@@ -1,8 +1,5 @@
 Hello agent! Today we're working on osis, the Open Structured Information System. osis is a decentralized, reactive data layer for interconnected applications.
 
-## Spec
-The spec in `spec/` should always be followed and never modified by agents directly. If the spec is overly ambiguous, contradictory or otherwise incorrect, surface the problem so I can fix. During development, the spec may make assertions that are not yet true, that's fine. [spec/README.md](spec/README.md) is a good starting point for understanding the scope and shape of the project.
-
 ## Notes
 The `notes/` directory contains your persistent notes about the project state. Create/edit/rename/split/delete notes as needed (without being asked) to keep them correct and maximally useful to you. Keep notes concise, remove parts or whole notes that are unimportant or obvious.
 

@@ -1,5 +1,8 @@
 # Commits, CRDTs and sync primitives
-> Summary: Proposed model for commits, per-aspect delta-state CRDTs, history purging and Merkle sync; discussed with owner 2026-09-25, not yet in spec.
+> Summary: Proposed model for commits, per-aspect delta-state CRDTs, history purging and Merkle sync; discussed with owner 2026-09-25, proposal not yet confirmed.
+
+## Decided so far
+- A sync `connection` syncs one group (a thing with `/group`). Merkle trees compare and sync changed data; the group hierarchy (items, subgroups) forms the tree. Everything below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Carries its own causal context (set of dots absorbed). Stored per aspect; hashed by the Merkle tree.
@@ -7,10 +10,10 @@
 - **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-node seq, list of (tid, ak, delta hash), signature. Commit ID = hash(header). Bodies addressed by own hash.
 
 ## Guarantees
-- Convergence under any delivery order (so "reorder/rebase" is meaningless; drop from spec).
+- Convergence under any delivery order (so "reorder/rebase" is meaningless).
 - Atomic visibility: all deltas of a commit for tracked aspects joined in one storage txn, listeners after.
 - Not isolation: concurrent commits merge; app invariants must be merge-compatible or repaired via listeners.
-- Causality is intra-aspect only (tids may dangle per spec), so no commit DAG/parents required.
+- Causality is intra-aspect only (tids may dangle, see notes/data-model.md), so no commit DAG/parents required.
 
 ## History purge
 - Delete bodies for one aspect; headers/signatures/IDs stay valid because bodies are by hash.
@@ -32,7 +35,7 @@
 - **Reset/epoch** primitive: deltas tagged with epoch; join keeps max epoch, drops lower. Used by remove_aspect, delete_thing, map key removal, replace, hard purge. Observed-remove = add-wins flavor; epoch bump = remove-wins. Prior art: `clear` in Almeida/Shoker/Baquero "Delta State Replicated Data Types".
 
 ## Other consequences
-- Merkle tree must hash *states* not values (equal values can have different contexts). Keep value hash for links/dedup; add state hash for sync. spec/data.md Hashing section currently says value hash.
+- Merkle tree must hash *states* not values (equal values can have different contexts). Keep value hash for links/dedup; add state hash for sync. notes/data-model.md Hashing section says value hash; reconcile when deciding.
 - Sync flow: compare trees -> divergent aspects -> transfer whole commits restricted to tracked aspects -> snapshots where bodies pruned.
 - Dots = (node tid, commit seq, index). Per-aspect contexts are sparse interval sets per node.
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
@@ -46,7 +49,7 @@
 - Chunking/prolly trees (see serialization.md) must apply to CRDT states too.
 - Group Merkle tree: prolly tree over flattened sorted member set is simpler than following the cyclic hierarchy.
 
-## Open (owner to decide in spec)
+## Open (owner to decide)
 - `set_aspect` default: diff vs replace.
 - remove_aspect / delete_thing: observed-remove vs epoch bump.
 - Expose `mv` register to apps in v1?
