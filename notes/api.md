@@ -1,5 +1,5 @@
 # Rust API
-> Summary: `Osis` handle, listener semantics and the initial function list; decided by owner, formerly spec/api.md. CRDT work implies path-based mutation ops still to be added.
+> Summary: `Osis` handle, listener semantics and the initial function list; decided by owner, formerly spec/api.md. CRDT work implies path-based mutation ops still to be added; API exposes plain values only, no CRDT concepts.
 
 ## `Osis`
 Main interface. A cloneable, thread-safe handle to an internal `Database`, which owns the aspect map, sync engine, etc. Many `Osis` handles per `Database`; the `Database` drops with the last handle.
