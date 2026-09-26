@@ -22,7 +22,12 @@
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.
 - string: LWW; `markdown`/`text` knob -> sequence CRDT over grapheme runs.
 - struct: per-field. map: OR-map, recursive values. set: OR-set. Knob `add_wins` (default) / `remove_wins`.
-- list: sequence CRDT, recursive elements; move = delete+insert (TODO).
+- list and text are the same structure (text = list<char> with run compaction). Each element has a position register (LWW): "after element X" or TRASH. Insert, delete, move, undelete, cut/paste are all writes to it. Range move = one record "elements a..b after X at t" (compressed per-element writes; Kleppmann 2020 "Moving Elements in List CRDTs"). Concurrently inserted neighbours have no record so they follow their anchor: "FOOBAR" + insert x / move FOO -> "BARFOxO". Concurrent moves of the same range resolve per element by timestamp, never duplicate.
+- Cut = move to TRASH, paste = move out of TRASH (IDs preserved, so others' concurrent edits inside the cut text travel with it; edits in between don't interfere). Client remembers cut ID range next to clipboard text; on paste emit move if it matches, else diff cut range vs pasted text -> moves + inserts. Cross-aspect paste = insert. Optional osis clipboard MIME type with (aspect, ID ranges). Protocol has no clipboard concept.
+- Tradeoff: delete is LWW, not a permanent tombstone. Delete vs concurrent move -> timestamp decides, move may resurrect. TRASH elements are retained as anchors.
+- Undo of a delete = move out of TRASH with original IDs (better than re-insert; keeps others' anchors valid).
+- IDs on the wire: node-table index + varint seq + varint idx (2-4 bytes typical), mostly implicit via runs. Cost scales with run count, not value size. Needs prototype + adversarial tests.
+- text state size target: 1.5x-3x plain text on real editing traces (run-length encoded runs, node-id table, delta-coded seqs). Benchmark against Kleppmann's automerge-paper trace before calling the text CRDT done.
 - enum: LWW whole value; same-case payload merge deferred (needs epochs).
 - **Reset/epoch** primitive: deltas tagged with epoch; join keeps max epoch, drops lower. Used by remove_aspect, delete_thing, map key removal, replace, hard purge. Observed-remove = add-wins flavor; epoch bump = remove-wins. Prior art: `clear` in Almeida/Shoker/Baquero "Delta State Replicated Data Types".
 
@@ -32,7 +37,12 @@
 - Dots = (node tid, commit seq, index). Per-aspect contexts are sparse interval sets per node.
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
 - API needs path-based ops (set field, insert/remove index, add/remove key, splice text, increment). `set_aspect` = structural diff convenience + explicit replace variant.
-- `history` flag: state always kept; bodies kept for a retention window, forever with `history`. Undo = inverse delta.
+- `history` flag: state always kept; bodies kept for a retention window, forever with `history`. An actor's own bodies are kept at least for the undo horizon regardless.
+
+## Undo/redo
+- Undo = new commit that cancels a specific earlier commit; header has `undoes: commit id`. Signed, replicated, atomic across the original's aspects. Never removes history; purged commits are not undoable.
+- Cancel per dot, not "apply inverse": undo insert = delete that ID; undo set-add = remove own dot only; undo counter inc = cancel that dot (idempotent if two devices undo concurrently); undo register write = restore old value only if own write is still the winner; undo delete = move out of TRASH (original IDs).
+- Stack is derived, not stored: actor's own commits in scope, minus undone, plus undo commits for redo. Replicates for free -> cross-device undo. Scope = set of aspects or a group, app-chosen.
 - Chunking/prolly trees (see serialization.md) must apply to CRDT states too.
 - Group Merkle tree: prolly tree over flattened sorted member set is simpler than following the cyclic hierarchy.
 
@@ -40,3 +50,4 @@
 - `set_aspect` default: diff vs replace.
 - remove_aspect / delete_thing: observed-remove vs epoch bump.
 - Expose `mv` register to apps in v1?
+- Undo stack per actor (cross-device, but two active devices share an interleaved stack) or per node?
