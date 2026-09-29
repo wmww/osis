@@ -22,3 +22,14 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 
 ## Pending additions (proposal, see notes/crdt-sync.md)
 Path-based ops: set field, insert/remove index, add/remove key, splice text, increment. `set_aspect` as structural-diff convenience plus an explicit replace variant. Default (diff vs replace) undecided.
+
+## Tids and hand-over (proposal, see notes/permissions.md)
+A thing gains a new tid each time its ownership, or that of an actor above it, is handed over; old tids are aliases. Apps should avoid ownership changes where membership changes will do.
+- Every call that takes a tid resolves aliases internally; listeners registered under an old tid keep firing. Apps never resolve in order to access.
+- Values returned to apps have known aliases replaced by the current tid, so tids read from osis compare equal. Stored bytes and hashes are unaffected; writing such a value back performs the rewrite.
+- Explicit call only for identity: comparing a tid the app kept (memory, config, URL) with one read later. `Tid` equality is plain bits and cannot consult the database.
+
+## Diagnostics channel (decided by owner 2026-09-29; shape is proposal)
+A place to dump problems such as a colliding record from a peer, a double hand-over, or rejected writes from a revoked actor. Apps may log, surface or ignore it. Correctness never depends on anyone seeing or reacting to it.
+- Shape: `Osis::listen_diagnostics(callback) -> ListenerId`, structured events (kind, tids involved, peer). Default sink is the log.
+- A peer must not be able to flood it: dedupe per (kind, tid), rate-limit per peer.

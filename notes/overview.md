@@ -5,8 +5,8 @@ osis (Open Structured Information System) is a decentralized database optimized 
 
 ## Areas
 - **API** (notes/api.md): Rust API to search, read, write and listen for changes. Hides crypto, databases, networking and CRDTs as far as possible.
-- **Data model** (notes/data-model.md, notes/serialization.md): every piece of data is an `Aspect` of a `Thing`. Things have random 120-bit tids; aspects are tid + aspect key (`AK`). Values are type-checked against the aspect's type.
-- **Permissions** (no detail yet): an `Actor` (user-like) controls multiple `Node`s (osis instances on devices). Actors are cryptographically identified and verified (no central auth). Permissions are per thing. Each thing is owned by exactly one actor at a time; ownership is transferable and read/edit permission can be granted to other actors.
+- **Data model** (notes/data-model.md, notes/serialization.md): every piece of data is an `Aspect` of a `Thing`. Things have 120-bit self-certifying tids; aspects are tid + aspect key (`AK`). Values are type-checked against the aspect's type.
+- **Permissions** (notes/permissions.md): an `Actor` (user-like) controls multiple `Node`s (osis instances on devices). Actors are cryptographically identified and verified (no central auth). Each thing is owned by exactly one actor, fixed by its tid; hand-over is lazy (notes/permissions.md). Access is granted by membership in the owner actor, not per thing.
 - **Sync** (notes/crdt-sync.md): each node tracks its own set of things and syncs with nodes with overlapping sets. Changes to aspects are grouped into commits, sent to nodes tracking the affected things and applied atomically. CRDTs resolve conflicts.
 
 ## Invariants
@@ -17,4 +17,4 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - BLAKE3 is the only hash.
 
 ## Workflow (since 2026-09-25)
-No spec directory. Owner and agent iterate by discussion; agent records decisions in notes, then implements. Notes mark items as decided or proposal. `open-questions.md` at repo root is the owner's own list; don't work on it unless asked.
+No spec directory. Owner and agent iterate by discussion; agent records decisions in notes, then implements. Notes mark items as decided or proposal.

@@ -63,6 +63,7 @@ Encoding and size:
 
 ## Dots and causal context
 - Dot = (node, aspect-local counter), not commit seq. Per-aspect contexts collapse to one interval per node; gaps only from out-of-order arrival. Commit header maps each touched aspect to a counter range.
+- Revocation (notes/permissions.md) needs every write attributable to an author node and dot, and droppable by dot. Timestamp-only registers are not enough; reconcile.
 - Only OR-set/OR-map carry contexts. Registers, counters and text carry timestamps only, so a bool aspect is a value plus a timestamp.
 
 ## Undo/redo
@@ -86,7 +87,7 @@ Encoding and size:
 - Undo stack per actor (cross-device, but two active devices share an interleaved stack) or per node?
 - Merkle leaf: state hash vs context hash.
 - set/map: OR with causal context vs LWW-element.
-- Keyed hashes for multi-group things.
+- Keyed hashes for multi-group things (candidate answer: derive from the owner actor, notes/permissions.md).
 
 ## Research
 - Loro's movable list and movable tree: production implementations of Kleppmann 2020 "Moving Elements in List CRDTs" and of tree cycle handling.
