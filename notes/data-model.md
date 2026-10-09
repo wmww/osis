@@ -60,10 +60,10 @@ Binds a thing to its first owner so nobody can publish a competing creation (not
 - Rejected: key inside the tid (a public key is 256 bits); bare tid + key told by the source node (unverifiable, two nodes can learn different owners); (owner, local id) pairs as identity (binding by construction but about 240 bits, 40 chars displayed).
 
 ### Hashing
-A thing has one canonical hash at a point in time: all values hash deterministically and all aspects must be known. Synthetic aspects excluded. Hashes refer to values and build Merkle trees, as in git. Caveat from CRDT work: sync trees likely need to hash CRDT *states*, keeping value hashes for links/dedup (notes/crdt-sync.md).
+A thing has one canonical hash at a point in time: all values hash deterministically and all aspects must be known. Synthetic aspects excluded. Hashes refer to values and are used for links, dedup and undo. Sync does not hash values or states; it reconciles encrypted blobs by ID (notes/sync.md).
 
 ### Groups
-A group is a thing with `/group`; membership is defined by that thing's data. A thing may be in many groups, membership changes over time, groups may contain themselves or be cyclic. Used for sync and app purposes. Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups).
+A group is a thing with `/group`; membership is defined by that thing's data. A thing may be in many groups, membership changes over time, groups may contain themselves or be cyclic. Used for sync (the sync unit, notes/sync.md) and app purposes. Blind nodes see a synced group as a flat opaque set; nesting is a local index. Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups).
 
 ## Storage
 Multiple backends (in-memory, sqlite, ...). Storage API kept clean and simple; sync, conflict resolution and listeners live above it.

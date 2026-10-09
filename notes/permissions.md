@@ -62,7 +62,7 @@ Two patterns from the same concepts, no per-thing grants needed:
   - Keeping a removed user's past messages is the chat's choice (keep the participant listed as former), not forced by the model.
 
 Open:
-- Next session (owner, 2026-09-29): what nodes without read access may see. Not discussed yet. Sync depends on it: Merkle trees hash per-aspect state, and a relay sees whatever they expose. Options so far: no relays in v1 (two devices must be online together); relays see structure but not content (tids, AKs, timestamps, sizes, who syncs with whom); relays see only opaque blobs (cruder sync). Agent leans to the middle one.
+- What nodes without read access see: settled 2026-10-09 as opaque blobs only, with efficient set reconciliation; see notes/sync.md. Each group carries a sync keypair that authorizes uploads to blind nodes; rotation trigger open.
 - Lazy hand-over is accepted conditionally; walk it through adversarial scenarios before marking it decided.
 - When references are rewritten after a hand-over (at hand-over, on read, on write).
 - A role on an actor covers both editing the actor thing's own data and acting as it. Fine so far; revisit if an example needs them apart.

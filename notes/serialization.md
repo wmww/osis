@@ -39,7 +39,7 @@ Decision: serde is not used on the wire. Own the encoder/decoder for `Value` (a 
 The LINK tag is the proposed mechanism for large values (notes/data-model.md):
 - A large blob is split with content-defined chunking (e.g. FastCDC) into a tree of chunks; interior nodes are lists of links.
 - A large map/set becomes a prolly tree (Noms/Dolt style): deterministic boundaries from hashing keys, so equal contents give equal trees regardless of edit history.
-- Every node is an ordinary canonical value with its own hash, so sync compares subtrees and a node can store/relay data it has no schema for.
+- Every node is an ordinary canonical value with its own hash. Chunks travel as separate encrypted blobs (notes/sync.md), so a large body is fetched and deduped piecewise; a prolly tree gives equal trees for equal contents regardless of edit history.
 - Threshold for when a value gets chunked, and whether links are visible to the API or hidden below it, still undecided.
 
 ## Schema DSL (*.osis files)

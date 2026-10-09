@@ -1,17 +1,17 @@
 # Commits, CRDTs and sync primitives
-> Summary: Proposed model for commits, per-aspect delta-state CRDTs, LWW reset as the single removal mechanism, movable text CRDT, content purging and Merkle sync; discussed with owner 2026-09-25, mostly proposal.
+> Summary: Proposed model for commits, per-aspect delta-state CRDTs, LWW reset as the single removal mechanism, movable text CRDT and content purging; discussed with owner 2026-09-25, mostly proposal. Sync itself moved to notes/sync.md (2026-10-09).
 
 ## Decided so far
-- A sync `connection` syncs one group (a thing with `/group`). Merkle trees compare and sync changed data; the group hierarchy (items, subgroups) forms the tree.
+- Sync unit is a group; mechanism is blob-set reconciliation, notes/sync.md (replaced the Merkle-tree design 2026-10-09).
 - Movable text/list CRDT ships in v1, as good as we can make it, with whatever fuzzing and testing that takes.
 - Apps see a value they can edit and listen to. No CRDT details (resets, contexts, lost writes) reach the API. A lost concurrent write is observed like any LWW loss: the listener fires with the current value.
 - Authenticated malicious writers are out of scope: a writer gaming HLC to win LWW is not a concern.
 - Everything else below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
-- **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect; hashed by the Merkle tree.
+- **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only (not synced or hashed).
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery needed.
-- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), signature. Commit ID = hash(header). Bodies addressed by own hash.
+- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire the whole commit is one encrypted blob (notes/sync.md).
 
 ## Guarantees
 - Convergence under any delivery order (so "reorder/rebase" is meaningless).
@@ -31,7 +31,7 @@
 - Delete bodies for one aspect; headers/signatures/IDs stay valid because bodies are by hash.
 - Replacement = snapshot = the aspect's state sent as a delta.
 - Caveats: cross-aspect atomicity vs. a purged aspect is lost for old commits. Deleted text content is already gone from state (see text CRDT); only IDs remain.
-- Guessable preimages: header keeps hash(delta), so a low-entropy delta (bool, PIN) could be brute-forced after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using a key derived from the read key; closes known-file confirmation on dedup'd chunks. Open: a thing in several groups with different read keys has no single key to derive from; relays without the key can store but not verify bodies. Dots are not hashes, so a fully purged commit's header can be dropped too. Purge removes values, not the fact/time/AK of an edit.
+- Guessable preimages: header keeps hash(delta), so a low-entropy delta (bool, PIN) could be brute-forced after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using a key derived from the read key; closes known-file confirmation on dedup'd chunks. Keys derive from the owner actor (notes/permissions.md). Blind nodes store but cannot verify bodies (notes/sync.md). Dots are not hashes, so a fully purged commit's header can be dropped too. Purge removes values, not the fact/time/AK of an edit.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.
@@ -73,21 +73,18 @@ Encoding and size:
 - An actor's own bodies (and pre-reset snapshots) are kept locally at least for the undo horizon.
 
 ## Sync
-- Merkle tree hashes *states* not values (equal values can have different metadata). Keep value hash for links/dedup; add state hash for sync. notes/data-model.md Hashing section says value hash; reconcile when deciding.
-- Merkle leaf alternative: hash(reset, context) instead of the full state. Cheap to maintain (no rehash of a large text per keystroke) and with aspect-local dots identifies the delta set exactly, but content refill after a drop then needs an explicit request. Leaning full state hash with prolly-tree chunking (see notes/serialization.md; chunking must apply to CRDT states too).
-- Flow: compare trees -> divergent aspects -> exchange per-aspect contexts (batched) -> transfer commits restricted to tracked aspects, snapshots where bodies are pruned.
-- Group Merkle tree: prolly tree over the flattened sorted member set is simpler than following the cyclic hierarchy. A thing in many groups updates many roots per edit.
+Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
 - API needs path-based ops (set field, insert/remove index, add/remove key, splice text, increment). `set_aspect` = structural diff convenience + explicit replace (reset) variant.
-- `history` flag: state always kept; bodies kept for a retention window, forever with `history`.
+- Bodies: kept for the live generation (required, to serve peers); forever with `history`. Snapshot = state sent as a delta, used by compaction.
+- Content refill after a drop (text CRDT resurrect case) is a request for specific blobs, not a state comparison.
 
 ## Open (owner to decide)
 - `set_aspect` default: diff vs replace.
 - Expose `mv` register to apps in v1?
 - Undo stack per actor (cross-device, but two active devices share an interleaved stack) or per node?
-- Merkle leaf: state hash vs context hash.
 - set/map: OR with causal context vs LWW-element.
-- Keyed hashes for multi-group things (candidate answer: derive from the owner actor, notes/permissions.md).
+- Keyed hashes for multi-group things: answered, derive from the owner actor (notes/permissions.md); blobs are encrypted under it anyway.
 
 ## Research
 - Loro's movable list and movable tree: production implementations of Kleppmann 2020 "Moving Elements in List CRDTs" and of tree cycle handling.
