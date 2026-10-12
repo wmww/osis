@@ -79,7 +79,7 @@ Owner: a tid commits to its owner by hash (self-certifying tids, decided, notes/
 
 Falls out:
 - Grant/revoke are ordinary writes to the actor thing, judged by the receipt-time rule like any other write.
-- Keyed hashes and chunk keys use a per-thing dedup secret derived from the thing's creation nonce, so every reader dedups identically and sharing changes nothing (notes/crdt-sync.md; closes the multi-group open question there).
+- Keyed hashes use a per-thing dedup secret derived from the thing's creation nonce, so every reader hashes identically and sharing changes nothing (notes/crdt-sync.md). Chunk keys are random and stored in links (notes/local-store.md).
 - Sync groups and owner actors stay separate: groups overlap and may be cyclic, ownership is single. A group may also be an actor (secrets and members) when it serves as a shared label.
 
 Three patterns from the same concepts:

@@ -18,7 +18,7 @@ CBOR (RFC 8949) restricted to a strict subset. Rationale: IETF standard, determi
 | set | tag 258 around an array sorted by canonical encoded bytes of elements |
 | tid | tag TID around a 15-byte byte string |
 | enum | tag ENUM around `[name]` (no payload) or `[name, payload]` |
-| link | tag LINK around a 32-byte byte string (BLAKE3 hash of a canonical value) |
+| link | tag LINK around (keyed BLAKE3 hash of the canonical value, blob ID, 32-byte blob key) |
 
 Tag numbers not yet chosen. Use the 3-byte range (256..65535) in an unassigned region, e.g. TID=4001, ENUM=4002, LINK=4003, and check the IANA CBOR tag registry before fixing them. 258 (set) is already registered for exactly this purpose.
 
@@ -39,7 +39,7 @@ Decision: serde is not used on the wire. Own the encoder/decoder for `Value` (a 
 The LINK tag is the proposed mechanism for large values (notes/data-model.md):
 - A large blob is split with content-defined chunking (e.g. FastCDC) into a tree of chunks; interior nodes are lists of links.
 - A large map/set becomes a prolly tree (Noms/Dolt style): deterministic boundaries from hashing keys, so equal contents give equal trees regardless of edit history.
-- Every node is an ordinary canonical value with its own hash. Chunks travel as separate encrypted blobs keyed from the thing's dedup secret (notes/sync.md), so a large body is fetched and deduped piecewise. Content-defined chunking is decided (2026-10-11); boundaries and sizes (FastCDC parameters) are not.
+- Every node is an ordinary canonical value with its own hash. Chunks and tree nodes travel as separate encrypted blobs, each under a random key carried in its parent link; an editor reuses unchanged chunks from the current tree by content hash (notes/local-store.md), so a large body is fetched and deduped piecewise. Content-defined chunking is decided (2026-10-11); boundaries and sizes (FastCDC parameters) are not.
 - Threshold for when a value gets chunked, and whether links are visible to the API or hidden below it, still undecided.
 
 ## Schema DSL (*.osis files)
