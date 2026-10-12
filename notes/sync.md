@@ -1,7 +1,7 @@
 # Sync: blob reconciliation, blind nodes, compaction
 > Summary: One sync protocol for all nodes: per-group set reconciliation over encrypted commit/chunk blobs; blind (keyless) nodes store and serve without seeing AKs, tids, sizes or structure; generations for compaction and deletion. Discussed with owner 2026-10-09; goals and unification decided, mechanism is proposal.
 
-Divergences from notes/constraints.md and proposed fixes: issues/sync-divergences.md (2026-10-11). Items there supersede this note where they conflict once the owner decides.
+Open fixes against notes/constraints.md: issues/sync-divergences.md.
 
 ## Goals (decided by owner 2026-10-09)
 - Untrusted always-on nodes (backup servers) exist and sync efficiently.
@@ -10,7 +10,8 @@ Divergences from notes/constraints.md and proposed fixes: issues/sync-divergence
 - Nothing in the earlier sync proposal is sacred; keep the plan as simple as possible while covering everything below.
 
 ## Model
-- **Blob**: an encrypted commit (header, signature and deltas all inside the ciphertext) or a fixed-size encrypted chunk of a large body. ID = BLAKE3 of the ciphertext. Indistinguishable to a keyless node. Encrypted under the owning actor's content key (notes/permissions.md), so a commit has one ID regardless of which groups contain it.
+- **Blob**: an encrypted commit (header, signature and its unpurged deltas inside the ciphertext) or an encrypted chunk of a large body. ID = BLAKE3 of the ciphertext. Indistinguishable to a keyless node. Encrypted under the owning actor's content key (notes/permissions.md), so a commit has one ID regardless of which groups contain it.
+- One blob per commit (decided by owner 2026-10-11): atomicity matters more than partial efficiency. A node syncing some but not all things a commit touches downloads the whole commit; most commits touch one thing, and multi-thing commits mostly go to nodes that want all of them. Purging one aspect rewrites the blob without that delta (same commit ID, new blob ID). Writer-chosen splitting of huge commits is a possible later optimization.
 - Every node holds a set of blobs. A node with keys decrypts commits and joins deltas into local aspect states. State is local only: never synced, never hashed for sync.
 - **Sync unit = group** (notes/data-model.md). "Blobs of G" = commits touching any thing in G's transitive closure, plus the chunks they reference. Each member computes this from its own data: commits are tagged with their things' `/groups` on arrival and retagged when group membership changes. Fixpoint, so cycles need nothing special; nesting depth does not affect sync cost, only retagging cost, which `/groups` already implies.
 - **Protocol**: per synced group, range-based set reconciliation over blob IDs within the live generation (Negentropy / Willow RBSR style), then transfer of the missing blobs. Cost proportional to diff times log of set size. A connection may sync many groups. No other sync messages.
@@ -26,8 +27,8 @@ Divergences from notes/constraints.md and proposed fixes: issues/sync-divergence
 - Compact: a member uploads snapshot commits (full aspect states as deltas) tagged with generation N+1, then signs "retire N, keep [ids]". The keep-list moves untouched blobs to N+1, so compaction costs proportional to churn, not group size. Concurrent compactions are harmless: snapshots join.
 - A returning member holding generation-N commits re-uploads into the live generation only those whose join still changes state.
 - Blind nodes keep retired generations for a grace period (recycle bin). An ex-member still holding the sync key can force a restore, not a loss.
-- Permanent deletion reaches blind nodes at compaction, together with read-key rotation; until then deleted content sits there as ciphertext under the current key. Members drop it immediately (LWW reset, notes/crdt-sync.md).
-- Nodes keep commit bodies for the live generation in order to serve them. Previously an optional retention window, now required. `history` flag = bodies never compacted.
+- Deletion follows the retention class (notes/crdt-sync.md): `purge` means the resetting node retires the old bodies at blind nodes right away (after a snapshot of any surviving live content, debounced); `undefined` means they go at the next compaction; `preserve` means only an explicit purge removes them. Read-key rotation is a membership matter, not a deletion one (issue item 7).
+- Nodes keep bodies per retention class; they must always be able to serve current state, from bodies or a snapshot.
 - Generations apply between trusted peers too; same protocol.
 
 ## Authorization of blind nodes

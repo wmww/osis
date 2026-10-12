@@ -11,7 +11,7 @@
 ## Layers (each a canonical CBOR value with a hash)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only (not synced or hashed).
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery needed.
-- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire the whole commit is one encrypted blob (notes/sync.md).
+- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
 
 ## Guarantees
 - Convergence under any delivery order (so "reorder/rebase" is meaningless).
@@ -27,11 +27,24 @@
 - Undo of a reset = paste-like reinsert of the pre-reset value with fresh IDs, taken from the local undo buffer. Others' concurrent edits inside the removed state are gone.
 - Compaction of a text bloated with tombstone IDs = reset + reinsert live content with fresh IDs; loses concurrent pre-reset edits, so rare or never. Yjs never compacts IDs and copes: deleted content is dropped (below), IDs are run-compressed.
 
-## History purge
-- Delete bodies for one aspect; headers/signatures/IDs stay valid because bodies are by hash.
-- Replacement = snapshot = the aspect's state sent as a delta.
-- Caveats: cross-aspect atomicity vs. a purged aspect is lost for old commits. Deleted text content is already gone from state (see text CRDT); only IDs remain.
-- Guessable preimages: header keeps hash(delta), so a low-entropy delta (bool, PIN) could be brute-forced after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using a key derived from the read key; closes known-file confirmation on dedup'd chunks. Keys derive from the owner actor (notes/permissions.md). Blind nodes store but cannot verify bodies (notes/sync.md). Dots are not hashes, so a fully purged commit's header can be dropped too. Purge removes values, not the fact/time/AK of an edit.
+## Retention and purge (owner's direction 2026-10-11; details proposal)
+Three retention classes for content, all expressible:
+- `purge`: once content is reset or superseded, every node applying that commit drops the body holding it immediately and irrevocably; the node that wrote the reset also retires the body at blind nodes.
+- `preserve`: bodies kept and synced until an explicit purge (today's `history` flag).
+- `undefined` (default): nodes may drop superseded bodies by local policy (age, size, cache-like). Dropping is a compaction (snapshot of live content, then retire), so current state stays servable.
+All three are compaction policies: now, never (except explicit purge), or whenever. Possible later: "preserve until DATE", "delete by DATE".
+
+Where set: schema default per AK (`history` = preserve, proposed `ephemeral` = purge, neither = undefined); per-commit override in the header for that commit's deltas; and a purge request naming prior bodies or whole aspect histories, for "oops, bank details pasted into a versioned shared doc".
+
+Mechanics:
+- Purge drops bodies (values), never headers: fact, time, author and AK of every edit remain, including the purge itself. Headers keep hash(delta), so a purged commit is still verifiable.
+- A multi-aspect commit purged for one aspect is rewritten as a blob without that delta: same commit ID, new blob ID, cost proportional to the commit's remaining deltas (notes/sync.md).
+- Deleting a whole thing with `purge`: retire its bodies, no snapshot (state after reset is a timestamp). Deleting part of a value (a paragraph, a map entry): a snapshot of the aspect's live content must be uploaded first, so batch with a short debounce. The deletion constraint (notes/constraints.md) is met within that debounce, which must be bounded.
+- Undo horizon: a node keeps its own bodies locally only while nobody has reset their content; others' resets with `purge` win over undo.
+- Guessable preimages: a low-entropy delta (bool, PIN) could be brute-forced from hash(delta) after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using a key derived from the owner's read key; closes known-file confirmation on dedup'd chunks. Blind nodes store but cannot verify bodies.
+- Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
+
+Who may purge is a permission question, open (notes/permissions.md): any editor wiping history can hide vandalism; purge right could follow the original author, be admin-only, or be a schema knob. Enforcement is only against honest nodes either way.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.
@@ -76,7 +89,7 @@ Encoding and size:
 Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
 - API needs path-based ops (set field, insert/remove index, add/remove key, splice text, increment). `set_aspect` = structural diff convenience + explicit replace (reset) variant.
-- Bodies: kept for the live generation (required, to serve peers); forever with `history`. Snapshot = state sent as a delta, used by compaction.
+- Bodies: retention class decides (purge/preserve/undefined, above). A node must always be able to serve current state: bodies or a snapshot (state sent as a delta).
 - Content refill after a drop (text CRDT resurrect case) is a request for specific blobs, not a state comparison.
 
 ## Open (owner to decide)

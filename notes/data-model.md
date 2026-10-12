@@ -28,7 +28,8 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `synthetic`: generated on the fly from other data
 - `guaranteed`: exists on all things
 - `indexed`: text-indexed for search
-- `history`: retain edit history
+- `history`: retain edit history (retention class `preserve`)
+- `ephemeral` (proposal): superseded content purged immediately (retention class `purge`); see notes/crdt-sync.md
 
 ### Schema files
 `*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md.

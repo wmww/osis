@@ -68,6 +68,7 @@ Open:
 - A role on an actor covers both editing the actor thing's own data and acting as it. Fine so far; revisit if an example needs them apart.
 - Nesting cost: removing a member low in the hierarchy rotates read keys of every actor above it.
 - Recovery when the owning key at the end of the chain is lost.
+- Purge rights (owner 2026-10-11, not to be settled now): an explicit history purge must exist (secret pasted into a versioned doc), but letting any editor purge lets a vandal hide what they changed. Candidates: purge right follows the original author of the content; admin-only; a schema knob per AK; granular flags in commits. The purge record itself stays visible (who, when, which AK), which deters but does not restore. Possibly overcomplicating; decide with a concrete app.
 
 ## Revocation: reference scenario
 Alice shares a doc with Bob (Mon). Bob goes offline (Tue), makes edit X (Wed). Alice revokes Bob without having seen X (Thu). Bob makes edit Y (Fri), returns and syncs (Sun). Variant: Carol is offline with Bob and syncs with him there.
