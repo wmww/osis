@@ -1,5 +1,5 @@
 # Permissions and revocation
-> Summary: Permission model (actors, membership on any thing, ownership; sharing within the owner's tree decided 2026-10-11, hand-over only for moving out of it) and write revocation vs. concurrent offline edits (receipt-time rule, accepted by owner 2026-09-29, details proposal), with rejected alternatives and costs.
+> Summary: Permission model (actors, membership on any thing, ownership; sharing within the owner's tree and verification via labeled membership commits decided 2026-10-11, hand-over only for moving out of it) and write revocation vs. concurrent offline edits (receipt-time rule, accepted by owner 2026-09-29, details proposal), with rejected alternatives and costs.
 
 ## Model (2026-09-29; proposal unless marked decided)
 Owner's direction: a small set of concepts that compose; hierarchical; keys for nodes, actors and other scopes; private keys wrapped to a target to grant access; a set of things shared with a changing set of actors must be managed in one place; nested actors (e.g. tess -> tess-human, tess-agent) should be possible but not baked in. Spreadsheet and group chat differ, but both are many things whose permissions change together.
@@ -28,6 +28,22 @@ Sharing never changes a tid. Resolves the former issue "share existing thing".
 - One note: edge on N, explicit secrets on N, N is its own label. A set: a group thing with members and secrets (the "shared with Bob" folder), one edge per thing naming it, written in one commit. A set meant to be shared as a unit is better created under a common owner (shared-owner pattern).
 - Why no tid change: the double-spend harm of a transfer is the former owner pulling the thing back. Moving a thing to an actor the owner owns has no such harm, so it is an ordinary write on the thing; the edge is the additive form of that write (a move would also drop A's own writers). Hand-over with a new tid remains only for moving a thing out of its owner's tree, which should be rare.
 - Rejected: an actor per thing at creation (usage rule, doubles the thing count, does not cover existing things); a membership edge on a group thing extending to its contents (groups are an app tool and must carry no permission meaning); a grant-set thing listing shared tids (a verifier could only check N's writes after syncing the set; an edge on N travels with N); per-thing derived content keys plus an encrypted hint per blob and label (about 24 bytes cheaper than a wrap, loses crypto-shredding per blob and add-a-wrap sharing; a drop-in change if the wrap ever matters).
+
+## Verifying writes without reading membership (decided by owner 2026-10-11)
+Problem: checking a write on N needs the current membership of N's owner and of every actor above it up to the key actor, and of the author's own actors below; only members can read those aspects, and non-members do not sync their labels. So a grantee or a chat reader could neither verify writes nor learn of revocations, and nodes would diverge.
+
+Resolution: the signed membership commits are the certificates; they travel under the labels where they are needed. No verify role, no certificate format, no extra key.
+- Membership writes (grant, revoke, demotion, receipt statement) always get their own commit, never shared with other aspects of the actor, so a membership commit can sit under extra labels without exposing anything else. Internal rule like "one owner actor per commit"; apps never see it.
+- When a node uploads under label L it also puts the membership commits proving its own chain under L: its edge into its person actor, that admin's edge into the owner, and so on up to the key actor. One extra wrap per blob, deduped by blob ID, so the cost is once per (node, label), not per commit (notes/sync.md, Labeling).
+- Revokes and statements follow the same rule: any member who syncs L and holds one about an author seen under L adds the wrap. A grantee with write on N is an authorized actor for N, so its receipts count as witness statements for N.
+- Chain checks need no secrets: each link is a node signature plus a tid committing to its owner, ending at a key actor whose tid commits to its public key. Readers of L decrypt with L's read secret; blind nodes see opaque blobs.
+- A commit whose author chain has not arrived is held unverified until it does; same pending state as an out-of-order delta.
+
+Leaks: a reader of L learns the chain of every author under L and the witness nodes that publish statements about them, never rosters. Author identity is inherent anyway (every write is node-signed, the receipt-time rule needs it).
+
+Accepted limits: revocation reach is eventual (if no member of the revoking actor syncs L again, L's readers keep accepting the revoked node until one does, then un-merge); chain depth equals nesting depth (node -> person -> recovery key is two blobs, each org level adds one).
+
+Rejected: a "verify" role whose key is handed out transitively with every edge (an outside collaborator on one note learns the team's and the company's full membership; every rotation above re-wraps to everyone below); per-commit certificate chains (a few hundred bytes per commit against a 200-byte floor; the same data is cheaper as labeled commits).
 
 Hand-over (2026-09-29). Decided by owner:
 - Ownership is immutable: an owner whose thing can be pulled or destroyed by a former owner is not really the owner. A former owner can always sign a second, competing transfer (double-spend; no fix without consensus), so a transfer must never be able to harm what the new owner holds.
@@ -75,7 +91,6 @@ Three patterns from the same concepts:
 
 Open:
 - What nodes without read access see: settled 2026-10-09 as opaque blobs only, with efficient set reconciliation; see notes/sync.md. Label keys derive from the group thing's role secrets; rotation trigger open.
-- Verifying a write needs the membership of every actor up the owner chain, which non-members cannot read today: issues/verifier-membership-chain.md.
 - Lazy hand-over is accepted conditionally; walk it through adversarial scenarios before marking it decided.
 - When references are rewritten after a hand-over (at hand-over, on read, on write).
 - A role on an actor covers both editing the actor thing's own data and acting as it. Fine so far; revisit if an example needs them apart.
