@@ -47,6 +47,7 @@ Lazy hand-over (owner 2026-09-29: "sounding better, if it will work"; from owner
 Mechanism splits by direction (decided by owner):
 - Write: signatures plus membership chain. A node always signs with its own key. Sharing an actor's private signing key is rejected: it erases which member wrote (the revocation rule needs the author) and makes every removal a key rotation.
 - Read: key wrapping, as the owner described. An actor's private decryption key is wrapped to each member; content keys derive from the owner actor's read key. Removal rotates the key, lazily (old content was already readable).
+- Per-role keys (proposal 2026-10-11): an actor has one secret per role (read, write, admin), each wrapped to the members holding that role or higher. Content uses the read key; the write and admin secrets exist so that blind nodes can distinguish roles by signature (notes/sync.md, Authorization). Demotion or removal rotates the affected secrets, lazily.
 
 Owner: a tid commits to its owner by hash (self-certifying tids, decided, notes/data-model.md).
 

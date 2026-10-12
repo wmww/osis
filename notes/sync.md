@@ -26,14 +26,20 @@ Open fixes against notes/constraints.md: issues/sync-divergences.md.
 - Per group label, a generation counter. Reconciliation runs only within the live generation, so retired blobs cannot resurrect from a stale peer.
 - Compact: a member uploads snapshot commits (full aspect states as deltas) tagged with generation N+1, then signs "retire N, keep [ids]". The keep-list moves untouched blobs to N+1, so compaction costs proportional to churn, not group size. Concurrent compactions are harmless: snapshots join.
 - A returning member holding generation-N commits re-uploads into the live generation only those whose join still changes state.
-- Blind nodes keep retired generations for a grace period (recycle bin). An ex-member still holding the sync key can force a restore, not a loss.
+- Blind nodes keep soft-retired blobs for the grace period (recycle bin); see Authorization. Members holding state can always re-upload live content as snapshots, so wipes lose history, not state, while any member remains.
 - Deletion follows the retention class (notes/crdt-sync.md): `purge` means the resetting node retires the old bodies at blind nodes right away (after a snapshot of any surviving live content, debounced); `undefined` means they go at the next compaction; `preserve` means only an explicit purge removes them. Read-key rotation is a membership matter, not a deletion one (issue item 7).
 - Nodes keep bodies per retention class; they must always be able to serve current state, from bodies or a snapshot.
 - Generations apply between trusted peers too; same protocol.
 
-## Authorization of blind nodes
-- Each group has a sync keypair stored in the group thing's data (encrypted like all data under the group thing's owner's read key). Anyone who can read the group can sign uploads and retires. The public key is the label; the blind node learns no membership.
-- A read-only member can upload garbage; members reject it at signature check. Same class as the accepted "authenticated malicious writer".
+## Authorization at blind nodes (proposal 2026-10-11, replaces single sync key)
+Threat (owner): a blind node may be someone's only backup. Read access must not allow deletion or forced re-upload; write access should not casually wipe a group either.
+- A label has three keys, one per role: upload (readers and up), soft-retire (writers and up), hard-delete (admins). Derived by KDF from per-role actor keys (notes/permissions.md), so nothing extra is stored; the label itself is a stable random ID registered with its three public keys by a hard-delete-signed message, which also rotates them.
+- Upload adds a blob under the label. Readers can at worst fill the quota with garbage, which members ignore and admins clean.
+- Soft retire removes a blob from the live set into a recycle bin for a grace period set per label by admins. Recoverable by any writer within the period. This is what compaction and `undefined`/`preserve` retention use.
+- Hard delete removes immediately, including from the bin. Needed for the `purge` class to take effect at blind nodes at once. Only admins hold it, so a writer's purge reaches blind nodes at the end of the grace period unless an admin shortens it (owner to decide; alternative is giving writers hard delete and accepting writer wipes).
+- Scope of a writer's soft retire is the whole label, because write access is granted per owner actor and the blind node sees no finer structure. Same power they have over the data itself, but history at the blind node is recoverable only for the grace period.
+- Mixed-owner labels (chat pattern): with label-level keys, a chat writer can soft-retire participants' blobs. Alternative: each upload is signed with a per-member pseudonymous key and only that key or hard-delete may retire it; the blind node then learns the number of uploader keys. Pick when the chat pattern is implemented.
+- A blind node may additionally rate-limit soft retires per label per day as a heuristic against wipes; not a correctness mechanism.
 
 ## What a blind node learns
 One label per group synced to it, overlaps between them, blob count, blob sizes rounded to buckets (chunks are fixed size), arrival times (clients may batch uploads), generation numbers and retire events, client addresses. Not: AKs, tids, thing or aspect counts, value sizes, authors, membership, nesting. Key epoch after a rotation: readers try the few live keys rather than a cleartext epoch byte (proposal).
@@ -48,7 +54,7 @@ Per-aspect state Merkle tree, Merkle tree over the group hierarchy, per-aspect c
 
 ## Open
 - Default compaction policy: when, and which member.
-- Sync key rotation: with the owner's read key, or on explicit admin action. A new label means re-labeling or re-upload.
+- Label key rotation follows the per-role actor key rotation; the label ID is stable, so no re-labeling.
 - Lazy chunk fetch for huge bodies a device does not want locally (local policy; reconciliation just reports the IDs it lacks).
 - Encrypted table of contents for partial restore from blind nodes.
 - Size bucketing scheme; upload batching.
