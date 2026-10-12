@@ -20,7 +20,7 @@ Types can be named and referenced (allows recursion and sub-types with their own
 - Large values: within reason, values are not assumed small or organized any particular way. Maps with millions of keys and single multi-GB blobs must work, and sync must stay efficient. Mechanism (links/chunking) is proposed in notes/serialization.md, not decided.
 
 ## Aspects
-An aspect has a key (AK) and a value. AK human-readable form: slash-prefixed, slash-separated, e.g. `/somenamespace/name`. AK versioning: open (candidate: schema-as-data pinned by hash, see notes/serialization.md).
+An aspect has a key (AK) and a value. AK human-readable form: slash-prefixed, slash-separated, e.g. `/somenamespace/name`. AK versioning: open, see issues/schema-versioning.md.
 
 ### Aspect map
 Maps AKs to value types; built from loaded schemas. Flags per aspect:

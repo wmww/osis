@@ -95,7 +95,7 @@ Open:
 - When references are rewritten after a hand-over (at hand-over, on read, on write).
 - A role on an actor covers both editing the actor thing's own data and acting as it. Fine so far; revisit if an example needs them apart.
 - Nesting cost: removing a member low in the hierarchy rotates read keys of every actor above it.
-- Recovery when the owning key at the end of the chain is lost.
+- Recovery of a lost owning key: out of scope, a product decision not baked into the architecture (owner 2026-10-12).
 
 ## Purge rights (decided by owner 2026-10-11)
 An explicit purge of preserved history may be issued by the author of a delta or by an admin of the thing's owner. Any writer can already destroy live state, but letting any writer purge would turn recoverable vandalism of `preserve` aspects into irrecoverable loss; purging only your own deltas gives no power you lacked by not writing them. The person who pasted a secret fixes it without an admin. A purge request naming an aspect's history purges the deltas the requester may purge; the purge record stays visible. Residue: a delta by another author that carries part of the content (a typo fix inside the pasted text, a re-chunked region of a large value) needs that author or an admin. Alternative considered: author-or-owner. At blind nodes authors act by per-entry delete token plus a current writer signature, admins by the label hard-delete key; for `purge`-class deltas the token is writer-derived so any current writer may finish the reset (notes/sync.md, Authorization).

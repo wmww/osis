@@ -40,7 +40,7 @@ The LINK tag is the proposed mechanism for large values (notes/data-model.md):
 - A large blob is split with content-defined chunking (e.g. FastCDC) into a tree of chunks; interior nodes are lists of links.
 - A large map/set becomes a prolly tree (Noms/Dolt style): deterministic boundaries from hashing keys, so equal contents give equal trees regardless of edit history.
 - Every node is an ordinary canonical value with its own hash. Chunks and tree nodes travel as separate encrypted blobs, each under a random key carried in its parent link; an editor reuses unchanged chunks from the current tree by content hash (notes/local-store.md), so a large body is fetched and deduped piecewise. Content-defined chunking is decided (2026-10-11); boundaries and sizes (FastCDC parameters) are not.
-- Threshold for when a value gets chunked, and whether links are visible to the API or hidden below it, still undecided.
+- Threshold for when a value gets chunked is undecided. API direction (owner 2026-10-12): whole-value access always allowed, streaming/partial access also available; whether that exposes links or a separate abstraction is an implementation question (notes/api.md).
 
 ## Schema DSL (*.osis files)
 Rust-like syntax, hand-written recursive-descent parser (no third-party parser libs, owner decision). Same parser serves runtime loading and the `load_schema!()` proc macro.
@@ -69,7 +69,7 @@ Grammar notes:
 - Errors should carry file/line/column.
 
 ### Schema as data
-The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. So a schema has a hash, can be stored and synced as a thing, and an AK could pin a schema version by hash. Candidate answer for AK versioning; not decided.
+The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. So a schema has a hash, can be stored and synced as a thing, and an AK could pin a schema version by hash. Candidate answer for AK versioning; not decided (issues/schema-versioning.md).
 
 ## Status
 Decided by owner (2026-09-22): CBOR wire format, Rust-like DSL, no serde on the wire. Proposal only: tag numbers, float rule, strict decoding, link/chunking scheme, DSL grammar details.

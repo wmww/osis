@@ -65,5 +65,5 @@ Per-aspect state Merkle tree, Merkle tree over the group hierarchy, per-aspect c
 - Lazy chunk fetch for huge bodies a device does not want locally (local policy; reconciliation just reports the IDs it lacks).
 - Encrypted table of contents for partial restore from blind nodes.
 - Upload batching; log retention horizon at each node (beyond it, peers fall back to range reconciliation).
-- Peer discovery, transport, crypto primitives: not discussed yet.
+- Peer discovery, transport, crypto primitives: not discussed yet. iroh (QUIC, hole punching, relays) might be a good transport option; owner unsure, evaluate when it comes up.
 - Commit floor: a minimal commit is about 200 bytes plus a wrap per label plus a 16-byte token hash. Fine for editing workloads (a few MB per hour at most); revisit only if huge commit volumes appear (owner 2026-10-11).

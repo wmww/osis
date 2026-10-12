@@ -84,6 +84,7 @@ Encoding and size:
 - Undo = new commit that cancels a specific earlier commit; header has `undoes: commit id`. Signed, replicated, atomic across the original's aspects. Never removes history; purged commits are not undoable.
 - Cancel per dot, not "apply inverse": undo insert = delete that ID; undo set-add = remove own dot only; undo counter inc = cancel that dot (idempotent if two devices undo concurrently); undo register write = write old value only if own write is still the winner; undo delete = undelete original IDs; undo reset = reinsert (above).
 - Stack is derived, not stored: actor's own commits in scope, minus undone, plus undo commits for redo. Replicates for free -> cross-device undo. Scope = set of aspects or a group, app-chosen.
+- Per actor by default (decided by owner 2026-10-12). Also an API to view every available change in scope regardless of author, from which an admin may remove (undo) others' changes.
 - An actor's own bodies (and pre-reset snapshots) are kept locally at least for the undo horizon.
 
 ## Sync
@@ -93,12 +94,8 @@ Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Bodies: retention class decides (purge/preserve/undefined, above). A node must always be able to serve current state: bodies or a snapshot (state sent as a delta).
 - Content refill after a drop (text CRDT resurrect case) is a request for specific blobs, not a state comparison.
 
-## Open (owner to decide)
-- `set_aspect` default: diff vs replace.
-- Expose `mv` register to apps in v1?
-- Undo stack per actor (cross-device, but two active devices share an interleaved stack) or per node?
-- set/map: OR with causal context vs LWW-element.
-- Keyed hashes for multi-group things: answered, per-thing dedup secret from the creation nonce (notes/permissions.md); blobs carry their own keys (notes/sync.md).
+## Open
+Tracked in issues/crdt-open-questions.md.
 
 ## Research
 - Loro's movable list and movable tree: production implementations of Kleppmann 2020 "Moving Elements in List CRDTs" and of tree cycle handling.

@@ -1,5 +1,11 @@
 # Rust API
-> Summary: `Osis` handle, listener semantics and the initial function list; decided by owner, formerly spec/api.md. CRDT work implies path-based mutation ops still to be added; API exposes plain values only, no CRDT concepts.
+> Summary: Early API sketch (`Osis` handle, listeners, function list) plus directions: the API is NOT decided and is to be worked out during implementation and refactored as example projects show what works (owner 2026-10-12). Fixed points: plain values and listeners, no CRDT concepts; large values usable both materialized and streamed.
+
+## Status (owner 2026-10-12)
+The sketch below is the owner's earlier idea. Do not follow it closely where it conflicts with the project's needs; shape the API while implementing and refactor as example apps reveal what works. Fixed directions:
+- Plain values and listeners, no CRDT concepts (notes/crdt-sync.md).
+- Large values: encourage but do not require good handling. Getting a string as one `String` is allowed; there must also be tools to read, edit and listen to a large value without materializing it into one buffer. No further owner input needed now.
+- Undo: per actor by default; plus a view of all available changes in scope from which an admin may remove others' (notes/crdt-sync.md).
 
 ## `Osis`
 Main interface. A cloneable, thread-safe handle to an internal `Database`, which owns the aspect map, sync engine, etc. Many `Osis` handles per `Database`; the `Database` drops with the last handle.
