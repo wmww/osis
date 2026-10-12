@@ -1,7 +1,5 @@
 # Sync: blob reconciliation, blind nodes, compaction
-> Summary: One sync protocol for all nodes: per-group set reconciliation over encrypted commit/chunk blobs; blind (keyless) nodes store and serve without seeing AKs, tids, sizes or structure; generations for compaction and deletion. Discussed with owner 2026-10-09; goals and unification decided, mechanism is proposal.
-
-Open fixes against notes/constraints.md: issues/sync-divergences.md.
+> Summary: One sync protocol for all nodes: per-label cursor logs with range reconciliation as fallback, over encrypted commit/chunk blobs with per-blob keys wrapped per label; blind (keyless) nodes store and serve without seeing AKs, tids, values or structure; generations and drop-list retires for compaction and deletion. Goals decided 2026-10-09, mechanism decided 2026-10-11 except blind-node retire rights (issues/blind-node-retire-authorization.md).
 
 ## Goals (decided by owner 2026-10-09)
 - Untrusted always-on nodes (backup servers) exist and sync efficiently.
@@ -10,13 +8,14 @@ Open fixes against notes/constraints.md: issues/sync-divergences.md.
 - Nothing in the earlier sync proposal is sacred; keep the plan as simple as possible while covering everything below.
 
 ## Model
-- **Blob**: an encrypted commit (header, signature and its unpurged deltas inside the ciphertext) or an encrypted chunk of a large body. ID = BLAKE3 of the ciphertext. Indistinguishable to a keyless node. Encrypted under its own random key, so a commit has one ID regardless of which groups contain it (decided by owner 2026-10-11).
+- **Blob**: an encrypted commit (header, signature and its unpurged deltas inside the ciphertext) or an encrypted chunk of a large body. ID = BLAKE3 of the ciphertext. Indistinguishable to a keyless node. Encrypted under its own key, so a commit has one ID regardless of which groups contain it (decided by owner 2026-10-11). A commit's key is random; a chunk's key is derived from the thing's dedup secret and the chunk content, so equal chunks give equal blobs across edits and readers (notes/crdt-sync.md).
 - **Wrap**: the blob key encrypted under the read secret of a label, about 48 bytes (nonce derived from the blob ID). One per (label, blob), stored as label-entry metadata beside the ID, not inside the blob. Anyone who can decrypt the blob and holds a label's read secret can add a wrap, so sharing history never re-encrypts, and the wrap tells a holder of several keys which one opens a blob from a mixed-owner label. Overhead: about 20% on a minimal 200-byte commit, under 5% on typical edits, nothing on snapshots and chunks; compaction drops retired wraps. A commit touches things of one owner actor only.
 - One blob per commit (decided by owner 2026-10-11): atomicity matters more than partial efficiency. A node syncing some but not all things a commit touches downloads the whole commit; most commits touch one thing, and multi-thing commits mostly go to nodes that want all of them. Purging one aspect rewrites the blob without that delta (same commit ID, new blob ID). Writer-chosen splitting of huge commits is a possible later optimization.
 - Every node holds a set of blobs. A node with keys decrypts commits and joins deltas into local aspect states. State is local only: never synced, never hashed for sync.
 - **Sync unit = group** (notes/data-model.md). "Blobs of G" = commits touching any thing in G's transitive closure, plus the chunks they reference. Each member computes this from its own data: commits are tagged with their things' `/groups` on arrival and retagged when group membership changes. Fixpoint, so cycles need nothing special; nesting depth does not affect sync cost, only retagging cost, which `/groups` already implies.
-- **Protocol**: per synced group, range-based set reconciliation over blob IDs within the live generation (Negentropy / Willow RBSR style), then transfer of the missing blobs. Cost proportional to diff times log of set size. A connection may sync many groups. No other sync messages.
-- **Blind node**: knows a group only as an opaque label over a flat set of (blob ID, wrap) entries. Same blob under two labels = one transfer, one stored copy, two label entries; that is the overlap leak.
+- **Protocol** (decided 2026-10-11): every node keeps a per-label append log of entries it received, with sequence numbers. A client stores a cursor per (peer, label) and sends "since cursor" plus the IDs it has gained under that label from any source since then; the peer answers with the entries and blobs after the cursor minus those IDs, and takes the client's new blobs. One round trip each way, blobs inline with their wraps. Nothing a side already holds is sent again, beyond the ID list, which is bounded by the client's own churn. Fallback when a cursor is missing or invalid (first contact, log truncated, peer reset): range-based set reconciliation over blob IDs within the live generation (Negentropy / Willow RBSR style), log(n) rounds. A connection may sync many labels. No other sync messages. Blind nodes see arrival order anyway, so the log leaks nothing new.
+- **Labeling** (decided 2026-10-11): an uploader puts a blob under the label of every group in its things' `/groups` whose read secret it holds, with a wrap per label. The server creates labels it does not know. A group whose group thing the uploader cannot read gets no label from that uploader; known gap, no fix needed so far. When a thing's group membership changes, its live blobs are added under the new label and retired under the old (retire is per label; the blob survives by refcount). A label holds every blob of every descendant group; intended, that is what makes the parent label a complete backup.
+- **Blind node**: knows a group only as an opaque label over a flat set of (blob ID, wrap, generation) entries. Same blob under two labels = one transfer, one stored copy, two label entries; that is the overlap leak.
 - **Partial trusted peers**: each reconciles with its current view; newly received group data may grow the closure, so repeat until a pass has no diff. Closure only grows within a session, so this terminates.
 - The receiver keeps blobs a peer puts in G even if its own closure disagrees (checked after decrypt when it can); stale extras leave at compaction.
 - **Mixed keys**: a node may hold keys for some owners in a group and not others. It is trusted for those blobs and blind for the rest, in one protocol. The chat pattern (notes/permissions.md) needs nothing extra.
@@ -24,15 +23,15 @@ Open fixes against notes/constraints.md: issues/sync-divergences.md.
 - Rejected sync unit: owner actor. Dedups perfectly but forces a new actor (a hand-over) for every separately syncable subset; groups are free and overlapping.
 
 ## Compaction, deletion, generations
-- Per group label, a generation counter. Reconciliation runs only within the live generation, so retired blobs cannot resurrect from a stale peer.
-- Compact: a member uploads snapshot commits (full aspect states as deltas) tagged with generation N+1, then signs "retire N, keep [ids]". The keep-list moves untouched blobs to N+1, so compaction costs proportional to churn, not group size. Concurrent compactions are harmless: snapshots join.
-- A returning member holding generation-N commits re-uploads into the live generation only those whose join still changes state.
+- Per label, a generation counter; every entry carries the generation it was uploaded in. Reconciliation runs only within the live generation, and a node rejects uploads tagged below it, so retired blobs cannot resurrect from a stale peer. No tombstone set is needed.
+- Compact (decided 2026-10-11): a member uploads snapshot commits (full aspect states as deltas) tagged with generation N+1, then signs "retire [ids]" naming the blobs the snapshots supersede. Blobs not named carry over to N+1 implicitly. Cost proportional to churn, not group size (a keep-list would cost 32 bytes per surviving blob). Concurrent compactions are harmless: snapshots join.
+- A returning member holding retired or generation-N commits re-tags into the live generation only those whose join still changes state; if a snapshot missed something, resurrecting it is correct.
 - Blind nodes keep soft-retired blobs for the grace period (recycle bin); see Authorization. Members holding state can always re-upload live content as snapshots, so wipes lose history, not state, while any member remains.
-- Deletion follows the retention class (notes/crdt-sync.md): `purge` means the resetting node retires the old bodies at blind nodes right away (after a snapshot of any surviving live content, debounced); `undefined` means they go at the next compaction; `preserve` means only an explicit purge removes them. Read-key rotation is a membership matter, not a deletion one (issue item 7).
+- Deletion follows the retention class (notes/crdt-sync.md): `purge` means the resetting node retires the old bodies at blind nodes right away (after a snapshot of any surviving live content, debounced); `undefined` means they go at the next compaction; `preserve` means only an explicit purge removes them. Read-key rotation is a membership matter, not a deletion one: it happens only on member removal, lazily, for new content; rotation does nothing for deletion against honest nodes and re-encrypting history would be O(group) (decided 2026-10-11).
 - Nodes keep bodies per retention class; they must always be able to serve current state, from bodies or a snapshot.
 - Generations apply between trusted peers too; same protocol.
 
-## Authorization at blind nodes (proposal 2026-10-11, replaces single sync key)
+## Authorization at blind nodes (proposal 2026-10-11, replaces single sync key; open: issues/blind-node-retire-authorization.md)
 Threat (owner): a blind node may be someone's only backup. Read access must not allow deletion or forced re-upload; write access should not casually wipe a group either.
 - A label has three keys, one per role: upload (readers and up), soft-retire (writers and up), hard-delete (admins). Derived by KDF from the group thing's role secrets (notes/permissions.md: derived from its owner's by default, explicit once the group has members of its own), so nothing extra is stored; the label itself is a stable random ID registered with its three public keys by a hard-delete-signed message, which also rotates them.
 - Scope: rights at a label are rights on the group thing. Example: my notes folder G (owned by me) is one label; I share note N by writing "friend: write" on N and making N (or a group thing holding everything I share with that friend) a label with its own secrets wrapped to the friend. N's blobs sit under both labels with a wrap each. The friend can upload and soft-retire under the shared label and touch nothing under G, including N's own entries there.
@@ -45,10 +44,12 @@ Threat (owner): a blind node may be someone's only backup. Read access must not 
 - A blind node may additionally rate-limit soft retires per label per day as a heuristic against wipes; not a correctness mechanism.
 
 ## What a blind node learns
-One label per group synced to it, overlaps between them, blob count, blob sizes rounded to buckets (chunks are fixed size), fixed-size opaque wraps, arrival times (clients may batch uploads), generation numbers and retire events, client addresses. Not: AKs, tids, thing or aspect counts, value sizes, authors, membership, nesting. Key epoch after a rotation: readers try the few live keys rather than a cleartext epoch byte (proposal).
+One label per group synced to it, overlaps between them, blob count, padded blob sizes, fixed-size opaque wraps, arrival times (clients may batch uploads), generation numbers and retire events, client addresses. Not: AKs, tids, thing or aspect counts, authors, membership, nesting.
+- Sizes (decided 2026-10-11, constraints tension 3): large values use content-defined chunking (notes/serialization.md), since fixed-size chunks make an insert re-upload everything after it. Volume may leak, so padding is coarse: every blob is padded to the next step of one eighth of a power of two (Padmé), at most 12% and about 6% on average. Chunk size distribution leaks; accepted. Key epoch after a rotation: readers try the few live keys rather than a cleartext epoch byte (proposal).
 
 ## Interaction with other notes
-- Receipt-time revocation rule: a blind node's receipt never counts, it is not a member. Statements are ordinary commits.
+- Receipt-time revocation rule: a blind node's receipt never counts, it is not a member. Statements are ordinary commits, per (aspect, author node). Through a blind relay a client cannot prioritize permission commits before decrypting, so it downloads everything and applies permission commits first.
+- Partial trusted peers whose closure grows mid-session repeat the exchange; extra rounds are bounded by nesting depth. Fine.
 - Atomic application: a commit applies once its blob and all referenced chunks are present.
 - Value hashes remain for links, dedup and undo; no state hash exists. The group hierarchy is a local index, not a sync tree.
 
@@ -60,6 +61,6 @@ Per-aspect state Merkle tree, Merkle tree over the group hierarchy, per-aspect c
 - Label key rotation follows the per-role actor key rotation; the label ID is stable, so no re-labeling.
 - Lazy chunk fetch for huge bodies a device does not want locally (local policy; reconciliation just reports the IDs it lacks).
 - Encrypted table of contents for partial restore from blind nodes.
-- Size bucketing scheme; upload batching.
+- Upload batching; log retention horizon at each node (beyond it, peers fall back to range reconciliation).
 - Peer discovery, transport, crypto primitives: not discussed yet.
 - Commit floor: a minimal commit is about 200 bytes plus a wrap per label. Fine for editing workloads (a few MB per hour at most); revisit only if huge commit volumes appear (owner 2026-10-11).
