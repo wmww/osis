@@ -11,7 +11,7 @@
 ## Layers (each a canonical CBOR value with a hash)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only (not synced or hashed).
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery needed.
-- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
+- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, delete token hash for the commit and one beside each chunk reference (notes/sync.md), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
 
 ## Guarantees
 - Convergence under any delivery order (so "reorder/rebase" is meaningless).
@@ -40,12 +40,12 @@ Mechanics:
 - Purge drops bodies (values), never headers: fact, time, author and AK of every edit remain, including the purge itself. Headers keep hash(delta), so a purged commit is still verifiable.
 - A multi-aspect commit purged for one aspect is rewritten as a blob without that delta: same commit ID, new blob ID, cost proportional to the commit's remaining deltas (notes/sync.md).
 - Deleting a whole thing with `purge`: retire its bodies, no snapshot (state after reset is a timestamp). Deleting part of a value (a paragraph, a map entry): a snapshot of the aspect's live content must be uploaded first, so batch with a short debounce. The deletion constraint (notes/constraints.md) is met within that debounce, which must be bounded.
-- Undo horizon: a node keeps its own bodies locally only while nobody has reset their content; others' resets with `purge` win over undo.
+- Undo horizon: a node keeps its own bodies locally only while nobody has reset their content; others' resets with `purge` win over undo. For `purge`-class content the deleting node's own undo buffer falls under the deletion constraint, so the partial-purge debounce is also the undo window.
 - Guessable preimages: a low-entropy delta (bool, PIN) could be brute-forced from hash(delta) after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using the thing's dedup secret (KDF of its creation nonce, which every reader holds; notes/permissions.md); closes known-file confirmation by anyone without it. Blind nodes store but cannot verify bodies.
 - Chunk IDs of large values are deterministic in (key, content) so unchanged chunks dedup across versions and groups; for a key holder that is a fingerprint. Forward-secure deletion (notes/constraints.md) therefore requires purge to drop every local reference to the chunks (links in purged deltas, chunk index, tombstones after their horizon) and robust erasure of the bytes. The only trace a later-compromised honest node may hold is nothing.
 - Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
 
-Who may purge is a permission question, open (issues/deletion-rights.md): any editor wiping history can hide vandalism; purge right could follow the original author, be admin-only, or be a schema knob. Enforcement is only against honest nodes either way.
+Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete tokens (notes/sync.md). Enforcement is only against honest nodes.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.

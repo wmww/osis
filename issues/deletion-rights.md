@@ -1,27 +1,26 @@
-# Deletion: who may delete what, and when it takes effect
-> Summary: Every open deletion question in one place, to be settled together: hard-delete rights at blind nodes (constraints tension 8), who may purge history, grace-period default, the partial-purge debounce bound, default compaction policy for `undefined` retention, and the local erasure mechanism for forward-secure deletion. Collected 2026-10-11; owner wants these resolved in one session.
+# Deletion: remaining open questions
+> Summary: What is still open after purge rights were decided (author or admin; delete tokens at blind nodes, 2026-10-11): cross-author resets of ephemeral content at blind nodes, grace-period default, partial-purge debounce bound (also the undo window), default compaction policy, and local erasure including the chunk-key tension (constraints tension 10).
 > Tags: sync, security, permissions, crdt
 
-Decided already (do not reopen): three retention classes, purge granularity one (commit, aspect) delta, no fingerprint after purge, forward-secure deletion as a requirement, read access never deletes at a blind node, rotation decoupled from deletion (notes/constraints.md, notes/crdt-sync.md, notes/sync.md).
+Decided (do not reopen): three retention classes, purge granularity one (commit, aspect) delta, no fingerprint after purge, forward-secure deletion as a requirement, read access never deletes at a blind node, rotation decoupled from deletion, purge rights author-or-admin, per-entry delete tokens for authors and the label key for admins at blind nodes (notes/constraints.md, notes/crdt-sync.md, notes/sync.md, notes/permissions.md).
 
-## 1. Hard delete at blind nodes (constraints tension 8)
-Label keys per role are proposed in notes/sync.md: upload for readers, soft retire for writers, hard delete for admins. A blind node checks only signatures, so whoever holds hard delete can wipe the label. Open: what a writer's purge does there.
-- Admin-only hard delete (agent's recommendation). A writer's purge is a soft retire; the content leaves the blind node at the end of the grace period, or earlier if an admin shortens it. Backups are safe from every non-admin. The deletion constraint then needs a note that purge at blind nodes is delayed by the grace period.
-- Writers hard delete. Purge takes effect at once. Any writer, or any stolen writer device, can wipe a backup label.
-- Middle: a separate, shorter purge grace for writer-flagged retires. Delays purge by hours rather than weeks, but a vandal can flag everything.
-Related: a writer's soft retire covers the whole label (the blind node sees no finer structure); any writer may un-retire within the grace period; per-uploader pseudonymous keys for mixed-owner labels would let uploaders retire only their own entries at the cost of leaking uploader count; rate limiting soft retires per label stays a heuristic.
+## 1. Ephemeral content reset by another writer at blind nodes (constraints tension 8 residual)
+Authors hard-delete their own bodies by token, admins by key. A `purge`-class body reset by a different writer is soft-retired and lingers at the blind node until the grace period ends, an admin acts, or one of the author's devices syncs the reset and presents the token. That window is where forward secrecy fails for anyone holding the label read secret.
+- Candidate: the uploader tags each entry with the lowest role allowed to hard-delete it (`purge`-class commits: writer; everything else: admin). A vandal gains only what resetting ephemeral content already gives at every honest node. Costs to judge: the server learns which blobs are ephemeral; a commit mixing ephemeral and preserved deltas takes the stricter flag; whether the flag is fixed at first upload.
+- Alternative: accept the window, since the author's own devices close it on their next sync.
 
-## 2. Who may purge history (notes/permissions.md, notes/crdt-sync.md)
-An explicit purge of a preserved aspect's history must exist (secret pasted into a versioned doc), but letting any editor purge lets a vandal hide what they changed. The purge record stays visible (who, when, which AK), which deters but does not restore. Candidates: purge right follows the original author of the content; admin-only; a schema knob per AK; granular flags in commits. Enforcement is only against honest nodes either way. Owner: possibly overcomplicating, decide with a concrete app. Must agree with item 1: a writer who may purge locally but not hard-delete remotely gets the grace-period delay.
+## 2. Grace-period default
+Per-label policy set by admins, carried in the retire (constraints tension 4). Unset. If item 1 takes the flag, the grace covers only non-ephemeral soft retires and a long default (30 days) is right. Otherwise it trades ephemeral linger against backup safety.
 
-## 3. Grace-period default
-Per-label policy set by admins and carried in the retire (constraints tension 4). The default is unset. Trades backup safety against how long purged content lingers at blind nodes under item 1.
+## 3. Partial-value purge debounce
+Purging part of a value needs a snapshot of the surviving live content first, so the resetting node batches behind a debounce; the deletion constraint holds only within that bound, which is not set. Seconds is the obvious range. The deletion constraint covers the deleting node's own undo buffer, so for `purge`-class content the debounce is also the undo window (notes/crdt-sync.md); apps need to know that.
 
-## 4. Partial-value purge debounce
-Purging part of a value (a paragraph, a map entry) needs a snapshot of the surviving live content first, so the resetting node batches behind a debounce. The deletion constraint holds only within that bound, and the bound is not set (notes/crdt-sync.md, Retention).
+## 4. Default compaction policy
+`undefined` retention lets nodes drop superseded bodies by local policy; compaction is what drops them at blind nodes (notes/sync.md). Candidate default: trigger on the ratio of superseded to live bodies under a label, done by the writer that notices on its next write, with a randomized delay against a thundering herd. Readers never drop locally: a local drop without a label retire gets the blob re-offered on every fallback reconciliation. Write into notes/sync.md once confirmed.
 
-## 5. Default compaction policy
-`undefined` retention lets nodes drop superseded bodies by local policy, and compaction is what drops them at blind nodes. When to compact, and which member does it, is open (notes/sync.md). Interacts with item 1 since compaction is a soft retire.
-
-## 6. Local erasure
-Forward-secure deletion requires that a node which deleted honestly and is compromised later yields nothing: crypto-shredding (per-blob keys, now in the design, dropped on delete) or secure delete in the storage backend, plus dropping every local reference (links, chunk index, tombstones, index entries). Marked out of scope for now but must be designed in (notes/constraints.md). Decide which mechanism each storage backend relies on and what "dropped" means for wraps held by other labels.
+## 5. Local erasure and the chunk-key tension (constraints tension 10)
+Forward-secure deletion requires that a node which deleted honestly and is compromised later yields nothing. Chunk keys and IDs derive from the permanent dedup secret, so crypto-shredding cannot cover chunks; commit-key wraps live in the same database as everything else, and common storage engines do not securely free pages. Both reduce to one node-local key store that can forget (key tree with a securely erasable root; Reardon, Basin, Capkun, "SoK: Secure Data Deletion", 2013). Decide:
+- A stored, rotatable per-thing dedup secret that a purge replaces, costing one re-upload of the value afterwards, instead of the derivation from the creation nonce.
+- The erasable root per platform: OS keychain, TPM, or overwrite of a small file where that is reliable.
+- What "dropped" means for wraps held by other labels: a label the node is a member of keeps the blob legitimately (refcount); a wrap under a label the node is blind for is unopenable and may stay.
+- Local references that are fingerprints for a dedup-secret holder: chunk IDs in retire lists, cursor logs and the "IDs gained" lists must go with the content.

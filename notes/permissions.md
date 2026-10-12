@@ -96,7 +96,9 @@ Open:
 - A role on an actor covers both editing the actor thing's own data and acting as it. Fine so far; revisit if an example needs them apart.
 - Nesting cost: removing a member low in the hierarchy rotates read keys of every actor above it.
 - Recovery when the owning key at the end of the chain is lost.
-- Purge rights (owner 2026-10-11, not to be settled now; collected with the other deletion questions in issues/deletion-rights.md): an explicit history purge must exist (secret pasted into a versioned doc), but letting any editor purge lets a vandal hide what they changed. Candidates: purge right follows the original author of the content; admin-only; a schema knob per AK; granular flags in commits. The purge record itself stays visible (who, when, which AK), which deters but does not restore. Possibly overcomplicating; decide with a concrete app.
+
+## Purge rights (decided by owner 2026-10-11)
+An explicit purge of preserved history may be issued by the author of a delta or by an admin of the thing's owner. Any writer can already destroy live state, but letting any writer purge would turn recoverable vandalism of `preserve` aspects into irrecoverable loss; purging only your own deltas gives no power you lacked by not writing them. The person who pasted a secret fixes it without an admin. A purge request naming an aspect's history purges the deltas the requester may purge; the purge record stays visible. Residue: a delta by another author that carries part of the content (a typo fix inside the pasted text, a re-chunked region of a large value) needs that author or an admin. Alternative considered: author-or-owner. At blind nodes authors act by per-entry delete tokens, admins by the label hard-delete key (notes/sync.md, Authorization).
 
 ## Revocation: reference scenario
 Alice shares a doc with Bob (Mon). Bob goes offline (Tue), makes edit X (Wed). Alice revokes Bob without having seen X (Thu). Bob makes edit Y (Fri), returns and syncs (Sun). Variant: Carol is offline with Bob and syncs with him there.
