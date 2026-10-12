@@ -19,7 +19,7 @@ No storage engine erases reliably (SSD wear levelling, copy-on-write filesystems
 What a node holds and the unit each lives in:
 - Blob ciphertexts: outside the store, plain files or rows; already opaque. Physically deleted when unreferenced, for space only.
 - Wraps: the unit is a page of label entries, a few KB. Dropping a blob from a label rewrites its page without the wrap under a fresh page key. Needed because a member holds the label read secret, so a lingering wrap is a key.
-- Aspect state, its undo buffer and pre-reset snapshots: one unit per aspect. A purge of part of a value rewrites the aspect's live state under a fresh key, O(state), within the debounce; a whole-thing purge drops the units.
+- Aspect state, its undo buffer and pre-reset snapshots: one unit per aspect. A purge of part of a value rewrites the aspect's live state under a fresh key, O(state), on every such edit; a whole-thing purge drops the units.
 - Decrypted chunk and tree-node caches, search and query indexes: units per aspect, or dropped and rebuilt. An index spanning aspects must be rebuildable and is dropped and rebuilt on a purge of anything it covers, or sharded per aspect.
 - Membership and label secrets: units per actor; rotation on removal drops the old unit once nothing needs it (lazy rotation keeps old read secrets until then, by design).
 - Cursor logs, the IDs-gained list, diagnostics: blob IDs only, harmless; stored in the store anyway for uniformity.
@@ -27,7 +27,7 @@ What a node holds and the unit each lives in:
 
 ## Key tree
 - Wide tree (256-ary) of 32-byte keys. Leaves are unit keys; an interior node is the list of its children's keys encrypted under its own key; the root key lives in platform storage. Three levels cover 16M units; more units add a level.
-- Delete or rotate a unit: new unit key (or none), fresh keys along the path to the root, rewrite those nodes (about 8 KB each), write the new root to platform storage, then delete the old nodes. Batched per debounce or per sync. Crash safety: the new root is written last; until it is durable the old root still opens the old tree, so the deletion counts as complete only after the root replacement is durable.
+- Delete or rotate a unit: new unit key (or none), fresh keys along the path to the root, rewrite those nodes (about 8 KB each), write the new root to platform storage, then delete the old nodes. Batched per sync. Crash safety: the new root is written last; until it is durable the old root still opens the old tree, so the deletion counts as complete only after the root replacement is durable.
 - Platform root storage, by trust: hardware-backed keystore (Secure Enclave and Keychain, Android Keystore, TPM-sealed key, Windows DPAPI or TPM); kernel keyring or secret service for the session; overwrite of a small file with fsync as last resort. The node records its tier and diagnostics report "best effort" below hardware-backed; nothing depends on that being read.
 - Unlock loads the root once per session; the tree is cached in memory.
 
