@@ -45,7 +45,7 @@ Mechanics:
 - Chunk IDs of large values are deterministic in (key, content) so unchanged chunks dedup across versions and groups; for a key holder that is a fingerprint. Forward-secure deletion (notes/constraints.md) therefore requires purge to drop every local reference to the chunks (links in purged deltas, chunk index, tombstones after their horizon) and robust erasure of the bytes. The only trace a later-compromised honest node may hold is nothing.
 - Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
 
-Who may purge is a permission question, open (notes/permissions.md): any editor wiping history can hide vandalism; purge right could follow the original author, be admin-only, or be a schema knob. Enforcement is only against honest nodes either way.
+Who may purge is a permission question, open (issues/deletion-rights.md): any editor wiping history can hide vandalism; purge right could follow the original author, be admin-only, or be a schema knob. Enforcement is only against honest nodes either way.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.

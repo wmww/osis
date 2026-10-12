@@ -1,5 +1,5 @@
 # Sync: blob reconciliation, blind nodes, compaction
-> Summary: One sync protocol for all nodes: per-label cursor logs with range reconciliation as fallback, over encrypted commit/chunk blobs with per-blob keys wrapped per label; blind (keyless) nodes store and serve without seeing AKs, tids, values or structure; generations and drop-list retires for compaction and deletion. Goals decided 2026-10-09, mechanism decided 2026-10-11 except blind-node retire rights (issues/blind-node-retire-authorization.md).
+> Summary: One sync protocol for all nodes: per-label cursor logs with range reconciliation as fallback, over encrypted commit/chunk blobs with per-blob keys wrapped per label; blind (keyless) nodes store and serve without seeing AKs, tids, values or structure; generations and drop-list retires for compaction and deletion. Goals decided 2026-10-09, mechanism decided 2026-10-11 except blind-node retire rights (issues/deletion-rights.md).
 
 ## Goals (decided by owner 2026-10-09)
 - Untrusted always-on nodes (backup servers) exist and sync efficiently.
@@ -31,7 +31,7 @@
 - Nodes keep bodies per retention class; they must always be able to serve current state, from bodies or a snapshot.
 - Generations apply between trusted peers too; same protocol.
 
-## Authorization at blind nodes (proposal 2026-10-11, replaces single sync key; open: issues/blind-node-retire-authorization.md)
+## Authorization at blind nodes (proposal 2026-10-11, replaces single sync key; open: issues/deletion-rights.md)
 Threat (owner): a blind node may be someone's only backup. Read access must not allow deletion or forced re-upload; write access should not casually wipe a group either.
 - A label has three keys, one per role: upload (readers and up), soft-retire (writers and up), hard-delete (admins). Derived by KDF from the group thing's role secrets (notes/permissions.md: derived from its owner's by default, explicit once the group has members of its own), so nothing extra is stored; the label itself is a stable random ID registered with its three public keys by a hard-delete-signed message, which also rotates them.
 - Scope: rights at a label are rights on the group thing. Example: my notes folder G (owned by me) is one label; I share note N by writing "friend: write" on N and making N (or a group thing holding everything I share with that friend) a label with its own secrets wrapped to the friend. N's blobs sit under both labels with a wrap each. The friend can upload and soft-retire under the shared label and touch nothing under G, including N's own entries there.
@@ -57,7 +57,7 @@ One label per group synced to it, overlaps between them, blob count, padded blob
 Per-aspect state Merkle tree, Merkle tree over the group hierarchy, per-aspect context exchange, the state-vs-context Merkle leaf question, "one connection syncs one group". A state Merkle tree exposes shape to relays and must follow a cyclic hierarchy; blob reconciliation hides shape and makes nesting a local index problem. Note the earlier per-edit cost (a thing in many groups updated many roots) is gone: one blob, N index entries.
 
 ## Open
-- Default compaction policy: when, and which member.
+- Default compaction policy: when, and which member (issues/deletion-rights.md).
 - Label key rotation follows the per-role actor key rotation; the label ID is stable, so no re-labeling.
 - Lazy chunk fetch for huge bodies a device does not want locally (local policy; reconciliation just reports the IDs it lacks).
 - Encrypted table of contents for partial restore from blind nodes.
