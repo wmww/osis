@@ -41,7 +41,7 @@ Mechanics:
 - A multi-aspect commit purged for one aspect is rewritten as a blob without that delta: same commit ID, new blob ID, cost proportional to the commit's remaining deltas (notes/sync.md).
 - Deleting a whole thing with `purge`: retire its bodies, no snapshot (state after reset is a timestamp). Deleting part of a value (a paragraph, a map entry): a snapshot of the aspect's live content must be uploaded first, so batch with a short debounce. The deletion constraint (notes/constraints.md) is met within that debounce, which must be bounded.
 - Undo horizon: a node keeps its own bodies locally only while nobody has reset their content; others' resets with `purge` win over undo.
-- Guessable preimages: a low-entropy delta (bool, PIN) could be brute-forced from hash(delta) after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using a key derived from the owner's read key; closes known-file confirmation by anyone without the key. Blind nodes store but cannot verify bodies.
+- Guessable preimages: a low-entropy delta (bool, PIN) could be brute-forced from hash(delta) after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using the thing's dedup secret (KDF of its creation nonce, which every reader holds; notes/permissions.md); closes known-file confirmation by anyone without it. Blind nodes store but cannot verify bodies.
 - Chunk IDs of large values are deterministic in (key, content) so unchanged chunks dedup across versions and groups; for a key holder that is a fingerprint. Forward-secure deletion (notes/constraints.md) therefore requires purge to drop every local reference to the chunks (links in purged deltas, chunk index, tombstones after their horizon) and robust erasure of the bytes. The only trace a later-compromised honest node may hold is nothing.
 - Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
 
@@ -98,7 +98,7 @@ Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Expose `mv` register to apps in v1?
 - Undo stack per actor (cross-device, but two active devices share an interleaved stack) or per node?
 - set/map: OR with causal context vs LWW-element.
-- Keyed hashes for multi-group things: answered, derive from the owner actor (notes/permissions.md); blobs are encrypted under it anyway.
+- Keyed hashes for multi-group things: answered, per-thing dedup secret from the creation nonce (notes/permissions.md); blobs carry their own keys (notes/sync.md).
 
 ## Research
 - Loro's movable list and movable tree: production implementations of Kleppmann 2020 "Moving Elements in List CRDTs" and of tree cycle handling.

@@ -15,7 +15,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - Convergence under any delivery order, duplicates and partial receipt; no ordered delivery or commit DAG required.
 
 ## Sync cost (goal, numbers from owner 2026-10-11)
-- Bytes up and down are close to the size of the change: about 1.2x for large changes is fine, 2x-10x is not. Small changes may carry fixed overhead, but a reasonable one.
+- Bytes up and down are close to the size of the change: about 1.2x for large changes is fine, 2x-10x is not. Small changes may carry fixed overhead, but a reasonable one (about 200 bytes per commit plus 48 per label accepted 2026-10-11).
 - Round trips: a small constant for the common incremental case; log(n) is the acceptable worst case.
 - No data a node already holds is sent again; a thing in many groups is stored and transferred once per node.
 - Compaction, deletion and membership changes cost proportional to what changed, not to group size or history.
@@ -38,7 +38,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - Data up to many GB per node, single values up to multi-GB, maps with millions of keys, millions of blobs per group. Nothing in sync, storage or reconciliation is O(total data) per operation.
 
 ## Generality (goal)
-- No usage rules like "don't group data this way" or "don't change this too often" are needed for the properties above to hold. Exceptions must be listed under Tensions and be rare (currently: avoid ownership transfers).
+- No usage rules like "don't group data this way" or "don't change this too often" are needed for the properties above to hold. Exceptions must be listed under Tensions and be rare (currently: avoid moving a thing out of its owner's tree).
 
 ## Data model and serialization (hard)
 - One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.
@@ -46,8 +46,8 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - Merge is per-aspect delta-state CRDT; LWW reset is the only removal mechanism. Text/list CRDT ships in v1.
 
 ## Permissions (decided)
-- Actor, membership, ownership are the only concepts. Every thing has exactly one owner, fixed by tid; ownership is immutable, hand-over is lazy aliasing.
-- Writes: own-node signatures plus membership chain. Reads: key wrapping; content keys derive from the owner actor.
+- Actor, membership, ownership are the only concepts. Every thing has exactly one owner, fixed by tid; ownership is immutable, hand-over is lazy aliasing. Membership edges may target plain things, so sharing within the owner's tree never changes a tid; hand-over is only for moving a thing out of it (2026-10-11).
+- Writes: own-node signatures plus membership chain. Reads: key wrapping; each blob has its own key, wrapped per label.
 - Revocation vs offline edits: receipt-time rule, member clocks only. Author timestamps never decide validity.
 - Out of scope: hostile admins and authenticated malicious writers (clock gaming, garbage uploads are rejected, not prevented).
 
@@ -57,7 +57,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 
 ## Tensions: goals that cannot all hold
 Each entry: what collides, the call, status.
-1. **Ownership transfer finality vs no consensus.** A former owner can always sign a competing transfer (double spend). Call: ownership immutable, lazy hand-over with aliases and forks, apps avoid transfers. Accepted 2026-09-29.
+1. **Ownership transfer finality vs no consensus.** A former owner can always sign a competing transfer (double spend). Call: ownership immutable, lazy hand-over with aliases and forks; sharing within the owner's tree uses edges on things, so transfers are rare. Accepted 2026-09-29, narrowed 2026-10-11.
 2. **Selective sync from a blind node vs hiding structure.** Fetching one row or column from a keyless server requires the server to distinguish them, so it learns which labels each blob is under. Only private information retrieval would avoid it. Call: allowed, that is the "limited structure" a blind node may see. Accepted 2026-10-11 (covered by owner's criterion).
 3. **Edit efficiency on large values vs hiding sizes.** Content-defined chunking is what makes an insert into a multi-GB blob cheap, and it exposes chunk size distribution; padding to hide it costs bandwidth. Call: volume may leak (owner criterion), so chunk by content and pad only coarsely. Proposal.
 4. **Prompt permanent deletion vs serving history, undo and recovery.** Bodies are kept to serve peers, for the author's undo, and by blind nodes as a recycle bin. Call: retention classes (above); purge retires bodies immediately, partial-value purge batches behind a bounded debounce, undo yields to others' resets, blind-node grace period is a per-group policy carried in the retire. Decided 2026-10-11 except purge rights and the grace-period default.
