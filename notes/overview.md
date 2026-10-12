@@ -1,5 +1,5 @@
 # Overview and invariants
-> Summary: What osis is, its four areas (API, data model, permissions, sync), and the hard invariants; decided by owner, formerly spec/README.md.
+> Summary: What osis is and its four areas (API, data model, permissions, sync); invariants moved to notes/constraints.md. Decided by owner, formerly spec/README.md.
 
 osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness. Target: end-user apps managing small amounts of interconnected data across users and devices (notes, calendars, spreadsheets). Multiple apps, app versions, generic tools and AI agents access the same data, like traditional file formats. Also handles device sync, sharing between users, encryption, and simple data APIs. Sits somewhere between Git, Obsidian, Google Drive and Syncthing.
 
@@ -10,11 +10,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - **Sync** (notes/sync.md, notes/crdt-sync.md): each node tracks groups and syncs them with other nodes by reconciling sets of encrypted commit blobs. Keyless nodes (backup servers) take part without seeing structure. Commits apply atomically; CRDTs resolve conflicts.
 
 ## Invariants
-- No single registry of things; total things may exceed what any one system can track.
-- Groups of things exist, but a thing may be in several groups. No "repo" concept.
-- Data may be permanently deleted or modified. Nothing depends on retaining full history.
-- Single canonical serialization, byte-identical across platforms and versions (hash stability).
-- BLAKE3 is the only hash.
+See notes/constraints.md: all hard constraints, goals and the known tensions between them, in one place.
 
 ## Workflow (since 2026-09-25)
 No spec directory. Owner and agent iterate by discussion; agent records decisions in notes, then implements. Notes mark items as decided or proposal.

@@ -1,0 +1,63 @@
+# Constraints and goals
+> Summary: Every hard requirement and design goal in one place (decentralization, sync cost, privacy from blind nodes, deletion, scale, generality, permissions, API), plus the list of goal pairs that cannot both hold and the call made on each. Check new designs against this. Collected 2026-10-11 from owner and earlier notes.
+
+Rules: mark each item hard (must hold) or goal (hold unless a listed tension says why not). When a design violates one, add it to Tensions, do not quietly weaken the item.
+
+## Scope
+- End-user apps with small-to-large interconnected data across users and devices; many apps, versions, tools and agents share the same data like a file format (notes/overview.md).
+- Simple, safe Rust. Hand-written parsers, own CBOR codec, no serde on the wire.
+
+## Decentralization (hard)
+- No central or trusted coordinator, no consensus mechanism, no sequencer. Truly peer-to-peer like git; any node can be offline indefinitely and return.
+- No single registry of things; total things may exceed what any node can track. Tids are self-certifying and minted offline.
+- Identity and authorization are verified cryptographically by every node; nothing trusts a server's word.
+- No "repo": a thing belongs to no cluster that must be synced whole. Groups overlap, nest, may be cyclic, and membership changes. Syncing one row or one column of a table must each be efficient, without duplicating the table at rest or in upload. (A 2D grid is the test case, not the goal: complexly intersecting groups in general.)
+- Convergence under any delivery order, duplicates and partial receipt; no ordered delivery or commit DAG required.
+
+## Sync cost (goal, numbers from owner 2026-10-11)
+- Bytes up and down are close to the size of the change: about 1.2x for large changes is fine, 2x-10x is not. Small changes may carry fixed overhead, but a reasonable one.
+- Round trips: a small constant for the common incremental case; log(n) is the acceptable worst case.
+- No data a node already holds is sent again; a thing in many groups is stored and transferred once per node.
+- Compaction, deletion and membership changes cost proportional to what changed, not to group size or history.
+
+## Encrypted (blind) nodes (hard)
+- Keyless always-on nodes are first-class: every property above holds for them, and two briefly-online trusted nodes syncing only through a blind node is a primary use case.
+- A blind node may learn data volume, and limited structure when selective sync needs it (which opaque labels a blob is under, label overlap, blob count). It must not learn AKs, tids, values, authors, membership, nesting, or thing/aspect counts beyond what label structure implies.
+- One protocol for all nodes; trusted and blind peers differ only in which keys they hold.
+
+## Deletion (hard)
+- Permanent deletion exists and some apps use it routinely. No honest node intentionally keeps deleted content once it has synced the event that triggered the deletion (see Tensions for the bounded exceptions). Offline copies and dishonest nodes are out of scope.
+- Nothing depends on retaining full history. Purging bodies keeps commit identity and signatures valid.
+
+## Scale (hard)
+- Data up to many GB per node, single values up to multi-GB, maps with millions of keys, millions of blobs per group. Nothing in sync, storage or reconciliation is O(total data) per operation.
+
+## Generality (goal)
+- No usage rules like "don't group data this way" or "don't change this too often" are needed for the properties above to hold. Exceptions must be listed under Tensions and be rare (currently: avoid ownership transfers).
+
+## Data model and serialization (hard)
+- One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.
+- Every piece of data is an aspect of a thing; values are type-checked against schemas; tids may dangle.
+- Merge is per-aspect delta-state CRDT; LWW reset is the only removal mechanism. Text/list CRDT ships in v1.
+
+## Permissions (decided)
+- Actor, membership, ownership are the only concepts. Every thing has exactly one owner, fixed by tid; ownership is immutable, hand-over is lazy aliasing.
+- Writes: own-node signatures plus membership chain. Reads: key wrapping; content keys derive from the owner actor.
+- Revocation vs offline edits: receipt-time rule, member clocks only. Author timestamps never decide validity.
+- Out of scope: hostile admins and authenticated malicious writers (clock gaming, garbage uploads are rejected, not prevented).
+
+## API and apps (decided)
+- Apps see plain values and listeners. No CRDT concepts, no conflict UI, no "surface it to the user" as a correctness mechanism. The diagnostics channel is informational only; nothing may depend on it being read.
+- Never panic on peer-caused input.
+
+## Tensions: goals that cannot all hold
+Each entry: what collides, the call, status.
+1. **Ownership transfer finality vs no consensus.** A former owner can always sign a competing transfer (double spend). Call: ownership immutable, lazy hand-over with aliases and forks, apps avoid transfers. Accepted 2026-09-29.
+2. **Selective sync from a blind node vs hiding structure.** Fetching one row or column from a keyless server requires the server to distinguish them, so it learns which labels each blob is under. Only private information retrieval would avoid it. Call: allowed, that is the "limited structure" a blind node may see. Accepted 2026-10-11 (covered by owner's criterion).
+3. **Edit efficiency on large values vs hiding sizes.** Content-defined chunking is what makes an insert into a multi-GB blob cheap, and it exposes chunk size distribution; padding to hide it costs bandwidth. Call: volume may leak (owner criterion), so chunk by content and pad only coarsely. Proposal.
+4. **Prompt permanent deletion vs serving history, undo and recovery.** Deleting content from CRDT state is immediate, but the commit bodies that inserted it are kept to serve peers, kept for the author's undo horizon, and kept by blind nodes for a recycle-bin grace period. Call needed: deletion must trigger a purge of the bodies, partial-value deletion needs a snapshot so it batches, the undo buffer must respect others' resets, grace period becomes a per-group policy. Open, see issues/sync-divergences.md.
+5. **Atomic multi-thing commits vs per-thing fetch and purge.** One encrypted blob per commit means a column syncer downloads whole bulk commits and purging one thing re-snapshots every aspect sharing a commit with it. Call needed: header blob plus per-thing body blobs; bulk edits across many groups then pay per-body overhead. Open, see issues/sync-divergences.md.
+6. **Receipt-time revocation vs blind-only topology.** A blind node's receipt never counts, so an honest member's edits parked on the server before a revoke are still dropped if no member downloaded them in time. Trusting the server's arrival order would fix it and makes the server a coordinator. Call: keep the rule; the loss is the designed semantics. Accepted implicitly 2026-10-09, flagged for owner.
+7. **Lazy key rotation vs forward secrecy against dishonest blind nodes.** History is not re-encrypted on member removal; an ex-member plus a dishonest blind node can read old content. Re-encrypting is O(group) per removal. Call: lazy rotation, dishonest nodes out of scope. Accepted 2026-09-29.
+8. **Blind-node authorization vs destruction by read members.** Anyone with the group sync key can retire blobs on a blind node, and the node cannot check more. Mitigation: grace period and members re-uploading live content from state. Conflicts with 4. Open.
+9. **Bounded clocks vs revocation precision.** Member clock skew leaves a window of at most the skew. Accepted 2026-09-29.

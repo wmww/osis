@@ -1,6 +1,8 @@
 # Sync: blob reconciliation, blind nodes, compaction
 > Summary: One sync protocol for all nodes: per-group set reconciliation over encrypted commit/chunk blobs; blind (keyless) nodes store and serve without seeing AKs, tids, sizes or structure; generations for compaction and deletion. Discussed with owner 2026-10-09; goals and unification decided, mechanism is proposal.
 
+Divergences from notes/constraints.md and proposed fixes: issues/sync-divergences.md (2026-10-11). Items there supersede this note where they conflict once the owner decides.
+
 ## Goals (decided by owner 2026-10-09)
 - Untrusted always-on nodes (backup servers) exist and sync efficiently.
 - They learn no AKs, tids, value or thing sizes, thing/aspect counts, authorship, membership or nesting. Overlap between groups synced to the same server is an acceptable leak.
