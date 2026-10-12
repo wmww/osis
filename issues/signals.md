@@ -13,6 +13,6 @@ Owner's hunch: thinking about this now, in the architecture phase, and adding fi
 
 ## Related
 - `ephemeral` aspect flag proposal, retention class `purge` (notes/data-model.md, notes/crdt-sync.md).
-- Cross-author resets of ephemeral content at blind nodes (issues/deletion-rights.md §1).
+- Cross-author resets of ephemeral content at blind nodes: resolved, any current writer hard-deletes by writer-derived token (notes/sync.md, Authorization).
 - Sync cost goals and drop-list compaction (notes/constraints.md, notes/sync.md).
 - Listener semantics (notes/api.md).

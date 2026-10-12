@@ -1,19 +1,11 @@
 # Deletion: remaining open questions
-> Summary: What is still open after purge rights (author or admin; delete tokens at blind nodes, 2026-10-11) and local erasure (notes/local-store.md, 2026-10-12) were decided: cross-author resets of ephemeral content at blind nodes, grace-period default, partial-purge debounce bound (also the undo window), default compaction policy.
-> Tags: sync, security, permissions, crdt
+> Summary: Two parameter choices remain after purge rights, local erasure, two-factor hard delete and writer-derived tokens for ephemeral content were decided (2026-10-11/12): the partial-purge debounce bound (also the undo window) and the default compaction policy.
+> Tags: sync, crdt
 
-Decided (do not reopen): three retention classes, purge granularity one (commit, aspect) delta, no fingerprint after purge, forward-secure deletion as a requirement, read access never deletes at a blind node, rotation decoupled from deletion, purge rights author-or-admin, per-entry delete tokens for authors and the label key for admins at blind nodes, local erasure by key tree and random chunk keys (notes/constraints.md, notes/crdt-sync.md, notes/sync.md, notes/permissions.md, notes/local-store.md).
+Decided (do not reopen): three retention classes, purge granularity one (commit, aspect) delta, no fingerprint after purge, forward-secure deletion as a requirement, read access never deletes at a blind node, rotation decoupled from deletion, purge rights author-or-admin, hard delete at blind nodes by per-entry token plus current writer signature or by the admin label key, `purge`-class tokens derived from the writer role secret, eager label-key rotation on removal, grace period default 30 days (covers only non-ephemeral soft retires now), local erasure by key tree and random chunk keys (notes/constraints.md, notes/crdt-sync.md, notes/sync.md, notes/permissions.md, notes/local-store.md).
 
-## 1. Ephemeral content reset by another writer at blind nodes (constraints tension 8 residual)
-Authors hard-delete their own bodies by token, admins by key. A `purge`-class body reset by a different writer is soft-retired and lingers at the blind node until the grace period ends, an admin acts, or one of the author's devices syncs the reset and presents the token. That window is where forward secrecy fails for anyone holding the label read secret.
-- Candidate: the uploader tags each entry with the lowest role allowed to hard-delete it (`purge`-class commits: writer; everything else: admin). A vandal gains only what resetting ephemeral content already gives at every honest node. Costs to judge: the server learns which blobs are ephemeral; a commit mixing ephemeral and preserved deltas takes the stricter flag; whether the flag is fixed at first upload.
-- Alternative: accept the window, since the author's own devices close it on their next sync.
-
-## 2. Grace-period default
-Per-label policy set by admins, carried in the retire (constraints tension 4). Unset. If item 1 takes the flag, the grace covers only non-ephemeral soft retires and a long default (30 days) is right. Otherwise it trades ephemeral linger against backup safety.
-
-## 3. Partial-value purge debounce
+## 1. Partial-value purge debounce
 Purging part of a value needs a snapshot of the surviving live content first, so the resetting node batches behind a debounce; the deletion constraint holds only within that bound, which is not set. Seconds is the obvious range. The deletion constraint covers the deleting node's own undo buffer, so for `purge`-class content the debounce is also the undo window (notes/crdt-sync.md); apps need to know that.
 
-## 4. Default compaction policy
+## 2. Default compaction policy
 `undefined` retention lets nodes drop superseded bodies by local policy; compaction is what drops them at blind nodes (notes/sync.md). Candidate default: trigger on the ratio of superseded to live bodies under a label, done by the writer that notices on its next write, with a randomized delay against a thundering herd. Readers never drop locally: a local drop without a label retire gets the blob re-offered on every fallback reconciliation. Write into notes/sync.md once confirmed.

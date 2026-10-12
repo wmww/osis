@@ -45,7 +45,7 @@ Mechanics:
 - Chunks and tree nodes of large values are encrypted under random keys stored in their parent links, so a purged version's chunks are crypto-shredded with its commit wraps and chunk IDs are not fingerprints (notes/local-store.md; replaces the earlier derivation from the dedup secret). Forward-secure deletion also requires every local plaintext, wrap and index entry to live in the encrypted local store, so that dropping it is a key erasure.
 - Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
 
-Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete tokens (notes/sync.md). Enforcement is only against honest nodes.
+Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete token plus current writer signature (notes/sync.md). Enforcement is only against honest nodes.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.
