@@ -48,7 +48,7 @@ Mechanics:
 - Undo horizon: a node keeps its own bodies locally only while nobody has reset their content; others' resets with `purge` win over undo. `purge`-class content has no undo: the deleting node's own undo buffer is just another copy and falls under the deletion constraint, so it is dropped with the commit like everything else.
 - Guessable preimages: a low-entropy delta (bool, PIN) could be brute-forced from hash(delta) after purge. Fix: every delta body carries a random nonce (hash covers it; purge destroys it). Also key outward-facing hashes (deltas, states, chunks) with BLAKE3 keyed mode using the thing's dedup secret (KDF of its creation nonce, which every reader holds; notes/permissions.md); closes known-file confirmation by anyone without it. Blind nodes store but cannot verify bodies.
 - Chunks and tree nodes of large values are encrypted under random keys stored in their parent links, so a purged version's chunks are crypto-shredded with its commit wraps and chunk IDs are not fingerprints (notes/local-store.md; replaces the earlier derivation from the dedup secret). Forward-secure deletion also requires every local plaintext, wrap and index entry to live in the encrypted local store, so that dropping it is a key erasure.
-- Caveat: cross-aspect atomicity against a purged aspect is lost for old commits. Deleted text content is already gone from state; only IDs remain.
+- Caveat (accepted by owner 2026-10-14): a node receiving a multi-aspect commit after one delta was purged applies the rest without it, so it may briefly observe an aspect combination no author produced. Final state is unaffected (the purged content was superseded anyway); same blur as snapshots.
 
 Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete token plus current writer signature (notes/sync.md). Enforcement is only against honest nodes.
 
@@ -100,8 +100,8 @@ Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Bodies: retention class decides (purge/preserve/undefined, above). A node must always be able to serve current state: bodies or a snapshot (state sent as a delta).
 - Content refill after a drop (text CRDT resurrect case) is a request for specific blobs, not a state comparison.
 
-## Open
-Tracked in issues/crdt-open-questions.md.
+## Before code
+- Spec the text linearization function fully (tree order, sibling key = pos write time, cycle breaking, unknown anchors), then build; benchmark state size against the automerge-paper trace (target 1.5x-3x plain text) and only then consider stability GC.
 
 ## Research
 - Loro's movable list and movable tree: production implementations of Kleppmann 2020 "Moving Elements in List CRDTs" and of tree cycle handling.
