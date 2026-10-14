@@ -22,7 +22,7 @@ CBOR (RFC 8949) restricted to a strict subset. Rationale: IETF standard, determi
 
 Tag numbers not yet chosen. Use the 3-byte range (256..65535) in an unassigned region, e.g. TID=4001, ENUM=4002, LINK=4003, and check the IANA CBOR tag registry before fixing them. 258 (set) is already registered for exactly this purpose.
 
-Struct and `map<int, T>` share an encoding. Acceptable because `any` is an enum, so an untyped value is still explicitly tagged by its case. Reserve a STRUCT tag number in case generic tools later need the distinction. Names never go on the wire (decided 2026-10-14, notes/versioning.md): a value without its schema prints with numbered keys; schemas travel with data as things, so that is rare.
+Struct and `map<int, T>` share an encoding. Acceptable because `any` is an enum, so an untyped value is still explicitly tagged by its case. Reserve a STRUCT tag number in case generic tools later need the distinction. Names never go on the wire (decided 2026-10-14, notes/versioning.md): a value without its schema prints with numbered keys; the core does not distribute schemas (notes/versioning.md).
 
 ### Canonical rules
 - RFC 8949 4.2.1 core deterministic requirements: shortest integer/length heads, no indefinite-length items, sorted map keys, no duplicate keys.
@@ -64,13 +64,13 @@ aspect /note/title: string [indexed];
 aspect /note/tasks: list<task>;
 ```
 Grammar notes:
-- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed. Fields and cases carry explicit integer IDs (syntax above is a sketch); `reserved`, `retired` and `supersedes` items record evolution (notes/versioning.md, syntax open).
+- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed. Fields and cases carry explicit integer IDs (syntax above is a sketch); `reserved`, `legacy`, `supersedes` and `revision` items record evolution (notes/versioning.md, syntax open).
 - Type expressions: builtin names, `list<T>`, `map<K, V>`, `set<T>`, `enum { case, case(T) }`, `struct { field: T }`, named type with optional `<args>`.
 - Comments: `//` ignored; `///` doc comments attach to the following item/field/case and are retained in the parsed schema so generic tools and agents can read invariants.
 - Errors should carry file/line/column.
 
 ### Schema as data
-The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. Decided 2026-10-14: an AK's version is the hash of its type closure; the writer's schema hash goes in the commit header; the schema is written as a `/schema` thing into every group it is used in. Details in notes/versioning.md.
+The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. Decided 2026-10-14: an AK's version is the hash of its type closure; the writer's schema hash and revision go in the commit header; the core does not distribute schemas (a maintainer may publish one as a thing). Details in notes/versioning.md.
 
 ## Status
 Decided by owner (2026-09-22): CBOR wire format, Rust-like DSL, no serde on the wire. Decided 2026-10-14: integer field/case IDs on the wire, open structs, schema as synced data (notes/versioning.md). Proposal only: tag numbers, float rule, strict decoding, link/chunking scheme, DSL grammar details.

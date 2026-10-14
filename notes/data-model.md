@@ -32,7 +32,7 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `ephemeral` (proposal): superseded content purged immediately (retention class `purge`); see notes/crdt-sync.md. Costly: every edit uploads a snapshot and retires the old bodies at blind nodes. For aspects where immediate deletion is worth that, not a default for frequently edited values.
 
 ### Schema files
-`*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md. A file holds only the current wire schema (plus reserved/retired IDs); the loader checks it is an additive superset of the last published version (notes/versioning.md).
+`*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md. A file holds only the current wire schema (plus reserved IDs, legacy items, supersedes links and a revision number); the loader checks it is an additive superset of the last published version (notes/versioning.md).
 
 ### Core aspects (always in the aspect map)
 - `/tid` (tid, synthetic, guaranteed): the thing's tid
@@ -40,7 +40,6 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `/node` (struct, currently empty): a sync node/device
 - `/group` (struct): `items: set<tid>`, `subgroups: set<tid>` (transitively included)
 - `/groups` (set<tid>, synthetic, guaranteed): groups containing this thing, directly or indirectly
-- `/schema` (struct): a parsed schema as data; written into each group where the schema is used, deduplicated by hash (notes/versioning.md)
 
 ## Things
 Things are composed of aspects and hold nothing else.

@@ -9,14 +9,14 @@
 - One conflict rule everywhere (owner 2026-10-14): every state element carries a timestamp and an author dot, later timestamp wins, removal is a reset. No causal contexts anywhere: sets and maps are LWW-element, not observed-remove. No `mv` register in v1 (needs contexts).
 - `set_aspect` defaults to structural diff; explicit replace variant for a reset (owner 2026-10-14).
 - Every composite type merges recursively down to leaf registers: struct fields, map entries, list/text element content, enum payloads (owner 2026-10-14). Enum cases never merge with each other.
-- Retire (owner 2026-10-14, notes/versioning.md): a reset with infinite timestamp. Join drops every element under that field ID / aspect, past or future, from any writer. The schema-level breaking change; also a permanent (non-resurrectable) thing deletion if applied to all aspects. Irreversible; one marker per thing per retired ID stays.
+- No terminal reset / retire in the lattice (rejected 2026-10-14, notes/versioning.md): breaking schema changes are new IDs with legacy old ones; ordinary resets cover everything.
 - Merge encodings form an upgrade lattice (notes/versioning.md): join converts the poorer side along a core-defined embedding, so changing an aspect's encoding is not breaking. Replaces the "changing = breaking" line below.
 - Everything else below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only (not synced or hashed).
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery needed.
-- **Commit**: signed header + one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer schema hash, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, delete token hash for the commit and one beside each chunk reference (notes/sync.md), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
+- **Commit**: signed header + one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer schema hash and revision, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, delete token hash for the commit and one beside each chunk reference (notes/sync.md), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
 
 ## Guarantees
 - Convergence under any delivery order (so "reorder/rebase" is meaningless).

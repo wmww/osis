@@ -44,8 +44,8 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - Parking rule: a node never discards, rejects or panics on data it cannot interpret (unknown format version, merge encoding, field ID, AK). It stores, relays, joins what it can, and re-examines after upgrade. Not understood is treated like not yet received.
 - Compatibility surface is blob contents only (commit header, delta encodings, chunk format, value CBOR); everything local may change freely. One format version: readers accept all older versions forever, writers emit the oldest version that can express the delta.
 - Each AK belongs to exactly one schema with a single source of truth; only that schema extends it or allocates its IDs.
-- Merge needs no schema; the wire schema only grows (integer IDs never reused, open structs); breaking changes are a new ID/AK plus a retire, never an in-place type change.
-- Old app versions keep working on current data until the schema author retires what they depend on; nothing requires global agreement on who has upgraded.
+- Merge needs no schema; the wire schema only grows (integer IDs never reused, open structs); breaking changes are a new ID/AK with the old one kept as legacy, never an in-place type change; nothing in the data is irreversible.
+- Old app versions keep working on current data (stale or missing on superseded items, edits honored by timestamp); nothing requires global agreement on who has upgraded. The core does not distribute schemas; headers carry the writer's schema hash and revision.
 
 ## Data model and serialization (hard)
 - One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.
