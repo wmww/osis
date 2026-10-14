@@ -64,7 +64,7 @@ aspect /note/title: string [indexed];
 aspect /note/tasks: list<task>;
 ```
 Grammar notes:
-- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed. Fields and cases carry explicit integer IDs (syntax above is a sketch); `reserved`, `supersedes` and `revision` items record evolution (notes/versioning.md, syntax open).
+- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed. Fields and cases carry explicit integer IDs (syntax above is a sketch); `reserved`, `succeeds` and `revision` items record evolution (notes/versioning.md, syntax open).
 - Type expressions: builtin names, `list<T>`, `map<K, V>`, `set<T>`, `enum { case, case(T) }`, `struct { field: T }`, named type with optional `<args>`.
 - Comments: `//` ignored; `///` doc comments attach to the following item/field/case and are retained in the parsed schema so generic tools and agents can read invariants.
 - Errors should carry file/line/column.
