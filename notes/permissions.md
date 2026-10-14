@@ -129,7 +129,7 @@ A write from a revoked actor is valid iff a node of a still-authorized actor *re
 - Un-merge: drop elements by author dot; restore register values the invalid write overwrote from peers or own retained bodies. Rare loss possible if neither has it.
 - Invalid text inserts stay as content-less anchors (like deleted elements) so others' inserts anchored to them keep their place.
 - Every state element carries an author dot (decided 2026-10-14, notes/crdt-sync.md), so un-merge and frontier statements are uniform.
-- Backfill: a revoked writer can mint a write claiming a dot below a published statement. Contiguous dots make it a detectable reuse; needs a deterministic winner.
+- Backfill: a revoked writer can mint a write claiming a dot below a published statement. Contiguous dots make it a detectable reuse. Rule (2026-10-14): a write at or below a witnessed frontier that the witness does not hold is invalid; if two witnesses hold different writes for one dot (equivocation before revoke), the lower commit hash wins.
 - A revoker can backdate a revoke to roll back more. Not a new power: any writer can already invert another's edits.
 - Sync exchanges permission state before content; revocations are pushed with priority.
 - No finality: a revoked actor's writes can turn valid while a witness is still offline. Same as any long-offline node returning.

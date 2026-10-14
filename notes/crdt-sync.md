@@ -8,6 +8,7 @@
 - Authenticated malicious writers are out of scope: a writer gaming HLC to win LWW is not a concern.
 - One conflict rule everywhere (owner 2026-10-14): every state element carries a timestamp and an author dot, later timestamp wins, removal is a reset. No causal contexts anywhere: sets and maps are LWW-element, not observed-remove. No `mv` register in v1 (needs contexts).
 - `set_aspect` defaults to structural diff; explicit replace variant for a reset (owner 2026-10-14).
+- Every composite type merges recursively down to leaf registers: struct fields, map entries, list/text element content, enum payloads (owner 2026-10-14). Enum cases never merge with each other.
 - Everything else below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
@@ -27,7 +28,7 @@
 - Permanent deletion falls out: after a reset the state is a timestamp. Every node that receives it drops its copy. Offline copies are unavoidable.
 - Replaces the earlier epoch-counter idea (causal remove-wins, concurrent-bump ambiguity, would have needed a "superseded" signal to apps). Observed-remove alternative for reference: `clear` in Almeida/Shoker/Baquero "Delta State Replicated Data Types"; not used for aspects.
 - Undo of a reset = paste-like reinsert of the pre-reset value with fresh IDs, taken from the local undo buffer. Others' concurrent edits inside the removed state are gone.
-- Compaction of a text bloated with tombstone IDs = reset + reinsert live content with fresh IDs; loses concurrent pre-reset edits, so rare or never. Yjs never compacts IDs and copes: deleted content is dropped (below), IDs are run-compressed.
+- Tombstone compaction (proposal 2026-10-14, owner asked for compaction without a sync point): a staleness horizon H (say 30 days, one constant) instead of reset + reinsert. Any node may at any time drop tombstones (text elements, set/map entries) whose removal timestamp is older than H, and a write whose timestamp is older than H is discarded on arrival. No coordination: dropping is a deterministic function of (state, horizon) and a later horizon subsumes an earlier one, so compacted and uncompacted states still converge. Contract: a node must sync at least once per H or its pending edits are lost; everything else is unaffected. Text detail: a tombstone that still anchors live children is folded into its nearest live ancestor with a compound sibling key, order unchanged; childless tombstones (the bulk, deleted runs) just go. Friendlier variant (hide only stale edits touching dropped state, via a per-node compaction watermark) works for text but not for sets, so not proposed. Yjs by comparison never drops IDs and relies on run compression.
 
 ## Retention and purge (owner's direction 2026-10-11; details proposal)
 Three retention classes for content, all expressible:
@@ -53,7 +54,8 @@ Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permiss
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: int/float `counter` (PN), `max`, `min`. (`mv` dropped from v1: needs causal contexts.)
 - string: LWW; `markdown`/`text` knob -> text CRDT below.
 - struct: per-field. map: LWW-element map, recursive values, key removal = reset of the entry. set: LWW-element set: each element is a register (present/absent, timestamp, dot); concurrent add vs remove is settled by timestamp, a removed element leaves one tombstone until the aspect is reset. Rejected: OR-set/OR-map (observed-remove, add-wins; needs a causal context in every state and delta, a second conflict rule).
-- enum: LWW whole value; same-case payload merge deferred.
+- enum: case is an LWW register; a case change is a reset of the enum value plus the new payload. Payload merges recursively while both sides are in the same case. A newer edit inside a case that lost is kept hidden in state and swept by the next reset (same as a text insert on an unknown anchor). No merging across cases.
+- list<T>: the text CRDT below with recursive element content, so a field of one element can be edited in place.
 
 ### Text/list CRDT (text = list<char> with run compaction)
 Each element has an immutable ID (creation dot), content, and two LWW registers: `pos` (anchor element ID or HEAD) and `deleted` (bool). Insert, move, delete, undelete, cut/paste are all register writes. No causal context: existence is grow-only, deletion is a register.
