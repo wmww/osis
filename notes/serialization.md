@@ -14,15 +14,15 @@ CBOR (RFC 8949) restricted to a strict subset. Rationale: IETF standard, determi
 | float | always 8-byte float (0xfb), never 16/32-bit |
 | list | array (major 4) |
 | map | map (major 5); any key type; keys sorted by their canonical encoded bytes (bytewise lexicographic, RFC 8949 4.2.1) |
-| struct | map with text keys, sorted like any map |
+| struct | map with int keys (field IDs from the schema), sorted like any map; unknown IDs preserved |
 | set | tag 258 around an array sorted by canonical encoded bytes of elements |
 | tid | tag TID around a 15-byte byte string |
-| enum | tag ENUM around `[name]` (no payload) or `[name, payload]` |
+| enum | tag ENUM around `[id]` (no payload) or `[id, payload]`; case ID from the schema |
 | link | tag LINK around (keyed BLAKE3 hash of the canonical value, blob ID, 32-byte blob key) |
 
 Tag numbers not yet chosen. Use the 3-byte range (256..65535) in an unassigned region, e.g. TID=4001, ENUM=4002, LINK=4003, and check the IANA CBOR tag registry before fixing them. 258 (set) is already registered for exactly this purpose.
 
-Struct and `map<string, T>` share an encoding. Acceptable because `any` is an enum, so an untyped value is still explicitly tagged by its case name. Reserve a STRUCT tag number in case generic tools later need the distinction.
+Struct and `map<int, T>` share an encoding. Acceptable because `any` is an enum, so an untyped value is still explicitly tagged by its case. Reserve a STRUCT tag number in case generic tools later need the distinction. Names never go on the wire (decided 2026-10-14, notes/versioning.md): a value without its schema prints with numbered keys; schemas travel with data as things, so that is rare.
 
 ### Canonical rules
 - RFC 8949 4.2.1 core deterministic requirements: shortest integer/length heads, no indefinite-length items, sorted map keys, no duplicate keys.
@@ -51,10 +51,11 @@ Sketch:
 type priority = enum { low, medium, high, custom(int) };
 
 type task = struct {
-    title: string,
-    done: bool,
-    tags: set<string>,
-    priority: option<priority>,
+    1 title: string,
+    2 done: bool,
+    3 tags: set<string>,
+    4 priority: option<priority>,   // option defaults to none
+    6 due: option<timestamp>,       // added later; reserved 5;
 };
 
 /// Markdown; not guaranteed valid.
@@ -63,13 +64,13 @@ aspect /note/title: string [indexed];
 aspect /note/tasks: list<task>;
 ```
 Grammar notes:
-- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed.
+- Items: `type NAME<PARAMS?> = TYPE;` and `aspect /a/k: TYPE [flag, flag];`. Trailing commas allowed. Fields and cases carry explicit integer IDs (syntax above is a sketch); `reserved`, `retired` and `supersedes` items record evolution (notes/versioning.md, syntax open).
 - Type expressions: builtin names, `list<T>`, `map<K, V>`, `set<T>`, `enum { case, case(T) }`, `struct { field: T }`, named type with optional `<args>`.
 - Comments: `//` ignored; `///` doc comments attach to the following item/field/case and are retained in the parsed schema so generic tools and agents can read invariants.
 - Errors should carry file/line/column.
 
 ### Schema as data
-The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. So a schema has a hash, can be stored and synced as a thing, and an AK could pin a schema version by hash. Candidate answer for AK versioning; not decided (issues/schema-versioning.md).
+The parsed schema is itself an osis value (struct of named types and aspects, docs included) using the same CBOR encoding. Decided 2026-10-14: an AK's version is the hash of its type closure; the writer's schema hash goes in the commit header; the schema is written as a `/schema` thing into every group it is used in. Details in notes/versioning.md.
 
 ## Status
-Decided by owner (2026-09-22): CBOR wire format, Rust-like DSL, no serde on the wire. Proposal only: tag numbers, float rule, strict decoding, link/chunking scheme, DSL grammar details.
+Decided by owner (2026-09-22): CBOR wire format, Rust-like DSL, no serde on the wire. Decided 2026-10-14: integer field/case IDs on the wire, open structs, schema as synced data (notes/versioning.md). Proposal only: tag numbers, float rule, strict decoding, link/chunking scheme, DSL grammar details.

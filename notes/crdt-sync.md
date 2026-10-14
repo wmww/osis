@@ -9,12 +9,14 @@
 - One conflict rule everywhere (owner 2026-10-14): every state element carries a timestamp and an author dot, later timestamp wins, removal is a reset. No causal contexts anywhere: sets and maps are LWW-element, not observed-remove. No `mv` register in v1 (needs contexts).
 - `set_aspect` defaults to structural diff; explicit replace variant for a reset (owner 2026-10-14).
 - Every composite type merges recursively down to leaf registers: struct fields, map entries, list/text element content, enum payloads (owner 2026-10-14). Enum cases never merge with each other.
+- Retire (owner 2026-10-14, notes/versioning.md): a reset with infinite timestamp. Join drops every element under that field ID / aspect, past or future, from any writer. The schema-level breaking change; also a permanent (non-resurrectable) thing deletion if applied to all aspects. Irreversible; one marker per thing per retired ID stays.
+- Merge encodings form an upgrade lattice (notes/versioning.md): join converts the poorer side along a core-defined embedding, so changing an aspect's encoding is not breaking. Replaces the "changing = breaking" line below.
 - Everything else below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only (not synced or hashed).
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery needed.
-- **Commit**: signed header + one delta per touched aspect. Header: author node, actor, HLC timestamp, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, delete token hash for the commit and one beside each chunk reference (notes/sync.md), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
+- **Commit**: signed header + one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer schema hash, per-aspect dot ranges, list of (tid, ak, delta hash), retention class, optional purge request, delete token hash for the commit and one beside each chunk reference (notes/sync.md), signature. Commit ID = hash(header). Bodies addressed by own hash. On the wire header plus the deltas not yet purged form one encrypted blob (notes/sync.md). Atomicity is decided: a commit applies whole or not at all on every node that tracks any of its things.
 
 ## Guarantees
 - Convergence under any delivery order (so "reorder/rebase" is meaningless).
@@ -28,6 +30,7 @@
 - Permanent deletion falls out: after a reset the state is a timestamp. Every node that receives it drops its copy. Offline copies are unavoidable.
 - Replaces the earlier epoch-counter idea (causal remove-wins, concurrent-bump ambiguity, would have needed a "superseded" signal to apps). Observed-remove alternative for reference: `clear` in Almeida/Shoker/Baquero "Delta State Replicated Data Types"; not used for aspects.
 - Undo of a reset = paste-like reinsert of the pre-reset value with fresh IDs, taken from the local undo buffer. Others' concurrent edits inside the removed state are gone.
+- Parked deltas (encoding or format this node does not know, notes/versioning.md) are never compacted away by this node; it accepts blob-level snapshots and retires from newer nodes.
 - Tombstone compaction: none in v1 (owner direction 2026-10-14: worse merging after long separation is acceptable, discarding edits is not). Deleted content is dropped immediately (below); what remains per tombstone is ID + pos, run-compressed, so state grows with the number of edit runs in the aspect's history, not with live size. Yjs does the same and copes. Same for LWW set/map tombstones (value hash + timestamp per removed element). Apps that want a fresh start use an explicit replace (reset) with its known loss.
 - Rejected: wall-clock staleness horizon (drop tombstones older than H, discard writes older than H). Two nodes separated for longer than H diverge or lose one side's whole month depending on the variant; any independent reset-style compaction has the same problem, because two compactions that forgot different things cannot merge.
 - Possible later, lossless and additive: stability-based GC. A tombstone can be dropped once every node that may write the aspect has acknowledged it, since any later add is newer by HLC and wins without it. Needs per-node acknowledgement frontiers for the group, stalls while a member is offline (removing the member unblocks), changes nothing about merge semantics. Add only if the size benchmark demands it.
@@ -52,7 +55,7 @@ Mechanics:
 
 Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete token plus current writer signature (notes/sync.md). Enforcement is only against honest nodes.
 
-## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
+## Merge per type (encoding is self-describing; schema picks the minimum; upgrades along embedding edges are not breaking, see Decided)
 - scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: int/float `counter` (PN), `max`, `min`. (`mv` dropped from v1: needs causal contexts.)
 - string: LWW; `markdown`/`text` knob -> text CRDT below.
 - struct: per-field. map: LWW-element map, recursive values, key removal = reset of the entry. set: LWW-element set: each element is a register (present/absent, timestamp, dot); concurrent add vs remove is settled by timestamp, a removed element leaves one tombstone until the aspect is reset. Rejected: OR-set/OR-map (observed-remove, add-wins; needs a causal context in every state and delta, a second conflict rule).

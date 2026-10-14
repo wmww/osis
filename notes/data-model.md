@@ -3,8 +3,8 @@
 
 ## Types
 - `string` (UTF-8), `blob` (bytes), `bool`, `int` (i64), `float` (f64), `tid`
-- `enum<(N, V?)...>`: 0+ cases, each named, optional payload type
-- `struct<(N, T)...>`: named fields, all required
+- `enum<(N, V?)...>`: 0+ cases, each named with an integer ID (on the wire), optional payload type. An unknown case fails the typed read.
+- `struct<(N, T)...>`: named fields, each with a small integer ID that goes on the wire instead of the name. All fields required at write time; open at read time (unknown IDs preserved and ignored), optional reader-side default (notes/versioning.md).
 - `list<T>`: ordered
 - `map<K, V>`, `set<T>`: any type as key/value/member; deterministically ordered when serialized
 
@@ -20,7 +20,7 @@ Types can be named and referenced (allows recursion and sub-types with their own
 - Large values: within reason, values are not assumed small or organized any particular way. Maps with millions of keys and single multi-GB blobs must work, and sync must stay efficient. Mechanism (links/chunking) is proposed in notes/serialization.md, not decided.
 
 ## Aspects
-An aspect has a key (AK) and a value. AK human-readable form: slash-prefixed, slash-separated, e.g. `/somenamespace/name`. AK versioning: open, see issues/schema-versioning.md.
+An aspect has a key (AK) and a value. AK human-readable form: slash-prefixed, slash-separated, e.g. `/somenamespace/name`. AKs are strings on the wire and are the stable identity of an aspect; its wire type never changes, only grows (notes/versioning.md).
 
 ### Aspect map
 Maps AKs to value types; built from loaded schemas. Flags per aspect:
@@ -32,7 +32,7 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `ephemeral` (proposal): superseded content purged immediately (retention class `purge`); see notes/crdt-sync.md. Costly: every edit uploads a snapshot and retires the old bodies at blind nodes. For aspects where immediate deletion is worth that, not a default for frequently edited values.
 
 ### Schema files
-`*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md.
+`*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md. A file holds only the current wire schema (plus reserved/retired IDs); the loader checks it is an additive superset of the last published version (notes/versioning.md).
 
 ### Core aspects (always in the aspect map)
 - `/tid` (tid, synthetic, guaranteed): the thing's tid
@@ -40,6 +40,7 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `/node` (struct, currently empty): a sync node/device
 - `/group` (struct): `items: set<tid>`, `subgroups: set<tid>` (transitively included)
 - `/groups` (set<tid>, synthetic, guaranteed): groups containing this thing, directly or indirectly
+- `/schema` (struct): a parsed schema as data; written into each group where the schema is used, deduplicated by hash (notes/versioning.md)
 
 ## Things
 Things are composed of aspects and hold nothing else.

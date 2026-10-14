@@ -40,9 +40,15 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 ## Generality (goal)
 - No usage rules like "don't group data this way" or "don't change this too often" are needed for the properties above to hold. Exceptions must be listed under Tensions and be rare (currently: avoid moving a thing out of its owner's tree).
 
+## Versioning (hard, decided 2026-10-14, notes/versioning.md)
+- Parking rule: a node never discards, rejects or panics on data it cannot interpret (unknown format version, merge encoding, field ID, AK). It stores, relays, joins what it can, and re-examines after upgrade. Not understood is treated like not yet received.
+- Compatibility surface is blob contents only (commit header, delta encodings, chunk format, value CBOR); everything local may change freely. One format version: readers accept all older versions forever, writers emit the oldest version that can express the delta.
+- Merge needs no schema; the wire schema only grows (integer IDs never reused, open structs); breaking changes are a new ID/AK plus a retire, never an in-place type change.
+- Old app versions keep working on current data until the schema author retires what they depend on; nothing requires global agreement on who has upgraded.
+
 ## Data model and serialization (hard)
 - One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.
-- Every piece of data is an aspect of a thing; values are type-checked against schemas; tids may dangle.
+- Every piece of data is an aspect of a thing; values are type-checked against the writer's schema; tids may dangle.
 - Merge is per-aspect delta-state CRDT; LWW reset is the only removal mechanism. Text/list CRDT ships in v1.
 
 ## Permissions (decided)
