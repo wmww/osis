@@ -44,8 +44,8 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - Parking rule: a node never discards, rejects or panics on data it cannot interpret (unknown format version, merge encoding, field ID, AK). It stores, relays, joins what it can, and re-examines after upgrade. Not understood is treated like not yet received.
 - Compatibility surface is blob contents only (commit header, delta encodings, chunk format, value CBOR); everything local may change freely. One format version: readers accept all older versions forever, writers emit the oldest version that can express the delta.
 - Each AK belongs to exactly one schema with a single source of truth; only that schema extends it or allocates its IDs.
-- Merge needs no schema; the wire schema only grows (integer IDs never reused, open structs); breaking changes are a new ID/AK with the old one kept as legacy, never an in-place type change; nothing in the data is irreversible.
-- Old app versions keep working on current data (stale or missing on superseded items, edits honored by timestamp); nothing requires global agreement on who has upgraded. The core does not distribute schemas; headers carry the writer's schema hash and revision.
+- Merge needs no schema; the wire schema only grows (integer IDs never reused, open structs); a representation change is a new ID/AK with `supersedes`, both forms stay readable and writable, never an in-place type change; nothing in the data is irreversible.
+- An app update never by itself changes what is stored: which form of a superseded item is written is runtime policy per write (oldest form that can express the value, unless the group has moved on), so old app versions keep working until a group actually uses the new form; nothing requires global agreement on who has upgraded. The core does not distribute schemas; headers carry the writer's schema hash and revision.
 
 ## Data model and serialization (hard)
 - One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.

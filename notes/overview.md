@@ -6,7 +6,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 ## Areas
 - **API** (notes/api.md): Rust API to search, read, write and listen for changes. Hides crypto, databases, networking and CRDTs as far as possible.
 - **Data model** (notes/data-model.md, notes/serialization.md): every piece of data is an `Aspect` of a `Thing`. Things have 120-bit self-certifying tids; aspects are tid + aspect key (`AK`). Values are type-checked against the aspect's type.
-- **Versioning** (notes/versioning.md): the wire only grows; app types are views; breaking changes are new IDs with the old kept as legacy; unknown data is parked, never dropped.
+- **Versioning** (notes/versioning.md): the wire only grows; app types are views; representation changes are new IDs with `supersedes`, which form is written is runtime policy; unknown data is parked, never dropped.
 - **Permissions** (notes/permissions.md): an `Actor` (user-like) controls multiple `Node`s (osis instances on devices). Actors are cryptographically identified and verified (no central auth). Each thing is owned by exactly one actor, fixed by its tid. Access is membership in the owner actor or membership edges on the thing itself; hand-over (lazy, new tid) only moves a thing out of its owner's tree (notes/permissions.md).
 - **Local store** (notes/local-store.md): backends hold ciphertext only; unit keys hang off a key tree rooted in platform erasable storage, so deletion is key erasure.
 - **Sync** (notes/sync.md, notes/crdt-sync.md): each node tracks groups and syncs them with other nodes by reconciling sets of encrypted commit blobs. Keyless nodes (backup servers) take part without seeing structure. Commits apply atomically; CRDTs resolve conflicts.

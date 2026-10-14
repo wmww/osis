@@ -9,7 +9,7 @@
 - One conflict rule everywhere (owner 2026-10-14): every state element carries a timestamp and an author dot, later timestamp wins, removal is a reset. No causal contexts anywhere: sets and maps are LWW-element, not observed-remove. No `mv` register in v1 (needs contexts).
 - `set_aspect` defaults to structural diff; explicit replace variant for a reset (owner 2026-10-14).
 - Every composite type merges recursively down to leaf registers: struct fields, map entries, list/text element content, enum payloads (owner 2026-10-14). Enum cases never merge with each other.
-- No terminal reset / retire in the lattice (rejected 2026-10-14, notes/versioning.md): breaking schema changes are new IDs with legacy old ones; ordinary resets cover everything.
+- No terminal reset / retire in the lattice (rejected 2026-10-14, notes/versioning.md): representation changes are new IDs with `supersedes`, both forms stay writable; ordinary resets cover everything.
 - Merge encodings form an upgrade lattice (notes/versioning.md): join converts the poorer side along a core-defined embedding, so changing an aspect's encoding is not breaking. Replaces the "changing = breaking" line below.
 - Everything else below is proposal.
 
