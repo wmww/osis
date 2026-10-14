@@ -27,7 +27,7 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `async Mutator::commit(self) -> Result<()>`
 
 ## Pending additions (proposal, see notes/crdt-sync.md)
-Path-based ops: set field, insert/remove index, add/remove key, splice text, increment. `set_aspect` as structural-diff convenience plus an explicit replace variant. Default (diff vs replace) undecided.
+Path-based ops: set field, insert/remove index, add/remove key, splice text, increment. `set_aspect` is a structural diff by default (concurrent edits elsewhere in the value survive); an explicit replace variant resets the aspect (decided 2026-10-14).
 
 ## Tids and hand-over (proposal, see notes/permissions.md)
 A thing gains a new tid each time its ownership, or that of an actor above it, is handed over; old tids are aliases. Sharing uses membership edges and never changes a tid; hand-over is only for moving a thing out of its owner's tree.

@@ -128,7 +128,7 @@ A write from a revoked actor is valid iff a node of a still-authorized actor *re
 - Receipt log: nodes record when each author frontier advanced (per aspect, per author node), pruned past some horizon.
 - Un-merge: drop elements by author dot; restore register values the invalid write overwrote from peers or own retained bodies. Rare loss possible if neither has it.
 - Invalid text inserts stay as content-less anchors (like deleted elements) so others' inserts anchored to them keep their place.
-- Every state element must be attributable to an author node and ordered per node. Registers currently carry only a timestamp (notes/crdt-sync.md), so they need a dot.
+- Every state element carries an author dot (decided 2026-10-14, notes/crdt-sync.md), so un-merge and frontier statements are uniform.
 - Backfill: a revoked writer can mint a write claiming a dot below a published statement. Contiguous dots make it a detectable reuse; needs a deterministic winner.
 - A revoker can backdate a revoke to roll back more. Not a new power: any writer can already invert another's edits.
 - Sync exchanges permission state before content; revocations are pushed with priority.

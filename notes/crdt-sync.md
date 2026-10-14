@@ -1,11 +1,13 @@
 # Commits, CRDTs and sync primitives
-> Summary: Proposed model for commits, per-aspect delta-state CRDTs, LWW reset as the single removal mechanism, movable text CRDT and content purging; discussed with owner 2026-09-25, mostly proposal. Sync itself moved to notes/sync.md (2026-10-09).
+> Summary: Model for commits, per-aspect delta-state CRDTs, LWW reset as the single removal mechanism, movable text CRDT and content purging. Core shape decided 2026-10-14: one rule everywhere (timestamp + author dot, later wins), no causal contexts. Sync itself in notes/sync.md.
 
 ## Decided so far
 - Sync unit is a group; mechanism is blob-set reconciliation, notes/sync.md (replaced the Merkle-tree design 2026-10-09).
 - Movable text/list CRDT ships in v1, as good as we can make it, with whatever fuzzing and testing that takes.
 - Apps see a value they can edit and listen to. No CRDT details (resets, contexts, lost writes) reach the API. A lost concurrent write is observed like any LWW loss: the listener fires with the current value.
 - Authenticated malicious writers are out of scope: a writer gaming HLC to win LWW is not a concern.
+- One conflict rule everywhere (owner 2026-10-14): every state element carries a timestamp and an author dot, later timestamp wins, removal is a reset. No causal contexts anywhere: sets and maps are LWW-element, not observed-remove. No `mv` register in v1 (needs contexts).
+- `set_aspect` defaults to structural diff; explicit replace variant for a reset (owner 2026-10-14).
 - Everything else below is proposal.
 
 ## Layers (each a canonical CBOR value with a hash)
@@ -48,9 +50,9 @@ Mechanics:
 Who may purge: the delta's author or an admin (decided 2026-10-11, notes/permissions.md, Purge rights); at blind nodes by delete token plus current writer signature (notes/sync.md). Enforcement is only against honest nodes.
 
 ## Merge per type (encoding is self-describing; schema picks it, enforced at write time; changing = breaking, so entangled with AK versioning)
-- scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: `mv`; int/float `counter` (PN), `max`, `min`.
+- scalars/tid/blob: LWW (HLC + node tiebreak). Knobs: int/float `counter` (PN), `max`, `min`. (`mv` dropped from v1: needs causal contexts.)
 - string: LWW; `markdown`/`text` knob -> text CRDT below.
-- struct: per-field. map: OR-map, recursive values, key removal = reset of the entry. set: OR-set. Knob `add_wins` (default) / `remove_wins`. Alternative: LWW-element-set (no causal context, one tombstone per removed element until the aspect is reset).
+- struct: per-field. map: LWW-element map, recursive values, key removal = reset of the entry. set: LWW-element set: each element is a register (present/absent, timestamp, dot); concurrent add vs remove is settled by timestamp, a removed element leaves one tombstone until the aspect is reset. Rejected: OR-set/OR-map (observed-remove, add-wins; needs a causal context in every state and delta, a second conflict rule).
 - enum: LWW whole value; same-case payload merge deferred.
 
 ### Text/list CRDT (text = list<char> with run compaction)
@@ -75,14 +77,14 @@ Encoding and size:
 - State size target: 1.5x-3x plain text on real editing traces (run-length encoded runs, node-id table, delta-coded counters). Benchmark against Kleppmann's automerge-paper trace before calling it done.
 - Testing: proptest against a sequential model for the single-writer case; convergence and linearization sanity under random concurrent operation sets; fuzz the wire decoder.
 
-## Dots and causal context
-- Dot = (node, aspect-local counter), not commit seq. Per-aspect contexts collapse to one interval per node; gaps only from out-of-order arrival. Commit header maps each touched aspect to a counter range.
-- Revocation (notes/permissions.md) needs every write attributable to an author node and dot, and droppable by dot. Timestamp-only registers are not enough; reconcile.
-- Only OR-set/OR-map carry contexts. Registers, counters and text carry timestamps only, so a bool aspect is a value plus a timestamp.
+## Dots
+- Dot = (node, aspect-local counter), not commit seq. Commit header maps each touched aspect to a counter range; a node's dots in an aspect are contiguous, gaps only from out-of-order arrival.
+- Every state element (register, set element, map entry, text element, counter contribution) carries its dot (decided 2026-10-14). Revocation (notes/permissions.md) drops by dot and witnesses state frontiers per (aspect, author node) as a counter. A bool aspect is value + timestamp + dot, a couple of bytes more than timestamp alone.
+- No causal contexts: nothing records what a writer had seen. Alternative (attribute through commit headers, zero bytes in state, history lookup at revocation) rejected for non-uniformity.
 
 ## Undo/redo
 - Undo = new commit that cancels a specific earlier commit; header has `undoes: commit id`. Signed, replicated, atomic across the original's aspects. Never removes history; purged commits are not undoable.
-- Cancel per dot, not "apply inverse": undo insert = delete that ID; undo set-add = remove own dot only; undo counter inc = cancel that dot (idempotent if two devices undo concurrently); undo register write = write old value only if own write is still the winner; undo delete = undelete original IDs; undo reset = reinsert (above).
+- Cancel per dot, not "apply inverse": undo insert = delete that ID; undo set-add = write absent only if own add is still the winner (same rule as registers); undo counter inc = cancel that dot (idempotent if two devices undo concurrently); undo register write = write old value only if own write is still the winner; undo delete = undelete original IDs; undo reset = reinsert (above).
 - Stack is derived, not stored: actor's own commits in scope, minus undone, plus undo commits for redo. Replicates for free -> cross-device undo. Scope = set of aspects or a group, app-chosen.
 - Per actor by default (decided by owner 2026-10-12). Also an API to view every available change in scope regardless of author, from which an admin may remove (undo) others' changes.
 - An actor's own bodies (and pre-reset snapshots) are kept locally at least for the undo horizon.
@@ -90,7 +92,7 @@ Encoding and size:
 ## Sync
 Moved to notes/sync.md. Kept here because they touch CRDT state:
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
-- API needs path-based ops (set field, insert/remove index, add/remove key, splice text, increment). `set_aspect` = structural diff convenience + explicit replace (reset) variant.
+- API needs path-based ops (set field, insert/remove index, add/remove key, splice text, increment). `set_aspect` = structural diff (default, decided) + explicit replace (reset) variant.
 - Bodies: retention class decides (purge/preserve/undefined, above). A node must always be able to serve current state: bodies or a snapshot (state sent as a delta).
 - Content refill after a drop (text CRDT resurrect case) is a request for specific blobs, not a state comparison.
 
