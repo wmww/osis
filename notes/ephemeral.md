@@ -17,7 +17,7 @@ A signal is a write that nobody stores.
 - Cost: an envelope is about the size of a minimal commit; latency is one relay hop.
 
 ## Expiry (decided 2026-10-15)
-Retention gains an optional `expires at T`, per commit in the header, with a schema default per AK as a duration from write (notes/data-model.md). Orthogonal to the supersede classes: `undefined`/`preserve`/`purge` say what happens before T, expiry says that at T it is gone regardless.
+A commit may carry `expires at T` in its header; schema default per AK as a duration from write (notes/data-model.md). Orthogonal to the retention classes: `undefined`/`preserve`/`purge` say what happens before T, expiry says that at T it is gone regardless.
 - At T every node treats the commit's deltas as purged and any live content they carry as reset at T (reset timestamp T, so a write stamped before T that arrives late is superseded, a write stamped after T is new state). Deterministic from the commit: clock skew moves the moment, not the outcome. No undo after T, like purge. A multi-aspect commit expires whole, same granularity as the retention class.
 - Blind nodes: T is carried in plaintext entry metadata beside the generation and token hash. At T the entry is deleted, no bin, no retire, no generation bump, no writer online. Uploads whose T has passed are refused, so a stale peer cannot resurrect them. Leak, accepted by owner 2026-10-15: a blind node learns which entries expire and when.
 - Trusted nodes drop bodies and every local reference at T under the purge rules (nonce destroyed, index entries gone, notes/crdt-sync.md).
@@ -26,12 +26,7 @@ Retention gains an optional `expires at T`, per commit in the header, with a sch
 
 ## The all-nodes predicate (decided 2026-10-15)
 "All nodes a thing syncs to" is computable at trusted nodes (every node of every member, nodes are leaf actors) and is a state predicate, never a protocol condition.
-- Each node publishes a small aspect on its node thing: software revision, schema revisions and forms it reads, last sync time. Written at a low rate (on change, last-sync hourly at most). Core-defined aspect, accepted by owner 2026-10-15.
+- Each node publishes on its node thing (`/node`, notes/data-model.md): software revision, schema revisions and forms it reads, last sync time. Written at a low rate (on change, last-sync hourly at most). Accepted by owner 2026-10-15.
 - Policies read it: write the new form once every node reads it (fixes the read-only old app that the writer-revision heuristic in notes/versioning.md cannot see), drop old-form history after that, clean up an inbox once every own device has acked.
 - Dead nodes: a lost phone blocks "all" forever, so every such policy pairs the predicate with an age cutoff on last sync or an explicit node removal. The predicate never gates deletion at blind nodes, which know no members and must not wait on liveness.
 - "Buffer until all have seen it" = inbox pattern plus this predicate plus expiry as backstop. Fine as a core helper later; not sync machinery.
-
-## Related
-- Subscriptions and signal publish at relays, entry metadata with expiry: notes/sync.md.
-- Retention classes and purge mechanics: notes/crdt-sync.md; schema flags: notes/data-model.md.
-- Form policy inputs: notes/versioning.md. API: notes/api.md.

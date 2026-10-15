@@ -1,17 +1,17 @@
 # Rust API
-> Summary: Early API sketch (`Osis` handle, listeners, function list) plus directions: the API is NOT decided and is to be worked out during implementation and refactored as example projects show what works (owner 2026-10-12). Fixed points: plain values and listeners, no CRDT concepts; large values usable both materialized and streamed.
+> Summary: Early API sketch (`Osis` handle, listeners, function list) plus fixed directions. The API is NOT decided: shape it during implementation and refactor as example apps show what works (owner 2026-10-12). Fixed: plain values and listeners, no CRDT concepts; large values usable both materialized and streamed.
 
 ## Status (owner 2026-10-12)
-The sketch below is the owner's earlier idea. Do not follow it closely where it conflicts with the project's needs; shape the API while implementing and refactor as example apps reveal what works. Fixed directions:
+The sketch below is the owner's earlier idea; do not follow it where it conflicts with the project's needs. Fixed directions:
 - Plain values and listeners, no CRDT concepts (notes/crdt-sync.md).
-- Large values: encourage but do not require good handling. Getting a string as one `String` is allowed; there must also be tools to read, edit and listen to a large value without materializing it into one buffer. No further owner input needed now.
+- Large values: getting a string as one `String` is allowed; there must also be tools to read, edit and listen to a large value without materializing it.
 - Undo: per actor by default; plus a view of all available changes in scope from which an admin may remove others' (notes/crdt-sync.md).
 
 ## `Osis`
 Main interface. A cloneable, thread-safe handle to an internal `Database`, which owns the aspect map, sync engine, etc. Many `Osis` handles per `Database`; the `Database` drops with the last handle.
 
 ## Listeners
-- Callback is invoked once before the listen call returns.
+- Callback is invoked once before the listen call returns (not for signals).
 - Returns an opaque `ListenerId` for cancellation.
 
 ## Functions
@@ -22,24 +22,21 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `async Osis::listen_aspect_mut(&self, tid, ak, callback: async (value, mutator) -> ()) -> Result<ListenerId>`
 - `Mutator::create_thing(&mut self) -> Tid`
 - `Mutator::delete_thing(&mut self, tid)`
-- `Mutator::set_aspect(&mut self, tid, ak, value)`
+- `Mutator::set_aspect(&mut self, tid, ak, value)`: structural diff by default (concurrent edits elsewhere in the value survive); an explicit replace variant resets the aspect (decided 2026-10-14). Path-based ops to add: set field, insert/remove index, add/remove key, splice text, increment (notes/crdt-sync.md).
 - `Mutator::remove_aspect(&mut self, tid, ak)`
 - `async Mutator::commit(self) -> Result<()>`
-- `async Osis::send_signal(&self, tid, kind, value) -> Result<()>` and `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach connected nodes only; write to send, read to listen (decided 2026-10-15, notes/ephemeral.md). Unlike `listen_aspect`, the callback is not invoked on registration.
+- `async Osis::send_signal(&self, tid, kind, value) -> Result<()>`, `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach connected nodes only (decided 2026-10-15, notes/ephemeral.md).
 
 ## Typed reads (decided 2026-10-14, notes/versioning.md)
-Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they must also be available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type (read conversion f, write conversion g receiving the current wire value), generated or hand-written in the app; a `succeeds` link makes codegen read the new form unless the old one carries a newer timestamp, then f(old); which form a write uses is runtime policy (oldest that can express the value, unless the group has moved on), never forced by the app update (notes/versioning.md).
+Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they are also available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type, generated or hand-written in the app; transitions and the form-choice policy are codegen conventions (notes/versioning.md).
 
-## Pending additions (proposal, see notes/crdt-sync.md)
-Path-based ops: set field, insert/remove index, add/remove key, splice text, increment. `set_aspect` is a structural diff by default (concurrent edits elsewhere in the value survive); an explicit replace variant resets the aspect (decided 2026-10-14).
-
-## Tids and hand-over (proposal, see notes/permissions.md)
-A thing gains a new tid each time its ownership, or that of an actor above it, is handed over; old tids are aliases. Sharing uses membership edges and never changes a tid; hand-over is only for moving a thing out of its owner's tree.
+## Tids and hand-over (proposal, notes/permissions.md)
+A thing gains a new tid when its ownership, or that of an actor above it, is handed over; old tids are aliases. Sharing never changes a tid.
 - Every call that takes a tid resolves aliases internally; listeners registered under an old tid keep firing. Apps never resolve in order to access.
 - Values returned to apps have known aliases replaced by the current tid, so tids read from osis compare equal. Stored bytes and hashes are unaffected; writing such a value back performs the rewrite.
 - Explicit call only for identity: comparing a tid the app kept (memory, config, URL) with one read later. `Tid` equality is plain bits and cannot consult the database.
 
-## Diagnostics channel (decided by owner 2026-09-29; shape is proposal)
-A place to dump problems such as a colliding record from a peer, a double hand-over, or rejected writes from a revoked actor. Apps may log, surface or ignore it. Correctness never depends on anyone seeing or reacting to it.
+## Diagnostics channel (decided 2026-09-29; shape is proposal)
+A place to dump problems such as a colliding record from a peer, a hand-over fork, or rejected writes from a revoked actor. Apps may log, surface or ignore it. Correctness never depends on anyone seeing or reacting to it.
 - Shape: `Osis::listen_diagnostics(callback) -> ListenerId`, structured events (kind, tids involved, peer). Default sink is the log.
 - A peer must not be able to flood it: dedupe per (kind, tid), rate-limit per peer.
