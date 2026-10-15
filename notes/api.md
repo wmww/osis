@@ -25,6 +25,7 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `Mutator::set_aspect(&mut self, tid, ak, value)`
 - `Mutator::remove_aspect(&mut self, tid, ak)`
 - `async Mutator::commit(self) -> Result<()>`
+- `async Osis::send_signal(&self, tid, kind, value) -> Result<()>` and `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach connected nodes only; write to send, read to listen (decided 2026-10-15, notes/ephemeral.md). Unlike `listen_aspect`, the callback is not invoked on registration.
 
 ## Typed reads (decided 2026-10-14, notes/versioning.md)
 Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they must also be available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type (read conversion f, write conversion g receiving the current wire value), generated or hand-written in the app; a `succeeds` link makes codegen read the new form unless the old one carries a newer timestamp, then f(old); which form a write uses is runtime policy (oldest that can express the value, unless the group has moved on), never forced by the app update (notes/versioning.md).

@@ -28,6 +28,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 
 ## Deletion (hard)
 - Three retention classes are expressible (owner 2026-10-11): purge (every node that sees the deleting commit drops the content immediately and irrevocably), preserve (history kept and synced until explicitly purged), undefined (nodes drop superseded content by local policy). Defaults per AK in the schema, overridable per change. Explicit purge of a preserved aspect's history must exist; the delta's author or an admin may issue it (decided 2026-10-11, notes/permissions.md).
+- A commit may carry an expiry time; at that time every node drops its content, blind nodes without anyone online, and the time is visible to blind nodes (accepted leak, owner 2026-10-15; notes/ephemeral.md). Signals are never stored and reach only connected nodes (notes/ephemeral.md).
 - For purge: no honest node intentionally keeps the content once it has synced the deleting commit; a partial-value deletion uploads its snapshot and retires in the same sync, no batching (owner 2026-10-12). Offline copies and dishonest nodes are out of scope.
 - Nothing depends on retaining full history. Purging bodies keeps commit identity and signatures valid.
 - Purge granularity is one delta, that is one (commit, aspect) pair (owner 2026-10-11). A commit touching several aspects can lose any subset of its deltas. Removing part of a value's history (one paragraph) purges every delta that carries it and replaces the aspect's history with a snapshot; a signed delta is never rewritten.

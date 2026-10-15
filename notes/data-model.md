@@ -30,6 +30,9 @@ Maps AKs to value types; built from loaded schemas. Flags per aspect:
 - `indexed`: text-indexed for search
 - `history`: retain edit history (retention class `preserve`)
 - `ephemeral` (proposal): superseded content purged immediately (retention class `purge`); see notes/crdt-sync.md. Costly: every edit uploads a snapshot and retires the old bodies at blind nodes. For aspects where immediate deletion is worth that, not a default for frequently edited values.
+- `expires: duration` (decided 2026-10-15): default expiry for writes to this AK, measured from the write; every node drops the content at that time, blind nodes included (notes/ephemeral.md). Overridable per commit.
+
+Schemas also declare **signal kinds**: typed like an AK, but a signal is never stored and never an aspect; sent and received through a dedicated API (notes/ephemeral.md).
 
 ### Schema files
 `*.osis` files define types and aspects for a use case/app, plus comments describing invariants. Loadable at runtime or at compile time via `load_schema!()`. Rust-like DSL, hand-written parser, no third-party parser library. Grammar sketch in notes/serialization.md. A file holds only the current wire schema (plus reserved IDs, `succeeds` links and a revision number); the loader checks it is an additive superset of the last published version (notes/versioning.md).

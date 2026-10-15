@@ -40,9 +40,9 @@ Three retention classes for content, all expressible:
 - `purge`: once content is reset or superseded, every node applying that commit drops the body holding it immediately and irrevocably; the node that wrote the reset also retires the body at blind nodes.
 - `preserve`: bodies kept and synced until an explicit purge (today's `history` flag).
 - `undefined` (default): nodes may drop superseded bodies by local policy (age, size, cache-like). Dropping is a compaction (snapshot of live content, then retire), so current state stays servable.
-All three are compaction policies: now, never (except explicit purge), or whenever. Possible later: "preserve until DATE", "delete by DATE".
+All three are compaction policies: now, never (except explicit purge), or whenever. Orthogonal to them, a commit may carry `expires at T` (decided 2026-10-15, notes/ephemeral.md): at T its deltas count as purged and their live content as reset at T on every node, blind nodes drop the entry unattended; "keep at least until T" is `preserve` plus expiry.
 
-Where set: schema default per AK (`history` = preserve, proposed `ephemeral` = purge, neither = undefined); per-commit override in the header for that commit's deltas; and a purge request naming prior bodies or whole aspect histories, for "oops, bank details pasted into a versioned shared doc".
+Where set: schema default per AK (`history` = preserve, proposed `ephemeral` = purge, neither = undefined; `expires` = default expiry duration); per-commit override in the header for that commit's deltas and an optional expiry time; and a purge request naming prior bodies or whole aspect histories, for "oops, bank details pasted into a versioned shared doc".
 
 Mechanics:
 - Purge drops bodies (values), never headers: fact, time, author and AK of every edit remain, including the purge itself. Headers keep hash(delta), so a purged commit is still verifiable.

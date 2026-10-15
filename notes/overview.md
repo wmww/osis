@@ -10,6 +10,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - **Permissions** (notes/permissions.md): an `Actor` (user-like) controls multiple `Node`s (osis instances on devices). Actors are cryptographically identified and verified (no central auth). Each thing is owned by exactly one actor, fixed by its tid. Access is membership in the owner actor or membership edges on the thing itself; hand-over (lazy, new tid) only moves a thing out of its owner's tree (notes/permissions.md).
 - **Local store** (notes/local-store.md): backends hold ciphertext only; unit keys hang off a key tree rooted in platform erasable storage, so deletion is key erasure.
 - **Sync** (notes/sync.md, notes/crdt-sync.md): each node tracks groups and syncs them with other nodes by reconciling sets of encrypted commit blobs. Keyless nodes (backup servers) take part without seeing structure. Commits apply atomically; CRDTs resolve conflicts.
+- **Ephemeral data** (notes/ephemeral.md): signals are never stored and reach only connected nodes; state may expire at a time every node honors; "all nodes" is a predicate over node-published state, never a protocol condition.
 
 ## Invariants
 See notes/constraints.md: all hard constraints, goals and the known tensions between them, in one place.
