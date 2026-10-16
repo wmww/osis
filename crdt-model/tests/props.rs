@@ -1,10 +1,11 @@
 //! Property tests of spec/crdt.md §10 against the reference model.
 use crdt_model::gen::{kitchen_sink, random_op, random_value, Rng};
 use crdt_model::ops::{self, Ty, Writer};
-use crdt_model::stamp::Source;
+use crdt_model::received::Received;
+use crdt_model::stamp::{Dot, Source};
 use crdt_model::state::{Content, Frag};
 use crdt_model::value::Value;
-use crdt_model::wire::{decode_delta, encode_delta, Ctx};
+use crdt_model::wire::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, Ctx};
 use proptest::prelude::*;
 
 /// Encode a delta, check the round trip and canonical re-encoding, return the decoded fragment.
@@ -26,58 +27,182 @@ fn snapshot(f: &Frag) -> Vec<u8> {
     encode_delta(f, [0; 16], &mut Ctx::new(1 << 40, Source::node(250), 1))
 }
 
+/// One commit's counter range: `(source, lo, hi)`.
+type Range = (Source, u64, u64);
+
+fn range(w: &Writer) -> Range {
+    (w.source.clone(), w.lo, w.hi())
+}
+
+/// Predicate over owner dots: the dot lies in one of `ranges`.
+fn in_ranges(ranges: &[Range]) -> impl Fn(&Dot) -> bool + '_ {
+    move |d: &Dot| ranges.iter().any(|(s, lo, hi)| d.source == *s && (*lo..*hi).contains(&d.ctr))
+}
+
 struct Replica {
     w: Writer,
     state: Option<Frag>,
+    /// Commits whose T this replica's clock has reached (§4.7).
+    expired: Vec<Range>,
+    received: Received,
+}
+
+impl Replica {
+    /// Join, then hold expired commits value-less (the expiry rule strips every later arrival).
+    fn apply(&mut self, d: Frag) {
+        apply(&mut self.state, d);
+        if let Some(s) = &mut self.state {
+            s.strip(&in_ranges(&self.expired));
+        }
+    }
+    fn expire(&mut self, r: &Range) {
+        if !self.expired.contains(r) {
+            self.expired.push(r.clone());
+        }
+        if let Some(s) = &mut self.state {
+            s.strip(&in_ranges(&self.expired));
+        }
+    }
+}
+
+struct Commit {
+    w: Writer,
+    delta: Frag,
+    expiring: bool,
+}
+
+/// A compactor's snapshot (§8): expiring commits' values stripped whether expired or not, frontiers from receipts.
+/// Round-trips it and returns what a receiver decodes.
+fn snapshot_transfer(st: &Frag, received: &Received, expiring: &[Range]) -> (Frag, Vec<(Source, u64)>) {
+    let mut f = st.clone();
+    f.strip(&in_ranges(expiring));
+    let fr = received.frontiers();
+    let mut cx = Ctx::new(1 << 40, Source::node(250), 1);
+    let bytes = encode_snapshot(&f, &fr, [3; 16], &mut cx);
+    let mut cx2 = Ctx::new(1 << 40, Source::node(250), 1);
+    cx2.sources = cx.sources.clone();
+    let (g, fr2) = decode_snapshot(&bytes, &mut cx2).expect("snapshot decodes");
+    let mut cx3 = Ctx::new(1 << 40, Source::node(250), 1);
+    assert_eq!(encode_snapshot(&g, &fr2, [3; 16], &mut cx3), bytes, "snapshot re-encodes byte-identically");
+    let mut sorted = fr2.clone();
+    sorted.sort();
+    assert_eq!(sorted, fr, "frontiers round-trip");
+    assert_eq!(snapshot(&g), snapshot(&f), "snapshot fragment round-trips");
+    (g, fr2)
 }
 
 /// Run `rounds` of random ops on `n` replicas, deliver every delta to everyone in random order with
-/// duplicates, and check convergence of reads and snapshots. Returns the final state.
-fn converge(seed: u64, ty: &Ty, n: usize, rounds: usize, partial: bool) -> Option<Frag> {
+/// duplicates, and check convergence of reads and snapshots. With `expiry`, some commits expire: each replica
+/// reaches their T at random points, mid-way snapshots carry them value-less, and at the end all have expired.
+/// Returns the final state.
+fn converge(seed: u64, ty: &Ty, n: usize, rounds: usize, partial: bool, expiry: bool) -> Option<Frag> {
     let mut r = Rng(seed | 1);
-    let mut reps: Vec<Replica> = (0..n).map(|i| Replica { w: Writer::new(Source::node(i as u8 + 1), 1 << 16, 1), state: None }).collect();
-    let mut deltas: Vec<(Writer, Frag)> = Vec::new();
+    let mut reps: Vec<Replica> =
+        (0..n).map(|i| Replica { w: Writer::new(Source::node(i as u8 + 1), 1 << 16, 0), state: None, expired: vec![], received: Received::default() }).collect();
+    let mut commits: Vec<Commit> = Vec::new();
     for round in 0..rounds {
         for i in 0..n {
             // clocks drift: each writer's ts jumps by a random amount, so concurrency is realistic
             let ts = ((round as u64 * 10 + r.below(10) as u64 + 1) << 16) + i as u64;
             let rep = &mut reps[i];
             let t = ts.max(rep.w.ts + 1);
+            let before = rep.w.clone();
             rep.w.next_commit(t);
-            let Some(d) = random_op(&mut r, &mut rep.w, ty, rep.state.as_ref()) else { continue };
+            let Some(d) = random_op(&mut r, &mut rep.w, ty, rep.state.as_ref()) else {
+                rep.w = before; // no commit, no counters consumed
+                continue;
+            };
             let d = roundtrip(&d, &rep.w);
-            apply(&mut rep.state, d.clone());
-            deltas.push((rep.w.clone(), d));
+            let expiring = expiry && r.chance(1, 4);
+            if expiring {
+                // the value-less form of every delta round-trips too
+                let mut s = d.clone();
+                s.strip(&|_| true);
+                roundtrip(&s, &rep.w);
+            }
+            rep.apply(d.clone());
+            let (src, lo, hi) = range(&rep.w);
+            rep.received.add(&src, lo, hi);
+            commits.push(Commit { w: rep.w.clone(), delta: d, expiring });
         }
         if partial && r.chance(1, 2) {
             // deliver a random subset to a random replica mid-way (state must stay well-formed)
             let i = r.below(n);
-            for (_, d) in deltas.iter() {
+            for c in commits.iter() {
                 if r.chance(1, 3) {
-                    apply(&mut reps[i].state, d.clone());
+                    reps[i].apply(c.delta.clone());
+                    let (src, lo, hi) = range(&c.w);
+                    reps[i].received.add(&src, lo, hi);
                 }
             }
         }
+        let expiring: Vec<Range> = commits.iter().filter(|c| c.expiring).map(|c| range(&c.w)).collect();
+        if expiry && r.chance(1, 2) {
+            // a replica's clock passes the T of some expiring commits, received or not
+            let i = r.below(n);
+            for x in &expiring {
+                if r.chance(1, 2) {
+                    reps[i].expire(x);
+                }
+            }
+        }
+        if expiry && r.chance(1, 3) {
+            let (i, j) = (r.below(n), r.below(n));
+            if let Some(st) = reps[i].state.clone() {
+                let (g, fr) = snapshot_transfer(&st, &reps[i].received, &expiring);
+                reps[j].apply(g);
+                reps[j].received.add_frontiers(&fr);
+            }
+        }
     }
-    // full delivery in random order with duplicates
+    let expiring: Vec<Range> = commits.iter().filter(|c| c.expiring).map(|c| range(&c.w)).collect();
+    // full delivery in random order with duplicates; every replica's clock passes every T somewhere in between
     for i in 0..n {
-        let mut order: Vec<usize> = (0..deltas.len()).collect();
+        let mut order: Vec<usize> = (0..commits.len()).collect();
         for k in (1..order.len()).rev() {
             let j = r.below(k + 1);
             order.swap(k, j);
         }
-        for k in order {
-            apply(&mut reps[i].state, deltas[k].1.clone());
-            if r.chance(1, 4) {
-                apply(&mut reps[i].state, deltas[k].1.clone());
+        let expire_at = r.below(order.len() + 1);
+        for (pos, k) in order.into_iter().enumerate() {
+            if pos == expire_at {
+                expiring.iter().for_each(|x| reps[i].expire(x));
             }
+            reps[i].apply(commits[k].delta.clone());
+            if r.chance(1, 4) {
+                reps[i].apply(commits[k].delta.clone());
+            }
+            let (src, lo, hi) = range(&commits[k].w);
+            reps[i].received.add(&src, lo, hi);
         }
+        expiring.iter().for_each(|x| reps[i].expire(x));
     }
     let reads: Vec<Option<Value>> = reps.iter().map(|x| x.state.as_ref().and_then(|s| s.read())).collect();
     let snaps: Vec<Vec<u8>> = reps.iter().map(|x| x.state.as_ref().map_or(vec![], snapshot)).collect();
     for i in 1..n {
         assert_eq!(reads[0], reads[i], "reads converge (replica {i})");
         assert_eq!(snaps[0], snaps[i], "snapshots converge (replica {i})");
+    }
+    // reference: join everything once, then expire
+    let mut reference: Option<Frag> = None;
+    for c in &commits {
+        apply(&mut reference, c.delta.clone());
+    }
+    if let Some(s) = &mut reference {
+        s.strip(&in_ranges(&expiring));
+    }
+    assert_eq!(reference.as_ref().map_or(vec![], snapshot), snaps[0], "matches join-then-expire");
+    // frontiers cover every commit, and a fresh node bootstrapped from a snapshot reads the same
+    for rep in &reps {
+        for x in &reps {
+            assert_eq!(rep.received.frontier(&x.w.source), commits.iter().filter(|c| c.w.source == x.w.source).map(|c| c.w.hi() - 1).max().unwrap_or(0));
+        }
+    }
+    if let Some(st) = &reps[0].state {
+        let (g, _) = snapshot_transfer(st, &reps[0].received, &expiring);
+        let mut fresh = Replica { w: Writer::new(Source::node(200), 1, 1), state: None, expired: expiring.clone(), received: Received::default() };
+        fresh.apply(g);
+        assert_eq!(fresh.state.as_ref().and_then(|s| s.read()), reads[0], "snapshot bootstrap reads the same");
     }
     reps.swap_remove(0).state
 }
@@ -104,18 +229,28 @@ proptest! {
 
     #[test]
     fn convergence_kitchen_sink(seed in any::<u64>()) {
-        converge(seed, &kitchen_sink(), 3, 6, true);
+        converge(seed, &kitchen_sink(), 3, 6, true, false);
+    }
+
+    #[test]
+    fn convergence_with_expiry(seed in any::<u64>()) {
+        converge(seed, &kitchen_sink(), 3, 6, true, true);
+    }
+
+    #[test]
+    fn convergence_text_with_expiry(seed in any::<u64>()) {
+        converge(seed, &Ty::Text, 3, 10, true, true);
     }
 
     #[test]
     fn convergence_text(seed in any::<u64>()) {
-        converge(seed, &Ty::Text, 3, 12, true);
+        converge(seed, &Ty::Text, 3, 12, true, false);
     }
 
     #[test]
     fn convergence_list(seed in any::<u64>()) {
         let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())));
-        converge(seed, &ty, 3, 8, false);
+        converge(seed, &ty, 3, 8, false, true);
     }
 
     #[test]
@@ -124,6 +259,7 @@ proptest! {
         let ty = kitchen_sink();
         let mut r = Rng(seed | 1);
         let mut states = Vec::new();
+        let mut ranges: Vec<Range> = Vec::new();
         for i in 0..3u8 {
             let mut w = Writer::new(Source::node(i + 1), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
             let mut st: Option<Frag> = None;
@@ -131,6 +267,7 @@ proptest! {
                 w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
                 if let Some(d) = random_op(&mut r, &mut w, &ty, st.as_ref()) {
                     apply(&mut st, d);
+                    ranges.push(range(&w));
                 }
             }
             states.push(st.unwrap_or_else(|| { let mut f = Frag::empty(4); f.prune(None); f }));
@@ -140,6 +277,17 @@ proptest! {
         prop_assert_eq!(join3(&join3(a, b), c), join3(a, &join3(b, c)), "associative");
         prop_assert_eq!(join3(a, a), a.clone(), "idempotent");
         prop_assert_eq!(join3(&join3(a, b), b), join3(a, b), "absorbing");
+
+        // expiry (§4.7): stripping a random set of commits commutes with join, is idempotent, and a valued copy
+        // wins over its value-less one
+        let expired: Vec<Range> = ranges.into_iter().filter(|_| r.chance(1, 2)).collect();
+        let strip = |f: &Frag| { let mut g = f.clone(); g.strip(&in_ranges(&expired)); g };
+        prop_assert_eq!(strip(&join3(a, b)), join3(&strip(a), &strip(b)), "strip commutes with join");
+        prop_assert_eq!(strip(&join3(a, &strip(b))), strip(&join3(a, b)), "strip commutes with partial strip");
+        prop_assert_eq!(strip(&strip(a)), strip(a), "strip idempotent");
+        prop_assert_eq!(join3(a, &strip(a)), a.clone(), "valued copy wins");
+        let (sa, sb, sc) = (strip(a), strip(b), strip(c));
+        prop_assert_eq!(join3(&join3(&sa, &sb), &sc), join3(&sa, &join3(&sb, &sc)), "associative after strip");
     }
 
     #[test]
@@ -214,7 +362,7 @@ proptest! {
         let mk = |r: &mut Rng, i: u8, s: &str| {
             let w = Writer::new(Source::node(i), ((r.below(4) as u64 + 1) << 16) + i as u64, 1);
             let v = if s.is_empty() { Value::Int(r.below(9) as i64 - 4) } else { Value::Str(s.to_string()) };
-            Frag::Register { reset: None, write: Some((w.delta(), v)) }
+            Frag::Register { reset: None, write: Some((w.delta(), Some(v))) }
         };
         for enc in [1u8, 2, 3] {
             let (a, b) = (mk(&mut r, 1, ""), mk(&mut r, 2, ""));
@@ -236,6 +384,17 @@ proptest! {
         let mut ab = a.clone();
         ab.join(b.clone());
         prop_assert_eq!(via_reg.read(), ab.read(), "text read equals the LWW winner");
+
+        // a value-less register embeds like its valued copy after stripping (§4.7, §7)
+        for (reg, enc) in [(mk(&mut r, 1, ""), 1u8), (mk(&mut r, 2, ""), 3), (mk(&mut r, 1, "abc"), 9), (mk(&mut r, 2, ""), 9)] {
+            let mut lessr = reg.clone();
+            lessr.strip(&|_| true);
+            let mut e1 = crdt_model::embed::embed(&reg, enc).unwrap();
+            e1.strip(&|_| true);
+            let mut e2 = crdt_model::embed::embed(&lessr, enc).unwrap();
+            e2.prune(None);
+            prop_assert_eq!(e1, e2, "enc {}", enc);
+        }
     }
 
     #[test]
@@ -271,7 +430,7 @@ proptest! {
     #[test]
     fn unmerge_removes_author(seed in any::<u64>()) {
         let ty = kitchen_sink();
-        let st = converge(seed, &ty, 3, 4, false);
+        let st = converge(seed, &ty, 3, 4, false, false);
         let Some(mut st) = st else { return Ok(()) };
         st.unmerge(&|s| *s == Source::node(2));
         let mut stamps = Vec::new();
@@ -393,4 +552,64 @@ fn map_resurrection_and_set_semantics() {
     s.join(add);
     assert_eq!(s.read(), Some(Value::set(vec![Value::Int(5)])));
     assert_eq!(st_ty.enc(), 6);
+}
+
+#[test]
+fn expiry_semantics() {
+    // §4.7: expiry keeps stamps, so the expired write still beats older writes and loses to newer ones
+    let exp = |w: &Writer| { let r = range(w); move |d: &Dot| in_ranges(std::slice::from_ref(&r))(d) };
+    let mut a = Writer::new(Source::node(1), 2 << 16, 1);
+    let da = ops::create(&mut a, &Ty::Register, &Value::Int(1));
+    let mut old = Writer::new(Source::node(2), 1 << 16, 1);
+    let dold = ops::create(&mut old, &Ty::Register, &Value::Int(0));
+    let mut s = da.clone();
+    s.strip(&exp(&a));
+    s.join(dold.clone());
+    s.strip(&exp(&a));
+    assert_eq!(s.read(), None, "older write still loses to the expired one");
+    let mut new = Writer::new(Source::node(3), 3 << 16, 1);
+    s.join(ops::create(&mut new, &Ty::Register, &Value::Int(2)));
+    assert_eq!(s.read(), Some(Value::Int(2)), "newer write wins");
+
+    // map: a key repeated by another commit's record does not revive an entry whose creation expired
+    let vt = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let put = ops::map_put(&mut a, None, &vt, &Value::Int(7), &Value::fields(vec![(1, Value::Int(1))])).unwrap();
+    let mut b = Writer::new(Source::node(2), 2 << 16, 1);
+    let edit = ops::map_put(&mut b, Some(&put), &vt, &Value::Int(7), &Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(5))])).unwrap();
+    let mut s = put.clone();
+    s.join(edit.clone());
+    assert_eq!(s.read(), Some(Value::map(vec![(Value::Int(7), Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(5))]))])));
+    s.strip(&exp(&a));
+    assert_eq!(s.read(), Some(Value::map(vec![])), "entry with value-less creation is not live");
+    s.join(edit);
+    s.strip(&exp(&a));
+    assert_eq!(s.read(), Some(Value::map(vec![])), "late copy of the key is ignored");
+
+    // text: an expired insert stays as hidden anchors, inserts anchored to it keep their place
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::seq_insert(&mut a, None, true, 0, "ab".chars().map(Content::Char).collect()));
+    let base = st.unwrap();
+    let mut x = Writer::new(Source::node(2), 2 << 16, 1);
+    let dx = ops::seq_insert(&mut x, Some(&base), true, 1, "xy".chars().map(Content::Char).collect());
+    let mut s = base.clone();
+    s.join(dx.clone());
+    let mut c = Writer::new(Source::node(3), 3 << 16, 1);
+    let dz = ops::seq_insert(&mut c, Some(&s), true, 3, vec![Content::Char('z')]);
+    s.join(dz);
+    assert_eq!(s.read(), Some(Value::Str("axyzb".into())));
+    s.strip(&exp(&x));
+    assert_eq!(s.read(), Some(Value::Str("azb".into())));
+    s.join(ops::seq_undelete(&mut c, &{ let mut t = base.clone(); t.join(dx.clone()); t }, &[Dot { source: Source::node(2), ctr: 1 }]));
+    s.strip(&exp(&x));
+    assert_eq!(s.read(), Some(Value::Str("azb".into())), "content repeated by an undelete is stripped");
+
+    // enum: an expired case write leaves the enum absent
+    let ty = kitchen_sink();
+    let Ty::Struct(fts) = &ty else { unreachable!() };
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut s = ops::create(&mut a, &fts[&5], &Value::Enum(1, Some(Box::new(Value::Int(3)))));
+    s.strip(&exp(&a));
+    assert_eq!(s.read(), None);
 }

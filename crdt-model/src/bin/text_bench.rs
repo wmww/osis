@@ -128,8 +128,7 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
             ctr = ctr.max(lo_of[&commit] + 1);
         }
     }
-    let mut f = Frag::Seq { text: true, c: Composite::default(), elems };
-    f.fix_written();
+    let f = Frag::Seq { text: true, c: Composite::default(), elems };
     (f, n)
 }
 

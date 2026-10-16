@@ -144,7 +144,6 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                     let mut f = Frag::Seq { text: false, c: Default::default(), elems: BTreeMap::new() };
                     let Frag::Seq { elems: de, .. } = &mut f else { unreachable!() };
                     de.insert(d, crate::state::SeqElem::write(Content::Frag(Box::new(delta)), vec![], None));
-                    f.fix_written();
                     Some(f)
                 }
             }
@@ -153,16 +152,14 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             let ids: Vec<_> = fts.keys().collect();
             let id = *ids[r.below(ids.len())];
             let delta = random_op(r, w, &fts[&id], fields.get(&id))?;
-            let mut f = Frag::Struct { c: Default::default(), fields: [(id, delta)].into_iter().collect() };
-            f.fix_written();
+            let f = Frag::Struct { c: Default::default(), fields: [(id, delta)].into_iter().collect() };
             Some(f)
         }
         (Ty::Enum(cases), Frag::Enum { case, payloads, .. }) => {
-            if let (Some((_, id)), true) = (case, r.chance(2, 3)) {
+            if let (Some((_, Some(id))), true) = (case, r.chance(2, 3)) {
                 if let Some(Some(pt)) = cases.get(id) {
                     let delta = random_op(r, w, pt, payloads.get(id))?;
-                    let mut f = Frag::Enum { c: Default::default(), case: None, payloads: [(*id, delta)].into_iter().collect() };
-                    f.fix_written();
+                    let f = Frag::Enum { c: Default::default(), case: None, payloads: [(*id, delta)].into_iter().collect() };
                     return Some(f);
                 }
             }
@@ -190,8 +187,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                     let k = keys[r.below(keys.len())].clone();
                     let d = live[&k][0].clone();
                     let delta = random_op(r, w, vt, entries[&d].frag.as_deref())?;
-                    let mut f = Frag::Map { c: Default::default(), entries: [(d, crate::state::Entry { reset: None, key: k, frag: Some(Box::new(delta)) })].into_iter().collect() };
-                    f.fix_written();
+                    let f = Frag::Map { c: Default::default(), entries: [(d, crate::state::Entry { reset: None, key: Some(k), frag: Some(Box::new(delta)) })].into_iter().collect() };
                     Some(f)
                 }
             }

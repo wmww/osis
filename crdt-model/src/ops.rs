@@ -62,6 +62,10 @@ impl Writer {
     pub fn delta(&self) -> Stamp {
         Stamp::new(self.ts, self.source.clone(), self.lo)
     }
+    /// End of this commit's counter range `[lo, hi)` (spec §2.3).
+    pub fn hi(&self) -> u64 {
+        self.next.max(self.lo + 1)
+    }
     /// Fresh counter: element creation or position write.
     pub fn stamp(&mut self) -> Stamp {
         let s = Stamp::new(self.ts, self.source.clone(), self.next);
@@ -71,7 +75,7 @@ impl Writer {
 }
 
 fn comp(reset: Option<Stamp>) -> Composite {
-    Composite { reset, written: None }
+    Composite { reset, w: None }
 }
 
 /// Live elements of a set/bag: dot -> value.
@@ -82,8 +86,8 @@ pub fn live_elems(elems: &BTreeMap<Dot, Elem>) -> Vec<(&Dot, Value)> {
 pub fn live_entries(entries: &BTreeMap<Dot, Entry>) -> BTreeMap<Value, Vec<Dot>> {
     let mut m: BTreeMap<Value, Vec<Dot>> = BTreeMap::new();
     for (d, e) in entries {
-        if e.frag.as_ref().map_or(false, |f| f.present()) {
-            m.entry(e.key.clone()).or_default().push(d.clone());
+        if let (Some(k), true) = (&e.key, e.frag.as_ref().map_or(false, |f| f.present())) {
+            m.entry(k.clone()).or_default().push(d.clone());
         }
     }
     m
@@ -95,18 +99,18 @@ pub fn visible(elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
         .filter(|d| match &elems[d].content {
             Content::None => false,
             Content::Char(_) => true,
-            Content::Frag(f) => f.present(),
+            Content::Frag(f) => f.read().is_some(),
         })
         .collect()
 }
 
 fn register(w: &mut Writer, v: Value) -> Frag {
-    Frag::Register { reset: None, write: Some((w.delta(), v)) }
+    Frag::Register { reset: None, write: Some((w.delta(), Some(v))) }
 }
 
 /// Create a value from nothing (every write new). Composites without content get an explicit W.
 pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
-    let mut f = match (ty, v) {
+    let f = match (ty, v) {
         (Ty::Register, v) => register(w, v.clone()),
         (Ty::Counter | Ty::Max | Ty::Min, v) => {
             let kind = match ty {
@@ -122,7 +126,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
         (Ty::Text, Value::Str(s)) => {
             let mut f = Frag::Seq { text: true, c: comp(None), elems: BTreeMap::new() };
             if s.is_empty() {
-                f.composite_mut().unwrap().written = Some(w.delta());
+                f.composite_mut().unwrap().w = Some(w.delta());
             } else {
                 insert_run(w, &mut f, Anchor::Head, s.chars().map(Content::Char).collect());
             }
@@ -132,7 +136,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             let mut fields = BTreeMap::new();
             let mut c = comp(None);
             if kv.is_empty() {
-                c.written = Some(w.delta());
+                c.w = Some(w.delta());
             }
             for (k, fv) in kv {
                 if let (Value::Int(id), Some(ft)) = (k, fts.get(&(int_id(k)))) {
@@ -142,7 +146,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             Frag::Struct { c, fields }
         }
         (Ty::Enum(cases), Value::Enum(id, p)) => {
-            let case = Some((w.delta(), *id));
+            let case = Some((w.delta(), Some(*id)));
             let mut payloads = BTreeMap::new();
             if let (Some(Some(pt)), Some(pv)) = (cases.get(id), p) {
                 payloads.insert(*id, create(w, pt, pv));
@@ -153,7 +157,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             let mut elems = BTreeMap::new();
             let mut c = comp(None);
             if items.is_empty() {
-                c.written = Some(w.delta());
+                c.w = Some(w.delta());
             }
             for it in items {
                 let d = w.stamp().dot;
@@ -165,18 +169,18 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             let mut entries = BTreeMap::new();
             let mut c = comp(None);
             if kv.is_empty() {
-                c.written = Some(w.delta());
+                c.w = Some(w.delta());
             }
             for (k, v) in kv {
                 let d = w.stamp().dot;
-                entries.insert(d, Entry { reset: None, key: k.clone(), frag: Some(Box::new(create(w, vt, v))) });
+                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) });
             }
             Frag::Map { c, entries }
         }
         (Ty::List(et), Value::List(items)) => {
             let mut f = Frag::Seq { text: false, c: comp(None), elems: BTreeMap::new() };
             if items.is_empty() {
-                f.composite_mut().unwrap().written = Some(w.delta());
+                f.composite_mut().unwrap().w = Some(w.delta());
             } else {
                 let contents: Vec<Content> = items.iter().map(|it| Content::Frag(Box::new(create(w, et, it)))).collect();
                 insert_run(w, &mut f, Anchor::Head, contents);
@@ -185,7 +189,6 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
         }
         _ => panic!("value does not match type"),
     };
-    f.fix_written();
     f
 }
 
@@ -234,8 +237,7 @@ pub fn bag_inc(w: &mut Writer, kind: BagKind, amount: Value) -> Frag {
     let d = w.stamp().dot;
     let mut elems = BTreeMap::new();
     elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, amount))) });
-    let mut f = Frag::Bag { kind, c: comp(None), elems };
-    f.fix_written();
+    let f = Frag::Bag { kind, c: comp(None), elems };
     f
 }
 
@@ -251,7 +253,6 @@ pub fn elem_reset(w: &mut Writer, enc: u8, dots: &[Dot]) -> Frag {
         }
         _ => panic!("elem_reset"),
     }
-    f.fix_written();
     f
 }
 
@@ -264,8 +265,7 @@ pub fn set_add(w: &mut Writer, state: Option<&Frag>, et: &Ty, v: &Value) -> Opti
     let d = w.stamp().dot;
     let mut elems = BTreeMap::new();
     elems.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, et, v))) });
-    let mut f = Frag::Set { c: comp(None), elems };
-    f.fix_written();
+    let f = Frag::Set { c: comp(None), elems };
     Some(f)
 }
 
@@ -285,16 +285,14 @@ pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Val
             let d = dots[0].clone();
             let cur = st[&d].frag.as_deref();
             let delta = crate::diff::diff(w, cur, vt, v)?;
-            entries.insert(d, Entry { reset: None, key: k.clone(), frag: Some(Box::new(delta)) });
-            let mut f = Frag::Map { c: comp(None), entries };
-            f.fix_written();
+            entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)) });
+            let f = Frag::Map { c: comp(None), entries };
             return Some(f);
         }
     }
     let d = w.stamp().dot;
-    entries.insert(d, Entry { reset: None, key: k.clone(), frag: Some(Box::new(create(w, vt, v))) });
-    let mut f = Frag::Map { c: comp(None), entries };
-    f.fix_written();
+    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) });
+    let f = Frag::Map { c: comp(None), entries };
     Some(f)
 }
 
@@ -304,22 +302,20 @@ pub fn map_remove(w: &mut Writer, state: Option<&Frag>, k: &Value) -> Option<Fra
     let s = w.delta();
     let mut entries = BTreeMap::new();
     for d in dots {
-        entries.insert(d, Entry { reset: Some(s.clone()), key: k.clone(), frag: None });
+        entries.insert(d, Entry { reset: Some(s.clone()), key: None, frag: None });
     }
-    let mut f = Frag::Map { c: comp(None), entries };
-    f.fix_written();
+    let f = Frag::Map { c: comp(None), entries };
     Some(f)
 }
 
 pub fn enum_set(w: &mut Writer, state: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Frag> {
     let Ty::Enum(cases) = ty else { panic!("enum") };
     let Value::Enum(id, p) = v else { panic!("enum value") };
-    if let Some(Frag::Enum { case: Some((_, cur)), payloads, .. }) = state {
+    if let Some(Frag::Enum { case: Some((_, Some(cur))), payloads, .. }) = state {
         if cur == id {
             let (Some(Some(pt)), Some(pv)) = (cases.get(id), p) else { return None };
             let delta = crate::diff::diff(w, payloads.get(id), pt, pv)?;
-            let mut f = Frag::Enum { c: comp(None), case: None, payloads: [(*id, delta)].into_iter().collect() };
-            f.fix_written();
+            let f = Frag::Enum { c: comp(None), case: None, payloads: [(*id, delta)].into_iter().collect() };
             return Some(f);
         }
     }
@@ -334,7 +330,6 @@ pub fn seq_insert(w: &mut Writer, state: Option<&Frag>, text: bool, after: usize
     };
     let mut f = seq_delta(text);
     insert_run(w, &mut f, anchor, contents);
-    f.fix_written();
     f
 }
 
@@ -346,7 +341,6 @@ fn flag(w: &mut Writer, text: bool, dots: &[Dot], b: bool, contents: Option<Vec<
         let content = contents.as_ref().map_or(Content::None, |c| c[i].clone());
         elems.insert(d.clone(), SeqElem::write(content, vec![], Some((s.clone(), b))));
     }
-    f.fix_written();
     f
 }
 
@@ -421,7 +415,6 @@ pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: us
         let last = all.iter().rev().find(|d| moved_root(d).as_ref() == Some(*r)).unwrap();
         anchor = Anchor::Dot(last.clone());
     }
-    f.fix_written();
     Some(f)
 }
 
@@ -437,6 +430,5 @@ pub fn seq_set_elem(w: &mut Writer, state: &Frag, et: &Ty, index: usize, v: &Val
     let mut f = seq_delta(*text);
     let Frag::Seq { elems: de, .. } = &mut f else { unreachable!() };
     de.insert(d, SeqElem::write(Content::Frag(Box::new(delta)), vec![], None));
-    f.fix_written();
     Some(f)
 }

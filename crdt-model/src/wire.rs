@@ -189,23 +189,23 @@ impl Frag {
             }
             Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => {
                 out.extend(c.reset.iter().cloned());
-                out.extend(c.written.iter().cloned());
+                out.extend(explicit_w(self, c));
                 elems(e, out);
             }
             Frag::Struct { c, fields } => {
                 out.extend(c.reset.iter().cloned());
-                out.extend(c.written.iter().cloned());
+                out.extend(explicit_w(self, c));
                 fields.values().for_each(|f| f.stamps(out));
             }
             Frag::Enum { c, case, payloads } => {
                 out.extend(c.reset.iter().cloned());
-                out.extend(c.written.iter().cloned());
+                out.extend(explicit_w(self, c));
                 out.extend(case.iter().map(|k| k.0.clone()));
                 payloads.values().for_each(|f| f.stamps(out));
             }
             Frag::Map { c, entries } => {
                 out.extend(c.reset.iter().cloned());
-                out.extend(c.written.iter().cloned());
+                out.extend(explicit_w(self, c));
                 for en in entries.values() {
                     out.extend(en.reset.iter().cloned());
                     if let Some(f) = &en.frag {
@@ -215,12 +215,13 @@ impl Frag {
             }
             Frag::Seq { c, elems: e, .. } => {
                 out.extend(c.reset.iter().cloned());
-                out.extend(c.written.iter().cloned());
+                out.extend(explicit_w(self, c));
                 for el in e.values() {
                     out.extend(el.created.iter().map(|c| c.0.clone()));
                     out.extend(el.pos.iter().map(|p| p.0.clone()));
                     out.extend(el.deleted.iter().map(|d| d.0.clone()));
-                    if let Content::Frag(f) = &el.content {
+                    // deleted elements never carry content (§3.3 rule 5)
+                    if let (Content::Frag(f), false) = (&el.content, is_deleted(el)) {
                         f.stamps(out);
                     }
                 }
@@ -250,12 +251,12 @@ fn enc_stamp(s: &Stamp, cx: &mut Ctx) -> Item {
 fn enc_opt_stamp(s: &Option<Stamp>, cx: &mut Ctx) -> Item {
     Item::Array(s.iter().map(|s| enc_stamp(s, cx)).collect())
 }
+/// Rule 4: `W` goes on the wire iff it is greater than every presence-counting stamp inside (or there is none).
+fn explicit_w(f: &Frag, c: &Composite) -> Option<Stamp> {
+    c.w.clone().filter(|w| f.inner_max(true).map_or(true, |m| *w > m))
+}
 fn enc_w(f: &Frag, c: &Composite, cx: &mut Ctx) -> Item {
-    // rule 4: explicit iff greater than every stamp carried inside (or nothing inside)
-    match (&c.written, f.inner_max()) {
-        (Some(w), inner) if inner.as_ref().map_or(true, |m| w > m) => Item::Array(vec![enc_stamp(w, cx)]),
-        _ => Item::Array(vec![]),
-    }
+    Item::Array(explicit_w(f, c).iter().map(|w| enc_stamp(w, cx)).collect())
 }
 fn enc_anchor(a: &Anchor, cx: &mut Ctx) -> Item {
     match a {
@@ -284,7 +285,7 @@ pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
             let mut a = vec![enc, enc_opt_stamp(reset, cx)];
             if let Some((s, v)) = write {
                 a.push(enc_stamp(s, cx));
-                a.push(v.to_item());
+                a.extend(v.iter().map(|v| v.to_item()));
             }
             Item::Array(a)
         }
@@ -294,14 +295,19 @@ pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), cbor::sorted_map(m)])
         }
         Frag::Enum { c, case, payloads } => {
-            let case_i = Item::Array(case.iter().map(|(s, id)| Item::Array(vec![enc_stamp(s, cx), u(*id)])).collect());
+            let case_i = Item::Array(case.iter().map(|(s, id)| Item::Array([enc_stamp(s, cx)].into_iter().chain(id.map(u)).collect())).collect());
             let m = payloads.iter().map(|(k, v)| (u(*k), encode(v, cx))).collect();
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), case_i, cbor::sorted_map(m)])
         }
         Frag::Map { c, entries } => {
             let es = entries
                 .iter()
-                .map(|(d, e)| Item::Array(vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx), e.key.to_item(), Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect())]))
+                .map(|(d, e)| {
+                    let mut a = vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx)];
+                    a.extend(e.key.iter().map(|k| k.to_item()));
+                    a.push(Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect()));
+                    Item::Array(a)
+                })
                 .collect();
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), Item::Array(es)])
         }
@@ -482,19 +488,20 @@ fn dec_fields(it: &Item, cx: &Ctx) -> Result<BTreeMap<u64, Frag>, Error> {
     Ok(m)
 }
 fn composite(a: &[Item], cx: &Ctx) -> Result<Composite, Error> {
-    Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, written: dec_opt_stamp(&a[2], cx)? })
+    Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w: dec_opt_stamp(&a[2], cx)? })
 }
 
-/// Decode a fragment; `fix_written` is applied so `written` includes inner writes.
+/// Decode a fragment.
 pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
     let a = it.array()?;
     if a.is_empty() {
         return Err(Error::Bad("fragment"));
     }
     let enc = a[0].uint()?;
-    let mut f = match (enc, a.len()) {
+    let f = match (enc, a.len()) {
         (0, 2) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: None },
-        (0, 4) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, Value::from_item(&a[3])?)) },
+        (0, 3) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, None)) },
+        (0, 4) => Frag::Register { reset: dec_opt_stamp(&a[1], cx)?, write: Some((dec_stamp(&a[2], cx)?, Some(Value::from_item(&a[3])?))) },
         (1..=3, 4) => {
             let kind = [BagKind::Counter, BagKind::Max, BagKind::Min][enc as usize - 1];
             Frag::Bag { kind, c: composite(a, cx)?, elems: dec_elems(&a[3], cx)? }
@@ -504,11 +511,11 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
             let case = match a[3].array()? {
                 [] => None,
                 [c] => {
-                    let c = c.array()?;
-                    if c.len() != 2 {
-                        return Err(Error::Bad("case"));
+                    match c.array()? {
+                        [s] => Some((dec_stamp(s, cx)?, None)),
+                        [s, id] => Some((dec_stamp(s, cx)?, Some(id.uint()?))),
+                        _ => return Err(Error::Bad("case")),
                     }
-                    Some((dec_stamp(&c[0], cx)?, c[1].uint()?))
                 }
                 _ => return Err(Error::Bad("case")),
             };
@@ -520,22 +527,26 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
             let mut last: Option<Dot> = None;
             for e in a[3].array()? {
                 let x = e.array()?;
-                if x.len() != 4 {
-                    return Err(Error::Bad("entry"));
+                let (key, frag) = match x.len() {
+                    3 => (None, dec_opt_frag(&x[2], cx)?),
+                    4 => (Some(Value::from_item(&x[2])?), dec_opt_frag(&x[3], cx)?),
+                    _ => return Err(Error::Bad("entry")),
+                };
+                if key.is_some() && frag.is_none() {
+                    return Err(Error::Bad("tombstone with key"));
                 }
                 let d = dec_dot(&x[0], cx)?;
                 if last.as_ref().map_or(false, |l| *l >= d) {
                     return Err(Error::Bad("entry order"));
                 }
                 last = Some(d.clone());
-                entries.insert(d, Entry { reset: dec_opt_stamp(&x[1], cx)?, key: Value::from_item(&x[2])?, frag: dec_opt_frag(&x[3], cx)? });
+                entries.insert(d, Entry { reset: dec_opt_stamp(&x[1], cx)?, key, frag });
             }
             Frag::Map { c: composite(a, cx)?, entries }
         }
         (8 | 9, 4) => Frag::Seq { text: enc == 9, c: composite(a, cx)?, elems: dec_runs(enc == 9, &a[3], cx)? },
         _ => return Err(Error::Bad("encoding or arity")),
     };
-    f.fix_written();
     Ok(f)
 }
 
@@ -673,5 +684,53 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
             decode(f, cx)
         }
         _ => Err(Error::Bad("delta")),
+    }
+}
+
+/// Snapshot delta: `[nonce, Commits, Fragment, Frontiers]`, `Frontiers := [[Src, ctr]*]` sorted by `Src`, one entry
+/// per `Node` source (§8). The caller strips the values of expiring commits first (§4.7). Frontier sources enter
+/// the header table after the fragment's.
+pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
+    cx.commits.clear();
+    cx.collect_commits(f);
+    let frag = encode(f, cx);
+    let mut fr: Vec<(u64, u64)> = frontiers
+        .iter()
+        .map(|(s, c)| {
+            assert!(matches!(s, Source::Node(_)) && *c >= 1, "frontiers name node sources");
+            (cx.index(s), *c)
+        })
+        .collect();
+    fr.sort();
+    let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
+    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.commits_item(), frag, fr]))
+}
+
+pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
+    let it = cbor::decode(bytes)?;
+    match it.array()? {
+        [Item::Bytes(n), commits, f, fr] if n.len() == 16 => {
+            cx.load_commits(commits)?;
+            let frag = decode(f, cx)?;
+            let mut out = Vec::new();
+            let mut last: Option<u64> = None;
+            for e in fr.array()? {
+                let (i, c) = match e.array()? {
+                    [i, c] => (i.uint()?, nonzero(c.uint()?)?),
+                    _ => return Err(Error::Bad("frontier")),
+                };
+                if last.map_or(false, |l| l >= i) {
+                    return Err(Error::Bad("frontier order"));
+                }
+                last = Some(i);
+                let s = cx.source(i)?;
+                if !matches!(s, Source::Node(_)) {
+                    return Err(Error::Bad("frontier source"));
+                }
+                out.push((s, c));
+            }
+            Ok((frag, out))
+        }
+        _ => Err(Error::Bad("snapshot")),
     }
 }

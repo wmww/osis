@@ -16,8 +16,8 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
     if cur.as_ref() == Some(v) {
         return None;
     }
-    let mut out = match (ty, st, v) {
-        (Ty::Register, _, v) => Frag::Register { reset: None, write: Some((w.delta(), v.clone())) },
+    let out = match (ty, st, v) {
+        (Ty::Register, _, v) => Frag::Register { reset: None, write: Some((w.delta(), Some(v.clone()))) },
         (Ty::Counter, _, Value::Int(n)) => {
             let c = match cur {
                 Some(Value::Int(c)) => c,
@@ -106,9 +106,9 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
             let gone: Vec<(&Value, &Vec<_>)> = live.iter().filter(|(k, _)| !kv.iter().any(|(k2, _)| k2 == *k)).collect();
             if !gone.is_empty() {
                 let s = w.delta();
-                for (k, dots) in gone {
+                for (_, dots) in gone {
                     for d in dots {
-                        de.insert(d.clone(), Entry { reset: Some(s.clone()), key: k.clone(), frag: None });
+                        de.insert(d.clone(), Entry { reset: Some(s.clone()), key: None, frag: None });
                     }
                 }
             }
@@ -117,12 +117,12 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
                     Some(dots) => {
                         let d = dots[0].clone();
                         if let Some(delta) = diff(w, entries[&d].frag.as_deref(), vt, val) {
-                            de.insert(d, Entry { reset: None, key: k.clone(), frag: Some(Box::new(delta)) });
+                            de.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)) });
                         }
                     }
                     None => {
                         let d = w.stamp().dot;
-                        de.insert(d, Entry { reset: None, key: k.clone(), frag: Some(Box::new(create(w, vt, val))) });
+                        de.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, val))) });
                     }
                 }
             }
@@ -133,7 +133,6 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
         }
         _ => panic!("type/value mismatch in diff"),
     };
-    out.fix_written();
     if out.is_empty() {
         return None;
     }

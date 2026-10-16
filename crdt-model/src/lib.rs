@@ -4,6 +4,7 @@ pub mod diff;
 pub mod embed;
 pub mod gen;
 pub mod ops;
+pub mod received;
 pub mod seq;
 pub mod stamp;
 pub mod state;

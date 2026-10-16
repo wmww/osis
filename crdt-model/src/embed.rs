@@ -4,12 +4,16 @@ use crate::state::{Anchor, BagKind, Composite, Content, Elem, Frag, SeqElem};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
-/// Embed `a` into encoding `target`, if an edge exists for `a`'s encoding and value type.
+/// Embed `a` into encoding `target`, if an edge exists. Every edge from a register is total, so a value-less write
+/// (§4.7) embeds exactly as its valued copy would after stripping: a value that does not fit the target (or none)
+/// leaves only the reset (text) or a contribution that reads as nothing (bags).
 pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
     let (reset, write) = match a {
         Frag::Register { reset, write } => (reset.clone(), write.clone()),
         _ => return None,
     };
+    let r = max_opt(reset, write.as_ref().map(|w| w.0.clone()));
+    let c = Composite { reset: r, w: None };
     match target {
         1 | 2 | 3 => {
             let kind = match target {
@@ -18,29 +22,14 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
                 _ => BagKind::Min,
             };
             let mut elems = BTreeMap::new();
-            let mut written = None;
-            let mut r = reset;
             if let Some((s, v)) = write {
-                if !matches!(v, Value::Int(_) | Value::Float(_)) {
-                    return None;
-                }
-                r = max_opt(r, Some(s.clone()));
-                written = Some(s.clone());
                 elems.insert(s.dot.clone(), Elem { reset: None, frag: Some(Box::new(Frag::Register { reset: None, write: Some((s, v)) })) });
             }
-            Some(Frag::Bag { kind, c: Composite { reset: r, written }, elems })
+            Some(Frag::Bag { kind, c, elems })
         }
         9 => {
             let mut elems = BTreeMap::new();
-            let mut written = None;
-            let mut r = reset;
-            if let Some((s, v)) = write {
-                let text = match v {
-                    Value::Str(t) => t,
-                    _ => return None,
-                };
-                r = max_opt(r, Some(s.clone()));
-                written = Some(s.clone());
+            if let Some((s, Some(Value::Str(text)))) = write {
                 let src = Source::Derived(Box::new(s.dot.clone()));
                 let mut prev = Anchor::Head;
                 for (i, ch) in text.chars().enumerate() {
@@ -50,7 +39,7 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
                     prev = Anchor::Dot(dot);
                 }
             }
-            Some(Frag::Seq { text: true, c: Composite { reset: r, written }, elems })
+            Some(Frag::Seq { text: true, c, elems })
         }
         _ => None,
     }
