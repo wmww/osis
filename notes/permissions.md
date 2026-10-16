@@ -169,4 +169,4 @@ Costs:
 Rejected: timestamp rule (forgeable); accept everything causally concurrent with the revoke (a hostile ex-writer never "sees" it); revoker's cutoff (depends on which node revoked); learn-based witness rule (valid if a member accepted it before *learning* of the revoke: the revoked actor can race the revocation, and honest offline sync looks like a hostile push); membership evaluated by claimed time only (an ex-admin could forever mint backdated grants); attestations as aspect writes on the actor thing or on the thing written (readers and edge-grantees cannot write there, and they would need retention rules).
 
 ## Open
-- Layer 1 replacement (owner): adopt the stratified rule (Membership fixpoint check), with admin witnesses for membership writes or write+ (`stratw`). Then rewrite Validity definition layer 1 and drop the as-written text.
+- Layer 1 as written can loop forever: issues/membership-layer1-loops.md. Owner picks the replacement; then rewrite Validity definition layer 1.
