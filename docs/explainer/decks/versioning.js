@@ -48,7 +48,7 @@ export default {
         ].join(''));
       },
       text: `<p>Data in osis behaves like a file format: many apps, each in several versions, read and write the same things. Nobody controls when apps update, users skip updates, and two devices may sit on different versions for years.</p>
-        <p>So a schema change can never assume every reader has upgraded, and an old app can never be allowed to break newer data.</p>`,
+        <p>So a schema change can never assume every reader has upgraded.</p>`,
     },
     {
       title: 'Never drop what you do not understand',
@@ -71,9 +71,9 @@ export default {
         cross(380, 372, { d: 2.6, s: 0.8 }),
         text(398, 372, 'never: reject, discard, panic', { anchor: 'start', cls: 'small', d: 2.6 }),
       ].join('')),
-      text: `<p>The <strong>parking rule</strong>: a node never rejects, discards or crashes on data it cannot interpret, whether that is an unknown field, aspect, merge encoding or format version. It stores it, merges what it can, relays it to others, and looks again after it upgrades.</p>
-        <p>"Not understood" is treated like "not received yet". That keeps an old device from silently destroying a newer app's data on its way through.</p>`,
-      more: `<h3>Three layers of compatibility</h3><ul><li><strong>Store, relay, merge</strong>: universal. Merge needs no schema, so any node can combine any aspect's state.</li><li><strong>Typing</strong>: per app. If an app's schema cannot type a value, the typed read fails with the path; the untyped value API always works, and an app can skip one bad element of a large list.</li><li><strong>Meaning</strong>: invariants in doc comments, which no tool can check.</li></ul>`,
+      text: `<p>The <strong>parking rule</strong>: a node never rejects, discards or crashes on data it can't interpret, such as an unknown field or format version. It stores it, merges what it can, relays it, and looks again after upgrading.</p>
+        <p>That keeps an old device from silently destroying a newer app's data.</p>`,
+      more: `<h3>Three layers of compatibility</h3><ul><li><strong>Store, relay, merge</strong>: universal. Merge needs no schema, so any node can combine any aspect's state.</li><li><strong>Typing</strong>: per app. If an app's schema can't type a value, the typed read fails; the untyped API always works.</li><li><strong>Meaning</strong>: invariants in doc comments, which no tool can check.</li></ul>`,
     },
     {
       title: 'The wire schema only grows',
@@ -81,8 +81,8 @@ export default {
     {n:1} title: {t:string},
     {n:2} done: {t:bool},
     {n:3} tags: {t:set}<{t:string}>,
-    {n:4} status: {t:option}<{t:status}>,  {cm:// new: reads as none}
-    {k:reserved} {n:5};                 {cm:// removed, never reused}
+    {k:reserved} {n:4};                 {cm:// removed, never reused}
+    {n:5} status: {t:option}<{t:status}>,  {cm:// new: reads as none}
 };
 {k:revision} {n:7};`)}${svg(440, 380, [
         box(10, 10, 200, 56, { label: 'lock file', sub: 'last published, rev 6', c: 'blind', d: 0.2 }),
@@ -96,14 +96,14 @@ export default {
           text(62, 196 + i * 40, s, { anchor: 'start', cls: 'small', d: 1 + i * 0.15 })),
       ].join(''))}</div>`,
       text: `<p>Names never go on the wire, only integer IDs, and an ID is never reused. Structs are <strong>open</strong>: readers ignore field IDs they do not know, and writes only touch the fields the writer knows, so unknown fields survive a round trip through an old app.</p>
-        <p>A new field gets a <strong>reader-side default</strong> instead of a migration. A checker built into the schema loader compares each revision against the last published one and refuses anything that is not purely additive.</p>`,
-      more: `<h3>Notes</h3><ul><li>The syntax for IDs, <code>reserved</code> and <code>revision</code> is still a sketch.</li><li>Commit headers carry the writer's schema revision and a hash of the aspect's type. Seeing a higher revision of your own schema is the "update required" signal.</li><li>The one change no checker can catch is giving an existing ID a new meaning (feet become meters). The rule is simply: new meaning, new ID.</li></ul>`,
+        <p>A new field gets a <strong>reader-side default</strong> instead of a migration. The schema loader checks each revision against the last published one and refuses anything not purely additive.</p>`,
+      more: `<h3>Notes</h3><ul><li>The syntax for IDs, <code>reserved</code> and <code>revision</code> is still a sketch.</li><li>Commit headers carry the writer's schema revision and a hash of the aspect's type. Seeing a higher revision of your own schema is the "update required" signal.</li><li>No checker can catch giving an existing ID a new meaning (feet become meters). The rule: new meaning, new ID.</li></ul>`,
     },
     {
       title: 'A breaking change is a new form that succeeds the old one',
       stage: () => svg(960, 385, [
         box(30, 30, 270, 76, { label: 'old form', sub: '2 done: bool', c: 'c2', d: 0 }),
-        box(660, 30, 270, 76, { label: 'new form', sub: '4 status: todo | doing | blocked | done', c: 'c1', d: 0.2 }),
+        box(660, 30, 270, 76, { label: 'new form', sub: '5 status: todo | doing | blocked | done', c: 'c1', d: 0.2 }),
         arrow(306, 52, 652, 52, { c: 'c1', d: 0.5 }),
         text(480, 36, 'f: read old as new', { cls: 'small b', d: 0.6 }),
         arrow(652, 88, 306, 88, { c: 'c2', d: 0.9 }),
@@ -122,22 +122,22 @@ export default {
       ].join('')),
       text: `<p>When the old shape cannot hold every new value, the schema adds fields with new IDs and declares that they <strong>succeed</strong> the old ones. The app supplies two conversions: <strong>f</strong> reads old data as new, <strong>g</strong> writes new data in the old shape where it can.</p>
         <p>Readers show whichever form was written last, so an old app's later edit still wins, read through f. Only values g cannot express (here, "blocked") look stale to old apps.</p>`,
-      more: `<h3>Why this lives in app code, not the core</h3><p>The core never interprets a transition. Merge is schema-free, so a maintainer who ignores the convention still converges; the convention can change without touching stored data. Timestamps are already the system's one conflict rule, so the tie-break needs no extra laws relating f and g. Renaming an aspect, splitting one field into two, or merging two into one all use the same mechanism.</p>`,
+      more: `<h3>Why this lives in app code, not the core</h3><p>The core never interprets a transition. Merge is schema-free, so data converges whatever apps do, and the timestamp rule is the only tie-break needed.</p>`,
     },
     {
       title: 'Installing an update never changes stored data by itself',
       stage: () => svg(960, 330, [
         phase(0, 'Old apps still write here', 'g is exact for this value', 'status = done', 'done = true', '', 0),
         phase(330, 'Value g cannot express', 'old apps see it as stale', 'status = blocked', '', 'blocked', 0.9),
-        phase(660, 'Every node reads v2', 'from published node info', 'status = doing', '', 'doing', 1.8),
+        phase(660, 'The group has moved on', 'every active node reads v2', 'status = doing', '', 'doing', 1.8),
         path('M318,10 V250', { c: 'blind', cls: 'thin', d: 0.8 }),
         path('M648,10 V250', { c: 'blind', cls: 'thin', d: 1.7 }),
         arrow(20, 300, 930, 300, { c: 'blind', thin: true, d: 0.1 }),
         text(480, 318, 'time in one shared group', { cls: 'sub', d: 0.1 }),
       ].join('')),
       text: `<p>An upgraded app gains the <em>ability</em> to write the new form; it decides per write which form to use. By default it writes the old form whenever that loses nothing, so older apps in the group keep working fully. Only a value the old form cannot hold forces the new form, and only for that value.</p>
-        <p>Once every active device can read the new form, apps start writing it. Devices may decide at different times; the result still merges correctly.</p>`,
-      more: `<h3>Policy inputs (all local)</h3><p>"Active" means every recent writer in the group's commit headers and every node syncing it. No step needs global agreement: nodes that decide differently produce a mix of forms, which the timestamp rule reads correctly.</p><ul><li>Whether g is exact, or approximate but declared acceptable (unit conversions).</li><li>Schema revisions seen in this group's recent commit headers.</li><li>Each node's published <code>/node</code> info: which revisions and forms it reads. This catches read-only old apps, which never appear in headers. An age cutoff keeps a dead phone from blocking forever.</li><li>An explicit per-group or per-app compatibility setting, which overrides the rest.</li></ul><p>A whole redesign is an ordinary import (read old forms, write new ones) once the group has moved on. The core has no migration concept.</p>`,
+        <p>Once local policy sees that every active device reads the new form, apps start writing it. Devices may decide at different times; the result still merges correctly.</p>`,
+      more: `<h3>Policy inputs (all local)</h3><ul><li>Whether g is exact, or approximate but acceptable (unit conversions).</li><li>Schema revisions in the group's recent commit headers.</li><li>Each node's published <code>/node</code> info, which also catches read-only old apps. An age cutoff keeps a dead phone from blocking forever.</li><li>An explicit compatibility setting, which overrides the rest.</li></ul><p>A full redesign is an ordinary import once the group has moved on; the core has no migration concept.</p>`,
     },
     {
       title: 'Merge encodings upgrade without breaking anyone',
@@ -154,8 +154,8 @@ export default {
           pill(310, 280, 'int (last write wins) → counter', { c: 'c4', mono: false }) +
           pill(610, 280, 'no edge → later write resets', { c: 'blind', mono: false }), { d: 1.7 }),
       ].join('')),
-      text: `<p>Below the schema, each aspect's state uses a <strong>merge encoding</strong>: a plain last-write-wins register, a counter, a text CRDT, and so on. The core defines how each simpler encoding embeds into a richer one, so when two nodes disagree, the join converts the simpler encoding to the richer one.</p>
-        <p>So turning a title into collaboratively edited text is an additive change. Until old apps are gone, their saves overwrite concurrent text edits, since old code has no notion of merging characters.</p>`,
+      text: `<p>Below the schema, each aspect's state uses a <strong>merge encoding</strong>: a last-write-wins register, a counter, a text CRDT, and so on. The core defines how simpler encodings embed into richer ones, so a merge converts the simpler side.</p>
+        <p>So turning a title into collaboratively edited text is an additive change. Until old apps are gone, their saves overwrite concurrent text edits.</p>`,
     },
     {
       title: 'Read everything older; write the oldest format that fits',
@@ -175,12 +175,11 @@ export default {
             pill(340, ry(r), `as ${v}`, { c: v === 'v1' ? 'c3' : 'c4', solid: true, d: 0.7 + r * 0.5 }) +
             res.map((ok, i) => ok ? check(cx(i), ry(r), { d: 0.9 + r * 0.5 + i * 0.08 })
               : pill(cx(i), ry(r), 'parked', { c: 'blind', d: 0.9 + r * 0.5 + i * 0.08, mono: false })).join('')),
-          text(480, 360, 'Old nodes lag only on the one aspect that used the new feature, and catch up after upgrading.', { cls: 'sub', d: 2.5 }),
         ].join(''));
       },
-      text: `<p>The bytes on the wire (commit headers, delta encodings, chunks, values) carry one format version. Readers accept every older version forever. Writers emit the <strong>oldest</strong> version that can express each change, so upgrading one device strands nobody until a new feature is actually used, and then only on that aspect.</p>
-        <p>Everything that is local to a node (storage layout, indexes, the sync protocol, the API) can change freely, because none of it is shared data.</p>`,
-      more: `<h3>Prior art</h3><p>Protobuf (integer IDs, reserved numbers, additive discipline), Avro (reader and writer schemas, defaults), SQLite's file-format promise (read everything older, forever). Cambria-style lenses were considered and rejected: no conversion language in the schema and no core-managed mirroring between forms.</p>`,
+      text: `<p>The bytes on the wire (commit headers, delta encodings, chunks, values) carry one format version. Readers accept every older version forever. Writers emit the <strong>oldest</strong> version that can express each change, so upgrading one device strands nobody until a new feature is used, and then only on that aspect.</p>
+        <p>Everything local to a node (storage layout, indexes, the sync protocol, the API) can change freely, since none of it is shared data.</p>`,
+      more: `<h3>Prior art</h3><p>Protobuf (integer IDs, reserved numbers, additive discipline), Avro (reader and writer schemas, defaults), SQLite's file-format promise (read everything older, forever). Cambria-style lenses were considered and rejected.</p>`,
     },
   ],
 };

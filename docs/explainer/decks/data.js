@@ -50,9 +50,9 @@ export default {
           arrow(212, 300, 314, ry(4) - 10, { c: 'c4', d: 2.2, dash: true }),
         ].join(''));
       },
-      text: `<p>A <strong>thing</strong> is an ID plus a bag of <strong>aspects</strong>. Each aspect is a typed value under an aspect key (AK) such as <code>/note/title</code>. A thing holds nothing else.</p>
-        <p>Apps pick the aspects they understand and ignore the rest, so a meeting can be a note to one app and an event to another, with no copying and no format conversion.</p>`,
-      more: `<h3>Aspect flags</h3><p>The schema can mark an aspect <code>indexed</code> (full-text search), <code>synthetic</code> (computed, such as <code>/aspects</code> or <code>/groups</code>), <code>ro</code>, or <code>guaranteed</code> (present on every thing). It also sets a retention class and an optional expiry; those are covered in the Deletion and Live data topics.</p>`,
+      text: `<p>A <strong>thing</strong> is an ID plus a bag of <strong>aspects</strong>. Each aspect is a typed value under a key such as <code>/note/title</code>.</p>
+        <p>Apps pick the aspects they understand and ignore the rest, so a meeting can be a note to one app and an event to another, with no copying or conversion.</p>`,
+      more: `<h3>Aspect flags</h3><p>The schema can mark an aspect <code>indexed</code> (full-text search), <code>synthetic</code> (computed, such as <code>/aspects</code> or <code>/groups</code>), <code>ro</code>, or <code>guaranteed</code> (present on every thing).</p>`,
     },
     {
       title: 'Schemas declare types; only small integer IDs go on the wire',
@@ -76,11 +76,10 @@ export default {
         box(40, 196, 360, 100, { c: 'blind', d: 1.1 }),
         text(60, 222, 'what is stored and synced', { anchor: 'start', cls: 'sub', d: 1.1 }),
         text(60, 258, '{1: "Buy milk", 2: false}', { anchor: 'start', cls: 'mono', d: 1.2 }),
-        text(220, 340, 'names never leave the schema', { cls: 'sub', d: 1.5 }),
       ].join(''))}</div>`,
-      text: `<p>Types are declared in <code>.osis</code> schema files with a small Rust-like syntax: strings, ints, floats, bools, blobs, tids, structs, enums, lists, maps and sets. Writes are type-checked against the writer's schema.</p>
-        <p>Struct fields and enum cases carry explicit integer IDs. Field names stay in the schema, which is what lets a field be renamed freely and lets versions evolve (see <a href="#/versioning/1">Versioning</a>).</p>`,
-      more: `<h3>Schema files</h3><ul><li>Loaded at runtime, or at compile time with <code>load_schema!()</code>; one hand-written parser for both.</li><li><code>///</code> doc comments are kept in the parsed schema, so generic tools and agents can read the invariants a value is meant to keep.</li><li>Every AK belongs to exactly one schema, the only place allowed to extend it. Someone else who needs more data adds their own aspects.</li><li>The exact ID syntax is still a sketch.</li></ul>`,
+      text: `<p>Types are declared in <code>.osis</code> schema files with a small Rust-like syntax: strings, ints, floats, bools, blobs, tids, structs, enums, lists, maps and sets. Writes are type-checked.</p>
+        <p>Struct fields and enum cases carry explicit integer IDs. Names stay in the schema, which helps versions evolve (see <a href="#/versioning/1">Versioning</a>).</p>`,
+      more: `<h3>Schema files</h3><ul><li>Loaded at runtime, or at compile time with <code>load_schema!()</code>; one hand-written parser for both.</li><li><code>///</code> doc comments are kept in the parsed schema, so generic tools and agents can read the invariants a value is meant to keep.</li><li>Each aspect key belongs to exactly one schema. Others who need more data add their own aspects.</li><li>The exact syntax is still a sketch.</li></ul>`,
     },
     {
       title: 'One value, one byte string, on every platform',
@@ -109,8 +108,8 @@ export default {
         ].join(''));
       },
       text: `<p>Values are encoded as <strong>canonical CBOR</strong>: a binary JSON-like standard, restricted so each value has exactly one valid encoding (shortest integers, sorted map keys, always 8-byte floats).</p>
-        <p>The decoder rejects anything non-canonical, so bytes are hashed and stored exactly as received and never re-encoded. Hashes and signatures stay valid across platforms and versions, so large values are never re-encoded to check them.</p>`,
-      more: `<h3>Why CBOR, and why not serde</h3><ul><li>CBOR is an IETF standard with a deterministic profile, tags for osis's extra types (tid, enum, set, link), and a text notation so any tool can print a value without the schema.</li><li>Not the dCBOR profile: it encodes <code>1.0</code> as <code>1</code>, losing int vs float.</li><li>osis owns its encoder and strict decoder (a few hundred lines). Generic serde backends do not sort keys or reject non-canonical input. BLAKE3 is the only hash.</li></ul>`,
+        <p>The decoder rejects anything else, so bytes are stored and hashed exactly as received, and hashes and signatures hold across platforms and versions.</p>`,
+      more: `<h3>Why CBOR, and why not serde</h3><ul><li>CBOR is an IETF standard with a deterministic profile, tags for osis's extra types (tid, enum, set, link), and a text notation so any tool can print a value without the schema.</li><li>Not the dCBOR profile: it encodes <code>1.0</code> as <code>1</code>, losing int vs float.</li><li>osis owns its encoder and strict decoder (a few hundred lines); generic serde backends don't sort keys or reject non-canonical input.</li></ul>`,
     },
     {
       title: 'Thing IDs are minted offline and prove their owner',
@@ -137,9 +136,9 @@ export default {
         cross(686, 342, { d: 3.2 }),
         text(712, 342, 'rejected', { anchor: 'start', cls: 'small', d: 3.2 }),
       ].join('')),
-      text: `<p>A thing's ID (<strong>tid</strong>) is a hash of its creation record: the owning actor plus a random nonce. Anyone can mint one offline with no registry, and nobody can later publish a different owner for it, since that record would hash to a different tid.</p>
+      text: `<p>A thing's ID (<strong>tid</strong>) is a hash of its creation record: the owning actor plus a random nonce. Anyone can mint one offline, and nobody can later claim a different owner, since that record would hash to a different tid.</p>
         <p>Every check of who may write a thing starts here (see <a href="#/permissions/1">Permissions</a>).</p>`,
-      more: `<h3>Numbers</h3><ul><li>120 bits, shown as 20 base64url characters. Forging a record for one given tid costs about 2<sup>120</sup> hashes.</li><li>The nonce keeps a bare tid from revealing its owner, and seeds the thing's secret for keyed hashes.</li><li>A key actor (a device, a recovery key) owns itself: its record is (public key, nonce).</li><li>The record is checked when the thing's data arrives. A bare reference to an unknown tid is never checked; it simply dangles.</li></ul>`,
+      more: `<h3>Numbers</h3><ul><li>120 bits, shown as 20 base64url characters. Forging a record for one given tid costs about 2<sup>120</sup> hashes.</li><li>The nonce keeps a bare tid from revealing its owner, and seeds the thing's secret for keyed hashes.</li><li>A device or recovery key owns itself: its record is (public key, nonce).</li><li>The record is checked when the thing's data arrives.</li></ul>`,
     },
     {
       title: 'Things reference each other by tid, and references may dangle',
@@ -157,7 +156,7 @@ export default {
         text(110, 184, 'attendee', { anchor: 'end', cls: 'sub', d: 1.4 }),
       ].join('')),
       text: `<p>A <code>tid</code> is an ordinary value type, so references appear in typed fields or as <code>osis://</code> links in markdown. Values nest but never recurse; trees and graphs are built from things pointing at things.</p>
-        <p>There are no foreign-key guarantees. The target may not have synced yet, may be shared with someone else, or may lack the aspects you expect. Apps treat a missing target like a missing file.</p>`,
+        <p>Nothing guarantees the target exists here: it may not have synced yet, may not be shared with you, or may lack the aspects you expect. Apps treat it like a missing file.</p>`,
     },
     {
       title: 'Groups are overlapping sets of things',
@@ -187,9 +186,9 @@ export default {
         );
         return svg(960, 380, out.join(''));
       },
-      text: `<p>A <strong>group</strong> is just a thing with a <code>/group</code> aspect listing items and subgroups. A thing can sit in many groups; groups nest, overlap, and may even contain each other.</p>
-        <p>Groups are what you sync. A spreadsheet can be a group of row groups and column groups, so a device can sync row 3 or column B alone, and cell B3 is still stored and sent only once. How is in <a href="#/sync/1">Sync</a>.</p>`,
-      more: `<h3>Groups are not permissions</h3><p>Putting a thing in a group grants nobody any rights to it. Access comes from ownership and explicit membership edges (see <a href="#/permissions/1">Permissions</a>). A group meant to be shared as a unit is made a read member of its contents. Blind servers see a synced group as one flat, opaque set; nesting is only known to nodes with keys.</p>`,
+      text: `<p>A <strong>group</strong> is a thing with a <code>/group</code> aspect listing items and subgroups. Groups nest and overlap, and a thing can sit in many.</p>
+        <p>Groups are what you sync: a device can sync just row 3 or just column B (see <a href="#/sync/2">Sync</a>).</p>`,
+      more: `<h3>Groups are not permissions</h3><p>Putting a thing in a group grants nobody any rights to it. Access comes from ownership and membership (see <a href="#/permissions/5">Permissions</a>).</p>`,
     },
     {
       title: 'Big values are split into content-defined chunks',
@@ -226,9 +225,9 @@ export default {
           text(700, 370, 'upload 1 chunk + 2 tree nodes; the rest is reused', { cls: 'small', c: 'c3', d: 2.5 }),
         ].join(''));
       },
-      text: `<p>Values can be many GB, and maps can hold millions of keys. Large values are cut into chunks at boundaries chosen by the content itself (a rolling hash), and the chunks form a tree.</p>
-        <p>An insert only changes the chunk it lands in and the path to the root; every other chunk keeps its ID and is reused. Uploads and storage track the size of the edit, not the size of the value.</p>`,
-      more: `<h3>Details</h3><ul><li>Large blobs use content-defined chunking (FastCDC-style); large maps and sets use prolly trees, where equal contents give equal trees regardless of edit history.</li><li>Each chunk is its own encrypted blob under a random key stored in its parent's link, so chunks are fetched, deduplicated and deleted piecewise.</li><li>Apps can read a large value whole, or stream and edit it without loading it all. The exact API is open, as is the size threshold for chunking.</li></ul>`,
+      text: `<p>Values can be many GB, and maps can hold millions of keys. Large values are cut into chunks at boundaries chosen by the content itself, and the chunks form a tree.</p>
+        <p>An insert usually changes only the chunk it lands in and the path to the root. Every other chunk is reused, so uploads and storage track the size of the edit, not the value.</p>`,
+      more: `<h3>Details</h3><ul><li>Large blobs use content-defined chunking (FastCDC-style); large maps and sets use prolly trees, where equal contents give equal trees regardless of edit history.</li><li>Each chunk is its own encrypted blob, so chunks are fetched, deduplicated and deleted piecewise.</li><li>Apps can stream and edit a large value without loading it all. The API and size threshold are open.</li></ul>`,
     },
   ],
 };

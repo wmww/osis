@@ -44,7 +44,7 @@ function renderHome() {
       <div class="hero">
         <h1>A local-first data layer that many apps share.</h1>
         <p>osis stores small-to-large interconnected data (notes, calendars, spreadsheets) on your devices, syncs it between people with no central server, and lets any app, version or agent work on the same data, the way files work today.</p>
-        <p class="note">Each topic is a short slide deck with diagrams. Read them in order to go from zero to a working picture of the design. osis is at the design stage: these decks describe decisions recorded in the project notes, not shipped code.</p>
+        <p class="note">osis is at the design stage. These slides describe the design, not shipped code.</p>
       </div>
       <div class="grid">
         ${decks.map((d, i) => `
@@ -53,7 +53,6 @@ function renderHome() {
             <div class="ico">${call(d.icon)}</div>
             <h2>${d.title}</h2>
             <p>${d.blurb}</p>
-            <span class="len">${d.slides.length} slides</span>
           </a>`).join('')}
       </div>
     </section>`;

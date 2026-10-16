@@ -46,15 +46,15 @@ export default {
           box(cx - 105, cy - 36, 210, 72, { label: 'bank details', sub: 'pasted into a shared doc', c: 'c2', solid: true, d: 0 }),
         ].join(''));
       },
-      text: `<p>One paste of the wrong text lands on every device that syncs the doc, in its edit history, undo buffers, search indexes and server backups. Storage engines don't reliably erase either: SSDs, journals and copy-on-write filesystems keep old pages around.</p>
-        <p>Goal: once an honest node applies a deletion, the content is unrecoverable there, even from a later-stolen device, and nothing left behind confirms what it was. Offline copies and dishonest nodes are out of scope.</p>`,
+      text: `<p>One wrong paste lands on every device that syncs the doc, and in edit history, undo buffers, search indexes and server backups. Disks don't reliably erase either: SSDs, journals and copy-on-write filesystems keep old pages.</p>
+        <p>Goal: once an honest node applies a purge, the content is unrecoverable there, even from a device stolen later, and nothing left behind confirms what it was.</p>`,
     },
     {
       title: 'Each aspect chooses how long old versions live',
       stage: () => {
         const xs = [370, 530, 690], lanes = [
           ['preserve', 'kept and synced until explicitly purged', 'c3', 70, []],
-          ['undefined (default)', 'dropped later, by each node’s policy', 'fgc', 165, [[0, 3.4]]],
+          ['default', 'dropped later, when a writer compacts', 'fgc', 165, [[0, 3.4]]],
           ['purge', 'dropped everywhere as soon as replaced', 'bad', 260, [[0, 1.15], [1, 1.85]]],
         ];
         const appear = [0.3, 1.0, 1.7];
@@ -73,11 +73,11 @@ export default {
           text(870, 318, 'time', { anchor: 'start', cls: 'sub', d: 0.2 }),
         ].join(''));
       },
-      text: `<p>A schema gives each aspect (each kind of value) a <strong>retention class</strong>, and a single write can override it. <strong>preserve</strong> keeps full history, <strong>purge</strong> drops superseded content on every node the moment it applies the change, and the default leaves old versions to each node's cleanup policy.</p>
-        <p>Purge is not free: every edit to a purge-class value uploads a fresh snapshot and retires the old bodies at servers. It is meant for values where that is worth it.</p>`,
+      text: `<p>A schema gives each aspect a <strong>retention class</strong>, and a single write can override it. <strong>preserve</strong> keeps full history, <strong>purge</strong> drops replaced content on every node as soon as it applies the change, and the default drops old versions later, when a writer compacts.</p>
+        <p>Purge isn't free: every edit uploads a fresh snapshot and retires old copies at servers.</p>`,
       more: `<h3>Explicit purge of preserved history</h3>
-        <p>"I pasted my bank details into a versioned shared doc" is the case for purging preserved history on demand. A delta's own author or an admin may purge it. Letting any writer do it would turn recoverable vandalism into permanent loss.</p>
-        <p>Granularity is one delta, i.e. one (commit, aspect) pair. A commit touching several aspects can lose just one of its deltas; its blob is rewritten without it under the same commit ID.</p>`,
+        <p>For "I pasted my bank details into a versioned doc", a delta's author or an admin can purge preserved history on demand. Letting any writer do it would turn recoverable vandalism into permanent loss.</p>
+        <p>The unit is one delta: one aspect's change in one commit. The rest of the commit stays.</p>`,
     },
     {
       title: 'Purge drops the body and keeps the signed header',
@@ -96,7 +96,7 @@ export default {
         text(732, 216, 'no copy, no undo', { anchor: 'start', cls: 'sub', d: 2.75 }),
       ].join('')),
       text: `<p>The signature covers the header, and the header holds only a hash of the delta. So bodies can be destroyed while the commit stays valid: any reader can still check that an edit happened, when, by whom and to which aspect, and the purge itself stays on record.</p>
-        <p>Nothing in osis depends on keeping full history, so purged history never breaks sync or merging.</p>`,
+        <p>Nothing depends on full history, so purging never breaks sync or merging.</p>`,
     },
     {
       title: 'Removing part of a value: snapshot, then retire',
@@ -113,10 +113,10 @@ export default {
         blob(850, 118, { c: 'c3', size: 34, label: 'snapshot', d: 2.6 }),
         pill(540, 245, '① upload a snapshot of what is still live', { c: 'c3', mono: false, d: 2.0 }),
         pill(540, 290, '② retire every body that carried it', { c: 'bad', mono: false, d: 3.0 }),
-        text(540, 330, 'in the same sync, no batching', { cls: 'sub', d: 3.3 }),
+        text(540, 330, 'in the same sync', { cls: 'sub', d: 3.3 }),
       ].join('')),
-      text: `<p>Deleting one paragraph of a purge-class doc can't just delete one commit: earlier edits may carry the same text. The node purges every delta that carries it and replaces the aspect's history with a snapshot of what is still live, in the same sync.</p>
-        <p>A signed delta is never rewritten. History becomes "snapshot plus newer edits", and every node that applies it drops the old bodies.</p>`,
+      text: `<p>Deleting one paragraph of a purge-class doc can't just delete one commit: earlier edits may carry the same text. So the node purges every delta that carries it and uploads a snapshot of what's still live.</p>
+        <p>History becomes "snapshot plus newer edits", and every node that applies it drops the old bodies.</p>`,
     },
     {
       title: 'Purge must not leave a fingerprint',
@@ -138,7 +138,7 @@ export default {
           gone(box(520, 46, 400, 50, { label: 'body: "1234" + random nonce', c: 'c2', mono: true, d: 0.3 }), 1.4),
           box(520, 46, 400, 50, { label: 'body purged', c: 'bad', ghost: true, d: 1.8 }),
           text(720, 112, 'nonce destroyed with the body', { cls: 'sub', d: 1.6 }),
-          box(520, 140, 400, 56, { label: 'tombstone: (laptop, dot 41) @ 14:02', sub: 'names the edit, not the value', c: 'c3', mono: true, d: 1.9 }),
+          box(520, 140, 400, 56, { label: 'reset: (laptop, dot 41) @ 14:02', sub: 'names the edit, not the value', c: 'c3', mono: true, d: 1.9 }),
           box(520, 214, 400, 56, { label: 'other hashes: keyed', sub: 'with a secret only readers of the thing hold', c: 'c4', d: 2.2 }),
           pill(620, 320, '1234', { c: 'blind', d: 2.6, w: 70 }),
           cross(675, 320, { d: 2.9, s: 0.8 }),
@@ -146,10 +146,9 @@ export default {
         ].join(''));
       },
       text: `<p>If anything derived from the deleted value survives, such as a hash in an index, a link or a tombstone, anyone can test guesses against it. For a 4-digit PIN or a yes/no field that takes moments.</p>
-        <p>So every delta body carries a random nonce that dies with it, every outward hash is keyed with a per-thing secret, and removals name the edit by its <strong>dot</strong> (author node plus counter), never the value or key. Purge also drops every local index entry and link to the content.</p>`,
+        <p>So every delta body carries a random nonce that dies with it, other hashes are keyed with a per-thing secret, and removals name the edit by its <strong>dot</strong>, never the value. Purge also drops local index entries and links to the content.</p>`,
       more: `<h3>Why this holds even against members</h3>
-        <p>The guarantee is meant to hold even against someone who holds the read key. Keyed hashes stop outsiders; the destroyed nonce stops insiders, since a hash over (nonce, value) can't be recomputed without the nonce.</p>
-        <p>Removing a set element or map key by its creation dot has a side effect on merging: a concurrent add of the same value elsewhere has a different dot and survives. That trade (add wins over unseen adds) was accepted to keep tombstones content-free.</p>`,
+        <p>Keyed hashes stop outsiders. The destroyed nonce stops members holding the read key too, since a hash over (nonce, value) can't be recomputed without it.</p>`,
     },
     {
       title: 'Deleting locally means forgetting a key',
@@ -160,7 +159,7 @@ export default {
           GONE_CSS,
           ...nodes.map((x, i) => path(`M480,72 L${x},128`, { c: 'c4', cls: 'thin', d: 0.2 + i * 0.05 })),
           ...nodes.flatMap((x, i) => leafDx.map((dx, j) => path(`M${x},168 L${x + dx},222`, { c: 'c4', cls: 'thin', d: 0.4 + i * 0.05 + j * 0.03 }))),
-          box(400, 20, 160, 52, { label: 'root key', sub: 'secure hardware', c: 'c4', solid: true, d: 0 }),
+          box(400, 20, 160, 52, { label: 'root key', sub: 'platform keystore', c: 'c4', solid: true, d: 0 }),
           ...nodes.map((x, i) => box(x - 60, 128, 120, 40, { label: 'branch key', c: 'c4', d: 0.25 + i * 0.05 })),
           ...nodes.flatMap((x, i) => leafDx.map((dx, j) => {
             const target = i === 1 && j === 1;
@@ -172,11 +171,11 @@ export default {
           box(40, 310, 880, 64, { label: 'disk: ciphertext only (SQLite, files, …)', sub: 'old pages of "bank doc" may linger, but nothing can decrypt them', c: 'blind', d: 0.8 }),
         ].join(''));
       },
-      text: `<p>No storage engine erases reliably, so osis never relies on erasing data. Every piece of local plaintext lives in a unit encrypted under its own key; those keys hang off a tree whose root sits in the one place the platform can truly erase, such as a hardware keystore.</p>
-        <p>Deleting a unit drops its key, and every key above it in the tree gets replaced. Leftover pages on disk become noise. This is what makes deletion hold even if the device is stolen later.</p>`,
+      text: `<p>No storage engine erases reliably, so osis never relies on erasing data. Local data lives in units, each encrypted under its own key; the keys form a tree whose root sits in the most reliably erasable place the platform offers, ideally a hardware keystore.</p>
+        <p>Deleting a unit drops its key and replaces every key above it. Leftover pages on disk become noise, even if the device is stolen later.</p>`,
       more: `<h3>Large values too</h3>
-        <p>Chunks of large values are encrypted under random keys stored in their parent links, and a commit's blob key is reachable only through wraps. Dropping a version's wraps makes its deltas, links and every chunk only that version reached unreadable, at a cost independent of the value's size.</p>
-        <p>The tree is 256-ary, so three levels cover 16 million units. A deletion rewrites about three small nodes and one root write, batched per sync; the new root is written last, so a crash leaves either the old or the new tree, never a half-deleted one.</p>`,
+        <p>Each chunk's key is stored in its parent's link, so dropping one version's wraps makes every chunk only that version reached unreadable, at a cost independent of the value's size.</p>
+        <p>Three levels of a 256-ary tree cover 16 million units. The new root is written last, so a crash leaves either the old tree or the new one.</p>`,
     },
     {
       title: 'Readers cannot wipe a backup',
@@ -203,14 +202,13 @@ export default {
                   : pill(x, y, 'one entry, with its token', { c: 'c4', mono: false, d: d + 0.25 });
               }).join('');
           }),
-          text(480, 360, 'A blind server checks only signatures under each label’s per-role keys; it never learns why.', { cls: 'sub', d: 1.6 }),
         ].join(''));
       },
-      text: `<p>A blind server may be someone's only backup, so its delete rights are split by role. Readers can only upload (to relay what they received). Writers can retire blobs into a recycle bin, recoverable for a grace period. Only admins can hard-delete any entry outright.</p>
-        <p>For one entry, a <strong>delete token</strong> from the delta's author plus a signature under the label's current writer (soft-retire) key deletes it immediately. That is how a purge finishes at servers without waiting 30 days.</p>`,
+      text: `<p>A blind server may be someone's only backup, so delete rights are split by role. Readers can only upload. Writers can retire blobs into a recycle bin, recoverable for 30 days by default. Only admins can hard-delete outright.</p>
+        <p>A writer holding a delta's <strong>delete token</strong> can also delete that one entry immediately. That's how a purge finishes at servers without waiting.</p>`,
       more: `<h3>Delete tokens</h3>
-        <p>When a delta introduces a blob, its author derives a token from a secret and the blob ID and puts the token's hash in the commit header; servers store the 16-byte hash per entry. Presenting the preimage plus a signature under the label's current writer key deletes that entry. The token alone does nothing, so a removed writer loses the power as soon as the label's keys are re-registered.</p>
-        <p>For purge-class content the token derives from the writers' shared secret, so any current writer can finish another writer's purge on its next sync. Servers learn nothing from tokens: not the author, not the retention class.</p>`,
+        <p>The author derives a token from a secret and the blob ID, and the commit header carries its hash, which servers store. The token plus a signature under the label's current writer key deletes that entry; the token alone does nothing, so a removed writer loses the power.</p>
+        <p>For purge-class content the token derives from the writers' shared secret, so any current writer can finish another's purge. Tokens reveal neither author nor retention class.</p>`,
     },
     {
       title: 'Expiry: gone at time T, even with nobody online',
@@ -236,14 +234,12 @@ export default {
           text(T + 22, 304, 'late re-uploads are refused', { anchor: 'start', cls: 'sub', d: 3.1 }),
         ].join(''));
       },
-      text: `<p>A commit can carry an expiry time. At that time every node treats its content as purged, including blind servers, which see the time in plain metadata and delete the entry with no one online. A device that was offline drops it the moment it wakes up.</p>
-        <p>That makes disappearing messages and short-lived buffers cheap: nothing has to be retired by hand. The cost is that servers learn which entries expire, and when.</p>`,
-      more: `<h3>What osis does not promise</h3>
+      text: `<p>A commit can carry an expiry time. At that time every node treats its content as purged, including blind servers, which see the time and delete the entry with no one online. A device that was offline drops it on waking.</p>
+        <p>That makes disappearing messages cheap. The cost: servers learn which entries expire, and when.</p>`,
+      more: `<h3>Limits</h3>
         <ul>
-          <li>Copies made outside osis (screenshots, exports, a device that never syncs again) are out of reach.</li>
-          <li>Dishonest nodes can keep anything they received; deletion binds honest nodes only.</li>
-          <li>Expiry is a hard upper bound, not a minimum: there is no server-enforced legal hold.</li>
-          <li>Clock skew moves the moment of expiry slightly, not the outcome: the expiry is part of the commit, so every node agrees on it.</li>
+          <li>Expiry is an upper bound, not a minimum: there is no server-enforced legal hold.</li>
+          <li>Clock skew shifts the moment slightly, not the outcome: every node agrees on the expiry time.</li>
         </ul>`,
     },
   ],

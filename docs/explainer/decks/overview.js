@@ -10,7 +10,7 @@ const icon = () => svg(300, 92, [
 export default {
   id: 'overview',
   title: 'What osis is',
-  blurb: 'The problem, the cast of characters, the hard requirements, and how one edit travels.',
+  blurb: 'The problem, the main pieces, the hard requirements, and how one edit travels.',
   icon,
   slides: [
     {
@@ -43,9 +43,8 @@ export default {
         packet('M640,214 L620,296', { c: 'acc', begin: 3, dur: 1.6 }),
         packet('M840,300 L820,214', { c: 'acc', begin: 3.6, dur: 1.6 }),
       ].join('')),
-      text: `<p>Apps usually tie data to their own servers and formats. Moving it between apps, devices or people means exports and per-vendor APIs, and every provider can read it.</p>
-        <p><strong>osis</strong> is a database that lives on each of your devices. Many apps read and write the same data, much like they share files today, and osis keeps every copy in sync.</p>
-        <p>osis is a design, not yet code; these decks describe the decisions recorded so far.</p>`,
+      text: `<p>Apps keep data on their own servers, in their own formats. Moving it between apps, devices or people takes exports and vendor APIs, and every provider can read it.</p>
+        <p><strong>osis</strong> is a database on each of your devices. Many apps share the same data, the way they share files, and osis keeps every copy in sync.</p>`,
     },
     {
       title: 'Somewhere between Git, Google Drive, Syncthing and Obsidian',
@@ -63,8 +62,7 @@ export default {
           box(370, 160, 220, 80, { label: 'osis', sub: 'all of it, plus structure', c: 'acc', solid: true, d: 0 }),
         ].join(''));
       },
-      text: `<p>osis takes something from each: Git's offline, serverless model with history; Drive's sharing and live editing; Syncthing's direct device sync; Obsidian's "many tools on one set of local files".</p>
-        <p>What it adds is <strong>typed, structured data</strong> that merges automatically, and encryption everywhere, so a server you rent can store your data without being able to read it.</p>`,
+      text: `<p>On top, osis adds <strong>typed, structured data</strong> that merges automatically, and end-to-end encryption, so a server you rent can store your data without reading it.</p>`,
     },
     {
       title: 'The cast: nodes, actors and blind nodes',
@@ -84,34 +82,21 @@ export default {
         packet('M250,295 Q330,80 440,62', { c: 'blind', shape: 'blob', begin: 1.6, dur: 2.2 }),
         packet('M520,62 Q650,80 760,298', { c: 'blind', shape: 'blob', begin: 2.4, dur: 2.2 }),
       ].join('')),
-      text: `<p>A <strong>node</strong> is one osis instance on one device, with a private key that never leaves it. An <strong>actor</strong> is anything that can hold rights: a person, team, agent or shared document (and each node is one too). Nodes act on behalf of the actors they belong to.</p>
-        <p>Nodes sync directly when they can. A <strong>blind node</strong> is any node that stores and relays a group's encrypted blobs without its keys. Blindness is per group: one node can read some groups and blindly relay others. The main case is a rented, always-on <strong>blind server</strong>, which lets two devices that are never online at the same time still meet.</p>`,
-      more: `<p>Transport and peer discovery (how nodes find and connect to each other) are not designed yet. A QUIC-based library with hole punching and relays, such as iroh, is a candidate.</p>`,
+      text: `<p>A <strong>node</strong> is osis on one device, with a private key that never leaves it. An <strong>actor</strong> is anything that can hold rights: a person, a team, an agent, a shared document. Nodes act for the actors they belong to.</p>
+        <p>Nodes sync directly when they can. A <strong>blind node</strong> stores and relays a group's encrypted data without holding its keys. A rented server is the typical example: through it, your devices sync even if they are never online at the same time.</p>`,
+      more: `<p>How nodes find and connect to each other isn't designed yet. iroh (QUIC with hole punching and relays) is a candidate.</p>`,
     },
     {
       title: 'The requirements that make this hard',
       stage: () => tiles([
-        { title: 'No coordinator', text: 'No central server, consensus or sequencer. Any node may be offline for months and come back.', c: 'c1', href: '#/permissions/1' },
-        { title: 'Always converges', text: 'Concurrent edits merge to the same result everywhere, in any delivery order, with no conflict dialogs.', c: 'c3', href: '#/merge/1' },
-        { title: "Servers can't read", text: 'Keyless servers sync as efficiently as trusted peers, learning only sizes, timing and which shares overlap.', c: 'blind', href: '#/sync/1' },
-        { title: 'Delete means deleted', text: 'Purged content is gone from every honest node, backups included, and leaves no fingerprint.', c: 'bad', href: '#/deletion/1' },
+        { title: 'No coordinator', text: 'No central server or consensus. Any node may be offline for months and come back.', c: 'c1', href: '#/permissions/1' },
+        { title: 'Always converges', text: 'Concurrent edits merge to the same result everywhere, with no conflict dialogs.', c: 'c3', href: '#/merge/1' },
+        { title: "Servers can't read", text: 'Servers without keys sync as efficiently as trusted peers, but see only ciphertext and some metadata.', c: 'blind', href: '#/sync/1' },
+        { title: 'Delete means deleted', text: 'Purged content is gone from every honest node that sees the purge, backups included, and leaves no fingerprint.', c: 'bad', href: '#/deletion/1' },
         { title: 'Many apps, many versions', text: 'Old and new apps share data forever. Nothing is dropped because it is not understood.', c: 'c4', href: '#/versioning/1' },
-        { title: 'Big and fine-grained', text: 'Multi-GB values, million-key maps, overlapping shares. Cost tracks the change, not the data.', c: 'c2', href: '#/sync/1' },
+        { title: 'Big and fine-grained', text: 'Multi-GB values, million-key maps, overlapping groups. Cost tracks the change, not the data.', c: 'c2', href: '#/sync/1' },
       ]),
-      text: `<p>Each is solved somewhere on its own; osis needs all of them at once, and most of the design is about where they collide. Click a tile to jump to its topic.</p>`,
-    },
-    {
-      title: 'The layers',
-      stage: () => `<div class="layers">${[
-        ['App API', 'plain values, listeners, undo', 'c1'],
-        ['Data model', 'things, aspects, schemas', 'c2'],
-        ['Merge', 'one conflict rule, per aspect', 'c3'],
-        ['Commits', 'signed, atomic batches of changes', 'c4'],
-        ['Permissions', 'actors, signatures, key wrapping', 'c1'],
-        ['Sync', 'encrypted blobs under labels', 'blind'],
-        ['Local store', 'ciphertext only, erasable keys', 'bad'],
-      ].map(([n, s, c], i) => `<div class="tile ${c} ap" style="--d:${(i * 0.12).toFixed(2)}s"><h3>${n}</h3><p>${s}</p></div>`).join('')}</div>`,
-      text: `<p>Each layer only sees the one below it as an abstraction. Apps never see merge machinery; the merge layer never sees encryption; the sync layer only moves opaque blobs and never needs to understand them.</p>`,
+      text: `<p>Each is solved somewhere on its own. osis needs all of them at once, and most of the design is about where they collide.</p>`,
     },
     {
       title: 'Life of one edit',
@@ -128,13 +113,11 @@ export default {
           path(`M880,232 Q880,${y2 + 30} ${2 * (w + gap) + w + 4},${y2 + 30}`, { c: 'blind', cls: 'arrow', d: 1.8 }),
           ...bot.map(([n, s, c], i) => box(i * (w + gap), y2, w, 60, { label: n, sub: s, c, d: 2.6 - i * 0.35 }) +
             (i < 2 ? arrow((i + 1) * (w + gap) - 4, y2 + 30, i * (w + gap) + w + 4, y2 + 30, { d: 2.7 - i * 0.35 }) : '')),
-          text(470, 170, 'commit = signed header + one delta per touched value', { cls: 'sub', d: 2.8 }),
-          text(470, 190, 'encrypted as one blob, stored once per node', { cls: 'sub', d: 2.9 }),
           packet(route, { c: 'acc', begin: 3.2, dur: 4.5 }),
         ].join(''));
       },
-      text: `<p>An app changes a value. osis turns that into a small <strong>delta</strong>, bundles the deltas of one save into a <strong>commit</strong> signed with the device's key, and encrypts the commit into an opaque <strong>blob</strong>.</p>
-        <p>Blobs travel peer to peer or through blind servers. A receiving node decrypts it, checks who signed it and whether they had permission, merges the delta into its own state, and the app's listener fires.</p>`,
+      text: `<p>An app changes a value. osis records just the change (a <strong>delta</strong>), bundles one save's deltas into a <strong>commit</strong> signed by the device, and encrypts it into an opaque <strong>blob</strong>.</p>
+        <p>The blob travels directly or through blind nodes. The receiver decrypts it, checks the signer's permissions, merges it in, and the app's listener fires.</p>`,
     },
     {
       title: 'What an app actually sees',
@@ -147,8 +130,7 @@ m.commit().{k:await}?;                      {cm:// atomic, signed, synced}
 db.listen_aspect(note, {s:"/note/title"}, |title| {
     render(title);                        {cm:// local or remote change}
 }).{k:await}?;`),
-      text: `<p>Plain values and listeners. No merge API, no conflict state, no networking or crypto calls. Edits from other devices and people simply show up as listener calls with the new value.</p>
-        <p>The API is still a sketch; this shape (values in, listeners out) is the fixed part.</p>`,
+      text: `<p>Plain values and listeners: no merge API, conflict state, networking or crypto. Edits from other devices and people arrive as listener calls. (The API is a sketch.)</p>`,
     },
   ],
 };

@@ -50,7 +50,7 @@ function timeline(carol) {
       arrow(dx(4) + 30, ROW.bob + 12, dx(4) + 60, ROW.carol + 16, { c: 'c4', d: 0.9, curve: -10 }),
       pill(dx(4) + 60, ROW.carol + 30, 'gets Y', { c: 'c4', mono: false, d: 0.9 }),
     ] : []),
-    res(2, carol, 'X', carol ? 'Carol got it before Thu' : 'no member got it before Thu', 1.5),
+    res(2, carol, 'X', carol ? 'Carol got it before Thu' : 'no writer got it before Thu', 1.5),
     res(4, false, 'Y', 'after the revoke', 1.7),
   ].join(''));
 }
@@ -76,7 +76,7 @@ function tlEnter(root) {
 export default {
   id: 'permissions',
   title: 'Permissions',
-  blurb: 'Who may read and write, verified by every device with no server to ask.',
+  blurb: 'Who may read and write, checked on each device with no server to ask.',
   icon,
   slides: [
     {
@@ -98,13 +98,12 @@ export default {
         text(748, 360, 'owns (fixed by tid)', { cls: 'sub', d: 1.8 }),
         text(300, 360, 'membership edges, each with a role', { cls: 'sub', d: 1.8 }),
       ].join('')),
-      text: `<p>An <strong>actor</strong> is any thing that has members: a device, a person, a team, a shared document. A <strong>membership</strong> edge gives an actor a role (read &lt; write &lt; admin) on another actor or a single thing. <strong>Ownership</strong> says which actor a thing belongs to; it is baked into the thing's id and never changes.</p>
+      text: `<p>An <strong>actor</strong> is something others can be members of: a person, a team, a shared document. Devices are actors too, at the leaves. A <strong>membership</strong> edge gives a role (read &lt; write &lt; admin) on an actor or a single thing. <strong>Ownership</strong> says which actor a thing belongs to; it's baked into the thing's id and never changes.</p>
         <p>"This phone acts for Alice" and "Alice is in the team" are the same kind of edge.</p>`,
       more: `<h3>Details</h3><ul>
-        <li>A node (one device's osis) is a leaf actor whose private key never leaves the device.</li>
         <li>An edge on an actor grants rights on everything it owns; an edge on a plain thing grants rights on that thing only.</li>
         <li>Effective role through a chain is the minimum along it.</li>
-        <li>An actor is a thing too, so it has an owner. The owner is implicitly an admin and the only one other admins can't remove. A sensible setup: a person actor owned by an offline recovery key, with devices as admins.</li>
+        <li>An actor's owner is implicitly an admin that other admins can't remove. A sensible setup: a person owned by an offline recovery key, with devices as admins.</li>
       </ul>`,
     },
     {
@@ -112,7 +111,7 @@ export default {
       stage: () => svg(960, 400, [
         text(230, 20, 'Add your phone', { cls: 'b', d: 0 }),
         device(90, 110, { kind: 'laptop', label: 'laptop', sub: 'existing admin', c: 'c1', d: 0.1 }),
-        device(90, 290, { kind: 'phone', label: 'new phone', sub: 'id = hash(its key)', c: 'c1', d: 0.3 }),
+        device(90, 290, { kind: 'phone', label: 'new phone', sub: 'makes its own key pair', c: 'c1', d: 0.3 }),
         person(360, 200, { c: 'c1', label: 'you', r: 24, d: 0.2 }),
         arrow(126, 112, 332, 188, { c: 'c1', d: 0.2 }),
         arrow(118, 280, 332, 212, { c: 'c3', d: 0.8 }),
@@ -133,8 +132,8 @@ export default {
         packet('M800,236 Q760,330 600,300', { c: 'c4', begin: 3.1, dur: 1.6, repeat: 1 }),
         text(740, 350, "doc's secrets, wrapped to Bob", { cls: 'sub', c: 'c4', d: 3.3 }),
       ].join('')),
-      text: `<p><strong>A new device</strong> makes its own key pair; its id is the hash of its public key. An existing admin device writes one membership edge (phone → you, admin) and wraps your role secrets to the phone. From then on the phone signs its own writes and reads what you can.</p>
-        <p><strong>A new person</strong> is the same move: an edge (Bob → doc, write) and the doc's secrets wrapped to Bob. Bob's devices already hold Bob's secrets, so they can all open it.</p>`,
+      text: `<p><strong>A new device</strong> makes its own key pair. An existing admin device writes one membership edge (phone → you, admin) and wraps your secrets to the phone. From then on the phone signs its own writes and reads what you can.</p>
+        <p><strong>A new person</strong> is the same move: an edge (Bob → doc, write) and the doc's secrets wrapped to Bob, which all of Bob's devices can open.</p>`,
     },
     {
       title: 'A write is checked by walking a chain, not by asking a server',
@@ -158,13 +157,12 @@ export default {
           packet(`M${x0 + 20},${y + 32} H${x0 + 3 * (w + gap) + w / 2} L480,${y + 154}`, { c: 'c4', begin: 0.3, dur: 3, repeat: 1 }),
           path(`M480,${y + 70} V${y + 116}`, { cls: 'arrow', c: 'c3', d: 2.8 }),
           box(310, y + 122, 340, 64, { label: 'Allowed to write', sub: 'min(admin, write) = write', c: 'c3', solid: true, d: 3 }),
-          text(480, y + 230, 'each edge is a signed membership commit that travels with the data', { cls: 'sub', d: 3.3 }),
         ].join(''));
       },
-      text: `<p>Every node verifies every write itself. The commit's signature names the device; signed membership commits link the device to Alice and Alice to the team; the note's id is a hash that commits to its owner. The chain ends at a key whose id is the hash of its public key.</p>
-        <p>The uploader puts the membership commits proving its chain next to its data, so even a reader who can't see the team's member list can check it.</p>`,
-      more: `<h3>Why not trust a server?</h3><p>There is no server to trust: every node is equal and any of them may be offline. Each check needs no secrets: a signature, plus hashing a creation record to confirm it matches a tid.</p>
-        <p>A commit whose chain hasn't arrived yet is held unverified, the same as data that arrives out of order. A reader learns the chain of each author it sees, never the full member list.</p>`,
+      text: `<p>Every node that can read the data checks every write itself. The commit's signature names the device, signed membership commits link the device to Alice and Alice to the team, and the note's id commits to its owner.</p>
+        <p>The uploader sends the membership commits proving its chain along with its data, so even a reader who can't see the team's member list can check it.</p>`,
+      more: `<h3>Details</h3><p>The checks need no secrets: signatures, plus hashing creation records to confirm they match tids.</p>
+        <p>A commit whose chain hasn't arrived yet waits, unverified. A reader learns the chain of each author it sees, never the full member list.</p>`,
     },
     {
       title: 'Reading is key wrapping: share history by adding a wrap',
@@ -193,14 +191,13 @@ export default {
         ].join(''), { d: 2.2 }),
         text(480, 370, 'the blob is never re-encrypted', { cls: 'sub', d: 2.6 }),
       ].join('')),
-      text: `<p>Each commit is encrypted once, under its own random key. That key is <strong>wrapped</strong> (encrypted) under the read secret of every label (shared group) it belongs to, and each label's secret is wrapped to that group's members.</p>
-        <p>Giving Carol access to old content means adding one small wrap. Removing someone rotates secrets for <em>new</em> content only; what they could already read, they could already have copied.</p>
-        <p>A blind server holds none of these secrets. It only checks signatures under per-label role keys, so a reader can relay data through it but never delete (see <a href="#/deletion/7">Deletion</a>).</p>`,
+      text: `<p>Each commit's key is <strong>wrapped</strong> under the read secret of every label (synced group) it belongs to, and each label's secret is wrapped to that group's members.</p>
+        <p>Giving Carol old content means adding one wrap. Removing someone rotates secrets for <em>new</em> content only; what they could read, they could have copied.</p>
+        <p>A blind server holds none of these secrets. It checks signatures under per-label role keys, so a reader can relay data through it but not delete (see <a href="#/deletion/7">Deletion</a>).</p>`,
       more: `<h3>Details</h3><ul>
-        <li>An actor has one secret per role (read, write, admin), each wrapped to members holding that role or higher, for every key epoch.</li>
-        <li>A plain thing's secrets are derived from its owner's by default, so nothing is stored. Once it has a member of its own it gets random secrets, so rotating the owner doesn't cascade.</li>
-        <li>Writes are authorized the other way: always the device's own signature plus the membership chain. A shared signing key would erase who wrote what.</li>
-        <li>At a blind server, a label is registered with three public keys (upload, retire, delete) derived from the group's role secrets. The server checks a signature under the label's shared role key, so it learns the role, not the member.</li>
+        <li>Proposed: an actor has one secret per role (read, write, admin), each wrapped to members at that role or higher.</li>
+        <li>Writes are always authorized by the device's own signature plus the membership chain. A shared signing key would erase who wrote what.</li>
+        <li>A blind server checks signatures under a label's shared role keys, so it learns the role, not the member.</li>
       </ul>`,
     },
     {
@@ -249,20 +246,20 @@ export default {
         text(800, 365, 'admins can\'t edit them', { cls: 'sub', d: 2.5 }),
       ].join('')),
       text: `<p><strong>One note:</strong> an admin writes "Bob: write" on the note itself; its id doesn't change.</p>
-        <p><strong>Spreadsheet:</strong> one actor owns every cell, so adding or removing an editor is one write.</p>
-        <p><strong>Group chat:</strong> each author owns their messages; the chat is a read member of each author, so members read everything but only authors edit.</p>`,
-      more: `<h3>Groups grant nothing</h3><p>A group (a folder, say) is for organizing and syncing; it carries no rights. A shared folder is made a read member of each thing in it, by one edge per thing. Dropping a thing into a shared folder without that edge simply doesn't share it, which is the intended failure. An "add to shared folder" helper writes both.</p>`,
+        <p><strong>Spreadsheet:</strong> one actor owns every cell, so access changes in one place.</p>
+        <p><strong>Group chat:</strong> each author has a participant actor that owns their messages, and the chat is a read member of each, so members read everything but only authors edit.</p>`,
+      more: `<h3>Groups grant nothing</h3><p>A group (a folder, say) is for organizing and syncing; it carries no rights. A shared folder is made a read member of each thing in it. Dropping a thing in without that edge doesn't share it, which is the safe failure. An "add to shared folder" helper writes both.</p>`,
     },
     {
-      title: 'Revocation vs offline edits: only a member\'s receipt counts',
+      title: 'Revocation vs offline edits: only a writer\'s receipt counts',
       stage: tlStage,
       enter: tlEnter,
-      text: `<p>Alice shares a doc with Bob on Monday and revokes him on Thursday, while Bob is offline editing. Which of his edits count? Bob's own timestamps can't decide: they are forgeable. The rule: <strong>a revoked actor's write is valid only if a node of a still-authorized member received it before the revoke time</strong>, by that member's clock.</p>
-        <p>Alone, both edits are dropped. If Carol, still a member, was offline with Bob and synced with him, X counts. Try both.</p>`,
+      text: `<p>Alice shares a doc with Bob on Monday and revokes him on Thursday, while Bob is offline editing. Which edits count? Bob's own timestamps can be forged, so they can't decide. The rule: <strong>a revoked actor's write counts only if a node of a member with write access received it before the revoke</strong>, by that member's clock.</p>
+        <p>Alone, both edits are dropped. If Carol, a writer, synced with Bob while offline, X counts.</p>`,
       more: `<h3>How the others find out</h3><ul>
         <li>A node that learns of a revoke publishes a signed <em>attestation</em>: "as of the revoke time, I held this author's writes up to here".</li>
-        <li>Only members with write access count as witnesses; blind servers never do.</li>
-        <li>A write can become valid late (a witness comes back online), like any late merge. A node that already merged a now-invalid write un-merges it.</li>
+        <li>Blind servers never count as witnesses.</li>
+        <li>A write can become valid late, when a witness comes back online. A node that merged a now-invalid write un-merges it.</li>
         <li>Clock skew between members leaves a window of at most the skew. Re-granting the actor makes their writes valid again.</li>
       </ul>`,
     },
@@ -273,7 +270,6 @@ export default {
         arrow(214, 190, 640, 100, { c: 'c3', d: 0.4, curve: -30 }),
         pill(400, 112, 'A signs: hand to X', { c: 'c3', mono: false, d: 0.6 }),
         box(644, 60, 290, 70, { label: 'hash(T, record₁)', sub: 'owned by X, forever', c: 'c3', mono: true, d: 0.9 }),
-        check(926, 60, { d: 1.1 }),
         g([
           arrow(214, 214, 640, 310, { c: 'c2', dash: true, curve: 30 }),
           pill(400, 300, 'A signs again: hand to Y', { c: 'c2', mono: false }),
@@ -282,12 +278,11 @@ export default {
         text(788, 205, 'neither can touch the other', { cls: 'sub', d: 2.4 }),
         text(120, 262, 'T stays as an alias', { cls: 'sub', d: 2.6 }),
       ].join('')),
-      text: `<p>Without a central ledger, nothing stops a former owner from signing a second, competing transfer: a double spend. So ownership is immutable. A hand-over creates a new id, the hash of the old id and the signed hand-over record, owned by the receiver forever. A competing record creates a different thing; it can't take the first one back.</p>
-        <p>Hand-over is rare by design: sharing never needs it. It's only for moving a thing out of its owner's tree.</p>`,
+      text: `<p>Without a central ledger, nothing stops a former owner from signing a second, competing transfer. So ownership is immutable: a hand-over creates a new thing, whose id hashes the old id and the signed hand-over record, owned by the receiver forever. A competing hand-over just creates another, separate thing.</p>
+        <p>Hand-overs are rare: sharing never needs one.</p>`,
       more: `<h3>Aliases and forks</h3><ul>
-        <li>The old id resolves to its successor while there is exactly one. Apps get the current id back from every read; listeners on the old id keep firing.</li>
-        <li>On a fork, a reference resolves by <em>standing</em> (if the referring thing's owner has rights in only one branch, that branch), else by the reader's <em>follow choice</em> (the branch their devices chose to follow, first seen by default, synced across their devices).</li>
-        <li>Resolution is a read-time view; stored bytes are never rewritten.</li>
+        <li>The old id resolves to its successor while there is exactly one; listeners on the old id keep firing.</li>
+        <li>On a fork, a reference resolves to the branch where the referring thing's owner has rights, else to the branch the reader chose to follow (first seen by default). Stored bytes are never rewritten.</li>
         <li>A hand-over also revokes the rights that came through the old owner. Handing over an actor strips its explicit admin edges (readers and writers carry over), and the new owner rotates all keys.</li>
       </ul>`,
     },

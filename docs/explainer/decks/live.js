@@ -21,7 +21,7 @@ export default {
         const relay = [480, 200];
         const outs = [[820, 80], [820, 220]];
         return svg(960, 420, [
-          device(120, 200, { kind: 'laptop', label: 'Alice', sub: 'moves her cursor', c: 'c1', d: 0 }),
+          device(120, 200, { kind: 'laptop', label: 'Alice', sub: 'moves the cursor', c: 'c1', d: 0 }),
           device(relay[0], relay[1], { kind: 'server', label: 'relay (blind)', sub: 'forwards, keeps nothing', c: 'blind', blind: true, d: 0.2 }),
           device(outs[0][0], outs[0][1], { kind: 'laptop', label: "Bob's laptop", sub: 'subscribed', c: 'c2', d: 0.4 }),
           device(outs[1][0], outs[1][1], { kind: 'phone', label: "Bob's phone", sub: 'subscribed', c: 'c2', d: 0.5 }),
@@ -37,14 +37,14 @@ export default {
           packet('M530,210 Q680,220 790,220', { c: 'c1', begin: 2.5, dur: 1.1 }),
         ].join(''));
       },
-      text: `<p>Cursor positions, typing indicators and presence change constantly and are worthless a second later. In osis they are <strong>signals</strong>: encrypted and signed like any commit, sent to the peers connected right now, then forgotten. A blind server relaying it forwards it to its other subscribers and stores nothing.</p>
-        <p>Delivery is best effort, at most once. Anything that must survive a device being offline is state, not a signal.</p>`,
+      text: `<p>Cursors, typing indicators and presence change constantly and are worthless a second later. In osis they are <strong>signals</strong>: encrypted and signed like commits, sent to whoever is connected right now, then forgotten. A blind server forwards them and stores nothing.</p>
+        <p>Delivery is best effort. Anything that must reach a device that's offline is state, not a signal.</p>`,
       more: `<h3>Signal details</h3>
         <ul>
-          <li>Separate API: <code>send_signal(thing, kind, value)</code> and <code>listen_signals(...)</code>. Signal kinds are typed in the schema like aspects, but never appear in state or history.</li>
-          <li>Sending needs write access to the thing, listening needs read. Receivers verify the signature and the sender's membership chain, exactly as for commits.</li>
+          <li>Signal kinds are typed in the schema like aspects, but never appear in state or history.</li>
+          <li>Sending needs write access to the thing, listening needs read. Receivers check the signature and the sender's membership chain, and drop signals whose chain they don't have.</li>
           <li>Encrypted under the thing's sync labels, so a blind server learns only label, size and arrival time.</li>
-          <li>Targeting one device is a field in the envelope; others drop it. Busy channels get their own group so they don't wake every subscriber of a big one.</li>
+          <li>Busy channels get their own group so they don't wake every subscriber of a big one.</li>
         </ul>`,
     },
     {
@@ -71,9 +71,9 @@ export default {
           text(480, 345, 'signal: passes through, no log entry', { cls: 'sub', c: 'c4', d: 3.2 }),
         ].join(''));
       },
-      text: `<p>A connection can <strong>subscribe</strong> to sync labels. The peer then pushes every new entry the moment it arrives, so edits show up on other devices about one server hop later, not on the next poll. Signals ride the same subscription but skip the log.</p>`,
+      text: `<p>A connection can <strong>subscribe</strong> to sync labels. The peer then pushes each new entry as it arrives, so edits show up on other devices right away, not on the next poll. Signals ride the same subscription but skip the log.</p>`,
       more: `<h3>How this relates to sync</h3>
-        <p>A push is the same message a client would get by asking "what's new since my cursor?". If a connection drops, the next sync simply resumes from the cursor, so nothing depends on pushes arriving. See the Sync topic for the log and cursors.</p>`,
+        <p>A push is the same message a client would get by asking "what's new since my cursor?". If a connection drops, the next sync catches up, so nothing depends on pushes arriving.</p>`,
     },
     {
       title: 'Nothing waits until "everyone has seen it"',
@@ -99,19 +99,19 @@ export default {
         g(box(616, 168, 228, 30, { label: 'read, deleted by Bob', c: 'bad', r: 7 }), { d: 3.2 }),
         device(540, 300, { kind: 'laptop', label: 'Alice appends', c: 'c1', d: 2.2 }),
         arrow(570, 268, 594, 112, { c: 'c1', d: 2.3, curve: 20 }),
-        pill(760, 290, 'expires in 30 days', { c: 'bad', mono: false, d: 3.6 }),
+        pill(760, 290, 'expires at time T', { c: 'bad', mono: false, d: 3.6 }),
         text(760, 320, 'backstop if Bob never returns', { cls: 'sub', d: 3.7 }),
       ].join('')),
-      text: `<p>"Buffer until every recipient has it" sounds simple but is not decidable: a person can add a device next year, a lost phone never returns, and a blind server cannot even tell who the recipients are. Every approximation turns into guesswork.</p>
-        <p>So osis offers two precise tools instead: state that the receiver owns and deletes (an <strong>inbox</strong>), and <strong>expiry</strong> as the backstop: a time at which every node, blind servers included, drops the data (<a href="#/deletion/8">see Deletion</a>).</p>`,
+      text: `<p>"Keep it until every recipient has it" can't be decided: a person can add a device next year, a lost phone never returns, and a blind server can't even tell who the recipients are.</p>
+        <p>Instead, osis offers state the receiver owns and deletes (an <strong>inbox</strong>), with <strong>expiry</strong> as the backstop: a time at which every node, blind servers included, drops the data (see <a href="#/deletion/8">Deletion</a>).</p>`,
     },
     {
-      title: '"All my devices" is a question you ask of state',
+      title: '"All devices" is a question you ask of state',
       stage: () => {
         const rows = [
-          ['laptop', '1.4', 'yes', '2 min ago', 'c3', 'c1'],
-          ['phone', '1.4', 'yes', '1 h ago', 'c3', 'c1'],
-          ['old tablet', '1.1', 'no', '8 months ago', 'blind', 'blind'],
+          ["Alice's laptop", '1.4', 'yes', '2 min ago', 'c3', 'c1'],
+          ["Bob's phone", '1.4', 'yes', '1 h ago', 'c3', 'c1'],
+          ["Alice's tablet", '1.1', 'no', '8 months ago', 'blind', 'blind'],
         ];
         const cols = [60, 270, 440, 610];
         return svg(960, 380, [
@@ -125,13 +125,13 @@ export default {
               text(cols[3], y, seen, { anchor: 'start', cls: 'mono', d });
           }),
           g(`<path d="M50,${74 + 2 * 58} H890" class="ln bad" style="stroke-width:2.5"/>`, { d: 1.8 }),
-          text(880, 74 + 2 * 58 + 38, 'excluded: no sync for over 90 days', { anchor: 'end', cls: 'sub', c: 'bad', d: 1.9 }),
+          text(880, 74 + 2 * 58 + 38, 'excluded: last sync too long ago', { anchor: 'end', cls: 'sub', c: 'bad', d: 1.9 }),
           box(180, 300, 600, 60, { label: 'policy: start writing tasks v2 now?', sub: 'every live node reads it → yes', c: 'c3', d: 2.4 }),
           check(760, 330, { d: 2.8 }),
         ].join(''));
       },
-      text: `<p>Each node publishes a small <code>/node</code> record: its software revision, which schema forms it can read, and when it last synced. Policies read these records like any other data: "switch to the new format once every device reads it", "clear the inbox once all my devices have acknowledged".</p>
-        <p>Because a lost device would block "all" forever, every such policy pairs it with an age cutoff or an explicit device removal. It is never a protocol condition, and it never gates deletion at blind servers.</p>`,
+      text: `<p>Each node publishes a small <code>/node</code> record: its software revision, which schema forms it reads, and when it last synced. Policies read these like any other data: "write the new format once every active node reads it", "clear the inbox once all my devices have it".</p>
+        <p>A lost device would block "all" forever, so such policies pair it with an age cutoff or explicit removal. It's never a protocol rule.</p>`,
     },
   ],
 };

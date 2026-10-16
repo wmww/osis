@@ -71,7 +71,7 @@ function lwwDemo(root) {
     now = 1;
     const init = { v: 'Untitled', t: 1, node: 'L', n: 1 };
     dev = { L: { reg: { ...init }, out: [], n: 1, ed: 0 }, P: { reg: { ...init }, out: [], n: 0, ed: 0 } };
-    log = 'Both start from the same value. Make edits on each side, then deliver.';
+    log = 'Edit each side, then deliver.';
     draw();
   }
   function edit(k) {
@@ -132,7 +132,7 @@ export default {
   slides: [
     {
       title: 'Two devices edit offline. Nobody referees.',
-      stage: () => svg(960, 400, [
+      stage: () => svg(960, 280, [
         device(150, 70, { kind: 'laptop', label: 'laptop', c: 'c1', d: 0 }),
         device(810, 70, { kind: 'phone', label: 'phone', c: 'c2', d: 0.1 }),
         box(60, 150, 180, 44, { label: '"Groceries"', c: 'c1', mono: true, d: 0.4 }),
@@ -145,26 +145,22 @@ export default {
         box(60, 150, 180, 44, { label: '"Shopping"', c: 'c3', solid: true, mono: true, d: 3.4 }),
         box(720, 150, 180, 44, { label: '"Shopping"', c: 'c3', solid: true, mono: true, d: 3.4 }),
         text(480, 250, 'they meet days later', { cls: 'sub', d: 1.4 }),
-        pill(250, 330, 'any delivery order', { c: 'c3', mono: false, d: 3.8 }),
-        pill(480, 330, 'duplicates', { c: 'c3', mono: false, d: 3.9 }),
-        pill(710, 330, 'partial receipt', { c: 'c3', mono: false, d: 4 }),
-        text(480, 372, 'every copy must reach the same value regardless', { cls: 'sub', d: 4.1 }),
       ].join('')),
-      text: `<p>Each device writes to its own copy, so edits happen without coordination. When copies meet, possibly through a server that cannot even read them, every one must end up identical: no lock, no leader, no merge dialog.</p>
+      text: `<p>Each device edits its own copy. When copies meet, possibly through a server that can't read them, all must end up identical: no lock, no leader, no merge dialog.</p>
         <p>osis gets this from <strong>CRDTs</strong> (conflict-free replicated data types): state where merging is a pure function that gives the same answer in any order, any number of times.</p>`,
       more: `<h3>Delta-state CRDTs</h3>
-        <p>Every aspect's state is a join-semilattice: merging (<em>join</em>) is commutative, associative and idempotent. A change travels as a <em>delta</em>, a tiny state of the same type, and applying it is just a join. So there is no operation log, no ordered delivery and no commit DAG; duplicates and reordering are harmless.</p>
+        <p>Every aspect's state is a join-semilattice: merging (<em>join</em>) is commutative, associative and idempotent. A change travels as a <em>delta</em>, a tiny state of the same type, and applying it is just a join. No operation log, ordered delivery or commit DAG is needed.</p>
         <p>Causality is only tracked inside one aspect. References between things may dangle, so nothing waits for another thing to arrive.</p>`,
     },
     {
       title: 'One rule everywhere: the later write wins',
       stage: demoHtml,
       enter: lwwDemo,
-      text: `<p>Every piece of state carries a <strong>timestamp</strong> and a <strong>dot</strong>, a unique ID for the write (writing node plus counter), so later operations can name exactly which write they mean. On merge, the later timestamp wins; the node ID breaks exact ties. Try editing both sides and delivering in either order: the result is always the same.</p>`,
+      text: `<p>Every write carries a <strong>timestamp</strong> and a <strong>dot</strong>: a unique ID (node plus counter) that later operations can point at. On merge, the later timestamp wins and the node ID breaks ties. Edit both sides and deliver in either order: the result is the same.</p>`,
       more: `<h3>Clocks and dots</h3>
         <p>Timestamps come from a <em>hybrid logical clock</em>: wall-clock milliseconds plus a counter, advanced whenever a node receives something newer, with drift capped. So causally later writes always have later timestamps even if a device's clock is a bit off.</p>
-        <p>A dot is (node, per-aspect counter). Every element of state carries one. Dots make removals, undo and revocation precise: each can name exactly which writes it affects.</p>
-        <p>A writer who games their clock to always win is out of scope: an authenticated malicious writer can do damage anyway.</p>`,
+        <p>A dot is (node, per-aspect counter). Dots let removals, undo and revocation name exactly which writes they affect.</p>
+        <p>A writer who games their clock to always win is out of scope.</p>`,
     },
     {
       title: 'Merging goes all the way down to the leaves',
@@ -177,7 +173,7 @@ export default {
         arrow(770, 152, 560, 236, { c: 'c2', d: 1, curve: 20 }),
         card(330, 240, 300, 'task, merged on both', [['title', '"Buy oat milk"', '10:05', 'c1'], ['done', 'true', '10:06', 'c2']], { c: 'c3', d: 1.5 }),
       ].join('')),
-      text: `<p>Values are not merged as opaque blobs. Struct fields, map entries, list elements and enum payloads each merge on their own, recursively, down to single values. Edits to different parts of a value never conflict; only two writes to the <em>same</em> leaf are decided by timestamp.</p>`,
+      text: `<p>Struct fields, map entries, list elements and enum payloads each merge on their own, down to single values. Edits to different fields don't conflict; only two writes to the <em>same</em> leaf are decided by timestamp.</p>`,
       more: `<h3>Per type</h3>
         <ul>
           <li><strong>Scalars</strong>: last writer wins. Numbers can opt into a counter (concurrent increments add up), max or min.</li>
@@ -208,11 +204,11 @@ export default {
           box(280, 330, 400, 50, { label: 'merged: task = { done: true }', sub: 'everything older than 10:05 is gone', c: 'c3', mono: true, d: 3 }),
         ].join(''));
       },
-      text: `<p>Every deletion (a whole thing, an aspect, a map key, a paragraph) is a <strong>reset</strong>: a write of a timestamp that drops everything older at that spot. A concurrent edit made <em>after</em> the reset time survives; an older one is dropped like any losing write.</p>
-        <p>One property holds everywhere: a newer write never loses to an older removal.</p>`,
+      text: `<p>Deleting a thing or an aspect writes a <strong>reset</strong>: a timestamp that drops everything older there. A concurrent edit made <em>after</em> the reset survives; an older one loses like any older write.</p>
+        <p>Map keys, set elements and text are removed the same way, aimed at specific elements (next slide). Either way, a newer write never loses to an older removal.</p>`,
       more: `<h3>Why resets</h3>
-        <p>A reset needs no tiebreak against other resets (the later dominates), and after one, the dropped content is simply gone from state, which is what real deletion needs. Undo of a reset is a paste-like reinsert from the local undo buffer.</p>
-        <p>Apart from set tombstones, nothing is garbage-collected in v1: merging after very long separation may be less tidy, but no edit is ever silently discarded by a timeout.</p>`,
+        <p>Concurrent resets need no tiebreak (the later dominates), and after one, the dropped content is gone from state, which is what real deletion needs.</p>
+        <p>Tombstones are never garbage-collected by a timeout in v1, so no edit is silently discarded after long separation.</p>`,
     },
     {
       title: 'Elements are named by their birth, not their value',
@@ -233,14 +229,13 @@ export default {
         text(480, 234, 'merged set', { cls: 'b small', d: 2.1 }),
         pill(410, 266, 'urgent · P4', { c: 'c2', d: 2.3 }),
         pill(550, 266, 'home · L2', { c: 'c1', d: 2.3 }),
-        box(330, 320, 300, 44, { label: 'tombstone: L1, reset 10:05', sub: 'no value stored', c: 'blind', mono: true, d: 2.8 }),
+        box(330, 320, 300, 44, { label: 'L1 removed', sub: 'nothing kept names "urgent"', c: 'blind', d: 2.8 }),
       ].join('')),
-      text: `<p>Each set element, map entry and list item is identified by the <strong>dot it was created with</strong>. "Remove urgent" resets the dots the remover can see, nothing else. An add the remover never saw has a different dot, so it survives.</p>
-        <p>This also means tombstones are just a dot and a time. They never contain the removed value or key, which matters for deletion: no leftover can be used to confirm what was there.</p>`,
+      text: `<p>Each set element, map entry and list item is identified by the <strong>dot it was created with</strong>. "Remove urgent" resets the dots the remover can see. An add it never saw has a different dot, so it survives.</p>
+        <p>Removals never record the removed value or key, so nothing left behind can confirm what was there.</p>`,
       more: `<h3>Trade-off</h3>
-        <p>The alternative, removing by value ("urgent is gone, whenever it was added"), lets a remove defeat unseen adds, but the tombstone must name the value: a fingerprint that lets anyone holding the state confirm a guess, even after a purge. osis chose content-free tombstones.</p>
-        <p>The accepted worst case: an admin revokes Bob by removing his membership entry while another, offline admin who never saw that entry grants Bob again. Bob stays a member until removed again.</p>
-        <p>Set tombstones are transient: once a node holds both the add and the reset, nothing can target that dot again, so it is dropped entirely.</p>`,
+        <p>Removing by value ("urgent is gone, whenever it was added") would beat unseen adds, but the tombstone would have to name the value: a fingerprint that lets anyone confirm a guess, even after a purge.</p>
+        <p>The accepted worst case: one admin removes Bob's membership while another, offline admin who never saw it grants Bob again. Bob stays a member until removed again.</p>`,
     },
     {
       title: 'Text is a tree of anchors, so moves merge cleanly',
@@ -269,15 +264,15 @@ export default {
           text(480, 356, '"x" is anchored to the last O, so it travels with FOO', { cls: 'sub', d: 4.6 }),
         ].join(''));
       },
-      text: `<p>Each character (or list item) has a permanent ID and two small registers: <strong>pos</strong>, the element it sits after, and <strong>deleted</strong>. Typing, moving, deleting, cut and paste are all register writes, merged by the same timestamp rule. The visible order is computed from these anchors.</p>
-        <p>Because "x" was anchored to an O and the move rewrote only F's anchor, the concurrent insert follows the moved text instead of being stranded.</p>`,
+      text: `<p>Each character (or list item) has a permanent ID and two small registers: <strong>pos</strong>, the element it sits after, and <strong>deleted</strong>. Typing, moving, deleting and pasting are register writes, merged by the same timestamp rule.</p>
+        <p>The move changed where F sits, not the O that "x" hangs from, so "x" follows the moved text.</p>`,
       more: `<h3>The sequence CRDT</h3>
         <ul>
           <li>Elements whose <code>pos</code> is X are X's children, newest <code>pos</code> write first; a depth-first walk gives the order (RGA-style).</li>
           <li>A move writes <code>pos</code> only for the moved range's roots, so concurrent inserts inside it travel along. Concurrent moves of one element resolve by timestamp and never duplicate it. Cycles are broken at the oldest edge.</li>
           <li>Delete is a flag: the content is dropped from state immediately, the ID stays as an anchor for others' inserts.</li>
           <li>Cut and paste keep the original IDs, so others' concurrent edits inside the cut text move with it.</li>
-          <li>Identifiers cost a few bytes and are mostly implicit in runs; target state size is 1.5–3x the plain text, to be benchmarked on real editing traces.</li>
+          <li>IDs are mostly implicit in runs; target state size is 1.5–3x the plain text.</li>
         </ul>`,
     },
     {
@@ -288,30 +283,29 @@ export default {
         box(220, 30, 520, 120, { c: 'c4', d: 0.3 }),
         text(240, 54, 'commit C7 · Alice via laptop · 10:05 · signed', { anchor: 'start', cls: 'b small', d: 0.3 }),
         box(240, 72, 480, 30, { label: '/note/body: paste paragraph (dots L40–L52)', c: 'fgc', plain: true, mono: true, r: 7, d: 0.4 }),
-        box(240, 108, 480, 30, { label: '/note/tasks: add "Call Sam" (dot L53)', c: 'fgc', plain: true, mono: true, r: 7, d: 0.5 }),
+        box(240, 108, 480, 30, { label: '/note/tasks: add "Call Sam" (dot L7)', c: 'fgc', plain: true, mono: true, r: 7, d: 0.5 }),
         arrow(130, 90, 214, 90, { c: 'c1', d: 0.6 }),
         arrow(746, 90, 832, 90, { c: 'c1', d: 0.8 }),
         packet('M746,90 H832', { c: 'c1', begin: 1, dur: 1.4, shape: 'blob' }),
         text(480, 180, 'both changes appear together, or not at all', { cls: 'sub', d: 1.2 }),
 
-        pill(870, 236, 'Undo', { c: 'c2', solid: true, mono: false, w: 72, d: 2 }),
+        device(870, 290, { kind: 'phone', label: 'phone', c: 'c2', d: 2 }),
         box(220, 250, 520, 90, { c: 'c4', d: 2.3 }),
         text(240, 274, 'commit C9 · Alice via phone · undoes C7', { anchor: 'start', cls: 'b small', d: 2.3 }),
-        box(240, 292, 480, 32, { label: 'reset dots L40–L53', c: 'fgc', plain: true, mono: true, r: 7, d: 2.4 }),
+        box(240, 292, 480, 32, { label: 'reset body L40–L52, tasks L7', c: 'fgc', plain: true, mono: true, r: 7, d: 2.4 }),
         arrow(832, 290, 746, 290, { c: 'c2', d: 2.6 }),
         arrow(214, 290, 130, 290, { c: 'c2', d: 2.8 }),
         device(90, 290, { kind: 'laptop', label: 'laptop', c: 'c1', d: 2.8 }),
         packet('M214,290 H130', { c: 'c2', begin: 3, dur: 1.4, shape: 'blob' }),
-        text(480, 372, "the undo stack is derived from your own synced commits, so it works across devices", { cls: 'sub', d: 3.2 }),
       ].join('')),
-      text: `<p>A <strong>commit</strong> (one save, from the overview) may touch several aspects and things; every node applies all of it or none, then fires listeners.</p>
-        <p><strong>Undo</strong> writes a new commit that cancels specific dots of an earlier one. It replicates like any edit, so you can undo on your phone what you typed on your laptop.</p>`,
+      text: `<p>A <strong>commit</strong> may touch several aspects and things; every node applies it in one step, then fires listeners.</p>
+        <p><strong>Undo</strong> is a new commit that cancels specific dots of an earlier one. It syncs like any edit, so you can undo on your phone what you typed on your laptop.</p>`,
       more: `<h3>Undo details</h3>
         <ul>
-          <li>Undo cancels per dot rather than applying an inverse: undoing an insert resets its dot; undoing a delete undeletes the original IDs, carrying the content from the local undo buffer.</li>
+          <li>Undoing an insert resets its dot; undoing a delete restores the original IDs, with the content from the local undo buffer.</li>
           <li>Undoing a plain value restores the old one only if your write is still the winner, so you never clobber someone's later edit.</li>
-          <li>Undo is per actor by default, scoped to an app-chosen set of aspects or a group. Admins can also browse every change in scope and undo others'.</li>
-          <li>Other people's later deletions win over your undo; purged content cannot be undone at all.</li>
+          <li>Undo is per actor by default, scoped by the app. Admins can also undo others' changes.</li>
+          <li>Purged content cannot be undone.</li>
         </ul>`,
     },
     {
@@ -333,8 +327,8 @@ m.commit().{k:await}?;`)}
           text(210, 278, 'both commits were valid alone', { cls: 'sub', d: 1.8 }),
         ].join(''))}
       </div>`,
-      text: `<p>Apps read and write ordinary values and listen for changes. Writing a whole value back is turned into a structural diff, so only the fields that actually changed are written and concurrent edits elsewhere survive. No CRDT type, conflict state or merge callback reaches the API.</p>
-        <p>The honest limit: merges are not transactions. Two individually valid commits can combine into a state that breaks an app rule, so app invariants must tolerate merging, and any repair an app makes must be a deterministic function of state, or two devices will fight.</p>`,
+      text: `<p>Writing a whole value back is diffed, so only changed fields are written and concurrent edits to other fields survive. No CRDT machinery reaches the app.</p>
+        <p>The price: merges are not transactions. Two commits that are each valid can combine into a state that breaks an app rule. App invariants must tolerate merging, and any repair must be a deterministic function of state, or two devices will fight.</p>`,
     },
   ],
 };

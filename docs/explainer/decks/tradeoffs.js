@@ -67,24 +67,14 @@ export default {
     {
       title: 'Some goals can\'t all hold at once',
       stage: () => tiles3([
-        { title: 'Ownership vs no consensus', text: 'Ownership can\'t be transferred, only handed over to a new id.', c: 'c1', href: '#/tradeoffs/2' },
-        { title: 'Selective sync vs a blind server', text: 'Blind servers learn some shape: which labels a blob is under, and rough sizes.', c: 'blind', href: '#/tradeoffs/3' },
-        { title: 'Deletion vs history', text: 'Each aspect picks: purge now, keep history, or let nodes decide.', c: 'bad', href: '#/tradeoffs/4' },
-        { title: 'Revocation vs no coordinator', text: 'Precise only up to what members actually received, and clock skew.', c: 'c2', href: '#/tradeoffs/5' },
-        { title: 'Cheap removal vs old keys', text: 'Keys rotate lazily; history isn\'t re-encrypted.', c: 'c4', href: '#/tradeoffs/6' },
-        { title: 'Atomic commits vs partial fetch', text: 'A multi-thing commit is one blob, fetched and purged whole.', c: 'c3', href: '#/tradeoffs/6' },
+        { title: 'Ownership vs no consensus', text: 'Ownership can\'t be transferred, only handed over to a new id.', c: 'c1', href: '#/permissions/7' },
+        { title: 'Selective sync vs a blind server', text: 'Blind servers learn some shape: which labels a blob is under, and rough sizes.', c: 'blind', href: '#/tradeoffs/2' },
+        { title: 'Deletion vs history', text: 'Each aspect picks: purge now, keep history, or compact later.', c: 'bad', href: '#/tradeoffs/3' },
+        { title: 'Revocation vs no coordinator', text: 'Precise only up to what writers received, and clock skew.', c: 'c2', href: '#/tradeoffs/4' },
+        { title: 'Cheap removal vs old keys', text: 'Keys rotate lazily; history isn\'t re-encrypted.', c: 'c4', href: '#/tradeoffs/5' },
+        { title: 'Atomic commits vs partial fetch', text: 'A multi-thing commit is one blob, fetched whole.', c: 'c3', href: '#/tradeoffs/5' },
       ]),
-      text: `<p>Some requirements collide. Each collision has an explicit call:</p>
-        <p>Each picture is a scale; the heavier pan is the goal that wins. The box below it states the call.</p>`,
-    },
-    {
-      title: 'Ownership can\'t move, because nothing can make a transfer final',
-      stage: () => tension(
-        ['Transfers are final', 'a new owner is safe from the old'],
-        ['No consensus', 'no ledger, no coordinator'], 'right',
-        ['Call: ownership is immutable; hand-over mints a new id', 'a former owner can still fork the thing, but can\'t take back or touch the new one']),
-      text: `<p>Without a shared ledger, a former owner can always sign a second, competing transfer. So a thing's owner is fixed by its id, and a hand-over creates a new thing with a new id. A competing hand-over makes a fork: two separate things, each reader picking one by clear rules.</p>
-        <p>Cost: a thing can have several names. Mitigation: sharing never needs a hand-over, so they stay rare.</p>`,
+      text: `<p>Some requirements collide, and each collision needs an explicit call. The next slides weigh the main ones; the heavier side wins.</p>`,
     },
     {
       title: 'A blind server learns some shape, never content',
@@ -93,37 +83,37 @@ export default {
           ['Server sees opaque labels per blob', 'and which labels overlap; not names, ids, authors']],
         [['Cheap edits', 'to multi-GB values'], ['Hide sizes', 'of values and edits'], 'left',
           ['Chunk by content, pad coarsely', 'at most 12% padding; data volume may leak']]),
-      text: `<p>To hand you just one row of a table, a blind server must be able to tell rows apart, so it learns which opaque label each blob is under. Only private information retrieval would avoid that, at a cost nobody would pay.</p>
-        <p>Likewise, editing the middle of a huge file cheaply means re-sending only the changed chunks, so chunk sizes are visible. Padding hides fine detail, not volume.</p>`,
+      text: `<p>To hand you just one row of a table, a blind server must be able to tell rows apart, so it learns which opaque label each blob is under.</p>
+        <p>Likewise, editing a huge file cheaply means re-sending only the changed chunks, so chunk sizes are visible. Padding hides fine detail, not volume.</p>`,
     },
     {
       title: 'Prompt deletion and keeping history pull in opposite directions',
       stage: () => tension(
         ['Delete right away', 'everywhere, irrevocably'],
         ['History, undo, backups', 'bodies kept to serve and restore'], 'even',
-        ['Call: each aspect picks a retention class', 'purge (no undo, snapshot per edit) · preserve (until explicitly purged) · undefined (nodes decide)']),
-      text: `<p>Old versions are useful: other devices need them, undo needs them, and a blind server's recycle bin is what lets you recover from a mistake. A password pasted into a shared doc needs the opposite.</p>
-        <p>So the schema sets a default per aspect, and any commit can override it. Blind servers keep retired data 30 days by default, except for purge-class content, which never waits.</p>`,
+        ['Call: each aspect picks a retention class', 'purge (no undo, snapshot per edit) · preserve (until explicitly purged) · default (compacted later)']),
+      text: `<p>Old versions are useful: other devices need them, undo needs them, and a server's recycle bin lets you recover from mistakes. A password pasted into a shared doc needs the opposite.</p>
+        <p>So the schema sets a class per aspect, and any commit can override it. Servers keep retired data 30 days by default, except purge-class content, which never waits.</p>`,
     },
     {
-      title: 'Revocation is exactly as precise as members\' receipts',
+      title: 'Revocation is exactly as precise as writers\' receipts',
       stage: () => tension2(
         [["Server's word counts", 'as proof of timing'], ['No coordinator', 'blind servers decide nothing'], 'right',
-          ['Only a member\'s receipt counts', 'an honest edit parked on a blind server too late is dropped']],
+          ['Only a writer\'s receipt counts', 'honest edits only a blind server saw before the revoke are dropped']],
         [['Exact revoke instant', 'everywhere'], ['No clock sync', 'clocks are only bounded'], 'right',
           ['Window of at most the clock skew', 'between members, against a node that hasn\'t heard yet']]),
-      text: `<p>If two devices only ever meet through a blind server, an honest edit uploaded before a revoke still doesn't count unless a member downloaded it in time. Trusting the server's arrival order would make it a coordinator.</p>
-        <p>And member clocks are close, not identical, so the cut-off is fuzzy by at most their skew.</p>`,
+      text: `<p>If two devices only ever meet through a blind server, an honest edit uploaded before a revoke still doesn't count unless a writer downloaded it in time. Trusting the server's arrival order would make it a coordinator.</p>
+        <p>Member clocks are close, not identical, so the cut-off is fuzzy by at most their skew.</p>`,
     },
     {
       title: 'Removing people stays cheap; old content stays as it was',
       stage: () => tension2(
-        [['Re-encrypt history', 'on every member removal'], ['Cheap removal', 'O(change), not O(group)'], 'right',
+        [['Re-encrypt history', 'on every member removal'], ['Cheap removal', 'old data left as is'], 'right',
           ['Lazy rotation: new keys for new content', 'an ex-member plus a dishonest blind server could read old data']],
         [['Atomic commits', 'across several things'], ['Fetch or purge', 'one thing alone'], 'left',
           ['One commit, one blob', 'partial syncers over-fetch; purging one part rewrites the blob']]),
-      text: `<p>A removed member already could read and copy old content, so re-encrypting it buys little and costs a lot. New content gets new keys immediately.</p>
-        <p>A commit that touches several things is one encrypted blob, so it applies all-or-nothing everywhere. Atomicity wins over the rare case of syncing only some of those things.</p>`,
+      text: `<p>A removed member could already read and copy old content, so re-encrypting it buys little and costs a lot. New content gets new keys.</p>
+        <p>A commit that touches several things is one blob, so it applies all-or-nothing. Atomicity wins over the rare case of syncing only some of those things.</p>`,
     },
     {
       title: 'Out of scope, on purpose',
@@ -135,17 +125,16 @@ export default {
         { title: 'Memory and swap', text: 'Plaintext in RAM, swap and core dumps: best effort only.', c: 'blind' },
         { title: 'Lost owning key', text: 'Recovering an actor whose owning key is lost. Can be added later.', c: 'c4' },
       ]),
-      text: `<p>These are limits of what any protocol can enforce, or deliberate product calls. "Deleted" means every honest node that saw the deletion dropped it, not that no copy can exist.</p>`,
+      text: `<p>Limits no protocol can enforce, or deliberate calls. "Deleted" means every honest node that saw the deletion dropped it, not that no copy can exist.</p>`,
     },
     {
       title: 'Where osis stands',
       stage: () => tiles3([
         { title: 'Decided', text: 'Things and aspects with self-certifying ids; the one conflict rule; group-based blob sync with blind servers; sharing by membership edges; the revocation rule; hand-over; retention classes; local store design (implementation deferred); versioning; signals and expiry.', c: 'c3' },
         { title: 'Proposal', text: 'The app API\'s shape, record and commit header layouts, most merge mechanics beyond the conflict rule (such as text CRDT details), purge mechanics, CBOR tag numbers, chunking parameters, schema syntax.', c: 'c2' },
-        { title: 'Open', text: 'Model-checking the membership fixpoint, transport and peer discovery, lazy fetch of huge values, partial restore from blind servers.', c: 'c4' },
+        { title: 'Open', text: 'Transport and peer discovery, crypto primitives, model-checking the membership fixpoint, lazy fetch of huge values, partial restore from blind servers.', c: 'c4' },
       ]),
-      text: `<p>osis is at the design stage: no code yet. The decisions in these decks are recorded, with dates and reasons, in the project's notes; the API in particular will be shaped by building real apps on it.</p>
-        <p>That's the tour. Back to <a href="#/">all topics</a> to revisit any part.</p>`,
+      text: `<p>osis is at the design stage, with no code yet. Decisions are recorded with dates and reasons in the project's notes, and the API will be shaped by building real apps on it.</p>`,
     },
   ],
 };

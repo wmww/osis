@@ -19,6 +19,7 @@ Below the title each note, issue and plan should contain a one-line `> Summary: 
 - Unless otherwise asked, commit when you've completed your task.
 - Only pull/push when explicitly asked. Git push may hang without user approval.
 - Commit to the current branch unless asked, don't make feature branches.
+- Don't worry about docs/ unless asked to, it's fine for docs/ to fall out of date, they will be updated on explicit request
 - Do not run code formatting tools unless explicitly asked.
 - Keep prose, comments, errors, and commit messages compact unless extra detail is genuinely useful.
 - When talking directly to humans, write especially clearly and concisely. Avoid unrequested details or jargon unless critical for correctness.
