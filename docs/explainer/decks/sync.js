@@ -1,4 +1,4 @@
-import { svg, g, box, text, arrow, path, device, blob, key, cross, pill } from '../lib/svg.js';
+import { svg, g, box, text, arrow, path, device, blob, key, cross, pill, arrowheads, cropToContent } from '../lib/svg.js';
 
 // Dashed path that fades in. Written raw: path() sets pathLength=1, which turns dashes solid.
 const dpath = (p, { c = 'fgc', cls = '' } = {}, d) => g(`<path d="${p}" class="ln ${c} ${cls}"/>`, { d });
@@ -100,6 +100,8 @@ export default {
         const demo = root.querySelector('.demo');
         const show = sel => {
           demo.innerHTML = sheet(sel);
+          arrowheads(demo);
+          cropToContent(demo.querySelector('.dia'));
           root.querySelectorAll('.ctl button').forEach(b => b.disabled = b.dataset.sel === sel);
         };
         root.querySelectorAll('.ctl button').forEach(b => b.addEventListener('click', () => show(b.dataset.sel)));

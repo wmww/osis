@@ -1,4 +1,4 @@
-import { svg, g, box, text, arrow, path, packet, device, blob, key, person, check, cross, pill } from '../lib/svg.js';
+import { svg, g, box, text, arrow, path, packet, device, blob, key, person, check, cross, pill, arrowheads } from '../lib/svg.js';
 
 const icon = () => svg(300, 92, [
   device(40, 40, { kind: 'phone', c: 'c1' }),
@@ -68,6 +68,7 @@ function tlEnter(root) {
     const carol = e.currentTarget.dataset.carol === '1';
     btns.forEach(b => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
     tl.innerHTML = timeline(carol);
+    arrowheads(tl);
   };
   btns.forEach(b => b.addEventListener('click', onClick));
   return () => btns.forEach(b => b.removeEventListener('click', onClick));

@@ -116,3 +116,38 @@ export const tiles = items => `<div class="tiles">${items.map((t, i) => {
   const tag = t.href ? 'a' : 'div';
   return `<${tag} class="tile ${t.c ?? ''} ap"${t.href ? ` href="${t.href}"` : ''} style="--d:${(t.d ?? i * 0.12).toFixed(2)}s"><h3>${t.title}</h3><p>${t.text}</p></${tag}>`;
 }).join('')}</div>`;
+
+// ---------- DOM finishing (run after diagrams are inserted) ----------
+
+/** Swap marker arrowheads on drawn-in paths for separate heads that appear as the line arrives. */
+export function arrowheads(root) {
+  for (const p of root.querySelectorAll('path.draw.arrow, path.draw.arrow2')) {
+    const len = p.getTotalLength();
+    if (!len) continue;
+    const k = 0.7 * (parseFloat(getComputedStyle(p).strokeWidth) || 2);
+    const d = parseFloat(p.style.getPropertyValue('--d')) || 0;
+    const roles = [...p.classList].filter(c => /^(c\d|bad|blind|acc|fgc)$/.test(c)).join(' ');
+    const head = (at, back) => {
+      const a = p.getPointAtLength(at), b = p.getPointAtLength(at + (back ? 1 : -1) * Math.min(1, len));
+      const deg = Math.atan2(a.y - b.y, a.x - b.x) * 180 / Math.PI;
+      return `<g transform="translate(${a.x} ${a.y}) rotate(${deg}) scale(${k})"><path class="ahd ap ${roles}" style="--d:${(d + 0.4).toFixed(2)}s" d="M-7.5,-3.5 L0.5,0 L-7.5,3.5 Z"/></g>`;
+    };
+    let html = head(len, false);
+    if (p.classList.contains('arrow2')) html += head(0, true);
+    p.classList.remove('arrow', 'arrow2');
+    p.insertAdjacentHTML('afterend', html);
+  }
+}
+
+/** Trim a diagram's viewBox to its content vertically (keeps full width so text scale stays uniform). */
+export function cropToContent(el, pad = 14) {
+  const { x, width: w } = el.viewBox.baseVal;
+  // Moving dots wait at the origin until they start, so leave them out of the measurement.
+  const pk = [...el.querySelectorAll('animateMotion')].map(m => m.parentElement);
+  pk.forEach(p => p.style.display = 'none');
+  const bb = el.getBBox();
+  pk.forEach(p => p.style.display = '');
+  if (!bb.height) return;
+  const x1 = Math.min(x, bb.x - pad), x2 = Math.max(x + w, bb.x + bb.width + pad);
+  el.setAttribute('viewBox', `${x1} ${bb.y - pad} ${x2 - x1} ${bb.height + 2 * pad}`);
+}

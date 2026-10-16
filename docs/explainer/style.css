@@ -64,6 +64,7 @@ button { font: inherit; color: inherit; }
   display: grid; place-items: center; cursor: pointer; color: var(--muted);
 }
 .icon-btn:hover { background: var(--faint); color: var(--fg); }
+#mode[data-mode="slides"] .to-slides, #mode[data-mode="page"] .to-page { display: none; }
 .icon-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---------- Home grid ---------- */
@@ -87,21 +88,36 @@ button { font: inherit; color: inherit; }
 .card p { margin: 0; color: var(--muted); font-size: .97rem; line-height: 1.45; }
 
 /* ---------- Deck ---------- */
-.deck { max-width: 1120px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px) 140px; }
-.slide { animation: slide-in .35s var(--ease) both; }
-.slide.back { animation-name: slide-in-back; }
+.deck { --col: 720px; max-width: 1120px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px) 88px; }
+/* Title and caption share one centered reading column; diagrams may be wider. */
+.caption { max-width: var(--col); margin-inline: auto; }
+/* Titles start at the column's left edge but may run wider. */
+.slide h1 { margin-left: calc((100% - min(100%, var(--col))) / 2); }
+.slide h1 { font-size: clamp(1.5rem, 3.2vw, 2.15rem); line-height: 1.15; letter-spacing: -.02em; margin-block: 6px 14px; text-wrap: balance; }
+.stage { display: flex; justify-content: center; align-items: center; margin: 0 0 16px; }
+.stage > * { max-width: 100%; }
+.slides .stage .dia { max-height: var(--fit, none); }
+.caption { font-size: 1.08rem; }
+.caption p { margin: 0 0 .55em; }
+.caption strong { font-weight: 650; }
+.slides .slide { animation: slide-in .35s var(--ease) both; }
+.slides .slide.back { animation-name: slide-in-back; }
 @keyframes slide-in { from { opacity: 0; transform: translateX(24px); } }
 @keyframes slide-in-back { from { opacity: 0; transform: translateX(-24px); } }
-.slide h1 { font-size: clamp(1.55rem, 3.6vw, 2.35rem); line-height: 1.15; letter-spacing: -.02em; margin: 10px 0 18px; max-width: 38ch; }
-.stage { display: flex; justify-content: flex-start; align-items: center; margin: 4px 0 18px; }
-.stage > * { max-width: 100%; }
-.caption { font-size: 1.12rem; display: grid; grid-template-columns: minmax(0, 64ch) auto; gap: 12px 40px; align-items: start; }
-@media (max-width: 760px) { .caption { grid-template-columns: 1fr; } .caption .more-btn { justify-self: start; } }
-.caption p { margin: 0 0 .6em; }
-.caption p:last-child { margin-bottom: 0; }
-.caption strong { font-weight: 650; }
+
+/* Page mode: the whole deck as one article. */
+.page-head { max-width: var(--col); margin: 24px auto 40px; }
+.page-head h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.08; letter-spacing: -.025em; margin: 0 0 8px; }
+.page-head p { margin: 0; color: var(--muted); font-size: 1.15rem; }
+.page .slide { margin-bottom: 72px; scroll-margin-top: 24px; }
+.page .slide h1 { font-size: clamp(1.35rem, 2.6vw, 1.75rem); }
+.page .dia { max-height: min(68vh, 520px); }
+.page-nav { max-width: var(--col); margin: 0 auto; display: flex; justify-content: space-between; gap: 12px; }
+/* Scrolled-to slides start their entrance animations; until then they wait. */
+.idle .ap, .idle .draw, .idle.ap { animation-play-state: paused; }
+
 .more-btn {
-  margin-top: 2px; border: 0; background: var(--faint); color: var(--fg); white-space: nowrap; justify-self: start;
+  margin-top: 4px; border: 0; background: var(--faint); color: var(--fg); white-space: nowrap;
   padding: 6px 14px 6px 10px; border-radius: 99px; cursor: pointer; font-size: .92rem;
   display: inline-flex; align-items: center; gap: 6px;
 }
@@ -161,7 +177,7 @@ button { font: inherit; color: inherit; }
   .stage { justify-content: flex-start; overflow-x: auto; margin-inline: calc(-1 * clamp(16px, 4vw, 40px)); padding-inline: clamp(16px, 4vw, 40px); }
   .stage > .dia { min-width: 600px; max-height: none; }
 }
-.dia { width: 100%; height: auto; max-height: min(54vh, 540px); overflow: visible; font-family: var(--sans); }
+.dia { width: 100%; height: auto; overflow: visible; font-family: var(--sans); }
 .dia text { fill: var(--fg); font-size: 15px; dominant-baseline: central; }
 .dia text.sub, .dia .muted { fill: var(--muted); font-size: 12.5px; }
 .dia text.small { font-size: 12.5px; }
@@ -187,6 +203,7 @@ button { font: inherit; color: inherit; }
 .dia .ln.dash { stroke-dasharray: 6 5; }
 .dia .ln.arrow { marker-end: url(#ah); }
 .dia .ln.arrow2 { marker-start: url(#ah); marker-end: url(#ah); }
+.dia .ahd { fill: var(--c); }
 .dia .pk { fill: var(--c); }
 .dia .glyph { fill: none; stroke: var(--c); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .dia .strike { text-decoration: line-through; }
@@ -227,6 +244,7 @@ a.tile:hover { transform: translateY(-2px); }
 .demo { width: 100%; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ap, .draw, .slide, .fadeout { animation-duration: .01s !important; animation-delay: 0s !important; }
+  .ap, .draw, .slides .slide, .fadeout { animation-duration: .01s !important; animation-delay: 0s !important; }
   .pulse { animation: none; }
 }
+@media (max-width: 560px) { .page-nav .pg .lbl { display: inline; } }
