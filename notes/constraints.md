@@ -109,7 +109,7 @@ Where two goals cannot both hold: what collides, and which yields.
 3. **Cheap edits of large values vs hiding sizes.** Sizes leak, padded coarsely.
 4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; untrusted nodes keep a recoverable bin for a grace period, except for purge-class content.
 5. **Atomic multi-thing changes vs partial fetch and purge.** Atomicity wins: a node syncing part of a change over-fetches, purging part of it rewrites it.
-6. **Witness-based revocation vs untrusted-only topology.** An untrusted node's receipt never counts, so edits parked there before a revoke can be lost.
+6. **Witness-based revocation vs untrusted-only topology.** An untrusted node's receipt never counts. A revoker syncs before stamping its revoke, so edits parked at untrusted nodes it reaches count; edits at nodes it does not reach, in transit, or passed over by an offline or backdated revoke can be lost until re-grant.
 7. **Lazy key rotation vs forward secrecy against dishonest untrusted nodes.** An ex-member plus a dishonest untrusted node can read old content.
 8. **Immediate purge at untrusted nodes vs backup safety.** Authors may hard-delete their own entries, admins anything; writers only soft-delete; readers neither.
 9. **Bounded clocks vs revocation precision.** A window the size of the clock skew.
@@ -118,6 +118,6 @@ Where two goals cannot both hold: what collides, and which yields.
 12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Ownership-transfer records are kept forever.
 13. **Lazy rotation vs per-thing sharing.** Removing a party costs proportional to the things shared with it one by one. Usage rule: share sets through one shared actor.
 14. **Bounded state vs never discarding an edit.** State grows with edit history, not live size; no horizon drops edits. Usage rule: commit per editing pause, never per keystroke.
-15. **Membership decidable from records alone vs completeness.** A removal by a member with incomplete knowledge drops grants it had not seen, even if others had.
+15. **Membership decidable from records alone vs completeness.** Only the demoter's own receipts decide which of the demoted actor's grants survive, never other admins'. The demoter syncs the actor's label first, so loss is limited to grants in transit or passed over by an offline or backdated demotion, and re-grant recovers them.
 16. **Explicit sync placement vs complete backup.** Nothing syncs by being owned; apps place things into synced groups explicitly, and a forgotten placement leaves a thing local-only.
 17. **Readers relaying vs junk at untrusted nodes.** Readers may upload; junk is discarded by members and capped by servers.

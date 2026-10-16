@@ -63,7 +63,7 @@ One label per group synced to it, overlaps between them, blob count, padded blob
 - Expiry: an entry's expiry time is plaintext metadata; at that time the entry is deleted outright, no bin, no generation bump, and later uploads of it are refused.
 
 ## Interaction with permissions
-- Receipt-time revocation rule: a blind node's receipt never counts, it is not a member. Through a blind relay a client cannot prioritize permission commits before decrypting, so it downloads everything and applies membership commits and attestations first. Attestations retire only as content snapshots supersede what they cover (notes/permissions.md).
+- Receipt-time revocation rule: a blind node's receipt never counts, it is not a member, but a revoker downloads from the blind nodes it reaches before stamping its revoke (notes/permissions.md, Sync-then-revoke), so parked writes there count. Through a blind relay a client cannot prioritize permission commits before decrypting, so it downloads everything and applies membership commits and attestations first. Attestations retire only as content snapshots supersede what they cover (notes/permissions.md).
 - A commit whose author chain has not arrived is held unverified until it does. A commit is valid only if its author is authorized on every thing it touches.
 
 ## Open
