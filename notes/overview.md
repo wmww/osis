@@ -18,4 +18,4 @@ osis (Open Structured Information System) is a decentralized database optimized 
 Owner and agent iterate by discussion; the agent records decisions in notes (marked decided or proposal, with dates), then implements. No code yet (2026-10-16).
 
 ## v1 scope (owner 2026-10-16)
-v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: issues/crypto-primitives.md, plans/crdt-spec.md, plans/protocol-spec.md, plans/membership-fixpoint-check.md.
+v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: issues/crypto-primitives.md, plans/crdt-spec.md, plans/protocol-spec.md, owner's choice of the layer-1 membership rule (notes/permissions.md, Open).
