@@ -183,6 +183,10 @@ impl Frag {
             }
         }
         match self {
+            Frag::Slots { reg, slots } => {
+                reg.iter().for_each(|r| r.stamps(out));
+                slots.values().for_each(|f| f.stamps(out));
+            }
             Frag::Register { reset, write } => {
                 out.extend(reset.iter().cloned());
                 out.extend(write.iter().map(|w| w.0.clone()));
@@ -251,9 +255,10 @@ fn enc_stamp(s: &Stamp, cx: &mut Ctx) -> Item {
 fn enc_opt_stamp(s: &Option<Stamp>, cx: &mut Ctx) -> Item {
     Item::Array(s.iter().map(|s| enc_stamp(s, cx)).collect())
 }
-/// Rule 4: `W` goes on the wire iff it is greater than every presence-counting stamp inside (or there is none).
-fn explicit_w(f: &Frag, c: &Composite) -> Option<Stamp> {
-    c.w.clone().filter(|w| f.inner_max(true).map_or(true, |m| *w > m))
+/// `W` goes on the wire whenever the state holds one (§4.3): dropping it when a greater stamp sits inside would
+/// make un-merge of that stamp's author lose the presence it recorded.
+fn explicit_w(_f: &Frag, c: &Composite) -> Option<Stamp> {
+    c.w.clone()
 }
 fn enc_w(f: &Frag, c: &Composite, cx: &mut Ctx) -> Item {
     Item::Array(explicit_w(f, c).iter().map(|w| enc_stamp(w, cx)).collect())
@@ -312,6 +317,7 @@ pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), Item::Array(es)])
         }
         Frag::Seq { text, c, elems } => Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), enc_runs(*text, elems, cx)]),
+        Frag::Slots { reg, slots } => Item::Array(vec![enc, Item::Array(reg.iter().map(|r| encode(r, cx)).collect()), Item::Array(slots.values().map(|s| encode(s, cx)).collect())]),
     }
 }
 
@@ -545,6 +551,31 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
             Frag::Map { c: composite(a, cx)?, entries }
         }
         (8 | 9, 4) => Frag::Seq { text: enc == 9, c: composite(a, cx)?, elems: dec_runs(enc == 9, &a[3], cx)? },
+        (10, 3) => {
+            let reg = match a[1].array()? {
+                [] => None,
+                [r] => match decode(r, cx)? {
+                    f @ Frag::Register { .. } => Some(Box::new(f)),
+                    _ => return Err(Error::Bad("slots register")),
+                },
+                _ => return Err(Error::Bad("slots register")),
+            };
+            let mut slots = BTreeMap::new();
+            let mut last = 0u8;
+            for it in a[2].array()? {
+                let f = decode(it, cx)?;
+                let e = f.enc();
+                if e == 0 || e == 10 || e <= last {
+                    return Err(Error::Bad("slot order"));
+                }
+                last = e;
+                slots.insert(e, f);
+            }
+            if reg.iter().count() + slots.len() < 2 {
+                return Err(Error::Bad("slots arity"));
+            }
+            Frag::Slots { reg, slots }
+        }
         _ => return Err(Error::Bad("encoding or arity")),
     };
     Ok(f)

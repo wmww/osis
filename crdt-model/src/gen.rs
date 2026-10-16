@@ -75,7 +75,7 @@ pub fn random_text(r: &mut Rng, max: usize) -> String {
 
 /// One random op against `state` (local view), as a delta. `None` when the op is a no-op.
 pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> Option<Frag> {
-    let state = state.filter(|s| s.present() && s.enc() == ty.enc());
+    let state = state.and_then(|s| s.slot(ty.enc())).filter(|s| s.present());
     if state.is_none() || r.chance(1, 12) {
         let v = random_value(r, ty, 0);
         return if r.chance(1, 3) { Some(ops::replace(w, ty, &v)) } else { crate::diff::diff(w, state, ty, &v) };

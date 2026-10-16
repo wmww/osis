@@ -10,12 +10,14 @@ fn comp() -> Composite {
 
 /// Writes that turn `st` into `v`; `None` when nothing changes.
 pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Frag> {
-    let st = st.filter(|s| s.present() && s.enc() == ty.enc());
-    let Some(st) = st else { return Some(create(w, ty, v)) };
-    let cur = st.read();
+    // what the app sees is the position's read; the writes go into the slot of the schema's encoding (§7)
+    let cur = st.filter(|s| s.present()).and_then(|s| s.read());
     if cur.as_ref() == Some(v) {
         return None;
     }
+    let st = st.and_then(|s| s.slot(ty.enc())).filter(|s| s.present());
+    let Some(st) = st else { return Some(create(w, ty, v)) };
+    let cur = st.read();
     let out = match (ty, st, v) {
         (Ty::Register, _, v) => Frag::Register { reset: None, write: Some((w.delta(), Some(v.clone()))) },
         (Ty::Counter, _, Value::Int(n)) => {

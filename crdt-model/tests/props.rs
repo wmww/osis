@@ -613,3 +613,148 @@ fn expiry_semantics() {
     s.strip(&exp(&a));
     assert_eq!(s.read(), None);
 }
+
+#[test]
+fn reset_keeps_newer_writes_as_anchors() {
+    // §5.7/§6.2: a replace at t=5 prunes the old content but keeps every record as a bare anchor, so a concurrent
+    // insert at t=6 anchored into the old content stays visible, placed after the new content (END order by dot).
+    let s = |v: &str| v.chars().map(Content::Char).collect::<Vec<_>>();
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::seq_insert(&mut a, None, true, 0, s("abc")));
+    let base = st.clone().unwrap();
+    a.next_commit(5 << 16);
+    let rep = ops::replace(&mut a, &Ty::Text, &Value::Str("xyz".into()));
+    let mut b = Writer::new(Source::node(2), 6 << 16, 1);
+    let q = ops::seq_insert(&mut b, Some(&base), true, 2, s("q"));
+    let mut s1 = base.clone();
+    s1.join(rep.clone());
+    s1.join(q.clone());
+    let mut s2 = base.clone();
+    s2.join(q);
+    s2.join(rep.clone());
+    assert_eq!(s1.read(), Some(Value::Str("xyzq".into())));
+    assert_eq!(snapshot(&s1), snapshot(&s2));
+    // an older concurrent insert (t=3) loses to the reset, as any older write does
+    let mut c = Writer::new(Source::node(3), 3 << 16, 1);
+    let old = ops::seq_insert(&mut c, Some(&base), true, 2, s("o"));
+    let mut s3 = base.clone();
+    s3.join(old);
+    s3.join(rep.clone());
+    assert_eq!(s3.read(), Some(Value::Str("xyz".into())));
+    // a newer undelete of an element whose creation was reset revives the flag but not the content (§5.7)
+    let mut d = Writer::new(Source::node(4), 2 << 16, 1);
+    let del = ops::seq_delete(&mut d, &base, 1, 1).unwrap();
+    let mut with_del = base.clone();
+    with_del.join(del);
+    assert_eq!(with_del.read(), Some(Value::Str("ac".into())));
+    d.next_commit(6 << 16);
+    let undel = ops::seq_undelete(&mut d, &base, &[Dot { source: Source::node(1), ctr: 2 }]);
+    let mut s4 = with_del.clone();
+    s4.join(rep.clone());
+    s4.join(undel.clone());
+    assert_eq!(s4.read(), Some(Value::Str("xyz".into())));
+    let mut s5 = with_del.clone();
+    s5.join(undel);
+    s5.join(rep);
+    assert_eq!(snapshot(&s4), snapshot(&s5));
+    // remove_aspect: absent, anchors kept, re-creation works
+    a.next_commit(7 << 16);
+    let rm = ops::remove(&mut a, 9);
+    s4.join(rm);
+    assert_eq!(s4.read(), None);
+    let bytes = snapshot(&s4);
+    assert!(bytes.len() > 8, "bare anchors are carried");
+
+    // cycle example of §6.4: acb, A moves a after b (t=5), B moves b after a (t=4): the later move wins -> cba
+    let mut w = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::seq_insert(&mut w, None, true, 0, s("acb")));
+    let base = st.unwrap();
+    let mut p = Writer::new(Source::node(2), 5 << 16, 1);
+    let mut q = Writer::new(Source::node(3), 4 << 16, 1);
+    let m1 = ops::seq_move(&mut p, &base, 0, 1, 2).unwrap();
+    let m2 = ops::seq_move(&mut q, &base, 2, 1, 1).unwrap();
+    let mut s1 = base.clone();
+    s1.join(m1.clone());
+    s1.join(m2.clone());
+    let mut s2 = base.clone();
+    s2.join(m2);
+    s2.join(m1);
+    assert_eq!(s1.read(), Some(Value::Str("cba".into())));
+    assert_eq!(s1.read(), s2.read());
+
+    // known anomaly (§6.4): abcd, move b to the end (t=5) and a concurrent insert x after a (t=4) -> acdbx
+    let mut w = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::seq_insert(&mut w, None, true, 0, s("abcd")));
+    let base = st.unwrap();
+    let mut p = Writer::new(Source::node(2), 5 << 16, 1);
+    let mut q = Writer::new(Source::node(3), 4 << 16, 1);
+    let mv = ops::seq_move(&mut p, &base, 1, 1, 3).unwrap();
+    let ins = ops::seq_insert(&mut q, Some(&base), true, 1, s("x"));
+    let mut s1 = base.clone();
+    s1.join(mv);
+    s1.join(ins);
+    assert_eq!(s1.read(), Some(Value::Str("acdbx".into())));
+}
+
+#[test]
+fn derived_anchor_outlives_its_register() {
+    // §6.1/§4.7: P saw the valued register and embedded it; Q only ever saw it value-less. Both place an insert
+    // anchored at an embedded character the same way after the register's commit expires.
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let reg = ops::create(&mut a, &Ty::Register, &Value::Str("ab".into()));
+    let ra = range(&a);
+    let mut text = crdt_model::embed::embed(&reg, 9).unwrap();
+    text.prune(None);
+    assert_eq!(text.read(), Some(Value::Str("ab".into())));
+    let mut b = Writer::new(Source::node(2), 2 << 16, 1);
+    let q = ops::seq_insert(&mut b, Some(&text), true, 1, vec![Content::Char('q')]);
+    let mut p = text.clone();
+    p.join(q.clone());
+    assert_eq!(p.read(), Some(Value::Str("aqb".into())));
+    p.strip(&in_ranges(std::slice::from_ref(&ra)));
+    assert_eq!(p.read(), Some(Value::Str("q".into())));
+    let mut lessr = reg.clone();
+    lessr.strip(&|_| true);
+    let mut qn = crdt_model::embed::embed(&lessr, 9).unwrap();
+    qn.join(q);
+    qn.strip(&in_ranges(std::slice::from_ref(&ra)));
+    assert_eq!(qn.read(), p.read());
+    assert_eq!(snapshot(&qn), snapshot(&p));
+    // and a later register write by a new app still resets everything older, q included
+    let mut c = Writer::new(Source::node(3), 3 << 16, 1);
+    p.join(ops::create(&mut c, &Ty::Register, &Value::Str("zz".into())));
+    assert_eq!(p.read(), Some(Value::Str("zz".into())));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), .. ProptestConfig::default() })]
+
+    #[test]
+    fn join_laws_across_encodings(seed in any::<u64>()) {
+        // §7 rule 2 (no edge): fragments of unrelated encodings meeting at one position still join
+        // commutatively and associatively.
+        let mut r = Rng(seed | 1);
+        let Ty::Struct(fts) = kitchen_sink() else { unreachable!() };
+        let tys: Vec<&Ty> = fts.values().collect();
+        let mut frags = Vec::new();
+        for i in 0..3u8 {
+            let ty = tys[r.below(tys.len())];
+            let mut w = Writer::new(Source::node(i + 1), ((r.below(4) as u64 + 1) << 16) + i as u64, 1);
+            let mut st: Option<Frag> = None;
+            for k in 0..3 {
+                w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
+                if let Some(d) = random_op(&mut r, &mut w, ty, st.as_ref()) {
+                    apply(&mut st, d);
+                }
+            }
+            frags.push(st.unwrap_or_else(|| { let mut f = Frag::empty(ty.enc()); f.prune(None); f }));
+        }
+        let (a, b, c) = (&frags[0], &frags[1], &frags[2]);
+        prop_assert_eq!(join3(a, b), join3(b, a), "commutative");
+        prop_assert_eq!(join3(&join3(a, b), c), join3(a, &join3(b, c)), "associative");
+        prop_assert_eq!(join3(a, a), a.clone(), "idempotent");
+    }
+}

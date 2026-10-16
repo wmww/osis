@@ -74,6 +74,10 @@ pub enum Frag {
     Set { c: Composite, elems: BTreeMap<Dot, Elem> },
     Map { c: Composite, entries: BTreeMap<Dot, Entry> },
     Seq { text: bool, c: Composite, elems: BTreeMap<Dot, SeqElem> },
+    /// Several encodings at one position (§7): the register slot plus non-register slots keyed by encoding, joined
+    /// pointwise. Every slot already holds the embedding of the register slot. Never produced by a writer; appears in
+    /// states and snapshots. Always at least two members (`assemble` collapses fewer).
+    Slots { reg: Option<Box<Frag>>, slots: BTreeMap<u8, Frag> },
 }
 
 pub fn max_pair<T>(a: Option<(Stamp, T)>, b: Option<(Stamp, T)>) -> Option<(Stamp, T)> {
@@ -107,6 +111,12 @@ impl SeqElem {
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
     }
+    /// Whether the record stays in the state (§4.2, §5.7): Node/Commit records are never dropped (a record with no
+    /// surviving write is a bare anchor); a `Derived` record exists only while it carries a write, since a node that
+    /// only ever saw the value-less register has none (§4.7, §6.1).
+    fn keeps_record(&self, d: &Dot) -> bool {
+        !matches!(d.source, Source::Derived(_)) || self.is_record()
+    }
 }
 
 fn top2(mut v: Vec<(Stamp, Anchor)>) -> Vec<(Stamp, Anchor)> {
@@ -129,6 +139,38 @@ impl Frag {
             Frag::Map { .. } => 7,
             Frag::Seq { text: false, .. } => 8,
             Frag::Seq { text: true, .. } => 9,
+            Frag::Slots { .. } => 10,
+        }
+    }
+
+    /// Members of a `Slots` position (the register slot first), or the fragment itself.
+    pub fn members(&self) -> Vec<&Frag> {
+        match self {
+            Frag::Slots { reg, slots } => reg.iter().map(|r| &**r).chain(slots.values()).collect(),
+            f => vec![f],
+        }
+    }
+
+    /// The slot of encoding `enc` at this position, if any (§7: ops address the slot of their schema's encoding).
+    pub fn slot(&self, enc: u8) -> Option<&Frag> {
+        match self {
+            Frag::Slots { reg, slots } => {
+                if enc == 0 {
+                    reg.as_deref()
+                } else {
+                    slots.get(&enc)
+                }
+            }
+            f if f.enc() == enc => Some(f),
+            _ => None,
+        }
+    }
+
+    /// The member a `Slots` position reads as: greatest `all_max`, ties by greater encoding id (§7).
+    pub fn chosen(&self) -> &Frag {
+        match self {
+            Frag::Slots { .. } => self.members().into_iter().max_by(|a, b| a.all_max().cmp(&b.all_max()).then(a.enc().cmp(&b.enc()))).unwrap(),
+            f => f,
         }
     }
 
@@ -149,27 +191,30 @@ impl Frag {
         }
     }
 
-    pub fn reset(&self) -> Option<&Stamp> {
+    /// Own reset; for `Slots` the greatest member reset (one position, one effective reset, §7).
+    pub fn reset(&self) -> Option<Stamp> {
         match self {
-            Frag::Register { reset, .. } => reset.as_ref(),
-            Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => c.reset.as_ref(),
+            Frag::Register { reset, .. } => reset.clone(),
+            Frag::Slots { .. } => self.members().into_iter().fold(None, |m, f| max_opt(m, f.reset())),
+            Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => c.reset.clone(),
         }
     }
     pub fn set_reset(&mut self, r: Option<Stamp>) {
         match self {
             Frag::Register { reset, .. } => *reset = r,
+            Frag::Slots { .. } => panic!("writers never produce slots"),
             Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => c.reset = r,
         }
     }
     pub fn composite(&self) -> Option<&Composite> {
         match self {
-            Frag::Register { .. } => None,
+            Frag::Register { .. } | Frag::Slots { .. } => None,
             Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => Some(c),
         }
     }
     pub fn composite_mut(&mut self) -> Option<&mut Composite> {
         match self {
-            Frag::Register { .. } => None,
+            Frag::Register { .. } | Frag::Slots { .. } => None,
             Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => Some(c),
         }
     }
@@ -179,6 +224,7 @@ impl Frag {
     pub fn written(&self) -> Option<Stamp> {
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| w.1.is_some()).map(|w| w.0.clone()),
+            Frag::Slots { .. } => self.chosen().written(),
             f => max_opt(f.composite().unwrap().w.clone(), f.inner_max(true)),
         }
     }
@@ -187,10 +233,11 @@ impl Frag {
     /// explicit `W`. With `valued`, value-less writes are skipped (§4.3, §4.7); used for presence and the canonical
     /// `W` rule (§3.3 rule 4).
     pub fn inner_max(&self, valued: bool) -> Option<Stamp> {
-        let child = |f: &Frag| if valued { max_opt(f.written(), f.reset().cloned()) } else { f.all_max() };
+        let child = |f: &Frag| if valued { max_opt(f.written(), f.reset()) } else { f.all_max() };
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| !valued || w.1.is_some()).map(|w| w.0.clone()),
+            Frag::Slots { .. } => self.members().into_iter().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems_max(elems),
             Frag::Struct { fields, .. } => fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Enum { case, payloads, .. } => {
@@ -216,13 +263,21 @@ impl Frag {
     /// Greatest stamp of anything in this fragment including its own reset, `W` and value-less writes (§7 rule 2).
     pub fn all_max(&self) -> Option<Stamp> {
         let w = self.composite().and_then(|c| c.w.clone());
-        max_opt(max_opt(self.inner_max(false), self.reset().cloned()), w)
+        max_opt(max_opt(self.inner_max(false), self.reset()), w)
     }
 
+    /// No surviving write and no record at any depth. Records (sequence anchors, and the element, entry or
+    /// field records holding them) are grow-only, so a fragment that still holds one is not empty even without a
+    /// stamp (§4.2).
     pub fn is_empty(&self) -> bool {
         self.all_max().is_none() && match self {
+            Frag::Register { .. } => true,
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.is_empty(),
+            Frag::Struct { fields, .. } => fields.is_empty(),
+            Frag::Enum { payloads, .. } => payloads.is_empty(),
+            Frag::Map { entries, .. } => entries.is_empty(),
             Frag::Seq { elems, .. } => elems.is_empty(),
-            _ => true,
+            Frag::Slots { .. } => self.members().iter().all(|f| f.is_empty()),
         }
     }
 
@@ -323,9 +378,26 @@ impl Frag {
 
     /// Drop every write below the effective reset (§4.2). `e_parent` is the parent's effective reset.
     pub fn prune(&mut self, e_parent: Option<&Stamp>) {
-        let own = self.reset().cloned();
+        let own = self.reset();
         let e = max_opt(e_parent.cloned(), own);
         let e = e.as_ref();
+        if let Frag::Slots { .. } = self {
+            // one effective reset for every member (§7): each member is pruned with it and then carries it, so a
+            // register write pruned here embeds the same whether it was embedded before or after the prune;
+            // members left empty go, fewer than two collapse
+            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            let fix = |mut f: Frag| {
+                f.prune(e);
+                if let Some(e) = e {
+                    f.set_reset(Some(e.clone()));
+                }
+                f
+            };
+            let reg = reg.map(fix);
+            let slots = slots.into_iter().map(|(k, f)| (k, fix(f))).collect();
+            *self = assemble(reg, slots);
+            return;
+        }
         fn prune_elems(elems: &mut BTreeMap<Dot, Elem>, e: Option<&Stamp>) {
             elems.retain(|_, el| {
                 if !el.reset.as_ref().map_or(true, |r| survives(r, e)) {
@@ -392,9 +464,10 @@ impl Frag {
                     en.reset.is_some() || en.frag.is_some()
                 });
             }
+            Frag::Slots { .. } => unreachable!(),
             Frag::Seq { c, elems, .. } => {
                 prune_written(c, e);
-                elems.retain(|_, el| {
+                elems.retain(|d, el| {
                     el.pos.retain(|p| survives(&p.0, e));
                     if el.created.as_ref().map_or(false, |c| !survives(&c.0, e)) {
                         el.created = None;
@@ -412,12 +485,11 @@ impl Frag {
                     if !keep_content {
                         el.content = Content::None;
                     }
-                    // Text content has no stamp of its own: it lives and dies with the creation write (§4.2).
+                    // Text content has no stamp of its own: it lives and dies with the creation write (§5.7).
                     if el.created.is_none() && matches!(el.content, Content::Char(_)) {
                         el.content = Content::None;
                     }
-                    // A record survives while any creation, position or flag write survives.
-                    el.is_record()
+                    el.keeps_record(d)
                 });
             }
         }
@@ -435,6 +507,7 @@ impl Frag {
             return None;
         }
         Some(match self {
+            Frag::Slots { .. } => return self.chosen().read(),
             Frag::Register { write, .. } => write.as_ref().unwrap().1.clone().unwrap(),
             Frag::Bag { kind, elems, .. } => {
                 let vals: Vec<Value> = elems.values().filter_map(|e| e.frag.as_ref().and_then(|f| f.read())).collect();
@@ -520,6 +593,22 @@ impl Frag {
 
     /// Remove every write authored by a source matching `bad` (§4.6).
     pub fn unmerge(&mut self, bad: &dyn Fn(&Source) -> bool) {
+        if let Frag::Slots { .. } = self {
+            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            let reg = reg.map(|mut r| {
+                r.unmerge(bad);
+                r
+            });
+            let slots = slots
+                .into_iter()
+                .map(|(k, mut f)| {
+                    f.unmerge(bad);
+                    (k, f)
+                })
+                .collect();
+            *self = assemble(reg, slots);
+            return;
+        }
         let is_bad = |s: &Stamp| bad(s.dot.source.author());
         fn fix_elems(elems: &mut BTreeMap<Dot, Elem>, is_bad: &dyn Fn(&Stamp) -> bool, bad: &dyn Fn(&Source) -> bool) {
             elems.retain(|d, el| {
@@ -546,6 +635,7 @@ impl Frag {
             }
         }
         match self {
+            Frag::Slots { .. } => unreachable!(),
             Frag::Register { reset, write } => {
                 if reset.as_ref().map_or(false, |r| is_bad(r)) {
                     *reset = None;
@@ -602,7 +692,7 @@ impl Frag {
                         }
                     }
                 }
-                elems.retain(|_, el| el.is_record());
+                elems.retain(|d, el| el.keeps_record(d));
             }
         }
     }
@@ -613,13 +703,17 @@ impl Frag {
     /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T.
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         self.strip_values(expired);
-        // drop records left empty (a seq element whose embedded creation went)
+        // drop `Derived` records left without a write (their creation was known only from the value)
         self.prune(None);
     }
 
     fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         let exp = |d: &Dot| expired(owner(d));
         match self {
+            Frag::Slots { reg, slots } => {
+                reg.iter_mut().for_each(|r| r.strip_values(expired));
+                slots.values_mut().for_each(|f| f.strip_values(expired));
+            }
             Frag::Register { write, .. } => {
                 if let Some(w) = write {
                     if exp(&w.0.dot) {
@@ -688,21 +782,56 @@ pub fn num_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
-/// Join of two fragments of possibly different encodings (§7), unpruned.
+/// Split a fragment into its register slot and non-register slots.
+fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
+    match f {
+        Frag::Slots { reg, slots } => (reg.map(|r| *r), slots),
+        Frag::Register { .. } => (Some(f), BTreeMap::new()),
+        f => {
+            let mut m = BTreeMap::new();
+            m.insert(f.enc(), f);
+            (None, m)
+        }
+    }
+}
+
+/// Canonical position from its members: a lone member stands alone, nothing is an empty register.
+fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
+    let reg = reg.filter(|r| !r.is_empty());
+    slots.retain(|_, f| !f.is_empty());
+    match (reg, slots.len()) {
+        (None, 0) => Frag::Register { reset: None, write: None },
+        (Some(r), 0) => r,
+        (None, 1) => slots.into_iter().next().unwrap().1,
+        (reg, _) => Frag::Slots { reg: reg.map(Box::new), slots },
+    }
+}
+
+/// Join of two fragments of possibly different encodings (§7), unpruned: pointwise per encoding, with the register
+/// slot embedded into every non-register slot.
 pub fn join_any(a: Frag, b: Frag) -> Frag {
-    if a.enc() == b.enc() {
+    if a.enc() == b.enc() && a.enc() != 10 {
         return a.join_raw(b);
     }
-    if let Some(ea) = crate::embed::embed(&a, b.enc()) {
-        return ea.join_raw(b);
+    let (ra, sa) = parts(a);
+    let (rb, sb) = parts(b);
+    let reg = match (ra, rb) {
+        (None, x) | (x, None) => x,
+        (Some(x), Some(y)) => Some(x.join_raw(y)),
+    };
+    let mut slots = sa;
+    for (k, fb) in sb {
+        let f = match slots.remove(&k) {
+            None => fb,
+            Some(fa) => fa.join_raw(fb),
+        };
+        slots.insert(k, f);
     }
-    if let Some(eb) = crate::embed::embed(&b, a.enc()) {
-        return a.join_raw(eb);
+    if let Some(r) = &reg {
+        for (k, f) in slots.iter_mut() {
+            let e = crate::embed::embed(r, *k).expect("embedding is total from a register");
+            *f = std::mem::replace(f, Frag::empty(0)).join_raw(e);
+        }
     }
-    // No edge: the side with the greater stamp is kept, the other becomes a reset at its greatest stamp.
-    let (wa, wb) = (a.all_max(), b.all_max());
-    let (mut keep, loser) = if wa >= wb { (a, wb) } else { (b, wa) };
-    let r = max_opt(keep.reset().cloned(), loser);
-    keep.set_reset(r);
-    keep
+    assemble(reg, slots)
 }

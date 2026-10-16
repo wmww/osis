@@ -4,9 +4,10 @@ use crate::state::{Anchor, BagKind, Composite, Content, Elem, Frag, SeqElem};
 use crate::value::Value;
 use std::collections::BTreeMap;
 
-/// Embed `a` into encoding `target`, if an edge exists. Every edge from a register is total, so a value-less write
-/// (§4.7) embeds exactly as its valued copy would after stripping: a value that does not fit the target (or none)
-/// leaves only the reset (text) or a contribution that reads as nothing (bags).
+/// Embed a register `a` into encoding `target` (§7). Total from a register into every non-register encoding: the
+/// register's stamp becomes a reset, and an edge (bags, text) adds content at that stamp. A value-less write (§4.7)
+/// embeds exactly as its valued copy would after stripping: a value that does not fit the target (or none) leaves only
+/// the reset (text) or a contribution that reads as nothing (bags).
 pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
     let (reset, write) = match a {
         Frag::Register { reset, write } => (reset.clone(), write.clone()),
@@ -40,6 +41,12 @@ pub fn embed(a: &Frag, target: u8) -> Option<Frag> {
                 }
             }
             Some(Frag::Seq { text: true, c, elems })
+        }
+        4..=8 => {
+            // no content edge: the register write is a reset of everything older at this position
+            let mut f = Frag::empty(target);
+            f.set_reset(c.reset);
+            Some(f)
         }
         _ => None,
     }

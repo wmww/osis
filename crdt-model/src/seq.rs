@@ -1,6 +1,6 @@
 //! Linearization of a sequence state (spec §6).
-use crate::stamp::Dot;
-use crate::state::{Anchor, SeqElem};
+use crate::stamp::{Dot, Source};
+use crate::state::{Anchor, Content, SeqElem};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,7 +16,33 @@ pub fn linearize(elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
 
 /// Order of every placed element (deleted ones included) and each element's chosen parent
 /// (`None` = HEAD or END), after cycle breaking (§6.2). Hidden elements (unknown anchor) are absent.
+///
+/// An anchor naming a `Derived` dot that is not in the state counts as a bare anchor at END (§6.1): such records
+/// exist only while they carry a write (§4.7), but every node knows the dot from the header sources table.
 pub fn linearize_full(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Option<Dot>>) {
+    let virtual_anchors: BTreeSet<Dot> = elems
+        .values()
+        .flat_map(|e| e.pos.iter().map(|p| &p.1))
+        .filter_map(|a| match a {
+            Anchor::Dot(d) if matches!(d.source, Source::Derived(_)) && !elems.contains_key(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    if virtual_anchors.is_empty() {
+        return linearize_known(elems);
+    }
+    let mut full = elems.clone();
+    for d in &virtual_anchors {
+        full.insert(d.clone(), SeqElem::write(Content::None, vec![], None));
+    }
+    let (order, mut parents) = linearize_known(&full);
+    for d in &virtual_anchors {
+        parents.remove(d);
+    }
+    (order.into_iter().filter(|d| !virtual_anchors.contains(d)).collect(), parents)
+}
+
+fn linearize_known(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Option<Dot>>) {
     // candidate index per element: 0 = cur, 1 = prev, 2 = END
     let mut cand: HashMap<&Dot, usize> = elems.keys().map(|d| (d, 0)).collect();
     let chosen = |d: &Dot, ci: usize| -> Cand {
