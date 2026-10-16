@@ -13,6 +13,7 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 ## Listeners
 - Callback is invoked once before the listen call returns (not for signals).
 - Returns an opaque `ListenerId` for cancellation.
+- Local changes fire listeners locally: a committed write fires matching aspect listeners and a sent signal fires matching signal listeners on the same node, with no other node connected, including listeners of the app (and `Osis` handle) that made the change.
 
 ## Functions
 - `async Osis::get_aspect(&self, tid, ak) -> Result<Value>`
@@ -25,7 +26,7 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `Mutator::set_aspect(&mut self, tid, ak, value)`: structural diff by default (concurrent edits elsewhere in the value survive); an explicit replace variant resets the aspect (decided 2026-10-14). Path-based ops to add: set field, insert/remove index, add/remove key, splice text, increment (notes/crdt-sync.md).
 - `Mutator::remove_aspect(&mut self, tid, ak)`
 - `async Mutator::commit(self) -> Result<()>`: one atomic commit for every touched thing, across owners and reader sets (notes/sync.md, Projection; 2026-10-16).
-- `async Osis::send_signal(&self, tid, kind, value) -> Result<()>`, `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach connected nodes only (decided 2026-10-15, notes/ephemeral.md).
+- `async Osis::send_signal(&self, tid, kind, value) -> Result<()>`, `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach local listeners plus connected nodes only (decided 2026-10-15, notes/ephemeral.md).
 
 ## Typed reads (decided 2026-10-14, notes/versioning.md)
 Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they are also available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type, generated or hand-written in the app; transitions and the form-choice policy are codegen conventions (notes/versioning.md).
