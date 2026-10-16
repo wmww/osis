@@ -440,12 +440,14 @@ impl Frag {
                 let vals: Vec<Value> = elems.values().filter_map(|e| e.frag.as_ref().and_then(|f| f.read())).collect();
                 match kind {
                     BagKind::Counter => {
-                        let mut si: i64 = 0;
+                        // §5.2: ints summed exactly (i128) and clamped to i64; floats summed as f64 in dot order
+                        // (`vals` is in dot order), so the read is the same on every node.
+                        let mut si: i128 = 0;
                         let mut sf: f64 = 0.0;
                         let mut is_f = false;
                         for v in &vals {
                             match v {
-                                Value::Int(i) => si = si.saturating_add(*i),
+                                Value::Int(i) => si += *i as i128,
                                 Value::Float(b) => {
                                     is_f = true;
                                     sf += f64::from_bits(*b)
@@ -453,6 +455,7 @@ impl Frag {
                                 _ => {}
                             }
                         }
+                        let si = si.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
                         if is_f {
                             Value::float(sf + si as f64)
                         } else {
@@ -671,6 +674,8 @@ fn prune_written(c: &mut Composite, e: Option<&Stamp>) {
     }
 }
 
+/// §5.2 order for max/min: ints by value; anything involving a float by IEEE 754 totalOrder on f64
+/// (-0.0 < 0.0, the canonical NaN is greatest), so the result never depends on iteration order.
 pub fn num_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     let f = |v: &Value| match v {
         Value::Int(i) => *i as f64,
@@ -679,7 +684,7 @@ pub fn num_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     };
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x.cmp(y),
-        _ => f(a).partial_cmp(&f(b)).unwrap_or(std::cmp::Ordering::Equal),
+        _ => f(a).total_cmp(&f(b)),
     }
 }
 

@@ -41,7 +41,7 @@ A reader checks that every own-source counter in a delta lies in `[lo, hi)` and 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
 - `sources` (the notes' "author table"): table of foreign sources referenced by the commit's deltas. Index 0 is the commit's own source (node form: the author node; commit form: this commit) and is not stored in the table. Entries: `Node` as a 15-byte string, `Commit` as a 32-byte string, `Derived` as `[src_index, counter]` (the referenced dot, whose source must itself be `Node` or `Commit`).
-- Per delta: `(tid, ak, delta hash, counter range [lo, hi))` as in §2.3. Encoding IDs are inside the delta (§3.2), not in the header. The header also carries the writer's type hash and schema revision per delta (notes/versioning.md); merge ignores them. A commit normally carries one delta per `(tid, ak)`; a roster snapshot (notes/permissions.md) carries one `/members` delta per edge, and the aspect's delta is the join of all of them that the node holds.
+- Per delta: `(tid, ak, delta hash, counter range [lo, hi))` as in §2.3. Encoding IDs are inside the delta (§3.2), not in the header. The header also carries a schema table `[(schema ID, revision)]` and per delta an index into it, absent for untyped writes (notes/versioning.md); merge ignores them. A commit normally carries one delta per `(tid, ak)`; a roster snapshot (notes/permissions.md) carries one `/members` delta per edge, and the aspect's delta is the join of all of them that the node holds.
 - Dot form flag (node or commit).
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional (§4.7).
@@ -56,15 +56,15 @@ All deltas and snapshots are osis canonical CBOR (notes/serialization.md): short
 | id | name | for schema types | read type |
 |---|---|---|---|
 | 0 | register | every scalar, tid, blob; default for int, float, string | the value |
-| 1 | counter | int/float with `counter` knob | sum of live contributions |
-| 2 | max | int/float `max` | max of live contributions |
-| 3 | min | int/float `min` | min of live contributions |
+| 1 | counter | `counter<int>`, `counter<float>` | sum of live contributions |
+| 2 | max | `max<int>`, `max<float>` | max of live contributions |
+| 3 | min | `min<int>`, `min<float>` | min of live contributions |
 | 4 | struct | struct | struct |
 | 5 | enum | enum (incl. option, any) | enum |
 | 6 | set | set | set |
 | 7 | map | map | map |
 | 8 | list | list<T> | list |
-| 9 | text | string with `text`/`markdown` knob | string |
+| 9 | text | `text` (and `markdown`) | string |
 
 Unknown id (or an unknown nested id) parks the whole delta (notes/versioning.md). A parked delta is kept as bytes with its header tuple and re-examined after upgrade.
 
@@ -174,7 +174,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 ### 5.2 Bags: counter (1), max (2), min (3)
 - State: `R`, `written`, elements `{dot: (R_elem, value register)}` exactly as a set (§5.5); the register holds the contribution amount (int or float per the aspect type). The register's first write has the element's creation stamp.
 - Join: as set; prune.
-- Read: counter = sum of live contributions (i64 saturating, never a panic); max/min = the extreme of live contributions. Absent when nothing is live and `written` does not survive.
+- Read (bit-identical on every node): counter = sum of live contributions; ints are summed exactly and the sum clamped to i64 (never a panic), floats are summed as f64 in dot order (§2.2), and a bag holding both (only via §7) reads as float sum plus int sum. max/min = the extreme under this order: int against int by value, anything involving a float by IEEE 754 totalOrder on f64 (-0.0 < 0.0, the canonical NaN greatest); among equal extremes the one with the lowest dot. Absent when nothing is live and `written` does not survive.
 - Ops: `inc(a)` → one element `[k, [], [[0, [], D, a]]]`. Contributions that are not numbers (only from a register embedding, §7) are ignored by read. `set v` (a replace) → fragment reset `D` then one element `k`. For max/min a bare contribution is "observe v".
 - Undo of a contribution = element reset on its dot (cancel per dot, idempotent when two devices undo the same inc). Undo of a `set` = replace with the pre-reset contributions from the undo buffer, fresh dots.
 - Tombstones: as set elements (§5.5). GC: an implementation may additionally drop, for max/min, every element of a source that is not that source's extreme, and for counters fold a source's contributions that are all older than the newest received frontier into one record per source only if it also keeps the dot set for un-merge; the model does neither.
@@ -309,14 +309,14 @@ Principle: state and snapshots are the same grammar, so a snapshot of a chunked 
 
 ## 9. Structural diff (`set_aspect` default)
 
-Input: local state fragment `S` (may be absent) and new value `v`. Output: writes, as a delta. Rules per encoding, recursive:
+Input: local state fragment `S` (may be absent), new value `v`, and the writer's **view**: a projection of read values onto what the writer's schema can type (identity for untyped writes). Every equality below compares `view(read(...))` with `v`'s side; an element or entry whose `view` fails (unknown enum case, type mismatch) is **opaque**: never matched, never removed, never re-inserted, and left where it is (notes/versioning.md, schema-aware diff). Output: writes, as a delta. Rules per encoding, recursive:
 - register: write iff `read(S) != v` (bit-exact for floats, notes/serialization.md) or S absent.
 - bag: counter: `inc(v - read(S))` if different; max/min: reset + contribution if `v != read(S)` (a max cannot go down otherwise).
-- struct: per field of `v`: recurse into `S.fields[id]`. Fields present in S but not in `v` are left alone (open structs: the writer only knows its fields; a typed `v` always has all the writer's fields).
+- struct: per field of `v`: recurse into `S.fields[id]`. Fields present in S but not in `v` are left alone (open structs: the writer only knows its fields; a typed `v` always has all the writer's fields). A field absent in S whose value in `v` equals the field's declared default produces no write (defaults are never materialized, notes/versioning.md).
 - enum: same case → recurse into the payload; different case → `set_case`.
-- set: adds for values in `v` not live in S; removes for live values not in `v` (one reset stamp).
-- map: keys only in `v` → put; keys only in S → remove; both → recurse into the lowest live entry.
-- list: LCS (Myers) over elements with equality = `read(elem) == item` (deep); unmatched old elements and new items are then **paired in order** while both remain and recursed into (a changed entry is an edit, not delete+insert); leftover old → delete, leftover new → insert after the preceding matched/paired element. Caveat kept from the notes: a changed entry that the pairing misaligns becomes delete+insert and loses concurrent edits; apps editing list entries concurrently should use path ops.
+- set: adds for values in `v` whose `view` matches no live element; removes for live, non-opaque elements whose `view` is not in `v` (one reset stamp). Large values compare by keyed content hash (notes/serialization.md).
+- map: keys (under `view`) only in `v` → put; non-opaque keys only in S → remove; both → recurse into the lowest live entry.
+- list: opaque elements are removed from consideration first and keep their place; LCS (Myers) over the rest with equality = `view(read(elem)) == item` (deep); unmatched old elements and new items are then **paired in order** while both remain and recursed into (a changed entry is an edit, not delete+insert); leftover old → delete, leftover new → insert after the preceding matched/paired element. Caveat kept from the notes: a changed entry that the pairing misaligns becomes delete+insert and loses concurrent edits; apps editing list entries concurrently should use path ops.
 - text: Myers diff over chars → deletes and inserts (no move detection). Equal strings → no writes.
 - absent S: everything is a creation; composites with no content get an explicit `W`.
 `set_aspect_replace` ignores S: fragment reset then the writes of a diff against absent.
@@ -333,7 +333,7 @@ Input: local state fragment `S` (may be absent) and new value `v`. Output: write
 - diff: `read(join(S, diff(S, v))) == v`;
 - expiry: convergence with random commits expiring, each node reaching T at its own random points and stripping later arrivals, mid-way snapshots carrying expiring writes value-less, and the result equal to join-then-strip; strip commutes with join and is idempotent, a valued copy wins over its value-less one, a value-less register embeds like its stripped valued copy; worked examples of §4.7;
 - snapshots: encode→decode round trip with frontiers, frontiers equal to every author's last counter after full delivery, a node bootstrapped from a snapshot reads the same.
-The model is not the implementation; the implementation is tested against it. Not modeled: set tombstone GC by received ranges (§5.5); the model tracks received ranges only to produce frontiers.
+The model is not the implementation; the implementation is tested against it. Not modeled: set tombstone GC by received ranges (§5.5); the model tracks received ranges only to produce frontiers. The model's diff uses the identity view (untyped writer); the schema projection of §9 is a typed-layer concern.
 
 ## 11. Text size benchmark
 Target (notes/crdt-sync.md): encoded text snapshot between 1.5x and 3x the plain text on Kleppmann's automerge-paper editing trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted). `crdt-model/src/bin/text_bench.rs` replays the trace as one writer with realistic wall-clock timestamps (2 s per commit), commits the net effect per batch (§4.5), and encodes the state as a foreign node's snapshot (every stamp through the commit table).
@@ -368,4 +368,6 @@ What was tried and kept: deleted elements never carry content on the wire (runs 
 - **D17 Snapshots** carry per-node frontiers, no own writes, and no values of expiring commits. §8.
 - **D18 Register edges are total** (written with the model, 2026-10-16): a wrong-typed value embeds as a contribution that reads as nothing, or as a bare reset into text, so a value-less write embeds the same before and after T. §7.
 - **D19 Presence is computed, only `W` is stored**, so expiry can lower it; a sequence creation counts iff the element has content or is deleted. A list element whose creation expired drops nested writes of other commits; a map entry keeps them hidden. Tombstones are keyless on the wire. §3.3, §4.3, §4.7, §5.6.
+- **D20 Bag reads are order-independent** (review 2026-10-16): exact int sums clamped to i64, float sums in dot order, max/min by IEEE totalOrder, so no node's read depends on iteration order. §5.2.
+- **D21 The diff takes the writer's view** (review 2026-10-16): equality under the writer's schema projection, opaque elements untouched, default-valued absent fields unwritten. Closes the hole where an old writer's save removed and re-added every set element a newer writer had extended. §9.
 - **Open (owner):** acceptable state growth per commit (D12), and whether `max`/`min` need exact undo.
