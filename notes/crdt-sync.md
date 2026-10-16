@@ -1,5 +1,17 @@
 # Commits, CRDTs, retention and purge
-> Summary: Commits and per-aspect delta-state CRDTs with one rule everywhere (timestamp plus author dot, later wins, removal is an LWW reset addressed by dot for collection elements, no causal contexts; decided 2026-10-14/15), the movable text/list CRDT, dots, undo, a second dot form keyed by commit ID for shared-key writers (2026-10-16), retention classes and purge mechanics. Sync itself in notes/sync.md.
+> Summary: Commits and per-aspect delta-state CRDTs with one rule everywhere (timestamp plus author dot, later wins, removal is an LWW reset addressed by dot for collection elements, no causal contexts; decided 2026-10-14/15), the movable text/list CRDT, dots, undo, a second dot form keyed by commit ID for shared-key writers (2026-10-16), retention classes and purge mechanics. The exact spec is spec/crdt.md, checked by the reference model in crdt-model/ (2026-10-16); text state size depends on commit count, see Spec status. Sync itself in notes/sync.md.
+
+## Spec status (2026-10-16)
+spec/crdt.md is the normative description (state, wire grammar, join, read, ops, undo, un-merge, embeddings, paging, structural diff); `crdt-model/` is a slow reference implementation with proptests (convergence under random delivery, lattice laws, single-writer text vs a sequential model, wire round trip and fuzzed decoder, embeddings, diff, un-merge) and the text size benchmark. Decisions taken while writing it (spec §12), all non-user-visible except where noted:
+- HLC tiebreak is the stamp's source (node tid or commit ID), not part of `ts`; `ts = wall_ms * 2^16 + logical`.
+- Commit-level writes (register values, resets, flags, case, presence, element resets) share one **delta stamp** `(ts, source, lo)`; only element creations and position writes consume counters. A delta always consumes at least one counter so frontiers cover it.
+- A write survives a reset iff its stamp is `>=` the reset; composites carry a presence stamp (`written`) so explicitly empty collections exist.
+- Register → text embedding uses synthetic `Derived(dot)` sources for the characters.
+- Undo of a text/list insert is a deleted-flag write, not an element reset (keeps anchors). Bag (counter/max/min) contributions are set elements; undo of an increment resets its dot.
+- Cycle breaking: demote the smallest-stamp move edge in the cycle to its previous slot, then to the end of the sequence (never hidden).
+- Sequence elements keep their creation write beside the two position slots; deleted elements never carry content on the wire; a move's range spans deleted elements inside the selection; re-anchored outside subtrees are written in reverse visual order (found by the model).
+- Delta framing `[nonce, commit table, fragment]`; encoding IDs are in the fragment, not the header tuple.
+- **Text size** (spec §11, automerge-paper trace, 105 KB text): snapshot is 3.2x the text at 100 edits per commit, 6.6x at 10, 44x at one commit per keystroke. Content plus run records are a 2.5x floor; the rest is about 13 bytes per commit. Hence the client rule: one commit per editing pause (seconds), never per keystroke, and a commit carries the net effect of its batch. Owner call still open: whether ~7x at a 2 s cadence is acceptable, or stability-based GC moves forward.
 
 ## Decided
 - Sync unit is a group; mechanism is blob-set reconciliation (notes/sync.md).
@@ -92,11 +104,11 @@ Encoding and size:
 - Second dot form (decided 2026-10-16, for anonymous writing through a shared signing key, notes/permissions.md): dot = (commit ID, commit-local index); the header marks the form per commit. Any author may use it. Unlinkable, and collision-free even when several devices sign with one key (per-device IDs under a shared key let any key holder reuse another's dot and knock out its edit). Cost falls only on such commits: text/list runs and received-dot ranges do not continue across commits, one ~16-byte author-table entry per commit, and revocation witnesses list commits instead of frontiers. Must be in the v1 format.
 - Every state element (register, set element, map entry, text element, counter contribution) carries its dot (decided 2026-10-14). Revocation (notes/permissions.md) drops by dot and witnesses frontiers per (aspect, author node). A bool aspect is value + timestamp + dot.
 - No causal contexts: nothing records what a writer had seen. Rejected: attributing through commit headers (zero bytes in state, history lookup at revocation) for non-uniformity.
-- Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
+- Clock: HLC (wall ms, logical counter; the tiebreak is the write's source; advanced on receipt, drift capped at 1 h; spec §2.2).
 
 ## Undo/redo
 - Undo = new commit that cancels a specific earlier commit; header has `undoes: commit id`. Signed, replicated, atomic across the original's aspects. Never removes history; purged commits are not undoable.
-- Cancel per dot, not "apply inverse": undo insert / set-add / map-add = reset that dot; undo counter inc = cancel that dot (idempotent across devices); undo register write = write old value only if own write is still the winner; undo delete / set-remove / key-remove = undelete the original dots, delta carries the content from the undo buffer; undo aspect reset = reinsert (above).
+- Cancel per dot, not "apply inverse": undo set-add / map-add = reset that dot, undo text/list insert = deleted-flag write on that dot (anchor kept); undo counter inc = cancel that dot (idempotent across devices); undo register write = write old value only if own write is still the winner; undo delete / set-remove / key-remove = undelete the original dots, delta carries the content from the undo buffer; undo aspect reset = reinsert (above).
 - Stack is derived, not stored: actor's own commits in scope, minus undone, plus undo commits for redo. Replicates for free -> cross-device undo. Scope = set of aspects or a group, app-chosen.
 - Per actor by default (owner 2026-10-12). Also an API to view every available change in scope regardless of author, from which an admin may remove (undo) others' changes.
 - An actor's own bodies (and pre-reset snapshots) are kept locally at least for the undo horizon.
