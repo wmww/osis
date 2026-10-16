@@ -15,7 +15,7 @@ Primitives and key formats: notes/crypto.md (decided 2026-10-16). Merge-type del
 ## Node-to-node protocol (versioned, may evolve, but the official server will see old clients)
 7. Framing and version negotiation over the transport abstraction (notes/networking.md).
 8. Messages: cursor sync, IDs-gained, range reconciliation fallback, upload, retire, hard delete (admin key or token + signature), label registration/re-registration (relayable; "have k" reply), subscribe/push, signals, specific-blob fetch.
-9. Label entry metadata: blob ID, 49-byte wrap or chunk filler, generation, token hash, expiry; generation rules. Label registration chain with the three Ed25519 role keys (upload key also gates download).
+9. Label entry metadata: blob ID, 49-byte wrap or chunk filler, generation, token hashes (list, format cap), expiry; generation rules. Label registration chain with the three Ed25519 role keys (upload key also gates download).
 10. **Design gaps** to close here, owner calls where noted:
     - Download authorization at blind nodes and its bootstrap (grant commits under the grantee's label; notes/sync.md Open, owner to confirm).
     - Blind server abuse limits: who may create labels and store how much without the server learning identities; how paying accounts tie to labels (owner call, privacy tradeoff).
