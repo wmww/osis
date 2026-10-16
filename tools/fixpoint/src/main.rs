@@ -1,11 +1,14 @@
 //! Throwaway model of the layer-1 membership validity rule (notes/permissions.md,
 //! "Validity definition"). Independent of any real implementation. One group actor G;
 //! actor i has exactly one node i; actor 0 is G's owner (always admin, unremovable).
-//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier]` (exhaustive
-//! tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in the notes;
-//! the others are the rejected as-written rule and its third-party-witness repairs.
+//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot]`
+//! (exhaustive tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in
+//! the notes; the others are the rejected as-written rule and its third-party-witness
+//! repairs. `snapshot` runs the two-level roster-snapshot model (src/snapshot.rs).
 
 use std::collections::HashSet;
+
+mod snapshot;
 
 const OWNER: usize = 0;
 /// Receipt time meaning "much later than anything else".
@@ -878,6 +881,10 @@ fn random(samples: u64, seed: u64, rule: Rule) -> Stats {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
+    if args.get(2).map(String::as_str) == Some("snapshot") {
+        snapshot::random(samples, 0x5eed).print();
+        return;
+    }
     let rule = match args.get(2).map(String::as_str) {
         Some("exempt") => Rule::ExemptOwnRevoke,
         Some("strat") => Rule::Stratified,
