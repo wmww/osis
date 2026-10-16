@@ -10,7 +10,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 ## Decentralization (hard)
 - No central or trusted coordinator, no consensus mechanism, no sequencer. Truly peer-to-peer like git; any node can be offline indefinitely and return.
 - No single registry of things; total things may exceed what any node can track. Tids are self-certifying and minted offline.
-- Identity and authorization are verified cryptographically by every node; nothing trusts a server's word.
+- Identity and authorization are verified cryptographically by every node that can read the data (blind nodes check only label-key signatures); nothing trusts a server's word.
 - No "repo": a thing belongs to no cluster that must be synced whole. Groups overlap, nest, may be cyclic, and membership changes. Syncing one row or one column of a table must each be efficient, without duplicating the table at rest or in upload. (A 2D grid is the test case, not the goal: complexly intersecting groups in general.)
 - Convergence under any delivery order, duplicates and partial receipt; no ordered delivery or commit DAG required.
 
@@ -22,7 +22,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 
 ## Encrypted (blind) nodes (hard)
 - Keyless always-on nodes are first-class: every property above holds for them, and two briefly-online trusted nodes syncing only through a blind node is a primary use case.
-- A blind node may learn data volume, and limited structure when selective sync needs it (which opaque labels a blob is under, label overlap, blob count, expiry times). It must not learn AKs, tids, values, authors, membership, nesting, or thing/aspect counts beyond what label structure implies.
+- A blind node may learn data volume, and limited structure when selective sync needs it (which opaque labels a blob is under, label overlap, blob count, expiry times). It must not learn AKs, tids, values, authors, membership, or nesting and thing/aspect counts beyond what label structure implies.
 - One protocol for all nodes; trusted and blind peers differ only in which keys they hold.
 - A blind node may be the only backup of rarely accessed data. Read access to a group never allows deleting its blobs at a blind node or forcing a re-upload (owner 2026-10-11). Destruction needs write rights at least, and is recoverable for a grace period unless done by an admin, or by a current writer presenting a per-entry delete token (notes/sync.md, decided 2026-10-11, amended 2026-10-12).
 

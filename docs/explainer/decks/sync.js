@@ -200,7 +200,7 @@ export default {
       text: `<p>A server without keys holds, per label, a flat list of entries: blob ID, a wrap it can't open, a generation number, a delete-token hash and an optional expiry. That's enough to store, reconcile, push and clean up.</p>
         <p>Seeing which labels share a blob (orange above) is the unavoidable price of selective sync.</p>`,
       more: `<h3>Sizes</h3>
-        <p>Blobs are padded (Padmé-style) by at most about 12%, about 6% on average. That hides exact sizes but not overall volume, an accepted leak.</p>
+        <p>Blobs are padded (Padmé-style) by at most about 12% (small blobs; less as they grow), a few percent on average. That hides exact sizes but not overall volume, an accepted leak.</p>
         <p>A blind server may be the only backup of rarely used data, so deleting there is guarded separately (see <a href="#/deletion/7">Deletion</a>).</p>`,
     },
     {

@@ -3,12 +3,12 @@
 
 ## Goals (owner 2026-10-09)
 - Untrusted always-on nodes (backup servers) exist and sync efficiently.
-- They learn no AKs, tids, value or thing sizes, thing/aspect counts, authorship, membership or nesting. Overlap between groups synced to the same server is an acceptable leak.
+- They learn no AKs, tids, value or thing sizes, thing/aspect counts, authorship or membership. Overlap between groups synced to the same server is an acceptable leak; it partly reveals nesting, since a nested group's blobs are a subset of its parent's.
 - One protocol for every node. Trusted peers and blind nodes differ only in which keys they hold.
 
 ## Model
 - **Blob**: an encrypted commit (header, signature and unpurged deltas) or an encrypted chunk of a large body. ID = BLAKE3 of the ciphertext. Indistinguishable to a keyless node. Each blob has its own random key, so a commit has one ID regardless of which groups contain it (owner 2026-10-11); a chunk's key is stored in its parent link, and dedup is by reuse from the current tree (notes/local-store.md).
-- **Wrap**: the blob key encrypted under the read secret of a label, about 48 bytes (nonce derived from the blob ID). One per (label, blob), stored as label-entry metadata beside the ID. Anyone who can decrypt the blob and holds a label's read secret can add a wrap, so sharing history never re-encrypts. Overhead: about 20% on a minimal 200-byte commit, under 5% on typical edits, nothing on chunks; compaction drops retired wraps.
+- **Wrap**: the blob key encrypted under the read secret of a label, about 48 bytes (nonce derived from the blob ID). One per (label, blob), stored as label-entry metadata beside the ID. Anyone who can decrypt the blob and holds a label's read secret can add a wrap, so sharing history never re-encrypts. Overhead: about 25% on a minimal 200-byte commit, under 5% on typical edits, nothing on chunks; compaction drops retired wraps.
 - One blob per commit (owner 2026-10-11): atomicity over partial efficiency. A node syncing some but not all things a commit touches downloads the whole commit. Purging one delta rewrites the blob without it (same commit ID, new blob ID). A commit touches things of one owner actor only; membership writes get their own commits (notes/permissions.md).
 - Every node holds a set of blobs. A node with keys decrypts commits and joins deltas into local aspect states. State is local only.
 - **Sync unit = group** (notes/data-model.md). "Blobs of G" = commits touching any thing in G's transitive closure, plus the chunks they reference. Each member computes this from its own data: commits are tagged with their things' `/groups` on arrival and retagged when membership changes. Fixpoint, so cycles need nothing special; nesting depth affects only retagging cost.
@@ -48,8 +48,8 @@ Threat (owner): a blind node may be someone's only backup. Read access must not 
 - A blind node may rate-limit soft retires per label per day as a heuristic against wipes; not a correctness mechanism.
 
 ## What a blind node learns
-One label per group synced to it, overlaps between them, blob count, padded blob sizes, fixed-size opaque wraps and token hashes, expiry times, arrival times (clients may batch uploads), generation numbers and retire events, client addresses. Not: AKs, tids, thing or aspect counts, authors, membership, nesting.
-- Sizes (2026-10-11, constraints tension 3): large values use content-defined chunking (notes/serialization.md). Volume may leak, so padding is coarse: every blob is padded to the next step of one eighth of a power of two (Padmé), at most 12% and about 6% on average. Key epoch after a rotation: readers try the few live keys rather than a cleartext epoch byte (proposal).
+One label per group synced to it, overlaps between them, blob count, padded blob sizes, fixed-size opaque wraps and token hashes, expiry times, arrival times (clients may batch uploads), generation numbers and retire events, client addresses. Nesting only as far as overlap shows it (a child label's blobs inside its parent's). Not: AKs, tids, thing or aspect counts, authors, membership.
+- Sizes (2026-10-11, constraints tension 3): large values use content-defined chunking (notes/serialization.md). Volume may leak, so padding is coarse: every blob is padded with Padmé (keep the top ~log2 log2 L bits of the length): at most about 12% on blobs under 256 B, 6% up to 64 KB, 3% above, about 1-4% on average. Key epoch after a rotation: readers try the few live keys rather than a cleartext epoch byte (proposal).
 
 ## Subscriptions and signals (2026-10-15, notes/ephemeral.md)
 - A connection may subscribe to labels. The peer then pushes new log entries (with blobs and wraps) as they arrive, same messages as a cursor reply, unsolicited.
