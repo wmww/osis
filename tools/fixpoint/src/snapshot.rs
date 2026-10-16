@@ -15,6 +15,18 @@
 //! result; nothing is dropped when nobody is offline; input order independence; bounded
 //! passes. A compaction point that a later backdated removal un-applies diverges from the
 //! full history until a fresh snapshot follows the removal (`compaction_at_unapplied`).
+//!
+//! Projected rosters (`SHist::projected`): a node holding only one actor's certificate
+//! closure computes that actor's P and G roles as the full node does, with or without
+//! compaction. Hand-over records (§7) are writes on G by its owner chain that touch no
+//! roster; one is valid iff its author was a P-admin at its point and no P demotion dropped
+//! it. Checked: a record by a device whose removal's frontier misses it is never valid;
+//! record validity is order independent, survives compaction and projection. A key-actor
+//! snapshot of P that omits a former device disowns that device's earlier records
+//! (`p_resnapshot_disowns_former_device_records`). The new identity hash(G, H) and the new
+//! owner's acceptance snapshot verify through the new owner's chain alone, so they are
+//! outside this model: whatever the record's validity, its content stands wherever the
+//! acceptance snapshot is held; only the alias and inheritance follow the record.
 
 use crate::Role;
 use std::collections::HashSet;
@@ -38,6 +50,8 @@ pub struct SWrite {
     pub t: u32,
     /// Full roster of `thing` over all nodes (K's entry ignored).
     pub snap: Option<Vec<Role>>,
+    /// Hand-over record of G (by its owner chain) to new owner `target` (an opaque id).
+    pub rec: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -149,7 +163,7 @@ impl SHist {
             for pos in start_pos..order.len() {
                 let i = order[pos];
                 let w = &self.writes[i];
-                if w.thing != thing || dropped >> i & 1 == 1 || w.target == K || w.snap.is_some() {
+                if w.thing != thing || dropped >> i & 1 == 1 || w.target == K || w.snap.is_some() || w.rec {
                     // A snapshot here is inapplicable or dropped (an applied one would be the start).
                     roles_after.push(roles.clone());
                     continue;
@@ -211,13 +225,74 @@ impl SHist {
             .collect()
     }
 
+    /// Hand-over record `i` is valid iff its author had owner-chain authority at its point by
+    /// P's timeline and no P demotion of the author dropped it (spec/permissions.md §7).
+    pub fn record_valid(&self, out: &Out, i: usize) -> bool {
+        let pos = pos_of(&self.order())[i];
+        let a = self.writes[i].author;
+        (a == K || out.p.roles_after[pos][a] == Role::Admin) && out.g.dropped >> i & 1 == 0
+    }
+
+    /// Valid hand-over records of G.
+    pub fn successors(&self, out: &Out) -> Vec<usize> {
+        (0..self.writes.len()).filter(|&i| self.writes[i].rec && self.record_valid(out, i)).collect()
+    }
+
+    /// What a node verifying actor `z` holds: the entries in the closure and every write that
+    /// touches one, every snapshot projected to the closure, and every hand-over record.
+    /// The closure starts at z's P and G entries and grows by each held write's author (its P
+    /// entry; for a non-snapshot write on G also its G entry): the certificate rule.
+    pub fn projected(&self, z: usize) -> (SHist, Vec<usize>) {
+        let n = self.n();
+        let (mut cp, mut cg) = (vec![false; n], vec![false; n]);
+        cp[z] = true;
+        cg[z] = true;
+        let held = |w: &SWrite, cp: &[bool], cg: &[bool]| {
+            !w.rec && (w.snap.is_some() || if w.thing == Thing::P { cp[w.target] } else { cg[w.target] })
+        };
+        loop {
+            let mut grew = false;
+            for w in &self.writes {
+                if !held(w, &cp, &cg) {
+                    continue;
+                }
+                let a = w.author;
+                let g_entry = w.thing == Thing::G && w.snap.is_none();
+                if !cp[a] || g_entry && !cg[a] {
+                    cp[a] = true;
+                    cg[a] |= g_entry;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        let mask = |r: &[Role], c: &[bool]| -> Vec<Role> { (0..n).map(|x| if c[x] { r[x] } else { Role::None }).collect() };
+        let keep: Vec<usize> = (0..self.writes.len()).filter(|&i| self.writes[i].rec || held(&self.writes[i], &cp, &cg)).collect();
+        let h = SHist {
+            gp: mask(&self.gp, &cp),
+            gg: mask(&self.gg, &cg),
+            writes: keep
+                .iter()
+                .map(|&i| {
+                    let mut w = self.writes[i].clone();
+                    w.snap = w.snap.map(|r| mask(&r, if w.thing == Thing::P { &cp } else { &cg }));
+                    w
+                })
+                .collect(),
+            recv: keep.iter().map(|&i| self.recv[i].clone()).collect(),
+        };
+        (h, keep)
+    }
+
     /// The history as held by a node that compacted `thing` at snapshot `s`: every write of
     /// `thing` ordered before `s` is gone, and so is the genesis (nothing before `s` exists).
     pub fn compacted(&self, thing: Thing, s: usize) -> (SHist, Vec<usize>) {
         let order = self.order();
         let pos_of = pos_of(&order);
         let keep: Vec<usize> = (0..self.writes.len())
-            .filter(|&i| !(self.writes[i].thing == thing && pos_of[i] < pos_of[s]))
+            .filter(|&i| !(self.writes[i].thing == thing && pos_of[i] < pos_of[s] && !self.writes[i].rec))
             .collect();
         let empty = vec![Role::None; self.n()];
         let h = SHist {
@@ -271,7 +346,17 @@ pub struct Stats {
     order_dep: u64,
     honest_mismatch: u64,
     max_passes: usize,
+    projections: u64,
+    projection_mismatch: u64,
+    records: u64,
+    records_valid: u64,
+    late_record_valid: u64,
+    record_mismatch: u64,
+    disowned: u64,
     ex_compaction: Option<SHist>,
+    ex_projection: Option<SHist>,
+    ex_late: Option<SHist>,
+    ex_record: Option<SHist>,
     ex_order: Option<SHist>,
     ex_honest: Option<SHist>,
 }
@@ -287,6 +372,13 @@ impl Stats {
         self.order_dep += o.order_dep;
         self.honest_mismatch += o.honest_mismatch;
         self.max_passes = self.max_passes.max(o.max_passes);
+        self.projections += o.projections;
+        self.projection_mismatch += o.projection_mismatch;
+        self.records += o.records;
+        self.records_valid += o.records_valid;
+        self.late_record_valid += o.late_record_valid;
+        self.record_mismatch += o.record_mismatch;
+        self.disowned += o.disowned;
         fn pick(a: &mut Option<SHist>, b: Option<SHist>) {
             if let Some(b) = b {
                 if a.as_ref().map_or(true, |a| b.writes.len() < a.writes.len()) {
@@ -297,6 +389,9 @@ impl Stats {
         pick(&mut self.ex_compaction, o.ex_compaction);
         pick(&mut self.ex_order, o.ex_order);
         pick(&mut self.ex_honest, o.ex_honest);
+        pick(&mut self.ex_projection, o.ex_projection);
+        pick(&mut self.ex_late, o.ex_late);
+        pick(&mut self.ex_record, o.ex_record);
     }
 
     pub fn print(&self) {
@@ -304,7 +399,18 @@ impl Stats {
             "snapshot: {} histories | G starts at a snapshot {} | compactions at applied snapshots {} mismatches {} | compactions at since-unapplied snapshots {} diverging {} | order-dependent {} | drops with nobody offline {} | max passes {}",
             self.histories, self.with_snapshot_start, self.compactions, self.compaction_mismatch, self.unapplied_points, self.unapplied_diverge, self.order_dep, self.honest_mismatch, self.max_passes
         );
-        for (label, ex) in [("compaction mismatch", &self.ex_compaction), ("order dependence", &self.ex_order), ("drop with nobody offline", &self.ex_honest)] {
+        println!(
+            "  projections (plain and compacted) {} mismatches {} | hand-over records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | valid records disowned by a fresh key-actor snapshot of P {}",
+            self.projections, self.projection_mismatch, self.records, self.records_valid, self.late_record_valid, self.record_mismatch, self.disowned
+        );
+        for (label, ex) in [
+            ("compaction mismatch", &self.ex_compaction),
+            ("order dependence", &self.ex_order),
+            ("drop with nobody offline", &self.ex_honest),
+            ("projection mismatch", &self.ex_projection),
+            ("late record valid", &self.ex_late),
+            ("record validity differing", &self.ex_record),
+        ] {
             if let Some(h) = ex {
                 println!("  smallest {label} example:");
                 print_hist(h);
@@ -318,20 +424,60 @@ pub fn print_hist(h: &SHist) {
     for i in h.order() {
         let w = &h.writes[i];
         match &w.snap {
+            _ if w.rec => println!("    w{i}: {} hands {:?} to #{} at t={} | recv {:?}", w.author, w.thing, w.target, w.t, h.recv[i]),
             Some(r) => println!("    w{i}: {} snapshots {:?} := {:?} at t={} | recv {:?}", w.author, w.thing, r, w.t, h.recv[i]),
             None => println!("    w{i}: {} sets {:?}[{}] := {:?} at t={} | recv {:?}", w.author, w.thing, w.target, w.role, w.t, h.recv[i]),
         }
     }
     let o = h.eval(true);
     println!(
-        "    -> P roles {:?} start {:?} | G roles {:?} start {:?} applied {:#b} dropped {:#b} ({} passes)",
-        o.p.roles, o.p.start, o.g.roles, o.g.start, o.g.applied, o.g.dropped, o.g.passes
+        "    -> P roles {:?} start {:?} | G roles {:?} start {:?} applied {:#b} dropped {:#b} ({} passes) | valid records {:?}",
+        o.p.roles, o.p.start, o.g.roles, o.g.start, o.g.applied, o.g.dropped, o.g.passes, h.successors(&o)
     );
+}
+
+/// Validity of the records by `author` (any if None) in `c`, holding `keep` of `h`'s
+/// writes, equals `h`'s.
+fn records_agree(h: &SHist, o: &Out, c: &SHist, keep: &[usize], author: Option<usize>) -> bool {
+    let oc = c.eval(true);
+    keep.iter().enumerate().all(|(new, &old)| {
+        let w = &h.writes[old];
+        !w.rec || author.map_or(false, |a| a != w.author) || c.record_valid(&oc, new) == h.record_valid(o, old)
+    })
+}
+
+/// A projection for each actor computes that actor's P and G roles as `o` does.
+fn projections_agree(h: &SHist, o: &Out, st: &mut Stats) -> bool {
+    (1..h.n()).all(|z| {
+        st.projections += 1;
+        let op = h.projected(z).0.eval(true);
+        op.p.roles[z] == o.p.roles[z] && op.g.roles[z] == o.g.roles[z]
+    })
 }
 
 fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
     st.histories += 1;
     let o = h.eval(true);
+    let order = h.order();
+    let pos = pos_of(&order);
+    let mut projection_ok = projections_agree(h, &o, st);
+    let mut records_ok = true;
+    for j in (0..h.writes.len()).filter(|&j| h.writes[j].rec) {
+        st.records += 1;
+        let valid = h.record_valid(&o, j);
+        st.records_valid += valid as u64;
+        // Late: its author was demoted from P by a write whose frontier misses it.
+        let late = o.p.demotions.iter().any(|&(r, z)| {
+            let rw = &h.writes[r];
+            h.writes[j].author == z && pos[j] < pos[r] && !(h.recv[j][rw.author] < rw.t)
+        });
+        if late && valid {
+            st.late_record_valid += 1;
+            st.ex_late.get_or_insert_with(|| h.clone());
+        }
+        let (pj, keep) = h.projected(h.writes[j].author);
+        records_ok &= records_agree(h, &o, &pj, &keep, Some(h.writes[j].author));
+    }
     st.max_passes = st.max_passes.max(o.p.passes.max(o.g.passes));
     if o.g.start.is_some() {
         st.with_snapshot_start += 1;
@@ -341,6 +487,10 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
         for s in h.snapshots(thing, &o, false) {
             let (c, keep) = h.compacted(thing, s);
             let oc = c.eval(true);
+            if applied.contains(&s) {
+                projection_ok &= projections_agree(&c, &o, st);
+                records_ok &= records_agree(h, &o, &c, &keep, None);
+            }
             let same = oc.p.roles == o.p.roles
                 && oc.g.roles == o.g.roles
                 && oc.p.applied == applied_kept(o.p.applied, &keep)
@@ -359,11 +509,30 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
             }
         }
     }
+    // K re-snapshots P with its current roster (as after removing a device): records by
+    // devices no longer in P lose their authority retroactively.
+    if h.writes.iter().any(|w| w.rec) {
+        let mut r = h.clone();
+        r.writes.push(SWrite { author: K, thing: Thing::P, target: 0, role: Role::None, t: 20, snap: Some(o.p.roles.clone()), rec: false });
+        r.recv.push(vec![20; h.n()]);
+        let or = r.eval(true);
+        st.disowned += (0..h.writes.len()).filter(|&j| h.writes[j].rec && h.record_valid(&o, j) && !r.record_valid(&or, j)).count() as u64;
+    }
     let perm = rng.perm(h.writes.len());
-    let op = h.permute(&perm).eval(true);
+    let ph = h.permute(&perm);
+    let op = ph.eval(true);
     if op.p.roles != o.p.roles || op.g.roles != o.g.roles {
         st.order_dep += 1;
         st.ex_order.get_or_insert_with(|| h.clone());
+    }
+    records_ok &= records_agree(h, &o, &ph, &perm, None);
+    if !projection_ok {
+        st.projection_mismatch += 1;
+        st.ex_projection.get_or_insert_with(|| h.clone());
+    }
+    if !records_ok {
+        st.record_mismatch += 1;
+        st.ex_record.get_or_insert_with(|| h.clone());
     }
     let distinct = h.writes.iter().map(|w| w.t).collect::<HashSet<_>>().len() == h.writes.len();
     if distinct {
@@ -433,7 +602,8 @@ fn random_hist(rng: &mut crate::Rng) -> SHist {
         };
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
         r[author] = t;
-        writes.push(SWrite { author, thing, target, role, t, snap });
+        let rec = thing == Thing::G && snap.is_none() && rng.below(6) == 0;
+        writes.push(SWrite { author, thing, target, role, t, snap, rec });
         recv.push(r);
     }
     SHist { gp, gg, writes, recv }
@@ -497,15 +667,28 @@ mod tests {
             self.0.writes.len() - 1
         }
         fn set(&mut self, author: usize, thing: Thing, target: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target, role, t, snap: Option::None }, recv)
+            self.push(SWrite { author, thing, target, role, t, snap: Option::None, rec: false }, recv)
         }
         fn snap(&mut self, author: usize, thing: Thing, roster: [Role; 6], t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()) }, recv)
+            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()), rec: false }, recv)
         }
     }
 
     fn g(h: &SHist) -> Vec<Role> {
         h.eval(true).g.roles
+    }
+
+    fn rec(b: &mut B6, author: usize, to: usize, t: u32, recv: &[(usize, u32)]) -> usize {
+        b.push(SWrite { author, thing: G, target: to, role: None, t, snap: Option::None, rec: true }, recv)
+    }
+
+    /// Every actor's projection agrees with the full node.
+    fn assert_projections(h: &SHist) {
+        let o = h.eval(true);
+        for z in 1..h.n() {
+            let op = h.projected(z).0.eval(true);
+            assert_eq!((op.p.roles[z], op.g.roles[z]), (o.p.roles[z], o.g.roles[z]), "projection for {z}");
+        }
     }
 
     /// Compacting at every applied snapshot gives the full result.
@@ -537,6 +720,8 @@ mod tests {
         assert_compaction_invariant(&h);
         let (c, _) = h.compacted(G, 1);
         assert_eq!(c.writes.len(), 3);
+        assert_projections(&h);
+        assert_projections(&c);
     }
 
     /// A grant with a pre-snapshot timestamp arriving after the snapshot is ignored
@@ -591,6 +776,7 @@ mod tests {
         let o = b.0.eval(true);
         assert_eq!(o.g.dropped >> s & 1, 1);
         assert_eq!(o.g.roles, vec![Admin, None, None, Admin, Write, None]);
+        assert_projections(&b.0);
     }
 
     /// A device removed from P cannot mint an epoch start: a snapshot claimed after its
@@ -683,5 +869,87 @@ mod tests {
         assert_eq!(g(&h), vec![Admin, None, None, Admin, None, Write]);
         assert_eq!(h.eval(true).g.start, Some(2));
         assert_compaction_invariant(&h);
+    }
+
+    /// Projection closure: B's role on G hinges on Z, who granted it; Z's own grant came
+    /// from device D1, whose removal from P (frontier missing the grant) drops it, which
+    /// takes B's grant with it. The projection for B holds exactly that chain.
+    #[test]
+    fn projection_follows_the_chain() {
+        let mut b = B6::new();
+        b.set(D1, G, Z, Admin, 2, &[(Z, 2)]);
+        b.set(Z, G, B, Admin, 3, &[]);
+        b.set(A, G, D2, Write, 4, &[]); // unrelated to B
+        b.set(D2, P, D1, None, 5, &[]);
+        let h = b.0;
+        assert_eq!(g(&h)[B], Write);
+        let (p, _) = h.projected(B);
+        assert_eq!(p.writes.len(), 3);
+        assert_projections(&h);
+    }
+
+    /// Hand-over disowned: D1 hands G to new owner #9 at t=5; D2, which never received the
+    /// record, removes D1 from P, backdated to t=4 or at t=7. Either way the record is
+    /// invalid at every node, compacted or not, so the alias G -> hash(G, H) breaks. The new
+    /// identity and #9's acceptance snapshot verify through #9's chain alone and stand.
+    #[test]
+    fn handover_disowned_by_device_removal() {
+        for removal_t in [4, 7] {
+            let mut b = B6::new();
+            let h_rec = rec(&mut b, D1, 9, 5, &[(A, 5)]);
+            b.set(D2, P, D1, None, removal_t, &[]);
+            let s = b.snap(D2, G, [None, None, None, Admin, Write, None], 8, &[]);
+            let h = b.0;
+            let o = h.eval(true);
+            assert!(!h.record_valid(&o, h_rec), "removal at {removal_t}");
+            assert!(h.successors(&o).is_empty());
+            let (c, keep) = h.compacted(G, s);
+            let ci = keep.iter().position(|&i| i == h_rec).unwrap();
+            assert!(!c.record_valid(&c.eval(true), ci));
+        }
+        // Received by D2 before its removal of D1: the record stands.
+        let mut b = B6::new();
+        let h_rec = rec(&mut b, D1, 9, 5, &[(D2, 6)]);
+        b.set(D2, P, D1, None, 7, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(b.0.successors(&o), vec![h_rec]);
+    }
+
+    /// A removed device's late record never becomes a valid successor: after its removal it
+    /// has no authority, backdated into its tenure it is dropped by the removal's frontier.
+    /// A competing honest record by D2 is then the only valid successor (no fork).
+    #[test]
+    fn removed_device_late_record_never_valid() {
+        let mut b = B6::new();
+        b.set(D2, P, D1, None, 4, &[(K, 4), (D1, 4), (A, 4)]);
+        let after = rec(&mut b, D1, 9, 6, &[(K, 6), (A, 6)]);
+        let backdated = rec(&mut b, D1, 9, 3, &[(K, 6), (A, 6)]);
+        let honest = rec(&mut b, D2, 8, 8, &[]);
+        let h = b.0;
+        let o = h.eval(true);
+        assert!(!h.record_valid(&o, after));
+        assert!(!h.record_valid(&o, backdated));
+        assert_eq!(h.successors(&o), vec![honest]);
+        for z in [D1, D2] {
+            let (p, keep) = h.projected(z);
+            let op = p.eval(true);
+            let valid: Vec<usize> = p.successors(&op).iter().map(|&i| keep[i]).collect();
+            assert_eq!(valid, vec![honest], "projection for {z}");
+        }
+    }
+
+    /// Finding: the key actor re-snapshotting P after a device left (as §6 recommends)
+    /// makes the snapshot's roster stand for all earlier time, so a hand-over the device
+    /// signed while it was a legitimate admin, and the removal had covered, becomes invalid.
+    #[test]
+    fn p_resnapshot_disowns_former_device_records() {
+        let mut b = B6::new();
+        let h_rec = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
+        b.set(D2, P, D1, None, 5, &[]);
+        let o = b.0.eval(true);
+        assert!(b.0.record_valid(&o, h_rec));
+        b.snap(K, P, [None, None, Admin, None, None, None], 7, &[]);
+        let o = b.0.eval(true);
+        assert!(!b.0.record_valid(&o, h_rec));
     }
 }

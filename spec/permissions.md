@@ -14,7 +14,7 @@
 ## 2. Membership writes
 - Grant, change and removal of an edge are writes to the target's `/members`, each in its own membership commit (spec/commits.md §2), by a node with admin on the target.
 - An edge may carry `until: timestamp`: the edge counts as removed at that time.
-- An edge may carry `invite: role`, at most its role. A node's **effective invite** on T is the maximum over its paths to T of the minimum of the roles along the path before the last edge and that edge's invite. An **invite grant** adds an edge for an actor with no current edge on T, with role and invite at most the author's effective invite, and carries the grantee's boxes for those roles. Invite holders cannot change or remove any other edge.
+- An edge may carry `invite: role`, at most its role. A node's **effective invite** on T is the maximum over its paths to T of the minimum of the roles along the path before the last edge and that edge's invite. An **invite grant** adds an edge for an actor with no current edge on T (an expired edge counts as none), with role and invite at most the author's effective invite, and carries the grantee's boxes for those roles. Invite holders cannot change or remove any other edge.
 - **Self-removal**: a node with admin on actor X may always remove X's edge on any target, or lower its role, invite or `until`.
 - A membership write made under an edge into actor G MUST also be published under G's label.
 - The roster apps read from `/members` is the membership timeline's roster (§4), not the CRDT join of the stored deltas.
@@ -42,6 +42,7 @@ Validity is a deterministic function of the commits, attestations and the node's
 2. Walk the writes, skipping the drop set D (initially empty). A write applies iff its author has the required authority at that point: admin on the thing; for an invite grant, the effective invite it needs; for a self-removal, admin on the edge's member.
 3. Attribute each membership write to the highest authority its author held at its point, owner chain before edge, admin before invite.
 4. When an applied write R by node A at time T demotes actor X (from admin to below, or removes an edge with admin, or lowers or removes X's invite), every earlier applied membership write by X attributed to the removed authority that R's **frontier** does not cover is added to D, and the walk restarts. Removing X from actor G audits X's writes made as G's admin on G and on everything G owns; demoting X's edge on a thing audits only what X wrote on that thing by that edge.
+Self-removals are never added to D. Each membership write of a commit is judged on its own.
 5. The first walk that adds nothing to D is the timeline. D is rebuilt from scratch whenever the held set changes.
 - R's frontier is A's receipt log over X's membership-write dots as of T, per node of X, embedded in R. A's own chain writes and R itself always count. No other receipts or attestations count for membership writes.
 - A demotion by `until` or by self-removal audits nothing. The next explicit demotion of that member by another node audits with its frontier as if the member still held the role.

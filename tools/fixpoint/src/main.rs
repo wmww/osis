@@ -1,13 +1,17 @@
 //! Throwaway model of the layer-1 membership validity rule (spec/permissions.md §5.1;
 //! findings in notes/permissions.md). Independent of any real implementation. One group actor G;
 //! actor i has exactly one node i; actor 0 is G's owner (always admin, unremovable).
-//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot]`
+//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov]`
 //! (exhaustive tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in
 //! the notes; the others are the rejected as-written rule and its third-party-witness
-//! repairs. `snapshot` runs the two-level roster-snapshot model (src/snapshot.rs).
+//! repairs. `snapshot` runs the two-level roster-snapshot model (src/snapshot.rs: snapshots,
+//! projected rosters, hand-over records); `edges` the one-level model of `until`, invite
+//! power and self-removal (src/edges.rs), `edges-prov` the same with a candidate fix for
+//! sticky drops.
 
 use std::collections::HashSet;
 
+mod edges;
 mod snapshot;
 
 const OWNER: usize = 0;
@@ -17,6 +21,7 @@ const LATE: u32 = 1000;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 enum Role {
     None,
+    Read,
     Write,
     Admin,
 }
@@ -883,6 +888,14 @@ fn main() {
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
     if args.get(2).map(String::as_str) == Some("snapshot") {
         snapshot::random(samples, 0x5eed).print();
+        return;
+    }
+    if let Some(mode) = match args.get(2).map(String::as_str) {
+        Some("edges") => Some(edges::Drops::Sticky),
+        Some("edges-prov") => Some(edges::Drops::Provenance),
+        _ => Option::None,
+    } {
+        edges::run(samples, mode);
         return;
     }
     let rule = match args.get(2).map(String::as_str) {

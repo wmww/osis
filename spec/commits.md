@@ -22,7 +22,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.
-- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9), one membership write per commit. A grant also carries the grantee's `/secrets` boxes. Roster snapshots and hand-over records are membership commits (spec/permissions.md §6, §7). Membership commits MUST NOT carry `expires` and are never purged; they retire only as spec/permissions.md §6 allows, and a partial-purge rewrite may drop their `/secrets` and `/keys` deltas.
+- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9), one membership write per commit, except a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9). A grant also carries the grantee's `/secrets` boxes. Roster snapshots and hand-over records are membership commits (spec/permissions.md §6, §7). Membership commits MUST NOT carry `expires` and are never purged; they retire only as spec/permissions.md §6 allows, and a partial-purge rewrite may drop their `/secrets` and `/keys` deltas.
 - **Attestation**: header only, no deltas (spec/permissions.md §5).
 - **Compaction snapshot**: content or membership kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7). A roster snapshot is not one: it writes a reset and full state under its own stamps (spec/permissions.md §6).
 - A commit spanning several kinds is invalid.

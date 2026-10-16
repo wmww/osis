@@ -1,8 +1,0 @@
-# Fixpoint model does not cover three newer permission rules
-> Summary: `tools/fixpoint` checks the demoter-frontier timeline and owner-chain roster snapshots, but not: outsiders evaluating a timeline over a per-edge projected roster, `until`/self-removal demotions that audit nothing until a real demoter finalizes, and hand-over disowning with the acceptance snapshot.
-> Tags: tests, permissions
-
-Each rule (spec/permissions.md §4, §5.1, §7, §9) was argued in notes/permissions.md, not model-checked. Extend `tools/fixpoint` (scenarios as test vectors plus random search) before implementation:
-1. **Projected rosters.** A node holding only the snapshot entries and later writes relevant to one author (closure by the certificate rule: each held write brings its author's entry, recursively) must compute the same role for that author as a node holding everything. Expect: equal everywhere, since drops of unheld writes cannot matter; find the counterexample if there is one.
-2. **Finalization.** Model an edge with `until` and a self-removal; show a backdated join by the shared key after `until` is applied until a real demoter's removal arrives and drops it, and that the finalizing removal audits even though the timeline already shows the member below. Check termination and order independence still hold.
-3. **Hand-over.** Model the record as a membership write by a device of the former owner, a backdated removal of that device, and an acceptance snapshot by the new owner; show the alias breaks while the new identity's content survives at every node holding the snapshot, and that a removed device's late record never becomes a valid successor.
