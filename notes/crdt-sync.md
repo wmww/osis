@@ -1,5 +1,5 @@
 # Commits, CRDTs, retention and purge
-> Summary: Commits and per-aspect delta-state CRDTs with one rule everywhere (timestamp plus author dot, later wins, removal is an LWW reset addressed by dot for collection elements, no causal contexts; decided 2026-10-14/15), the movable text/list CRDT, dots, undo, retention classes and purge mechanics. Sync itself in notes/sync.md.
+> Summary: Commits and per-aspect delta-state CRDTs with one rule everywhere (timestamp plus author dot, later wins, removal is an LWW reset addressed by dot for collection elements, no causal contexts; decided 2026-10-14/15), the movable text/list CRDT, dots, undo, a second dot form keyed by commit ID for shared-key writers (2026-10-16), retention classes and purge mechanics. Sync itself in notes/sync.md.
 
 ## Decided
 - Sync unit is a group; mechanism is blob-set reconciliation (notes/sync.md).
@@ -17,7 +17,7 @@
 ## Layers (each a canonical CBOR value)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only: never synced, never hashed.
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery.
-- **Commit**: signed header plus one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer type hash and schema revision, per-aspect dot ranges, list of (tid, ak, delta hash, encoding), retention class override, optional expiry time, optional purge request, delete token hash for the commit and one per chunk blob the deltas introduce (notes/sync.md), signature. Commit ID = hash(header). Header plus unpurged deltas form one encrypted blob. A commit applies whole or not at all on every node that tracks any of its things. Commit kinds: content, membership (own commit per membership write, notes/permissions.md), attestation (header-only receipt frontiers for the revocation rule, no deltas, never compacted away).
+- **Commit**: signed header plus one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer type hash and schema revision, per-aspect dot ranges, list of (tid, ak, delta hash, encoding), retention class override, optional expiry time, optional purge request, delete token hash for the commit and one per chunk blob the deltas introduce (notes/sync.md), signature. Commit ID = hash(header). Header plus unpurged deltas form one encrypted blob. A commit applies whole or not at all on every node that tracks any of its things. Commit kinds: content, membership (own commit per membership write, notes/permissions.md), attestation (header-only receipt frontiers or commit lists for the revocation rule, no deltas, never compacted away).
 
 ## Guarantees
 - Convergence under any delivery order.
@@ -89,6 +89,7 @@ Encoding and size:
 
 ## Dots and clock
 - Dot = (node, aspect-local counter), not commit seq. Commit header maps each touched aspect to a counter range; a node's dots in an aspect are contiguous, gaps only from out-of-order arrival.
+- Second dot form (decided 2026-10-16, for anonymous writing through a shared signing key, notes/permissions.md): dot = (commit ID, commit-local index); the header marks the form per commit. Any author may use it. Unlinkable, and collision-free even when several devices sign with one key (per-device IDs under a shared key let any key holder reuse another's dot and knock out its edit). Cost falls only on such commits: text/list runs and received-dot ranges do not continue across commits, one ~16-byte author-table entry per commit, and revocation witnesses list commits instead of frontiers. Must be in the v1 format.
 - Every state element (register, set element, map entry, text element, counter contribution) carries its dot (decided 2026-10-14). Revocation (notes/permissions.md) drops by dot and witnesses frontiers per (aspect, author node). A bool aspect is value + timestamp + dot.
 - No causal contexts: nothing records what a writer had seen. Rejected: attributing through commit headers (zero bytes in state, history lookup at revocation) for non-uniformity.
 - Clock: HLC (wall ms, counter, node tiebreak, advanced on receipt, drift capped).
