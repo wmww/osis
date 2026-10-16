@@ -65,4 +65,5 @@ One label per group synced to it, overlaps between them, blob count, padded blob
 - Encrypted table of contents for partial restore from blind nodes.
 - Upload batching; log retention horizon at each node (beyond it, peers fall back to range reconciliation).
 - Transport and discovery: notes/networking.md (decided 2026-10-16). Crypto primitives: not discussed.
+- Download authorization at blind nodes is unspecified. Needed so a revoked link or removed member cannot keep fetching old blobs of a label: a fourth label key (download, readers and up), re-registered eagerly like the others. Also stops strangers who learn a label ID from counting blobs.
 - Commit floor: a minimal commit is about 200 bytes plus a wrap per label plus a 16-byte token hash. Fine for editing workloads; revisit only if huge commit volumes appear (owner 2026-10-11).
