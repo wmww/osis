@@ -41,7 +41,7 @@ A reader checks that every own-source counter in a delta lies in `[lo, hi)` and 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
 - `sources` (the notes' "author table"): table of foreign sources referenced by the commit's deltas. Index 0 is the commit's own source (node form: the author node; commit form: this commit) and is not stored in the table. Entries: `Node` as a 15-byte string, `Commit` as a 32-byte string, `Derived` as `[src_index, counter]` (the referenced dot, whose source must itself be `Node` or `Commit`).
-- Per delta: `(tid, ak, delta hash, counter range [lo, hi))` as in §2.3. Encoding IDs are inside the delta (§3.2), not in the header. The header also carries the writer's type hash and schema revision per delta (notes/versioning.md); merge ignores them.
+- Per delta: `(tid, ak, delta hash, counter range [lo, hi))` as in §2.3. Encoding IDs are inside the delta (§3.2), not in the header. The header also carries the writer's type hash and schema revision per delta (notes/versioning.md); merge ignores them. A commit normally carries one delta per `(tid, ak)`; a roster snapshot (notes/permissions.md) carries one `/members` delta per edge, and the aspect's delta is the join of all of them that the node holds.
 - Dot form flag (node or commit).
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional (§4.7).

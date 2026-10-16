@@ -1,5 +1,5 @@
 # Networking: transport, discovery, reachability
-> Summary: Decided with owner 2026-10-16. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct server connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official blind server and relays. Addresses and relays are osis data; transport keys are separate from node signing keys. Tor saved as a future option.
+> Summary: Decided with owner 2026-10-16. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct server connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official blind server and relays. Addresses and relays are osis data, server addresses pin the server's key; transport keys are separate from node signing keys. Tor saved as a future option.
 
 ## What osis needs from the network (from notes/sync.md, notes/constraints.md)
 - Long-lived connections with server push (subscriptions, signals), several labels per connection, one round trip for the common case.
@@ -14,6 +14,7 @@
 3. **Official infrastructure, never required.** We run an official blind server: cheap, unexploitable services free (likely including relaying and first-contact help), services with real cost (storage) for paying accounts. It also runs `iroh-relay` (open source, one TOML file, ACME TLS). Anyone may run their own; any blind node may relay. n0's public relays and DNS discovery (dns.iroh.link) are not used: n0 would see every node's key and IP.
 4. **Reachability is osis data.** A node's dialable key, preferred relays and direct addresses live on its node thing (`/reach`), published under the labels it tracks so co-readers can dial it (not under labels with bearer or public readers by default; notes/permissions.md, Nodes as things); blind nodes see nothing of it. mDNS on by default for LAN; mainline-DHT discovery opt-in.
 5. **Transport keys are not node signing keys**, or every blind node and relay learns which device uploaded what. Clients dial blind nodes with an ephemeral key per connection (blind nodes never dial out). For P2P a node has a separate dialable key, published only in `/reach`, rotatable at will.
+6. **Server addresses pin a key** (sync review 2026-10-16): an entry in a label's `servers` list is a transport URL plus the server's static public key (QUIC/TLS certificate key or iroh endpoint key), so a self-hosted server needs no certificate authority and a middlebox cannot pose as the server. Everything of value is end-to-end signed and encrypted, so the pin protects only the metadata the server sees anyway.
 
 ## Local and offline transports (state 2026-10-16)
 Owner wants iroh's "just works" across LAN, Bluetooth and similar. Actual state:
@@ -42,3 +43,4 @@ Hides IPs from blind nodes, relays and peers. Not needed now (owner 2026-10-16).
 - First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server. A contact card can be a bearer link to a profile thing holding `/keys` (notes/crypto.md).
 - Which free services the official server offers exactly, and abuse limits for free relaying.
 - BLE: AGPL crate vs our own.
+- LAN discovery announces the dialable key on every network the device joins, a stable identifier for tracking across networks. Options: a dialable key per network, or announcing only on networks the user marks trusted. Anonymity against network analysis is out of scope, but this leak is gratuitous.

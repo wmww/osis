@@ -13,7 +13,7 @@ No storage engine erases reliably (SSD wear levelling, copy-on-write filesystems
 - Dedup by reuse, not by convergence: an editor holds the current tree, recomputes content-defined boundaries over the new content, matches chunks by content hash against the tree's links and reuses their (ID, key); only new chunks become new blobs. Dedup across edits, devices and editors is unchanged. Lost only when two parties independently create equal content for the same thing, which was never common; cross-thing dedup never existed.
 - Shredding a version: drop the wraps of its commit blob. Its deltas, hence its root links, hence every tree node and chunk that only this version reached, become unreadable. Surviving chunks stay reachable through the live tree. Purge cost is independent of value size.
 - The dedup secret (KDF of the creation nonce) keys every content hash: delta hashes and links' content hashes. It keys no encryption any more, so it may stay permanent. Chunk IDs are hashes of ciphertext under random keys, so retire lists, cursor logs and IDs-gained lists are not fingerprints.
-- Delete token hashes (notes/sync.md) derive from blob IDs; unaffected.
+- Delete tokens (notes/sync.md) derive from chunk blob IDs or a header salt, never from content; unaffected.
 
 ## Units
 What a node holds and the unit each lives in:
