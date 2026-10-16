@@ -1,7 +1,9 @@
 //! Throwaway model of the layer-1 membership validity rule (notes/permissions.md,
 //! "Validity definition"). Independent of any real implementation. One group actor G;
 //! actor i has exactly one node i; actor 0 is G's owner (always admin, unremovable).
-//! Run: `cargo run --release` (exhaustive tiers + random sample), `cargo test` (scenarios).
+//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier]` (exhaustive
+//! tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in the notes;
+//! the others are the rejected as-written rule and its third-party-witness repairs.
 
 use std::collections::HashSet;
 
@@ -70,6 +72,9 @@ enum Rule {
     Stratified,
     /// Stratified, but write+ nodes witness membership writes (as the notes say today).
     StratifiedW,
+    /// Demoter-frontier rule (`Hist::frontier`): the only testimony about an actor's
+    /// membership writes is the frontier embedded in the write that demotes it.
+    Frontier,
 }
 
 impl Hist {
@@ -271,6 +276,76 @@ impl Hist {
         }
     }
 
+    /// Demoter-frontier rule. Walk once in (HLC, node) order skipping `dropped`; a write
+    /// applies iff its author is admin at that point. When an applied write R by A at time
+    /// T takes X from admin to below, every earlier applied write by X that A had not
+    /// received before T (A's embedded frontier; A's own chain and R itself always count)
+    /// is dropped for good and the walk restarts. No receipts of third parties, no
+    /// attestations: all testimony about membership writes is itself a membership write,
+    /// audited the same way when its author is demoted. Terminates: drops only grow.
+    fn frontier(&self) -> (Walk, usize) {
+        let n = self.n();
+        let order = self.order();
+        let mut dropped = 0u64;
+        let mut passes = 0;
+        'walk: loop {
+            passes += 1;
+            let mut roles = self.genesis.clone();
+            roles[OWNER] = Role::Admin;
+            let mut applied = 0u64;
+            let mut adm_rev = vec![None; n];
+            let mut wr_rev = vec![None; n];
+            // Last applied write that set each actor's role: the actor's chain.
+            let mut chain: Vec<Option<usize>> = vec![None; n];
+            for &i in &order {
+                let w = &self.writes[i];
+                if dropped >> i & 1 == 1 || w.target == OWNER {
+                    continue;
+                }
+                if w.author != OWNER && roles[w.author] != Role::Admin {
+                    continue;
+                }
+                let old = roles[w.target];
+                roles[w.target] = w.role;
+                applied |= 1 << i;
+                if old == Role::Admin && w.role < Role::Admin {
+                    adm_rev[w.target] = Some(i);
+                    let x = w.target;
+                    let mut grew = false;
+                    for j in 0..self.writes.len() {
+                        if applied >> j & 1 == 0 || self.writes[j].author != x || j == i {
+                            continue;
+                        }
+                        let covered = self.recv[j][w.author] < w.t || chain[w.author] == Some(j);
+                        if !covered {
+                            dropped |= 1 << j;
+                            grew = true;
+                        }
+                    }
+                    if grew {
+                        continue 'walk;
+                    }
+                }
+                if old >= Role::Write && w.role == Role::None {
+                    wr_rev[w.target] = Some(i);
+                }
+                chain[w.target] = Some(i);
+            }
+            let att_valid = self.att_fixpoint(&roles, &wr_rev, applied);
+            return (Walk { roles, applied, adm_rev, wr_rev, att_valid }, passes);
+        }
+    }
+
+    /// Rules defined as a terminating procedure rather than a fixpoint.
+    fn procedural(&self, rule: Rule) -> Option<(Walk, usize)> {
+        match rule {
+            Rule::Stratified => Some(self.stratified(Role::Admin)),
+            Rule::StratifiedW => Some(self.stratified(Role::Write)),
+            Rule::Frontier => Some(self.frontier()),
+            _ => None,
+        }
+    }
+
     fn droppable(&self) -> u64 {
         let mut m = 0;
         for (i, w) in self.writes.iter().enumerate() {
@@ -415,7 +490,7 @@ struct Stats {
     ex_multi: Option<Hist>,
     ex_none: Option<Hist>,
     ex_acc: Option<Hist>,
-    /// Stratified only: differs from the as-written (exempt) iteration where that converges.
+    /// Procedural rules only: differs from the as-written (exempt) iteration where that converges.
     disagree: u64,
     disagree_roles: u64,
     honest_mismatch: u64,
@@ -460,9 +535,9 @@ impl Stats {
             self.histories, self.cycles, self.no_stable, self.multi_stable, self.acc_unstable, self.acc_differs,
             self.order_dep, self.l2_nonmono, self.l1_nonmono
         );
-        if strat_witness(rule) != Role::None {
+        if is_procedural(rule) {
             println!(
-                "  stratified: differs from converged exempt iteration {} (final roles differ {}) | max passes {} | drops with nobody offline {}",
+                "  {rule:?}: differs from converged exempt iteration {} (final roles differ {}) | max passes {} | drops with nobody offline {}",
                 self.disagree, self.disagree_roles, self.max_passes, self.honest_mismatch
             );
         }
@@ -481,9 +556,9 @@ fn print_hist(h: &Hist, rule: Rule) {
         let w = &h.writes[i];
         println!("    w{i}: {} sets {} := {:?} at t={} | recv {:?}", w.author, w.target, w.role, w.t, h.recv[i]);
     }
-    if strat_witness(rule) != Role::None {
-        let (w, p) = h.stratified(strat_witness(rule));
-        println!("    stratified -> roles {:?} applied {:#b} ({p} passes)", w.roles, w.applied);
+    if is_procedural(rule) {
+        let (w, p) = h.procedural(rule).unwrap();
+        println!("    {rule:?} -> roles {:?} applied {:#b} ({p} passes)", w.roles, w.applied);
         print_hist(h, Rule::ExemptOwnRevoke);
         return;
     }
@@ -498,8 +573,8 @@ fn print_hist(h: &Hist, rule: Rule) {
 
 fn check(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, rule: Rule) {
     st.histories += 1;
-    if strat_witness(rule) != Role::None {
-        return check_stratified(h, st, rng, strat_witness(rule));
+    if is_procedural(rule) {
+        return check_procedural(h, st, rng, rule);
     }
     let stable = h.stable(rule);
     let outcomes: HashSet<&Outcome> = stable.iter().map(|(_, o)| o).collect();
@@ -568,16 +643,12 @@ fn check(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, rule: Rule) {
     }
 }
 
-fn strat_witness(rule: Rule) -> Role {
-    match rule {
-        Rule::Stratified => Role::Admin,
-        Rule::StratifiedW => Role::Write,
-        _ => Role::None,
-    }
+fn is_procedural(rule: Rule) -> bool {
+    matches!(rule, Rule::Stratified | Rule::StratifiedW | Rule::Frontier)
 }
 
-fn check_stratified(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, witness: Role) {
-    let (w, passes) = h.stratified(witness);
+fn check_procedural(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, rule: Rule) {
+    let (w, passes) = h.procedural(rule).unwrap();
     st.max_passes = st.max_passes.max(passes);
     if let Ok((_, o, _)) = h.iterate(Rule::ExemptOwnRevoke, false) {
         if o.roles != w.roles || o.applied != w.applied {
@@ -596,13 +667,13 @@ fn check_stratified(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, witness: Ro
         r.fill(h.writes[i].t);
     }
     fill_att_immediate(&mut honest);
-    if distinct && honest.stratified(witness).0.roles != honest.walk(0).roles {
+    if distinct && honest.procedural(rule).unwrap().0.roles != honest.walk(0).roles {
         st.honest_mismatch += 1;
         st.ex_honest.get_or_insert_with(|| honest.clone());
     }
     let Some(rng) = rng else { return };
     let perm = rng.perm(h.writes.len());
-    if permute(h, &perm).stratified(witness).0.roles != w.roles {
+    if permute(h, &perm).procedural(rule).unwrap().0.roles != w.roles {
         st.order_dep += 1;
     }
     if !h.content.is_empty() {
@@ -811,6 +882,7 @@ fn main() {
         Some("exempt") => Rule::ExemptOwnRevoke,
         Some("strat") => Rule::Stratified,
         Some("stratw") => Rule::StratifiedW,
+        Some("frontier") => Rule::Frontier,
         _ => Rule::AsWritten,
     };
     println!("rule {rule:?}");
@@ -839,12 +911,14 @@ mod tests {
     const A3: usize = 3;
     const M: usize = 4;
     const G: [Role; 5] = [Admin, Admin, Admin, Admin, Write];
+    /// Rules with third-party witnesses.
     const RULES: [Rule; 3] = [Rule::ExemptOwnRevoke, Rule::Stratified, Rule::StratifiedW];
+    const ALL: [Rule; 4] = [Rule::ExemptOwnRevoke, Rule::Stratified, Rule::StratifiedW, Rule::Frontier];
 
     fn eval(h: &Hist, rule: Rule) -> Walk {
-        match strat_witness(rule) {
-            Role::None => h.walk(h.iterate(rule, false).expect("terminates").0),
-            w => h.stratified(w).0,
+        match h.procedural(rule) {
+            Option::None => h.walk(h.iterate(rule, false).expect("terminates").0),
+            Option::Some((w, _)) => w,
         }
     }
 
@@ -854,7 +928,7 @@ mod tests {
         b.set(A1, A2, None, 2, &[]);
         b.set(A2, A1, None, 3, &[]);
         let h = b.build();
-        for rule in RULES {
+        for rule in ALL {
             let w = eval(&h, rule);
             assert_eq!((w.roles[A1], w.roles[A2]), (Admin, None), "{rule:?}");
         }
@@ -863,7 +937,8 @@ mod tests {
     #[test]
     fn stolen_device_backdated_revoke_witnessed() {
         // A1 is a stolen device: backdated removals at t=2,3 reach admin A3 at t=5;
-        // owner removes A1 at t=10 without backdating.
+        // owner removes A1 at t=10 without backdating. Witness rules: the removals stand
+        // (A3 saw them). Frontier: they stand iff the owner itself had received them.
         let mut b = Builder::new(&G);
         b.set(A1, A2, None, 2, &[(A3, 5)]);
         b.set(A1, M, None, 3, &[(A3, 5)]);
@@ -873,6 +948,14 @@ mod tests {
             let w = eval(&h, rule);
             assert_eq!((w.roles[A1], w.roles[A2], w.roles[M]), (None, None, None), "{rule:?}");
         }
+        let w = eval(&h, Rule::Frontier);
+        assert_eq!((w.roles[A1], w.roles[A2], w.roles[M]), (None, Admin, Write));
+        let mut b = Builder::new(&G);
+        b.set(A1, A2, None, 2, &[(A3, 5), (O, 6)]);
+        b.set(A1, M, None, 3, &[(A3, 5), (O, 6)]);
+        b.set(O, A1, None, 10, &[]);
+        let w = eval(&b.build(), Rule::Frontier);
+        assert_eq!((w.roles[A1], w.roles[A2], w.roles[M]), (None, None, None));
     }
 
     #[test]
@@ -886,6 +969,7 @@ mod tests {
         assert_eq!(eval(&h, Rule::ExemptOwnRevoke).roles[A2], None);
         assert_eq!(eval(&h, Rule::StratifiedW).roles[A2], None);
         assert_eq!(eval(&h, Rule::Stratified).roles[A2], Admin);
+        assert_eq!(eval(&h, Rule::Frontier).roles[A2], Admin);
     }
 
     #[test]
@@ -895,7 +979,7 @@ mod tests {
         b.set(A1, A3, None, 3, &[(A3, 5), (M, 5)]);
         b.set(O, A1, None, 1, &[]);
         let h = b.build();
-        for rule in RULES {
+        for rule in ALL {
             let w = eval(&h, rule);
             assert_eq!((w.roles[A1], w.roles[A2], w.roles[A3]), (None, Admin, Admin), "{rule:?}");
         }
@@ -908,7 +992,7 @@ mod tests {
         b.content(M, 3, &[]); // nobody saw it
         b.set(O, M, Write, 5, &[]);
         let h = b.build();
-        for rule in RULES {
+        for rule in ALL {
             assert_eq!(h.content_valid(&eval(&h, rule)), vec![true], "{rule:?}");
         }
     }
@@ -928,7 +1012,7 @@ mod tests {
                 h.att_recv[0][a][m] = if m == A3 || m == M { 4 } else { LATE };
             }
         }
-        for rule in RULES {
+        for rule in ALL {
             assert_eq!(h.content_valid(&eval(&h, rule)), vec![false], "{rule:?}");
         }
     }
@@ -943,7 +1027,7 @@ mod tests {
         let h = b.build();
         assert!(h.iterate(Rule::AsWritten, false).is_err());
         assert!(h.stable(Rule::AsWritten).is_empty());
-        for rule in RULES {
+        for rule in ALL {
             assert_eq!(eval(&h, rule).roles[A1], None, "{rule:?}");
         }
     }
@@ -963,7 +1047,7 @@ mod tests {
             assert!(h.iterate(rule, false).is_err(), "{rule:?}");
             assert!(h.stable(rule).is_empty(), "{rule:?}");
         }
-        for rule in [Rule::Stratified, Rule::StratifiedW] {
+        for rule in [Rule::Stratified, Rule::StratifiedW, Rule::Frontier] {
             let w = eval(&h, rule);
             assert_eq!((w.roles[A1], w.roles[A2]), (None, Admin), "{rule:?}");
         }
@@ -980,9 +1064,93 @@ mod tests {
         b.set(A1, A2, None, 4, &[(O, 1), (3, 1)]);
         let h = b.build();
         assert_eq!(h.stable(Rule::AsWritten).len(), 2);
-        for rule in RULES {
+        for rule in ALL {
             let w = eval(&h, rule);
             assert_eq!((w.roles[A1], w.roles[A2]), (None, Admin), "{rule:?}");
         }
+    }
+
+    /// Hole in every third-party-witness rule: an ex-admin's backdated grant whose only
+    /// receiver is its beneficiary. The beneficiary is a member at the end (and just
+    /// before the removal), so it witnesses its own grant. Frontier: the owner never
+    /// received the grant, so it is dropped.
+    #[test]
+    fn grant_witnessed_only_by_its_beneficiary() {
+        let g = [Admin, Admin, Admin, None];
+        let z = 3;
+        let mut b = Builder::new(&g);
+        b.set(A1, z, Admin, 2, &[(z, 2)]);
+        b.set(O, A1, None, 5, &[]);
+        let h = b.build();
+        for rule in [Rule::AsWritten, Rule::ExemptOwnRevoke, Rule::Stratified, Rule::StratifiedW] {
+            assert_eq!(eval(&h, rule).roles[z], Admin, "{rule:?} (hole)");
+        }
+        assert_eq!(eval(&h, Rule::Frontier).roles[z], None);
+    }
+
+    /// Same with two forged grants vouching for each other.
+    #[test]
+    fn grants_witnessing_each_other() {
+        let g = [Admin, Admin, Admin, None, None];
+        let (z1, z2) = (3, 4);
+        let mut b = Builder::new(&g);
+        b.set(A1, z1, Admin, 2, &[(z2, 3)]);
+        b.set(A1, z2, Admin, 3, &[(z1, 3)]);
+        b.set(O, A1, None, 5, &[]);
+        let h = b.build();
+        for rule in [Rule::AsWritten, Rule::ExemptOwnRevoke, Rule::Stratified, Rule::StratifiedW] {
+            let w = eval(&h, rule);
+            assert_eq!((w.roles[z1], w.roles[z2]), (Admin, Admin), "{rule:?} (hole)");
+        }
+        let w = eval(&h, Rule::Frontier);
+        assert_eq!((w.roles[z1], w.roles[z2]), (None, None));
+    }
+
+    /// Frontier: the demoter's testimony is audited when the demoter is demoted. A2
+    /// removes A3 at t=3; the owner removes A2 at t=5. If the owner had received A2's
+    /// removal of A3, it stands; otherwise it falls with A2 and A3 is restored.
+    #[test]
+    fn frontier_demoters_testimony_is_audited() {
+        let mut b = Builder::new(&G);
+        b.set(A2, A3, None, 3, &[]);
+        b.set(O, A2, None, 5, &[]);
+        let w = eval(&b.build(), Rule::Frontier);
+        assert_eq!((w.roles[A2], w.roles[A3]), (None, Admin));
+        let mut b = Builder::new(&G);
+        b.set(A2, A3, None, 3, &[(O, 4)]);
+        b.set(O, A2, None, 5, &[]);
+        let w = eval(&b.build(), Rule::Frontier);
+        assert_eq!((w.roles[A2], w.roles[A3]), (None, None));
+    }
+
+    /// Frontier: a drop can move a demotion earlier. A1 removes A2 (nobody else saw it),
+    /// A2 removes A1 (A2 had not seen it), the owner removes A1 without having seen A1's
+    /// write. Dropping it makes A2's removal of A1 the operative one; the result is stable
+    /// because drops are sticky (a from-scratch re-evaluation would oscillate).
+    #[test]
+    fn frontier_drop_moves_demotion_earlier() {
+        let mut b = Builder::new(&G);
+        b.set(A1, A2, None, 2, &[]);
+        b.set(A2, A1, None, 3, &[]);
+        b.set(O, A1, None, 5, &[]);
+        let h = b.build();
+        let (w, passes) = h.frontier();
+        assert_eq!((w.roles[A1], w.roles[A2]), (None, Admin));
+        assert_eq!(passes, 2);
+    }
+
+    /// Frontier: the demoter's own chain always counts as received, so an admin can
+    /// remove the admin that granted it without a malformed frontier undoing itself.
+    #[test]
+    fn frontier_demoter_chain_is_covered() {
+        let g = [Admin, Admin, None];
+        let y = 2;
+        let mut b = Builder::new(&g);
+        b.set(A1, y, Admin, 2, &[(y, 2)]);
+        b.set(y, A1, None, 4, &[]);
+        let h = b.build();
+        let (w, passes) = h.frontier();
+        assert_eq!((w.roles[A1], w.roles[y]), (None, Admin));
+        assert_eq!(passes, 1);
     }
 }
