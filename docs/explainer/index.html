@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>osis explained</title>
+<meta name="description" content="A visual tour of osis, the Open Structured Information System: a decentralized, reactive data layer for interconnected applications.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233657d6'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='white' stroke-width='3.5'/%3E%3C/svg%3E">
+<script>
+  // Apply a saved theme before first paint to avoid a flash.
+  try { const t = localStorage.getItem('osis-theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
+</script>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<!-- Shared SVG defs: markers referenced by every diagram. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1,1.5 L9,5 L1,8.5 Z" fill="context-stroke"/>
+    </marker>
+  </defs>
+</svg>
+
+<header class="top">
+  <a class="brand" href="#/">osis<span>explained</span></a>
+  <div class="crumb" id="crumb"></div>
+  <button class="icon-btn" id="replay" title="Replay animation (R)" aria-label="Replay animation" hidden>
+    <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4.5h4.5"/></svg>
+  </button>
+  <button class="icon-btn" id="theme" title="Toggle light/dark" aria-label="Toggle light/dark theme">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+  </button>
+</header>
+
+<main id="view"></main>
+
+<nav class="pager" id="pager" hidden>
+  <a class="pg prev" id="prev"><span class="arr">←</span><span class="lbl"></span></a>
+  <div class="dots" id="dots"></div>
+  <a class="pg next" id="next"><span class="lbl"></span><span class="arr">→</span></a>
+</nav>
+</body>
+</html>
