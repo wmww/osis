@@ -64,5 +64,5 @@ One label per group synced to it, overlaps between them, blob count, padded blob
 - Lazy chunk fetch for huge bodies a device does not want locally (local policy; reconciliation just reports the IDs it lacks).
 - Encrypted table of contents for partial restore from blind nodes.
 - Upload batching; log retention horizon at each node (beyond it, peers fall back to range reconciliation).
-- Transport and discovery: proposal in notes/networking.md (iroh, without depending on n0 infrastructure). Crypto primitives: not discussed.
+- Transport and discovery: notes/networking.md (decided 2026-10-16). Crypto primitives: not discussed.
 - Commit floor: a minimal commit is about 200 bytes plus a wrap per label plus a 16-byte token hash. Fine for editing workloads; revisit only if huge commit volumes appear (owner 2026-10-11).
