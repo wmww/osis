@@ -1,26 +1,28 @@
-# Spec the protocol
-> Summary: Write the byte-level spec of everything on the wire or between nodes (blob formats, commit header, wraps, core aspects, sync messages, blind-node operations) and close the remaining design gaps it exposes (download auth, server abuse limits).
-> Tags: sync, permissions, serialization
+# Spec the protocol bytes
+> Summary: Fill every TBD in spec/ (byte layouts of everything on the wire or between nodes, format constants, sync messages, bundle format), close the protocol design gaps tracked as issues, and produce test vectors.
+> Tags: sync, permissions, crypto
 
-Primitives and key formats: notes/crypto.md (decided 2026-10-16). Merge-type delta encodings are in spec/crdt.md (delta = `[nonce, commit table, fragment]`; the header tuple per delta is `(tid, ak, hash, lo, hi)` plus the sources table, spec §2.4; encoding IDs are inside the delta). Output: a spec document (`spec/protocol.md` or similar) plus test vectors.
+Output goes into the spec files themselves (new sections or a spec/wire.md if layouts get long), plus test vectors. `grep -n TBD spec/*.md` lists what is open.
 
 ## Permanent blob surface (readers accept forever)
-1. **Value CBOR profile**: fix tag numbers (check IANA registry), link layout, STRUCT reservation.
-2. **Commit header**: exact field order/IDs and encoding of every field in notes/crdt-sync.md (format version, author node, actor, HLC, schema table `[(schema ID, revision)]` with a per-delta index, per-aspect counter ranges `[lo, hi)` and the sources table (spec/crdt.md §2.4), commit-ID dot marker, (tid, ak, delta hash) list, which may repeat a (tid, ak) for roster snapshots (one `/members` delta per edge, notes/permissions.md), retention override, expiry, purge request, `undoes`, delete token salt and hashes, author table, signature). Commit kinds: content, membership (including the roster snapshot: snapshot marker plus full membership-class states, notes/permissions.md; and the hand-over commit, which also carries boxes and `/label` like a grant), attestation (entry format, commit lists for commit-ID dots). Commit ID (unkeyed hash of the header without the signature; the signature is over it) and delta hash definitions (keyed, nonce placement). Algorithm enums for keys and signatures (notes/crypto.md).
-3. **Blob framing**: clear prefix (salt, expiry, token commitments) covered by the blob ID, header + deltas inside the ciphertext, Padmé padding, maximum blob size, chunk and prolly-tree node blobs, how a purged-delta rewrite, a per-label projection or a per-label certificate copy keeps the commit ID; the delivery blob (sealed box around a commit, notes/sync.md).
-4. **Schema table**: schema ID (16 bytes) and revision encoding; the schema-as-data canonical form (notes/serialization.md) for published schemas.
-5. **Core aspects**: final schemas for `/created` (creation record), `/members`, `/keys`, `/secrets` (sealed box and history box layouts, suite ids), `/handover` (record chain, authorization enum), `/follows`, `/node` (revisions, forms), `/reach` (dialable key, relays, addresses), `/group`, `/members` with `until`, `/label` (self-certifying label IDs, registration chains, server addresses with pinned keys; notes/sync.md, Label discovery), the profile thing and contact label (notes/crypto.md).
-6. **Signal envelope** and **link format** (URL layout: L's seed, target tid, server, K's label), the contact-card variant and the recovery card (seed, person tid, home label, server; notes/permissions.md, Model).
+1. **Value CBOR profile** (spec/data-model.md §5): tag numbers (check the IANA registry), `any` case IDs, STRUCT tag reservation.
+2. **Commit header** (spec/commits.md §1): field order and encoding, kinds and markers, attestation entry format, signature domain digests, the hand-over identity hash input (spec/permissions.md §7).
+3. **Blob framing** (spec/sync.md §1): prefix layout, commitment list cap, Padmé details, `MAX_BLOB`, `CHUNK_THRESHOLD`, chunker definition (gear table, mask, min/max) shared with spec/crdt.md §8; how purge rewrites, projections and certificate copies keep the commit ID; the delivery blob.
+4. **Schemas**: core schema ID; schema-as-data canonical form (spec/data-model.md §10).
+5. **Core aspects** (spec/data-model.md §9): exact types of `/created`, `/members`, `/keys`, `/secrets` (box enum, suite IDs), `/handover`, `/follows`, `/node`, `/reach`, `/group`, `/label` (steps, addresses with pinned keys); the contact profile thing.
+6. **Signal envelope**, **link format** (spec/permissions.md §9), contact card, recovery card, link-key creation nonce derivation (spec/crypto.md §3).
 
-## Node-to-node protocol (versioned, may evolve, but the official server will see old clients)
-7. Framing and version negotiation over the transport abstraction (notes/networking.md). Fixed maximum message size; every list is paged.
-8. Messages: cursor sync (since cursor, own blobs inline, IDs gained, want-list reply), range reconciliation fallback, upload with the client's last-seen generation, retire and restore (soft-retire key, relayable), hard delete (admin key, or token preimage plus upload-key signature), label registration/re-registration (relayable; "have k" reply), subscribe/push, signals, specific-blob fetch, bin listing.
-9. Label entries: blob ID, 49-byte wrap or chunk filler; the wrap rules (latest-wins, rate-limited); prefix checks (past expiry refused; token commitment list with format cap, commitment = 16 bytes of BLAKE3(header token hash || prefix salt)); the per-(node, label) generation counter; hard-delete tombstones and the bin with their grace periods. Label registration chain with the three Ed25519 role keys (upload key also gates download), genesis key hashing to the label ID.
-10. **Design gaps** to close here, owner calls where noted:
-    - Download authorization at blind nodes and its bootstrap (grant as a certificate copy under a label the grantee reads, else a delivery blob under its contact label; notes/sync.md Open, owner to confirm).
-    - Blind server abuse limits: who may create labels and store how much without the server learning identities; how paying accounts tie to labels (owner call, privacy tradeoff). An account credential is presented to one server by an admin and bound to (server, label); it never rides in the relayed `/label` chain, where every member and every server would see it.
-    - First-contact invite format (notes/networking.md Open).
-11. File bundle format (sneakernet): a one-way log replay for a set of labels (registration chains, entries with wraps and metadata, blobs, retire lists); the importer treats it as a peer with no cursor and applies the re-tag rule to anything the bundle's generation claims are stale.
+## Node-to-node protocol (versioned separately; old clients must keep working with the official server)
+7. Framing and version negotiation over the transport abstraction (spec/sync.md §10); fixed maximum message size; paging.
+8. Messages (spec/sync.md §5, §6, §8): cursor sync, range reconciliation, upload with generation, retire, restore, hard delete (admin key; token plus upload-key signature), registration ("have k"), subscribe/push, signals, specific-blob fetch, bin listing, download.
+9. File bundle format (spec/sync.md §11); an importer applies the re-tag rule to anything the bundle's generation claims are stale.
+
+## Design gaps to close first
+- issues/download-authorization.md (owner).
+- issues/server-abuse-limits.md (owner).
+- issues/chunk-delete-tokens.md.
+- issues/label-replacement.md.
+- First-contact invite format (notes/networking.md, Open).
 
 ## Then
-Test vectors for every blob type; version-skew simulation as a test category (notes/versioning.md).
+Test vectors for every blob type; version-skew simulation as a test category (notes/versioning.md, Open details).

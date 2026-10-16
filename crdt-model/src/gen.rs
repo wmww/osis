@@ -1,4 +1,4 @@
-//! Random values and ops for property tests (spec §10). Deterministic from a seed.
+//! Random values and ops for property tests (notes/crdt.md, Reference model). Deterministic from a seed.
 use crate::ops::{self, Ty, Writer};
 use crate::state::{BagKind, Content, Frag};
 use crate::value::Value;

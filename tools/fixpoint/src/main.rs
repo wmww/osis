@@ -1,5 +1,5 @@
-//! Throwaway model of the layer-1 membership validity rule (notes/permissions.md,
-//! "Validity definition"). Independent of any real implementation. One group actor G;
+//! Throwaway model of the layer-1 membership validity rule (spec/permissions.md §5.1;
+//! findings in notes/permissions.md). Independent of any real implementation. One group actor G;
 //! actor i has exactly one node i; actor 0 is G's owner (always admin, unremovable).
 //! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot]`
 //! (exhaustive tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in

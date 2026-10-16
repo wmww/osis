@@ -260,7 +260,7 @@ impl Frag {
         }
     }
 
-    /// Greatest stamp of anything in this fragment including its own reset, `W` and value-less writes (§7 rule 2).
+    /// Greatest stamp of anything in this fragment including its own reset, `W` and value-less writes (§7, Read).
     pub fn all_max(&self) -> Option<Stamp> {
         let w = self.composite().and_then(|c| c.w.clone());
         max_opt(max_opt(self.inner_max(false), self.reset()), w)

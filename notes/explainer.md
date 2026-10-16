@@ -8,4 +8,4 @@
 - `mount()` crops static diagrams' viewBox to content (vertical only, so text scale stays uniform) and replaces marker arrowheads on drawn-in paths with separate heads that fade in as the line arrives (`arrowheads`). Demos that re-render (`.demo`) call these helpers themselves.
 - `lib/svg.js`: diagram helpers returning SVG strings (box, arrow, path, packet, device, blob, key, person, pill, check/cross, code, tiles). Colors are role classes (c1/c2 two parties, c3 ok, c4 crypto, bad, blind) mapped to theme tokens in `style.css`; `d` = entrance delay.
 - `decks/index.js` sets reading order. A deck is `{id, title, blurb, icon, slides: [{title, stage, text, more?, enter?}]}`.
-- Content mirrors notes/ as of 2026-10-16 (edit pass and fact-check against notes done that day); it describes the design, not shipped code.
+- Content describes the design, not shipped code. It predates the split into spec/ and notes/; check it against spec/ when next updated.

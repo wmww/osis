@@ -327,7 +327,7 @@ fn creation(_d: &Dot, e: &SeqElem) -> Option<(Stamp, Anchor)> {
 fn is_deleted(e: &SeqElem) -> bool {
     e.deleted.as_ref().map_or(false, |d| d.1)
 }
-/// Content goes on the wire only for elements that are not deleted (§3.3 rule 3).
+/// Content goes on the wire only for elements that are not deleted (§3.3 rule 5).
 fn has_content(e: &SeqElem) -> bool {
     !is_deleted(e) && !matches!(e.content, Content::None)
 }

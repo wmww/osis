@@ -1,4 +1,4 @@
-//! Spec §11: replay the automerge-paper trace as one writer and measure the encoded text snapshot.
+//! notes/crdt.md, Text size: replay the automerge-paper trace as one writer and measure the encoded text snapshot.
 //! Usage: text-bench <edits.txt> <final.txt>
 use crdt_model::stamp::{Dot, Source, Stamp};
 use crdt_model::state::{Anchor, Composite, Content, Frag, SeqElem};

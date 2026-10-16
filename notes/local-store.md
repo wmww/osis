@@ -1,19 +1,19 @@
 # Local store: encryption at rest and forward-secure deletion
-> Summary: A node keeps plaintext, wraps and indexes only inside an encrypted local store whose unit keys hang off a key tree rooted in platform erasable storage; deleting a unit erases its key, so freed pages never matter and no storage engine has to erase anything. Chunk keys are random and stored in links, so crypto-shredding covers large values too. Design decided 2026-10-12; in v1 scope (owner 2026-10-16: v1 implements everything specified); resolves constraints tension 10.
+> Summary: A node keeps plaintext, wraps and indexes only inside an encrypted local store whose unit keys hang off a key tree rooted in platform erasable storage; deleting a unit erases its key, so freed pages never matter and no storage engine has to erase anything. Chunk keys are random and stored in links, so crypto-shredding covers large values too. Design decided; part of the MVP. Resolves tension 10.
 
 ## Requirement
-notes/constraints.md, Deletion: a node that deleted honestly and is compromised later yields nothing, not even confirmation of a guess. Compromise means the attacker holds the device unlocked, so disk encryption does not help, and freed database pages, journals, undo buffers and indexes all count.
+spec/requirements.md, Deletion: a node that deleted honestly and is compromised later yields nothing, not even confirmation of a guess. Compromise means the attacker holds the device unlocked, so disk encryption does not help, and freed database pages, journals, undo buffers and indexes all count.
 
 ## Principle
 No storage engine erases reliably (SSD wear levelling, copy-on-write filesystems, write-ahead logs), so never rely on erasing data. Erase keys instead. Every piece of local plaintext or key material lives in a unit encrypted under its own unit key; unit keys live in a key tree whose root sits in the one place the platform can erase; deleting a unit means dropping its key and rotating the path to a fresh root. (Reardon, Basin, Capkun, "SoK: Secure Data Deletion", 2013; DNEFS.) The storage engine, whether SQLite, redb or plain files, only ever holds ciphertext, so the backend choice is free and freed pages are harmless.
 
 ## Content keys (protocol side, on the wire)
-- Commit blobs: random key, wrapped per label (notes/sync.md). Unchanged.
+- Commit blobs: random key, wrapped per label (spec/sync.md).
 - Chunks and tree nodes of large values: random key per blob, stored in the parent's link; the root's link sits in the delta that carries the value. A link is (keyed content hash, blob ID, suite byte plus blob key), 97 bytes. Replaces the former derivation from the dedup secret and content, which made every chunk ID a fingerprint for every reader and left nothing to shred.
-- Dedup by reuse, not by convergence: an editor holds the current tree, recomputes content-defined boundaries over the new content, matches chunks by content hash against the tree's links and reuses their (ID, key), unless the chunk's expiry is earlier than the new commit's (re-encrypted then, notes/sync.md Blob prefix); only new chunks become new blobs. Dedup across edits, devices and editors is unchanged. Lost only when two parties independently create equal content for the same thing, which was never common; cross-thing dedup never existed.
+- Dedup by reuse, not by convergence: an editor holds the current tree, recomputes content-defined boundaries over the new content, matches chunks by content hash against the tree's links and reuses their (ID, key), unless the chunk's expiry is earlier than the new commit's (re-encrypted then, spec/sync.md §1); only new chunks become new blobs. Dedup across edits, devices and editors is unchanged. Lost only when two parties independently create equal content for the same thing, which was never common; cross-thing dedup never existed.
 - Shredding a version: drop the wraps of its commit blob. Its deltas, hence its root links, hence every tree node and chunk that only this version reached, become unreadable. Surviving chunks stay reachable through the live tree. Purge cost is independent of value size.
 - The dedup secret (KDF of the creation nonce) keys every content hash: delta hashes and links' content hashes. It keys no encryption any more, so it may stay permanent. Chunk IDs are hashes of ciphertext under random keys, so retire lists, cursor logs and IDs-gained lists are not fingerprints.
-- Delete tokens (notes/sync.md) derive from a chunk's prefix salt or a header salt, never from content; unaffected.
+- Delete tokens (spec/crypto.md §7) derive from a chunk's prefix salt or a header salt, never from content; unaffected.
 
 ## Units
 What a node holds and the unit each lives in:
@@ -43,4 +43,4 @@ What a node holds and the unit each lives in:
 - Storage: 32 bytes per unit in the tree, plus about 64 bytes more per link inside large values, under 0.01% of a 1 MB chunk.
 
 ## Open
-- Unit granularity (must close in v1, hard scale constraint): one unit per aspect makes every write, not only a purge, re-encrypt the whole state, O(map) for a million-key map. Page large states into units of their own (pages of a prolly-tree-like structure, so a write touches one page plus its key path); decide the page structure with the storage layer (snapshot paging: spec/crdt.md §8).
+- Unit granularity: issues/local-store-unit-granularity.md.

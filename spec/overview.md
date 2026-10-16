@@ -1,0 +1,21 @@
+# osis specification
+> Summary: Index of the spec, notation and status conventions. The spec holds what a compatible implementation needs; rationale, rejected options and open questions live in notes/.
+
+osis (Open Structured Information System) is a decentralized, reactive data layer: typed data on things, merged by CRDTs, synced as encrypted blobs between devices, users and untrusted servers.
+
+## Documents
+- spec/requirements.md: hard requirements, goals, out of scope, and the tensions where requirements yield.
+- spec/data-model.md: things, tids, aspects, types, values and their canonical CBOR encoding, large values, groups, core aspects.
+- spec/versioning.md: format version, extension points, the parking rule, schema identity and evolution rules.
+- spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
+- spec/commits.md: commits: header, kinds, dot forms, atomic apply, retention, purge, expiry, undo.
+- spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete tokens, agility.
+- spec/permissions.md: actors, membership, ownership, certificates, the validity rules, roster snapshots, hand-over, links.
+- spec/sync.md: blobs, labels, labeling, blind-node operations, the sync protocol, compaction, subscriptions and signals.
+
+## Conventions
+- MUST, MUST NOT, SHOULD are normative. Everything not marked otherwise is normative.
+- **TBD**: a detail not fixed yet (byte layouts, constants). plans/protocol-spec.md tracks them.
+- Notation: `[a, b]` is a CBOR array, `{k: v}` a CBOR map. `||` is byte concatenation. `kdf`, `derive_key`, `keyed_hash` are defined in spec/crypto.md.
+- "Node": an osis instance on a device. "Blind node": a node holding no read secret of a label it stores. "Member": an actor with a role on an actor or thing.
+- Domain strings such as `"osis v1 commit"` are fixed byte strings; their `v1` is not a protocol version.

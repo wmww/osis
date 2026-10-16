@@ -1,4 +1,4 @@
-//! Two-level model of roster snapshots (notes/permissions.md, "Roster snapshots"). Key actor
+//! Two-level model of roster snapshots (spec/permissions.md §6). Key actor
 //! K (node 0) owns person actor P, whose admins are devices; P owns G. Membership writes
 //! target P or G; a write on G by a P-admin acts through the owner chain. A **snapshot** of a
 //! thing is a write by its owner chain (P: K; G: K or a P-admin at that time) carrying the

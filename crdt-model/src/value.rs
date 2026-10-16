@@ -1,4 +1,4 @@
-//! Osis values (notes/serialization.md), ordered by canonical bytes.
+//! Osis values (spec/data-model.md), ordered by canonical bytes.
 use crate::cbor::{self, Item};
 use std::cmp::Ordering;
 

@@ -1,4 +1,4 @@
-//! Property tests of spec/crdt.md §10 against the reference model.
+//! Property tests of spec/crdt.md (list: notes/crdt.md, Reference model) against the reference model.
 use crdt_model::gen::{kitchen_sink, random_op, random_value, Rng};
 use crdt_model::ops::{self, Ty, Writer};
 use crdt_model::received::Received;
@@ -448,7 +448,7 @@ proptest! {
 
 #[test]
 fn worked_examples_from_spec() {
-    // FOOBAR + insert x after O2 / move FOO to the end -> BARFOOx (§6.4)
+    // FOOBAR + insert x after O2 / move FOO to the end -> BARFOOx (notes/crdt.md, Worked examples)
     let mut a = Writer::new(Source::node(1), 1 << 16, 1);
     let mut st: Option<Frag> = None;
     let d = ops::seq_insert(&mut a, None, true, 0, "FOOBAR".chars().map(Content::Char).collect());
@@ -666,7 +666,7 @@ fn reset_keeps_newer_writes_as_anchors() {
     let bytes = snapshot(&s4);
     assert!(bytes.len() > 8, "bare anchors are carried");
 
-    // cycle example of §6.4: acb, A moves a after b (t=5), B moves b after a (t=4): the later move wins -> cba
+    // cycle example (notes/crdt.md, Worked examples): acb, A moves a after b (t=5), B moves b after a (t=4): the later move wins -> cba
     let mut w = Writer::new(Source::node(1), 1 << 16, 1);
     let mut st: Option<Frag> = None;
     apply(&mut st, ops::seq_insert(&mut w, None, true, 0, s("acb")));
@@ -684,7 +684,7 @@ fn reset_keeps_newer_writes_as_anchors() {
     assert_eq!(s1.read(), Some(Value::Str("cba".into())));
     assert_eq!(s1.read(), s2.read());
 
-    // known anomaly (§6.4): abcd, move b to the end (t=5) and a concurrent insert x after a (t=4) -> acdbx
+    // known anomaly (notes/crdt.md, Worked examples): abcd, move b to the end (t=5) and a concurrent insert x after a (t=4) -> acdbx
     let mut w = Writer::new(Source::node(1), 1 << 16, 1);
     let mut st: Option<Frag> = None;
     apply(&mut st, ops::seq_insert(&mut w, None, true, 0, s("abcd")));
@@ -734,7 +734,7 @@ proptest! {
 
     #[test]
     fn join_laws_across_encodings(seed in any::<u64>()) {
-        // §7 rule 2 (no edge): fragments of unrelated encodings meeting at one position still join
+        // §7: fragments of unrelated encodings meeting at one position still join
         // commutatively and associatively.
         let mut r = Rng(seed | 1);
         let Ty::Struct(fts) = kitchen_sink() else { unreachable!() };

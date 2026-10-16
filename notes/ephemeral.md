@@ -1,33 +1,27 @@
-# Ephemeral data: signals, expiry, the all-nodes predicate
-> Summary: Decided with owner 2026-10-15. Three separate concepts: signals are never stored and reach only connected nodes (dedicated API, write to send, read to listen); state may carry an expiry at which every node, blind ones included, drops it without anyone online; "all nodes of a thing" is a predicate over node-published state used by policies, never a protocol condition. Nothing is kept "until everyone has seen it".
+# Ephemeral data: rationale and patterns
+> Summary: Why signals, expiry and the all-nodes predicate are three separate concepts (decided with owner), how apps use them, and the all-nodes predicate as a policy helper. Mechanisms: spec/sync.md §9 (signals), spec/commits.md §6 and spec/crdt.md §4.7 (expiry).
 
 ## Why three, not one
-Owner's goal (2026-10-12): event-stream-like apps on the same infra, first-class if it helps, no cruft. "Keep until every receiver has seen it" is not decidable: the receiver set is open (a member adds a device later), nodes die, and blind nodes know no members. Every approximation (caps on a label, TTL guesses by the writer) was the cruft. So: a signal is never stored; anything that must outlive the moment is state, and state can expire at a time known to everyone.
+Owner's goal: event-stream-like apps on the same infrastructure, first-class if it helps, no cruft. "Keep until every receiver has seen it" is not decidable: the receiver set is open (a member adds a device later), nodes die, and blind nodes know no members. Every approximation (caps on a label, TTL guesses by the writer) was the cruft. So a signal is never stored; anything that must outlive the moment is state, and state can expire at a time everyone knows.
 
-## Signals (decided 2026-10-15)
-A signal is a write that nobody stores.
-- API: dedicated, not `set_aspect`. `send_signal(tid, kind, value)` and `listen_signals(tid, kind, callback)`. Signal kinds are declared in the schema like AKs (typed, so generic tools understand them) but are not aspects: reading one returns nothing, they never appear in state or history.
-- Rights: send needs write on the thing, listen needs read. Receivers verify the sender's signature and membership chain like a commit; a sender whose chain has not arrived yet is dropped.
-- Envelope: encrypted under the thing's group labels exactly like a blob (wrap per label), signed by the sender node. Inside: sender node, actor, HLC timestamp, tid, kind, optional target node, value. No dots, no retention class, no delete token, not a commit, never in the label log.
-- Delivery: push on subscribed connections. A node subscribes to the labels it tracks on each connection; this is the same subscription that pushes new log entries for low-latency state sync (notes/sync.md, Subscriptions). A blind relay forwards a signal to its other subscribers of that label and keeps nothing; clients never re-forward. At most once, best effort, in order per sender per connection. A node connected to several relays may see a signal twice; latest-wins values are idempotent, event-style signals carry a sender sequence.
-- Targeting an actor: a thing shared with them, with its own label. Targeting one device: the target node field; the actor's other nodes drop it silently. No label per device.
-- Local delivery: a sent signal always fires the sending node's own matching listeners, including the sending app's, even with no connection.
-- Late joiners see nothing until the next signal. Presence apps heartbeat; "last seen" is a normal aspect written at low rate.
-- A signal on a thing without its own label reaches every subscriber of the enclosing group, who decrypt and drop it. Busy channels get their own group, same as selective sync.
-- Not provided: delivery guarantees, buffering, replay. What must survive a receiver being offline is state: inbox pattern (receiver-owned list, senders append, owner deletes elements, expiry as backstop), or a list with expiry.
-- Cost: an envelope is about the size of a minimal commit; latency is one relay hop.
+## Signals
+- Dedicated API (`send_signal`, `listen_signals`), not `set_aspect`. Kinds are declared in the schema so generic tools understand them, but reading one returns nothing.
+- Targeting an actor: a thing shared with them, with its own label. Targeting one device: the target-node field. No label per device.
+- A signal on a thing without its own label reaches every subscriber of the enclosing group, who decrypt and drop it. Busy channels get their own group.
+- A node connected to several relays may see a signal twice: latest-wins values are idempotent; event-style signals carry a sender sequence.
+- Late joiners see nothing until the next signal: presence apps heartbeat; "last seen" is a normal aspect written at a low rate.
+- What must survive a receiver being offline is state: inbox pattern (receiver-owned list, senders append, owner deletes, expiry as backstop) or a list with expiry.
+- Cost: an envelope is about a minimal commit; latency one relay hop. A junk signal costs subscribers a signature check.
 
-## Expiry (decided 2026-10-15)
-A commit may carry `expires at T` in its header; schema default per AK as a duration from write (notes/data-model.md). Orthogonal to the retention classes: `undefined`/`preserve`/`purge` say what happens before T, expiry says that at T it is gone regardless.
-- At T every node strips the values of the commit's writes, keeping their stamps (spec/crdt.md §4.7): what it wrote reads absent, a late write older than it still loses, newer writes are untouched; bodies are dropped as purged. Snapshots never carry expiring values, so blind nodes' unattended delete really removes them. Deterministic from the commit: clock skew moves the moment, not the outcome. No undo after T, like purge. A multi-aspect commit expires whole, same granularity as the retention class.
-- Blind nodes: T sits in the blob's clear prefix, fixed by the blob ID (notes/sync.md, Blob prefix), so no relayer can shorten or extend it. At T the entry is deleted, no bin, no retire, no generation bump, no writer online. Uploads whose T has passed are refused, so a stale peer cannot resurrect them. Leak, accepted by owner 2026-10-15: a blind node learns which entries expire and when.
-- Trusted nodes drop bodies and every local reference at T under the purge rules (nonce destroyed, index entries gone, notes/crdt-sync.md).
-- Covers: disappearing messages (write-based timer in core; read-based timers and earlier deletion are app writes; core expiry is the hard upper bound and what lets a server wipe them unattended), events buffered for a while (a list aspect with a one-hour default), "keep at least until T" (`preserve` plus expiry). Cheaper than `purge`-on-supersede: nothing has to be retired.
-- Not provided: server-enforced minimum retention (legal hold). If ever wanted it is a per-label policy beside the grace period, and it cannot apply to `purge`-class content, which the server cannot tell apart.
+## Expiry
+- Orthogonal to retention classes: the class says what happens before T, expiry that at T it is gone. "Keep at least until T" = `preserve` plus expiry.
+- Covers disappearing messages (write-based timer in core; read-based timers and earlier deletion are app writes; core expiry is the hard upper bound and lets a server wipe them unattended) and buffered events (a list aspect with a one-hour default). Cheaper than `purge`-on-supersede: nothing has to be retired.
+- Leak accepted by owner: a blind node learns which entries expire and when.
+- Not provided: server-enforced minimum retention (legal hold). If ever wanted it is a per-label policy beside the grace period, and cannot apply to `purge`-class content.
 
-## The all-nodes predicate (decided 2026-10-15)
-"All nodes a thing syncs to" is computable at trusted nodes and is a state predicate, never a protocol condition. Defined per label (2026-10-16): the nodes with a valid chain that published their `/node` under the thing's label (notes/permissions.md, Nodes as things), not "every node of every member", which would need rosters readers never see.
-- Each node publishes on its node thing (`/node`, notes/data-model.md): software revision and `schemas: map<schema id, revision>`, the highest revision of each schema any of its apps loaded (which fixes the forms it reads). Written on change, and re-put under each label it still tracks at a low rate (daily at most), so the newest copy's HLC under L is the node's last sync of L. Accepted by owner 2026-10-15.
-- Policies read it: write the new form once every node reads it (fixes the read-only old app that the writer-revision heuristic in notes/versioning.md cannot see), drop old-form history after that, clean up an inbox once every own device has acked.
-- Dead nodes: a lost phone blocks "all" forever, so every such policy pairs the predicate with an age cutoff on last sync or an explicit node removal (which invalidates its chain, dropping it from the predicate). The predicate never gates deletion at blind nodes, which know no members and must not wait on liveness.
+## The all-nodes predicate
+"All nodes a thing syncs to" is a state predicate computable at trusted nodes, never a protocol condition. Per label: the nodes with a valid chain that published `/node` under the thing's label (not "every node of every member", which needs rosters readers never see).
+- Each node re-puts `/node` under each label it tracks at a low rate (daily at most), so the newest copy's `ts` under L is its last sync of L (accepted by owner).
+- Uses: write a new schema form once every node reads it (fixes the read-only old app the header heuristic cannot see), drop old-form history after that, clean up an inbox once every own device has acked.
+- Dead nodes: a lost phone blocks "all" forever, so every policy pairs the predicate with an age cutoff or an explicit node removal. Never gates deletion at blind nodes.
 - "Buffer until all have seen it" = inbox pattern plus this predicate plus expiry as backstop. Fine as a core helper later; not sync machinery.

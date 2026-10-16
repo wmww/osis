@@ -1,7 +1,7 @@
-# Constraints
-> Summary: The requirements osis must satisfy, the threat model, and the calls made where goals collide. Mechanism-free: how each requirement is met lives in the other notes and may change without touching this file. Check every design against it.
+# Requirements
+> Summary: The requirements osis must satisfy, the threat model, and the calls made where requirements collide (tensions, numbered and cited elsewhere). Mechanism-free; check every design against it.
 
-Items are hard unless a section says goal. Never weaken an item to fit a design; record the collision under Tensions.
+Items are hard unless a section says goal. Never weaken an item to fit a design; record the collision under Tensions. Tension numbers are stable.
 
 ## Purpose
 - End-user apps with small-to-large interconnected data across users and devices. Many apps, app versions, generic tools and agents share the same data, like a file format.
@@ -77,7 +77,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 ## Data model
 - One canonical serialization, byte-identical everywhere. One hash function.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
-- Per-aspect merge with one conflict rule everywhere. A newer write never loses to an older removal. Collaborative text and lists in v1.
+- Per-aspect merge with one conflict rule everywhere. A newer write never loses to an older removal. Collaborative text and lists.
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Permissions

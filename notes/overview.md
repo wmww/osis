@@ -1,22 +1,29 @@
 # Overview
-> Summary: What osis is, its areas and which note covers each. Constraints and tensions live in notes/constraints.md.
+> Summary: Project state, where things live (spec vs notes vs issues), the code so far, MVP scope, and the index of notes.
 
-osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness. Target: end-user apps managing small amounts of interconnected data across users and devices (notes, calendars, spreadsheets). Multiple apps, app versions, generic tools and AI agents access the same data, like traditional file formats. Also handles device sync, sharing between users, encryption, and simple data APIs. Sits somewhere between Git, Obsidian, Google Drive and Syncthing.
+osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and devices (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
 
-## Areas
-- **API** (notes/api.md): Rust API to search, read, write and listen for changes. Hides crypto, databases, networking and CRDTs as far as possible.
-- **Data model** (notes/data-model.md, notes/serialization.md): every piece of data is an `Aspect` of a `Thing`. Things have 120-bit self-certifying tids; aspects are tid + aspect key (`AK`). Values are type-checked against the aspect's type and serialized as canonical CBOR.
-- **Versioning** (notes/versioning.md): the wire only grows; app types are views; a representation change is a transition to new IDs (`succeeds`); which form is written is runtime policy; unknown data is parked, never dropped.
-- **Permissions** (notes/permissions.md): an `Actor` (user-like) controls multiple `Node`s (osis instances on devices). Actors are cryptographically identified and verified (no central auth). Each thing is owned by exactly one actor, fixed by its tid. Access is membership in the owner actor or membership edges on the thing itself; hand-over (lazy, new tid) only moves a thing out of its owner's tree. Share links are invites (a link actor plus a link key).
-- **Merge** (notes/crdt-sync.md): per-aspect delta-state CRDTs, one rule everywhere (timestamp plus author dot, later wins, removal is a reset); retention classes and purge.
-- **Sync** (notes/sync.md): each node tracks groups and syncs them with other nodes by reconciling sets of encrypted commit blobs under per-group labels. Keyless (blind) nodes take part without seeing structure. Commits apply atomically.
-- **Networking** (notes/networking.md): sync runs over our own transport abstraction; direct server connections without iroh, iroh for P2P (LAN, relays, later BLE); official blind server and relays; addresses and relays are osis data, transport keys separate from node keys.
-- **Crypto** (notes/crypto.md): suite 1 (Ed25519, XChaCha20-Poly1305, BLAKE3, hybrid post-quantum sealed boxes), key per actor kind, `/keys` and `/secrets`, epochs, algorithm agility.
-- **Local store** (notes/local-store.md): backends hold ciphertext only; unit keys hang off a key tree rooted in platform erasable storage, so deletion is key erasure.
-- **Ephemeral data** (notes/ephemeral.md): signals are never stored and reach only connected nodes; state may expire at a time every node honors; "all nodes" is a predicate over node-published state, never a protocol condition.
+## Where things live
+- `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements and tensions are spec/requirements.md. Significant or breaking spec changes need owner sign-off.
+- `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
+- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`). `plans/`: plans/protocol-spec.md (byte layouts and remaining protocol gaps, the TBDs in spec/).
+- `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
-## Workflow
-Owner and agent iterate by discussion; the agent records decisions in notes (marked decided or proposal, with dates), then implements. Code so far (2026-10-16): `crdt-model/`, the reference model for spec/crdt.md (not the implementation). Specs live in `spec/`. Pre-implementation design review done 2026-10-16: fixes folded into the notes (marked "review 2026-10-16"); open owner calls are listed under Open or Spec status in the notes; issues/ holds unsolved problems.
+## Status
+- Design is mostly settled; byte layouts are not (plans/protocol-spec.md).
+- Code: `crdt-model/` (reference model for spec/crdt.md, not the implementation; notes/crdt.md) and `tools/fixpoint/` (throwaway model of the membership rules; notes/permissions.md). No implementation yet.
+- MVP scope (owner): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
+- Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.
 
-## v1 scope (owner 2026-10-16)
-v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: plans/protocol-spec.md (CRDT spec done: spec/crdt.md).
+## Notes
+- notes/api.md: Rust API sketch and the fixed API directions.
+- notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.
+- notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
+- notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
+- notes/permissions.md: permission rules' reasons, fixpoint findings, hand-over and revocation walk-throughs, sharing patterns.
+- notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
+- notes/crypto.md: suite choices, costs, crates.
+- notes/ephemeral.md: signals vs expiry vs the all-nodes predicate.
+- notes/networking.md: transports (iroh, direct servers), official infrastructure, risks.
+- notes/local-store.md: encrypted local store and key-erasure deletion.
+- notes/explainer.md: the docs site.
