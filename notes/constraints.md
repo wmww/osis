@@ -83,7 +83,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 ## Permissions
 - Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation. Sharing never changes a thing's identity. Transfer of ownership is rare.
 - Grouping for sync grants no rights.
-- Every write is attributable to a device and verifiable. Hiding authorship is a deliberate choice, never the default.
+- Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Whether an edit by a revoked member counts is judged by what authorized members witnessed, never by the author's own timestamps.
 - Rights held by different parties never combine into a right neither has alone.
 - Removing a member never re-encrypts existing content.
@@ -104,7 +104,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 
 ## Tensions
 Where two goals cannot both hold: what collides, and which yields.
-1. **Transfer finality vs no consensus.** A former owner can always publish a competing transfer. Ownership is immutable; transfer is aliasing, a former owner can fork, and forks resolve deterministically for readers with a stake in one branch, else by the reader's choice. Moving a thing out of its owner's tree should be rare.
+1. **Transfer finality vs no consensus.** A former owner can always publish a competing transfer, and its key actor can retroactively disown one by backdating the removal of the device that signed it; without a clock or consensus the two cannot be told from an ex-device's forgery. Ownership is immutable; the transferred identity is the new owner's by construction and what it holds survives both, inherited history once re-anchored by its own snapshot; transfer is aliasing, a former owner can fork or disown, and forks resolve deterministically for readers with a stake in one branch, else by the reader's choice. Moving a thing out of its owner's tree should be rare.
 2. **Selective sync from untrusted nodes vs hiding structure.** Structure leaks as far as selection needs it.
 3. **Cheap edits of large values vs hiding sizes.** Sizes leak, padded coarsely.
 4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; untrusted nodes keep a recoverable bin for a grace period, except for purge-class content.
@@ -115,7 +115,7 @@ Where two goals cannot both hold: what collides, and which yields.
 9. **Bounded clocks vs revocation precision.** A window the size of the clock skew.
 10. **Deduplication vs forward-secure deletion.** Deduplicate only against content the editor already holds.
 11. **Removals beating unseen concurrent adds vs no-fingerprint purge.** An add the remover never saw survives.
-12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Ownership-transfer records are kept forever.
+12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Whoever verifies a chain through the snapshot learns the roster's size (never its entries). Ownership-transfer records are kept forever.
 13. **Lazy rotation vs per-thing sharing.** Removing a party costs proportional to the things shared with it one by one. Usage rule: share sets through one shared actor.
 14. **Bounded state vs never discarding an edit.** State grows with edit history, not live size; no horizon drops edits. Usage rule: commit per editing pause, never per keystroke.
 15. **Membership decidable from records alone vs completeness.** Only the demoter's own receipts decide which of the demoted actor's grants survive, never other admins'. The demoter syncs the actor's label first, so loss is limited to grants in transit or passed over by an offline or backdated demotion, and re-grant recovers them.
@@ -124,3 +124,5 @@ Where two goals cannot both hold: what collides, and which yields.
 18. **Readers relaying vs reader-proof metadata at untrusted nodes.** An untrusted node cannot check a wrap, an expiry or a delete-token commitment, so a reader that uploads a blob before its author sets them. Rules bound the damage (expiry only ever extends, wraps are re-asserted by any key holder, a spoiled commitment leaves admin deletion) and the author's own upload is first in the primary pattern, but a reader who wins the race can make the server's copy unreadable or short-lived until an honest holder syncs again; data no honest node still holds is then lost at that server. "Malicious readers can only waste storage" yields by this much.
 19. **Byte-identical serialization vs no-fingerprint purge of large values.** Chunk keys must be random (a content-derived key would make a retained blob ID a fingerprint), so two independent writes of one large value differ in their link bytes. Equality of a large value is its keyed content hash, never its bytes.
 20. **One schema authority per aspect vs no registry.** Authority over an AK is by convention (namespaced AKs, a schema ID in every header); a collision between two schemas is detected at read time, never prevented, and until detected their writes merge like any concurrent writes.
+21. **Lazy rotation vs membership cost proportional to the change.** Removing a member re-seals one box per remaining direct member and role of every actor whose secret it could open (the actor it left and those above it), so a removal costs proportional to those rosters, never to content or history.
+22. **Shared signing keys vs timeline testimony.** A link key is signed by every holder, so its own claimed times constrain nothing; link expiry and single use hold against hostile holders only once a sharer's device publishes a real removal.

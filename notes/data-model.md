@@ -52,7 +52,7 @@ Schemas also declare **signal kinds**: typed like an AK, but a signal is never s
 - `/tid` (tid, synthetic, guaranteed)
 - `/aspects` (set<string>, synthetic, guaranteed): AKs present on this thing
 - `/created` (struct, ro, guaranteed; shape proposal): the creation record the tid hashes (owner actor tid, nonce; below)
-- `/members` (map<tid, role>; proposal): membership edges on this thing (notes/permissions.md)
+- `/members` (map<tid, {role, until?}>; proposal): membership edges on this thing; read as the membership timeline's roster, the stored deltas are only the carrier (notes/permissions.md)
 - `/keys` (keyset register, current epoch only; 2026-10-16): an actor's public KEM key per role (one for a key actor, whose signing key is in `/created`), so granters can seal secrets to it (notes/crypto.md)
 - `/secrets` (2026-10-16): an actor's role secrets sealed to its members, one box per (member, role), plus history boxes per (epoch, role) (notes/crypto.md); `/handover` (proposal): hand-over records (notes/permissions.md)
 - `/follows` (map<record hash, record hash>; proposal 2026-10-15): on a person actor, which successor its devices follow at a hand-over fork (notes/permissions.md, Resolution)
