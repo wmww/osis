@@ -16,7 +16,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - **Ephemeral data** (notes/ephemeral.md): signals are never stored and reach only connected nodes; state may expire at a time every node honors; "all nodes" is a predicate over node-published state, never a protocol condition.
 
 ## Workflow
-Owner and agent iterate by discussion; the agent records decisions in notes (marked decided or proposal, with dates), then implements. Code so far (2026-10-16): `crdt-model/`, the reference model for spec/crdt.md (not the implementation). Specs live in `spec/`.
+Owner and agent iterate by discussion; the agent records decisions in notes (marked decided or proposal, with dates), then implements. Code so far (2026-10-16): `crdt-model/`, the reference model for spec/crdt.md (not the implementation). Specs live in `spec/`. Pre-implementation design review done 2026-10-16: fixes folded into the notes (marked "review 2026-10-16"), owner calls in issues/.
 
 ## v1 scope (owner 2026-10-16)
 v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: plans/protocol-spec.md (CRDT spec done: spec/crdt.md).

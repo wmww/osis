@@ -41,10 +41,11 @@ Schemas also declare **signal kinds**: typed like an AK, but a signal is never s
 - `/aspects` (set<string>, synthetic, guaranteed): AKs present on this thing
 - `/created` (struct, ro, guaranteed; shape proposal): the creation record the tid hashes (owner actor tid, nonce; below)
 - `/members` (map<tid, role>; proposal): membership edges on this thing (notes/permissions.md)
-- `/keys` (map<epoch, keyset>; 2026-10-16): an actor's public KEM key per role (plus signing key for a key actor), so granters can seal secrets to it (notes/crypto.md)
+- `/keys` (keyset register, current epoch only; 2026-10-16): an actor's public KEM key per role (one for a key actor, whose signing key is in `/created`), so granters can seal secrets to it (notes/crypto.md)
 - `/secrets` (2026-10-16): an actor's role secrets sealed to its members, one box per (member, role), plus history boxes per (epoch, role) (notes/crypto.md); `/handover` (proposal): hand-over records (notes/permissions.md)
 - `/follows` (map<record hash, record hash>; proposal 2026-10-15): on a person actor, which successor its devices follow at a hand-over fork (notes/permissions.md, Resolution)
-- `/node` (struct): a sync node. Fields (2026-10-15, notes/ephemeral.md): software revision, schema revisions and forms it reads, last sync time; written at a low rate.
+- `/node` (struct): a sync node. Fields (2026-10-15, notes/ephemeral.md): software revision, schema revisions and forms it reads, last sync time; written at a low rate. Readable by the node's person actor through an edge the node writes on itself at enrollment (notes/permissions.md, Nodes as things).
+- `/label` (proposal 2026-10-16): a synced group's label IDs with their registration chains and servers (notes/sync.md).
 - `/group` (struct): `items: set<tid>`, `subgroups: set<tid>` (transitively included)
 - `/groups` (set<tid>, synthetic, guaranteed): locally known groups containing this thing, directly or indirectly
 

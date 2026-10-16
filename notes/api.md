@@ -24,7 +24,7 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `Mutator::delete_thing(&mut self, tid)`
 - `Mutator::set_aspect(&mut self, tid, ak, value)`: structural diff by default (concurrent edits elsewhere in the value survive); an explicit replace variant resets the aspect (decided 2026-10-14). Path-based ops to add: set field, insert/remove index, add/remove key, splice text, increment (notes/crdt-sync.md).
 - `Mutator::remove_aspect(&mut self, tid, ak)`
-- `async Mutator::commit(self) -> Result<()>`
+- `async Mutator::commit(self) -> Result<()>`: splits into one commit per reader set (owner plus edges) of the touched things; atomicity holds within each (notes/constraints.md, Confidentiality; review 2026-10-16).
 - `async Osis::send_signal(&self, tid, kind, value) -> Result<()>`, `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach connected nodes only (decided 2026-10-15, notes/ephemeral.md).
 
 ## Typed reads (decided 2026-10-14, notes/versioning.md)

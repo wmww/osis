@@ -6,18 +6,18 @@ Primitives and key formats: notes/crypto.md (decided 2026-10-16). Merge-type del
 
 ## Permanent blob surface (readers accept forever)
 1. **Value CBOR profile**: fix tag numbers (check IANA registry), link layout, STRUCT reservation.
-2. **Commit header**: exact field order/IDs and encoding of every field in notes/crdt-sync.md (format version, author node, actor, HLC, type hash + schema revision, per-aspect counter ranges `[lo, hi)` and the sources table (spec/crdt.md §2.4), commit-ID dot marker, (tid, ak, delta hash) list, retention override, expiry, purge request, `undoes`, delete token hashes, signature). Commit kinds: content, membership, attestation (entry format, commit lists for commit-ID dots). Commit ID (unkeyed hash of the header without the signature; the signature is over it) and delta hash definitions (keyed, nonce placement). Algorithm enums for keys and signatures (notes/crypto.md).
-3. **Blob framing**: header + deltas inside the ciphertext, Padmé padding, chunk and prolly-tree node blobs, how a purged-delta rewrite keeps the commit ID.
+2. **Commit header**: exact field order/IDs and encoding of every field in notes/crdt-sync.md (format version, author node, actor, HLC, type hash + schema revision, per-aspect counter ranges `[lo, hi)` and the sources table (spec/crdt.md §2.4), commit-ID dot marker, (tid, ak, delta hash) list, retention override, expiry, purge request, `undoes`, delete token salt and hashes, author table, per-AK type hash and revision, signature). Commit kinds: content, membership, attestation (entry format, commit lists for commit-ID dots). Commit ID (unkeyed hash of the header without the signature; the signature is over it) and delta hash definitions (keyed, nonce placement). Algorithm enums for keys and signatures (notes/crypto.md).
+3. **Blob framing**: header + deltas inside the ciphertext, Padmé padding, maximum blob size, chunk and prolly-tree node blobs, how a purged-delta rewrite or a per-label projection keeps the commit ID.
 4. **Type hash**: exact canonical form of an AK's type closure.
-5. **Core aspects**: final schemas for `/created` (creation record), `/members`, `/keys`, `/secrets` (sealed box and history box layouts, suite ids), `/handover` (record chain, authorization enum), `/follows`, `/node` (revisions, reachability, keys), `/group`. Gap to design: where a group records its labels and which servers hold them, so a new device can find what to sync.
+5. **Core aspects**: final schemas for `/created` (creation record), `/members`, `/keys`, `/secrets` (sealed box and history box layouts, suite ids), `/handover` (record chain, authorization enum), `/follows`, `/node` (revisions, reachability, keys), `/group`, `/members` with `until`, `/label` (label IDs, registration chains, servers; proposal in notes/sync.md), the contact label (notes/crypto.md).
 6. **Signal envelope** and **link format** (URL layout: L's seed, target tid, server, K's label) and the contact-card variant.
 
 ## Node-to-node protocol (versioned, may evolve, but the official server will see old clients)
 7. Framing and version negotiation over the transport abstraction (notes/networking.md).
 8. Messages: cursor sync, IDs-gained, range reconciliation fallback, upload, retire, hard delete (admin key or token + signature), label registration/re-registration (relayable), subscribe/push, signals, specific-blob fetch.
-9. Label entry metadata: blob ID, 49-byte wrap, generation, token hash, expiry; generation rules. Label registration message with the three (or four) Ed25519 role keys.
+9. Label entry metadata: blob ID, 49-byte wrap or chunk filler, generation, token hash, expiry; generation rules. Label registration chain with the three Ed25519 role keys (upload key also gates download).
 10. **Design gaps** to close here, owner calls where noted:
-    - Download authorization at blind nodes (fourth label key, notes/sync.md Open).
+    - Download authorization at blind nodes and its bootstrap (grant commits under the grantee's label; notes/sync.md Open, owner to confirm).
     - Blind server abuse limits: who may create labels and store how much without the server learning identities; how paying accounts tie to labels (owner call, privacy tradeoff).
     - First-contact invite format (notes/networking.md Open).
 11. File bundle format (sneakernet).

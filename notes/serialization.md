@@ -28,6 +28,7 @@ Struct and `map<int, T>` share an encoding. Acceptable because `any` is an enum,
 - RFC 8949 4.2.1 core deterministic requirements: shortest integer/length heads, no indefinite-length items, sorted map keys, no duplicate keys.
 - Do NOT use the dCBOR profile: its numeric reduction encodes 1.0 as 1, which erases the int/float distinction.
 - No CBOR `null`/`undefined`; absence is expressed by `option<T>`.
+- Unknown tags are not errors: the `Value` model keeps an unknown tag with its content as raw canonical bytes, so parked data round-trips (notes/versioning.md).
 - Decoder is strict: any non-canonical input is an error. So bytes on the wire are the canonical bytes and are hashed and stored as received, never re-encoded. Important for multi-GB blobs.
 - Floats: value identity is the IEEE bit pattern. NaN is normalized to a single canonical pattern (positive quiet NaN, zero payload) when a value is constructed; the decoder rejects any other NaN. -0.0 and 0.0 are distinct values. (Confirmed by owner 2026-10-16.)
 - Content hashes are keyed BLAKE3 over canonical bytes (notes/data-model.md, Hashing).
@@ -39,6 +40,7 @@ Not used on the wire. Own the encoder/decoder for `Value` (a few hundred lines f
 - A large blob is split with content-defined chunking (decided 2026-10-11; e.g. FastCDC, parameters open) into a tree of chunks; interior nodes are lists of links.
 - A large map/set becomes a prolly tree (Noms/Dolt style): deterministic boundaries from hashing keys, so equal contents give equal trees regardless of edit history.
 - Every node is an ordinary canonical value with its own content hash. Chunks and tree nodes travel as separate encrypted blobs, each under a random key carried in its parent link; an editor reuses unchanged chunks from the current tree by content hash (notes/local-store.md), so a large body is fetched and deduped piecewise. The commit header lists the chunk blobs a delta introduced, with a delete token hash each (notes/sync.md).
+- Maximum blob size is a constant of format version 1 (chunk and commit blobs alike), so a receiver never allocates on a peer's claim; value open (a few MB).
 - Threshold for when a value gets chunked is undecided. Whole-value access is always allowed, streaming/partial access also available; whether that exposes links or a separate abstraction is an implementation question (notes/api.md).
 
 ## Schema DSL (*.osis files)

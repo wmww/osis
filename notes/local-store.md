@@ -1,5 +1,5 @@
 # Local store: encryption at rest and forward-secure deletion
-> Summary: A node keeps plaintext, wraps and indexes only inside an encrypted local store whose unit keys hang off a key tree rooted in platform erasable storage; deleting a unit erases its key, so freed pages never matter and no storage engine has to erase anything. Chunk keys are random and stored in links, so crypto-shredding covers large values too. Design decided 2026-10-12, implementation deferred; resolves constraints tension 10.
+> Summary: A node keeps plaintext, wraps and indexes only inside an encrypted local store whose unit keys hang off a key tree rooted in platform erasable storage; deleting a unit erases its key, so freed pages never matter and no storage engine has to erase anything. Chunk keys are random and stored in links, so crypto-shredding covers large values too. Design decided 2026-10-12; in v1 scope (owner 2026-10-16: v1 implements everything specified); resolves constraints tension 10.
 
 ## Requirement
 notes/constraints.md, Deletion: a node that deleted honestly and is compromised later yields nothing, not even confirmation of a guess. Compromise means the attacker holds the device unlocked, so disk encryption does not help, and freed database pages, journals, undo buffers and indexes all count.
@@ -43,4 +43,4 @@ What a node holds and the unit each lives in:
 - Storage: 32 bytes per unit in the tree, plus about 64 bytes more per link inside large values, under 0.01% of a 1 MB chunk.
 
 ## Open
-- Unit granularity for very large aspect states: a map with millions of keys as one unit makes a purge of one entry O(map). Split large states into pages with their own units; decide with the storage layer.
+- Unit granularity (must close in v1, hard scale constraint): one unit per aspect makes every write, not only a purge, re-encrypt the whole state, O(map) for a million-key map. Page large states into units of their own (pages of a prolly-tree-like structure, so a write touches one page plus its key path); decide the page structure with the storage layer (snapshot paging: spec/crdt.md §8).
