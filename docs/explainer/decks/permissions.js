@@ -193,7 +193,7 @@ export default {
         text(480, 370, 'the blob is never re-encrypted', { cls: 'sub', d: 2.6 }),
       ].join('')),
       text: `<p>Each commit's key is <strong>wrapped</strong> under the read secret of every label (synced group) it belongs to, and each label's secret is wrapped to that group's members.</p>
-        <p>Giving Carol old content means adding one wrap. Removing someone rotates secrets for <em>new</em> content only; what they could read, they could have copied.</p>
+        <p>Giving Carol old content means adding one wrap. Removing someone rotates secrets for <em>new</em> content only; what they could read, they could have copied. An honest removed device erases its copy.</p>
         <p>A blind server holds none of these secrets. It checks signatures under per-label role keys, so a reader can relay data through it but not delete (see <a href="#/deletion/7">Deletion</a>).</p>`,
       more: `<h3>Details</h3><ul>
         <li>Proposed: an actor has one secret per role (read, write, admin), each wrapped to members at that role or higher.</li>

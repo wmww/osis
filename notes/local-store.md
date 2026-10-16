@@ -21,7 +21,7 @@ What a node holds and the unit each lives in:
 - Wraps: the unit is a page of label entries, a few KB. Dropping a blob from a label rewrites its page without the wrap under a fresh page key. Needed because a member holds the label read secret, so a lingering wrap is a key.
 - Aspect state, its undo buffer and pre-reset snapshots: one unit per aspect. A purge of part of a value rewrites the aspect's live state under a fresh key, O(state), on every such edit; a whole-thing purge drops the units.
 - Decrypted chunk and tree-node caches, search and query indexes: units per aspect, or dropped and rebuilt. An index spanning aspects must be rebuildable and is dropped and rebuilt on a purge of anything it covers, or sharded per aspect.
-- Membership and label secrets: units per actor; rotation on removal drops the old unit once nothing needs it (lazy rotation keeps old read secrets until then, by design).
+- Membership and label secrets: units per actor; rotation on removal drops the old unit once nothing needs it (lazy rotation keeps old read secrets until then, by design). A node removed from an actor drops that actor's units and the content units only it opened (notes/permissions.md).
 - Cursor logs, the IDs-gained list, diagnostics: blob IDs only, harmless; stored in the store anyway for uniformity.
 - Memory, swap, core dumps, OS page cache: out of scope; mlock what is practical.
 
