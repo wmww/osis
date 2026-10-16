@@ -5,13 +5,14 @@
 - A **blob** is an encrypted commit (header plus unpurged deltas; spec/commits.md) or an encrypted chunk, tree node or page of a large value (spec/data-model.md §6, spec/crdt.md §8). Blind nodes cannot tell them apart except as §4 states.
 - Layout: **clear prefix** || ciphertext (framing TBD). Prefix: a random 16-byte salt (fresh per encryption), optional expiry `T`, the token commitments (spec/crypto.md §7; list length capped). Ciphertext: spec/crypto.md §5, plaintext padded with Padmé (Nikitin et al., PURBs).
 - **Blob ID** = BLAKE3 of prefix and ciphertext. A blob is at most `MAX_BLOB` bytes.
-- One commit may travel as several blobs (projections, purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID. Every encryption of a commit computes its prefix from the header: expiry = the header's `expires`; commitments from the header's token hashes and the new salt. A chunk reused by a later commit keeps its blob and prefix, unless its expiry is earlier than the new commit's; then it is re-encrypted.
+- One commit may travel as several blobs (projections, purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID. Every encryption of a commit computes its prefix from the header: expiry = the header's `expires`; commitments from the header's token hashes and the new salt. A chunk reused by a later commit keeps its blob and prefix, unless its expiry is earlier than the new commit's or its commitments lack the token for the write secret of a thing the new commit's `purge`-class deltas touch (spec/crypto.md §7); then it is re-encrypted. Author-chain tokens need not match.
 
 ## 2. Labels
-- A synced group has a **label**: the unit a blind node stores. A label has three Ed25519 role keys: **upload** `kdf("label upload", read secret)`, **soft-retire** `kdf("label retire", write secret)`, **hard-delete** `kdf("label delete", admin secret)`, from the group thing's role secrets (explicit, or derived from its owner's by tid; spec/crypto.md §3).
-- **Label ID** = first 16 bytes of BLAKE3(`"osis v1 label id"` || genesis hard-delete public key).
-- **Registration chain**: steps (label ID, seq, three public keys, signature under `"osis v1 label register"` by the previous step's hard-delete key; step 0 by its own). A new step is issued on every rotation of the role secrets the keys derive from.
-- `/label` on the group thing: `map<label ID, { chain: list<step>, servers: list<address> }>`. Membership-class. An address is a transport URL plus the server's static public key (§10).
+- A synced group has a **label**: the unit a blind node stores. A label has an **index** i (0 for a group's first label) and three Ed25519 role keys: **upload** `kdf("label upload", read secret, le64(i))`, **soft-retire** `kdf("label retire", write secret, le64(i))`, **hard-delete** `kdf("label delete", admin secret, le64(i))`, from the group thing's role secrets (explicit, or derived from its owner's by tid; spec/crypto.md §3).
+- **Label ID** = first 16 bytes of BLAKE3(`"osis v1 label id"` || genesis hard-delete public key). The genesis step derives from the admin secret current when the label is created.
+- **Registration chain**: steps (label ID, seq, three public keys, signature under `"osis v1 label register"` by the previous step's hard-delete key; step 0 by its own). A new step is issued on every rotation of the role secrets the keys derive from. After a fork (spec/crypto.md §4) a server holds the step that reached it first; a node uses the epoch whose keys match it.
+- `/label` on the group thing: `map<label ID, { index, chain: list<step>, servers: list<address>, retired: bool }>`. Membership-class. An address is a transport URL plus the server's static public key (§10). Nodes upload under, and sync, every label of the group not marked retired.
+- **Replacement** (a label lost at a server, e.g. to a removed admin re-registering first): an admin rotates the admin secret if the loss calls for it, creates label index `1 + max index in /label`, uploads the live blobs under it, then marks the old label retired and hard-deletes it at servers it still controls.
 - **Home label**: an actor with role secrets (not a key actor) is synced as a group of itself; that label is its home label. The home closure holds the actor thing and what its `/group` lists, nothing by ownership. A link's K label is K's home label.
 - A thing in no labeled group is not synced.
 
@@ -44,6 +45,7 @@ Each operation names a label and is signed with that label's current role key:
 
 ## 6. Protocol
 - Framed messages over an ordered byte stream (§10); version negotiation and message layout TBD. Every message has a fixed maximum size; every list is paged.
+- Each side's handshake carries its wall clock (ms). A node SHOULD estimate its clock offset from peers' handshakes (round-trip corrected, robust to an outlier) and use the corrected clock wherever wall time is used; it reports an offset of more than a few seconds as a diagnostic.
 - **Cursor sync**: a client keeps a cursor per (peer, label) and sends: the cursor, its own new blobs inline, and the blob IDs it gained under that label from other sources since. The peer replies with its log after the cursor minus those IDs, blobs inline, and a want-list of the gained IDs it lacks, which the client then sends.
 - **Range reconciliation** (fallback when a cursor is missing or invalid, or the gained list exceeds a message): range-based set reconciliation over the IDs of the live entries (Negentropy/RBSR style; details TBD).
 - One connection may sync many labels; a blob under several of them crosses it once.
@@ -70,6 +72,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - Sync runs over any ordered, bidirectional byte stream with confidentiality and an authenticated peer key.
 - A server address is a transport URL plus the server's static public key; a client MUST check the server's key against it.
 - Clients connect to servers with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `/reach`, together with its preferred relays. Direct addresses are never published; they are exchanged with the peer at connection time (hole punching) or found by LAN discovery.
+- **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag `kdf("lan tag", lan secret, le64(floor(unix ms / 600000)))` (first 16 bytes) and a transport key fresh per network join, never the dialable key. The 32-byte random lan secret is in `/reach`; a co-reader matches tags of the nodes it knows for the current and adjacent windows and dials the announced transport key.
 
 ## 11. File bundles
 A bundle is a one-way log replay for a set of labels: registration chains, entries with wraps, blobs, retire lists (format TBD). An importer treats it as a peer with no cursor.

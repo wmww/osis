@@ -10,7 +10,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - `sources` table (spec/crdt.md §2.4).
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
 - Delta list: per delta `(tid, ak, delta hash, counter range [lo, hi), schema index or none)`. A `(tid, ak)` appears once, except in a roster snapshot (spec/permissions.md §6).
-- Chunk list: the chunk and tree-node blobs the deltas introduce, each with its delete token hash.
+- Chunk list: the chunk and tree-node blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
 - Optional retention class override (§5), optional `expires` (§6), optional purge request (§5), optional `undoes: commit ID` (§7).
 - Delete token salt (16 random bytes) and token hashes (spec/crypto.md §7; list length capped, cap TBD).
 - Attestations only: the answered revoke's commit ID and the entries (spec/permissions.md §5).

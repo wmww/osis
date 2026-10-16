@@ -19,16 +19,16 @@
 - **Blob prefix** fixes expiry and token commitments by the blob ID, so a relaying reader cannot spoil them; before, the first or latest upload set them. Expiry is immutable: extending it would keep ciphertext meant to be gone for anyone who later obtains keys; content that must outlive it is re-encrypted. Per-blob commitments (rather than the header's token hashes) keep projections and rewrites of one commit unlinkable at the server.
 - **Commit token salt in the header**: the commit's own blob ID does not exist when the header is built and changes on rewrite or projection.
 - **Token plus upload key** for hard delete: the token proves authorship or write on the thing; the upload key proves current membership. With the soft-retire key instead, a chat participant (a reader of the chat label) could never finish the purge of its own message there.
-- **Writer-derived tokens for `purge`-class deltas**: any current writer of such a thing finishes another writer's reset at once, and a commit may span owners and reader sets regardless of class.
+- **Writer-derived tokens for `purge`-class deltas**: any current writer of such a thing finishes another writer's reset at once, and a commit may span owners and reader sets regardless of class. Chunks carry the same token secrets as their commit (16 bytes per chunk per secret in the header, usually one secret). A reused chunk must carry the thing-write-secret tokens the reusing commit needs, else it is re-encrypted; author-chain tokens need not match, so dedup across editors survives. Residue: an author's explicit purge of a `preserve` value cannot hard-delete chunks it reused from another author's version; an admin can, and honest nodes drop the keys anyway.
 - **Hard-delete tombstones** refuse re-upload for the grace period, so a purge needs no generation bump and a stale peer cannot resurrect a purged body. Blob IDs are hashes of ciphertext under random keys, so a tombstone is no fingerprint.
 - **Generation as a counter** per (node, label) rather than a tag per entry.
-- **Download gated by the upload key** (proposal): both derive from the read secret, a separate key gains nothing. Keyless nodes then never pull: replication between two servers is driven by a key holder, or an admin gives the mirror the upload private key alone.
+- **Download authorization**: open (issues/download-authorization.md).
 - Scope of a writer's soft retire is the whole label, since the blind node sees no finer structure; history there is recoverable only for the grace period.
 - Rule of thumb: per-entry rights are capabilities whose preimage is distributed client-side; label-wide rights are role keys; revocation rides on role keys. Nothing stored at the server states a reason.
 
 ## Limits (accepted)
 - A removed writer keeps deriving tokens, but tokens alone delete nothing; its power ends when the upload key is re-registered, which every removal does.
-- A removed admin holds the current hard-delete key until re-registration and can win the race at a server by re-registering keys only it knows. Remedy: a new label under fresh keys, O(entries). Hostile admins are out of scope.
+- A removed admin holds the current hard-delete key until re-registration and can win the race at a server by re-registering keys only it knows. Remedy: a replacement label (next index, keys from the rotated admin secret the removed admin lacks), O(entries). The index keeps a replacement's keys and ID apart from the old label's, and two admins replacing concurrently derive the same ID. Hostile admins are out of scope.
 - A writer demoted to reader keeps its old write secrets and can hard-delete `purge`-class entries of those epochs under labels it still reads: vandalism of server copies, healed by a re-snapshot.
 - A malicious current writer can wipe current `purge`-class bodies at a blind node; write access already lets it reset them everywhere.
 - A reader who uploads first can spoil only wraps (tension 18).
@@ -54,7 +54,7 @@ One label per synced group, overlaps between labels (shared content blobs; certi
 - Plain grant under the contact label: contradicts entitlement, since every card holder reads that label.
 
 ## Open
-- Download authorization and its bootstrap: issues/download-authorization.md.
+- Download authorization: issues/download-authorization.md.
 - Server abuse limits and accounts: issues/server-abuse-limits.md.
 - Encrypted table of contents for partial restore from blind nodes (today a subgroup needs its own label to be restorable alone).
 - Upload batching; log retention horizon per node (beyond it peers fall back to range reconciliation).

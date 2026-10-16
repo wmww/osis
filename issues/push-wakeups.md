@@ -1,13 +1,16 @@
 # Push wake-ups from blind nodes
-> Summary: Mobile apps need the server to wake a device when something arrives; that needs a device-to-label registration at blind nodes (a metadata trade), a UnifiedPush story, and perhaps a notion of high- and low-priority sync traffic.
-> Tags: sync, networking, security
+> Summary: Mobile apps need the server to wake a device when something arrives. Proposal: per-label opaque wake handles sealed to a push proxy, so the server cannot link one device's labels. Owner calls: the official proxy's trust (it runs beside the server), whether wake priority is visible to servers, and who pays.
+> Tags: sync, networking, security, owner-call
 
-Found by the chat deep dive; any app with notifications needs it. Today a blind node knows only which connection syncs which labels, over an ephemeral key per connection, and pushes only on live subscriptions (spec/sync.md §8). A phone in the background has no connection.
+Found by the chat deep dive; any app with notifications needs it. Today a blind node knows only which connection syncs which labels, over an ephemeral key per connection, and pushes only on live subscriptions (spec/sync.md §8). A phone in the background has no connection. A push token (APNs, FCM) is a stable per-device identifier, so registering "wake me on L1..Ln" with one token links those labels at the server, which the requirements forbid beyond overlap.
 
-Needed: a way for a device to register "wake me when label L changes" with a push token. A push token is a stable per-device identifier, so the server learns which labels one device tracks across sessions, roughly Signal's token-to-account mapping. The payload must be empty or opaque; the device syncs on wake. One round-trip sync keeps iOS notification-extension time limits reachable.
+## Proposal
+- Per label, the device registers a **wake handle**: a sealed box to a push proxy's public key holding the push token, fresh randomness per label, so the server sees unrelated handles. On a new log event the server hands the handle to the proxy, which opens it and sends an empty push; the device then syncs (one round trip, within iOS extension limits).
+- The server learns how many wake handles a label has and when wakes fire; the proxy learns tokens and wake timing, never labels. Server and proxy together can link a device's labels by timing; if both are the official service, that is a promise, not a guarantee.
+- UnifiedPush: the server posts to per-label endpoint URLs of the user's chosen distributor directly, no proxy. An osis server can also act as a UnifiedPush distributor for Android without Google services and for self-hosters. iOS needs APNs through the official proxy.
+- Rate limits: at most one wake per handle per short interval; events batch into one wake.
 
-Ideas to consider:
-- An osis server should be able to act as a UnifiedPush server (push distributor) and the osis app as a UnifiedPush provider, so Android users without Google services and self-hosters get push with no third party. Does not cover iOS, and probably not every Android case; those need APNs/FCM relayed by the official server.
-- High and low priority traffic: some writes and signals should wake a phone (a chat message, a call invite), others should not (presence, a read marker, a bulk edit). The priority would have to be visible to the blind node, so it is metadata; decide whether it is a per-label setting, a per-upload flag, or a separate "wake" label pattern, and what the server then learns.
-- Rate limits: a busy label must not wake a device per blob; batching and per-device limits.
+## Owner calls
+- Accept the official proxy beside the official server (collusion risk above), or require a separately operated proxy.
+- Priority: some writes should wake (a chat message, a call invite), others not (a read marker, a bulk edit). Options: a per-upload wake bit (the server learns which blobs matter), a separate wake label per chat (one more label, overlap shows its pairing), or wake on everything with client-side quiet filtering (battery cost).
 - Who pays for push on the official server (issues/server-abuse-limits.md).

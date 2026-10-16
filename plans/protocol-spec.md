@@ -20,8 +20,6 @@ Output goes into the spec files themselves (new sections or a spec/wire.md if la
 ## Design gaps to close first
 - issues/download-authorization.md (owner).
 - issues/server-abuse-limits.md (owner).
-- issues/chunk-delete-tokens.md.
-- issues/label-replacement.md.
 - First-contact invite format (notes/networking.md, Open).
 
 ## Then

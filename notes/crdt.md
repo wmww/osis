@@ -30,7 +30,7 @@
 - **Move** writes `pos` only for range roots (rewriting interior elements changes their sibling keys and reorders concurrent neighbours). The range spans deleted elements inside the selection; outside subtrees are re-anchored in reverse visual order (found by the model's sequential test). Delete is a flag, not a move to a trash position, which would drag concurrent inserts along.
 - **Encoding slots.** The first draft joined unrelated encodings destructively (later encoding wins, loser becomes a reset). With eager embedding that is not associative: `(register ⊔ counter) ⊔ text` ended as a counter and `register ⊔ (counter ⊔ text)` as a text (found by the model's join-law test). Keeping the register as its own slot makes the state a product of lattices. Cost: in a `string` → `text` upgrade the last register write is stored twice until a reset. Register edges are total so a value-less write embeds like its valued copy.
 - **Expiry is value erasure, not a floor.** It changes no stamp or order, only whether a value is known, so it commutes with join and arrival order; a late older write still loses to the expired one. Dropping the commit's resets instead would let content they pruned survive on a node that received it after T. A floor at T diverges if applied only when the expired write wins (a write stamped between the commit and T wins on some nodes, loses on others), and expires others' newer writes if applied to every register the commit wrote.
-- **Drift cap parks** commits from the future instead of holding the clock back, so a wrong clock harms only its owner's writes.
+- **Drift cap parks** commits from the future instead of holding the clock back, so a wrong clock harms only its owner's writes. Parking is silent: a device 90 minutes fast has its writes held by everyone for 90 minutes, and blind nodes cannot tell it. Hence the corrected clock (spec/sync.md §6): a device fixes its stamps at its first connection and later writes are not parked; only writes it stamped before that wait. A lying peer can shift a node's clock, which harms that node's own writes or admits writes a little early; estimate over several peers, preferring pinned servers. HLC receipt already pulls a slow clock forward.
 - **Diff takes the writer's view**: without it an old writer's save of a `set<struct>` removed every element a newer writer had extended and added a stripped copy. The diff algorithm itself is not normative, only "kept elements keep their dot".
 - **Second dot form** (commit ID, index): unlinkable, and collision-free when several devices sign with one key (per-device counters under a shared key let any holder reuse another's dot and knock out its edit). Its cost falls only on such commits: runs do not continue across commits, one 32-byte `sources` entry per foreign commit, witnesses list commits.
 - **Every state element carries its dot**, so un-merge and frontier attestations are uniform.
@@ -45,6 +45,7 @@
 - While a text aspect is in transition, every save by an old LWW app wipes concurrent older text edits; old code has no CRDT.
 - The list diff pairs changed entries in order; a misaligned pair becomes delete+insert and loses concurrent edits to that entry. Apps editing list entries concurrently should use path ops.
 - Un-merge over state is approximate: position registers keep two writes, and register values the invalid author overwrote come back only from retained bodies.
+- Undo of a reset re-adds content with fresh dots (the old dots stay below the reset forever), so a later undo of an original element no longer cancels its restored copy; only out-of-order selective undo sees this. Bag undo re-adds contributions without a reset so concurrent newer contributions survive; other encodings' reset undo is a `replace` and wipes concurrent newer writes inside the value.
 
 ## Rejected
 - Wall-clock staleness horizon for tombstones: nodes separated longer than the horizon diverge or lose edits; any independent reset-style compaction has the same problem.
@@ -56,7 +57,7 @@
 
 ## Implementation hints (non-normative)
 - Linearization: cache the order and tree; a delta touching k elements re-places those k subtrees; a cycle recomputes only its strongly connected component.
-- Large states page in the local store like snapshots: one unit per page plus an index unit (`key -> page`, `dot range -> page`, for text `dot -> position`). Very long texts (tens of MB) load fully for linearization; a subtree-count index is a later optimization.
+- Large states page in the local store like snapshots (notes/local-store.md, Units). Very long texts (tens of MB) load fully for linearization; a subtree-count index is a later optimization.
 - Maps need a local `key -> live dots` index.
 - If a concurrent edit resurrects an element whose content this node dropped, request the specific blobs that carried it.
 - Cut/paste: the client remembers the cut dot ranges beside the clipboard text; paste emits move + undelete if the clipboard still matches, else a diff. Optional osis clipboard MIME type with (aspect, ranges); the protocol has no clipboard concept.
@@ -90,7 +91,7 @@ Content is 105 KB and run records about 150 KB (6,000 runs at 25 bytes, the floo
 
 Kept from tuning: deleted elements carry no content on the wire (182k → 6k runs), the per-delta commit table with bare indices (1–3 bytes per foreign stamp instead of 10), delta-coded table entries, runs spanning commits via segments, the shared delta stamp.
 
-Open owner call: issues/text-state-growth.md.
+Accepted (tension 14): about 13 bytes per commit forever, so clients commit per editing pause. Stability-based GC (drop per-commit stamps once every writer acknowledged) would need every writer's frontier and stall on offline members, which the requirements forbid ("whether others are alive is never a protocol condition").
 
 ## Worked examples
 Dots `a1`, `b3` (source letter, counter); stamps `(t, dot)`. Tests in `crdt-model/tests/props.rs` cite these.

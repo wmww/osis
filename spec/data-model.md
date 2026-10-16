@@ -84,14 +84,14 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record |
-| `/members` | map<tid, struct { role, until: option<timestamp> }> | membership edges; read as the membership timeline's roster (spec/permissions.md §4) |
+| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role> }> | membership edges; read as the membership timeline's roster (spec/permissions.md §4) |
 | `/keys` | struct (register) | an actor's current keyset (spec/crypto.md §3) |
 | `/secrets` | struct | sealed role secrets and history boxes (spec/crypto.md §4) |
 | `/handover` | struct | hand-over records (spec/permissions.md §7) |
-| `/label` | map<label ID, struct { chain, servers }> | labels of a synced group (spec/sync.md §2) |
+| `/label` | map<label ID, struct { index, chain, servers, retired }> | labels of a synced group (spec/sync.md §2) |
 | `/follows` | map<record hash, record hash> | on a person actor: chosen successor per hand-over fork |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
-| `/reach` | struct { dialable key, relays } | on a node thing (spec/sync.md §10); never direct addresses |
+| `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 

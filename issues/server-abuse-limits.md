@@ -13,4 +13,4 @@ Chat makes tension 17 concrete: any participant (a reader of the chat label) can
 - Per-label pseudonymous member keys: an admin certifies (label, pseudonym public key) with the hard-delete key; uploads are signed by the pseudonym. The server then links one member's uploads across sessions (author structure, though not identity), which the requirements forbid.
 - Rate-limited anonymous credentials (what Signal's zkgroup does): unlinkable, but algebraic-MAC or BBS-class zero-knowledge crypto, far outside the simple-Rust suite.
 - Stay with per-label caps, per-connection rate limits and admin hard-delete; accept the junk window.
-None is free; the owner should pick.
+None is free; the owner should pick. Recommended for now: the third, since the junk window is bounded by the cap and admins can hard-delete.

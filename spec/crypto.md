@@ -17,25 +17,26 @@
 - **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
 - **Plain thing** (no non-owner member): role secret = `kdf("thing <role>", owner's <role> secret, tid)`. A thing that gets a non-owner member gets random role secrets of its own (spec/permissions.md §3).
 - **Key actor** (node, recovery key): one 32-byte seed. Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` (64 XOF bytes for ML-KEM keygen, 32 for X25519). The creation record commits to the signing public key only.
-- **Link key L**: seed in the link (spec/permissions.md §9). Signing key from `kdf("sign", seed)`; creation nonce from the seed (derivation TBD); no KEM key. The link's actor K has role secrets `kdf("link K <role>", seed)` until K is first rotated.
+- **Link key L**: seed in the link (spec/permissions.md §9). Signing key from `kdf("sign", seed)`; creation nonce from the seed (derivation TBD); no KEM key. The link's actor K has role secrets `kdf("link K <role>", seed)` until K is first rotated. Boxes to L use the symmetric form with `kdf("link box", seed)` as its secret; K's admins hold the seed (spec/permissions.md §9).
 - **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`, so only holders of a role can open boxes sealed to that role.
 - **`/keys`**: a register holding the current keyset only: epoch plus, per role, the algorithm-tagged KEM public key (a key actor: its single KEM key). Written by an admin of the actor; a key actor signs its own. A key actor rotates its KEM key by a new keyset; old private keys are kept for old boxes.
 - **Dedup secret** of a thing = `derive_key("osis v1 dedup", creation nonce)`.
 
 ## 4. `/secrets` and epochs
-- An **epoch** is a version of an actor's role secrets; every rotation bumps it; secrets not rotated carry over.
-- `/secrets` = `{ boxes: map<(member tid, role), box>, history: map<(epoch, role), history box> }`.
-- A box seals one role's current secret to a member, AD = (actor tid, member tid, role, epoch). Forms (enum):
+- An **epoch** is a version of an actor's role secrets, identified by (n, 16-byte random nonce). A rotation from epoch n creates an epoch n+1 with a fresh nonce; secrets not rotated carry over. Concurrent rotations create several epochs with one n (a **fork**); nodes keep all of them. The **newest** epoch is the greatest n, ties by lowest nonce.
+- `/secrets` = `{ boxes: map<(member tid, role, epoch), box>, history: map<(epoch, role), history box> }`. A rotation writes the new epoch's boxes and removes the boxes of the epochs it supersedes (those it holds), so a concurrent rotation's boxes survive the merge.
+- A box seals one role's secret of one epoch to a member, AD = (actor tid, member tid, role, epoch). Forms (enum):
   - sealed: `{ recipient keyset epoch, suite ID, sealed box }` to the member's KEM key for that role;
-  - symmetric: a wrap under `kdf("box", member's role secret)`, used when the writer holds that secret.
+  - symmetric: a wrap under `kdf("box", s)`, s the member's role secret (a link key: §3), used when the writer holds s.
 - A key-actor member has one KEM key: it gets one box, keyed (member, highest granted role), carrying every granted role's secret.
-- A grant writes the grantee's boxes for every role at or below the granted one. A rotation writes new boxes for every current member of each rotated role.
-- **History box** (epoch n, role r) = AEAD under `kdf("history", secret_r[n])` of every earlier distinct `secret_r`, written once per rotation.
+- A grant writes the grantee's boxes for every role at or below the granted one, for every epoch that still has boxes. A rotation writes new boxes for every current member of each rotated role.
+- **History box** (epoch e, role r) = AEAD under `kdf("history", secret_r[e])` of every distinct earlier `secret_r` the rotator holds, forks included, written once per rotation.
+- A node that may rotate an actor MUST NOT encrypt, wrap or seal under an epoch of it that a removal or demotion it knows of requires rotating (spec/permissions.md §3), even one made by a concurrent rotation; it rotates first.
 - Each epoch names its suite ID.
 
 ## 5. Blobs and wraps
 - **Blob encryption**: a fresh random 32-byte key per encryption, nonce all zero; nothing encrypts a blob under a caller-chosen key. Plaintext is Padmé-padded first. Blob = clear prefix || ciphertext (spec/sync.md §1). Blob ID = BLAKE3 of the whole blob.
-- **Wrap** (per label, per blob): AEAD under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, plaintext = suite byte || blob key: 49 bytes. Deterministic. A wrap names no epoch: a reader tries the read secrets it holds, newest first. An uploader wraps under the newest read epoch it holds.
+- **Wrap** (per label, per blob): AEAD under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, plaintext = suite byte || blob key: 49 bytes. Deterministic. A wrap names no epoch: a reader tries the read secrets it holds, newest first. An uploader wraps under the newest read epoch it holds (§4).
 - **Delivery blob** plaintext = sealed box to the recipient's read-role KEM key, AD = (recipient tid, `"delivery"`), payload = commit header and deltas.
 - **Signal envelope**: encrypted and wrapped like a blob, signed under `"osis v1 signal"` (layout TBD).
 
@@ -45,7 +46,8 @@
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
 
 ## 7. Delete tokens
-- Commit blob token: `kdf("delete token", secret, header salt)`, one per secret that may finish a purge of the commit: the write secret of the actor directly above the author node in its chain, plus the write secret of each thing a `purge`-class delta touches. Chunk token: `kdf("delete token", secret, chunk prefix salt)`. Tokens are 32 bytes.
+- **Token secrets** of a commit: the write secret of the actor directly above the author node in its chain, plus the write secret of each thing a `purge`-class delta touches.
+- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the commit that created the chunk. Tokens are 32 bytes.
 - **Token hash** = first 16 bytes of BLAKE3(token); the header lists them.
 - **Commitment** in a blob prefix = first 16 bytes of BLAKE3(token hash || prefix salt). A server verifies a presented token by hashing twice.
 - A token holder tries its epochs of the secret.

@@ -33,6 +33,7 @@ The chat deep dive showed that per-aspect reads and text search are not enough f
 - Things in a group (transitively) that carry a given aspect, ordered by a field or by commit time, paged, with a listener for changes inside the visible range (a chat timeline, a feed, an inbox).
 - Backlinks: things whose values reference a given tid, resolved through aliases (reactions and replies pointing at a message, "where is this note linked").
 - Filters over aspect values (unread, by author actor, by tag) and counts, live.
+- Ordering by commit time should tolerate a sender's skewed clock, e.g. display time = min(`ts`, local receipt time).
 - Local-only indexes that are rebuildable and shardable per aspect, since the local store erases by key (notes/local-store.md).
 None of this touches the wire; it is local API work.
 

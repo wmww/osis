@@ -16,6 +16,6 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 ## Conventions
 - MUST, MUST NOT, SHOULD are normative. Everything not marked otherwise is normative.
 - **TBD**: a detail not fixed yet (byte layouts, constants). plans/protocol-spec.md tracks them.
-- Notation: `[a, b]` is a CBOR array, `{k: v}` a CBOR map. `||` is byte concatenation. `kdf`, `derive_key`, `keyed_hash` are defined in spec/crypto.md.
+- Notation: `[a, b]` is a CBOR array, `{k: v}` a CBOR map. `||` is byte concatenation. `le64(i)` is i as 8 little-endian bytes. `kdf`, `derive_key`, `keyed_hash` are defined in spec/crypto.md.
 - "Node": an osis instance on a device. "Blind node": a node holding no read secret of a label it stores. "Member": an actor with a role on an actor or thing.
 - Domain strings such as `"osis v1 commit"` are fixed byte strings; their `v1` is not a protocol version.

@@ -24,7 +24,7 @@ A **source** is who minted a run of counters:
 A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write forever, and doubles as the identity of the element it created.
 
 ### 2.2 Timestamps and stamps
-- `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`. HLC rules: a node's clock is `max(wall clock, last ts seen)` with `logical` incremented on equal `wall_ms`; on receiving a commit the clock advances to the commit's ts. A commit with `wall_ms(ts)` more than `MAX_DRIFT = 1 h` (format constant) ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, tombstone GC, §5.5) until local wall time catches up, then joined normally. The node tiebreak lives in the dot, not in `ts`.
+- `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`. HLC rules: a node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`; on receiving a commit the clock advances to the commit's ts. A commit with `wall_ms(ts)` more than `MAX_DRIFT = 1 h` (format constant) ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, tombstone GC, §5.5) until local wall time catches up, then joined normally. The node tiebreak lives in the dot, not in `ts`.
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts` and its own counter, so stamps inside a commit are ordered by counter, matching the writer's sequential intent.
 - Total order on stamps: by `ts`; then source kind (`Node` < `Commit` < `Derived`); then source bytes (tid, commit ID; for `Derived`, the order of the underlying dot); then counter. Two different writes never compare equal.
 - "Later wins" everywhere means this order.
@@ -147,7 +147,7 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
 - element creation (text/list insert, set add, map put, contribution): text/list → deleted-flag write `true` on the dot (keeps the anchor; §5.7); set/map/bag → element reset on that dot.
 - register write, case write, position write: write the previous value only if the undone write is still the current winner locally; otherwise no write.
 - flag write, element reset (delete, set remove, key remove): the inverse write (flag `false`, or re-add) carrying content from the undo buffer, at the undo commit's stamp.
-- fragment reset (remove_aspect, replace, enum case change): re-insert the pre-reset value from the undo buffer with fresh dots (`replace`).
+- fragment reset (remove_aspect, replace, enum case change): re-insert the pre-reset value from the undo buffer with fresh dots (`replace`); bags: §5.2.
 Purged or expired originals are not undoable. Redo = undo of the undo commit.
 
 **Un-merge** (revocation, spec/permissions.md §5): remove every write whose dot's source belongs to the invalid author (`Derived` dots count for the author of the underlying dot) from the state, then re-derive registers' winners, `written`, pos top-2 (§5.7) from the remaining writes. Seq elements created by the author keep their record with their creation position as a content-less, hidden anchor (`Derived` records with no remaining write go, §4.7). Position registers keep only two writes (§5.7), so un-merging the current one may expose a position older than the one a full history would give; accepted. Un-merge over state is an approximation in general: an exact result re-joins the retained valid bodies, which also restores register values the author overwrote; otherwise they are lost.
@@ -177,7 +177,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - Join: as set; prune.
 - Read (bit-identical on every node): counter = sum of live contributions; ints are summed exactly and the sum clamped to i64 (never a panic), floats are summed as f64 in dot order (§2.2), and a bag holding both (only via §7) reads as float sum plus int sum. max/min = the extreme under this order: int against int by value, anything involving a float by IEEE 754 totalOrder on f64 (-0.0 < 0.0, the canonical NaN greatest); among equal extremes the one with the lowest dot. Absent when nothing is live and `written` does not survive.
 - Ops: `inc(a)` → one element `[k, [], [[0, [], D, a]]]`. Contributions that are not numbers (only from a register embedding, §7) are ignored by read. `set v` (a replace) → fragment reset `D` then one element `k`. For max/min a bare contribution is "observe v".
-- Undo of a contribution = element reset on its dot (cancel per dot, idempotent when two devices undo the same inc). Undo of a `set` = replace with the pre-reset contributions from the undo buffer, fresh dots.
+- Undo of a contribution = element reset on its dot (cancel per dot, idempotent when two devices undo the same inc). Undo of a `set` or `remove_aspect` = an element reset on the undone commit's own contribution (if any), plus the pre-reset live contributions from the undo buffer re-added with fresh dots; no fragment reset, so contributions others made after the undone commit survive.
 - Tombstones: as set elements (§5.5), including the `W` fold. No other GC: dropping non-extreme max/min elements or folding contributions is not permitted.
 
 ### 5.3 Struct (4)

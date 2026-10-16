@@ -8,12 +8,14 @@
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, where a path climbs membership edges and owner links (an owner holds admin on what it owns). Evaluated with each timeline (§4) at t.
 - **Admin** = write + change membership + purge (§8) + hand over things the actor owns (§7). An admin edge on a plain thing grants membership changes and purge on that thing, not hand-over.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
-- The aspects `/members`, `/secrets`, `/handover` of an actor are writable only by its admins, whatever other role a node holds.
+- The aspects `/members`, `/secrets`, `/handover` of an actor are writable only by its admins, whatever other role a node holds, except invite grants and self-removals (§2).
 - Group membership (`/group`) grants no rights.
 
 ## 2. Membership writes
 - Grant, change and removal of an edge are writes to the target's `/members`, each in its own membership commit (spec/commits.md §2), by a node with admin on the target.
 - An edge may carry `until: timestamp`: the edge counts as removed at that time.
+- An edge may carry `invite: role`, at most its role. A node's **effective invite** on T is the maximum over its paths to T of the minimum of the roles along the path before the last edge and that edge's invite. An **invite grant** adds an edge for an actor with no current edge on T, with role and invite at most the author's effective invite, and carries the grantee's boxes for those roles. Invite holders cannot change or remove any other edge.
+- **Self-removal**: a node with admin on actor X may always remove X's edge on any target, or lower its role, invite or `until`.
 - A membership write made under an edge into actor G MUST also be published under G's label.
 - The roster apps read from `/members` is the membership timeline's roster (§4), not the CRDT join of the stored deltas.
 
@@ -37,9 +39,9 @@ Validity is a deterministic function of the commits, attestations and the node's
 
 ### 5.1 Layer 1: membership timeline (per thing that carries edges)
 1. Order membership writes by (`ts`, author node). Start at the thing's epoch start (§6) if one applies, ignoring writes ordered before it; else at the first held write.
-2. Walk the writes, skipping the drop set D (initially empty). A write applies iff its author has the required authority at that point.
-3. Attribute each membership write to the highest authority its author held at its point, owner chain before edge.
-4. When an applied write R by node A at time T demotes actor X (from admin to below, or removes an edge with admin), every earlier applied membership write by X attributed to the removed authority that R's **frontier** does not cover is added to D, and the walk restarts. Removing X from actor G audits X's writes made as G's admin on G and on everything G owns; demoting X's edge on a thing audits only what X wrote on that thing by that edge.
+2. Walk the writes, skipping the drop set D (initially empty). A write applies iff its author has the required authority at that point: admin on the thing; for an invite grant, the effective invite it needs; for a self-removal, admin on the edge's member.
+3. Attribute each membership write to the highest authority its author held at its point, owner chain before edge, admin before invite.
+4. When an applied write R by node A at time T demotes actor X (from admin to below, or removes an edge with admin, or lowers or removes X's invite), every earlier applied membership write by X attributed to the removed authority that R's **frontier** does not cover is added to D, and the walk restarts. Removing X from actor G audits X's writes made as G's admin on G and on everything G owns; demoting X's edge on a thing audits only what X wrote on that thing by that edge.
 5. The first walk that adds nothing to D is the timeline. D is rebuilt from scratch whenever the held set changes.
 - R's frontier is A's receipt log over X's membership-write dots as of T, per node of X, embedded in R. A's own chain writes and R itself always count. No other receipts or attestations count for membership writes.
 - A demotion by `until` or by self-removal audits nothing. The next explicit demotion of that member by another node audits with its frontier as if the member still held the role.
@@ -81,9 +83,9 @@ Before stamping a role-lowering membership write a client SHOULD sync the labels
 An explicit purge of a delta may be issued by the delta's author or by an admin of the thing. At blind nodes: spec/sync.md §5.
 
 ## 9. Links
-- A link consists of K, an actor owned by the sharer and made a member of the target with the link's role, and L, a key actor whose seed is in the link and which is an admin member of K. The link encodes: L's seed, the target tid, a server address, the target's label and K's label (layout TBD).
-- **Redeem**: derive K's secrets and L's key from the seed, then, signing as L, add the redeemer's actor (or a fresh node) to K with the link's role and seal K's secrets to it. L writes in commit form.
-- `until` on L's edge expires the link; single use = the redemption also removes L from K in the same commit. Both are finalized by a sharer device writing a plain removal of L (§5.1).
+- A link consists of K, an actor owned by the sharer and made a member of the target with the link's role, and L, a key actor whose seed is in the link, with edge (role r, invite r) on K for the link's role r. The sharer's actor is K's only admin. The link encodes: L's seed, the target tid, a server address, the target's label and K's label (layout TBD).
+- **Redeem**: derive K's secrets and L's key from the seed (or open L's boxes on K once K has rotated, spec/crypto.md §3), then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form.
+- `until` on L's edge expires the link; single use = the redemption also removes L's own edge in the same commit (a self-removal). Both are finalized by a sharer device writing a plain removal of L (§5.1).
 - **Bearer use**: act as L without writing anything. Read only.
 - The sharer keeps the seed on K under an admin-only aspect.
 - **Recovery card**: recovery key seed, person actor tid, home label, server (layout TBD). The seed also derives a bootstrap label's read secret, under which the person's devices keep certificate copies of its current `/secrets`, `/label` and `/created` commits. The recovery key has a KEM key and a box in the person's `/secrets`.

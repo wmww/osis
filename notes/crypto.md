@@ -1,5 +1,5 @@
 # Crypto: rationale
-> Summary: Why suite 1 (spec/crypto.md) is what it is, costs of keys and boxes, proposed crates, rejected options. The suite was the agent's call with the owner deferring; the hybrid post-quantum choice is flagged for the owner.
+> Summary: Why suite 1 (spec/crypto.md) is what it is, costs of keys and boxes, proposed crates, rejected options. The suite was the agent's call with the owner deferring; hybrid post-quantum boxes follow from the requirement that long-lived secrets resist a future quantum attacker.
 
 ## Why
 - **Ed25519**: 32-byte keys, 64-byte signatures, fast verification per commit. Strict verification so every node accepts exactly the same signatures. PQ signatures not now: ML-DSA-44 has 2420-byte signatures and 1312-byte keys, over ten times the commit floor. Forgery is not retroactive: nodes rotate to a PQ scheme (new enum case, key actors rotate by hand-over) before a quantum attacker exists, and stored data stays valid.
