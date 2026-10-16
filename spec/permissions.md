@@ -26,7 +26,7 @@
 ## 4. Verifying authors: certificates
 - A write's authority is checked through the chain from the signing node up: each link is a membership write or an owner link (tid commits to the owner), ending at a key actor whose tid commits to its public key. No secrets are needed.
 - **Chain certificates** of a node: for each thing on its chain, the `/created` record, the epoch start (§6, projected to the entries the chain needs), the later membership writes that establish each edge, and the current `/keys` commit of each actor on it. Its **node card**: its `/keys`, `/node` and `/reach` commits (each a commit of its own touching nothing else).
-- When a node first uploads under a label, and whenever they change, it places its chain certificates and node card under that label (spec/sync.md §3). `/reach` is omitted under labels with link members unless the app opts in.
+- When a node first uploads under a label, and whenever they change, it places its chain certificates and node card under that label (spec/sync.md §3). `/reach` goes under every label by default; an app MAY exclude labels (e.g. public or bearer-read ones). Without it, co-readers of that label cannot dial the node off-LAN.
 - Any member that syncs a label and holds a revoke, roster snapshot, hand-over record or attestation about an author seen under that label places it there, with the chain certificates of that commit's own author.
 - A grant is accompanied by the target's current `/label` commit.
 - A commit whose author's chain has not arrived is pending (spec/commits.md §4).

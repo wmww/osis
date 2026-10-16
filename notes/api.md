@@ -28,6 +28,14 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 - `async Mutator::commit(self) -> Result<()>`: one atomic commit for every touched thing, across owners and reader sets (spec/sync.md §3, Projection).
 - `async Osis::send_signal(&self, tid, kind, value) -> Result<()>`, `async Osis::listen_signals(&self, tid, kind, callback: async value -> ()) -> Result<ListenerId>`: never stored, reach local listeners plus connected nodes only (decided, notes/ephemeral.md).
 
+## Queries apps will want (direction, not specified)
+The chat deep dive showed that per-aspect reads and text search are not enough for any list-like UI. Expect to grow most of a slow, not very feature-rich database on top of the lighter local store, over time; a dedicated design pass should shape it. The kinds of things apps need, kept loose on purpose:
+- Things in a group (transitively) that carry a given aspect, ordered by a field or by commit time, paged, with a listener for changes inside the visible range (a chat timeline, a feed, an inbox).
+- Backlinks: things whose values reference a given tid, resolved through aliases (reactions and replies pointing at a message, "where is this note linked").
+- Filters over aspect values (unread, by author actor, by tag) and counts, live.
+- Local-only indexes that are rebuildable and shardable per aspect, since the local store erases by key (notes/local-store.md).
+None of this touches the wire; it is local API work.
+
 ## Typed reads (decided; spec/versioning.md §5)
 Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they are also available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type, generated or hand-written in the app; transitions and the form-choice policy are codegen conventions (notes/versioning.md).
 

@@ -91,7 +91,7 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/label` | map<label ID, struct { chain, servers }> | labels of a synced group (spec/sync.md §2) |
 | `/follows` | map<record hash, record hash> | on a person actor: chosen successor per hand-over fork |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
-| `/reach` | struct { dialable key, relays, addresses } | on a node thing (spec/sync.md §10) |
+| `/reach` | struct { dialable key, relays } | on a node thing (spec/sync.md §10); never direct addresses |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 

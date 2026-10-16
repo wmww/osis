@@ -22,7 +22,7 @@
 - **Retag**: when a thing joins a group, any member adds its live blobs under the new label; when it leaves, writers retire them under the old label.
 - **Certificate blobs**: chain certificates, node cards, revokes, roster snapshots, hand-over records, attestations, and `/label` commits accompanying grants (spec/permissions.md §4) go under a label as a fresh encryption per label, never as a blob shared with another label. A roster snapshot copied as a certificate is projected to the edges the chain needs and omits `/secrets` and `/label`.
 - **Delivery blob**: a commit sealed to one recipient (spec/crypto.md §5), placed under a label whose other readers may not read it.
-- **Grant delivery**: a grant commit goes under the target's labels and, so the grantee can find and open it, either as a certificate copy under a label the grantee already reads and whose readers may see the grant (K's label for a link; the grantee's home label when the granter reads it), or else as a delivery blob under the grantee's contact label (below).
+- **Grant delivery**: a grant commit goes under the target's labels and, so the grantee can find and open it, either as a certificate copy under a label the grantee already reads and whose readers may see the grant (K's label for a link; the grantee's home label when the granter reads it), or else as a delivery blob under the grantee's contact label (below). A grantee device that accepts a grant for its person actor (from a delivery blob, from K's label, or by pairing) places a certificate copy of the grant, with the `/label` commits it needed to reach the target, under the person's home label, so the person's other and future devices find it; a consumed delivery blob may then be hard-deleted from the contact label by its owner.
 - **Contact label**: a person's profile thing P is a group of itself holding `/keys` and chain certificates only; a contact card is a link (spec/permissions.md §9) to P with read role. Card holders may upload to P's label.
 - A receiver keeps blobs a peer placed under a label even if its own closure disagrees.
 
@@ -69,7 +69,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 ## 10. Transport and addresses
 - Sync runs over any ordered, bidirectional byte stream with confidentiality and an authenticated peer key.
 - A server address is a transport URL plus the server's static public key; a client MUST check the server's key against it.
-- Clients connect to servers with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `/reach`.
+- Clients connect to servers with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `/reach`, together with its preferred relays. Direct addresses are never published; they are exchanged with the peer at connection time (hole punching) or found by LAN discovery.
 
 ## 11. File bundles
 A bundle is a one-way log replay for a set of labels: registration chains, entries with wraps, blobs, retire lists (format TBD). An importer treats it as a peer with no cursor.
