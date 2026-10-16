@@ -41,7 +41,8 @@ Schemas also declare **signal kinds**: typed like an AK, but a signal is never s
 - `/aspects` (set<string>, synthetic, guaranteed): AKs present on this thing
 - `/created` (struct, ro, guaranteed; shape proposal): the creation record the tid hashes (owner actor tid, nonce; below)
 - `/members` (map<tid, role>; proposal): membership edges on this thing (notes/permissions.md)
-- `/secrets`, `/handover` (proposal): an actor's role secrets wrapped to its members (every role, every epoch); hand-over records (notes/permissions.md)
+- `/keys` (map<epoch, keyset>; 2026-10-16): an actor's public KEM key per role (plus signing key for a key actor), so granters can seal secrets to it (notes/crypto.md)
+- `/secrets` (2026-10-16): an actor's role secrets sealed to its members, one box per (member, role), plus history boxes per (epoch, role) (notes/crypto.md); `/handover` (proposal): hand-over records (notes/permissions.md)
 - `/follows` (map<record hash, record hash>; proposal 2026-10-15): on a person actor, which successor its devices follow at a hand-over fork (notes/permissions.md, Resolution)
 - `/node` (struct): a sync node. Fields (2026-10-15, notes/ephemeral.md): software revision, schema revisions and forms it reads, last sync time; written at a low rate.
 - `/group` (struct): `items: set<tid>`, `subgroups: set<tid>` (transitively included)
@@ -57,7 +58,7 @@ Things are composed of aspects and hold nothing else.
 
 ### Self-certifying tids (decided 2026-09-29; record layout is proposal)
 Binds a thing to its first owner so nobody can publish a competing creation (notes/permissions.md).
-- tid = first 120 bits of BLAKE3(creation record). Record = (owner actor tid, random nonce of 128+ bits); for a key actor (node, recovery key), which owns itself, (public signing key, nonce). Trust chain thing -> owner actor -> ... -> node key, each step checked by hashing.
+- tid = first 120 bits of BLAKE3(creation record). Record = (owner actor tid, 32-byte random nonce); for a key actor (node, recovery key, link key), which owns itself, (algorithm-tagged public signing key, nonce); its encryption key is signed data in `/keys`, not part of the record (notes/crypto.md). Trust chain thing -> owner actor -> ... -> node key, each step checked by hashing.
 - The record is checked when the thing's data is received, never for a dangling reference. References stay bare tids. The nonce keeps a bare tid from revealing its owner and seeds the thing's dedup secret (Hashing, below).
 - Storage: owner kept as an index into a local table of known actors.
 - Margin: forging a second record for a given tid costs 2^120; for any one of N known tids 2^120/N (N = 2^30: 2^90 hashes, roughly $10^8-10^9 at Bitcoin-ASIC efficiency, far more on GPUs; 2026 figures, hardware gets about 10x cheaper per decade). Below Bitcoin addresses (160 bits), above retired Tor v2 names (80 bits). Adequate, not generous.

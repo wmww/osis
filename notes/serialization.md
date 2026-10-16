@@ -18,7 +18,7 @@ CBOR (RFC 8949) restricted to a strict subset. Rationale: IETF standard, determi
 | set | tag 258 around an array sorted by canonical encoded bytes of elements |
 | tid | tag TID around a 15-byte byte string |
 | enum | tag ENUM around `[id]` (no payload) or `[id, payload]`; case ID from the schema |
-| link | tag LINK around (keyed content hash of the canonical value, blob ID, 32-byte blob key) |
+| link | tag LINK around (keyed content hash of the canonical value, blob ID, suite byte plus 32-byte blob key) |
 
 Tag numbers not yet chosen. Use the 3-byte range (256..65535) in an unassigned region, e.g. TID=4001, ENUM=4002, LINK=4003, and check the IANA CBOR tag registry before fixing them. 258 (set) is already registered for exactly this purpose.
 

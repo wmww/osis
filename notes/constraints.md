@@ -49,7 +49,7 @@ Rules: mark each item hard (must hold) or goal (hold unless a listed tension say
 - An app update never by itself changes what is stored: which form is written is runtime policy per write, so old app versions keep working until a group actually uses the new form; nothing requires global agreement on who has upgraded. The core has no migration concept; an import is ordinary writes. The core does not distribute schemas; headers carry the writer's type hash and revision.
 
 ## Data model and serialization (hard)
-- One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash.
+- One canonical, byte-identical serialization across platforms and versions; bytes on the wire are stored as received. BLAKE3 is the only hash osis computes; suite 1 is Ed25519, XChaCha20-Poly1305, BLAKE3 and a hybrid X25519 + ML-KEM-768 sealed box (notes/crypto.md, 2026-10-16).
 - Every piece of data is an aspect of a thing; values are type-checked against the writer's schema; tids may dangle.
 - Merge is per-aspect delta-state CRDT; LWW reset is the only removal mechanism, addressed by aspect or by a collection element's creation dot, never by value or key (2026-10-15). A newer write never loses to an older removal. Text/list CRDT ships in v1.
 

@@ -11,6 +11,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - **Merge** (notes/crdt-sync.md): per-aspect delta-state CRDTs, one rule everywhere (timestamp plus author dot, later wins, removal is a reset); retention classes and purge.
 - **Sync** (notes/sync.md): each node tracks groups and syncs them with other nodes by reconciling sets of encrypted commit blobs under per-group labels. Keyless (blind) nodes take part without seeing structure. Commits apply atomically.
 - **Networking** (notes/networking.md): sync runs over our own transport abstraction; direct server connections without iroh, iroh for P2P (LAN, relays, later BLE); official blind server and relays; addresses and relays are osis data, transport keys separate from node keys.
+- **Crypto** (notes/crypto.md): suite 1 (Ed25519, XChaCha20-Poly1305, BLAKE3, hybrid post-quantum sealed boxes), key per actor kind, `/keys` and `/secrets`, epochs, algorithm agility.
 - **Local store** (notes/local-store.md): backends hold ciphertext only; unit keys hang off a key tree rooted in platform erasable storage, so deletion is key erasure.
 - **Ephemeral data** (notes/ephemeral.md): signals are never stored and reach only connected nodes; state may expire at a time every node honors; "all nodes" is a predicate over node-published state, never a protocol condition.
 
@@ -18,4 +19,4 @@ osis (Open Structured Information System) is a decentralized database optimized 
 Owner and agent iterate by discussion; the agent records decisions in notes (marked decided or proposal, with dates), then implements. No code yet (2026-10-16).
 
 ## v1 scope (owner 2026-10-16)
-v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: issues/crypto-primitives.md, plans/crdt-spec.md, plans/protocol-spec.md, issues/membership-layer1-loops.md.
+v1 implements everything specified in these notes. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns). Pre-implementation work: plans/crdt-spec.md, plans/protocol-spec.md.

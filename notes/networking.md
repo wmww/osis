@@ -39,6 +39,6 @@ Hides IPs from blind nodes, relays and peers. Not needed now (owner 2026-10-16).
 - **Willow/WGPS, Syncthing BEP, Hyperswarm**: sync protocols or JS-only stacks, not transports. Syncthing's community relays plus self-hostable discovery are the precedent for decision 3.
 
 ## Open
-- First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server.
+- First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server. A contact card can be a bearer link to a profile thing holding `/keys` (notes/crypto.md).
 - Which free services the official server offers exactly, and abuse limits for free relaying.
 - BLE: AGPL crate vs our own.
