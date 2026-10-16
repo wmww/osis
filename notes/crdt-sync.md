@@ -17,7 +17,7 @@
 ## Layers (each a canonical CBOR value)
 - **Aspect state**: delta-state CRDT (join-semilattice, single `join` op). Stored per aspect, local only: never synced, never hashed.
 - **Delta**: a small state of the same lattice; applying = join. Idempotent, order-free, tolerates duplicates. No op log or ordered delivery.
-- **Commit**: signed header plus one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer type hash and schema revision, per-aspect dot ranges, list of (tid, ak, delta hash, encoding), retention class override, optional expiry time, optional purge request, delete token hash for the commit and one per chunk blob the deltas introduce (notes/sync.md), signature. Commit ID = hash(header). Header plus unpurged deltas form one encrypted blob. A commit applies whole or not at all on every node that tracks any of its things.
+- **Commit**: signed header plus one delta per touched aspect. Header: format version, author node, actor, HLC timestamp, writer type hash and schema revision, per-aspect dot ranges, list of (tid, ak, delta hash, encoding), retention class override, optional expiry time, optional purge request, delete token hash for the commit and one per chunk blob the deltas introduce (notes/sync.md), signature. Commit ID = hash(header). Header plus unpurged deltas form one encrypted blob. A commit applies whole or not at all on every node that tracks any of its things. Commit kinds: content, membership (own commit per membership write, notes/permissions.md), attestation (header-only receipt frontiers for the revocation rule, no deltas, never compacted away).
 
 ## Guarantees
 - Convergence under any delivery order.

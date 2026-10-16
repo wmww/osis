@@ -41,7 +41,8 @@ Schemas also declare **signal kinds**: typed like an AK, but a signal is never s
 - `/aspects` (set<string>, synthetic, guaranteed): AKs present on this thing
 - `/created` (struct, ro, guaranteed; shape proposal): the creation record the tid hashes (owner actor tid, nonce; below)
 - `/members` (map<tid, role>; proposal): membership edges on this thing (notes/permissions.md)
-- `/secrets`, `/handover` (proposal): an actor's role secrets wrapped to its members; hand-over records (notes/permissions.md)
+- `/secrets`, `/handover` (proposal): an actor's role secrets wrapped to its members (every role, every epoch); hand-over records (notes/permissions.md)
+- `/follows` (map<record hash, record hash>; proposal 2026-10-15): on a person actor, which successor its devices follow at a hand-over fork (notes/permissions.md, Resolution)
 - `/node` (struct): a sync node. Fields (2026-10-15, notes/ephemeral.md): software revision, schema revisions and forms it reads, last sync time; written at a low rate.
 - `/group` (struct): `items: set<tid>`, `subgroups: set<tid>` (transitively included)
 - `/groups` (set<tid>, synthetic, guaranteed): locally known groups containing this thing, directly or indirectly

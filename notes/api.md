@@ -31,9 +31,9 @@ Main interface. A cloneable, thread-safe handle to an internal `Database`, which
 Typed reads fail with an error carrying the path on an unknown enum case, a field type mismatch or a missing required field; they are also available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type, generated or hand-written in the app; transitions and the form-choice policy are codegen conventions (notes/versioning.md).
 
 ## Tids and hand-over (proposal, notes/permissions.md)
-A thing gains a new tid when its ownership, or that of an actor above it, is handed over; old tids are aliases. Sharing never changes a tid.
+A thing gains a new tid when it is handed over, and a new identity per branch when an actor above it forks; old tids are aliases. Sharing never changes a tid.
 - Every call that takes a tid resolves aliases internally; listeners registered under an old tid keep firing. Apps never resolve in order to access.
-- Values returned to apps have known aliases replaced by the current tid, so tids read from osis compare equal. Stored bytes and hashes are unaffected; writing such a value back performs the rewrite.
+- Values returned to apps have known aliases replaced by the current tid (typed tids and `osis://` links in markdown), so tids read from osis compare equal. Resolution is a read-time view (2026-10-15): stored bytes and hashes are untouched, and `set_aspect` diffs against the resolved view, so writing a value back does not rewrite references. An app pins a reference by writing it explicitly.
 - Explicit call only for identity: comparing a tid the app kept (memory, config, URL) with one read later. `Tid` equality is plain bits and cannot consult the database.
 
 ## Diagnostics channel (decided 2026-09-29; shape is proposal)

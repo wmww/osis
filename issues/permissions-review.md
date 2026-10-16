@@ -1,17 +1,19 @@
-# Review the permission model as a whole
-> Summary: Walk notes/permissions.md end to end before implementation: hand-over adversarial scenarios, receipt-time rule details, witness roles, rotation cost, label entitlement, chat pattern limits. Requested by owner 2026-10-12.
-> Tags: security, permissions, sync
+# Permission model review: proposals awaiting owner
+> Summary: The 2026-10-12 end-to-end review was done 2026-10-15 (agent); specs and corrections are in notes/permissions.md. This issue now lists only what needs the owner's call, plus one verification task. Close when each item is decided and its "proposal" mark in the note is resolved.
+> Tags: security, permissions, sync, tests
 
-Context: notes/permissions.md, notes/sync.md (Labeling, Authorization at blind nodes), notes/constraints.md (Permissions, tensions 1, 6, 7, 8, 9).
+All details in notes/permissions.md under the sections named.
 
-Review for consistency and gaps, then settle:
-- Lazy hand-over is accepted conditionally. Walk it through adversarial scenarios (split at birth, repeated forks, chains of hand-overs, hand-over of an actor with members). Spec the derived-tid index and branch-relative resolution; check whether "standing in exactly one branch" is a sufficient decider for old references.
-- When references are rewritten after a hand-over: at hand-over, on read, or on write. Includes `osis://` links inside markdown.
-- Receipt-time rule details never discussed: validity as a least fixpoint over revokes and statements; what a re-grant does to never-witnessed writes; statement publication cost (one per aspect per author node a witness holds).
-- Witnesses: statements are writes. Readers receive writes but cannot write to the actor thing, so either only writers witness, or statements are a special write any member may publish. Decide, and where statements live (actor thing, or the thing written).
-- Label entitlement rule (2026-10-15, agent): an uploader wraps a thing's blobs for a label only if the label's actor may read the thing. Confirm with owner; check the shared-folder and chat patterns and the cost of the entitlement check at upload.
-- One role on an actor covers both editing the actor thing's own data and acting as it. Confirm or split.
-- Nesting cost: removing a member low in the hierarchy rotates read secrets of every actor it could read. Quantify and decide whether to mitigate.
-- Per-role secrets and label-key derivation (proposal 2026-10-11): check against sharing, demotion, eager label re-registration and the mixed-owner chat pattern.
-- Chat pattern limits left to app design (removed participant keeps control of old messages, no verifiable cutoff): confirm acceptable.
-- Key recovery is out of scope (owner 2026-10-12); make sure nothing precludes it.
+Decisions needed (recommendation first):
+1. **Hand-over is a revocation** (Hand-over as a revocation). Without it a handed-over thing's whole history is invalid under the receipt-time rule. Proposal: the hand-over commit carries the signer's frontier; hand over from an up-to-date node. Also: strip inherited admin edges of a handed-over actor; rotate its secrets and re-register label keys eagerly.
+2. **No reference rewriting** (Resolution). Replaces the 2026-09-29 decision to rewrite old tids in data and markdown. Resolution is a read-time view; a fork is resolved by standing, then by a per-person `/follows` aspect (first seen by default). Reasons: a no-op register rewrite beats a concurrent real edit under LWW; concurrent text splices duplicate links; aliases are permanent anyway.
+3. **Mutual admin removal**: earlier timestamp wins, not "both apply" (Model). Follows from judging membership writes by the receipt-time rule.
+4. **Re-grant validates all** of the actor's writes, not only witnessed ones (Validity definition). Needed for lossless recovery from a stolen admin device's backdated mass revoke.
+5. **Witnesses are writers and above**, never readers; attestations are a header-only commit kind, labeled like membership commits, never compacted away (Witnesses).
+6. **Honest fork rule**: successors naming the same new owner resolve to the lowest record hash (Resolution).
+7. Confirmations with no change: one role per actor covers acting and editing (core aspects are admin-gated anyway); nesting rotation cost accepted (wraps per direct member plus label re-registrations, no content); chat pattern limits accepted (app-level accepted-marker if a cutoff is wanted); label entitlement rule holds for all patterns, one cached check per (thing, label); per-role secrets hold, all epochs wrapped to members; key recovery not precluded (hand-over authorization is an extensible enum); rotate a key by handing over the key actor, not the person.
+
+Verification before implementation:
+- Model-check the membership timeline fixpoint (Validity definition, layer 1): generate small random histories of grants, revokes, hand-overs and receipts with skewed clocks; check the iteration terminates and that the stable result is unique and independent of iteration order. If a counterexample appears, the definition needs stratification or a different base.
+
+Known accepted consequences recorded in notes/sync.md: a removed admin can win the label re-registration race at a blind node (hostile admin, out of scope; remedy is a new label); re-registration messages must be relayable by members.
