@@ -1,5 +1,5 @@
 # Serialization: CBOR wire format and schema DSL
-> Summary: Canonical CBOR encoding of values (tags, ordering, floats, links for large values) and the Rust-like schema DSL. Decided: CBOR, Rust-like DSL, no serde on the wire, integer item IDs, open structs, content-defined chunking. Proposal: tag numbers, float rule, chunking parameters, grammar details.
+> Summary: Canonical CBOR encoding of values (tags, ordering, floats, links for large values) and the Rust-like schema DSL. Decided: CBOR, Rust-like DSL, no serde on the wire, integer item IDs, open structs, content-defined chunking. Float rule confirmed 2026-10-16. Proposal: tag numbers, chunking parameters, grammar details.
 
 ## Wire format: osis CBOR profile
 CBOR (RFC 8949) restricted to a strict subset. Rationale: IETF standard, deterministic-encoding profile exists, tags cover the types osis adds, diagnostic notation lets generic tools print any value without a schema. DAG-CBOR (IPLD) is the closest prior art but only allows string map keys, so we don't use it directly.
@@ -29,7 +29,7 @@ Struct and `map<int, T>` share an encoding. Acceptable because `any` is an enum,
 - Do NOT use the dCBOR profile: its numeric reduction encodes 1.0 as 1, which erases the int/float distinction.
 - No CBOR `null`/`undefined`; absence is expressed by `option<T>`.
 - Decoder is strict: any non-canonical input is an error. So bytes on the wire are the canonical bytes and are hashed and stored as received, never re-encoded. Important for multi-GB blobs.
-- Floats: value identity is the IEEE bit pattern. NaN is normalized to a single canonical pattern (positive quiet NaN, zero payload) when a value is constructed; the decoder rejects any other NaN. -0.0 and 0.0 are distinct values. (Not confirmed by owner.)
+- Floats: value identity is the IEEE bit pattern. NaN is normalized to a single canonical pattern (positive quiet NaN, zero payload) when a value is constructed; the decoder rejects any other NaN. -0.0 and 0.0 are distinct values. (Confirmed by owner 2026-10-16.)
 - Content hashes are keyed BLAKE3 over canonical bytes (notes/data-model.md, Hashing).
 
 ### Serde
