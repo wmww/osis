@@ -25,8 +25,8 @@ A commit may carry `expires at T` in its header; schema default per AK as a dura
 - Not provided: server-enforced minimum retention (legal hold). If ever wanted it is a per-label policy beside the grace period, and it cannot apply to `purge`-class content, which the server cannot tell apart.
 
 ## The all-nodes predicate (decided 2026-10-15)
-"All nodes a thing syncs to" is computable at trusted nodes (every node of every member, nodes are leaf actors) and is a state predicate, never a protocol condition.
-- Each node publishes on its node thing (`/node`, notes/data-model.md): software revision, schema revisions and forms it reads, last sync time. Written at a low rate (on change, last-sync hourly at most). Accepted by owner 2026-10-15.
+"All nodes a thing syncs to" is computable at trusted nodes and is a state predicate, never a protocol condition. Defined per label (2026-10-16): the nodes with a valid chain that published their `/node` under the thing's label (notes/permissions.md, Nodes as things), not "every node of every member", which would need rosters readers never see.
+- Each node publishes on its node thing (`/node`, notes/data-model.md): software revision, schema revisions and forms it reads. Written on change, and re-put under each label it still tracks at a low rate (daily at most), so the newest copy's HLC under L is the node's last sync of L. Accepted by owner 2026-10-15.
 - Policies read it: write the new form once every node reads it (fixes the read-only old app that the writer-revision heuristic in notes/versioning.md cannot see), drop old-form history after that, clean up an inbox once every own device has acked.
-- Dead nodes: a lost phone blocks "all" forever, so every such policy pairs the predicate with an age cutoff on last sync or an explicit node removal. The predicate never gates deletion at blind nodes, which know no members and must not wait on liveness.
+- Dead nodes: a lost phone blocks "all" forever, so every such policy pairs the predicate with an age cutoff on last sync or an explicit node removal (which invalidates its chain, dropping it from the predicate). The predicate never gates deletion at blind nodes, which know no members and must not wait on liveness.
 - "Buffer until all have seen it" = inbox pattern plus this predicate plus expiry as backstop. Fine as a core helper later; not sync machinery.
