@@ -84,7 +84,7 @@ function renderHome() {
 
 /** One slide's markup, shared by both modes. */
 function slideHtml(s, i, cls = '') {
-  const more = s.more ? `<button class="more-btn" popovertarget="more-${i}">${s.moreLabel ?? 'Details'}</button>
+  const more = s.more ? `<button class="more-btn" popovertarget="more-${i}" title="Details" aria-label="Details">?</button>
     <div class="more" id="more-${i}" popover>${s.more}</div>` : '';
   return `<article class="slide ${cls}" id="s${i + 1}">
       <h1>${s.title}</h1>
