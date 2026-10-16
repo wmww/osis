@@ -20,5 +20,6 @@ Below the title each note, issue and plan should contain a one-line `> Summary: 
 - Only pull/push when explicitly asked. Git push may hang without user approval.
 - Commit to the current branch unless asked, don't make feature branches.
 - Do not run code formatting tools unless explicitly asked.
-- Keep prose, comments, errors, and commit messages short unless extra detail is genuinely useful.
+- Keep prose, comments, errors, and commit messages compact unless extra detail is genuinely useful.
+- When talking directly to humans, write especially clearly and concisely. Avoid unrequested details or jargon unless critical for correctness.
 - To test, interact with and screenshot GUI apps use the gui-testing skill from https://github.com/wmww/agent-skills.
