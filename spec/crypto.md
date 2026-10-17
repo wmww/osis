@@ -31,7 +31,7 @@
 - A key-actor member has one KEM key: it gets one box, keyed (member, highest granted role), carrying every granted role's secret.
 - A grant writes the grantee's boxes for every role at or below the granted one, for every epoch that still has boxes. A rotation writes new boxes for every current member of each rotated role.
 - **History box** (epoch e, role r) = AEAD under `kdf("history", secret_r[e])` of every distinct earlier `secret_r` the rotator holds, forks included, written once per rotation.
-- A node that may rotate an actor MUST NOT encrypt, wrap or seal under an epoch of it that a removal or demotion it knows of requires rotating (spec/permissions.md §3), even one made by a concurrent rotation; it rotates first.
+- A node that may rotate a role of an actor (spec/permissions.md §3) MUST NOT encrypt, wrap or seal under an epoch of it that does not cover a removal or demotion it knows of; it rotates first. An epoch **covers** a removal of member M if it holds no box for M for the rotated roles; it covers a demotion of M to role r if it holds no box for M above r; it covers a removal below a member M (a device removal, or a removal in an actor under M) if M's box names a keyset epoch of M that covers it. A rotation by a writer leaves the admin boxes as they are; the epoch covers nothing for the admin role.
 - Each epoch names its suite ID.
 
 ## 5. Blobs and wraps

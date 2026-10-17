@@ -8,7 +8,7 @@
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, where a path climbs membership edges and owner links (an owner holds admin on what it owns). Evaluated with each timeline (§4) at t.
 - **Admin** = write + change membership + purge (§8) + hand over things the actor owns (§7). An admin edge on a plain thing grants membership changes and purge on that thing, not hand-over.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
-- The aspects `/members`, `/secrets`, `/handover` of an actor are writable only by its admins, whatever other role a node holds, except invite grants and self-removals (§2).
+- The aspects `/members`, `/keys`, `/handover` of an actor are writable only by its admins, whatever other role a node holds, except invite grants and self-removals (§2). `/secrets` is written by admins, and by rotations (§3): a node with effective role r may rotate the roles ≤ r.
 - Group membership (`/group`) grants no rights.
 
 ## 2. Membership writes
@@ -22,7 +22,11 @@
 ## 3. Secrets and rotation
 - Each role secret of an actor is sealed to every member holding that role or higher, every epoch (spec/crypto.md §4).
 - A plain thing uses derived role secrets until it gets a non-owner member; it then gets random secrets of its own, boxed to its owner and each member.
-- A removal or demotion rotates the affected role secrets of the actor the member left and of every actor above it whose secrets it could open; content is not re-encrypted. Rotation happens before the rotating node next encrypts under those secrets. Label role keys (spec/sync.md §2) are re-registered eagerly on every member removal or demotion, device removal and hand-over. A blind node serves a label only to holders of its current sync key, so every rotation delivers each member's new boxes to its mailbox (spec/sync.md §3).
+- A removal or demotion (a device removal is one, on the person actor) requires rotating the role secrets the removed member could open, on the actor it left and on every actor above it; content is not re-encrypted.
+- **Who rotates**: a node with effective role r on an actor may rotate its roles ≤ r (a writer rotates read and write, an admin all three; a reader rotates nothing). A rotation seals the new secrets to every current member of each rotated role and writes the history boxes (spec/crypto.md §4); roles it does not rotate carry over. Its validity is the author's role at its `ts` (§5.2).
+- A node that may rotate a required rotation MUST do so before it next encrypts under a secret it would replace (spec/crypto.md §4); it MAY rotate eagerly. Eager rotation by many members at once forks the epoch harmlessly, but costs boxes per rotator.
+- Label role keys (spec/sync.md §2) derive from the newest epoch, and only an admin can register them; an admin that holds an epoch newer than a label's registered step issues the step at once (spec/sync.md §5). Until then nodes use the registered epoch's keys at that server, and the removed member keeps the old sync key: it can fetch ciphertext it cannot open, and as an ex-writer stamp and delete under the old write key, until re-registration.
+- A blind node serves a label only to holders of its current sync key, so every rotation delivers each member's new boxes to its mailbox (spec/sync.md §3).
 - A node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path.
 
 ## 4. Verifying authors: certificates
