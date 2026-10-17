@@ -28,8 +28,8 @@
 ## 4. Verifying authors: certificates
 - A write's authority is checked through the chain from the signing node up: each link is a membership write or an owner link (tid commits to the owner), ending at a key actor whose tid commits to its public key. No secrets are needed.
 - **Chain certificates** of a node: for each thing on its chain, the `/created` record, the epoch start (§6, projected to the entries the chain needs), the later membership writes that establish each edge, and the current `/keys` commit of each actor on it. Its **node card**: its `/keys`, `/node` and `/reach` commits (each a commit of its own touching nothing else).
-- When a node first uploads under a label, and whenever they change, it places its chain certificates and node card under that label (spec/sync.md §3). `/reach` goes under every label by default; an app MAY exclude labels (e.g. public or bearer-read ones). Without it, co-readers of that label cannot dial the node off-LAN.
-- Any member that syncs a label and holds a revoke, roster snapshot, hand-over record or attestation about an author seen under that label places it there, with the chain certificates of that commit's own author.
+- When a node first places anything under a label, and whenever they change, it places its chain certificates and node card under that label (spec/sync.md §3; a non-writer of the label by deposit). `/reach` goes under every label by default; an app MAY exclude labels (e.g. public or bearer-read ones). Without it, co-readers of that label cannot dial the node off-LAN.
+- Any member that syncs a label and holds a revoke, roster snapshot, hand-over record or attestation about an author seen under that label places it there (a non-writer by deposit), with the chain certificates of that commit's own author.
 - A grant is accompanied by the target's current `/label` commit.
 - A commit whose author's chain has not arrived is pending (spec/commits.md §4).
 - A node that does not sync a thing applies the certificate deltas it holds; its timeline for that thing runs over the entries it was given.
@@ -85,7 +85,7 @@ A delta's retention names who may purge it (spec/commits.md §5), judged at the 
 
 ## 9. Links
 - A link consists of K, an actor owned by the sharer and made a member of the target with the link's role, and L, a key actor whose seed is in the link, with edge (role r, invite r) on K for the link's role r. The sharer's actor is K's only admin. The link encodes: L's seed, the target tid, a server address, the target's label and K's label (layout TBD).
-- **Redeem**: derive K's secrets and L's key from the seed (or, once K has rotated, open L's boxes from L's mailbox, spec/crypto.md §3), then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form.
+- **Redeem**: derive K's secrets and L's key from the seed (or, once K has rotated, open L's boxes from L's mailbox, spec/crypto.md §3), then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form and deposits the commit under K's label (spec/sync.md §5) unless r is write or above.
 - `until` on L's edge expires the link; single use = the redemption also removes L's own edge in the same commit (a self-removal). Both are finalized by a sharer device writing a plain removal of L (§5.1).
 - **Bearer use**: act as L without writing anything. Read only.
 - The sharer keeps the seed on K under an admin-only aspect, registers L's mailbox at the link's server and writes L's `/keys`.

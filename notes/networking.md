@@ -45,9 +45,9 @@ Mobile apps with notifications need the server to wake a device with no live con
 - **UnifiedPush**: the server posts to per-label endpoint URLs of the user's distributor directly, no proxy. An osis server can itself be a distributor (Android without Google services, self-hosters). iOS needs APNs through the official proxy.
 - Rate limits: at most one wake per handle per short interval; events batch into one wake.
 - **Priority** (some writes should wake, others not): a per-upload wake bit (server learns which entries matter), a separate wake label per chat (one more label, overlap shows its pairing), or wake on everything with client-side filtering (battery). Undecided.
-- Owner calls when it comes up: the official proxy beside the official server (collusion above) or a separately operated one; priority; who pays (issues/server-abuse-limits.md).
+- Owner calls when it comes up: the official proxy beside the official server (collusion above) or a separately operated one; priority; who pays (accounts deferred, notes/sync.md Open).
 - Keep open while implementing: per-entry upload-time attributes stay outside the hashed blob prefix (as the deposit flag does), so a wake bit never touches blob IDs; local-store root keys must be readable while the device is locked after first unlock, or a woken app cannot present the sync key.
 
 ## Open
 - First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server. A contact card is a link to a profile thing holding `/keys` (spec/sync.md §3).
-- Which free services the official server offers, and abuse limits for free relaying: issues/server-abuse-limits.md.
+- Which free services the official server offers, and abuse limits for free relaying (deferred, see notes/sync.md Open).
