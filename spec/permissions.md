@@ -22,7 +22,7 @@
 ## 3. Secrets and rotation
 - Each role secret of an actor is sealed to every member holding that role or higher, every epoch (spec/crypto.md §4).
 - A plain thing uses derived role secrets until it gets a non-owner member; it then gets random secrets of its own, boxed to its owner and each member.
-- A removal or demotion rotates the affected role secrets of the actor the member left and of every actor above it whose secrets it could open; content is not re-encrypted. Rotation happens before the rotating node next encrypts under those secrets. Label role keys (spec/sync.md §2) are re-registered eagerly on every member removal or demotion, device removal and hand-over.
+- A removal or demotion rotates the affected role secrets of the actor the member left and of every actor above it whose secrets it could open; content is not re-encrypted. Rotation happens before the rotating node next encrypts under those secrets. Label role keys (spec/sync.md §2) are re-registered eagerly on every member removal or demotion, device removal and hand-over. A blind node serves a label only to holders of its current sync key, so every rotation delivers each member's new boxes to its mailbox (spec/sync.md §3).
 - A node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path.
 
 ## 4. Verifying authors: certificates
@@ -85,8 +85,8 @@ A delta's retention names who may purge it (spec/commits.md §5), judged at the 
 
 ## 9. Links
 - A link consists of K, an actor owned by the sharer and made a member of the target with the link's role, and L, a key actor whose seed is in the link, with edge (role r, invite r) on K for the link's role r. The sharer's actor is K's only admin. The link encodes: L's seed, the target tid, a server address, the target's label and K's label (layout TBD).
-- **Redeem**: derive K's secrets and L's key from the seed (or open L's boxes on K once K has rotated, spec/crypto.md §3), then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form.
+- **Redeem**: derive K's secrets and L's key from the seed (or, once K has rotated, open L's boxes from L's mailbox, spec/crypto.md §3), then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form.
 - `until` on L's edge expires the link; single use = the redemption also removes L's own edge in the same commit (a self-removal). Both are finalized by a sharer device writing a plain removal of L (§5.1).
 - **Bearer use**: act as L without writing anything. Read only.
-- The sharer keeps the seed on K under an admin-only aspect.
-- **Recovery card**: recovery key seed, person actor tid, home label, server (layout TBD). The seed also derives a bootstrap label's read secret, under which the person's devices keep certificate copies of its current `/secrets`, `/label` and `/created` commits. The recovery key has a KEM key and a box in the person's `/secrets`.
+- The sharer keeps the seed on K under an admin-only aspect, registers L's mailbox at the link's server and writes L's `/keys`.
+- **Recovery card**: recovery key seed, person actor tid, home label, server (layout TBD). The recovery key is a member of the person actor with a box in its `/secrets`; its mailbox at the card's server receives the person's rotations with `/label` and `/created` (spec/sync.md §3), so a device holding the card can rejoin.
