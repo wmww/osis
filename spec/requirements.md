@@ -34,7 +34,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 - They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
 - Different groups of one owner are unlinkable beyond their overlap.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
-- An untrusted node may be the only backup. Read access never allows deleting its data or forcing a re-upload. Destruction needs write rights at least, and is recoverable for a grace period unless done by an admin or by the data's author.
+- An untrusted node may be the only backup. Read access never allows deleting its data or forcing a re-upload. Only the roles an edit names (its author, admins, or any writer where the author allowed it) can destroy it.
 - It knows no members and never waits on their liveness.
 - Goal: it can limit abuse (storage, rate) without learning identities.
 
@@ -46,7 +46,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 - No secret ever passes where an untrusted node could read it.
 
 ## Deletion
-- Three retention classes: purge (immediate and irrevocable everywhere once the deletion is seen), preserve (history kept until explicitly purged), undefined (local policy). Defaults per aspect, overridable per change. Preserved history can be purged explicitly by its author or an admin.
+- Retention per edit: who may purge it (nobody, admins, the author, any writer) and how long its history is kept (at least and at most, absolute or after it is replaced). Defaults per aspect, overridable per change, immutable once written.
 - Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching.
 - Granularity is one edit of one aspect. Part of a value's history can be purged.
@@ -107,11 +107,11 @@ Where two goals cannot both hold: what collides, and which yields.
 1. **Transfer finality vs no consensus.** A former owner can always publish a competing transfer, and its key actor can retroactively disown one by backdating the removal of the device that signed it; without a clock or consensus the two cannot be told from an ex-device's forgery. Ownership is immutable; the transferred identity is the new owner's by construction and what it holds survives both, inherited history once re-anchored by its own snapshot; transfer is aliasing, a former owner can fork or disown, and forks resolve deterministically for readers with a stake in one branch, else by the reader's choice. Moving a thing out of its owner's tree should be rare.
 2. **Selective sync from untrusted nodes vs hiding structure.** Structure leaks as far as selection needs it.
 3. **Cheap edits of large values vs hiding sizes.** Sizes leak, padded coarsely.
-4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; untrusted nodes keep a recoverable bin for a grace period, except for purge-class content.
+4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; what a right holder dropped is recoverable only from nodes whose retention still holds it. No node keeps a bin.
 5. **Atomic multi-thing changes vs partial fetch and purge.** Atomicity wins: a node syncing part of a change over-fetches, purging part of it rewrites it.
 6. **Witness-based revocation vs untrusted-only topology.** An untrusted node's receipt never counts. A revoker syncs before stamping its revoke, so edits parked at untrusted nodes it reaches count; edits at nodes it does not reach, in transit, or passed over by an offline or backdated revoke can be lost until re-grant.
 7. **Lazy key rotation vs forward secrecy against dishonest untrusted nodes.** An ex-member plus a dishonest untrusted node can read old content.
-8. **Immediate purge at untrusted nodes vs backup safety.** Authors may hard-delete their own entries, admins anything; writers only soft-delete; readers neither.
+8. **Immediate purge at untrusted nodes vs backup safety.** Only the roles an edit names may delete it there, readers never; an edit that allows any writer can be wiped from a server by one at once.
 9. **Bounded clocks vs revocation precision.** A window the size of the clock skew.
 10. **Deduplication vs forward-secure deletion.** Deduplicate only against content the editor already holds.
 11. **Removals beating unseen concurrent adds vs no-fingerprint purge.** An add the remover never saw survives.

@@ -50,7 +50,7 @@ type task = struct {
 };
 
 /// Markdown; not guaranteed valid.
-aspect /note/body: markdown [indexed, preserve];
+aspect /note/body: markdown [indexed, keep_at_least: forever];
 aspect /note/title: string [indexed];
 aspect /note/tasks: list<task>;
 aspect /note/views: counter<int>;

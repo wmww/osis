@@ -13,7 +13,7 @@
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
 - Single-segment AKs belong to the core schema (§9). App AKs have two or more segments; the first is a namespace owned by the schema maintainer.
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention class (spec/commits.md §5), an optional default expiry duration measured from the write (spec/commits.md §6), and local flags (`ro`, `synthetic`, `guaranteed`, `indexed`) that nothing on the wire enforces.
+- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most; spec/commits.md §5), an optional default expiry duration measured from the write (spec/commits.md §6), and local flags (`ro`, `synthetic`, `guaranteed`, `indexed`) that nothing on the wire enforces.
 - A schema also declares **signal kinds**, typed like AKs. Signals are never stored and are not aspects (spec/sync.md §9).
 
 ## 3. Types
@@ -88,7 +88,7 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/keys` | struct (register) | an actor's current keyset (spec/crypto.md §3) |
 | `/secrets` | struct | sealed role secrets and history boxes (spec/crypto.md §4) |
 | `/handover` | struct | hand-over records (spec/permissions.md §7) |
-| `/label` | map<label ID, struct { index, chain, servers, retired }> | labels of a synced group (spec/sync.md §2) |
+| `/label` | map<label ID, struct { index, chain, servers, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `/follows` | map<record hash, record hash> | on a person actor: chosen successor per hand-over fork |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
 | `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |

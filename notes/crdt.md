@@ -10,7 +10,7 @@
 - Apps see plain values and listeners; no CRDT details reach the API. A lost concurrent write looks like any LWW loss.
 - Authenticated malicious writers are out of scope (gaming the HLC to win LWW is not a concern).
 - No tombstone compaction: worse merging after long separation is acceptable, discarding edits is not.
-- Retention classes, purge per commit without batching, expiry (spec/commits.md §5, §6).
+- Retention per delta (who may purge, keep bounds; spec/commits.md §5), purge per commit without batching, expiry (§6).
 - Undo is per actor by default, plus an API listing every change in scope from which an admin may undo others' changes.
 - Accepted: a node receiving a multi-aspect commit after one delta was purged applies the rest, so it may briefly see an aspect combination no author produced.
 
@@ -29,6 +29,7 @@
 - **Cycle breaking** demotes the oldest move in the cycle, the one the other movers did not know about, keeping the newest intention. Falling back twice needs three or more concurrent moves over the same elements; END keeps content visible instead of hiding it.
 - **Move** writes `pos` only for range roots (rewriting interior elements changes their sibling keys and reorders concurrent neighbours). The range spans deleted elements inside the selection; outside subtrees are re-anchored in reverse visual order (found by the model's sequential test). Delete is a flag, not a move to a trash position, which would drag concurrent inserts along.
 - **Encoding slots.** The first draft joined unrelated encodings destructively (later encoding wins, loser becomes a reset). With eager embedding that is not associative: `(register ⊔ counter) ⊔ text` ended as a counter and `register ⊔ (counter ⊔ text)` as a text (found by the model's join-law test). Keeping the register as its own slot makes the state a product of lattices. Cost: in a `string` → `text` upgrade the last register write is stored twice until a reset. Register edges are total so a value-less write embeds like its valued copy.
+- **Death of a write** (spec/crdt.md §4.8) is what retention bounds measure from, per write rather than per delta: one surviving character must not keep a paragraph's deleted text alive under "no history", and a long-lived text must stay compactable under "30 days after replaced". Dropping a body is always possible locally (snapshot the aspect, drop), so keep-at-most never needs another node.
 - **Expiry is value erasure, not a floor.** It changes no stamp or order, only whether a value is known, so it commutes with join and arrival order; a late older write still loses to the expired one. Dropping the commit's resets instead would let content they pruned survive on a node that received it after T. A floor at T diverges if applied only when the expired write wins (a write stamped between the commit and T wins on some nodes, loses on others), and expires others' newer writes if applied to every register the commit wrote.
 - **Drift cap parks** commits from the future instead of holding the clock back, so a wrong clock harms only its owner's writes. Parking is silent: a device 90 minutes fast has its writes held by everyone for 90 minutes, and blind nodes cannot tell it. Hence the corrected clock (spec/sync.md §6): a device fixes its stamps at its first connection and later writes are not parked; only writes it stamped before that wait. A lying peer can shift a node's clock, which harms that node's own writes or admits writes a little early; estimate over several peers, preferring pinned servers. HLC receipt already pulls a slow clock forward.
 - **Diff takes the writer's view**: without it an old writer's save of a `set<struct>` removed every element a newer writer had extended and added a stripped copy. The diff algorithm itself is not normative, only "kept elements keep their dot".
@@ -49,7 +50,7 @@
 
 ## Rejected
 - Wall-clock staleness horizon for tombstones: nodes separated longer than the horizon diverge or lose edits; any independent reset-style compaction has the same problem.
-- LWW-element sets/maps: the tombstone names a value hash or key (a fingerprint under `purge`) and cannot be dropped without stability information.
+- LWW-element sets/maps: the tombstone names a value hash or key (a fingerprint once the body is purged) and cannot be dropped without stability information.
 - OR-set/OR-map with causal contexts: same add-wins semantics as dot addressing but a version vector in every state and delta. Possible later if map tombstones ever matter: stability-based GC (needs frontiers, stalls on offline members).
 - Terminal reset / retire marker in the encoding lattice: representation changes are transitions to new IDs.
 - Attributing state elements through commit headers instead of dots (zero bytes in state, history lookup at revocation): not uniform.

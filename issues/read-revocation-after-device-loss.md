@@ -9,8 +9,8 @@ Alice removes her stolen phone from her person actor: its write authority ends a
 
 spec/permissions.md §3 already says a removal rotates every actor above the removed member whose secrets it could open, which includes the chat; nobody but the chat's admins is allowed to. Nothing leaks until the next write, so the rotation only has to happen before that write. Concurrent rotations are no longer a problem (epoch forks, spec/crypto.md §4), so many members rotating at once is fine. Proposal:
 - Allow a member with role r to rotate the secrets of roles ≤ r (writers rotate read and write secrets). Not readers: a reader sealing a new secret to an incomplete roster would lock members out, a power beyond "waste storage" (spec/requirements.md).
-- Client rule: before the first write under a label after observing a co-member's device removal (the removal certificate is relayed under shared labels), rotate and seal to the current roster. A writer cannot re-register the label (steps are signed by the admin-derived hard-delete key), so the upload key stays until an admin rotates; harmless for reads, since new wraps use the new read secret.
-- The chat pattern then either makes participants writers of the chat actor (they can also edit its data and soft-retire at servers) or keeps them readers and relies on admins' clients auto-rotating. Owner to pick.
+- Client rule: before the first write under a label after observing a co-member's device removal (the removal certificate is relayed under shared labels), rotate and seal to the current roster. A writer cannot re-register the label (steps are signed by the admin-derived delete key), so the upload key stays until an admin rotates; harmless for reads, since new wraps use the new read secret.
+- The chat pattern then either makes participants writers of the chat actor (they can also edit its data) or keeps them readers and relies on admins' clients auto-rotating. Owner to pick.
 
 Residue either way: a member that has not yet heard of the removal still wraps under the old epoch, and the thief reads that message. Signal has the same shape with sender keys; its server cut-off covers everyone on top.
 
