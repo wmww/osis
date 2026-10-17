@@ -11,7 +11,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
 - Delta list: per delta `(tid, ak, delta hash, counter range [lo, hi), schema index or none)`. A `(tid, ak)` appears once, except in a roster snapshot (spec/permissions.md §6).
 - Chunk list: the chunk and tree-node blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
-- Optional retention overrides per delta (§5), optional `expires` (§6), optional purge request (§5), optional `undoes: commit ID` (§7).
+- Retention per delta (§5), optional `expires` (§6), optional purge request (§5), optional `undoes: commit ID` (§7).
 - Delete token salt (16 random bytes) and token hashes (spec/crypto.md §7; list length capped, cap TBD).
 - Attestations only: the answered revoke's commit ID and the entries (spec/permissions.md §5).
 - Signature (spec/crypto.md §2).
@@ -22,7 +22,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.
-- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9), one membership write per commit, except a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9). A grant also carries the grantee's `/secrets` boxes. Roster snapshots and hand-over records are membership commits (spec/permissions.md §6, §7). Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them. A partial-purge rewrite may drop their `/secrets` and `/keys` deltas.
+- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9), one membership write per commit, except a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9). A grant also carries the grantee's `/secrets` boxes. Roster snapshots and hand-over records are membership commits (spec/permissions.md §6, §7). Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
 - **Attestation**: header only, no deltas (spec/permissions.md §5).
 - **Compaction snapshot**: content or membership kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7). A roster snapshot is not one: it writes a reset and full state under its own stamps (spec/permissions.md §6).
 - A commit spanning several kinds is invalid.
@@ -37,22 +37,22 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - **Atomic apply**: a node applies a commit only once it holds every delta of it that it may read and whose thing it syncs; dropped or expired deltas count as held. It then joins all those deltas in one storage transaction and fires listeners after. Pending commits are re-examined when the node starts or stops syncing a thing.
 - Membership commits and attestations are applied before content.
 - A delta whose bytes do not match the header's delta hash is bad input.
-- A commit blob whose clear prefix disagrees with its header (expiry, token commitments; spec/sync.md §1) is bad input.
+- A commit blob whose clear prefix disagrees with its header (expiry, the token commitments its deltas call for; spec/sync.md §1) is bad input.
 
 ## 5. Retention and purge
-Every delta carries **retention**: who may purge it and how long its body is kept. The schema gives defaults per AK (spec/data-model.md §2); a commit may override them per delta. Retention is immutable: to change it, purge and write again.
-- **Purgeable by**: `nobody` < `admin` (admins of the thing) < `author` (the author's actor or an admin) < `writer` (any writer of the thing). The named roles may drop the delta's body: by purge request, by compaction, and by deleting its blobs at blind nodes (spec/sync.md §5). Delete tokens follow it (spec/crypto.md §7).
-- **Keep at least** and **keep at most**: each optional; each an absolute time, a duration after the body is replaced, or both (the later bound counts for at least, the earlier for at most). Schema defaults are durations from the write; a reader derives the absolute bound from `ts`, so only overrides go on the wire.
-- A write **dies** when a later write supersedes it or at its commit's expiry (spec/crdt.md §4.8), at the superseding commit's `ts` or at T. A body is **replaced** as its writes die; per body a node tracks the first and last death.
-- A body is **covered** by a snapshot the node holds when joining the body into the snapshot changes nothing. A body the node cannot join is never covered for it.
-- **Keep at least**: before the bound (last death plus D, or T) no body leaves a label except by purge request: compaction MUST NOT drop it and right holders MUST NOT delete it at blind nodes. A body with no dead writes is past this bound.
-- **Keep at most**: by the bound (first death plus D, or T) every node MUST drop the body, snapshotting the aspect locally first if any of its writes is live. Right holders delete it at blind nodes as they see it. At most 0 after replaced drops the body in the transaction that applies the killing commit.
-- Between the bounds a right holder may drop a covered body at its discretion (compaction, spec/sync.md §7); `nobody` makes that window empty. Snapshot bodies follow the same rules.
-- **Purge request**: a header field naming earlier deltas or a whole aspect history. At any time, every node applying it drops the named deltas its author may purge (spec/permissions.md §8). It MUST NOT name membership deltas.
+Every delta carries **retention** on the wire: who may purge it and how long its body is kept. The Mutator fills it from the schema's defaults per AK (spec/data-model.md §2); a commit may set it per delta. Retention is immutable: to change it, purge and write again.
+- **Purgeable by**: `nobody` < `admin` < `author` < `writer`. The named role may drop the delta's body: by purge request (spec/permissions.md §8), by compaction, and by deleting its blobs at blind nodes (spec/sync.md §5). Delete tokens follow it (spec/crypto.md §7). A **right holder** is a node that holds the right now.
+- **Keep at least** and **keep at most**: each optional; each an absolute time, a duration after the body is replaced, or both (the later bound counts for at least, the earlier for at most). A relative keep at most exists only under `writer`: whoever replaces a body must be able to delete it. Where the two bounds disagree, keep at most wins.
+- A write **dies** when a later write supersedes it or at its commit's expiry (spec/crdt.md §4.8), at the superseding commit's `ts` or at T. A body is **replaced** as its writes die; per body a node tracks the first and last death so far.
+- A body is **covered** by a snapshot the node holds when joining the body into the snapshot's fragment leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A body the node cannot join is never covered for it.
+- **Keep at least**: before the bound (last death so far plus D, or T) a body leaves the labels of its things' groups only by purge request: compaction MUST NOT drop it and right holders MUST NOT delete it at blind nodes. A body with no dead writes is past a relative bound.
+- **Keep at most**: by the bound (first death plus D, or T) every node MUST drop the body; its live writes stay in the node's state. A body with live writes is deleted at a label only once a snapshot covering it is under that label (spec/sync.md §7). At most 0 after replaced: the replacing node drops the body in the transaction that applies the kill and deletes it at blind nodes in the same sync. At most D after replaced: the replacing node sends blind nodes a delete timed at the bound (spec/sync.md §5). Absolute T: right holders delete at blind nodes when next online after T.
+- Between the bounds a right holder may drop a covered body (compaction, spec/sync.md §7); `nobody` makes that window empty. Snapshot bodies follow the same rules.
+- **Purge request**: a header field naming earlier deltas or a whole aspect history. Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §8): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and drops every body carrying their values, snapshots included; the first writer to apply it re-snapshots the aspect. A request SHOULD name dead writes; the Mutator resets live content in the same commit. It MUST NOT name membership deltas.
 - Purging drops bodies, never headers. A commit with a purged delta is rewritten as a blob without that delta: same header and commit ID, new blob.
 - Dropping a body means destroying every local copy, its delta nonce and every local index entry derived from it, so that later compromise of the node recovers nothing (notes/local-store.md describes the mechanism).
 - A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
-- Fixed retention: membership deltas are `writer`, keep at least the receipt-log horizon after replaced (a roster snapshot replaces them, spec/permissions.md §6); `/handover` deltas are `nobody`. Attestations and certificate copies are `writer` with no bounds; they die when the commits they cover are covered.
+- Fixed retention: membership deltas are `admin`, keep at least `MEMBERSHIP_KEEP` (90 days) after replaced (a roster snapshot replaces them, spec/permissions.md §6); `/handover` deltas are `nobody`; a certificate copy carries its commit's. Attestations are `writer` with no bounds and die when the commits they cover are covered. Compaction-snapshot deltas are `writer` with the aspect's bounds.
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid). The schema may give a default per AK as a duration from the write. The blob prefix carries T (spec/sync.md §1).

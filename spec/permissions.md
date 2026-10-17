@@ -22,7 +22,7 @@
 ## 3. Secrets and rotation
 - Each role secret of an actor is sealed to every member holding that role or higher, every epoch (spec/crypto.md §4).
 - A plain thing uses derived role secrets until it gets a non-owner member; it then gets random secrets of its own, boxed to its owner and each member.
-- A removal or demotion rotates the affected role secrets of the actor the member left and of every actor above it whose secrets it could open; content is not re-encrypted. Rotation happens before the rotating node next encrypts under those secrets. Label role keys (spec/sync.md §2) are re-registered eagerly on every member removal, device removal and hand-over.
+- A removal or demotion rotates the affected role secrets of the actor the member left and of every actor above it whose secrets it could open; content is not re-encrypted. Rotation happens before the rotating node next encrypts under those secrets. Label role keys (spec/sync.md §2) are re-registered eagerly on every member removal or demotion, device removal and hand-over.
 - A node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path.
 
 ## 4. Verifying authors: certificates
@@ -66,7 +66,7 @@ Before stamping a role-lowering membership write a client SHOULD sync the labels
 - A **roster snapshot** of thing N is a membership commit with the roster-snapshot marker, by a node acting through N's owner chain (admin of N's owner actor or of an actor above it, or the key actor at the top; never by an edge on N). It carries reset-plus-full-state deltas of N's membership-class aspects as the timeline computes them: `/members` as one delta per edge (each carrying the reset stamp and that edge), plus `/label`, `/secrets`, `/keys`. It has no frontier.
 - **Epoch start**: N's newest snapshot S whose author had owner-chain authority at S's time by the timelines above N, and that no later demotion of its author dropped (a demotion with a time before S, or a frontier not covering S). Writes ordered before S are ignored. S's roster also answers what authority anyone had on N at times before S.
 - A certificate copy of S is projected to the edges the verifier needs and omits `/secrets` and `/label` (spec/sync.md §3).
-- S replaces N's membership commits ordered before it (their writes die at S's `ts`); their retention keeps them at least the receipt-log horizon after that, and `/handover` records forever (spec/commits.md §5).
+- S replaces N's membership commits ordered before it (their writes die at S's `ts`); their retention keeps them at least `MEMBERSHIP_KEEP` after that, and `/handover` records forever (spec/commits.md §5).
 - A node that removes an admin device SHOULD re-snapshot, in the same sync, every thing whose epoch start that device authored.
 - **Content**: a compaction snapshot by writer W carries its elements on W's authority: an element is valid if the snapshot commit is valid as W's content write. Once a node holds a snapshot whose frontiers cover a commit, that commit's own validity no longer matters at that node, and attestation entries covering only such commits are dead.
 
@@ -81,7 +81,7 @@ Before stamping a role-lowering membership write a client SHOULD sync the labels
 - A commit names things by the identity its writer resolved. A bare tid applies in every branch where its author's chain is valid; a derived tid in its branch only.
 
 ## 8. Purge rights
-A delta's retention names who may purge it (spec/commits.md §5): `admin` the thing's admins; `author` also the actor directly above the author node in its chain, acting through any of its nodes; `writer` also any writer of the thing; `nobody` no one. A purge request drops a named delta iff its author held that right on it at the request's time. At blind nodes: spec/sync.md §5.
+A delta's retention names who may purge it (spec/commits.md §5), judged at the request's time: `admin` the thing's current admins; `author` also the actor directly above the author node in its chain while it holds write on the thing, acting through any of its nodes; `writer` also any current writer of the thing; `nobody` no one. A purge request drops a named delta iff its author held that right at the request's time. At blind nodes a token proves the right as of the delta and the label key current membership (spec/sync.md §5).
 
 ## 9. Links
 - A link consists of K, an actor owned by the sharer and made a member of the target with the link's role, and L, a key actor whose seed is in the link, with edge (role r, invite r) on K for the link's role r. The sharer's actor is K's only admin. The link encodes: L's seed, the target tid, a server address, the target's label and K's label (layout TBD).

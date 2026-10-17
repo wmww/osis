@@ -46,8 +46,8 @@
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
 
 ## 7. Delete tokens
-- **Token secrets** of a commit, by its deltas' retention (spec/commits.md §5): the write secret of the actor directly above the author node in its chain, if any delta is purgeable by `author` or `writer`; plus the write secret of each thing that has a delta purgeable by `writer`. A commit whose deltas are all `nobody` or `admin` carries no tokens; admins delete by the label delete key (spec/sync.md §5).
-- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the commit that created the chunk. Tokens are 32 bytes.
+- **Token secrets** of a delta, by its retention (spec/commits.md §5): `admin` and above, the admin secret of its thing; `author` and above, also the write secret of the actor directly above the author node in its chain; `writer`, also the write secret of its thing; `nobody`, none. A commit's token secrets are the union over its deltas; a blob carries the commitments of the deltas it holds (spec/sync.md §1, §3).
+- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the delta that created the chunk. Tokens are 32 bytes.
 - **Token hash** = first 16 bytes of BLAKE3(token); the header lists them.
 - **Commitment** in a blob prefix = first 16 bytes of BLAKE3(token hash || prefix salt). A server verifies a presented token by hashing twice.
 - A token holder tries its epochs of the secret.

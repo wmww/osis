@@ -34,7 +34,7 @@ What a node holds and the unit each lives in:
 ## What "dropped" means for a blob under several labels
 - Also held under another label the node is a member of: keep the blob and that label's wrap, drop only the purged label's wrap. The content is legitimately still readable there.
 - Under a label the node is blind for: keep; the wrap is unopenable here.
-- A blind node or relay never has plaintext; it honours tokens, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a token holder deletes it (tension 4).
+- A blind node or relay never has plaintext; it honours tokens, timed deletes, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a token holder deletes it (tension 4).
 
 ## Cost
 - Reads: one unit decrypt per aspect load, cached. Writes: re-encrypt the unit; the tree is untouched unless a key rotates.
