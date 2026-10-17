@@ -39,6 +39,15 @@ Hides IPs from blind nodes, relays and peers. Not needed now (owner). Paths: iro
 - **Veilid** (MPL-2.0): private routing plus its own DHT/storage model, overlaps osis's data layer, activity unclear. Not a base.
 - **Willow/WGPS, Syncthing BEP, Hyperswarm**: sync protocols or JS-only stacks, not transports. Syncthing's community relays plus self-hostable discovery are the precedent for decision 3.
 
+## Proposal: push wake-ups from blind nodes
+Mobile apps with notifications need the server to wake a device with no live connection (spec/sync.md §8 pushes only on subscriptions). A push token (APNs, FCM) is a stable device identifier, so registering "wake me on L1..Ln" with one token would link those labels at the server beyond the accepted overlap leak. Not in the spec; nothing here is needed before the initial implementation (every piece is a new message and new per-label server state).
+- **Wake handles**: per label the device registers a sealed box to a push proxy's public key holding the push token with fresh randomness, so the server sees unrelated handles. On a new log event the server hands the handle to the proxy, which opens it and sends an empty push; the device syncs (one round trip, within iOS extension limits). The server learns handle counts per label and wake timing; the proxy learns tokens and timing, never labels. Server and proxy together can link labels by timing; if both are the official service that is a promise, not a guarantee.
+- **UnifiedPush**: the server posts to per-label endpoint URLs of the user's distributor directly, no proxy. An osis server can itself be a distributor (Android without Google services, self-hosters). iOS needs APNs through the official proxy.
+- Rate limits: at most one wake per handle per short interval; events batch into one wake.
+- **Priority** (some writes should wake, others not): a per-upload wake bit (server learns which entries matter), a separate wake label per chat (one more label, overlap shows its pairing), or wake on everything with client-side filtering (battery). Undecided.
+- Owner calls when it comes up: the official proxy beside the official server (collusion above) or a separately operated one; priority; who pays (issues/server-abuse-limits.md).
+- Keep open while implementing: per-entry upload-time attributes stay outside the hashed blob prefix (as the deposit flag does), so a wake bit never touches blob IDs; local-store root keys must be readable while the device is locked after first unlock, or a woken app cannot present the sync key.
+
 ## Open
 - First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server. A contact card is a link to a profile thing holding `/keys` (spec/sync.md §3).
 - Which free services the official server offers, and abuse limits for free relaying: issues/server-abuse-limits.md.
