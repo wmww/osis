@@ -93,6 +93,7 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/was` | tid (register) | the thing this one continues (spec/permissions.md §7) |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
 | `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
+| `/seen` | timestamp (register) | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 
