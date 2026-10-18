@@ -5,7 +5,7 @@
 Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - Format version (spec/versioning.md §1).
 - Author node tid and the actor tid it acts for.
-- Kind: content, membership or attestation (§2); compaction-snapshot marker; roster-snapshot marker (membership only).
+- Kind: content or membership (§2); compaction-snapshot marker; roster-snapshot marker (membership only).
 - `ts` (spec/crdt.md §2.2) and the dot form, node or commit (§3).
 - `sources` table (spec/crdt.md §2.4).
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
@@ -13,7 +13,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - Chunk list: the chunk and tree-node blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
 - Retention per delta (§5), optional `expires` (§6), optional purge request (§5), optional `undoes: commit ID` (§7).
 - Delete token salt (16 random bytes) and token hashes (spec/crypto.md §7; list length capped, cap TBD).
-- Attestations only: the answered revoke's commit ID and the entries (spec/permissions.md §5).
+- Demotions only: the frontier (spec/permissions.md §5).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
@@ -23,7 +23,6 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.
 - **Membership**: deltas only on membership-class aspects (spec/data-model.md §9). A membership commit changes at most one `/members` edge, except: a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9); a hand-over (the record plus the grant to the new owner, spec/permissions.md §7); a roster snapshot (one delta per edge, spec/permissions.md §6). A grant also carries the grantee's `/secrets` boxes; rotations and `/keys` and `/label` writes change no edge. Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-- **Attestation**: header only, no deltas (spec/permissions.md §5).
 - **Compaction snapshot**: content or membership kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7). A roster snapshot is not one: it writes a reset and full state under its own stamps (spec/permissions.md §6).
 - A commit spanning several kinds is invalid.
 
@@ -35,7 +34,8 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - A commit is valid iff its signature verifies and its author is authorized, at the commit's time, on every thing it touches (spec/permissions.md §5). Receivers dedup by commit ID.
 - A commit is **pending**, not applied and counted as not received, while: its author's chain certificates have not arrived; any part of it is parked (spec/versioning.md §2); its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2); or atomic apply waits.
 - **Atomic apply**: a node applies a commit only once it holds every delta of it that it may read and whose thing it syncs; dropped or expired deltas count as held. It then joins all those deltas in one storage transaction and fires listeners after. Pending commits are re-examined when the node starts or stops syncing a thing.
-- Membership commits and attestations are applied before content.
+- Membership commits are applied before content.
+- Two commits by one node whose node-form counter ranges on one aspect overlap are both invalid.
 - A delta whose bytes do not match the header's delta hash is bad input.
 - A commit blob whose clear prefix disagrees with its header (expiry, the token commitments its deltas call for; spec/sync.md §1) is bad input.
 
@@ -52,7 +52,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - Purging drops bodies, never headers. A commit with a purged delta is rewritten as a blob without that delta: same header and commit ID, new blob.
 - Dropping a body means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it, so that later compromise of the node recovers nothing (notes/local-store.md describes the mechanism).
 - A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
-- Fixed retention: membership deltas are `admin`, keep at least `MEMBERSHIP_KEEP` (90 days) after replaced (a roster snapshot replaces them, spec/permissions.md §6); `/handover` deltas are `nobody`; a certificate copy carries its commit's. An attestation has no deltas: its header is its body, purgeable by `writer` of the revoke's target thing with no bounds (token secrets as for a `writer` delta on that thing). It is dead, and counts as covered, once every commit its entries cover is covered (spec/permissions.md §6, Content); dropping it drops the commit. Compaction-snapshot deltas are `writer` with the aspect's bounds.
+- Fixed retention: membership deltas are `admin`, keep at least `MEMBERSHIP_KEEP` (90 days) after replaced (a roster snapshot replaces them, spec/permissions.md §6); `/handover` deltas are `nobody`; a certificate copy carries its commit's. Compaction-snapshot deltas are `writer` with the aspect's bounds.
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid). The schema may give a default per AK as a duration from the write. The blob prefix carries T (spec/sync.md §1).

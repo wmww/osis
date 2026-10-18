@@ -14,7 +14,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - A change may atomically cover any set of things, across owners and reader sets: a node that may read and syncs several of them sees all of it or none.
-- Deterministic: a node's state and its judgment of every write are functions of the data it holds and what it has itself witnessed, never of arrival order.
+- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order.
 
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.
@@ -85,7 +85,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 - Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation. Sharing never changes a thing's identity. Transfer of ownership is rare.
 - Grouping for sync grants no rights.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
-- Whether an edit by a revoked member counts is judged by what authorized members witnessed, never by the author's own timestamps.
+- Whether an edit by a revoked member counts is judged by what the revoker had received, never by the author's own timestamps.
 - Rights held by different parties never combine into a right neither has alone.
 - Removing a member never re-encrypts existing content.
 
@@ -110,7 +110,7 @@ Where two goals cannot both hold: what collides, and which yields.
 3. **Cheap edits of large values vs hiding sizes.** Sizes leak, padded coarsely.
 4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; what a right holder dropped is recoverable only from nodes whose retention still holds it. No node keeps a bin.
 5. **Atomic multi-thing changes vs partial fetch and purge.** Atomicity wins: a node syncing part of a change over-fetches, purging part of it rewrites it.
-6. **Witness-based revocation vs untrusted-only topology.** An untrusted node's receipt never counts. A revoker syncs before stamping its revoke, so edits parked at untrusted nodes it reaches count; edits at nodes it does not reach, in transit, or passed over by an offline or backdated revoke can be lost until re-grant.
+6. **Revocation decidable from records alone vs completeness.** Only the revoker's own receipts decide which of the revoked actor's writes survive, never other members' or an untrusted node's. A revoker syncs before stamping its revoke, so edits parked at untrusted nodes it reaches count; edits at nodes it does not reach, in transit, or passed over by an offline or backdated revoke are lost until re-grant or a writer's snapshot.
 7. **Lazy key rotation vs forward secrecy against dishonest untrusted nodes.** An ex-member plus a dishonest untrusted node can read old content.
 8. **Immediate purge at untrusted nodes vs backup safety.** Only the roles an edit names may delete it there, readers never; an edit that allows any writer can be wiped from a server by one at once.
 9. **Bounded clocks vs revocation precision.** A window the size of the clock skew.
@@ -119,7 +119,7 @@ Where two goals cannot both hold: what collides, and which yields.
 12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Whoever verifies a chain through the snapshot learns the roster's size (never its entries). Ownership-transfer records are kept forever.
 13. **Lazy rotation vs per-thing sharing.** Removing a party costs proportional to the things shared with it one by one. Usage rule: share sets through one shared actor.
 14. **Bounded state vs never discarding an edit.** State grows with edit history, not live size; no horizon drops edits, and a sequence reset keeps every old element as a bare anchor so that newer concurrent inserts stay placeable. Usage rule: commit per editing pause, never per keystroke.
-15. **Membership decidable from records alone vs completeness.** Only the demoter's own receipts decide which of the demoted actor's grants survive, never other admins'. The demoter syncs the actor's label first, so loss is limited to grants in transit or passed over by an offline or backdated demotion, and re-grant recovers them.
+15. Merged into 6.
 16. **Explicit sync placement vs complete backup.** Nothing syncs by being owned; apps place things into synced groups explicitly, and a forgotten placement leaves a thing local-only.
 17. **Reader-originated writes vs junk at untrusted nodes.** A reader's own membership writes and node card, and deliveries from anyone holding an actor's `/keys`, enter a label only through its deposit budget; junk there is discarded by members and bounded by the budget, and a flooded budget delays key delivery and readers' own writes until an admin cleans it.
 18. Retired.

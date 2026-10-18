@@ -7,7 +7,7 @@ Output goes into the spec files themselves (new sections, or a spec/wire.md if l
 ## Permanent blob surface (readers accept forever)
 1. **Value CBOR profile** (spec/data-model.md §5): tag numbers TID, ENUM, LINK and the reserved STRUCT tag (check the IANA registry); `any` case IDs (§3).
 2. **Creation record** layout (spec/data-model.md §1) and the hand-over identity hash input `hash(T, H)` (spec/permissions.md §7).
-3. **Commit header** (spec/commits.md §1): field order and encoding, kinds and markers, attestation entry format, the token-hash list cap; one signature domain per signed object (spec/crypto.md §2).
+3. **Commit header** (spec/commits.md §1): field order and encoding, kinds and markers, the revoke frontier format, the token-hash list cap; one signature domain per signed object (spec/crypto.md §2).
 4. **Blob framing** (spec/sync.md §1): prefix layout, commitment list cap, Padmé details, `MAX_BLOB`, `CHUNK_THRESHOLD`; the chunker (gear table, mask, min/max) shared by spec/data-model.md §6 and spec/crdt.md §8; the delivery blob and signal envelope (spec/crypto.md §5).
 5. **Schemas**: the core schema ID; schema-as-data canonical form (spec/data-model.md §10).
 6. **Core aspects** (spec/data-model.md §9): exact types of `/created`, `/members`, `/keys`, `/secrets` (box enum, suite IDs), `/handover`, `/follows`, `/node`, `/reach`, `/group`, `/label` (steps, addresses with pinned keys); the contact profile thing (spec/sync.md §3).
