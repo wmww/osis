@@ -1,5 +1,5 @@
 # Is sync-key download gating worth mailboxes?
-> Summary: Gating downloads by the current sync key is what makes mailboxes, delivery blobs, mailbox deposit budgets, the `stale` path and the missed-rotation lockout necessary. Owner keeps gating (ex-members must fetch nothing, new or old). Two viable replacements for mailboxes: claim hashes in the registration step, with the registrar's key implicit or ephemeral.
+> Summary: Gating downloads by the current sync key is what makes mailboxes, delivery blobs, mailbox deposit budgets, the `stale` path and the missed-rotation lockout necessary. Owner keeps gating (ex-members must fetch nothing, new or old). Replacement for mailboxes: per-member claim keys in the registration step; recommended variant 1c (ephemeral registrar key, disclosed one step at a time) leaks ex-members nothing beyond today's `stale`.
 > Tags: owner-call, sync, security
 
 ## What gating buys
@@ -25,6 +25,15 @@ The registrar uses its own actor's current read-role X25519 key (a device: its n
 
 ### 1b: registrar key ephemeral in the step
 The registrar puts a fresh X25519 public key in the step and uses it for every DH; the chain stays fetchable by anyone. No guessing, one DH per candidate seq. Cost: anyone with the label ID can poll the chain and watch rotation timing and roster bucket forever. PQ option exists only here: ML-KEM ciphertexts per member in the step instead of DH (about 1.1 KB per member per step).
+
+### 1c: ephemeral key, disclosed one step at a time (recommended)
+Fixes 1a's unknown-registrar residue and 1b's public chain.
+- Step j carries a fresh X25519 public key `eph_j` and the claim set: per current reader M, `V_M = Ed25519 public key from seed kdf("label claim", DH(eph_j priv, M's X25519 pub), label ID || j)`, padded to a power of two; the registrar erases `eph_j`'s private half. M derives the same seed from its private key and `eph_j`.
+- **Claim** = the open signature under `V_M` plus (j, `V_M`). Server, holding every step's `eph` and set: `V_M` in set j and j current → opened; j older → reply `eph_{j+1}`; else refused like a stale open. A stale open under step k's sync key replies `eph_{k+1}`. Fetching `eph_0` needs no proof (the recovery key, owner of the person actor, is in set 0 by construction; everyone else enters holding a sync key).
+- A laggard behind n steps walks n round trips. An ex-member removed at step k+1 learns `eph_{k+1}` and nothing after it, so no rotation count or timing: exactly what `stale` tells it today. Signatures, not hash preimages, so a dishonest server cannot replay a claim elsewhere; the challenge binds it to the connection.
+- Checks: CDH keeps `V_M` from anyone without M's or `eph_j`'s private key; a person's devices share `V_P`, so the server links two late devices of one person at one step (today it holds a stable mailbox per device forever); `V` is fresh per step, no tracking across steps; a leaked `eph_j` private key after step j yields only `eph_{j+1}`; the registrar uses M's X25519 key as its copy of M's `/keys` says, so M tries old keys as it does for boxes, and a device M removed can claim (metadata only, content is boxed to M's new key) until a registrar that saw M's new keyset issues a step, the same staleness class as the epoch-covers rule; re-grant after removal enters by the grant's deposited sync key, not the walk.
+- Cost: 32 B per reader per step, about 3% on top of the rotation commit's boxes; the server keeps every step's set (chain storage, 1–2 KB per step; a horizon means P2P fallback). `/label` may carry the set hash only, the set travels with the register op.
+- Remaining residue shared with mailboxes: a member away through a label replacement does not learn the new label ID without P2P (today only key actors got `/label` by delivery); a roster the registrar got wrong locks that member out until the next step. Grants still deposit into the grantee's home label (an ordinary deposit, boxed as today); key actors need no inbox at all.
 
 ## Alternative 2: no gating against ex-members (owner: rejected)
 Reads accept any sync key of the registration chain; upload, deposit relay, delete and signal send need the current one. Kept for the record: download-before-upload closes most of the laggard-wrap leak; a step listing skipped epochs' sync keys covers grantees boxed under an unregistered writer epoch; the recovery card would carry a sync key. Loses: ex-members watch label activity and harvest new ciphertext forever.
