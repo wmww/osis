@@ -1,0 +1,5 @@
+# Review the chat pattern under writer stamps
+> Summary: notes/permissions.md (Patterns) proposes a chat shape that works with writer-stamped uploads: participants are writers of a messages group owned by the chat. Nothing in the core depends on it; the owner should check it before the chat example app is built.
+> Tags: owner-call, permissions
+
+The owner's hub pattern (participants as readers of the chat label, owning their messages) cannot upload at blind nodes since uploads need the label's write key. The proposal: chat thing C (participants read, admins write its data and participant set) plus a messages group M owned by C; each participant actor P has write on M and makes M a read member of P, so its devices hold M's read and write secrets and can stamp, signal and rotate M after a device loss; messages are P-owned things placed in M with `author` retention. Moderation is removal from M plus a C-written hidden marker. Residues are listed in the note. Needs the owner's eye on: whether participants writing M's `/group` (vandalism bounded by repair) is acceptable, and whether readers of C that cannot rotate C matters.

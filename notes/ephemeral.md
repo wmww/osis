@@ -5,7 +5,7 @@
 Owner's goal: event-stream-like apps on the same infrastructure, first-class if it helps, no cruft. "Keep until every receiver has seen it" is not decidable: the receiver set is open (a member adds a device later), nodes die, and blind nodes know no members. Every approximation (caps on a label, TTL guesses by the writer) was the cruft. So a signal is never stored; anything that must outlive the moment is state, and state can expire at a time everyone knows.
 
 ## Signals
-- Dedicated API (`send_signal`, `listen_signals`), not `set_aspect`. Kinds are declared in the schema so generic tools understand them, but reading one returns nothing.
+- Dedicated API (`send_signal`, `listen_signals`, notes/api.md), not `set_aspect`. Kinds are declared in the schema so generic tools understand them; a signal is never readable as an aspect.
 - Targeting an actor: a thing shared with them, with its own label. Targeting one device: the target-node field. No label per device.
 - A signal on a thing without its own label reaches every subscriber of the enclosing group, who decrypt and drop it. Busy channels get their own group.
 - A node connected to several relays may see a signal twice: latest-wins values are idempotent; event-style signals carry a sender sequence.
@@ -21,7 +21,7 @@ Owner's goal: event-stream-like apps on the same infrastructure, first-class if 
 
 ## The all-nodes predicate
 "All nodes a thing syncs to" is a state predicate computable at trusted nodes, never a protocol condition. Per label: the nodes with a valid chain that published `/node` under the thing's label (not "every node of every member", which needs rosters readers never see).
-- Each node re-puts `/node` under each label it tracks at a low rate (daily at most), so the newest copy's `ts` under L is its last sync of L (accepted by owner).
+- Each node re-puts its node card (`/node`, spec/permissions.md §4) under each label it tracks at a low rate (daily at most), so the newest copy's `ts` under L is its last sync of L (accepted by owner). A reader's copy enters by deposit, so the rate must stay far below the label's deposit budget.
 - Uses: write a new schema form once every node reads it (fixes the read-only old app the header heuristic cannot see), drop old-form history after that, clean up an inbox once every own device has acked.
 - Dead nodes: a lost phone blocks "all" forever, so every policy pairs the predicate with an age cutoff or an explicit node removal. Never gates deletion at blind nodes.
 - "Buffer until all have seen it" = inbox pattern plus this predicate plus expiry as backstop. Fine as a core helper later; not sync machinery.

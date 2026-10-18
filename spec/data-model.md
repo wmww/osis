@@ -13,7 +13,7 @@
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
 - Single-segment AKs belong to the core schema (§9). App AKs have two or more segments; the first is a namespace owned by the schema maintainer.
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the Mutator writes into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and local flags (`ro`, `synthetic`, `guaranteed`, `indexed`) that nothing on the wire enforces.
+- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and local flags (`ro`, `synthetic`, `guaranteed`, `indexed`) that nothing on the wire enforces.
 - A schema also declares **signal kinds**, typed like AKs. Signals are never stored and are not aspects (spec/sync.md §9).
 
 ## 3. Types
@@ -61,7 +61,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 6. Large atomic values
 - A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, TBD, a few hundred KB) MUST be chunked; below it MUST NOT be.
-- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8 (gear table and mask TBD), giving a tree: leaves are chunks, interior nodes are canonical arrays of links; the value's place in the enclosing CBOR holds the root link.
+- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8 (gear table and mask TBD), giving a tree: leaves are chunks, interior nodes are canonical arrays of links (fan-out TBD; every node fits `MAX_BLOB`); the value's place in the enclosing CBOR holds the root link.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the canonical value the subtree encodes, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - Every blob, chunk or commit, is at most `MAX_BLOB` bytes (format constant, TBD, a few MB).
@@ -84,10 +84,11 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record |
-| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role> }> | membership edges; read as the membership timeline's roster (spec/permissions.md §4) |
-| `/keys` | struct (register) | an actor's current keyset (spec/crypto.md §3) |
-| `/secrets` | struct | sealed role secrets and history boxes (spec/crypto.md §4) |
+| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<struct { ts, node: tid }> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
+| `/keys` | struct (register) | an actor's current keyset and mailbox (spec/crypto.md §3, spec/sync.md §2) |
+| `/secrets` | struct | boxes keyed (member, role, epoch) and history boxes (spec/crypto.md §4) |
 | `/handover` | struct | hand-over records (spec/permissions.md §7) |
+| `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6) |
 | `/label` | map<label ID, struct { index, chain, servers, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `/follows` | map<record hash, record hash> | on a person actor: chosen successor per hand-over fork |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
@@ -95,7 +96,7 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 
-**Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/handover`, `/label`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/handover`, `/label`, `/tenures`. Their rules: spec/commits.md §2, spec/permissions.md.
 
 ## 10. Schemas
 - A schema has a **schema ID** (128 random bits, minted once, never changed) and a **revision** (integer, bumped on every publish).

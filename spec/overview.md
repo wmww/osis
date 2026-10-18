@@ -10,12 +10,13 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
 - spec/commits.md: commits: header, kinds, dot forms, atomic apply, retention, purge, expiry, undo.
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete tokens, agility.
-- spec/permissions.md: actors, membership, ownership, certificates, the validity rules, roster snapshots, hand-over, links.
-- spec/sync.md: blobs, labels, labeling, blind-node operations, the sync protocol, compaction, subscriptions and signals.
+- spec/permissions.md: actors, membership, ownership, rotation, certificates, the validity rules, roster snapshots, hand-over, purge rights, links.
+- spec/sync.md: blobs, labels, labeling, blind-node operations (stamps, deposits, mailboxes), the sync protocol, compaction, subscriptions, signals, transports, bundles.
 
 ## Conventions
 - MUST, MUST NOT, SHOULD are normative. Everything not marked otherwise is normative.
 - **TBD**: a detail not fixed yet (byte layouts, constants). plans/protocol-spec.md tracks them.
 - Notation: `[a, b]` is a CBOR array, `{k: v}` a CBOR map. `||` is byte concatenation. `le64(i)` is i as 8 little-endian bytes. `kdf`, `derive_key`, `keyed_hash` are defined in spec/crypto.md.
-- "Node": an osis instance on a device. "Blind node": a node holding no read secret of a label it stores. "Member": an actor with a role on an actor or thing.
+- "Node": an osis instance on a device. "Blind node": a node holding no read secret of a label it stores; "server" is a blind node used as one. "Member": an actor with a role on an actor or thing. "Writer" of a label: a holder of its write key.
+- Format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, `MAX_DRIFT`, `MEMBERSHIP_KEEP`, `TOMBSTONE_LIFETIME`) are fixed by the format version (spec/versioning.md §1) except `TOMBSTONE_LIFETIME`, a blind-node policy.
 - Domain strings such as `"osis v1 commit"` are fixed byte strings; their `v1` is not a protocol version.

@@ -1,24 +1,26 @@
 # Spec the protocol bytes
-> Summary: Fill every TBD in spec/ (byte layouts of everything on the wire or between nodes, format constants, sync messages, bundle format), close the protocol design gaps tracked as issues, and produce test vectors.
-> Tags: sync, permissions, crypto
+> Summary: Fill every TBD in spec/ (byte layouts of everything on the wire or between nodes, format constants, sync messages, bundle format) and produce test vectors.
+> Tags: sync, permissions, crypto, data-model
 
-Output goes into the spec files themselves (new sections or a spec/wire.md if layouts get long), plus test vectors. `grep -n TBD spec/*.md` lists what is open.
+Output goes into the spec files themselves (new sections, or a spec/wire.md if layouts get long), plus test vectors. `grep -n TBD spec/*.md` lists what is open; every item below corresponds to one or more of those.
 
 ## Permanent blob surface (readers accept forever)
-1. **Value CBOR profile** (spec/data-model.md §5): tag numbers (check the IANA registry), `any` case IDs, STRUCT tag reservation.
-2. **Commit header** (spec/commits.md §1): field order and encoding, kinds and markers, attestation entry format, signature domain digests, the hand-over identity hash input (spec/permissions.md §7).
-3. **Blob framing** (spec/sync.md §1): prefix layout, commitment list cap, Padmé details, `MAX_BLOB`, `CHUNK_THRESHOLD`, chunker definition (gear table, mask, min/max) shared with spec/crdt.md §8; how purge rewrites, projections and certificate copies keep the commit ID; the delivery blob.
-4. **Schemas**: core schema ID; schema-as-data canonical form (spec/data-model.md §10).
-5. **Core aspects** (spec/data-model.md §9): exact types of `/created`, `/members`, `/keys`, `/secrets` (box enum, suite IDs), `/handover`, `/follows`, `/node`, `/reach`, `/group`, `/label` (steps, addresses with pinned keys); the contact profile thing.
-6. **Signal envelope**, **link format** (spec/permissions.md §9), contact card, recovery card, link-key creation nonce derivation (spec/crypto.md §3).
+1. **Value CBOR profile** (spec/data-model.md §5): tag numbers TID, ENUM, LINK and the reserved STRUCT tag (check the IANA registry); `any` case IDs (§3).
+2. **Creation record** layout (spec/data-model.md §1) and the hand-over identity hash input `hash(T, H)` (spec/permissions.md §7).
+3. **Commit header** (spec/commits.md §1): field order and encoding, kinds and markers, attestation entry format, the token-hash list cap; one signature domain per signed object (spec/crypto.md §2).
+4. **Blob framing** (spec/sync.md §1): prefix layout, commitment list cap, Padmé details, `MAX_BLOB`, `CHUNK_THRESHOLD`; the chunker (gear table, mask, min/max) shared by spec/data-model.md §6 and spec/crdt.md §8; the delivery blob and signal envelope (spec/crypto.md §5).
+5. **Schemas**: the core schema ID; schema-as-data canonical form (spec/data-model.md §10).
+6. **Core aspects** (spec/data-model.md §9): exact types of `/created`, `/members`, `/keys`, `/secrets` (box enum, suite IDs), `/handover`, `/follows`, `/node`, `/reach`, `/group`, `/label` (steps, addresses with pinned keys); the contact profile thing (spec/sync.md §3).
+7. **Link format**, recovery card (spec/permissions.md §9), link-key creation nonce derivation (spec/crypto.md §3).
 
 ## Node-to-node protocol (versioned separately; old clients must keep working with the official server)
-7. Framing and version negotiation over the transport abstraction (spec/sync.md §10); fixed maximum message size; paging.
-8. Messages (spec/sync.md §5, §6, §8): cursor sync, range reconciliation, open (challenge signature, `stale`), upload (with stamps), deposit, delete (label delete key; token plus write- or sync-key signature, optionally timed), registration ("have k"), subscribe/push, signals, specific-blob fetch, download.
-9. File bundle format (spec/sync.md §11); an importer treats the bundle's deletions as a peer's log events.
+8. Framing and version negotiation over the transport abstraction (spec/sync.md §6, §10); fixed maximum message size; paging; the handshake (clock, challenge, static key).
+9. Messages (spec/sync.md §5, §6, §8): cursor sync, range reconciliation (choose and specify the RBSR variant), open (challenge signature, `stale`), upload (with stamps), deposit, delete (label delete key; token plus write- or sync-key signature, optionally timed), registration ("have k"), subscribe/push, signals, specific-blob fetch, download.
+10. File bundle format (spec/sync.md §11); an importer treats the bundle's deletions as a peer's log events.
 
 ## Design gaps to close first
 - First-contact invite format (notes/networking.md, Open).
+- Any open issue tagged `sync`, `crypto` or `permissions` that changes bytes on the wire.
 
 ## Then
 Test vectors for every blob type; version-skew simulation as a test category (notes/versioning.md, Open details).

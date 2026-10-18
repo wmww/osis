@@ -7,7 +7,7 @@
 - **XChaCha20-Poly1305 over AES-GCM**: 96-bit GCM nonces plus frequent local unit rewrites invite nonce reuse; GCM is slow without hardware and in WASM. A hardware-speed suite can be added later for multi-GB values.
 - **KEM key per role** for non-key actors: effective role is the minimum along the chain, so a box sealed to A's write key must be openable only by A's writers. One KEM key per actor would hand every reader of A all of A's write and admin secrets.
 - **`/keys` holds the current keyset only**: nobody seals to an old epoch on purpose, and a granter with a stale key still succeeds because members keep old secrets.
-- **Link keys sign only**: K's secrets derive from the seed, so nothing is sealed to L and a link URL is just seed + target + server + K's label.
+- **Link keys sign only**: K's secrets derive from the seed until K first rotates, and after that L's boxes use the symmetric form under a seed-derived secret, so L needs no KEM key and a link URL is just seed + target + server + K's label.
 - **Symmetric box form** when the writer already holds the recipient's role secret (a thing's secrets to its owner): 49 bytes instead of 1.2 KB.
 - **History boxes**: holding a role's current secret opens every older one; a member removed before epoch n opens nothing newer; a join costs one box per role, not one per epoch.
 - **Wraps name no epoch**: a cleartext epoch byte would leak rotation timing per blob to save one tag check. A lagging relayer's older-epoch wrap extends an ex-member's reach by that blob (tension 7).

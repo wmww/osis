@@ -3,7 +3,7 @@
 
 ## 1. Extension points
 Four independent extension points, each parked separately so a node with one unknown item still reads everything else:
-- **Format version**: one integer covering commit header fields, blob framing and format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, chunking and paging parameters, `MAX_DRIFT`). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
+- **Format version**: one integer covering commit header fields, blob framing and format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, chunking and paging parameters, `MAX_DRIFT`, `MEMBERSHIP_KEEP`). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
 - **Merge encodings**: IDs named per fragment inside a delta (spec/crdt.md §3.1). A change to an encoding's grammar is a new encoding ID with an embedding from the old one (spec/crdt.md §7), never an in-place change.
 - **Value types**: new CBOR tags (spec/data-model.md §5).
 - **Algorithms**: enum cases on keys, signatures and sealed boxes; suite bytes and suite IDs (spec/crypto.md §8).

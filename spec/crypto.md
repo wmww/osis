@@ -10,7 +10,7 @@
 - Every hash osis computes itself is BLAKE3.
 
 ## 2. Signatures
-- Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Domains: `"osis v1 commit"` (input digest: the commit ID), `"osis v1 signal"`, `"osis v1 label register"`, `"osis v1 label open"`; further domains TBD per signed object.
+- Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Domains: `"osis v1 commit"` (input digest: the commit ID), `"osis v1 signal"`, `"osis v1 label register"`, `"osis v1 label open"`, `"osis v1 upload"` (stamps, spec/sync.md §5); further domains TBD per signed object.
 - Signers: node keys (commits by the node), recovery keys and link keys (commits signed as that key actor), label role keys (spec/sync.md §5).
 
 ## 3. Keys per actor kind
@@ -19,7 +19,7 @@
 - **Key actor** (node, recovery key): one 32-byte seed. Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` (64 XOF bytes for ML-KEM keygen, 32 for X25519); mailbox label keys from the seed (spec/sync.md §2). The creation record commits to the signing public key only.
 - **Link key L**: seed in the link (spec/permissions.md §9). Signing key from `kdf("sign", seed)`; creation nonce from the seed (derivation TBD); mailbox label keys from the seed; no KEM key. The link's actor K has role secrets `kdf("link K <role>", seed)` until K is first rotated. Boxes to L use the symmetric form with `kdf("link box", seed)` as its secret; K's admins hold the seed (spec/permissions.md §9).
 - **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`, so only holders of a role can open boxes sealed to that role.
-- **`/keys`**: a register holding the current keyset only: epoch plus, per role, the algorithm-tagged KEM public key (a key actor: its single KEM key), and the actor's **mailbox**: label ID, servers, deposit seed (spec/sync.md §2). Written by an admin of the actor; a key actor signs its own (a link key's: K's admin). A key actor rotates its KEM key by a new keyset; old private keys are kept for old boxes.
+- **`/keys`**: a register holding the current keyset only: epoch plus, per role, the algorithm-tagged KEM public key (a key actor: its single KEM key), and the actor's **mailbox**: label ID, servers, deposit seed (spec/sync.md §2). Written by an admin of the actor; a key actor's is signed by its own key (a link key's by the sharer, which holds the seed). A key actor rotates its KEM key by a new keyset; old private keys are kept for old boxes.
 - **Dedup secret** of a thing = `derive_key("osis v1 dedup", creation nonce)`.
 
 ## 4. `/secrets` and epochs
@@ -29,7 +29,7 @@
   - sealed: `{ recipient keyset epoch, suite ID, sealed box }` to the member's KEM key for that role;
   - symmetric: a wrap under `kdf("box", s)`, s the member's role secret (a link key: §3), used when the writer holds s.
 - A key-actor member has one KEM key: it gets one box, keyed (member, highest granted role), carrying every granted role's secret.
-- A grant writes the grantee's boxes for every role at or below the granted one, for every epoch that still has boxes. A rotation writes new boxes for every current member of each rotated role.
+- A grant writes the grantee's boxes for every role at or below the granted one, for every epoch that still has boxes (those no held rotation superseded). A rotation writes new boxes for every current member of each rotated role.
 - **History box** (epoch e, role r) = AEAD under `kdf("history", secret_r[e])` of every distinct earlier `secret_r` the rotator holds, forks included, written once per rotation.
 - A node that may rotate a role of an actor (spec/permissions.md §3) MUST NOT encrypt, wrap or seal under an epoch of it that does not cover a removal or demotion it knows of; it rotates first. An epoch **covers** a removal of member M if it holds no box for M for the rotated roles; it covers a demotion of M to role r if it holds no box for M above r; it covers a removal below a member M (a device removal, or a removal in an actor under M) if M's box names a keyset epoch of M that covers it. A rotation by a writer leaves the admin boxes as they are; the epoch covers nothing for the admin role.
 - Each epoch names its suite ID.

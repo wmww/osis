@@ -9,9 +9,9 @@ Three layers of compatibility: store/relay/merge (universal: merge is schema-fre
 ## Core vs convention
 The core does five things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, the writer's (schema ID, revision) in headers, and the parking rule plus encoding lattice. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
 - Writers emitting the oldest format version that fits means one upgraded node strands nobody unless it uses a new feature, and then only on that aspect.
-- The header's (schema ID, revision) answers the one question it must: "my schema's future revision" vs "a foreign schema on my AK". It replaced a per-delta type hash (32 bytes per delta, could not tell those apart).
-- Defaults are never materialized and immutable: changing one would read old data differently per revision; materializing them made a default-valued field distinguishable from an unwritten one.
-- The schema-aware diff exists because an old app's save of a `set<struct>` otherwise removed every element a newer app had extended and added a stripped copy, and a list with one unreadable element was rewritten around it.
+- The header's (schema ID, revision) answers the one question it must: "my schema's future revision" vs "a foreign schema on my AK". A per-delta type hash (32 bytes per delta) cannot tell those apart.
+- Defaults are never materialized and immutable: changing one would read old data differently per revision; materializing them would make a default-valued field distinguishable from an unwritten one.
+- Without the schema-aware diff an old app's save of a `set<struct>` would remove every element a newer app had extended and add a stripped copy, and a list with one unreadable element would be rewritten around it.
 
 ## Terminology
 - **Item**: anything with an ID in a schema (field, case, aspect). **Form**: the set of items holding one piece of information.
