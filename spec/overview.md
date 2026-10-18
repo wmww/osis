@@ -11,7 +11,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/commits.md: commits: header, kinds, dot forms, atomic apply, retention, purge, expiry, undo.
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete tokens, agility.
 - spec/permissions.md: actors, membership, ownership, rotation, certificates, the validity rules, roster snapshots, moving a thing, purge rights, links.
-- spec/sync.md: blobs, labels, labeling, blind-node operations (stamps, deposits, mailboxes), the sync protocol, compaction, subscriptions, signals, transports, bundles.
+- spec/sync.md: blobs, labels, labeling, blind-node operations (stamps, deposits, claims), the sync protocol, compaction, subscriptions, signals, transports, bundles.
 
 ## Conventions
 - MUST, MUST NOT, SHOULD are normative. Everything not marked otherwise is normative.

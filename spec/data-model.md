@@ -85,7 +85,7 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record |
 | `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<struct { ts, node: tid }> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
-| `/keys` | struct (register) | an actor's current keyset and mailbox (spec/crypto.md §3, spec/sync.md §2) |
+| `/keys` | struct (register) | an actor's current keyset and inbox (spec/crypto.md §3, spec/sync.md §2) |
 | `/secrets` | struct | boxes keyed (member, role, epoch) and history boxes (spec/crypto.md §4) |
 | `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6) |
 | `/label` | map<label ID, struct { index, chain, servers, replaced }> | labels of a synced group (spec/sync.md §2) |

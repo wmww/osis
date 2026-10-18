@@ -1,5 +1,5 @@
 # Cryptography
-> Summary: Suite 1 primitives (Ed25519 strict, XChaCha20-Poly1305, BLAKE3, hybrid X25519 + ML-KEM-768 sealed box), signature domains, the KDF, keys per actor kind, `/keys`, `/secrets` boxes and history boxes, epochs, blob encryption, wraps, links, delete tokens, keyed hashes, delivery blobs, algorithm agility.
+> Summary: Suite 1 primitives (Ed25519 strict, XChaCha20-Poly1305, BLAKE3, hybrid X25519 + ML-KEM-768 sealed box), signature domains, the KDF, keys per actor kind, `/keys`, `/secrets` boxes and history boxes, epochs, blob encryption, wraps, links, delete tokens, keyed hashes, grant blobs, algorithm agility.
 
 ## 1. Suite 1 primitives
 - **Signature**: Ed25519 (RFC 8032) with strict verification: reject non-canonical encodings and small-order points (as ed25519-dalek `verify_strict`). Batch and single verification MUST agree.
@@ -16,10 +16,10 @@
 ## 3. Keys per actor kind
 - **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
 - **Plain thing** (no non-owner member): role secret = `kdf("thing <role>", owner's <role> secret, tid)`. A thing that gets a non-owner member gets random role secrets of its own (spec/permissions.md §3).
-- **Key actor** (node, recovery key): one 32-byte seed. Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` (64 XOF bytes for ML-KEM keygen, 32 for X25519); mailbox label keys from the seed (spec/sync.md §2). The creation record commits to the signing public key only.
-- **Link key L**: seed in the link (spec/permissions.md §9). Signing key from `kdf("sign", seed)`; creation nonce from the seed (derivation TBD); mailbox label keys from the seed; no KEM key. The link's actor K has role secrets `kdf("link K <role>", seed)` until K is first rotated. Boxes to L use the symmetric form with `kdf("link box", seed)` as its secret; K's admins hold the seed (spec/permissions.md §9).
-- **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`, so only holders of a role can open boxes sealed to that role.
-- **`/keys`**: a register holding the current keyset only: epoch plus, per role, the algorithm-tagged KEM public key (a key actor: its single KEM key), and the actor's **mailbox**: label ID, servers, deposit seed (spec/sync.md §2). Written by an admin of the actor; a key actor's is signed by its own key (a link key's by the sharer, which holds the seed). A key actor rotates its KEM key by a new keyset; old private keys are kept for old boxes.
+- **Key actor** (node, recovery key): one 32-byte seed. Signing key from `kdf("sign", seed)`; KEM key pair from `kdf("kem", seed)` (64 XOF bytes for ML-KEM keygen, 32 for X25519); its X25519 half is also its claim key (spec/sync.md §2). The creation record commits to the signing public key only.
+- **Link key L**: seed in the link (spec/permissions.md §9). Signing key from `kdf("sign", seed)`; creation nonce from the seed (derivation TBD); X25519 claim key (spec/sync.md §2) from `kdf("claim", seed)`; no KEM key. The link's actor K has role secrets `kdf("link K <role>", seed)` until K is first rotated. Boxes to L use the symmetric form with `kdf("link box", seed)` as its secret; K's admins hold the seed (spec/permissions.md §9).
+- **Other actors**: one KEM key pair per role per epoch, `kdf("kem", role secret)`, so only holders of a role can open boxes sealed to that role. The read-role pair's X25519 half is the actor's claim key (spec/sync.md §2).
+- **`/keys`**: a register holding the current keyset only: epoch plus, per role, the algorithm-tagged KEM public key (a key actor: its single KEM key), and, for an actor with role secrets, its **inbox**: label ID, servers, deposit seed (spec/sync.md §2). Written by an admin of the actor; a key actor's is signed by its own key (a link key's by the sharer, which holds the seed). A key actor rotates its KEM key by a new keyset; old private keys are kept for old boxes.
 - **Dedup secret** of a thing = `derive_key("osis v1 dedup", creation nonce)`.
 
 ## 4. `/secrets` and epochs
@@ -37,7 +37,7 @@
 ## 5. Blobs and wraps
 - **Blob encryption**: a fresh random 32-byte key per encryption, nonce all zero; nothing encrypts a blob under a caller-chosen key. Plaintext is Padmé-padded first. Blob = clear prefix || ciphertext (spec/sync.md §1). Blob ID = BLAKE3 of the whole blob.
 - **Wrap** (per label, per blob): AEAD under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, plaintext = suite byte || blob key: 49 bytes. Deterministic. A wrap names no epoch: a reader tries the read secrets it holds, newest first. An uploader wraps under the newest read epoch it holds (§4).
-- **Delivery blob** = clear prefix || Padmé-padded box to the recipient: a sealed box to its read-role KEM key (a key actor: its KEM key), or the symmetric form under `kdf("link box", seed)` for a link key; AD = (recipient tid, `"delivery"`); payload = commit header and deltas. It has no blob key; its entry's wrap is filler.
+- **Grant blob** = clear prefix || Padmé-padded sealed box to the grantee's read-role KEM key; AD = (grantee tid, `"grant"`); payload = commit header and deltas. It has no blob key; its entry's wrap is filler.
 - **Signal envelope**: encrypted and wrapped like a blob, signed under `"osis v1 signal"` (layout TBD).
 
 ## 6. Hashes and links
