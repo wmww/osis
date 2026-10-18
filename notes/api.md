@@ -1,5 +1,5 @@
 # Rust API
-> Summary: Fixed API directions (plain values and listeners, no CRDT concepts, large values materialized and streamed, alias resolution inside every call, typed-read failures, diagnostics channel) plus an early sketch of the `Osis` handle and its functions. The API is NOT decided: shape it during implementation and refactor as example apps show what works (owner).
+> Summary: Fixed API directions (plain values and listeners, no CRDT concepts, large values materialized and streamed, move resolution inside every call, typed-read failures, diagnostics channel) plus an early sketch of the `Osis` handle and its functions. The API is NOT decided: shape it during implementation and refactor as example apps show what works (owner).
 
 ## Fixed directions (owner)
 - Plain values and listeners, no CRDT concepts (notes/crdt.md).
@@ -23,7 +23,7 @@
 ## Queries apps will want (direction, not specified)
 Per-aspect reads and text search are not enough for any list-like UI. Expect to grow most of a slow, not very feature-rich database on top of the local store, over time; a dedicated design pass should shape it. Kinds of things apps need:
 - Things in a group (transitively) that carry a given aspect, ordered by a field or by commit time, paged, with a listener for changes inside the visible range (a chat timeline, a feed, an inbox).
-- Backlinks: things whose values reference a given tid, resolved through aliases.
+- Backlinks: things whose values reference a given tid, resolved through moves.
 - Filters over aspect values (unread, by author actor, by tag) and counts, live.
 - Ordering by commit time should tolerate a sender's skewed clock, e.g. display time = min(`ts`, local receipt time).
 - Local-only indexes that are rebuildable and shardable per aspect, since the local store erases by key (notes/local-store.md).
@@ -32,13 +32,14 @@ None of this touches the wire.
 ## Typed reads (decided; spec/versioning.md §5)
 Typed reads fail with an error carrying the path on an unknown enum case, a type mismatch or a missing required field; they are also available per path so an app can skip one bad element of a large collection. The untyped `Value` API always works. App types are views over the wire type, generated or hand-written in the app; transitions and the form-choice policy are codegen conventions (notes/versioning.md).
 
-## Tids and hand-over (spec/permissions.md §7)
-A thing gains a new tid when it is handed over, and a new identity per branch when an actor above it forks; old tids are aliases. Sharing never changes a tid.
-- Every call that takes a tid resolves aliases internally; listeners registered under an old tid keep firing. Apps never resolve in order to access. Roster reads resolve `/members` keys too, since a handed-over actor is listed under its old tid.
-- Values returned to apps have known aliases replaced by the current tid (typed tids and `osis://` links in markdown), so tids read from osis compare equal. Resolution is a read-time view: stored bytes and hashes are untouched, and `set_aspect` diffs against the resolved view, so writing a value back does not rewrite references. An app pins a reference by writing it explicitly.
+## Tids and moves (spec/permissions.md §7)
+A thing never changes tid or owner. Moving it to another owner makes a copy with a new tid; the copy says what it continues (`/was`) and the old thing, if its owner cooperates, what it continued as (`/moved`).
+- Every call that takes a tid resolves moves internally by the §7 rule; listeners registered under an old tid keep firing. Apps never resolve in order to access. Roster reads resolve `/members` keys too, since a moved actor may be listed under its old tid.
+- Values returned to apps have known old tids replaced by the resolved one (typed tids and `osis://` links in markdown), so tids read from osis compare equal. Resolution is a read-time view: stored bytes and hashes are untouched, and `set_aspect` diffs against the resolved view, so writing a value back does not rewrite references. An app pins a reference by writing it explicitly.
 - Explicit call only for identity: comparing a tid the app kept (memory, config, URL) with one read later. `Tid` equality is plain bits and cannot consult the database.
+- Moving is node logic over the import commit: create the copy, import the origin's commits the node holds (dead bodies included) or its snapshots, re-grant the roster, write `/was`; the old owner writes `/moved`. Attribution shown to apps for imported writes is the origin commit's author and `ts`.
 
 ## Diagnostics channel (decided; shape is proposal)
-A place to dump problems such as a colliding record from a peer, a hand-over fork, or rejected writes from a revoked actor. Apps may log, surface or ignore it; correctness never depends on anyone seeing it.
+A place to dump problems such as a colliding record from a peer, a move with several claimants, or rejected writes from a revoked actor. Apps may log, surface or ignore it; correctness never depends on anyone seeing it.
 - Shape: `Osis::listen_diagnostics(callback) -> ListenerId`, structured events (kind, tids involved, peer). Default sink is the log.
 - A peer must not be able to flood it: dedupe per (kind, tid), rate-limit per peer.

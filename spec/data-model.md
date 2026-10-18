@@ -7,7 +7,7 @@
 - Creation record of an ordinary thing: (owner actor tid, 32-byte random nonce). Of a **key actor** (node, recovery key, link key), which owns itself: (algorithm-tagged signing public key, 32-byte nonce). A link key's nonce derives from its seed (spec/crypto.md).
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
-- Tids derived by hand-over: spec/permissions.md §7.
+- A thing never changes owner; moving it is a copy under a new tid (spec/permissions.md §7).
 
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string, slash-prefixed and slash-separated (`/note/body`). AKs go on the wire as strings.
@@ -87,16 +87,16 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 | `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<struct { ts, node: tid }> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
 | `/keys` | struct (register) | an actor's current keyset and mailbox (spec/crypto.md §3, spec/sync.md §2) |
 | `/secrets` | struct | boxes keyed (member, role, epoch) and history boxes (spec/crypto.md §4) |
-| `/handover` | struct | hand-over records (spec/permissions.md §7) |
 | `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6) |
 | `/label` | map<label ID, struct { index, chain, servers, replaced }> | labels of a synced group (spec/sync.md §2) |
-| `/follows` | map<record hash, record hash> | on a person actor: chosen successor per hand-over fork |
+| `/moved` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
+| `/was` | tid (register) | the thing this one continues (spec/permissions.md §7) |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
 | `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 
-**Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/handover`, `/label`, `/tenures`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
 
 ## 10. Schemas
 - A schema has a **schema ID** (128 random bits, minted once, never changed) and a **revision** (integer, bumped on every publish).

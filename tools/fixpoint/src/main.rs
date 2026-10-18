@@ -5,7 +5,7 @@
 //! (exhaustive tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in
 //! the notes; the others are the rejected as-written rule and its third-party-witness
 //! repairs. `snapshot` runs the two-level roster-snapshot model (src/snapshot.rs: snapshots,
-//! projected rosters, hand-over records); `edges` the one-level model of `until`, invite
+//! projected rosters, plain owner-chain writes); `edges` the one-level model of `until`, invite
 //! power and self-removal (src/edges.rs), `edges-prov` the same with a candidate fix for
 //! sticky drops.
 

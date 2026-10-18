@@ -5,7 +5,7 @@
 Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - Format version (spec/versioning.md §1).
 - Author node tid and the actor tid it acts for.
-- Kind: content or membership (§2); compaction-snapshot marker; roster-snapshot marker (membership only).
+- Kind: content or membership (§2); compaction-snapshot marker; import marker (content only, with the origins table, spec/permissions.md §7); roster-snapshot marker (membership only).
 - `ts` (spec/crdt.md §2.2) and the dot form, node or commit (§3).
 - `sources` table (spec/crdt.md §2.4).
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
@@ -22,8 +22,9 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.
-- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9). A membership commit changes at most one `/members` edge, except: a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9); a hand-over (the record plus the grant to the new owner, spec/permissions.md §7); a roster snapshot (one delta per edge, spec/permissions.md §6). A grant also carries the grantee's `/secrets` boxes; rotations and `/keys` and `/label` writes change no edge. Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
+- **Membership**: deltas only on membership-class aspects (spec/data-model.md §9). A membership commit changes at most one `/members` edge, except: a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9); a roster snapshot (one delta per edge, spec/permissions.md §6). A grant also carries the grantee's `/secrets` boxes; rotations and `/keys` and `/label` writes change no edge. Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
 - **Compaction snapshot**: content or membership kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7). A roster snapshot is not one: it writes a reset and full state under its own stamps (spec/permissions.md §6).
+- **Import**: content kind with the import marker; deltas of writes re-sourced from origin commits, no own writes, empty counter ranges (spec/permissions.md §7).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
@@ -52,7 +53,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - Purging drops bodies, never headers. A commit with a purged delta is rewritten as a blob without that delta: same header and commit ID, new blob.
 - Dropping a body means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it, so that later compromise of the node recovers nothing (notes/local-store.md describes the mechanism).
 - A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
-- Fixed retention: membership deltas are `admin`, keep at least `MEMBERSHIP_KEEP` (90 days) after replaced (a roster snapshot replaces them, spec/permissions.md §6); `/handover` deltas are `nobody`; a certificate copy carries its commit's. Compaction-snapshot deltas are `writer` with the aspect's bounds.
+- Fixed retention: membership deltas are `admin`, keep at least `MEMBERSHIP_KEEP` (90 days) after replaced (a roster snapshot replaces them, spec/permissions.md §6); a certificate copy carries its commit's. Compaction-snapshot deltas are `writer` with the aspect's bounds. Import deltas carry their origin delta's (spec/permissions.md §7).
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid). The schema may give a default per AK as a duration from the write. The blob prefix carries T (spec/sync.md §1).

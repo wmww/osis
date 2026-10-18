@@ -18,21 +18,17 @@
 //!
 //! Projected rosters (`SHist::projected`): a node holding only one actor's certificate
 //! closure computes that actor's P and G roles as the full node does, with or without
-//! compaction. Hand-over records (§7) are writes on G by its owner chain that touch no
-//! roster; one is valid iff its author was a P-admin at its point and no P demotion dropped
-//! it. Checked: a record by a device whose removal's frontier misses it is never valid;
-//! record validity is order independent, survives compaction and projection. The new
-//! identity hash(G, H) and the new owner's acceptance snapshot verify through the new
-//! owner's chain alone, so they are outside this model: whatever the record's validity, its
-//! content stands wherever the acceptance snapshot is held; only the alias and inheritance
-//! follow the record.
+//! compaction. A **record** here is a plain write on G by its owner chain that touches no
+//! roster (`/moved`, say, spec/permissions.md §7); one is valid iff its author was a P-admin
+//! at its point and no P demotion dropped it. Checked: a record by a device whose removal's
+//! frontier misses it is never valid; record validity is order independent, survives
+//! compaction and projection.
 //!
 //! **Ledger**: a snapshot answers authority before its time by its roster and its ledger of
 //! admin intervals (`Entry`): a member held admin inside a closed interval, or after its
 //! roster edge's `since`; a write inside a closed interval is dropped iff the frontier of
 //! the demotion that closed it misses the write. Without the ledger a key-actor re-snapshot
-//! of P that omits a former device disowned that device's earlier records and G writes
-//! (issue resnapshot-disowns-handover, now closed). Checked: a re-snapshot of P with the
+//! of P that omits a former device disowned that device's earlier records and G writes. Checked: a re-snapshot of P with the
 //! roster and ledger the timeline computes (`ledger_of`) changes no record's validity and
 //! no G write's application (`resnapshot_neutral`).
 
@@ -76,7 +72,7 @@ pub struct SWrite {
     /// Admin intervals before the snapshot (snapshots of P only; G edges authorize nothing
     /// in the chain).
     pub ledger: Vec<Entry>,
-    /// Hand-over record of G (by its owner chain) to new owner `target` (an opaque id).
+    /// Plain owner-chain write on G touching no roster; `target` is an opaque payload.
     pub rec: bool,
 }
 
@@ -321,20 +317,20 @@ impl SHist {
             .collect()
     }
 
-    /// Hand-over record `i` is valid iff its author had owner-chain authority at its point by
-    /// P's timeline and no P demotion of the author dropped it (spec/permissions.md §7).
+    /// Record `i` is valid iff its author had owner-chain authority at its point by P's
+    /// timeline and no P demotion of the author dropped it.
     pub fn record_valid(&self, out: &Out, i: usize) -> bool {
         let pos = pos_of(&self.order())[i];
         self.p_admin_at(&out.p, self.writes[i].author, pos) && out.g.dropped >> i & 1 == 0
     }
 
-    /// Valid hand-over records of G.
+    /// Valid records of G.
     pub fn successors(&self, out: &Out) -> Vec<usize> {
         (0..self.writes.len()).filter(|&i| self.writes[i].rec && self.record_valid(out, i)).collect()
     }
 
     /// What a node verifying actor `z` holds: the entries in the closure and every write that
-    /// touches one, every snapshot projected to the closure, and every hand-over record.
+    /// touches one, every snapshot projected to the closure, and every record.
     /// The closure starts at z's P and G entries and grows by each held write's author (its P
     /// entry; for a non-snapshot write on G also its G entry): the certificate rule.
     pub fn projected(&self, z: usize) -> (SHist, Vec<usize>) {
@@ -499,7 +495,7 @@ impl Stats {
             self.histories, self.with_snapshot_start, self.compactions, self.compaction_mismatch, self.unapplied_points, self.unapplied_diverge, self.order_dep, self.honest_mismatch, self.max_passes
         );
         println!(
-            "  projections (plain and compacted) {} mismatches {} | hand-over records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | fresh key-actor snapshots of P with roster and ledger {} changing records or G writes {}",
+            "  projections (plain and compacted) {} mismatches {} | owner-chain records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | fresh key-actor snapshots of P with roster and ledger {} changing records or G writes {}",
             self.projections, self.projection_mismatch, self.records, self.records_valid, self.late_record_valid, self.record_mismatch, self.resnapshots, self.disowned
         );
         for (label, ex) in [
@@ -524,7 +520,7 @@ pub fn print_hist(h: &SHist) {
     for i in h.order() {
         let w = &h.writes[i];
         match &w.snap {
-            _ if w.rec => println!("    w{i}: {} hands {:?} to #{} at t={} | recv {:?}", w.author, w.thing, w.target, w.t, h.recv[i]),
+            _ if w.rec => println!("    w{i}: {} records #{} on {:?} at t={} | recv {:?}", w.author, w.target, w.thing, w.t, h.recv[i]),
             Some(r) => println!("    w{i}: {} snapshots {:?} := {:?} ledger {:?} at t={} | recv {:?}", w.author, w.thing, r, w.ledger, w.t, h.recv[i]),
             None => println!("    w{i}: {} sets {:?}[{}] := {:?} at t={} | recv {:?}", w.author, w.thing, w.target, w.role, w.t, h.recv[i]),
         }
@@ -1024,12 +1020,11 @@ mod tests {
         assert_projections(&h);
     }
 
-    /// Hand-over disowned: D1 hands G to new owner #9 at t=5; D2, which never received the
-    /// record, removes D1 from P, backdated to t=4 or at t=7. Either way the record is
-    /// invalid at every node, compacted or not, so the alias G -> hash(G, H) breaks. The new
-    /// identity and #9's acceptance snapshot verify through #9's chain alone and stand.
+    /// Record disowned: D1 writes a record #9 on G at t=5; D2, which never received it,
+    /// removes D1 from P, backdated to t=4 or at t=7. Either way the record is invalid at
+    /// every node, compacted or not.
     #[test]
-    fn handover_disowned_by_device_removal() {
+    fn record_disowned_by_device_removal() {
         for removal_t in [4, 7] {
             let mut b = B6::new();
             let h_rec = rec(&mut b, D1, 9, 5, &[(A, 5)]);
@@ -1075,7 +1070,7 @@ mod tests {
     }
 
     /// The key actor re-snapshots P after D2 removed D1 (as §6 recommends). The ledger
-    /// carries D1's admin interval and the removal's frontier, so the hand-over D1 signed
+    /// carries D1's admin interval and the removal's frontier, so the record D1 signed
     /// as a legitimate admin, which D2 had received, stays valid, compacted or not, while
     /// one D2 had not received stays invalid. A snapshot without the ledger disowned both.
     #[test]

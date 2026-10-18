@@ -5,7 +5,7 @@ The requirements behind this file: spec/requirements.md, Untrusted (blind) nodes
 
 ## Why
 - **One blob per commit, random key per blob**: a commit has one ID whatever groups contain it, and atomicity beats partial-fetch efficiency (tension 5). Sharing history means adding wraps, never re-encrypting.
-- **Groups as sync unit**: groups are free and overlap; owner actors as the unit would force a hand-over for every separately syncable subset.
+- **Groups as sync unit**: groups are free and overlap; owner actors as the unit would force a copy for every separately syncable subset.
 - **Label keys derive from the group's own role secrets**, never the owner's directly, or every label of one owner would carry the same role keys and identical wraps for a shared blob, linking them at the blind node.
 - **Entitlement, not group membership**, decides labeling: a thing dropped into a shared folder without an edge is silently not shared, which is the intended failure; an "add to shared folder" helper writes both. Cache the check per (thing, label), invalidated by membership changes of the label actor, the thing's edges or its owner chain.
 - **Convergence as the one rule**: must-hold, may-hold, must-not-hold per body. Retag on join, cleanup on leave, compaction and repair after a bad deletion are all this rule. The may-hold class keeps a compactor's drop and a lagging member's re-upload from ping-ponging. A wrongful deletion is healed at the next member sync by a fresh encryption.

@@ -2,7 +2,7 @@
 > Summary: Why suite 1 (spec/crypto.md) is what it is, costs of keys and boxes, proposed crates, rejected options. The suite was the agent's call with the owner deferring; hybrid post-quantum boxes follow from the requirement that long-lived secrets resist a future quantum attacker.
 
 ## Why
-- **Ed25519**: 32-byte keys, 64-byte signatures, fast verification per commit. Strict verification so every node accepts exactly the same signatures. PQ signatures not now: ML-DSA-44 has 2420-byte signatures and 1312-byte keys, over ten times the commit floor. Forgery is not retroactive: nodes rotate to a PQ scheme (new enum case, key actors rotate by hand-over) before a quantum attacker exists, and stored data stays valid.
+- **Ed25519**: 32-byte keys, 64-byte signatures, fast verification per commit. Strict verification so every node accepts exactly the same signatures. PQ signatures not now and not required (spec/requirements.md: signatures need not resist a quantum attacker): ML-DSA-44 has 2420-byte signatures and 1312-byte keys, over ten times the commit floor. If ever wanted: a new enum case; devices move by add-and-remove, a root key by copying the person actor (spec/permissions.md §7, rare and costly); stored data stays valid. An in-place successor key in `/keys` would be a convenience only, and its fork rule could only be keep-the-first-seen, as for colliding creation records.
 - **Hybrid PQ sealed boxes**: boxes sit on blind nodes forever and lazy rotation keeps old secrets valid for old content, so a classical box harvested today would yield every blob under that secret, forever; a later migration cannot re-protect it. The cost lands only on membership changes (about 1.2 KB per member and role), never per blob or commit. Generic hash-everything combiner (secure if either KEM is); X-Wing was a draft at decision time; if it is an RFC by implementation, add it as a second case.
 - **XChaCha20-Poly1305 over AES-GCM**: 96-bit GCM nonces plus frequent local unit rewrites invite nonce reuse; GCM is slow without hardware and in WASM. A hardware-speed suite can be added later for multi-GB values.
 - **KEM key per role** for non-key actors: effective role is the minimum along the chain, so a box sealed to A's write key must be openable only by A's writers. One KEM key per actor would hand every reader of A all of A's write and admin secrets.
@@ -25,6 +25,6 @@
 ## Rejected
 - Per-epoch `/keys` history, per-role boxes to devices, a KEM key and box for link keys: needless 1.2 KB objects.
 - Node KEM keys as the only sealing target: a granter would need the grantee's device list; a new device would need re-grants from everyone.
-- Tid committing to the KEM key: 1.2 KB in every chain certificate; rotation would need a hand-over.
+- Tid committing to the KEM key: 1.2 KB in every chain certificate; rotation would need a new tid.
 - One KEM key per actor (above). Cleartext epoch byte in wraps (above).
 - AES-256-GCM and AEGIS (above); HPKE (SHA-256 inside, no hybrid in the RFC); X-Wing (draft at decision time); ML-KEM-1024 (768 matches TLS and Signal practice); PQ signatures now.

@@ -82,7 +82,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Permissions
-- Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation. Sharing never changes a thing's identity. Transfer of ownership is rare.
+- Three concepts only: actor, membership, ownership. Every thing has exactly one owner, fixed at creation; moving a thing to another owner is a copy, and rare. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Whether an edit by a revoked member counts is judged by what the revoker had received, never by the author's own timestamps.
@@ -105,7 +105,7 @@ Items are hard unless a section says goal. Never weaken an item to fit a design;
 
 ## Tensions
 Where two goals cannot both hold: what collides, and which yields.
-1. **Transfer finality vs no consensus.** A former owner can always publish a competing transfer or retroactively disown one (backdating the removal of the device that signed it), and neither can be told from an ex-device's forgery. So ownership is immutable and transfer is aliasing: the transferred identity is the new owner's by construction and survives both; a former owner can only fork or disown, and forks resolve deterministically for readers with a stake in one branch, else by the reader's choice. Moving a thing out of its owner's tree should be rare.
+1. **Transfer finality vs no consensus.** A former owner can always publish a competing story about where a thing went, and nothing tells it from an ex-device's forgery. So a thing never changes owner: moving it is a copy under a new tid with its history imported, and the former owner keeps power only over the old thing and its pointer, never over the copy. A reference by the old tid resolves through the copy's own claim for things whose owner has rights in the copy, else through the pointer. Moving a thing out of its owner's tree should be rare.
 2. **Selective sync from untrusted nodes vs hiding structure.** Structure leaks as far as selection needs it.
 3. **Cheap edits of large values vs hiding sizes.** Sizes leak, padded coarsely.
 4. **Prompt deletion vs history, undo and recovery.** Purge is immediate; undo yields to others' deletions; what a right holder dropped is recoverable only from nodes whose retention still holds it. No node keeps a bin.
@@ -116,7 +116,7 @@ Where two goals cannot both hold: what collides, and which yields.
 9. **Bounded clocks vs revocation precision.** A window the size of the clock skew.
 10. **Deduplication vs forward-secure deletion.** Deduplicate only against content the editor already holds.
 11. **Removals beating unseen concurrent adds vs no-fingerprint purge.** An add the remover never saw survives.
-12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Whoever verifies a chain through the snapshot learns the roster's size (never its entries). Ownership-transfer records are kept forever.
+12. **Verifiable membership history vs bounded history.** The owner chain may restart a thing's authorization history at a snapshot; grants in flight before it are lost, and briefly-wrong rosters are possible until re-snapshot. Whoever verifies a chain through the snapshot learns the roster's size (never its entries).
 13. **Lazy rotation vs per-thing sharing.** Removing a party costs proportional to the things shared with it one by one. Usage rule: share sets through one shared actor.
 14. **Bounded state vs never discarding an edit.** State grows with edit history, not live size; no horizon drops edits, a sequence reset keeps every old element as a bare anchor so that newer concurrent inserts stay placeable, and set, bag and map tombstones live until the collection is reset. Usage rules: commit per editing pause, never per keystroke; ephemeral membership (presence, selections) uses expiring commits, not add/remove.
 15. Merged into 6.
