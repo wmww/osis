@@ -63,6 +63,7 @@ A simulator runs real node code with: an in-process transport, a simulated clock
 - Coverage measured but not gated; it finds untested branches of decoders.
 
 ## Order of work
+Superseded by plans/mvp_meta.md §7; the infrastructure items are plans/test-infra.md and plans/sim.md, the per-crate items live in each crate's plan. Kept for reference:
 1. Workspace layout; move the models; vectors runner with the first vectors (CBOR, tids, kdf).
 2. CRDT crate with differential tests against the model from the first commit.
 3. Simulator skeleton with in-process transport as soon as commits exist; invariants grow with features.

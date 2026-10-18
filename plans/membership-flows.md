@@ -1,0 +1,33 @@
+# Membership flows: actors, devices, grants, demotions with pre-sync, rotation cascade, re-seal, roster snapshots, links, cards, moving things
+> Summary: Implement the user-level membership operations in `osis-node` (`flows/`): person actors under a recovery key, adding devices by pairing, grants and inbox delivery, changes and removals, `until`, invite grants and self-removal, demotion with the pre-sync and the frontier from the node's receipt record, the rotation cascade on departures and the re-seal triggers, registration steps after rotations, giving a thing its own secrets, roster snapshots with the tenure ledger, share links (K and L) with redemption, single use and bearer use, recovery and contact cards, moving a thing, label replacement, erasing what a removed member lost.
+> Tags: permissions, crypto, sync, security, tests
+
+Crate: `osis-node` module `flows/` (plus `rotation/`). Depends on: node-core, node-sync (delivery and pre-sync), keys, perm, label. Unblocks: api sharing surface, apps-e2e, sim scenarios.
+Spec: spec/permissions.md (all), spec/crypto.md §3–§4, spec/sync.md §2 (home label, inbox, registration), §3 (inbox blobs, grantee's certificate copy), §5 (re-registration, claims). Notes: notes/permissions.md (Revocation scenario, Links, Patterns, re-seal trigger), notes/api.md (demotion and the pre-sync: fail / proceed choice; diagnostics "this device was removed"), notes/chat.md (a pattern to validate against), notes/sync.md (re-seal path, stale /keys window). Spec trumps this plan.
+
+## Deliverables
+- Person actor creation: recovery key (key actor) owns the person actor; this node granted admin; `/keys` with inbox and deposit seed; home label created with its genesis step on configured servers; recovery card (seed, tid, home label, servers) produced.
+- Pairing: direct grant to a new node over a connection (the only way a node receives a grant); new device bootstraps: claims by DH key, downloads home label, opens boxes.
+- Edge operations as membership commits, one edge each: grant (with the grantee's boxes for every granted role at each current epoch; inbox blob to the grantee's inbox with label IDs and servers; grantee's `/keys` placed under the target's label), change (role, until, invite), removal; invite grant and self-removal (deposited when the author is not a writer of the label); `until` handling; first-wins for concurrent invite grants is perm's.
+- Demotion/removal procedure: pre-sync every label of every thing the demoted authority gave write on (walk edges and `/label` below), with fail / proceed-anyway choice surfaced through a request option and the diagnostics channel; stamp after applying what was downloaded; frontier from the node's receipt record (per (tid, ak, author node) contiguous received counters + commit-form IDs; policy for granularity and horizon in a `ReceiptRecord` store unit); frontier inline or as a link above `CHUNK_THRESHOLD`; in the same sync, before any other upload, place the removal and the affected actors' new `/keys` under every label the removed party could read.
+- Rotation cascade: on a departure, keys' planner → rotations this node may make, performed before it next encrypts under a replaced secret (hook in labeling), eager option; rotation commit + continuations wrapped under the superseded epoch; `/keys` keysets written by the rotator; registration steps issued for every server of every affected label (admin) and recorded in `/label`; `until` departures evaluated on the corrected clock.
+- Re-seal: triggers (current member without a box at a current epoch; stranded heartbeat) → re-seal commit delivered as an inbox blob or under the actor's label; manual API.
+- Own secrets for a thing on its first non-owner member (rotation from derived epochs) and before it is made a member of anything.
+- Roster snapshots by owner-chain authority with the ledger from perm; policy: when superseded `/members` bodies pass a threshold; retention keeps replaced membership deltas `MEMBERSHIP_KEEP`.
+- Links: create (K owned by the sharer with own secrets and an edge on the target; L key actor from a seed with (r, invite r) on K; L listed by static entry with an entry box in K's steps; L's boxes in K's `/secrets`; seed kept on a sharer-only thing; link bytes per protocol-spec), redeem (derive L, claim K's label by static entry, read secret from the entry box, invite-grant own actor in commit form, deposit unless write+, discard seed), bearer read, `until`, single use (grant + L's self-removal in one commit), finalize by a sharer removal of L, revoke a joiner = remove it and L, new link.
+- Recovery: restore a person actor from a card on a fresh device (claim home label by static entry, read secret from the entry box, boxes, `/label`, `/created`); contact card = read link to a profile thing holding `/keys` and certificates.
+- Moving a thing: copy with import (node-core) + re-grant roster on the copy + `/was`; old owner writes `/moved`; guard against double import.
+- Label replacement after a lost label (admin rotation if needed, new index, re-upload, mark replaced, delete old content entries at controlled servers keeping membership-class commits and the marker).
+- Erasure on removal: drop secrets and unreadable units; diagnostic "removed from X by N at T"; recovery card as the remedy noted.
+
+## Steps
+- [ ] Person/recovery/home label/pairing; new device bootstrap in the simulator (two devices, one server).
+- [ ] Edge operations + inbox delivery + grantee certificate copy; `until`; invite grants and self-removal via a reader (deposit path).
+- [ ] Demotion with pre-sync and receipt-record frontier; the Bob/Carol scenario end to end through a blind server; stolen-device backdating scenario; proceed-anyway path.
+- [ ] Rotation cascade, continuations, registration steps, re-seal triggers; scenarios: lost device while others offline, stranded member re-sealed, grant raced by rotation, fork from concurrent rotations converges.
+- [ ] Own secrets switch; roster snapshots; links (all modes incl. races from notes/permissions.md); cards; moving; label replacement; erasure.
+
+## Done when
+Every scenario in notes/permissions.md and notes/sync.md Limits that names an expected outcome runs in the simulator with that outcome; the chat pattern of notes/chat.md can be built with these flows (apps-e2e proves it); notes/permissions.md "Implementation" section written. Delete this plan.
+
+## Progress

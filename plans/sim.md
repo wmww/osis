@@ -1,0 +1,26 @@
+# Deterministic simulator
+> Summary: Build `osis-sim`, the deterministic multi-node simulator of plans/testing.md §5: seeded scheduler, per-node virtual clocks with skew and drift, InProcess transport with fault injection, real node and server code, crash/restart and disk loss, the invariant library checked at every step or quiescence, the scenario library from the notes, adversary nodes, version skew, seed replay and a nightly sweep. Phase A lands with node-core; phase B grows with node-sync and flows.
+> Tags: tests, sync, permissions, crdt
+
+Crate: `osis-sim` (also a `sim-sweep` binary). Depends on: osis (API), osis-node, osis-server, osis-transport (InProcess), osis-store (MemoryBackend with crash hook). Unblocks: apps-e2e, hardening-signoff.
+Reference: plans/testing.md §5 (the full list), scenarios named in notes/permissions.md, notes/sync.md (Limits), notes/chat.md, notes/crdt.md. Spec trumps this plan.
+
+## Deliverables
+- Harness: `Sim::new(seed)`; `add_node`, `add_server`; a scheduler picking the next event (node acts, message delivered, timer) from the seed; virtual time; per-node `Clock` with configurable skew and drift; InProcess transport faults (partition, drop, reorder, duplicate, delay); crash (drop the node, restart from its `MemoryBackend` bytes), disk loss (restore from recovery card); servers that go away or lose data.
+- Quiescence detection and `run_until_quiescent(max_steps)`; `step()` for fine control; every run reproducible from (seed, scenario).
+- Invariants (checked by a visitor after steps or at quiescence; each cites the spec sentence): same readable set ⇒ same reads; no unauthorized write read as valid; a departed member holds no post-departure secret and decrypts no later body; label required sets held at servers at quiescence; purged bodies absent from reachable honest nodes and servers once right holders synced; state size bounds (tension 14 rules); no ping-pong (bounded uploads per quiescent period); every current member eventually reads (liveness by quiescence); parking rule under version skew.
+- Scenario library (named functions, also seed families for randomized exploration around them): revocation Bob and Carol variant; stolen device backdating; demotion with and without pre-sync; link redemption races; move with import; rotation during offline spans; re-seal of stranded member; chat join/leave (notes/chat.md); folder patterns; two briefly-online devices through one blind server; compaction/purge/expiry races; label replacement; bundles by hand.
+- Adversaries as node implementations: equivocating writer; backdating ex-member; flooding depositor; malformed-blob sender; replaying server; server lying about tombstones; colluding ex-member plus dishonest server (asserts exactly tension 7's bound). Each with its expected outcome (fails / bounded / accepted-by-tension).
+- Version skew: nodes with different format versions and schema revisions (feature flags that make a node "old"); parking holds; an old writer never destroys what it cannot read.
+- `sim-sweep` binary: many seeds, time budget, prints failing seeds; failing seeds become regression tests with a one-line description.
+- Tier policy: a few short seeds per scenario in tier 1; sweeps in nightly.
+
+## Steps
+- [ ] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay.
+- [ ] Phase B (after node-sync, server): transport faults, servers, label invariants, crash/restart, disk loss.
+- [ ] Phase C (after flows): scenario library, adversaries, version skew, sweep binary, nightly CI job (test-infra).
+
+## Done when
+Every scenario and adversary runs with its expected outcome; invariants green over a sweep of ≥ 10^4 seeds per headline scenario; notes/testing.md documents how to run and replay. Delete this plan (its content goes to notes/testing.md).
+
+## Progress

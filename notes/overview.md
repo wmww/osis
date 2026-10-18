@@ -6,7 +6,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 ## Where things live
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements and tensions are spec/requirements.md. Significant or breaking spec changes need owner sign-off.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
-- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`). `plans/`: plans/protocol-spec.md (byte layouts and remaining protocol gaps, the TBDs in spec/).
+- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`). `plans/`: the implementation run. plans/mvp_meta.md is the entry point (roles, rules, order of work); one plan per crate or subsystem (plans/workspace.md first), plans/protocol-spec.md (the TBDs in spec/), plans/testing.md and plans/tla-models.md (test strategy and model checking). `grep '^> Summary' plans/*.md` lists them.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
