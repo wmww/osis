@@ -21,12 +21,20 @@
 //! compaction. Hand-over records (§7) are writes on G by its owner chain that touch no
 //! roster; one is valid iff its author was a P-admin at its point and no P demotion dropped
 //! it. Checked: a record by a device whose removal's frontier misses it is never valid;
-//! record validity is order independent, survives compaction and projection. A key-actor
-//! snapshot of P that omits a former device disowns that device's earlier records
-//! (`p_resnapshot_disowns_former_device_records`). The new identity hash(G, H) and the new
-//! owner's acceptance snapshot verify through the new owner's chain alone, so they are
-//! outside this model: whatever the record's validity, its content stands wherever the
-//! acceptance snapshot is held; only the alias and inheritance follow the record.
+//! record validity is order independent, survives compaction and projection. The new
+//! identity hash(G, H) and the new owner's acceptance snapshot verify through the new
+//! owner's chain alone, so they are outside this model: whatever the record's validity, its
+//! content stands wherever the acceptance snapshot is held; only the alias and inheritance
+//! follow the record.
+//!
+//! **Ledger**: a snapshot answers authority before its time by its roster and its ledger of
+//! admin intervals (`Entry`): a member held admin inside a closed interval, or after its
+//! roster edge's `since`; a write inside a closed interval is dropped iff the frontier of
+//! the demotion that closed it misses the write. Without the ledger a key-actor re-snapshot
+//! of P that omits a former device disowned that device's earlier records and G writes
+//! (issue resnapshot-disowns-handover, now closed). Checked: a re-snapshot of P with the
+//! roster and ledger the timeline computes (`ledger_of`) changes no record's validity and
+//! no G write's application (`resnapshot_neutral`).
 
 use crate::Role;
 use std::collections::HashSet;
@@ -40,6 +48,21 @@ pub enum Thing {
     G,
 }
 
+/// A write's position key in the global order.
+pub type Key = (u32, usize);
+
+/// An admin interval in a snapshot's ledger: `member` held admin from the grant keyed
+/// `since` (None: from the beginning) until the demotion keyed `until` (None: it still holds
+/// admin in the roster). A closed interval's frontier is its demoter's receipts before its
+/// time; every earlier write of the member that the frontier misses is dropped (each later
+/// demotion re-audits, as in the walk).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Entry {
+    pub member: usize,
+    pub since: Option<Key>,
+    pub until: Option<Key>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SWrite {
     pub author: usize,
@@ -50,6 +73,9 @@ pub struct SWrite {
     pub t: u32,
     /// Full roster of `thing` over all nodes (K's entry ignored).
     pub snap: Option<Vec<Role>>,
+    /// Admin intervals before the snapshot (snapshots of P only; G edges authorize nothing
+    /// in the chain).
+    pub ledger: Vec<Entry>,
     /// Hand-over record of G (by its owner chain) to new owner `target` (an opaque id).
     pub rec: bool,
 }
@@ -107,21 +133,34 @@ impl SHist {
     pub fn eval(&self, audit: bool) -> Out {
         let order = self.order();
         let p = self.walk(Thing::P, &order, &self.gp, &|a, _| if a == K { Role::Admin } else { Role::None }, 0, audit);
-        // A device demoted from P: its writes on G that the demoter had not received are dropped.
+        // A device's writes on G as P-admin are dropped when the frontier of a later P
+        // demotion of it misses them: a demotion in the walk, or one that closed a ledger
+        // interval ending after the write.
         let mut dropped_g = 0u64;
         if audit {
             let pos_of = pos_of(&order);
-            for &(r, z) in &p.demotions {
-                let rw = &self.writes[r];
-                for (j, w) in self.writes.iter().enumerate() {
-                    let as_device = p.roles_after[pos_of[j]][z] == Role::Admin;
-                    if w.thing == Thing::G && w.author == z && as_device && pos_of[j] < pos_of[r] && !(self.recv[j][rw.author] < rw.t) {
-                        dropped_g |= 1 << j;
+            for (j, w) in self.writes.iter().enumerate() {
+                let z = w.author;
+                if w.thing != Thing::G || z == K || !self.p_admin_at(&p, z, pos_of[j]) {
+                    continue;
+                }
+                let by_ledger = match p.start {
+                    Some(s) if pos_of[j] < pos_of[s] => {
+                        let k = self.key(j);
+                        self.writes[s].ledger.iter().any(|e| e.member == z && e.until.map_or(false, |(t, d)| k < (t, d) && !(self.recv[j][d] < t)))
                     }
+                    _ => false,
+                };
+                let by_demotion = p.demotions.iter().any(|&(r, x)| {
+                    let rw = &self.writes[r];
+                    x == z && pos_of[j] < pos_of[r] && !(self.recv[j][rw.author] < rw.t)
+                });
+                if by_ledger || by_demotion {
+                    dropped_g |= 1 << j;
                 }
             }
         }
-        let chain = |a: usize, pos: usize| if a == K { Role::Admin } else { p.roles_after[pos][a] };
+        let chain = |a: usize, pos: usize| if self.p_admin_at(&p, a, pos) { Role::Admin } else { Role::None };
         let g = self.walk(Thing::G, &order, &self.gg, &chain, dropped_g, audit);
         Out { p, g }
     }
@@ -208,6 +247,63 @@ impl SHist {
         }
     }
 
+    fn key(&self, i: usize) -> Key {
+        (self.writes[i].t, self.writes[i].author)
+    }
+
+    /// The closed ledger interval of `z` in snapshot `sw` containing key `k`.
+    fn interval<'a>(&self, sw: &'a SWrite, z: usize, k: Key) -> Option<&'a Entry> {
+        sw.ledger.iter().find(|e| e.member == z && e.since.map_or(true, |s| s < k) && e.until.map_or(false, |u| k < u))
+    }
+
+    /// Whether `z` held P-admin at position `pos` by P's timeline `p`: before the epoch
+    /// start, inside a closed ledger interval, or after every interval and after its roster
+    /// edge's `since` (spec/permissions.md §6); after the start, by the walk.
+    pub fn p_admin_at(&self, p: &ThingOut, z: usize, pos: usize) -> bool {
+        if z == K {
+            return true;
+        }
+        let order = self.order();
+        match p.start {
+            Some(s) if pos < pos_of(&order)[s] => {
+                let sw = &self.writes[s];
+                let k = self.key(order[pos]);
+                self.interval(sw, z, k).is_some()
+                    || sw.snap.as_ref().unwrap()[z] == Role::Admin
+                        && sw.ledger.iter().filter(|e| e.member == z).all(|e| e.until.map_or(e.since.map_or(true, |s| s < k), |u| u < k))
+            }
+            _ => p.roles_after[pos][z] == Role::Admin,
+        }
+    }
+
+    /// The ledger a snapshot of P taken after every write carries: the epoch start's ledger
+    /// carried forward, then every interval the walk opened or closed.
+    pub fn ledger_of(&self, p: &ThingOut) -> Vec<Entry> {
+        let order = self.order();
+        let mut ledger: Vec<Entry> = p.start.map_or(vec![], |s| self.writes[s].ledger.clone());
+        for z in 1..self.n() {
+            let mut open = ledger.iter().position(|e| e.member == z && e.until.is_none());
+            if open.is_none() && p.roles_after[0][z] == Role::Admin {
+                // In the start roster without a `since`: from after its last closed interval.
+                let since = ledger.iter().filter(|e| e.member == z).filter_map(|e| e.until).max();
+                ledger.push(Entry { member: z, since, until: None });
+                open = Some(ledger.len() - 1);
+            }
+            for pos in 0..order.len() {
+                let (before, after) = (p.roles_after[pos][z], p.roles_after[pos + 1][z]);
+                let k = self.key(order[pos]);
+                if before != Role::Admin && after == Role::Admin {
+                    ledger.push(Entry { member: z, since: Some(k), until: None });
+                    open = Some(ledger.len() - 1);
+                } else if before == Role::Admin && after != Role::Admin {
+                    ledger[open.unwrap()].until = Some(k);
+                    open = None;
+                }
+            }
+        }
+        ledger
+    }
+
     /// Snapshots of `thing` whose author had chain authority at their time. `applied` further
     /// requires that no demotion dropped them; those are the compaction points whose result
     /// must equal the full history's. The others were compaction points at some node only
@@ -219,7 +315,7 @@ impl SHist {
         (0..self.writes.len())
             .filter(|&i| {
                 let w = &self.writes[i];
-                let chain_admin = w.author == K || (thing == Thing::G && out.p.roles_after[pos_of[i]][w.author] == Role::Admin);
+                let chain_admin = w.author == K || (thing == Thing::G && self.p_admin_at(&out.p, w.author, pos_of[i]));
                 w.thing == thing && w.snap.is_some() && chain_admin && (!applied || t.dropped >> i & 1 == 0)
             })
             .collect()
@@ -229,8 +325,7 @@ impl SHist {
     /// P's timeline and no P demotion of the author dropped it (spec/permissions.md §7).
     pub fn record_valid(&self, out: &Out, i: usize) -> bool {
         let pos = pos_of(&self.order())[i];
-        let a = self.writes[i].author;
-        (a == K || out.p.roles_after[pos][a] == Role::Admin) && out.g.dropped >> i & 1 == 0
+        self.p_admin_at(&out.p, self.writes[i].author, pos) && out.g.dropped >> i & 1 == 0
     }
 
     /// Valid hand-over records of G.
@@ -352,7 +447,9 @@ pub struct Stats {
     records_valid: u64,
     late_record_valid: u64,
     record_mismatch: u64,
+    resnapshots: u64,
     disowned: u64,
+    ex_disowned: Option<SHist>,
     ex_compaction: Option<SHist>,
     ex_projection: Option<SHist>,
     ex_late: Option<SHist>,
@@ -378,6 +475,7 @@ impl Stats {
         self.records_valid += o.records_valid;
         self.late_record_valid += o.late_record_valid;
         self.record_mismatch += o.record_mismatch;
+        self.resnapshots += o.resnapshots;
         self.disowned += o.disowned;
         fn pick(a: &mut Option<SHist>, b: Option<SHist>) {
             if let Some(b) = b {
@@ -392,6 +490,7 @@ impl Stats {
         pick(&mut self.ex_projection, o.ex_projection);
         pick(&mut self.ex_late, o.ex_late);
         pick(&mut self.ex_record, o.ex_record);
+        pick(&mut self.ex_disowned, o.ex_disowned);
     }
 
     pub fn print(&self) {
@@ -400,8 +499,8 @@ impl Stats {
             self.histories, self.with_snapshot_start, self.compactions, self.compaction_mismatch, self.unapplied_points, self.unapplied_diverge, self.order_dep, self.honest_mismatch, self.max_passes
         );
         println!(
-            "  projections (plain and compacted) {} mismatches {} | hand-over records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | valid records disowned by a fresh key-actor snapshot of P {}",
-            self.projections, self.projection_mismatch, self.records, self.records_valid, self.late_record_valid, self.record_mismatch, self.disowned
+            "  projections (plain and compacted) {} mismatches {} | hand-over records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | fresh key-actor snapshots of P with roster and ledger {} changing records or G writes {}",
+            self.projections, self.projection_mismatch, self.records, self.records_valid, self.late_record_valid, self.record_mismatch, self.resnapshots, self.disowned
         );
         for (label, ex) in [
             ("compaction mismatch", &self.ex_compaction),
@@ -410,6 +509,7 @@ impl Stats {
             ("projection mismatch", &self.ex_projection),
             ("late record valid", &self.ex_late),
             ("record validity differing", &self.ex_record),
+            ("re-snapshot not neutral", &self.ex_disowned),
         ] {
             if let Some(h) = ex {
                 println!("  smallest {label} example:");
@@ -425,7 +525,7 @@ pub fn print_hist(h: &SHist) {
         let w = &h.writes[i];
         match &w.snap {
             _ if w.rec => println!("    w{i}: {} hands {:?} to #{} at t={} | recv {:?}", w.author, w.thing, w.target, w.t, h.recv[i]),
-            Some(r) => println!("    w{i}: {} snapshots {:?} := {:?} at t={} | recv {:?}", w.author, w.thing, r, w.t, h.recv[i]),
+            Some(r) => println!("    w{i}: {} snapshots {:?} := {:?} ledger {:?} at t={} | recv {:?}", w.author, w.thing, r, w.ledger, w.t, h.recv[i]),
             None => println!("    w{i}: {} sets {:?}[{}] := {:?} at t={} | recv {:?}", w.author, w.thing, w.target, w.role, w.t, h.recv[i]),
         }
     }
@@ -444,6 +544,19 @@ fn records_agree(h: &SHist, o: &Out, c: &SHist, keep: &[usize], author: Option<u
         let w = &h.writes[old];
         !w.rec || author.map_or(false, |a| a != w.author) || c.record_valid(&oc, new) == h.record_valid(o, old)
     })
+}
+
+/// K re-snapshots P with the roster and ledger the timeline computes (as after removing a
+/// device): every record keeps its validity and every G write its application.
+pub fn resnapshot_neutral(h: &SHist, o: &Out) -> bool {
+    let mut r = h.clone();
+    r.writes.push(SWrite { author: K, thing: Thing::P, target: 0, role: Role::None, t: 100, snap: Some(o.p.roles.clone()), ledger: h.ledger_of(&o.p), rec: false });
+    r.recv.push(vec![100; h.n()]);
+    let or = r.eval(true);
+    let n = h.writes.len();
+    (0..n).all(|j| !h.writes[j].rec || h.record_valid(&o, j) == r.record_valid(&or, j))
+        && or.g.roles == o.g.roles
+        && or.g.applied & ((1 << n) - 1) == o.g.applied
 }
 
 /// A projection for each actor computes that actor's P and G roles as `o` does.
@@ -509,15 +622,11 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
             }
         }
     }
-    // K re-snapshots P with its current roster (as after removing a device): records by
-    // devices no longer in P lose their authority retroactively.
-    if h.writes.iter().any(|w| w.rec) {
-        let mut r = h.clone();
-        r.writes.push(SWrite { author: K, thing: Thing::P, target: 0, role: Role::None, t: 20, snap: Some(o.p.roles.clone()), rec: false });
-        r.recv.push(vec![20; h.n()]);
-        let or = r.eval(true);
-        st.disowned += (0..h.writes.len()).filter(|&j| h.writes[j].rec && h.record_valid(&o, j) && !r.record_valid(&or, j)).count() as u64;
+    if !resnapshot_neutral(h, &o) {
+        st.disowned += 1;
+        st.ex_disowned.get_or_insert_with(|| h.clone());
     }
+    st.resnapshots += 1;
     let perm = rng.perm(h.writes.len());
     let ph = h.permute(&perm);
     let op = ph.eval(true);
@@ -580,7 +689,8 @@ fn random_hist(rng: &mut crate::Rng) -> SHist {
         } else {
             1 + devices + rng.below(gnodes)
         };
-        let t = 1 + rng.below(10) as u32;
+        // Writes at even times; ledger keys at odd times, so no key ties a write's.
+        let t = 2 * (1 + rng.below(10) as u32);
         if writes.iter().any(|w: &SWrite| w.t == t && w.author == author) {
             continue;
         }
@@ -603,7 +713,29 @@ fn random_hist(rng: &mut crate::Rng) -> SHist {
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
         r[author] = t;
         let rec = thing == Thing::G && snap.is_none() && rng.below(6) == 0;
-        writes.push(SWrite { author, thing, target, role, t, snap, rec });
+        // Random well-formed ledgers (per member: disjoint intervals in order, ending before
+        // the snapshot, at most the last one open) exercise the rule; only `ledger_of`
+        // produces ones that match a history.
+        let mut ledger: Vec<Entry> = vec![];
+        if thing == Thing::P && snap.is_some() && rng.below(2) == 0 {
+            for member in 1..n {
+                let intervals = [0, 0, 1, 1, 2][rng.below(5)];
+                let mut times: Vec<u32> = (0..2 * intervals).map(|_| 1 + 2 * rng.below(t as usize / 2) as u32).collect();
+                times.sort();
+                times.dedup();
+                for (i, pair) in times.chunks(2).enumerate() {
+                    let key = |t: u32, rng: &mut crate::Rng| (t, rng.below(n));
+                    let since = if i == 0 && rng.below(2) == 0 { Option::None } else { Some(key(pair[0], rng)) };
+                    let until = if pair.len() == 2 && !(i + 1 == times.len() / 2 && rng.below(3) == 0) { Some(key(pair[1], rng)) } else { Option::None };
+                    let open = until.is_none();
+                    ledger.push(Entry { member, since, until });
+                    if open {
+                        break;
+                    }
+                }
+            }
+        }
+        writes.push(SWrite { author, thing, target, role, t, snap, ledger, rec });
         recv.push(r);
     }
     SHist { gp, gg, writes, recv }
@@ -651,6 +783,7 @@ mod tests {
     const GP: [Role; 6] = [None, Admin, Admin, None, None, None];
     const GG: [Role; 6] = [None, None, None, Admin, Write, None];
 
+    #[derive(Clone)]
     struct B6(SHist);
     impl B6 {
         fn new() -> Self {
@@ -667,10 +800,13 @@ mod tests {
             self.0.writes.len() - 1
         }
         fn set(&mut self, author: usize, thing: Thing, target: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target, role, t, snap: Option::None, rec: false }, recv)
+            self.push(SWrite { author, thing, target, role, t, snap: Option::None, ledger: vec![], rec: false }, recv)
         }
         fn snap(&mut self, author: usize, thing: Thing, roster: [Role; 6], t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()), rec: false }, recv)
+            self.snap_l(author, thing, roster, vec![], t, recv)
+        }
+        fn snap_l(&mut self, author: usize, thing: Thing, roster: [Role; 6], ledger: Vec<Entry>, t: u32, recv: &[(usize, u32)]) -> usize {
+            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()), ledger, rec: false }, recv)
         }
     }
 
@@ -679,7 +815,7 @@ mod tests {
     }
 
     fn rec(b: &mut B6, author: usize, to: usize, t: u32, recv: &[(usize, u32)]) -> usize {
-        b.push(SWrite { author, thing: G, target: to, role: None, t, snap: Option::None, rec: true }, recv)
+        b.push(SWrite { author, thing: G, target: to, role: None, t, snap: Option::None, ledger: vec![], rec: true }, recv)
     }
 
     /// Every actor's projection agrees with the full node.
@@ -841,8 +977,8 @@ mod tests {
         assert_eq!(g(&b.0)[Z], Admin);
     }
 
-    /// The key actor's snapshot of P: its roster stands for all earlier time, so a device
-    /// it omits never had authority on G, and compaction of P changes nothing.
+    /// The key actor's snapshot of P: its roster and ledger stand for all earlier time, so
+    /// a device neither lists never had authority on G, and compaction of P changes nothing.
     #[test]
     fn owner_snapshot_of_p_governs_earlier_time() {
         let mut b = B6::new();
@@ -938,18 +1074,83 @@ mod tests {
         }
     }
 
-    /// Finding: the key actor re-snapshotting P after a device left (as §6 recommends)
-    /// makes the snapshot's roster stand for all earlier time, so a hand-over the device
-    /// signed while it was a legitimate admin, and the removal had covered, becomes invalid.
+    /// The key actor re-snapshots P after D2 removed D1 (as §6 recommends). The ledger
+    /// carries D1's admin interval and the removal's frontier, so the hand-over D1 signed
+    /// as a legitimate admin, which D2 had received, stays valid, compacted or not, while
+    /// one D2 had not received stays invalid. A snapshot without the ledger disowned both.
     #[test]
-    fn p_resnapshot_disowns_former_device_records() {
+    fn p_resnapshot_keeps_former_device_records() {
         let mut b = B6::new();
-        let h_rec = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
+        let seen = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
+        let unseen = rec(&mut b, D1, 8, 4, &[]);
         b.set(D2, P, D1, None, 5, &[]);
         let o = b.0.eval(true);
-        assert!(b.0.record_valid(&o, h_rec));
-        b.snap(K, P, [None, None, Admin, None, None, None], 7, &[]);
+        assert_eq!(b.0.successors(&o), vec![seen]);
+        let ledger = b.0.ledger_of(&o.p);
+        assert_eq!(
+            ledger,
+            vec![Entry { member: D1, since: Option::None, until: Some((5, D2)) }, Entry { member: D2, since: Option::None, until: Option::None }]
+        );
+        assert!(resnapshot_neutral(&b.0, &o));
+        let roster = [None, None, Admin, None, None, None];
+        let mut with = b.clone();
+        let s = with.snap_l(K, P, roster, ledger, 7, &[]);
+        let ow = with.0.eval(true);
+        assert_eq!(ow.p.start, Some(s));
+        assert_eq!(with.0.successors(&ow), vec![seen]);
+        assert!(!with.0.record_valid(&ow, unseen));
+        let (c, keep) = with.0.compacted(P, s);
+        let oc = c.eval(true);
+        assert_eq!(c.successors(&oc).iter().map(|&i| keep[i]).collect::<Vec<_>>(), vec![seen]);
+        b.snap(K, P, roster, 7, &[]);
+        assert!(b.0.successors(&b.0.eval(true)).is_empty());
+    }
+
+    /// A ledger interval keeps the gap closed: D1 removed at 2 (seen by D2), re-granted at
+    /// 4, current admin. A record D1 signed in the gap is invalid by the full history and
+    /// stays so after K re-snapshots P with D1 in the roster, since its roster edge's
+    /// `since` is the re-grant; a snapshot without `since` would adopt it.
+    #[test]
+    fn p_resnapshot_keeps_gap_closed() {
+        let mut b = B6::new();
+        b.set(D2, P, D1, None, 2, &[]);
+        let gap = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
+        b.set(D2, P, D1, Admin, 4, &[]);
         let o = b.0.eval(true);
-        assert!(!b.0.record_valid(&o, h_rec));
+        assert!(!b.0.record_valid(&o, gap));
+        assert!(resnapshot_neutral(&b.0, &o));
+        let ledger = b.0.ledger_of(&o.p);
+        assert_eq!(ledger.iter().find(|e| e.member == D1 && e.until.is_none()).unwrap().since, Some((4, D2)));
+        b.snap_l(K, P, [None, Admin, Admin, None, None, None], ledger, 7, &[]);
+        assert!(!b.0.record_valid(&b.0.eval(true), gap));
+        let mut no_since = B6::new();
+        let gap = rec(&mut no_since, D1, 9, 3, &[(D2, 3)]);
+        no_since.snap(K, P, [None, Admin, Admin, None, None, None], 7, &[]);
+        assert!(no_since.0.record_valid(&no_since.0.eval(true), gap));
+    }
+
+    /// A G snapshot by D1 at t=4 and a G grant by D1 at t=5 survive P's re-snapshot at t=7
+    /// after D1's removal at t=6, through the ledger; the §6 re-snapshot of G is no longer
+    /// needed for correctness.
+    #[test]
+    fn p_resnapshot_keeps_former_device_g_writes() {
+        let mut b = B6::new();
+        let s = b.snap(D1, G, [None, None, None, Admin, Write, None], 4, &[(D2, 4)]);
+        b.set(D1, G, Z, Write, 5, &[(D2, 5)]);
+        b.set(D2, P, D1, None, 6, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(o.g.start, Some(s));
+        assert_eq!(g(&b.0)[Z], Write);
+        assert!(resnapshot_neutral(&b.0, &o));
+        let ledger = b.0.ledger_of(&o.p);
+        let mut bare = b.clone();
+        bare.snap(K, P, [None, None, Admin, None, None, None], 7, &[]);
+        let ob = bare.0.eval(true);
+        assert_eq!(ob.g.start, Option::None);
+        assert_eq!(ob.g.roles[Z], None);
+        b.snap_l(K, P, [None, None, Admin, None, None, None], ledger, 7, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(o.g.start, Some(s));
+        assert_eq!(o.g.roles[Z], Write);
     }
 }
