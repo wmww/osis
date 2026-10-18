@@ -8,7 +8,7 @@
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, where a path climbs membership edges and owner links (an owner holds admin on what it owns). Evaluated with each timeline (§5.1) at t.
 - **Admin** = write + change membership + purge (§8). An admin edge on a plain thing grants membership changes and purge on that thing.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
-- The membership-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and the boxes that grants and rotations write into `/secrets` (§3).
+- The membership-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and what rotations and re-seals write into `/secrets` and `/keys` (§3).
 - Group membership (`/group`) grants no rights.
 
 ## 2. Membership writes
@@ -16,17 +16,18 @@
 - An edge may carry `until: timestamp`: the edge counts as removed at that time.
 - An edge may carry `invite: role`, at most its role. A node's **effective invite** on T is the maximum over its paths to T of the minimum of the roles along the path before the last edge and that edge's invite. An **invite grant** adds an edge for an actor with no current edge on T (an expired edge counts as none), with role and invite at most the author's effective invite, and carries the grantee's boxes for those roles. Invite holders cannot change or remove any other edge.
 - **Self-removal**: a node with admin on actor X may always remove X's edge on any target, or lower its role, invite or `until`.
-- A membership write made under an edge into actor G MUST also be published under G's label.
+- A write that grants, changes or removes an edge whose member is actor G MUST also be published under G's home label, so G's admins know what G is a member of.
 - The roster apps read from `/members` is the membership timeline's roster (§5.1), not the CRDT join of the stored deltas.
 
 ## 3. Secrets and rotation
 - Each role secret of an actor is sealed to every member holding that role or higher, every epoch (spec/crypto.md §4).
 - A plain thing uses derived role secrets until it gets a non-owner member; it then gets random secrets of its own, boxed to its owner and each member.
-- A removal or demotion (a device removal is one, on the person actor) requires rotating the role secrets the removed member could open, on the actor it left and on every actor above it; content is not re-encrypted.
-- **Who rotates**: a node with effective role write or above on an actor may rotate its roles at or below that role (a writer rotates read and write, an admin all three). A rotation seals the new secrets to every current member of each rotated role and writes the history boxes (spec/crypto.md §4); roles it does not rotate carry over. Its validity is the author's role at its `ts` (§5.2).
+- A removal or demotion of member M on actor A (a device removal is one, on the person actor) requires rotating every role secret M could open through A: on A the roles M held, and on every thing with secrets of its own that A's roles open (what A owns, the targets of A's edges, and so on transitively) the roles A holds there. Content is not re-encrypted. Each rotation is required of whoever may make it, when it next encrypts (below); nobody is required to sync anything to find it.
+- **Who rotates**: a node with effective role write or above on an actor may rotate its roles at or below that role (a writer rotates read and write, an admin all three). A rotation seals the new secrets to every current member of each rotated role, writes the history boxes and the rotated roles' keysets in `/keys` (spec/crypto.md §3, §4); the other roles keep their epochs. Its validity is the author's role at its `ts` (§5.2).
 - A node that may rotate a required rotation MUST do so before it next encrypts under a secret it would replace (spec/crypto.md §4); it MAY rotate eagerly.
-- Label role keys (spec/sync.md §2) derive from the newest epoch; only an admin registers them, and an admin that holds an epoch newer than a label's registered step issues the step at once (spec/sync.md §5).
-- A blind node serves a label only to holders of its current sync key or of a claim key in its current step (spec/sync.md §5); a member that missed rotations claims its way through the steps it missed, then downloads them and opens each under the epoch before it (spec/crypto.md §5).
+- **Re-seal**: a node that may rotate a role may instead write a current member's boxes for that role's current epochs, changing nothing else (spec/crypto.md §4), delivered as a grant blob (spec/sync.md §3).
+- Label role keys (spec/sync.md §2) derive from the newest epoch of each role; only an admin registers them, and an admin that holds an epoch newer than a server's head issues the next step at once (spec/sync.md §5).
+- A blind node serves a label only to holders of its current sync key or of a claim key in its current step (spec/sync.md §5); a member that missed rotations claims its way through the steps it missed, then downloads them and opens each under the epoch before it (spec/crypto.md §5), or is re-sealed.
 - A node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path.
 
 ## 4. Verifying authors: certificates

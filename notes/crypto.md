@@ -9,6 +9,7 @@
 - **`/keys` holds the current keyset only**: nobody seals to an old epoch on purpose, and a granter with a stale key still succeeds because members keep old secrets.
 - **Link keys sign only**: K's secrets derive from the seed until K first rotates, and after that L's boxes use the symmetric form under a seed-derived secret, so L needs no KEM key and a link URL is just seed + target + server + K's label.
 - **Symmetric box form** when the writer already holds the recipient's role secret (a thing's secrets to its owner): 49 bytes instead of 1.2 KB.
+- **Epochs per role**, not per actor: a writer may rotate read and write but not admin, so a per-actor epoch would have to say which roles "carry over" and where their boxes live; per-role epochs make each role an independent chain of secrets, boxes and history boxes, and `/keys` an independent keyset per role that the rotator of that role writes.
 - **History boxes**: holding a role's current secret opens every older one; a member removed before epoch n opens nothing newer; a join costs one box per role, not one per epoch.
 - **Rotation commits wrap under the superseded epoch** (the only exception to wrapping under the newest): the commit carries the new secret, so under the new wrap only its author could read it; the leak to an ex-member via a dishonest server is the new epoch's box map (notes/sync.md).
 - **Wraps name no epoch**: a cleartext epoch byte would leak rotation timing per blob to save one tag check. A lagging relayer's older-epoch wrap extends an ex-member's reach by that blob (tension 7).
