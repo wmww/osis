@@ -29,7 +29,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
         }
         (Ty::Max | Ty::Min | Ty::Counter, _, v) => replace(w, ty, v),
         (Ty::Text, Frag::Seq { elems, .. }, Value::Str(s)) => {
-            let vis = visible(elems);
+            let vis = visible(true, elems);
             let old: Vec<char> = vis.iter().map(|d| match &elems[d].content {
                 Content::Char(c) => *c,
                 _ => unreachable!(),
@@ -43,7 +43,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
             f
         }
         (Ty::List(et), Frag::Seq { elems, .. }, Value::List(items)) => {
-            let vis = visible(elems);
+            let vis = visible(false, elems);
             let old: Vec<Value> = vis.iter().map(|d| match &elems[d].content {
                 Content::Frag(fr) => fr.read().unwrap(),
                 _ => unreachable!(),

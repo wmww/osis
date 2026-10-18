@@ -18,8 +18,9 @@ fn main() {
         // snapshot by a compactor (other node, later ts): every stamp in full form
         let mut cx = Ctx::new(u64::MAX / 2, Source::node(9), 1);
         let bytes = crdt_model::wire::encode_delta(&state, [0; 16], &mut cx);
-        let it = encode(&state, &mut cx);
+        let it = encode(&state, &cx);
         let frag_bytes = crdt_model::cbor::encode(&it).len();
+        let sources_bytes = crdt_model::cbor::encode(&cx.sources_item()).len();
         let flagw: usize = match &it {
             crdt_model::cbor::Item::Array(a) => match &a[3] {
                 crdt_model::cbor::Item::Array(r) => r.iter().map(|run| match run { crdt_model::cbor::Item::Array(x) => x[5].array().unwrap().len(), _ => 0 }).sum(),
@@ -34,7 +35,7 @@ fn main() {
             },
             _ => 0,
         };
-        println!("  commits={} commit_table={}B fragment={}B flag_writes={flagw} flag_bytes={flag_bytes}", cx.commits.len(), bytes.len() - frag_bytes - 18, frag_bytes);
+        println!("  commits={} commit_table={}B fragment={}B flag_writes={flagw} flag_bytes={flag_bytes}", cx.commits.len(), bytes.len() - frag_bytes - sources_bytes - 18, frag_bytes);
         let runs = match &it {
             crdt_model::cbor::Item::Array(a) => match &a[3] {
                 crdt_model::cbor::Item::Array(r) => r.len(),

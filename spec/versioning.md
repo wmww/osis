@@ -3,14 +3,14 @@
 
 ## 1. Extension points
 Four independent extension points, each parked separately so a node with one unknown item still reads everything else:
-- **Format version**: one integer covering commit header fields, blob framing and format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, chunking and paging parameters, `MAX_DRIFT`, `MEMBERSHIP_KEEP`). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
+- **Format version**: one integer covering commit header fields, blob framing and format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, chunking and paging parameters, `MAX_DRIFT`, `MEMBERSHIP_KEEP`, `INBOX_LIFETIME`, heartbeat bounds). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
 - **Merge encodings**: IDs named per fragment inside a delta (spec/crdt.md §3.1). A change to an encoding's grammar is a new encoding ID with an embedding from the old one (spec/crdt.md §7), never an in-place change.
 - **Value types**: new CBOR tags (spec/data-model.md §5).
 - **Algorithms**: enum cases on keys, signatures and sealed boxes; suite bytes and suite IDs (spec/crypto.md §8).
 Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negotiates its own version) and the API are not part of the format and change freely.
 
 ## 2. Parking rule
-- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade.
+- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta pends its whole commit (atomic apply, spec/commits.md §4).
 - A parked delta is kept as bytes with its header entry. A parked commit is pending (spec/commits.md §4).
 - A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one; purge requests, expiry and absolute keep-at-most bounds still apply. It relays other nodes' snapshots and deletions of such blobs like a blind node does.
 - A membership-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.

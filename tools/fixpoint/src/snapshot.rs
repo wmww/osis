@@ -7,8 +7,11 @@
 //! demotion of the author dropped it. That roster also stands for every earlier time.
 //! Without one the node walks everything it holds (a compacted node: from an empty roster).
 //! Snapshots by edge-admins are ignored. Everything else is the demoter-frontier rule; a
-//! P-demotion audits the device's writes made as P-admin (on P and on G), a G-demotion
-//! only writes made by edge authority, so edge-admins never touch snapshots.
+//! P-demotion audits the device's writes made as P-admin (on P and on G, owner-chain class)
+//! and, if the device then holds no G admin edge, its G writes made by edge authority too
+//! (it fell through edge admin); a G-demotion only writes made by edge authority, so
+//! edge-admins never touch snapshots. A G edge removed while the device still holds the
+//! chain audits nothing (its class on G does not fall).
 //!
 //! Checked (`cargo run --release [samples] snapshot`, `cargo test`): compaction, that is
 //! removing every write of a thing before any applied snapshot of it, never changes the
@@ -46,6 +49,12 @@ pub enum Thing {
 
 /// A write's position key in the global order.
 pub type Key = (u32, usize);
+
+/// The end of a device's P tenure: by a demotion keyed `key` = (t, demoter node).
+pub struct Event {
+    key: Key,
+    member: usize,
+}
 
 /// An admin interval in a snapshot's ledger: `member` held admin from the grant keyed
 /// `since` (None: from the beginning) until the demotion keyed `until` (None: it still holds
@@ -128,7 +137,7 @@ impl SHist {
     /// for the nobody-offline check.
     pub fn eval(&self, audit: bool) -> Out {
         let order = self.order();
-        let p = self.walk(Thing::P, &order, &self.gp, &|a, _| if a == K { Role::Admin } else { Role::None }, 0, audit);
+        let p = self.walk(Thing::P, &order, &self.gp, &|a, _| if a == K { Role::Admin } else { Role::None }, 0, audit, &[]);
         // A device's writes on G as P-admin are dropped when the frontier of a later P
         // demotion of it misses them: a demotion in the walk, or one that closed a ledger
         // interval ending after the write.
@@ -157,7 +166,16 @@ impl SHist {
             }
         }
         let chain = |a: usize, pos: usize| if self.p_admin_at(&p, a, pos) { Role::Admin } else { Role::None };
-        let g = self.walk(Thing::G, &order, &self.gg, &chain, dropped_g, audit);
+        // Every end of a P tenure (a demotion in the walk, or a closed ledger interval with its
+        // ending key): the device falls from the owner chain on G. If it holds no G admin edge
+        // at that point it falls through edge admin too, so the G walk audits its edge-class
+        // writes with that demotion's frontier (spec/permissions.md §5.1 step 4).
+        let mut events: Vec<Event> = p.demotions.iter().map(|&(r, x)| Event { key: self.key(r), member: x }).collect();
+        if let Some(s) = p.start {
+            events.extend(self.writes[s].ledger.iter().filter_map(|e| e.until.map(|key| Event { key, member: e.member })));
+        }
+        events.sort_by_key(|e| e.key);
+        let g = self.walk(Thing::G, &order, &self.gg, &chain, dropped_g, audit, if audit { &events } else { &[] });
         Out { p, g }
     }
 
@@ -169,6 +187,7 @@ impl SHist {
         chain: &dyn Fn(usize, usize) -> Role,
         mut dropped: u64,
         audit: bool,
+        events: &[Event],
     ) -> ThingOut {
         let n = self.n();
         let pos_of = pos_of(order);
@@ -195,7 +214,38 @@ impl SHist {
             let mut demotions = Vec::new();
             let mut chain_of: Vec<Option<usize>> = vec![None; n];
             let mut roles_after = vec![roles.clone(); start_pos.min(order.len()) + 1];
-            for pos in start_pos..order.len() {
+            let mut next_event = 0;
+            for pos in start_pos..=order.len() {
+                // Chain demotions up to this point audit edge-class writes of a member that
+                // holds no admin edge here.
+                let upto = if pos < order.len() { self.key(order[pos]) } else { (u32::MAX, usize::MAX) };
+                let mut grew = false;
+                while next_event < events.len() && events[next_event].key <= upto {
+                    let ev = &events[next_event];
+                    next_event += 1;
+                    if roles[ev.member] == Role::Admin {
+                        continue;
+                    }
+                    let (t, d) = ev.key;
+                    for j in 0..self.writes.len() {
+                        if applied >> j & 1 == 0 || self.writes[j].author != ev.member || self.key(j) > ev.key {
+                            continue;
+                        }
+                        if chain(ev.member, pos_of[j]) == Role::Admin {
+                            continue; // chain class: dropped up front
+                        }
+                        if !(self.recv[j][d] < t) {
+                            dropped |= 1 << j;
+                            grew = true;
+                        }
+                    }
+                }
+                if grew {
+                    continue 'walk;
+                }
+                if pos == order.len() {
+                    break;
+                }
                 let i = order[pos];
                 let w = &self.writes[i];
                 if w.thing != thing || dropped >> i & 1 == 1 || w.target == K || w.snap.is_some() || w.rec {
@@ -1147,5 +1197,48 @@ mod tests {
         let o = b.0.eval(true);
         assert_eq!(o.g.start, Some(s));
         assert_eq!(o.g.roles[Z], Write);
+    }
+
+    /// Two admin paths to G: A is G's edge admin and, from t=2, a P admin (owner chain).
+    /// A's grant of Z at t=1 is edge class. Whichever path is removed first, the removal that
+    /// leaves A without admin on G audits it: edge first (D1 at 3, no fall: A still holds the
+    /// chain), then D2's removal from P at 4 falls through edge admin too; chain first, D1's
+    /// edge removal at 4 audits it. Dropped unless that remover had received it.
+    #[test]
+    fn two_admin_paths_class_attribution() {
+        for edge_first in [true, false] {
+            for seen in [false, true] {
+                let mut b = B6::new();
+                let (te, tp) = if edge_first { (3, 4) } else { (4, 3) };
+                let last = if edge_first { D2 } else { D1 };
+                let recv: &[(usize, u32)] = if seen { &[(last, 1)] } else { &[] };
+                b.set(A, G, Z, Admin, 1, recv);
+                b.set(D1, P, A, Admin, 2, &[]);
+                b.set(D1, G, A, None, te, &[]);
+                b.set(D2, P, A, None, tp, &[]);
+                let h = b.0;
+                assert_eq!(g(&h)[Z], if seen { Admin } else { None }, "edge first {edge_first}, seen {seen}");
+                assert_compaction_invariant(&h);
+                assert_projections(&h);
+            }
+        }
+    }
+
+    /// The same through the ledger: K re-snapshots P after D2 removed A, so the tenure end is
+    /// a ledger entry; the result is unchanged.
+    #[test]
+    fn two_admin_paths_through_ledger() {
+        let mut b = B6::new();
+        b.set(A, G, Z, Admin, 1, &[]);
+        b.set(D1, P, A, Admin, 2, &[]);
+        b.set(D1, G, A, None, 3, &[]);
+        b.set(D2, P, A, None, 4, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(o.g.roles[Z], None);
+        assert!(resnapshot_neutral(&b.0, &o));
+        let ledger = b.0.ledger_of(&o.p);
+        let s = b.snap_l(K, P, [None, Admin, Admin, None, None, None], ledger, 7, &[]);
+        let (c, _) = b.0.compacted(P, s);
+        assert_eq!(g(&c)[Z], None);
     }
 }

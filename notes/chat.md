@@ -1,14 +1,20 @@
 # Chat
-> Summary: Scratch notes on how chat could work. Possibly stale: later design changes (claim keys, copy-not-handover, /seen heartbeat, etc.) were not re-checked against it. Rework when the owner asks to make chat fit the current design.
+> Summary: The group-chat pattern derived from the current design (entitlement, per-thing roles, writer stamps, inbox blobs), what each join, message and removal costs, and the limits the owner should know. Not reviewed by the owner.
 
-## Old proposal (under writer-stamped uploads; never reviewed by the owner)
-The owner's hub pattern (participants as readers of the chat label, owning their messages) could not upload at blind nodes, since uploads needed the label's write key. This proposal worked around that.
+## Structure
+- **Chat actor C**, owned by the creator's person actor or, better, by a root actor (notes/permissions.md, Patterns). Moderators are C's admins. C's label (its home label) is the chat's label. C's data: title, hidden-message set, settings.
+- **Every participant is a writer of C** (tension 33): a reader could neither stamp its own messages (they would sit as deposits) nor add itself to `/group`. Viewers that never post can be readers.
+- **Persona P_i** per participant per chat: an actor owned by the participant's person actor, with secrets of its own. It owns the participant's messages, reactions and read marker, and it is the group listing its messages. Edge (C, P_i, read) so C's actor reads everything P_i owns (entitlement under C's label); P_i added to C's `/group.subgroups`. P_i needs no label of its own: its commits live under C's label.
+- **Messages**: plain things owned by P_i (derived secrets, no boxes), placed in P_i's `/group.items`. One commit each (content, `/created`, the placement), about 350 B plus content.
+- **Reactions**: `map<message tid, set<string>>` on P_j (tombstones forever, cheap). **Read marker**: a register on P_j. **Typing and presence**: signals on P_j under C's label (a writer signs with C's write key; a reader may use the deposit key). **Disappearing messages**: `expires` on the message's deltas, placement included. **Hide**: an admin-written set on C; nobody edits or purges another owner's message. **Removal**: remove P_i's edge on C (its person's write edge too), rotate C's read and write, delete P_i's entries with C's delete key; other members drop them as outside the closure.
+- **Join by link**: K with write on C; the joiner invite-grants its person into K, then creates P_i and writes the two P_i edges itself (P_i is its own; the (C, P_i, read) edge is P_i's admin's to write, and C's `/group` write is a writer's).
+- **History**: a label has no partial download, so one group per time bucket (owned by C, derived keys, its own label) lets a new device fetch recent months first.
 
-A chat actor C: its admins write C's data (title, participant list, hidden-message markers), participants are read members of C. A messages group M, owned by C, with its own label. Each user has a per-chat participant actor P (owned by their person actor) that owns their messages and a group G_P listing them: P is a write member of M, M is a read member of P, and G_P is a subgroup of M. So M's actor reads every message (entitlement under M's label holds), every participant reads every message and edits only its own, and P's devices hold M's read and write secrets: they stamp uploads, send signals under M's label, and rotate M after a device loss. Messages keep the default `author` retention; its tokens derive from P's secrets, so no participant can delete another's at servers. Moderation: C's admins (admins of M by ownership) remove P from M, drop G_P from M's subgroups and delete P's entries with M's delete key; the removal rotates M's write key, so P cannot re-stamp, and other members drop the messages as outside their closure. Per-message hiding is a C-written marker; admins cannot edit or purge another owner's message. A link into the chat: K with write on M and read on C; the joiner invite-grants its P into K, then writes its own edges (M on P, G_P under M). Any M writer can vandalize M's `/group`; honest clients re-add their own G_P (a deterministic repair) and admins remove the vandal (authenticated malicious writers are bounded). Reactions and read markers live on the reactor's own participant things, since roles are per thing, not per aspect. Residue: participants only read C, so a lost device keeps reading C's data until a C writer next writes.
+## Costs
+- Join: persona creation plus two membership commits and one content commit; two sealed boxes (C's read and write secrets to the person) plus one box (C's read secret to P_i).
+- Removal from a 200-person chat: 2 × 199 sealed boxes ≈ 480 KB, possibly split over several commits, downloaded by every participant; a month-offline device walks the missed steps and downloads each rotation. Sub-actors of about 50 (channels as actors under C) keep a removal near 120 KB.
+- Vandalism: any participant can edit C's `/group` and `writer`-purgeable bodies of C's own aspects; honest clients re-add their own persona deterministically and admins remove the vandal (authenticated malicious writers are bounded, not prevented).
 
-Open questions for the owner: whether participants writing M's `/group` (vandalism bounded by repair) is acceptable, and whether readers of C that cannot rotate C matters.
-
-## Related
-- Moderation is not deletion (notes/sync.md).
-- Wake priority per chat is undecided (notes/networking.md, Priority).
-- Timeline query shape (notes/api.md).
+## Open
+- Whether participants writing C's `/group` is acceptable, or C's `/group` should list personas by an admin-only flow.
+- Wake priority per chat is undecided (notes/networking.md, Priority); timeline query shape (notes/api.md).

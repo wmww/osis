@@ -1,34 +1,52 @@
-//! Wire encoding of fragments (spec §3): canonical CBOR items with a commit context.
+//! Wire encoding of fragments (spec §3): canonical CBOR items. A delta is self-contained:
+//! `[nonce, Sources, Commits, Fragment]`, a snapshot adds `Frontiers`.
 use crate::cbor::{self, Error, Item};
 use crate::stamp::{Dot, Source, Stamp, Ts};
 use crate::state::{Anchor, BagKind, Composite, Content, Elem, Entry, Frag, SeqElem};
 use crate::value::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// What the commit header provides (§2.4) plus the delta's own commit table (§3.2).
+/// Runs never exceed this many elements (§3.3 rule 3).
+pub const MAX_RUN: usize = 1 << 16;
+
+/// What the commit header provides (§2.4) plus the delta's own tables (§3.2).
 #[derive(Clone, Debug)]
 pub struct Ctx {
     pub ts: Ts,
     pub own: Source,
-    /// The delta dot counter of the own delta (header range start).
+    /// Start of the own counter range (header).
     pub lo: u64,
-    /// Foreign sources (header); wire index i is `sources[i-1]`, 0 is `own`.
+    /// End of the own counter range for a writer's delta: enables the range checks and the writer-only rules of
+    /// §2.3 and §3.3 rule 7. `None` for snapshot and import deltas.
+    pub hi: Option<u64>,
+    /// `Sources` of the delta: wire index i is `sources[i-1]`, 0 is `own`.
     pub sources: Vec<Source>,
     /// Commit table of the delta: wire index i is `commits[i-1]`; index 0 is (ts, own, lo).
     /// `base` is the counter a bare commit index stands for. Sorted by (source index, ts).
     pub commits: Vec<(Ts, Source, u64)>,
 }
 
+/// A reference to a stamp or dot as it appears in the encoding.
+#[derive(Clone, Copy, Debug)]
+pub enum Ref<'a> {
+    Stamp(&'a Stamp),
+    Dot(&'a Dot),
+}
+
 impl Ctx {
     pub fn new(ts: Ts, own: Source, lo: u64) -> Ctx {
-        Ctx { ts, own, lo, sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: None, sources: Vec::new(), commits: Vec::new() }
+    }
+    /// Context of a writer's own delta with range `[lo, hi)`.
+    pub fn writer(ts: Ts, own: Source, lo: u64, hi: u64) -> Ctx {
+        Ctx { ts, own, lo, hi: Some(hi), sources: Vec::new(), commits: Vec::new() }
     }
     fn index(&mut self, s: &Source) -> u64 {
         if *s == self.own {
             return 0;
         }
         if let Source::Derived(d) = s {
-            self.index(&d.source); // the underlying source must be in the table first
+            self.index(&d.source); // the underlying source precedes (§3.3 rule 1)
         }
         if let Some(i) = self.sources.iter().position(|x| x == s) {
             return i as u64 + 1;
@@ -46,41 +64,39 @@ impl Ctx {
         if *s == self.own {
             0
         } else {
-            self.sources.iter().position(|x| x == s).unwrap() as u64 + 1
+            self.sources.iter().position(|x| x == s).expect("source collected") as u64 + 1
         }
     }
-    /// Header representation of the sources table.
-    pub fn sources_item(&self) -> Item {
-        Item::Array(
-            self.sources
-                .iter()
-                .map(|s| match s {
-                    Source::Node(b) => Item::Bytes(b.to_vec()),
-                    Source::Commit(b) => Item::Bytes(b.to_vec()),
-                    Source::Derived(d) => Item::Array(vec![u(self.idx_of(&d.source)), u(d.ctr)]),
-                })
-                .collect(),
-        )
-    }
-    /// Fill the commit table from a fragment: one entry per foreign (ts, source) in order of first appearance,
-    /// base = smallest counter of that commit's stamps in the fragment (§3.3 rule 1).
-    fn collect_commits(&mut self, f: &Frag) {
-        let mut stamps = Vec::new();
-        f.stamps(&mut stamps);
-        for s in stamps {
-            if s.ts == self.ts && s.dot.source == self.own {
-                continue;
+    /// Fill `sources` and `commits` from a fragment (§3.3 rule 1): sources in order of first appearance in the
+    /// fragment's encoding, then `extra` (a snapshot's frontier-only sources); commits grouped by source index,
+    /// ascending ts, base = smallest counter of that commit's stamps in the fragment.
+    fn collect(&mut self, f: &Frag, extra: &[Source]) {
+        self.sources.clear();
+        self.commits.clear();
+        let mut commits: Vec<(Ts, Source, u64)> = Vec::new();
+        f.walk(&mut |r| match r {
+            Ref::Dot(d) => {
+                self.index(&d.source);
             }
-            self.index(&s.dot.source);
-            match self.commits.iter_mut().find(|(t, x, _)| *t == s.ts && *x == s.dot.source) {
-                Some(c) => c.2 = c.2.min(s.dot.ctr),
-                None => self.commits.push((s.ts, s.dot.source.clone(), s.dot.ctr)),
+            Ref::Stamp(s) => {
+                self.index(&s.dot.source);
+                if s.ts == self.ts && s.dot.source == self.own {
+                    return;
+                }
+                match commits.iter_mut().find(|(t, x, _)| *t == s.ts && *x == s.dot.source) {
+                    Some(c) => c.2 = c.2.min(s.dot.ctr),
+                    None => commits.push((s.ts, s.dot.source.clone(), s.dot.ctr)),
+                }
             }
+        });
+        // frontier-only sources come last, by ascending source (§3.3 rule 1)
+        let mut extra: Vec<&Source> = extra.iter().collect();
+        extra.sort();
+        for s in extra {
+            self.index(s);
         }
-        let idx: Vec<u64> = self.commits.iter().map(|c| self.idx_of(&c.1)).collect();
-        let mut order: Vec<usize> = (0..self.commits.len()).collect();
-        order.sort_by_key(|&i| (idx[i], self.commits[i].0));
-        self.commits = order.into_iter().map(|i| self.commits[i].clone()).collect();
+        commits.sort_by_key(|c| (self.idx_of(&c.1), c.0));
+        self.commits = commits;
     }
     fn commit_index(&self, ts: Ts, s: &Source) -> Option<(u64, u64)> {
         if ts == self.ts && *s == self.own {
@@ -93,6 +109,41 @@ impl Ctx {
             return Ok((self.ts, self.own.clone(), self.lo));
         }
         self.commits.get(i as usize - 1).cloned().ok_or(Error::Bad("commit index"))
+    }
+    /// `Sources := [Source*]`, `Source := bytes(15) | bytes(32) | [Src, ctr]`.
+    pub fn sources_item(&self) -> Item {
+        Item::Array(
+            self.sources
+                .iter()
+                .map(|s| match s {
+                    Source::Node(b) => Item::Bytes(b.to_vec()),
+                    Source::Commit(b) => Item::Bytes(b.to_vec()),
+                    Source::Derived(d) => Item::Array(vec![u(self.idx_of(&d.source)), u(d.ctr)]),
+                })
+                .collect(),
+        )
+    }
+    fn load_sources(&mut self, it: &Item) -> Result<(), Error> {
+        self.sources.clear();
+        for s in it.array()? {
+            let src = match s {
+                Item::Bytes(b) if b.len() == 15 => Source::Node(b[..].try_into().unwrap()),
+                Item::Bytes(b) if b.len() == 32 => Source::Commit(b[..].try_into().unwrap()),
+                Item::Array(a) if a.len() == 2 => {
+                    let d = Dot { source: self.source(a[0].uint()?)?, ctr: nonzero(a[1].uint()?)? };
+                    if matches!(d.source, Source::Derived(_)) {
+                        return Err(Error::Bad("derived of derived"));
+                    }
+                    Source::Derived(Box::new(d))
+                }
+                _ => return Err(Error::Bad("source")),
+            };
+            if src == self.own || self.sources.contains(&src) {
+                return Err(Error::Bad("non-canonical sources"));
+            }
+            self.sources.push(src);
+        }
+        Ok(())
     }
     /// `[[src, [[dwall, logical, base]*]]*]`: grouped by source in index order, ascending ts; `dwall` is the
     /// wall-ms difference to the previous entry of the group (absolute for the first).
@@ -115,7 +166,7 @@ impl Ctx {
         }
         Item::Array(groups.into_iter().map(|(si, v)| Item::Array(vec![u(si), Item::Array(v)])).collect())
     }
-    pub fn load_commits(&mut self, it: &Item) -> Result<(), Error> {
+    fn load_commits(&mut self, it: &Item) -> Result<(), Error> {
         self.commits.clear();
         let mut last_src: Option<u64> = None;
         for g in it.array()? {
@@ -158,6 +209,39 @@ impl Ctx {
         }
         Ok(())
     }
+    /// After decoding: the declared tables must be exactly what the fragment (plus `extra`) yields (§3.3 rule 1),
+    /// and a writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7.
+    fn check(&self, f: &Frag, extra: &[Source]) -> Result<(), Error> {
+        let mut again = Ctx::new(self.ts, self.own.clone(), self.lo);
+        again.collect(f, extra);
+        if again.sources != self.sources {
+            return Err(Error::Bad("non-canonical sources"));
+        }
+        if again.commits != self.commits {
+            return Err(Error::Bad("non-canonical commit table"));
+        }
+        if let Some(hi) = self.hi {
+            if !self.commits.is_empty() {
+                return Err(Error::Bad("foreign stamps in a writer's delta"));
+            }
+            let mut err = None;
+            f.walk(&mut |r| {
+                let ok = match r {
+                    Ref::Stamp(s) => s.dot.source != self.own || (self.lo..hi).contains(&s.dot.ctr),
+                    Ref::Dot(d) => d.source != self.own || d.ctr < hi,
+                };
+                if !ok {
+                    err = Some(Error::Bad("own counter out of range"));
+                }
+            });
+            if let Some(e) = err {
+                return Err(e);
+            }
+            let mut used = BTreeSet::new();
+            f.check_writer(&self.own, &mut used)?;
+        }
+        Ok(())
+    }
 }
 
 fn u(n: u64) -> Item {
@@ -171,80 +255,238 @@ fn nonzero(n: u64) -> Result<u64, Error> {
     }
 }
 
+/// Text: content goes on the wire for elements that are not deleted (§3.3 rule 5). List: for elements whose
+/// fragment exists (a reset element with newer nested writes included).
+fn has_content(e: &SeqElem) -> bool {
+    match &e.content {
+        Content::None => false,
+        Content::Char(_) => !e.deleted.as_ref().map_or(false, |d| d.1),
+        Content::Frag(_) => true,
+    }
+}
+/// "Carries something" (§3.3 rule 3): deleted (text) or reset (list), or has content. An undeleted text element
+/// whose char is gone (expired) carries nothing, so it never sits in a run whose `Content` would have to list it.
+fn carries(e: &SeqElem) -> bool {
+    e.deleted.as_ref().map_or(false, |d| d.1) || !matches!(e.content, Content::None)
+}
+
+/// Maximal runs (§3.3 rule 3) as `(start, n)` over the dot-ordered elements. List runs are uniform in
+/// `has_content` so the decoder knows which elements the `Content` array describes.
+fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < v.len() {
+        let (d0, e0) = v[i];
+        let cr = e0.created.is_some();
+        let mut n = 1;
+        while i + n < v.len() && n < MAX_RUN {
+            let (d, e) = v[i + n];
+            let (dp, _) = v[i + n - 1];
+            if d.source != d0.source || d.ctr != dp.ctr + 1 || carries(e) != carries(e0) || (!text && has_content(e) != has_content(e0)) {
+                break;
+            }
+            let ok = if cr {
+                matches!(&e.created, Some((_, Anchor::Dot(a))) if a == dp)
+            } else {
+                e.created.is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted
+            };
+            if !ok {
+                break;
+            }
+            n += 1;
+        }
+        out.push((i, n));
+        i += n;
+    }
+    out
+}
+
 impl Frag {
-    /// Every stamp carried by the fragment, in canonical encoding order.
-    pub fn stamps(&self, out: &mut Vec<Stamp>) {
-        fn elems(e: &BTreeMap<Dot, Elem>, out: &mut Vec<Stamp>) {
-            for el in e.values() {
-                out.extend(el.reset.iter().cloned());
-                if let Some(f) = &el.frag {
-                    f.stamps(out);
+    /// Every stamp and dot reference of the fragment, in canonical encoding order.
+    pub fn walk(&self, f: &mut dyn FnMut(Ref)) {
+        fn opt(s: &Option<Stamp>, f: &mut dyn FnMut(Ref)) {
+            if let Some(s) = s {
+                f(Ref::Stamp(s));
+            }
+        }
+        fn elems(e: &BTreeMap<Dot, Elem>, f: &mut dyn FnMut(Ref)) {
+            for (d, el) in e {
+                f(Ref::Dot(d));
+                opt(&el.reset, f);
+                if let Some(fr) = &el.frag {
+                    fr.walk(f);
                 }
+            }
+        }
+        fn anchor(a: &Anchor, f: &mut dyn FnMut(Ref)) {
+            if let Anchor::Dot(d) = a {
+                f(Ref::Dot(d));
             }
         }
         match self {
             Frag::Slots { reg, slots } => {
-                reg.iter().for_each(|r| r.stamps(out));
-                slots.values().for_each(|f| f.stamps(out));
+                reg.iter().for_each(|r| r.walk(f));
+                slots.values().for_each(|s| s.walk(f));
             }
             Frag::Register { reset, write } => {
-                out.extend(reset.iter().cloned());
-                out.extend(write.iter().map(|w| w.0.clone()));
+                opt(reset, f);
+                if let Some(w) = write {
+                    f(Ref::Stamp(&w.0));
+                }
             }
             Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => {
-                out.extend(c.reset.iter().cloned());
-                out.extend(explicit_w(self, c));
-                elems(e, out);
+                opt(&c.reset, f);
+                opt(&c.w, f);
+                elems(e, f);
             }
             Frag::Struct { c, fields } => {
-                out.extend(c.reset.iter().cloned());
-                out.extend(explicit_w(self, c));
-                fields.values().for_each(|f| f.stamps(out));
+                opt(&c.reset, f);
+                opt(&c.w, f);
+                fields.values().for_each(|x| x.walk(f));
             }
             Frag::Enum { c, case, payloads } => {
-                out.extend(c.reset.iter().cloned());
-                out.extend(explicit_w(self, c));
-                out.extend(case.iter().map(|k| k.0.clone()));
-                payloads.values().for_each(|f| f.stamps(out));
+                opt(&c.reset, f);
+                opt(&c.w, f);
+                if let Some(k) = case {
+                    f(Ref::Stamp(&k.0));
+                }
+                payloads.values().for_each(|x| x.walk(f));
             }
             Frag::Map { c, entries } => {
-                out.extend(c.reset.iter().cloned());
-                out.extend(explicit_w(self, c));
-                for en in entries.values() {
-                    out.extend(en.reset.iter().cloned());
-                    if let Some(f) = &en.frag {
-                        f.stamps(out);
+                opt(&c.reset, f);
+                opt(&c.w, f);
+                for (d, en) in entries {
+                    f(Ref::Dot(d));
+                    opt(&en.reset, f);
+                    if let Some(fr) = &en.frag {
+                        fr.walk(f);
                     }
                 }
             }
-            Frag::Seq { c, elems: e, .. } => {
-                out.extend(c.reset.iter().cloned());
-                out.extend(explicit_w(self, c));
-                for el in e.values() {
-                    out.extend(el.created.iter().map(|c| c.0.clone()));
-                    out.extend(el.pos.iter().map(|p| p.0.clone()));
-                    out.extend(el.deleted.iter().map(|d| d.0.clone()));
-                    // deleted elements never carry content (§3.3 rule 5)
-                    if let (Content::Frag(f), false) = (&el.content, is_deleted(el)) {
-                        f.stamps(out);
+            Frag::Seq { text, c, elems: e } => {
+                opt(&c.reset, f);
+                opt(&c.w, f);
+                let v: Vec<(&Dot, &SeqElem)> = e.iter().collect();
+                for (start, n) in runs(*text, &v) {
+                    let run = &v[start..start + n];
+                    f(Ref::Dot(run[0].0));
+                    if let Some((_, a)) = &run[0].1.created {
+                        anchor(a, f);
+                        for (_, el) in run {
+                            f(Ref::Stamp(&el.created.as_ref().unwrap().0));
+                        }
+                    }
+                    for (_, el) in run {
+                        if let (Content::Frag(fr), true) = (&el.content, has_content(el)) {
+                            fr.walk(f);
+                        }
+                    }
+                    for (d, el) in run {
+                        for p in &el.pos {
+                            if p.0.dot != **d {
+                                f(Ref::Stamp(&p.0));
+                                anchor(&p.1, f);
+                            }
+                        }
+                    }
+                    for (_, el) in run {
+                        if let Some((s, _)) = &el.deleted {
+                            f(Ref::Stamp(s));
+                        }
                     }
                 }
             }
         }
     }
+
+    /// Every stamp carried by the fragment, in canonical encoding order.
+    pub fn stamps(&self, out: &mut Vec<Stamp>) {
+        self.walk(&mut |r| {
+            if let Ref::Stamp(s) = r {
+                out.push(s.clone());
+            }
+        });
+    }
+
+    /// Writer-only rules (§2.3, §3.3 rule 7): no `Slots`, no `Derived` creation runs, and the writer's creations
+    /// and position writes use distinct counters.
+    fn check_writer(&self, own: &Source, used: &mut BTreeSet<u64>) -> Result<(), Error> {
+        fn take(used: &mut BTreeSet<u64>, ctr: u64) -> Result<(), Error> {
+            if used.insert(ctr) {
+                Ok(())
+            } else {
+                Err(Error::Bad("repeated own counter"))
+            }
+        }
+        match self {
+            Frag::Slots { .. } => return Err(Error::Bad("slots in a writer's delta")),
+            Frag::Register { .. } => {}
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => {
+                for (d, el) in elems {
+                    if d.source == *own && el.frag.is_some() {
+                        take(used, d.ctr)?;
+                    }
+                    if let Some(f) = &el.frag {
+                        f.check_writer(own, used)?;
+                    }
+                }
+            }
+            Frag::Struct { fields, .. } => {
+                for f in fields.values() {
+                    f.check_writer(own, used)?;
+                }
+            }
+            Frag::Enum { payloads, .. } => {
+                for f in payloads.values() {
+                    f.check_writer(own, used)?;
+                }
+            }
+            Frag::Map { entries, .. } => {
+                for (d, en) in entries {
+                    if d.source == *own && en.frag.is_some() {
+                        take(used, d.ctr)?;
+                    }
+                    if let Some(f) = &en.frag {
+                        f.check_writer(own, used)?;
+                    }
+                }
+            }
+            Frag::Seq { elems, .. } => {
+                for (d, el) in elems {
+                    if el.created.is_some() {
+                        if matches!(d.source, Source::Derived(_)) {
+                            return Err(Error::Bad("derived creation in a writer's delta"));
+                        }
+                        if d.source == *own {
+                            take(used, d.ctr)?;
+                        }
+                    }
+                    for p in &el.pos {
+                        if p.0.dot != *d && p.0.dot.source == *own {
+                            take(used, p.0.dot.ctr)?;
+                        }
+                    }
+                    if let Content::Frag(f) = &el.content {
+                        f.check_writer(own, used)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ------------------------------------------------------------------ encode
 
-fn enc_dot(d: &Dot, cx: &mut Ctx) -> Item {
-    let i = cx.index(&d.source);
+fn enc_dot(d: &Dot, cx: &Ctx) -> Item {
+    let i = cx.idx_of(&d.source);
     if i == 0 {
         u(d.ctr)
     } else {
         Item::Array(vec![u(i), u(d.ctr)])
     }
 }
-fn enc_stamp(s: &Stamp, cx: &mut Ctx) -> Item {
+fn enc_stamp(s: &Stamp, cx: &Ctx) -> Item {
     let (ci, base) = cx.commit_index(s.ts, &s.dot.source).expect("commit table collected");
     if s.dot.ctr == base {
         u(ci)
@@ -252,24 +494,21 @@ fn enc_stamp(s: &Stamp, cx: &mut Ctx) -> Item {
         Item::Array(vec![u(ci), u(s.dot.ctr)])
     }
 }
-fn enc_opt_stamp(s: &Option<Stamp>, cx: &mut Ctx) -> Item {
+fn enc_opt_stamp(s: &Option<Stamp>, cx: &Ctx) -> Item {
     Item::Array(s.iter().map(|s| enc_stamp(s, cx)).collect())
 }
 /// `W` goes on the wire whenever the state holds one (§4.3): dropping it when a greater stamp sits inside would
 /// make un-merge of that stamp's author lose the presence it recorded.
-fn explicit_w(_f: &Frag, c: &Composite) -> Option<Stamp> {
-    c.w.clone()
+fn enc_w(c: &Composite, cx: &Ctx) -> Item {
+    enc_opt_stamp(&c.w, cx)
 }
-fn enc_w(f: &Frag, c: &Composite, cx: &mut Ctx) -> Item {
-    Item::Array(explicit_w(f, c).iter().map(|w| enc_stamp(w, cx)).collect())
-}
-fn enc_anchor(a: &Anchor, cx: &mut Ctx) -> Item {
+fn enc_anchor(a: &Anchor, cx: &Ctx) -> Item {
     match a {
         Anchor::Head => u(0),
         Anchor::Dot(d) => enc_dot(d, cx),
     }
 }
-fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &mut Ctx) -> Item {
+fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &Ctx) -> Item {
     Item::Array(
         elems
             .iter()
@@ -278,12 +517,8 @@ fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &mut Ctx) -> Item {
     )
 }
 
-/// Encode a fragment; `cx.commits` must have been collected (see `encode_delta`), or be empty when every stamp
-/// is the own commit's.
-pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
-    if cx.commits.is_empty() {
-        cx.collect_commits(f);
-    }
+/// Encode a fragment; `cx` must have been collected (see `encode_delta`).
+pub fn encode(f: &Frag, cx: &Ctx) -> Item {
     let enc = u(f.enc() as u64);
     match f {
         Frag::Register { reset, write } => {
@@ -294,15 +529,15 @@ pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
             }
             Item::Array(a)
         }
-        Frag::Bag { c, elems, .. } | Frag::Set { c, elems } => Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), enc_elems(elems, cx)]),
+        Frag::Bag { c, elems, .. } | Frag::Set { c, elems } => Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), enc_elems(elems, cx)]),
         Frag::Struct { c, fields } => {
             let m = fields.iter().map(|(k, v)| (u(*k), encode(v, cx))).collect();
-            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), cbor::sorted_map(m)])
+            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), cbor::sorted_map(m)])
         }
         Frag::Enum { c, case, payloads } => {
             let case_i = Item::Array(case.iter().map(|(s, id)| Item::Array([enc_stamp(s, cx)].into_iter().chain(id.map(u)).collect())).collect());
             let m = payloads.iter().map(|(k, v)| (u(*k), encode(v, cx))).collect();
-            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), case_i, cbor::sorted_map(m)])
+            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), case_i, cbor::sorted_map(m)])
         }
         Frag::Map { c, entries } => {
             let es = entries
@@ -314,59 +549,27 @@ pub fn encode(f: &Frag, cx: &mut Ctx) -> Item {
                     Item::Array(a)
                 })
                 .collect();
-            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), Item::Array(es)])
+            Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), Item::Array(es)])
         }
-        Frag::Seq { text, c, elems } => Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(f, c, cx), enc_runs(*text, elems, cx)]),
+        Frag::Seq { text, c, elems } => Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), enc_runs(*text, elems, cx)]),
         Frag::Slots { reg, slots } => Item::Array(vec![enc, Item::Array(reg.iter().map(|r| encode(r, cx)).collect()), Item::Array(slots.values().map(|s| encode(s, cx)).collect())]),
     }
 }
 
-fn creation(_d: &Dot, e: &SeqElem) -> Option<(Stamp, Anchor)> {
-    e.created.clone()
-}
-fn is_deleted(e: &SeqElem) -> bool {
-    e.deleted.as_ref().map_or(false, |d| d.1)
-}
-/// Content goes on the wire only for elements that are not deleted (§3.3 rule 5).
-fn has_content(e: &SeqElem) -> bool {
-    !is_deleted(e) && !matches!(e.content, Content::None)
-}
-fn carries(e: &SeqElem) -> bool {
-    is_deleted(e) || !matches!(e.content, Content::None)
-}
-
-fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &mut Ctx) -> Item {
+fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
     let v: Vec<(&Dot, &SeqElem)> = elems.iter().collect();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < v.len() {
-        let (d0, e0) = v[i];
-        let cr = creation(d0, e0);
-        let mut n = 1;
-        while i + n < v.len() {
-            let (d, e) = v[i + n];
-            let (dp, _) = v[i + n - 1];
-            if d.source != d0.source || d.ctr != dp.ctr + 1 || carries(e) != carries(e0) {
-                break;
-            }
-            let ok = match &cr {
-                Some(_) => matches!(creation(d, e), Some((_, Anchor::Dot(a))) if a == *dp),
-                None => creation(d, e).is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted,
-            };
-            if !ok {
-                break;
-            }
-            n += 1;
-        }
-        let run = &v[i..i + n];
+    for (start, n) in runs(text, &v) {
+        let run = &v[start..start + n];
+        let (d0, e0) = run[0];
         let first = enc_dot(d0, cx);
-        let creation_i = match &cr {
+        let creation_i = match &e0.created {
             None => Item::Array(vec![]),
             Some((_, a)) => {
                 // segments of consecutive elements created by the same commit
                 let mut segs: Vec<(u64, u64)> = Vec::new();
                 for (d, e) in run {
-                    let ts = creation(d, e).unwrap().0.ts;
+                    let ts = e.created.as_ref().unwrap().0.ts;
                     let (ci, _) = cx.commit_index(ts, &d.source).expect("commit table collected");
                     match segs.last_mut() {
                         Some((c, k)) if *c == ci => *k += 1,
@@ -376,7 +579,7 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &mut Ctx) -> Item {
                 Item::Array(vec![enc_anchor(a, cx), Item::Array(segs.into_iter().map(|(c, k)| Item::Array(vec![u(c), u(k)])).collect())])
             }
         };
-        let content = if !carries(e0) {
+        let content = if !run.iter().any(|(_, e)| has_content(e)) {
             Item::Array(vec![])
         } else if text {
             Item::Text(run.iter().filter(|(_, e)| has_content(e)).map(|(_, e)| match &e.content {
@@ -384,9 +587,9 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &mut Ctx) -> Item {
                 _ => unreachable!(),
             }).collect())
         } else {
-            Item::Array(run.iter().filter(|(_, e)| has_content(e)).map(|(_, e)| match &e.content {
+            Item::Array(run.iter().map(|(_, e)| match &e.content {
                 Content::Frag(f) => encode(f, cx),
-                _ => unreachable!(),
+                _ => unreachable!("list runs are uniform in content"),
             }).collect())
         };
         let mut posw = Vec::new();
@@ -412,7 +615,6 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &mut Ctx) -> Item {
             }
         }
         out.push(Item::Array(vec![first, u(n as u64), creation_i, content, Item::Array(posw), Item::Array(flagw)]));
-        i += n;
     }
     Item::Array(out)
 }
@@ -516,13 +718,11 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
         (5, 5) => {
             let case = match a[3].array()? {
                 [] => None,
-                [c] => {
-                    match c.array()? {
-                        [s] => Some((dec_stamp(s, cx)?, None)),
-                        [s, id] => Some((dec_stamp(s, cx)?, Some(id.uint()?))),
-                        _ => return Err(Error::Bad("case")),
-                    }
-                }
+                [c] => match c.array()? {
+                    [s] => Some((dec_stamp(s, cx)?, None)),
+                    [s, id] => Some((dec_stamp(s, cx)?, Some(id.uint()?))),
+                    _ => return Err(Error::Bad("case")),
+                },
                 _ => return Err(Error::Bad("case")),
             };
             Frag::Enum { c: composite(a, cx)?, case, payloads: dec_fields(&a[4], cx)? }
@@ -591,7 +791,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         }
         let first = dec_dot(&a[0], cx)?;
         let n = nonzero(a[1].uint()?)? as usize;
-        if n > 1 << 24 {
+        if n > MAX_RUN {
             return Err(Error::Bad("run length"));
         }
         if last.as_ref().map_or(false, |l| *l >= first) {
@@ -636,6 +836,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             }
             _ => return Err(Error::Bad("creation")),
         }
+        let mut last_pos: Option<(usize, Stamp)> = None;
         for p in a[4].array()? {
             let p = p.array()?;
             if p.len() != 3 {
@@ -645,7 +846,15 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if i >= n {
                 return Err(Error::Bad("posw index"));
             }
-            elems[i].pos.push((dec_stamp(&p[1], cx)?, dec_anchor(&p[2], cx)?));
+            let s = dec_stamp(&p[1], cx)?;
+            // sorted by i, then stamp descending (§3.3 rule 2)
+            if let Some((li, ls)) = &last_pos {
+                if i < *li || (i == *li && s >= *ls) {
+                    return Err(Error::Bad("posw order"));
+                }
+            }
+            last_pos = Some((i, s.clone()));
+            elems[i].pos.push((s, dec_anchor(&p[2], cx)?));
         }
         for fl in a[5].array()? {
             let x = fl.array()?;
@@ -661,14 +870,17 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 Item::Bool(b) => *b,
                 _ => return Err(Error::Bad("flag")),
             };
+            if !text && !b {
+                return Err(Error::Bad("undelete of a list element"));
+            }
             for e in &mut elems[i..=j] {
                 e.deleted = crate::state::max_pair(e.deleted.take(), Some((s.clone(), b)));
             }
         }
-        let live: Vec<usize> = (0..n).filter(|i| !is_deleted(&elems[*i])).collect();
         match &a[3] {
             Item::Array(v) if v.is_empty() => {}
             Item::Text(s) if text => {
+                let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deleted.as_ref().map_or(false, |d| d.1)).collect();
                 let cs: Vec<char> = s.chars().collect();
                 if cs.len() != live.len() {
                     return Err(Error::Bad("content length"));
@@ -678,11 +890,12 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 }
             }
             Item::Array(v) if !text => {
-                if v.len() != live.len() {
+                // a list run with content carries one fragment per element
+                if v.len() != n {
                     return Err(Error::Bad("content length"));
                 }
-                for (k, i) in live.iter().enumerate() {
-                    elems[*i].content = Content::Frag(Box::new(decode(&v[k], cx)?));
+                for (i, it) in v.iter().enumerate() {
+                    elems[i].content = Content::Frag(Box::new(decode(it, cx)?));
                 }
             }
             _ => return Err(Error::Bad("content")),
@@ -699,48 +912,51 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
     Ok(m)
 }
 
-/// Full delta: `[nonce, Commits, Fragment]` (§3.2). Fills `cx.sources` (header table) and `cx.commits`.
+/// Full delta: `[nonce, Sources, Commits, Fragment]` (§3.2). Fills `cx.sources` and `cx.commits`.
 pub fn encode_delta(f: &Frag, nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
-    cx.commits.clear();
-    cx.collect_commits(f);
+    cx.collect(f, &[]);
     let frag = encode(f, cx);
-    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.commits_item(), frag]))
+    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag]))
 }
-/// `cx` carries ts, own, lo and the header's sources table; the commit table is read from the delta.
+/// `cx` carries ts, own, lo (and hi for a writer's delta); the tables are read from the delta and checked.
 pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
     let it = cbor::decode(bytes)?;
     match it.array()? {
-        [Item::Bytes(n), commits, f] if n.len() == 16 => {
+        [Item::Bytes(n), sources, commits, f] if n.len() == 16 => {
+            cx.load_sources(sources)?;
             cx.load_commits(commits)?;
-            decode(f, cx)
+            let frag = decode(f, cx)?;
+            cx.check(&frag, &[])?;
+            Ok(frag)
         }
         _ => Err(Error::Bad("delta")),
     }
 }
 
-/// Snapshot delta: `[nonce, Commits, Fragment, Frontiers]`, `Frontiers := [[Src, ctr]*]` sorted by `Src`, one entry
-/// per `Node` source (§8). The caller strips the values of expiring commits first (§4.7). Frontier sources enter
-/// the header table after the fragment's.
+/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers]`, `Frontiers := [[Src, ctr]*]` sorted by `Src`,
+/// one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7). Frontier-only
+/// sources come last in `Sources`.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
-    cx.commits.clear();
-    cx.collect_commits(f);
-    let frag = encode(f, cx);
-    let mut fr: Vec<(u64, u64)> = frontiers
+    let extra: Vec<Source> = frontiers
         .iter()
         .map(|(s, c)| {
             assert!(matches!(s, Source::Node(_)) && *c >= 1, "frontiers name node sources");
-            (cx.index(s), *c)
+            s.clone()
         })
         .collect();
+    cx.collect(f, &extra);
+    let frag = encode(f, cx);
+    let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
     fr.sort();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.commits_item(), frag, fr]))
+    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr]))
 }
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
     let it = cbor::decode(bytes)?;
     match it.array()? {
-        [Item::Bytes(n), commits, f, fr] if n.len() == 16 => {
+        [Item::Bytes(n), sources, commits, f, fr] if n.len() == 16 => {
+            cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
             let mut out = Vec::new();
@@ -760,6 +976,8 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
                 }
                 out.push((s, c));
             }
+            let extra: Vec<Source> = out.iter().map(|x| x.0.clone()).collect();
+            cx.check(&frag, &extra)?;
             Ok((frag, out))
         }
         _ => Err(Error::Bad("snapshot")),

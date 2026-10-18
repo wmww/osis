@@ -9,16 +9,16 @@ enum Cand {
     End,
 }
 
-/// Order of elements that are not deleted (content presence is checked by the caller).
-pub fn linearize(elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
-    linearize_full(elems).0.into_iter().filter(|d| !elems[d].deleted.as_ref().map_or(false, |x| x.1)).collect()
+/// Order of elements that are not deleted (§5.7: text by flag, list by absent content).
+pub fn linearize(elems: &BTreeMap<Dot, SeqElem>, text: bool) -> Vec<Dot> {
+    linearize_full(elems).0.into_iter().filter(|d| !elems[d].is_deleted(text)).collect()
 }
 
 /// Order of every placed element (deleted ones included) and each element's chosen parent
 /// (`None` = HEAD or END), after cycle breaking (§6.2). Hidden elements (unknown anchor) are absent.
 ///
 /// An anchor naming a `Derived` dot that is not in the state counts as a bare anchor at END (§6.1): such records
-/// exist only while they carry a write (§4.7), but every node knows the dot from the header sources table.
+/// exist only while they carry a write (§4.7), but every node knows the dot from the delta's `Sources`.
 pub fn linearize_full(elems: &BTreeMap<Dot, SeqElem>) -> (Vec<Dot>, HashMap<Dot, Option<Dot>>) {
     let virtual_anchors: BTreeSet<Dot> = elems
         .values()

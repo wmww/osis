@@ -90,8 +90,18 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
         (Ty::Max, _) => Some(ops::bag_inc(w, BagKind::Max, Value::Int(r.below(10) as i64))),
         (Ty::Min, _) => Some(ops::bag_inc(w, BagKind::Min, Value::Int(r.below(10) as i64))),
         (Ty::Text, Frag::Seq { elems, .. }) => {
-            let n = ops::visible(elems).len();
-            match r.below(4) {
+            let n = ops::visible(true, elems).len();
+            match r.below(5) {
+                4 => {
+                    // undelete a run of deleted elements whose content this node still holds
+                    let dead: Vec<_> = elems.iter().filter(|(_, e)| e.is_deleted(true) && matches!(e.content, Content::Char(_))).map(|(d, _)| d.clone()).collect();
+                    if dead.is_empty() {
+                        return None;
+                    }
+                    let from = r.below(dead.len());
+                    let to = (from + 1 + r.below(3)).min(dead.len());
+                    Some(ops::seq_undelete(w, st, &dead[from..to]))
+                }
                 0 | 1 => {
                     let s = random_text(r, 4);
                     if s.is_empty() {
@@ -114,7 +124,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
             }
         }
         (Ty::List(et), Frag::Seq { elems, .. }) => {
-            let n = ops::visible(elems).len();
+            let n = ops::visible(false, elems).len();
             match r.below(5) {
                 0 => {
                     let items: Vec<Content> = (0..1 + r.below(2)).map(|_| Content::Frag(Box::new(ops::create(w, et, &random_value(r, et, 1))))).collect();
@@ -134,7 +144,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                         return None;
                     }
                     let i = r.below(n);
-                    let d = ops::visible(elems)[i].clone();
+                    let d = ops::visible(false, elems)[i].clone();
                     let cur = match &elems[&d].content {
                         Content::Frag(f) => Some(&**f),
                         _ => None,

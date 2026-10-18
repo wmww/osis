@@ -12,8 +12,8 @@ use proptest::prelude::*;
 fn roundtrip(f: &Frag, w: &Writer) -> Frag {
     let mut cx = Ctx::new(w.ts, w.source.clone(), w.lo);
     let bytes = encode_delta(f, [7; 16], &mut cx);
-    let mut cx2 = Ctx::new(w.ts, w.source.clone(), w.lo);
-    cx2.sources = cx.sources.clone();
+    // decoded as a writer's delta: range and writer-only rules checked (§2.3, §3.3 rule 7)
+    let mut cx2 = Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi());
     let g = decode_delta(&bytes, &mut cx2).expect("decodes");
     let mut cx3 = Ctx::new(w.ts, w.source.clone(), w.lo);
     let bytes2 = encode_delta(&g, [7; 16], &mut cx3);
@@ -80,7 +80,6 @@ fn snapshot_transfer(st: &Frag, received: &Received, expiring: &[Range]) -> (Fra
     let mut cx = Ctx::new(1 << 40, Source::node(250), 1);
     let bytes = encode_snapshot(&f, &fr, [3; 16], &mut cx);
     let mut cx2 = Ctx::new(1 << 40, Source::node(250), 1);
-    cx2.sources = cx.sources.clone();
     let (g, fr2) = decode_snapshot(&bytes, &mut cx2).expect("snapshot decodes");
     let mut cx3 = Ctx::new(1 << 40, Source::node(250), 1);
     assert_eq!(encode_snapshot(&g, &fr2, [3; 16], &mut cx3), bytes, "snapshot re-encodes byte-identically");
@@ -400,8 +399,11 @@ proptest! {
     #[test]
     fn decoder_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..400)) {
         let mut cx = Ctx::new(5 << 16, Source::node(1), 1);
-        cx.sources.push(Source::node(2));
         let _ = decode_delta(&bytes, &mut cx);
+        let mut cx = Ctx::writer(5 << 16, Source::node(1), 1, 4);
+        let _ = decode_delta(&bytes, &mut cx);
+        let mut cx = Ctx::new(5 << 16, Source::node(1), 1);
+        let _ = decode_snapshot(&bytes, &mut cx);
     }
 
     #[test]
@@ -417,8 +419,7 @@ proptest! {
             let p = pos % bytes.len();
             bytes[p] = byte;
         }
-        let mut cx2 = Ctx::new(w.ts, w.source.clone(), w.lo);
-        cx2.sources = cx.sources.clone();
+        let mut cx2 = Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi());
         if let Ok(f) = decode_delta(&bytes, &mut cx2) {
             let _ = f.read();
             let mut s = f;
@@ -757,4 +758,182 @@ proptest! {
         prop_assert_eq!(join3(&join3(a, b), c), join3(a, &join3(b, c)), "associative");
         prop_assert_eq!(join3(a, a), a.clone(), "idempotent");
     }
+}
+
+/// Bootstrap convergence (§8, spec/commits.md §5 "covered"): a fresh node joins from a snapshot mid-way, everyone
+/// keeps editing, and the fresh node ends up reading and snapshotting exactly what a full-history node does.
+fn converge_bootstrap(seed: u64, ty: &Ty, rounds: usize) {
+    let mut r = Rng(seed | 1);
+    let n = 3;
+    let mut reps: Vec<Replica> =
+        (0..n).map(|i| Replica { w: Writer::new(Source::node(i as u8 + 1), 1 << 16, 0), state: None, expired: vec![], received: Received::default() }).collect();
+    let mut commits: Vec<Commit> = Vec::new();
+    let mut joined_at = 0usize;
+    for round in 0..rounds {
+        if round == rounds / 2 {
+            // deliver everything so far to replica 0, snapshot it, bootstrap a fresh replica from it
+            for c in &commits {
+                reps[0].apply(c.delta.clone());
+                let (src, lo, hi) = range(&c.w);
+                reps[0].received.add(&src, lo, hi);
+            }
+            let mut fresh = Replica { w: Writer::new(Source::node(9), 1 << 16, 0), state: None, expired: vec![], received: Received::default() };
+            if let Some(st) = &reps[0].state {
+                let (g, fr) = snapshot_transfer(st, &reps[0].received, &[]);
+                fresh.apply(g);
+                fresh.received.add_frontiers(&fr);
+            }
+            reps.push(fresh);
+            joined_at = commits.len();
+        }
+        for i in 0..reps.len() {
+            let ts = ((round as u64 * 10 + r.below(10) as u64 + 1) << 16) + i as u64;
+            let rep = &mut reps[i];
+            let t = ts.max(rep.w.ts + 1);
+            let before = rep.w.clone();
+            rep.w.next_commit(t);
+            let Some(d) = random_op(&mut r, &mut rep.w, ty, rep.state.as_ref()) else {
+                rep.w = before;
+                continue;
+            };
+            let d = roundtrip(&d, &rep.w);
+            rep.apply(d.clone());
+            commits.push(Commit { w: rep.w.clone(), delta: d, expiring: false });
+        }
+        // random partial delivery of post-join commits to everyone, pre-join ones to the old replicas
+        for i in 0..reps.len() {
+            for (k, c) in commits.iter().enumerate() {
+                if (k >= joined_at || i < n) && r.chance(1, 3) {
+                    reps[i].apply(c.delta.clone());
+                }
+            }
+        }
+    }
+    for i in 0..reps.len() {
+        for (k, c) in commits.iter().enumerate() {
+            if k >= joined_at || i < n {
+                reps[i].apply(c.delta.clone());
+            }
+        }
+    }
+    let reads: Vec<Option<Value>> = reps.iter().map(|x| x.state.as_ref().and_then(|s| s.read())).collect();
+    let snaps: Vec<Vec<u8>> = reps.iter().map(|x| x.state.as_ref().map_or(vec![], snapshot)).collect();
+    for i in 1..reps.len() {
+        assert_eq!(reads[0], reads[i], "reads converge (replica {i})");
+        assert_eq!(snaps[0], snaps[i], "snapshots converge (replica {i})");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64), .. ProptestConfig::default() })]
+
+    #[test]
+    fn bootstrap_convergence_list(seed in any::<u64>()) {
+        let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text), (3, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())));
+        converge_bootstrap(seed, &ty, 8);
+    }
+
+    #[test]
+    fn bootstrap_convergence_kitchen_sink(seed in any::<u64>()) {
+        converge_bootstrap(seed, &kitchen_sink(), 6);
+    }
+
+    #[test]
+    fn bootstrap_convergence_text(seed in any::<u64>()) {
+        converge_bootstrap(seed, &Ty::Text, 10);
+    }
+
+    #[test]
+    fn convergence_list_partial(seed in any::<u64>()) {
+        let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect())));
+        converge(seed, &ty, 3, 8, true, false);
+    }
+}
+
+#[test]
+fn list_delete_is_an_element_reset() {
+    // §5.7, tension 24: B deletes element 0 at t=5 while C writes a field into it at t=6; the element comes back
+    // holding only C's field, on every node and after a snapshot bootstrap; an older nested write (t=4) is dropped.
+    let et = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let ty = Ty::List(Box::new(et.clone()));
+    let mut a = Writer::new(Source::node(1), 1 << 16, 1);
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::create(&mut a, &ty, &Value::List(vec![Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(2))])])));
+    let base = st.clone().unwrap();
+    let mut b = Writer::new(Source::node(2), 5 << 16, 1);
+    let del = roundtrip(&ops::seq_delete(&mut b, &base, 0, 1).unwrap(), &b);
+    let mut c = Writer::new(Source::node(3), 6 << 16, 1);
+    let newer = roundtrip(&ops::seq_set_elem(&mut c, &base, &et, 0, &Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(9))])).unwrap(), &c);
+    let mut d = Writer::new(Source::node(4), 4 << 16, 1);
+    let older = roundtrip(&ops::seq_set_elem(&mut d, &base, &et, 0, &Value::fields(vec![(1, Value::Int(7)), (2, Value::Int(2))])).unwrap(), &d);
+    let mut s1 = base.clone();
+    s1.join(del.clone());
+    assert_eq!(s1.read(), Some(Value::List(vec![])));
+    s1.join(older.clone());
+    assert_eq!(s1.read(), Some(Value::List(vec![])), "older nested write loses to the reset");
+    s1.join(newer.clone());
+    assert_eq!(s1.read(), Some(Value::List(vec![Value::fields(vec![(2, Value::Int(9))])])), "newer nested write revives the element alone");
+    let mut s2 = base.clone();
+    s2.join(newer.clone());
+    s2.join(older.clone());
+    s2.join(del.clone());
+    assert_eq!(snapshot(&s1), snapshot(&s2));
+    // the scenario that used to diverge: A's snapshot must carry C's write, so a bootstrapped node reads the same
+    let (g, _) = snapshot_transfer(&s1, &Received::default(), &[]);
+    let mut fresh: Option<Frag> = None;
+    apply(&mut fresh, g);
+    assert_eq!(fresh.as_ref().unwrap().read(), s1.read());
+    assert_eq!(snapshot(fresh.as_ref().unwrap()), snapshot(&s1));
+    // the deleted element's body is covered by the snapshot only if joining it changes nothing
+    let mut again = fresh.clone().unwrap();
+    again.join(newer);
+    assert_eq!(snapshot(&again), snapshot(&s1), "covered: the newer write is already in the snapshot");
+    // a value-less (expired) list creation keeps others' nested writes (§4.7)
+    let mut s3 = base.clone();
+    let mut e = Writer::new(Source::node(5), 7 << 16, 1);
+    let later = ops::seq_set_elem(&mut e, &base, &et, 0, &Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])).unwrap();
+    s3.join(later);
+    s3.strip(&in_ranges(&[range(&a)]));
+    assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(2, Value::Int(3))])])));
+}
+
+#[test]
+fn decoder_rejects_writer_rule_violations() {
+    use crdt_model::stamp::Stamp;
+    let own = Source::node(1);
+    let ts = 3 << 16;
+    let enc = |f: &Frag| encode_delta(f, [1; 16], &mut Ctx::new(ts, own.clone(), 5));
+    // own stamp outside [lo, hi)
+    let f = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 7), Some(Value::Int(1)))) };
+    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
+    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_ok());
+    assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok(), "an import or snapshot context checks no range");
+    // a foreign stamp in a writer's delta
+    let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::node(2), 1), Some(Value::Int(1)))) };
+    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
+    assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
+    // repeated own counter: two set elements created with one counter
+    let mut elems = std::collections::BTreeMap::new();
+    let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));
+    elems.insert(Dot { source: own.clone(), ctr: 5 }, crdt_model::state::Elem { reset: None, frag: reg(1) });
+    elems.insert(Dot { source: own.clone(), ctr: 6 }, crdt_model::state::Elem { reset: None, frag: reg(2) });
+    let f = Frag::Set { c: Default::default(), elems };
+    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 7)).is_ok());
+    let mut w = Writer::new(own.clone(), ts, 5);
+    let d = ops::create(&mut w, &Ty::Set(Box::new(Ty::Register)), &Value::set(vec![Value::Int(1), Value::Int(2)]));
+    assert!(decode_delta(&enc(&d), &mut Ctx::writer(ts, own.clone(), 5, w.hi())).is_ok());
+    // an undelete flag in a list run, and a posw order violation, are rejected
+    let mut w = Writer::new(own.clone(), ts, 1);
+    let et = Ty::Register;
+    let mut st: Option<Frag> = None;
+    apply(&mut st, ops::create(&mut w, &Ty::List(Box::new(et)), &Value::List(vec![Value::Int(1), Value::Int(2)])));
+    let base = st.unwrap();
+    let mut b = Writer::new(Source::node(2), 4 << 16, 1);
+    let del = ops::seq_delete(&mut b, &base, 0, 1).unwrap();
+    let mut bytes = encode_delta(&del, [1; 16], &mut Ctx::new(b.ts, b.source.clone(), b.lo));
+    assert!(decode_delta(&bytes, &mut Ctx::writer(b.ts, b.source.clone(), b.lo, b.hi())).is_ok());
+    // flip the flag byte (CBOR true 0xf5 -> false 0xf4)
+    let p = bytes.iter().rposition(|x| *x == 0xf5).unwrap();
+    bytes[p] = 0xf4;
+    assert!(decode_delta(&bytes, &mut Ctx::writer(b.ts, b.source.clone(), b.lo, b.hi())).is_err());
 }

@@ -1,17 +1,21 @@
 //! Throwaway model of the layer-1 membership validity rule (spec/permissions.md §5.1;
 //! findings in notes/permissions.md). Independent of any real implementation. One group actor G;
 //! actor i has exactly one node i; actor 0 is G's owner (always admin, unremovable).
-//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov]`
+//! Run: `cargo run --release [samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint]`
 //! (exhaustive tiers + random sample), `cargo test` (scenarios). `frontier` is the rule in
 //! the notes; the others are the rejected as-written rule and its third-party-witness
 //! repairs. `snapshot` runs the two-level roster-snapshot model (src/snapshot.rs: snapshots,
 //! projected rosters, plain owner-chain writes); `edges` the one-level model of `until`, invite
 //! power and self-removal (src/edges.rs), `edges-prov` the same with a candidate fix for
-//! sticky drops.
+//! sticky drops; `joint` the joint walk over several actors with mutual membership and
+//! commit-ID ties (src/joint.rs). src/content.rs: layer-2 scenarios (per-delta validity,
+//! compaction-snapshot authority at ts).
 
 use std::collections::HashSet;
 
+mod content;
 mod edges;
+mod joint;
 mod snapshot;
 
 const OWNER: usize = 0;
@@ -886,6 +890,10 @@ fn random(samples: u64, seed: u64, rule: Rule) -> Stats {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let samples = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
+    if args.get(2).map(String::as_str) == Some("joint") {
+        joint::random(samples, 0x5eed).print();
+        return;
+    }
     if args.get(2).map(String::as_str) == Some("snapshot") {
         snapshot::random(samples, 0x5eed).print();
         return;

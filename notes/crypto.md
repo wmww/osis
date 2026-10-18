@@ -6,9 +6,11 @@
 - **Hybrid PQ sealed boxes**: boxes sit on blind nodes forever and lazy rotation keeps old secrets valid for old content, so a classical box harvested today would yield every blob under that secret, forever; a later migration cannot re-protect it. The cost lands only on membership changes (about 1.2 KB per member and role), never per blob or commit. Generic hash-everything combiner (secure if either KEM is); X-Wing was a draft at decision time; if it is an RFC by implementation, add it as a second case.
 - **XChaCha20-Poly1305 over AES-GCM**: 96-bit GCM nonces plus frequent local unit rewrites invite nonce reuse; GCM is slow without hardware and in WASM. A hardware-speed suite can be added later for multi-GB values.
 - **KEM key per role** for non-key actors: effective role is the minimum along the chain, so a box sealed to A's write key must be openable only by A's writers. One KEM key per actor would hand every reader of A all of A's write and admin secrets.
-- **`/keys` holds the current keyset only**: nobody seals to an old epoch on purpose, and a granter with a stale key still succeeds because members keep old secrets.
-- **Link keys sign only**: K's secrets derive from the seed until K first rotates, and after that L's boxes use the symmetric form under a seed-derived secret, so L needs no KEM key and a link URL is just seed + target + server + K's label.
-- **Symmetric box form** when the writer already holds the recipient's role secret (a thing's secrets to its owner): 49 bytes instead of 1.2 KB.
+- **`/keys` holds the current keyset only**: nobody seals to an old epoch on purpose, and a granter with a stale key still succeeds because members keep old secrets. The deposit seed lives beside the keysets (one per actor, every label index derives from it) and should be refreshed with the read secret, or a removed device keeps filling the inbox budget.
+- **Key actors have seed-derived role secrets** so a thing owned by a key actor (a node's local thing, a person actor under its recovery key) is a plain thing like any other; they are never rotated and never shared.
+- **Big rosters**: a rotation may split its boxes over several commits, and `/secrets` compacts by ordinary paged compaction snapshots, so no roster size makes rotation impossible; the roster snapshot's header still lists one delta hash per edge (tension 12).
+- **Link keys are full key actors** (signing and KEM keys from the seed): the earlier sign-only design derived K's secrets from the seed, which handed every read-link holder K's admin secret and label delete key, and used a symmetric link box only the sharer could write, which a writer's rotation of K could not refresh (notes/permissions.md, Links). Cost: 1.2 KB per box to L per rotation of K, and one hybrid entry box per step of K's label.
+- **Symmetric box form** when the writer already holds the recipient's role secret (a thing's secrets to its owner): 49 bytes plus the epoch of the recipient's secret, which the covers rule needs (without it an owner's rotation after a lost device would not make the thing's epoch stale).
 - **Epochs per role**, not per actor: a writer may rotate read and write but not admin, so a per-actor epoch would have to say which roles "carry over" and where their boxes live; per-role epochs make each role an independent chain of secrets, boxes and history boxes, and `/keys` an independent keyset per role that the rotator of that role writes.
 - **History boxes**: holding a role's current secret opens every older one; a member removed before epoch n opens nothing newer; a join costs one box per role, not one per epoch.
 - **Rotation commits wrap under the superseded epoch** (the only exception to wrapping under the newest): the commit carries the new secret, so under the new wrap only its author could read it; the leak to an ex-member via a dishonest server is the new epoch's box map (notes/sync.md).
@@ -25,7 +27,7 @@
 - Not in the protocol: password hashing (an app exporting a recovery key uses Argon2id), transport crypto (TLS 1.3, QUIC, iroh).
 
 ## Rejected
-- Per-epoch `/keys` history, per-role boxes to devices, a KEM key and box for link keys: needless 1.2 KB objects.
+- Per-epoch `/keys` history, per-role boxes to devices: needless 1.2 KB objects. (A KEM key for link keys was rejected on the same ground and later reinstated, above.)
 - Node KEM keys as the only sealing target: a granter would need the grantee's device list; a new device would need re-grants from everyone.
 - Tid committing to the KEM key: 1.2 KB in every chain certificate; rotation would need a new tid.
 - One KEM key per actor (above). Cleartext epoch byte in wraps (above).

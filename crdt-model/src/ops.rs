@@ -93,8 +93,8 @@ pub fn live_entries(entries: &BTreeMap<Dot, Entry>) -> BTreeMap<Value, Vec<Dot>>
     m
 }
 /// Visible sequence elements: not deleted and with content.
-pub fn visible(elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
-    linearize(elems)
+pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
+    linearize(elems, text)
         .into_iter()
         .filter(|d| match &elems[d].content {
             Content::None => false,
@@ -325,7 +325,7 @@ pub fn enum_set(w: &mut Writer, state: Option<&Frag>, ty: &Ty, v: &Value) -> Opt
 /// Insert `contents` after visible index `after` (0 = at the start).
 pub fn seq_insert(w: &mut Writer, state: Option<&Frag>, text: bool, after: usize, contents: Vec<Content>) -> Frag {
     let anchor = match state {
-        Some(Frag::Seq { elems, .. }) if after > 0 => Anchor::Dot(visible(elems)[after - 1].clone()),
+        Some(Frag::Seq { elems, text, .. }) if after > 0 => Anchor::Dot(visible(*text, elems)[after - 1].clone()),
         _ => Anchor::Head,
     };
     let mut f = seq_delta(text);
@@ -344,21 +344,22 @@ fn flag(w: &mut Writer, text: bool, dots: &[Dot], b: bool, contents: Option<Vec<
     f
 }
 
-/// Delete visible range [from, from+len).
+/// Delete visible range [from, from+len): a deleted-flag write for text, an element reset for lists (§5.7).
 pub fn seq_delete(w: &mut Writer, state: &Frag, from: usize, len: usize) -> Option<Frag> {
     let Frag::Seq { text, elems, .. } = state else { panic!("seq") };
-    let vis = visible(elems);
+    let vis = visible(*text, elems);
     if len == 0 || from + len > vis.len() {
         return None;
     }
     Some(flag(w, *text, &vis[from..from + len], true, None))
 }
 
-/// Undelete the given dots, carrying their content.
+/// Undelete the given text dots, carrying their content. Text only: a list element is restored by re-inserting
+/// its value with a fresh dot (§5.7).
 pub fn seq_undelete(w: &mut Writer, state: &Frag, dots: &[Dot]) -> Frag {
-    let Frag::Seq { text, elems, .. } = state else { panic!("seq") };
+    let Frag::Seq { text: true, elems, .. } = state else { panic!("text") };
     let contents = dots.iter().map(|d| elems.get(d).map_or(Content::None, |e| e.content.clone())).collect();
-    flag(w, *text, dots, false, Some(contents))
+    flag(w, true, dots, false, Some(contents))
 }
 
 /// Move visible range [from, from+len) so it follows the element at index `after` of the sequence without the
@@ -366,7 +367,7 @@ pub fn seq_undelete(w: &mut Writer, state: &Frag, dots: &[Dot]) -> Frag {
 pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: usize) -> Option<Frag> {
     let Frag::Seq { text, elems, .. } = state else { panic!("seq") };
     let (all, parents) = crate::seq::linearize_full(elems);
-    let vis = visible(elems);
+    let vis = visible(*text, elems);
     if len == 0 || from + len > vis.len() {
         return None;
     }
@@ -421,7 +422,7 @@ pub fn seq_move(w: &mut Writer, state: &Frag, from: usize, len: usize, after: us
 /// Nested edit of the visible list element at `index`.
 pub fn seq_set_elem(w: &mut Writer, state: &Frag, et: &Ty, index: usize, v: &Value) -> Option<Frag> {
     let Frag::Seq { text, elems, .. } = state else { panic!("seq") };
-    let d = visible(elems).get(index)?.clone();
+    let d = visible(*text, elems).get(index)?.clone();
     let cur = match &elems[&d].content {
         Content::Frag(f) => Some(&**f),
         _ => None,

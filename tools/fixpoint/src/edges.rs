@@ -1,19 +1,19 @@
 //! One-level model of edges with `until`, invite power and self-removal (spec/permissions.md
 //! §2, §5.1, §9). One thing T; node 0 is T's owner (admin, unremovable); every other node is a
 //! key actor (admin of itself, so effective invite = its edge's invite). An edge is (role,
-//! until, invite ≤ role). A commit (normally one op; a redemption has two) is judged with its
-//! author's authority just before it. A commit whose ops all lower the author's own edge in
-//! every component is a self-removal: it applies, attributed SelfOnly, even for an admin. An
-//! admin's (owner, or an alive admin edge) other commits apply whole, attributed Admin.
-//! Otherwise each op takes effect on its own iff it is a self-lowering or adds an edge, role ≤
-//! the author's invite, for an actor with no alive edge (invite grant); the commit is
-//! attributed Invite if the author holds an invite and it touches anyone else.
+//! until, invite ≤ role). A commit (normally one op; a redemption has two) is ordered by (t,
+//! author, commit ID) and each op is judged on its own with the author's authority just before
+//! the commit: an op lowering the author's own edge is a self-removal (SelfOnly, even for an
+//! admin; never audited) except in a redemption, where it is attributed like the grant; an
+//! admin's (owner, or an alive admin edge) other ops apply (Admin); otherwise an op applies iff
+//! it adds an edge, role ≤ the author's invite, for an actor with no alive edge (Invite, with
+//! the author's invite level).
 //!
-//! Audit (demoter-frontier rule of main.rs): `held[x]` is the highest (role, invite) x held
-//! since its last audit. An applied Owner/Admin op on x ≠ author leaving x below `held` (admin
-//! to below; invite lowered) drops x's earlier applied commits attributed to the lost class
-//! (Admin; Invite) that the author had not received before the op's time (its own chain write
-//! always counts), and the walk restarts; `held[x]` becomes x's new authority. `until`,
+//! Audit (demoter-frontier rule of main.rs): `held[x]` is the highest class (admin above every
+//! invite level) x held since its last audit. An applied op by another author leaving x below
+//! `held` drops x's earlier applied ops attributed to a class it fell through (above its new
+//! class, up to `held`) that the author had not received before the op's time (its own chain
+//! write always counts), and the walk restarts; `held[x]` becomes x's new class. `until`,
 //! self-removal and invite grants never audit, so `held` persists until an explicit write.
 //! Links: L has (r, ∞, r) on K; redeem = L's commit adding the redeemer (single use: plus
 //! removing L's own edge).
@@ -62,14 +62,13 @@ fn lowers(new: Option<Edge>, old: Option<Edge>) -> bool {
     }
 }
 
-fn max2(a: (Role, Role), b: (Role, Role)) -> (Role, Role) {
-    (a.0.max(b.0), a.1.max(b.1))
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EWrite {
     pub author: usize,
     pub t: u32,
+    /// Commit ID: the last order key, so two holders of one link key writing at one `t`
+    /// are ordered alike everywhere.
+    pub id: u32,
     pub ops: Vec<(usize, Option<Edge>)>,
 }
 
@@ -86,16 +85,36 @@ pub enum Attr {
     Skipped,
     Owner,
     Admin,
-    Invite,
+    /// With the author's effective invite at that point (its level).
+    Invite(Role),
     SelfOnly,
+}
+
+/// Authority class of (role, invite) for auditing: edge admin above every invite level.
+fn class((role, invite): (Role, Role)) -> u8 {
+    if role == Role::Admin {
+        4
+    } else {
+        invite as u8
+    }
+}
+
+/// Class an op was attributed to; Owner and SelfOnly are never audited.
+fn attr_class(a: Attr) -> u8 {
+    match a {
+        Attr::Admin => 4,
+        Attr::Invite(l) => l as u8,
+        _ => 0,
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct EOut {
     pub edges: Vec<Option<Edge>>,
-    pub applied: u64,
+    /// Per flat op index (`base[commit] + k`).
     pub dropped: u64,
     pub attr: Vec<Attr>,
+    pub base: Vec<usize>,
     pub passes: usize,
     /// Provenance only: the drop set repeated (the walk shown audits nothing).
     pub cycled: bool,
@@ -122,6 +141,10 @@ impl EOut {
             auth(self.edges[x], NOW)
         }
     }
+    /// Commits with a dropped op.
+    pub fn dropped_commits(&self) -> u64 {
+        (0..self.base.len() - 1).filter(|&i| (self.base[i]..self.base[i + 1]).any(|op| self.dropped >> op & 1 == 1)).fold(0, |m, i| m | 1 << i)
+    }
     fn all(&self) -> Vec<(Role, Role)> {
         (0..self.edges.len()).map(|x| self.auth(x)).collect()
     }
@@ -134,50 +157,53 @@ impl EHist {
 
     pub fn order(&self) -> Vec<usize> {
         let mut o: Vec<usize> = (0..self.writes.len()).collect();
-        o.sort_by_key(|&i| (self.writes[i].t, self.writes[i].author));
+        o.sort_by_key(|&i| (self.writes[i].t, self.writes[i].author, self.writes[i].id));
         o
     }
 
-    /// How commit `w` applies given the edges just before it: its attribution, from the
-    /// author's authority alone, and which ops take effect. A non-admin's ops are judged one
-    /// by one, so a redemption's self-removal never depends on the redeemer's entry (with
-    /// all-or-nothing commits a verifier of L would need every redeemer's entry; projections
-    /// then diverge).
-    fn judge(&self, w: &EWrite, edges: &[Option<Edge>]) -> (Attr, Vec<bool>) {
+    /// How commit `w` applies given the edges just before it: per op, its attribution (the
+    /// author's authority class for that op) or Skipped. Each op is judged on its own against
+    /// the edges just before the commit (spec/permissions.md §5.1), so a redemption's
+    /// self-removal never depends on the redeemer's entry (with all-or-nothing commits a
+    /// verifier of L would need every redeemer's entry; projections then diverge) and is never
+    /// audited even when another op of the commit is.
+    fn judge(&self, w: &EWrite, edges: &[Option<Edge>]) -> Vec<Attr> {
         let a = w.author;
-        if w.ops.iter().any(|&(x, _)| x == O) {
-            return (Attr::Skipped, vec![false; w.ops.len()]);
-        }
-        let all = vec![true; w.ops.len()];
-        if a == O {
-            return (Attr::Owner, all);
-        }
-        // A pure self-removal is never audited, even by an admin: dropping it could only
-        // hand its author back what it gave up.
-        if w.ops.iter().all(|&(x, new)| x == a && lowers(new, edges[a])) {
-            return (Attr::SelfOnly, all);
-        }
         let (role, inv) = auth(edges[a], w.t);
-        if role == Role::Admin {
-            return (Attr::Admin, all);
-        }
-        let eff: Vec<bool> = w
-            .ops
+        w.ops
             .iter()
-            .map(|&(x, new)| match new {
-                _ if x == a => lowers(new, edges[a]),
-                Some(e) => auth(edges[x], w.t).0 == Role::None && e.role <= inv && e.invite <= e.role,
-                None => false,
+            .map(|&(x, new)| {
+                if x == O {
+                    Attr::Skipped
+                } else if a == O {
+                    Attr::Owner
+                } else if x == a {
+                    // A self-removal is never audited, even by an admin: dropping it could only
+                    // hand its author back what it gave up. Except a redemption's (an invite
+                    // holder's commit that also grants): it is attributed like the grant, by
+                    // the author's authority alone, so a forged redemption falls whole when the
+                    // sharer finalizes. Raising itself needs admin.
+                    if lowers(new, edges[a]) {
+                        if role < Role::Admin && inv > Role::None && w.ops.iter().any(|&(y, _)| y != a) {
+                            Attr::Invite(inv)
+                        } else {
+                            Attr::SelfOnly
+                        }
+                    } else if role == Role::Admin {
+                        Attr::Admin
+                    } else {
+                        Attr::Skipped
+                    }
+                } else if role == Role::Admin {
+                    Attr::Admin
+                } else {
+                    match new {
+                        Some(e) if auth(edges[x], w.t).0 == Role::None && e.role <= inv && e.invite <= e.role && inv > Role::None => Attr::Invite(inv),
+                        _ => Attr::Skipped,
+                    }
+                }
             })
-            .collect();
-        let at = if inv > Role::None && w.ops.iter().any(|&(x, _)| x != a) {
-            Attr::Invite
-        } else if eff.iter().any(|&b| b) {
-            Attr::SelfOnly
-        } else {
-            Attr::Skipped
-        };
-        (at, eff)
+            .collect()
     }
 
     /// The timeline. `audit = false` never drops (reference for the nobody-offline check).
@@ -185,71 +211,79 @@ impl EHist {
         self.eval_mode(if audit { Drops::Sticky } else { Drops::Off })
     }
 
+    /// Flat op index of each commit's first op.
+    fn bases(&self) -> Vec<usize> {
+        let mut b = Vec::with_capacity(self.writes.len() + 1);
+        let mut n = 0;
+        for w in &self.writes {
+            b.push(n);
+            n += w.ops.len();
+        }
+        b.push(n);
+        b
+    }
+
     pub fn eval_mode(&self, mode: Drops) -> EOut {
         let n = self.n();
         let order = self.order();
-        // cause[j]: the demotion whose audit dropped j.
-        let mut cause: Vec<Option<usize>> = vec![None; self.writes.len()];
+        let base = self.bases();
+        let nops = base[self.writes.len()];
+        // cause[op]: the demotion (commit) whose audit dropped op.
+        let mut cause: Vec<Option<usize>> = vec![None; nops];
         let mut seen = HashSet::new();
         let mut passes = 0;
         'walk: loop {
             passes += 1;
             let cycled = !seen.insert(cause.clone());
-            let dropped = (0..cause.len()).filter(|&j| cause[j].is_some()).fold(0u64, |m, j| m | 1 << j);
+            let dropped = (0..nops).filter(|&j| cause[j].is_some()).fold(0u64, |m, j| m | 1 << j);
             let mut edges = self.genesis.clone();
-            let mut held: Vec<(Role, Role)> = edges.iter().map(|&e| auth(e, 0)).collect();
+            let mut held: Vec<u8> = edges.iter().map(|&e| class(auth(e, 0))).collect();
             let mut applied = 0u64;
-            let mut attr = vec![Attr::Skipped; self.writes.len()];
-            // Last applied commit that set each actor's edge: the actor's chain.
+            let mut attr = vec![Attr::Skipped; nops];
+            // Last applied op that set each actor's edge: the actor's chain.
             let mut chain: Vec<Option<usize>> = vec![None; n];
             // Commits that demoted someone (and so audited) in this walk.
             let mut demoting = 0u64;
             for &i in &order {
-                if dropped >> i & 1 == 1 {
-                    continue;
-                }
                 let w = &self.writes[i];
                 let a = w.author;
-                let (at, eff) = self.judge(w, &edges);
-                if at == Attr::Skipped {
-                    continue;
-                }
-                applied |= 1 << i;
-                attr[i] = at;
+                let ats = self.judge(w, &edges);
                 let chain_a = chain[a];
                 let mut grew = false;
-                for (&(x, new), _) in w.ops.iter().zip(&eff).filter(|(_, &e)| e) {
-                    let old = edges[x];
+                for (k, (&(x, new), &at)) in w.ops.iter().zip(&ats).enumerate() {
+                    let op = base[i] + k;
+                    if at == Attr::Skipped || dropped >> op & 1 == 1 {
+                        continue;
+                    }
+                    applied |= 1 << op;
+                    attr[op] = at;
                     edges[x] = new;
-                    chain[x] = Some(i);
-                    let now = auth(new, w.t);
-                    if x == a {
-                        // Self-removal audits nothing; an admin raising itself raises `held`.
-                        if !lowers(new, old) {
-                            held[x] = max2(held[x], now);
-                        }
+                    chain[x] = Some(op);
+                    let now = class(auth(new, w.t));
+                    // Self-removal and invite grants audit nothing; `held` keeps the highest
+                    // class since the last audit, so the next explicit demotion audits as if
+                    // the member still held it.
+                    if x == a || matches!(at, Attr::Invite(_)) || now >= held[x] {
+                        held[x] = held[x].max(now);
                         continue;
                     }
-                    if at == Attr::Invite {
-                        held[x] = max2(held[x], now);
-                        continue;
-                    }
-                    let (hr, hi) = held[x];
+                    let before = held[x];
                     held[x] = now;
-                    let lost_admin = hr == Role::Admin && now.0 < Role::Admin;
-                    let lost_invite = hi > now.1;
-                    if mode == Drops::Off || cycled || !(lost_admin || lost_invite) {
+                    if mode == Drops::Off || cycled {
                         continue;
                     }
                     demoting |= 1 << i;
-                    for j in 0..self.writes.len() {
-                        if j == i || applied >> j & 1 == 0 || self.writes[j].author != x {
+                    // Audit x's ops attributed to a class it fell through: (now, before].
+                    for j in 0..nops {
+                        if applied >> j & 1 == 0 || self.writes[self.commit_of(&base, j)].author != x {
                             continue;
                         }
-                        if !(lost_admin && attr[j] == Attr::Admin || lost_invite && attr[j] == Attr::Invite) {
+                        let c = attr_class(attr[j]);
+                        if !(now < c && c <= before) {
                             continue;
                         }
-                        let covered = self.recv[j][a] < w.t || chain_a == Some(j);
+                        let jc = self.commit_of(&base, j);
+                        let covered = self.recv[jc][a] < w.t || chain_a == Some(j) || jc == i;
                         if !covered && cause[j].is_none() {
                             cause[j] = Some(i);
                             grew = true;
@@ -272,8 +306,12 @@ impl EHist {
                     continue 'walk;
                 }
             }
-            return EOut { edges, applied, dropped, attr, passes, cycled };
+            return EOut { edges, dropped, attr, base, passes, cycled };
         }
+    }
+
+    fn commit_of(&self, base: &[usize], op: usize) -> usize {
+        base.partition_point(|&b| b <= op) - 1
     }
 
     fn keep(&self, keep: &[usize], genesis: Vec<Option<Edge>>) -> EHist {
@@ -333,14 +371,16 @@ impl EHist {
         if cut.iter().all(Option::is_none) {
             return None;
         }
-        let keep: Vec<usize> = (0..self.writes.len())
-            .filter(|&j| {
-                let w = &self.writes[j];
-                let self_only = w.ops.iter().all(|&(x, _)| x == w.author);
-                self_only || cut[w.author].map_or(true, |t| self.recv[j][O] < t)
-            })
-            .collect();
-        Some(self.keep(&keep, self.genesis.clone()))
+        // Uncovered commits keep only their self ops (self-removals are never dropped).
+        let mut r = self.clone();
+        for j in 0..self.writes.len() {
+            let w = &mut r.writes[j];
+            if !cut[w.author].map_or(true, |t| self.recv[j][O] < t) {
+                let a = w.author;
+                w.ops.retain(|&(x, _)| x == a);
+            }
+        }
+        Some(r)
     }
 
     /// Authors that never hold an admin role (genesis or any write).
@@ -458,10 +498,10 @@ pub fn print_hist(h: &EHist, mode: Drops) {
     let o = h.eval_mode(mode);
     for i in h.order() {
         let w = &h.writes[i];
-        let ops: Vec<String> = w.ops.iter().map(|&(x, e)| format!("{x} := {}", fmt_edge(e))).collect();
-        println!("    w{i}: {} sets {} at t={} | recv {:?} | {:?}", w.author, ops.join(", "), w.t, h.recv[i], o.attr[i]);
+        let ops: Vec<String> = w.ops.iter().enumerate().map(|(k, &(x, e))| format!("{x} := {} {:?}", fmt_edge(e), o.attr[o.base[i] + k])).collect();
+        println!("    w{i}: {} sets {} at t={} id {} | recv {:?}", w.author, ops.join(", "), w.t, w.id, h.recv[i]);
     }
-    println!("    -> {:?} applied {:#b} dropped {:#b} ({} passes, cycled {})", o.all(), o.applied, o.dropped, o.passes, o.cycled);
+    println!("    -> {:?} dropped commits {:#b} ({} passes, cycled {})", o.all(), o.dropped_commits(), o.passes, o.cycled);
 }
 
 fn check(h: &EHist, st: &mut Stats, rng: &mut Rng, mode: Drops) {
@@ -557,7 +597,13 @@ fn random_hist(rng: &mut Rng) -> EHist {
     while h.writes.len() < k {
         let author = if rng.below(4) == 0 { O } else { 1 + rng.below(n - 1) };
         let t = 1 + rng.below(10) as u32;
-        if h.writes.iter().any(|w| w.t == t && w.author == author) {
+        // Usually one commit per (t, author); sometimes two (holders of one link key), told
+        // apart by commit ID.
+        if rng.below(4) != 0 && h.writes.iter().any(|w| w.t == t && w.author == author) {
+            continue;
+        }
+        let id = rng.next() as u32;
+        if h.writes.iter().any(|w| w.id == id) {
             continue;
         }
         let other = |rng: &mut Rng| loop {
@@ -573,7 +619,7 @@ fn random_hist(rng: &mut Rng) -> EHist {
         };
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
         r[author] = t;
-        h.writes.push(EWrite { author, t, ops });
+        h.writes.push(EWrite { author, t, id, ops });
         h.recv.push(r);
     }
     h
@@ -635,7 +681,8 @@ pub fn exhaustive(k: usize, edges: &[Option<Edge>], recv_opts: &[u32], recv_at: 
                     r[m] = recv_opts[c % recv_opts.len()];
                     c /= recv_opts.len();
                 }
-                menu.push((EWrite { author: *author, t, ops: ops.clone() }, r));
+                let id = menu.len() as u32;
+                menu.push((EWrite { author: *author, t, id, ops: ops.clone() }, r));
             }
         }
     }
@@ -705,7 +752,8 @@ mod tests {
             for &(m, tm) in recv {
                 r[m] = tm;
             }
-            self.0.writes.push(EWrite { author, t, ops: ops.to_vec() });
+            let id = self.0.writes.len() as u32;
+            self.0.writes.push(EWrite { author, t, id, ops: ops.to_vec() });
             self.0.recv.push(r);
             self.0.writes.len() - 1
         }
@@ -751,7 +799,7 @@ mod tests {
         assert_eq!(roles(&b.0)[Z], W, "applied before finalization");
         b.set(0, L, None, 10, &[]);
         let o = b.0.eval(true);
-        assert_eq!(o.dropped, 1 << forged);
+        assert_eq!(o.dropped_commits(), 1 << forged);
         assert_eq!((o.auth(J), o.auth(Z), o.auth(L)), (W, NONE, NONE));
         assert_projections(&b.0);
     }
@@ -768,7 +816,7 @@ mod tests {
         assert_eq!((o.auth(J), o.auth(Z)), (NONE, W), "forged one wins before finalization");
         b.set(0, L, None, 10, &[]);
         let o = b.0.eval(true);
-        assert_eq!(o.dropped, 1 << forged);
+        assert_eq!(o.dropped_commits(), 1 << forged);
         assert_eq!((o.auth(J), o.auth(Z), o.auth(L)), (W, NONE, NONE));
         assert_eq!(o.passes, 2);
         assert_projections(&b.0);
@@ -785,7 +833,7 @@ mod tests {
         assert_eq!(roles(&b.0)[Z], (Admin, Admin));
         b.set(0, a, None, 10, &[]);
         let o = b.0.eval(true);
-        assert_eq!(o.dropped, 1 << forged);
+        assert_eq!(o.dropped_commits(), 1 << forged);
         assert_eq!(o.auth(Z), NONE);
     }
 
@@ -953,5 +1001,47 @@ mod tests {
         b.ops(l, &[(Z, e(Write, NI)), (l, None)], 2, &[]);
         assert_eq!(roles(&b.0)[l], NONE);
         assert_projections(&b.0);
+    }
+
+    /// Two holders of one single-use link redeem at the same `t`: both commits have author L
+    /// and one `t`, so the commit ID decides, the same at every node and in any input order.
+    /// The sharer's finalization keeps the winner if it had received it; otherwise the winner
+    /// falls whole (its self-removal with it) and the other redemption applies.
+    #[test]
+    fn link_holders_tie_broken_by_commit_id() {
+        for (j_id, z_id) in [(1, 2), (2, 1)] {
+            for sharer_saw in [None, Some(J), Some(Z)] {
+                let mut b = B::new(&[None, e(Write, Write), None, None, e(Write, NI)]);
+                let rj = b.ops(L, &[(J, e(Write, NI)), (L, None)], 3, if sharer_saw == Some(J) { &[(0, 4)] } else { &[] });
+                let rz = b.ops(L, &[(Z, e(Write, NI)), (L, None)], 3, if sharer_saw == Some(Z) { &[(0, 4)] } else { &[] });
+                b.0.writes[rj].id = j_id;
+                b.0.writes[rz].id = z_id;
+                let first = if j_id < z_id { J } else { Z };
+                let o = b.0.eval(true);
+                assert_eq!((o.auth(J), o.auth(Z)), if first == J { (W, NONE) } else { (NONE, W) });
+                assert_eq!(b.0.permute(&[1, 0]).eval(true).all(), o.all());
+                if let Some(saw) = sharer_saw {
+                    b.set(0, L, None, 10, &[]);
+                    let o = b.0.eval(true);
+                    assert_eq!((o.auth(J), o.auth(Z), o.auth(L)), if saw == J { (W, NONE, NONE) } else { (NONE, W, NONE) }, "ids {j_id} {z_id} saw {saw}");
+                    assert_eq!(b.0.permute(&[2, 1, 0]).eval(true).all(), o.all());
+                    assert_projections(&b.0);
+                }
+            }
+        }
+    }
+
+    /// Lowering an invite from write to read audits the grants made at invite level write;
+    /// grants made while the inviter held only invite read stay (that class is not lost).
+    #[test]
+    fn invite_audit_by_level() {
+        let i = 1;
+        let mut b = B::new(&[None, e(Write, Read), None, None, None]);
+        b.set(i, J, e(Read, NI), 2, &[]); // at invite level read
+        b.set(0, i, e(Write, Write), 3, &[(i, 3)]);
+        b.set(i, Z, e(Read, NI), 4, &[]); // at invite level write
+        b.set(0, i, e(Write, Read), 6, &[]);
+        let o = b.0.eval(true);
+        assert_eq!((o.auth(J), o.auth(Z)), ((Read, NI), NONE));
     }
 }

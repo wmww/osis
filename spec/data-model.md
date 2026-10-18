@@ -26,8 +26,9 @@
   - `option<T>` = `enum { 0 none, 1 some(T) }`, default `none`.
   - `markdown` = `text`, content not guaranteed valid.
   - `timestamp` = `int`, milliseconds since the Unix epoch, UTC. `duration` = `int`, milliseconds.
-  - `any`: an enum with one case per kind, so an untyped value stays self-describing: `string(string)`, `blob(blob)`, `bool(bool)`, `int(int)`, `float(float)`, `tid(tid)`, `list(list<any>)`, `set(set<any>)`, `map(map<any, any>)`, `struct(map<int, any>)`, `enum(struct { 1 case: int, 2 payload: option<any> })`. Case IDs TBD.
+  - `any`: the raw canonical value, self-describing by its CBOR encoding (§5); a map with int keys reads as `map<int, any>`, so a struct held in an `any` position reads back as a map.
 - Field and case IDs are never reused (spec/versioning.md).
+- Encoding wrappers are not allowed as set elements or map keys (those are atomic).
 
 ## 4. Values
 - A value is a finite tree; never cyclic.
@@ -57,14 +58,14 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - No `null`, `undefined` or simple values other than true and false.
 - Floats: value identity is the IEEE 754 bit pattern. NaN is normalized at construction to the positive quiet NaN with zero payload; a decoder rejects any other NaN. -0.0 and 0.0 are distinct.
 - Unknown tags are not errors: the value keeps the tag and its content as raw canonical bytes, merges as an opaque register value and fails only a typed read. New osis types are added as new tags (spec/versioning.md).
-- Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides, and `any` names the kind where no schema applies.
+- Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides.
 
 ## 6. Large atomic values
 - A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, TBD, a few hundred KB) MUST be chunked; below it MUST NOT be.
 - Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8 (gear table and mask TBD), giving a tree: leaves are chunks, interior nodes are canonical arrays of links (fan-out TBD; every node fits `MAX_BLOB`); the value's place in the enclosing CBOR holds the root link.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the canonical value the subtree encodes, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
-- Every blob, chunk or commit, is at most `MAX_BLOB` bytes (format constant, TBD, a few MB).
+- Every blob, chunk or commit, is at most `MAX_BLOB` bytes (format constant, TBD, a few MB). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
 
 ## 7. Hashing
 - **Keyed content hashes** (delta hashes, link content hashes) are keyed BLAKE3 under the thing's **dedup secret** (spec/crypto.md §6), so only readers can compute or confirm them.
@@ -83,17 +84,17 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 |---|---|---|
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
-| `/created` | struct | guaranteed: the creation record |
+| `/created` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
 | `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<struct { ts, node: tid }> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
-| `/keys` | struct { read, write, admin: { epoch, kem_key }, inbox } | an actor's current keysets per role and inbox (spec/crypto.md §3, spec/sync.md §2) |
-| `/secrets` | struct | boxes keyed (member, role, epoch) and history boxes keyed (role, epoch) (spec/crypto.md §4) |
-| `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6) |
-| `/label` | map<label ID, struct { index, steps, servers, replaced }> | labels of a synced group (spec/sync.md §2) |
+| `/keys` | struct { read, write, admin: { epoch, kem_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
+| `/secrets` | struct { boxes: map<(member, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
+| `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6); a large frontier is a link |
+| `/label` | map<label ID, struct { index, steps: map<step ID, step>, servers, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `/moved` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
 | `/was` | tid (register) | the thing this one continues (spec/permissions.md §7) |
 | `/node` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
 | `/reach` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
-| `/seen` | timestamp (register) | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
+| `/seen` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 

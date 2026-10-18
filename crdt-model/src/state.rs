@@ -52,6 +52,8 @@ pub struct SeqElem {
     pub content: Content,
     /// Position writes (the creation write included), greatest first, at most two (§5.7).
     pub pos: Vec<(Stamp, Anchor)>,
+    /// Text: the deleted flag (LWW bool). List: the element reset `R_elem`, always `true`; the element's content
+    /// fragment is pruned under it and the element is deleted iff that fragment is absent (§5.7).
     pub deleted: Option<(Stamp, bool)>,
 }
 
@@ -104,9 +106,17 @@ pub fn owner(d: &Dot) -> &Dot {
 }
 
 impl SeqElem {
-    /// Whether the creation write counts toward presence: value-less creations (no content, not deleted) do not.
+    /// Whether the creation write counts toward presence: value-less creations (no content, not deleted or reset) do not.
     fn creation_counts(&self) -> bool {
         !matches!(self.content, Content::None) || self.deleted.as_ref().map_or(false, |d| d.1)
+    }
+    /// Text: the deleted flag. List: no present content fragment (reset, value-less or never had one).
+    pub fn is_deleted(&self, text: bool) -> bool {
+        if text {
+            self.deleted.as_ref().map_or(false, |d| d.1)
+        } else {
+            !matches!(&self.content, Content::Frag(f) if f.present())
+        }
     }
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
@@ -252,8 +262,8 @@ impl Frag {
                 let m = e.pos.iter().filter(|p| creation || p.0.dot != *d).fold(m, |m, p| max_opt(m, Some(p.0.clone())));
                 let m = max_opt(m, e.deleted.as_ref().map(|d| d.0.clone()));
                 match &e.content {
-                    // a deleted element's content is not carried on the wire (§3.3 rule 5), so not for presence
-                    Content::Frag(f) if !(valued && e.deleted.as_ref().map_or(false, |d| d.1)) => max_opt(m, child(f)),
+                    // a list element's fragment survives its reset only with newer writes, which are on the wire
+                    Content::Frag(f) => max_opt(m, child(f)),
                     _ => m,
                 }
             }),
@@ -465,7 +475,7 @@ impl Frag {
                 });
             }
             Frag::Slots { .. } => unreachable!(),
-            Frag::Seq { c, elems, .. } => {
+            Frag::Seq { c, elems, text } => {
                 prune_written(c, e);
                 elems.retain(|d, el| {
                     el.pos.retain(|p| survives(&p.0, e));
@@ -477,9 +487,11 @@ impl Frag {
                             el.deleted = None;
                         }
                     }
+                    // a list element's content is pruned under its own reset as well (§5.7)
+                    let ee = if *text { e.cloned() } else { max_opt(e.cloned(), el.deleted.as_ref().map(|d| d.0.clone())) };
                     let mut keep_content = true;
                     if let Content::Frag(f) = &mut el.content {
-                        f.prune(e);
+                        f.prune(ee.as_ref());
                         keep_content = !f.is_empty();
                     }
                     if !keep_content {
@@ -573,7 +585,7 @@ impl Frag {
                 Value::map(by_key.into_iter().filter_map(|(k, f)| f.read().map(|v| (k, v))).collect())
             }
             Frag::Seq { text, elems, .. } => {
-                let order = linearize(elems);
+                let order = linearize(elems, *text);
                 if *text {
                     Value::Str(order.iter().filter_map(|d| match &elems[d].content {
                         Content::Char(c) => Some(*c),
@@ -744,15 +756,19 @@ impl Frag {
             }
             Frag::Seq { elems, .. } => {
                 for (d, el) in elems.iter_mut() {
-                    if exp(d) {
-                        el.content = Content::None;
-                        if matches!(d.source, Source::Derived(_)) {
-                            // an embedded character's creation is known only from the value (§7): it goes entirely
-                            el.created = None;
-                            el.pos.retain(|p| p.0.dot != *d);
+                    match &mut el.content {
+                        // a list element loses only the content writes of the expiring delta; others' nested
+                        // writes survive and show (§4.7, tension 24)
+                        Content::Frag(f) => f.strip_values(expired),
+                        _ if exp(d) => {
+                            el.content = Content::None;
+                            if matches!(d.source, Source::Derived(_)) {
+                                // an embedded character's creation is known only from the value (§7): it goes entirely
+                                el.created = None;
+                                el.pos.retain(|p| p.0.dot != *d);
+                            }
                         }
-                    } else if let Content::Frag(f) = &mut el.content {
-                        f.strip_values(expired);
+                        _ => {}
                     }
                 }
             }
