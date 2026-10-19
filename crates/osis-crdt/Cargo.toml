@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 osis-core.workspace = true
+
+[dev-dependencies]
+crdt-model.workspace = true
+proptest.workspace = true

@@ -17,11 +17,17 @@ mod state;
 mod view;
 mod wire;
 
+#[cfg(test)]
+mod testutil;
+#[cfg(test)]
+mod tests_join;
+
 pub use changes::{Changes, Death};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use ops::Writer;
 pub use page::{MemoryPages, PageError, PageSink, PageSource};
+pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};

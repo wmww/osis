@@ -23,7 +23,7 @@ Spec: spec/crdt.md §1–§5.6, §7–§9; spec/commits.md §4 (atomic apply exp
 
 ## Steps
 - [x] Types, order, interning; `Fragment` skeleton with all variants; wire grammar types. Commit this skeleton early and record "skeleton merged" in Progress: plans/crdt-seq.md starts from it.
-- [ ] Register, struct, enum, set, map, bags: join/prune/presence/read; differential tests against models/crdt (random op sequences from the model's generator; equal reads, equal canonical bytes, equal under random delivery orders and duplication).
+- [x] Register, struct, enum, set, map, bags: join/prune/presence/read; differential tests against models/crdt (random op sequences from the model's generator; equal reads, equal canonical bytes, equal under random delivery orders and duplication).
 - [ ] Wire encode/decode + rule 7; every rejection a negative test; the model's lenient cases covered here.
 - [ ] Ops, counter consumption, net effect; undo; diff with View.
 - [ ] Slots/embeddings, value-less/expiry, un-merge; snapshots, frontiers, paging through PageSink/PageSource (in-memory impl for tests).
@@ -37,3 +37,4 @@ Every encoding but seq round-trips, joins and reads identically to the model und
 
 ## Progress
 - Step 1 (skeleton merged): `Source` (Arc-interned) / `Dot` / `Stamp` / `CounterRange`, `Fragment` with all variants, `Seq` types and hooks in `seq.rs`, `View`, `PageSink`/`PageSource`, `Writer`, `Changes`, wire `Enc`/`Dec` tables; spec edit §3.3 rule 2 (own commit-form source sorts first).
+- Step 2: delta-driven `join_into`/`prune`, presence, read, slots and embeddings, change summary; differential lockstep vs the model (tid/enum tags aligned to 1616/1617). Found and fixed (spec, model, impl) order-dependent nested slots; map key index still to do (ops step).

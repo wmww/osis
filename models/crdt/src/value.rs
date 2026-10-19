@@ -3,8 +3,8 @@ use crate::cbor::{self, Item};
 use std::cmp::Ordering;
 
 pub const TAG_SET: u64 = 258;
-pub const TAG_TID: u64 = 4001;
-pub const TAG_ENUM: u64 = 4002;
+pub const TAG_TID: u64 = 1616;
+pub const TAG_ENUM: u64 = 1617;
 
 #[derive(Clone, Debug)]
 pub enum Value {

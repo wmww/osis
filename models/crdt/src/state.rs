@@ -392,21 +392,24 @@ impl Frag {
         let e = max_opt(e_parent.cloned(), own);
         let e = e.as_ref();
         if let Frag::Slots { .. } = self {
-            // one effective reset for every member (§7): each member is pruned with it and then carries it, so a
-            // register write pruned here embeds the same whether it was embedded before or after the prune;
-            // members left empty go, fewer than two collapse
+            // one effective reset for every member (§7): each member is pruned with it like any nested fragment (an
+            // own reset below it goes); members left empty or below the register's embedding go, fewer than two
+            // collapse
             let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
             let fix = |mut f: Frag| {
                 f.prune(e);
-                if let Some(e) = e {
-                    f.set_reset(Some(e.clone()));
-                }
                 f
             };
             let reg = reg.map(fix);
             let slots = slots.into_iter().map(|(k, f)| (k, fix(f))).collect();
             *self = assemble(reg, slots);
             return;
+        }
+        // a nested reset below the parent's effective reset is itself a pruned write (§4.2)
+        if let (Some(r), Some(p)) = (self.reset(), e_parent) {
+            if !survives(&r, Some(p)) {
+                self.set_reset(None);
+            }
         }
         fn prune_elems(elems: &mut BTreeMap<Dot, Elem>, e: Option<&Stamp>) {
             elems.retain(|_, el| {
@@ -424,10 +427,17 @@ impl Frag {
             });
         }
         match self {
-            Frag::Register { write, .. } => {
+            Frag::Register { write, reset } => {
                 if let Some(w) = write {
                     if !survives(&w.0, e) {
                         *write = None;
+                    }
+                }
+                // a reset below the register's own write is implied by it (the write resets everything older at
+                // the position, §7), so it goes
+                if let (Some(w), Some(r)) = (write.as_ref(), reset.as_ref()) {
+                    if w.0 > *r {
+                        *reset = None;
                     }
                 }
             }
@@ -814,13 +824,23 @@ fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
 /// Canonical position from its members: a lone member stands alone, nothing is an empty register.
 fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
     let reg = reg.filter(|r| !r.is_empty());
-    slots.retain(|_, f| !f.is_empty());
+    // a member that adds nothing to the register's embedding is not kept (§7 Canonical form)
+    slots.retain(|_, f| !f.is_empty() && !reg.as_ref().map_or(false, |r| below_embedding(f, r)));
     match (reg, slots.len()) {
         (None, 0) => Frag::Register { reset: None, write: None },
         (Some(r), 0) => r,
         (None, 1) => slots.into_iter().next().unwrap().1,
         (reg, _) => Frag::Slots { reg: reg.map(Box::new), slots },
     }
+}
+
+/// Whether `f` adds nothing to the embedding of register `r` into its encoding: `f ⊔ embed(r) = embed(r)`.
+fn below_embedding(f: &Frag, r: &Frag) -> bool {
+    let Some(mut e) = crate::embed::embed(r, f.enc()) else { return false };
+    e.prune(None);
+    let mut j = f.clone().join_raw(e.clone());
+    j.prune(None);
+    j == e
 }
 
 /// Join of two fragments of possibly different encodings (§7), unpruned: pointwise per encoding, with the register

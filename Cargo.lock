@@ -280,7 +280,9 @@ dependencies = [
 name = "osis-crdt"
 version = "0.1.0"
 dependencies = [
+ "crdt-model",
  "osis-core",
+ "proptest",
 ]
 
 [[package]]
