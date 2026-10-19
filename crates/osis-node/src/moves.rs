@@ -58,9 +58,9 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId) -> Result<Option<
     let node = tx.core.id.tid();
     let ts = tx.core.hlc.next();
     for d in &deltas {
-        crate::engine::write::check_authority(tx.core, &[], &d.tid, d.ak.as_str(), ts)?;
+        crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &[], &d.tid, d.ak.as_str(), ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }] };
+    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node };
     build_and_apply(tx, plan, deltas).map(Some)
 }
 

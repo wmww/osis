@@ -41,6 +41,8 @@ pub struct Mutation {
     pub(crate) frontier: Option<Value>,
     /// Membership flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
+    /// A held key actor that signs instead of the node (commit form).
+    pub(crate) signer: Option<Tid>,
 }
 
 impl Default for Mutation {
@@ -55,12 +57,20 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = Some(actor);
+        self
+    }
+
+    /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a recovery
+    /// key or link key (spec/crypto.md §2). Commit form: its holders share no counters.
+    pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
+        self.signer = Some(key_actor);
+        self.form = Form::Commit;
         self
     }
 
@@ -138,7 +148,6 @@ impl Mutation {
     }
 
     /// Skips the plain role check (membership flows judge invite grants and self-removals).
-    #[allow(dead_code)]
     pub(crate) fn unchecked(&mut self) -> &mut Self {
         self.unchecked = true;
         self
@@ -162,9 +171,9 @@ pub(crate) fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
 
-/// May this node write `ak` of `tid` at `ts`? Things created by the commit take their owner's.
-pub(crate) fn check_authority(core: &Core, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    let node = core.id.tid();
+/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
+/// created by the commit take their owner's.
+pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     let need = required_role(ak);
     let role = match creates.iter().find(|r| r.tid() == *tid) {
         Some(CreationRecord::KeyActor { .. }) => (*tid == node).then_some(Role::Admin),
@@ -210,6 +219,8 @@ pub(crate) struct CommitPlan {
     pub undoes: Option<CommitId>,
     pub frontier: Option<Value>,
     pub origins: Vec<osis_commit::Origin>,
+    /// The signing key actor: the node, or a key actor it holds.
+    pub signer: Tid,
 }
 
 /// Retention, expiry and blob framing of one aspect's delta in a commit (spec/commits.md §5,
@@ -233,7 +244,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, sc
 
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
-    let node = tx.core.id.tid();
+    let node = plan.signer;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (retention, expires, framing) = framing_for(tx.core, &plan, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
@@ -275,7 +286,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
         let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.txn), rng: &mut list_rng };
-        b.build(&core.id.keys().signing, &secrets, &mut sink, &mut *tx.rng)
+        let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
+        b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = built?;
     let id = built.commit.id();
@@ -298,7 +310,11 @@ impl Engine {
 }
 
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
-    let node = tx.core.id.tid();
+    let node = match m.signer {
+        Some(k) if tx.core.key_actors.contains_key(&k) => k,
+        Some(_) => return Err(Error::Misuse("signer not held")),
+        None => tx.core.id.tid(),
+    };
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     for rec in &m.creates {
         let t = rec.tid();
@@ -322,7 +338,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         });
     }
     let ts = tx.core.hlc.next();
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new() };
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
@@ -331,7 +347,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
-            check_authority(tx.core, &plan.creates, &tid, ak.as_str(), ts)?;
+            check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();

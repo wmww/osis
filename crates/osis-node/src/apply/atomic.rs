@@ -248,6 +248,8 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             {
                 let b = crate::engine::secrets::encode_epochs(e);
                 tx.txn.put_local(&[b"k/".as_slice(), tid.as_bytes()].concat(), &b, Shred::Yes)?;
+                // boxes sealed to this actor elsewhere open now (membership flows hook)
+                crate::flows::reopen_dependents(tx, *tid)?;
             }
         }
         "/keys" => {

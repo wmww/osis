@@ -16,6 +16,7 @@ pub mod labeling;
 pub mod local_peer;
 pub mod moves;
 pub mod retention;
+pub mod rotation;
 pub mod sync;
 pub mod undo;
 
