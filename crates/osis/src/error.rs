@@ -1,7 +1,8 @@
 //! The one `Error` of the API (notes/api.md Errors). Absent aspects and unknown tids read as
 //! `None`, never as errors; peer-caused problems are diagnostics, never errors.
 
-use osis_core::{Role, Tid};
+use crate::undo::DropReason;
+use osis_core::{CommitId, Role, Tid};
 use osis_schema::{Path, PathError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +17,9 @@ pub enum Error {
     Type { path: Path, reason: String },
     /// The value exceeds the materialization bound; read it by path or stream.
     TooLarge { limit: usize },
+    /// The newest change in an undo or redo scope cannot be undone (its body was dropped, or a
+    /// register it wrote is no longer its winner). Nothing older is undone instead.
+    NotUndoable { commit: CommitId, reason: DropReason },
     /// A demotion's pre-sync could not reach these groups.
     Unsynced { groups: Vec<Tid> },
     /// A malformed argument: value, link, card, path, op, retention.
@@ -36,6 +40,7 @@ osis_core::impl_error!(Error {
     Permission { tid, needs } => ("needs {needs:?} on {tid}"),
     Type { path, reason } => ("type error at {path}: {reason}"),
     TooLarge { limit } => ("value larger than the materialization bound ({limit} bytes)"),
+    NotUndoable { commit, reason } => ("cannot undo {commit:?}: {reason:?}"),
     Unsynced { groups } => ("could not sync {} group(s)", groups.len()),
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
@@ -59,7 +64,6 @@ impl From<osis_node::Error> for Error {
             N::Permission { tid } => Error::Permission { tid, needs: Role::Write },
             N::UnknownThing(tid) => Error::UnknownThing { tid },
             N::Path(p) => p.into(),
-            N::Label(osis_label::Error::TooLarge(_)) => Error::TooLarge { limit: 0 },
             N::Store(e) => Error::Storage(e.to_string()),
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),

@@ -33,3 +33,4 @@ The example apps need nothing the API does not provide; every fixed direction an
 
 ## Progress
 - First half (steps 1–2): crates/osis over the local engine; sharing/sync surface stubbed (`Unsupported`); text sessions, queries, `stream`/`len`/`set_stream` open (step 3); notes/api.md Implementation written; issues/undo-chain-register.md.
+- Review fixes: undo never skips (NotUndoable), new change clears redo, coalesced calls carry the newest source, errors never coalesced, callback panics caught, drop waits for in-flight calls, callbacks get &Osis, watches follow moves; issues/api-person-owner.md.

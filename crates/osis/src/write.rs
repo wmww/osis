@@ -262,8 +262,11 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     }
 
     /// This write's delta expires at `t` (spec/commits.md §6); default from the key.
+    /// Fails the following op with `Invalid` when `t` is not in the future.
     pub fn expires_at(mut self, t: WallMs) -> Self {
-        if self.bad.is_none()
+        if self.bad.is_none() && t <= self.w.db.engine(|e| e.now()) {
+            self.bad = Some(Error::Invalid(format!("expiry {} ms is not in the future", t.0)));
+        } else if self.bad.is_none()
             && let Err(e) = self.w.m.expires(self.tid, &self.key, t)
         {
             self.bad = Some(e.into());

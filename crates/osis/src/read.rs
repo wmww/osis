@@ -32,9 +32,9 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
     let too_large = Error::TooLarge { limit };
     Ok(match v {
         Value::Link(l) => {
-            let x = e.read_large_max(tid, &l, *budget).map_err(|err| match Error::from(err) {
-                Error::TooLarge { .. } => too_large.clone(),
-                other => other,
+            let x = e.read_large_max(tid, &l, *budget).map_err(|err| match err {
+                osis_node::Error::Label(osis_label::Error::TooLarge(_)) => too_large.clone(),
+                other => other.into(),
             })?;
             let n = osis_core::cbor::encode(&x).len();
             *budget = budget.checked_sub(n).ok_or(too_large)?;
@@ -186,6 +186,16 @@ impl Osis {
         self.read(|r| r.resolve(a) == r.resolve(b))
     }
 
+    /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
+    /// events whose effect the read shows).
+    pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
+        let limit = self.inner.limit;
+        self.locked(|l| {
+            let v = Reader { e: &mut l.engine, limit }.value(tid, ak);
+            also();
+            v
+        })
+    }
 
     /// Registers a callback built by `make` under the engine lock (so whatever `make` reads is
     /// atomic with the registration: nothing committed after it is missed or seen twice);
@@ -204,9 +214,11 @@ impl Osis {
         })
     }
 
-    /// Calls `f` with every change of any aspect of `tid`, first once per present aspect
-    /// (`Source::Initial`, through the dispatcher).
-    pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(Change<Value>) + Send + 'static) -> Subscription {
+    /// Calls `f` with every change of any aspect of `tid` (and of what it moves to), first
+    /// once per present aspect (`Source::Initial`, through the dispatcher). Like every
+    /// callback, `f` gets the database handle, so it need not capture one (a captured clone in
+    /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
+    pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Subscription {
         let tid = self.read(|r| r.resolve(tid));
         self.subscribe(Filter::Thing(tid), true, move |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -218,15 +230,12 @@ impl Osis {
             Box::new(move |db, d| match d {
                 Delivery::Initial => {
                     for (ak, v) in first.take().unwrap_or_default() {
-                        f(Change { tid, ak, value: v, source: Source::Initial });
+                        f(db, Change { tid, ak, value: v, source: Source::Initial });
                     }
                 }
-                Delivery::Aspect { ak, source } => {
-                    let v = db.read(|r| r.value(tid, &ak));
-                    if last.get(&ak) != Some(&v) {
-                        last.insert(ak.clone(), v.clone());
-                        f(Change { tid, ak, value: v, source });
-                    }
+                Delivery::Aspect { tid, ak, source, value } if value.is_err() || last.get(&ak) != Some(&value) => {
+                    last.insert(ak.clone(), value.clone());
+                    f(db, Change { tid, ak, value, source });
                 }
                 _ => {}
             })
@@ -234,17 +243,17 @@ impl Osis {
     }
 
     /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change.
-    pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(Roster) + Send + 'static) -> Subscription {
+    pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Roster) + Send + 'static) -> Subscription {
         let actor = self.read(|r| r.resolve(actor));
         self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(last.clone()),
+                Delivery::Initial => f(db, last.clone()),
                 Delivery::Roster => {
                     let r = db.roster(actor);
                     if r != last {
                         last = r.clone();
-                        f(r);
+                        f(db, r);
                     }
                 }
                 _ => {}
@@ -253,11 +262,11 @@ impl Osis {
     }
 
     /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine).
-    pub fn on_diagnostic(&self, mut f: impl FnMut(Diagnostic) + Send + 'static) -> Subscription {
+    pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Subscription {
         self.subscribe(Filter::Diagnostics, false, |_| {
-            Box::new(move |_, d| {
+            Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
-                    f(x)
+                    f(db, x)
                 }
             })
         })
@@ -289,7 +298,8 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
 }
 
 impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
-    /// A watch taken atomically with the current value: no change after it is missed.
+    /// A watch taken atomically with the current value: no change after it is missed. It
+    /// follows moves of the thing.
     pub fn watch(&self) -> Result<Watch<K::T>>
     where
         K: Sync,
@@ -300,9 +310,9 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         let sub = self.db.subscribe(Filter::Aspect(tid, ak.clone()), false, |r| {
             let st = WatchState::new(r.value(tid, &ak));
             state = Some(st.clone());
-            Box::new(move |db, d| {
-                if matches!(d, Delivery::Aspect { .. }) {
-                    st.update(db.read(|r| r.value(tid, &ak)));
+            Box::new(move |_, d| {
+                if let Delivery::Aspect { value, .. } = d {
+                    st.update(value);
                 }
             })
         });
@@ -312,8 +322,10 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     }
 
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
-    /// dispatcher like every later call), then on every change.
-    pub fn on_change(&self, mut f: impl FnMut(Change<K::T>) + Send + 'static) -> Result<Subscription> {
+    /// dispatcher like every later call), then on every change; `f` gets the database handle.
+    /// Calls coalesce: one call may show several commits' effect and carries the newest one's
+    /// source; an unchanged value is not repeated, an error always is. Follows moves.
+    pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
         let ak = ak_of(&self.key)?;
         let tid = self.db.read(|r| r.resolve(self.tid));
         let key = self.key.clone();
@@ -321,19 +333,17 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         Ok(self.db.subscribe(Filter::Aspect(tid, ak.clone()), true, move |r| {
             let mut last = r.value(tid, &ak);
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(Change { tid, ak: ak.clone(), value: decode(last.clone()), source: Source::Initial }),
-                Delivery::Aspect { source, .. } => {
-                    let v = db.read(|r| r.value(tid, &ak));
-                    if v != last {
-                        last = v.clone();
-                        f(Change { tid, ak: ak.clone(), value: decode(v), source });
-                    }
+                Delivery::Initial => f(db, Change { tid, ak: ak.clone(), value: decode(last.clone()), source: Source::Initial }),
+                Delivery::Aspect { tid, source, value, .. } if value.is_err() || value != last => {
+                    last = value.clone();
+                    f(db, Change { tid, ak: ak.clone(), value: decode(value), source });
                 }
                 _ => {}
             })
         }))
     }
 }
+
 
 /// A position inside an aspect's value.
 pub struct PathRef<'a, 'd, K> {

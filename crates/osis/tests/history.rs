@@ -3,7 +3,7 @@
 
 mod common;
 use common::*;
-use osis::{DropReason, EntryState, HistoryQuery, Place, UndoScope, Value};
+use osis::{DropReason, EntryState, Error, HistoryQuery, Place, UndoScope, Value};
 
 // spec/commits.md §7, notes/api.md Undo: undo and redo walk this actor's own changes in
 // scope; redo is an undo of the undo; a new undo after a redo undoes the redone change.
@@ -25,8 +25,10 @@ fn undo_redo_cycle_spec_commits_7() {
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(1)));
     // spec/crdt.md §4.6: the first write is no longer the register's winner (the undo's
-    // restoring write is), so undoing it writes nothing (issues/undo-chain-register.md)
-    assert_eq!(db.undo(&scope).unwrap(), None);
+    // restoring write is), so its undo is reported blocked, never skipped
+    // (issues/undo-chain-register.md)
+    let first = db.history(&scope, HistoryQuery::default()).unwrap().last().unwrap().commit;
+    assert_eq!(db.undo(&scope), Err(Error::NotUndoable { commit: first, reason: DropReason::Superseded }));
     assert_eq!(get(), Some(Value::Int(1)));
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(2)));
@@ -36,10 +38,60 @@ fn undo_redo_cycle_spec_commits_7() {
     db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
     db.undo(&scope).unwrap().unwrap();
     db.undo(&scope).unwrap().unwrap();
-    assert_eq!((db.get(t, a).unwrap(), db.get(t, b).unwrap()), (None, None));
+    assert_eq!((db.get(t, a.clone()).unwrap(), db.get(t, b.clone()).unwrap()), (None, None));
     // another scope sees nothing to undo
     let other = UndoScope::Aspects(vec![(t, ak("/t/other"))]);
     assert_eq!(db.undo(&other).unwrap(), None);
+}
+
+// notes/api.md Undo (decided): a new change clears the redo stack.
+#[test]
+fn new_change_clears_redo_spec_commits_7() {
+    let db = db(1);
+    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
+    let scope = UndoScope::Thing(t);
+    db.undo(&scope).unwrap().unwrap();
+    db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
+    assert_eq!(db.redo(&scope).unwrap(), None);
+    assert_eq!(db.get(t, a).unwrap(), None);
+    // undo then redo still pairs up after the new change
+    db.undo(&scope).unwrap().unwrap();
+    assert_eq!(db.get(t, b.clone()).unwrap(), None);
+    db.redo(&scope).unwrap().unwrap();
+    assert_eq!(db.get(t, b).unwrap(), Some(Value::Int(1)));
+}
+
+// spec/commits.md §7: when the newest change's body was dropped, undo reports it and never
+// undoes an older change instead.
+#[test]
+fn undo_blocked_by_dropped_body_spec_commits_7() {
+    let db = db(1);
+    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
+    let newest = db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap().unwrap().commit;
+    db.engine(|e| e.drop_body(&newest, &t, &b)).unwrap();
+    assert_eq!(db.undo(&UndoScope::Thing(t)), Err(Error::NotUndoable { commit: newest, reason: DropReason::Compacted }));
+    assert_eq!(db.get(t, a).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.undo_commit(newest), Err(Error::NotUndoable { commit: newest, reason: DropReason::Compacted }));
+}
+
+// notes/node.md: an undo mutation carries nothing else.
+#[test]
+fn undo_mutation_alone_spec_commits_7() {
+    let db = db(1);
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    let c = w.commit().unwrap().unwrap().commit;
+    let mut m = osis::node::Mutation::new();
+    m.undo(c).set(t, &ak("/t/x"), &Value::Int(1)).unwrap();
+    assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::node::Error::Misuse(_))));
 }
 
 // notes/api.md Undo: history lists everyone's changes in scope with their state; a change
@@ -60,7 +112,7 @@ fn history_states_spec_crdt_4_6() {
     w.at(t, j.clone()).set(&Value::Int(5)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
     // the node's commit is not on me's stack, but undo_commit reverts it
-    let u = db.undo_commit(c2.commit).unwrap().unwrap();
+    let u = db.undo_commit(c2.commit).unwrap();
     assert_eq!(db.get(t, j.clone()).unwrap(), None);
     let h = db.history(&UndoScope::Group(g), HistoryQuery::default()).unwrap();
     let state = |c: osis::CommitId| h.iter().find(|e| e.commit == c).map(|e| e.state);

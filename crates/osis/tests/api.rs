@@ -349,8 +349,8 @@ fn expiry_retention_purge_spec_commits_5_6() {
     assert_eq!(db.get(t, k.clone()).unwrap(), None);
     // expiry in the past is invalid at commit
     let mut w = db.write();
-    w.at(t, k.clone()).expires_at(osis::WallMs(T0)).set(&s("late")).unwrap();
-    assert!(w.commit().is_err());
+    assert!(matches!(w.at(t, k.clone()).expires_at(osis::WallMs(T0)).set(&s("late")), Err(Error::Invalid(_))));
+    drop(w);
     // purge
     db.write_with(|w| w.at(t, r.clone()).purge()).unwrap();
     assert_eq!(db.get(t, r.clone()).unwrap(), None);

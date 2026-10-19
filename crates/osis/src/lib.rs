@@ -80,7 +80,7 @@
 //! let t = w.create(db.me(), Place::Unsynced)?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
-//! let sub = db.at(t, k.clone()).on_change(move |c| { let _ = tx.send(c); })?;
+//! let sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c); })?;
 //! db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1)))?;
 //! assert_eq!(rx.recv().unwrap().source, Source::Initial);
 //! let c = rx.recv().unwrap();
@@ -129,7 +129,7 @@
 //! ```compile_fail
 //! #![deny(unused_must_use)]
 //! let db = osis::Osis::create(osis::Config::memory()).unwrap();
-//! db.on_diagnostic(|_| {});
+//! db.on_diagnostic(|_, _| {});
 //! ```
 //! - A forgotten commit: `Write` is `#[must_use]`:
 //! ```compile_fail
@@ -150,7 +150,7 @@ mod watch;
 mod write;
 
 pub use error::{Error, Result};
-pub use handle::{Config, DEFAULT_LIMIT, MemStore, Osis, StoreAt};
+pub use handle::{Config, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use keys::{Key, SignalKey, core};
 pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkOpts, Lower, PairOffer, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
@@ -163,6 +163,8 @@ pub use osis_core::{Ak, Clock, CommitId, ManualClock, Role, Tid, Ts, Value, Wall
 pub use osis_node::{Cause, Diagnostic, DiagnosticKind};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, Step, p};
 
-/// Lower layers, for generated code (`use osis::schema as osis_schema;`) and inspection.
-pub use osis_node as node;
+/// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;
+/// The engine, for inspection (CLI) and tests only.
+#[doc(hidden)]
+pub use osis_node as node;

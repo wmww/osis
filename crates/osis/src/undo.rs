@@ -4,6 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
+use crate::watch::lock;
 use crate::write::Committed;
 use osis_core::{Ak, CommitId, Tid, Ts};
 use osis_node::Mutation;
@@ -39,6 +40,9 @@ impl Default for HistoryQuery {
 pub enum DropReason {
     /// Its body was dropped (compaction, keep-at-most, purge): spec/crdt.md §4.6.
     Compacted,
+    /// Undoing it writes nothing: a register it wrote is no longer the winner (spec/crdt.md
+    /// §4.6; issues/undo-chain-register.md).
+    Superseded,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,45 +113,61 @@ impl Osis {
         out
     }
 
-    /// Undoes the newest of this actor's changes in effect (`redo`: undos in effect) whose undo
-    /// writes something (spec/crdt.md §4.6 writes nothing for a register no longer its winner).
+    /// Undoes this actor's newest change in effect (`redo`: its newest undo in effect since its
+    /// last new change: a new change clears the redo stack). If that one cannot be undone the
+    /// result is `NotUndoable`; nothing older is undone instead. Serialized under one lock.
     fn undo_newest(&self, scope: &UndoScope, redo: bool) -> Result<Option<Committed>> {
+        let _g = lock(&self.inner.undo);
         let me = self.me();
         let aks = self.scope_aspects(scope)?;
-        for c in self.scope_changes(&aks).into_iter().filter(|c| c.actor == me && c.active && (c.depth % 2 == 1) == redo) {
-            if let Some(done) = self.undo_one(c.id)? {
-                return Ok(Some(done));
-            }
+        let changes = self.scope_changes(&aks);
+        let mut mine = changes.iter().filter(|c| c.actor == me);
+        let target = if redo {
+            mine.take_while(|c| c.undoes.is_some()).find(|c| c.active && c.depth % 2 == 1)
+        } else {
+            mine.find(|c| c.active && c.depth % 2 == 0)
+        };
+        match target {
+            Some(c) => self.undo_one(c.id).map(Some),
+            None => Ok(None),
         }
-        Ok(None)
     }
 
-    fn undo_one(&self, target: CommitId) -> Result<Option<Committed>> {
+    /// The undo commit of `target`, or why there is none (never a partial undo).
+    fn undo_one(&self, target: CommitId) -> Result<Committed> {
         let mut m = Mutation::new();
         m.act_as(self.me()).undo(target);
-        self.engine(|e| match e.commit(m)? {
-            Some(id) => Ok(Some(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() })),
-            None => Ok(None),
+        let blocked = |reason| Error::NotUndoable { commit: target, reason };
+        self.engine(|e| {
+            let h = e.header(&target).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
+            if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.holds_body(&target, &a.tid, &a.ak)) {
+                return Err(blocked(DropReason::Compacted));
+            }
+            match e.commit(m)? {
+                Some(id) => Ok(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }),
+                None => Err(blocked(DropReason::Superseded)),
+            }
         })
     }
 
-    /// Undoes this actor's newest change in effect in scope; `None` when there is none.
+    /// Undoes this actor's newest change in effect in scope; `None` when there is none,
+    /// `NotUndoable` when that change cannot be undone.
     pub fn undo(&self, scope: &UndoScope) -> Result<Option<Committed>> {
         self.undo_newest(scope, false)
     }
 
-    /// Redoes this actor's newest undo in effect in scope; `None` when there is none.
+    /// Redoes this actor's newest undo in effect in scope, unless a new change of this actor
+    /// came after it; `None` when there is none.
     pub fn redo(&self, scope: &UndoScope) -> Result<Option<Committed>> {
         self.undo_newest(scope, true)
     }
 
     /// Undoes any held change this node may write (an admin reverting someone else's).
-    pub fn undo_commit(&self, id: CommitId) -> Result<Option<Committed>> {
-        if self.engine(|e| e.header(&id)).is_none() {
-            return Err(Error::Invalid("unknown commit".into()));
-        }
+    pub fn undo_commit(&self, id: CommitId) -> Result<Committed> {
+        let _g = lock(&self.inner.undo);
         self.undo_one(id)
     }
+
 
     /// Everyone's changes in scope, newest first.
     pub fn history(&self, scope: &UndoScope, q: HistoryQuery) -> Result<Vec<HistoryEntry>> {

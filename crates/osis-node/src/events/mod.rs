@@ -53,6 +53,8 @@ pub enum DiagnosticKind {
     Pending,
     /// Two commits by one node overlap on node-form counters (spec/commits.md §4).
     OverlappingCounters,
+    /// An app callback panicked (the `osis` dispatcher reports it and lives on).
+    Callback,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

@@ -48,13 +48,13 @@ impl Osis {
     }
 
     /// Calls `f` with every signal of kind `key` about `tid`.
-    pub fn on_signal<S: SignalKey + Send + 'static>(&self, tid: Tid, key: S, mut f: impl FnMut(SignalEvent<S::T>) + Send + 'static) -> Subscription {
+    pub fn on_signal<S: SignalKey + Send + 'static>(&self, tid: Tid, key: S, mut f: impl FnMut(&Osis, SignalEvent<S::T>) + Send + 'static) -> Subscription {
         let tid = self.read(|r| r.resolve(tid));
         let kind = key.kind().to_string();
         self.subscribe(Filter::Signal(tid, kind), false, |_| {
-            Box::new(move |_, d| {
+            Box::new(move |db, d| {
                 if let Delivery::Signal(s) = d {
-                    f(SignalEvent { value: key.decode(&s.value).map_err(Error::from), actor: s.actor, node: s.node, ts: s.ts });
+                    f(db, SignalEvent { value: key.decode(&s.value).map_err(Error::from), actor: s.actor, node: s.node, ts: s.ts });
                 }
             })
         })

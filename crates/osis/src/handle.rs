@@ -80,6 +80,8 @@ pub(crate) struct Inner {
     pub home: Tid,
     pub limit: usize,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
+    /// Serializes undo and redo: candidate selection and commit.
+    pub undo: Mutex<()>,
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
@@ -92,6 +94,23 @@ pub struct Osis {
 impl std::fmt::Debug for Osis {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Osis({})", self.inner.node)
+    }
+}
+
+/// A non-owning handle (`Osis::downgrade`).
+#[derive(Clone, Debug)]
+pub struct WeakOsis(std::sync::Weak<Inner>);
+
+impl WeakOsis {
+    /// The database, if still open.
+    pub fn upgrade(&self) -> Option<Osis> {
+        self.0.upgrade().map(|inner| Osis { inner })
+    }
+}
+
+impl std::fmt::Debug for Inner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Inner({})", self.node)
     }
 }
 
@@ -165,13 +184,19 @@ impl Osis {
         let node = engine.tid();
         let events = engine.subscribe();
         let (dispatch, queue) = Dispatch::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(Locked { engine, events, seq: 0 }), dispatch, node, me, home, limit, schemas: Mutex::new(Vec::new()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(Locked { engine, events, seq: 0 }), dispatch, node, me, home, limit, schemas: Mutex::new(Vec::new()), undo: Mutex::new(()) });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
         Ok(Osis { inner })
     }
 
     pub(crate) fn from_inner(inner: Arc<Inner>) -> Osis {
         Osis { inner }
+    }
+
+    /// A handle that does not keep the database open (for the rare callback that must capture
+    /// one; callbacks are passed `&Osis`).
+    pub fn downgrade(&self) -> WeakOsis {
+        WeakOsis(Arc::downgrade(&self.inner))
     }
 
     /// Closes this handle (the database closes with the last one; every commit is already
@@ -200,23 +225,29 @@ impl Osis {
 
     /// Runs `f` on the engine under the database lock, then queues its events for the
     /// dispatcher. For inspection (the CLI's `inspect`) and tests; apps never need it.
+    #[doc(hidden)]
     pub fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
         self.locked(|l| f(&mut l.engine))
     }
 
     pub(crate) fn locked<R>(&self, f: impl FnOnce(&mut Locked) -> R) -> R {
         let mut g = lock(&self.inner.eng);
+        let holder = &self.inner.dispatch.shared.holder;
+        *lock(holder) = Some(std::thread::current().id());
         let r = f(&mut g);
         let l = &mut *g;
         for e in l.events.try_iter() {
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
+        *lock(holder) = None;
         r
     }
 
     /// Blocks until every callback for changes made so far has run (returns at once on the
-    /// dispatcher thread). Tests and scripts use it to wait without sleeping.
+    /// dispatcher thread). Tests and scripts use it to wait without sleeping. Never call it
+    /// inside an `Osis::read` or `Osis::engine` closure: the dispatcher may need the lock
+    /// that closure holds (deadlock).
     pub fn settle(&self) {
         self.inner.dispatch.settle();
     }
