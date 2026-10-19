@@ -11,6 +11,4 @@
 - Done (notes/sync.md, Implementation (osis-node sync)): per (server, label) pass completion and `SyncEngine::complete_pass(actor)`; re-registration order (download, the actor's membership commits the server lacks, register, the rest); stranded heartbeat on a refused claim and after a complete pass without the head's read epoch, wrapped under the newest established secret; opens with any held secret, stamps, steps and token deletes only under established epochs.
 
 ## membership-flows
-- Re-seal: at the end of a complete pass, `reseal_member` for members `reseal_needed` reports, and for stranded heartbeats; when `newest_is_snapshot` do not re-seal (optionally rotate).
-- Rotation: boxes for members current in the timeline (`rotate` keeps history to established secrets); a removal's rotation uploaded before the step (node-sync does the ordering).
-- `/secrets` compaction only when `may_compact_secrets`.
+- Done (notes/node.md, Flows readings): `Engine::reseal_due` decides with node-sync's `SyncState::complete_pass`, skips roles whose newest is snapshot-established; stranded members are re-sealed by `reshare` (by hand or on a stranded heartbeat, node-sync) and over pairing; rotations box the timeline's current members; `/secrets` compaction is node-core's gate. Left: the removal's rotation uploaded before the step (node-sync).

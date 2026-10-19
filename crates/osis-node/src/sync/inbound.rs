@@ -68,12 +68,36 @@ impl SyncEngine {
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
                     }
-                    let mut e = self.state.entries.get(&(l, blob_id)).cloned().unwrap_or(Entry { wrap, stamp, cert: false, kind: Kind::Unknown });
-                    if stamp.is_some() || e.wrap != wrap {
-                        e.wrap = wrap;
-                        e.stamp = stamp;
+                    // a stamp counts only if it verifies under the head's write key (it is relayed)
+                    let head = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.clone());
+                    let stamp = stamp.filter(|st| match &head {
+                        Some(h) => osis_label::verify_stamp(&h.keys.write, &l, &blob_id, &wrap, st).is_ok(),
+                        // a bundle's stamps were checked against its path by the importer
+                        None => conn.is_none(),
+                    });
+                    match self.state.entries.get(&(l, blob_id)).cloned() {
+                        None => self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown }),
+                        Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
+                            // another wrap only if it opens to the blob key this node knows
+                            let known = self.state.blobs.get(&blob_id).map(|r| r.key.clone());
+                            let ok = match known {
+                                None => true,
+                                Some(k) => {
+                                    let g = self.group_of(&l);
+                                    let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
+                                    osis_label::unwrap_any(secrets.iter(), &blob_id, &wrap).is_some_and(|(_, x)| x.expose() == k.expose())
+                                }
+                            };
+                            if ok {
+                                e.wrap = wrap;
+                                if stamp.is_some() {
+                                    e.stamp = stamp;
+                                }
+                                self.state.set_entry(l, blob_id, e);
+                            }
+                        }
+                        Some(_) => {}
                     }
-                    self.state.set_entry(l, blob_id, e);
                     match blob {
                         Some(b) => {
                             self.fetching.remove(&blob_id);
@@ -90,6 +114,7 @@ impl SyncEngine {
                     }
                     if !self.state.present_anywhere(&l, &b) {
                         self.state.remove_entry(l, b);
+                        self.forget_blob(&b)?;
                     }
                 }
                 LogEvent::Pending { .. } => {}
@@ -103,6 +128,8 @@ impl SyncEngine {
         if let (Some(s), Some(c)) = (server, cursor) {
             self.state.set_cursor(s, l, Some(c));
         }
+        // a push (no Sync running) brings the log to its end: a pass end
+        let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && !x.syncing);
         // the label changed under us: a pass decides again (carriers, retags)
         if !touched.is_empty()
             && let Some(lc) = conn.and_then(|c| self.conns.get_mut(&c)).and_then(|c| c.labels.get_mut(&l))
@@ -115,11 +142,14 @@ impl SyncEngine {
         if let Some(c) = conn {
             let g = self.group_of(&l);
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).filter(|b| self.fetching.insert(*b)).collect();
+            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).filter(|b| self.fetching.insert(*b, c).is_none()).collect();
             if !want.is_empty() {
                 self.command(c, Command::Fetch { label: l, ids: want }, out)?;
             }
             self.fetch_waiting(c, l, out)?;
+        }
+        if pushed && let Some(s) = server {
+            self.bump_pass(s, l)?;
         }
         Ok(())
     }
@@ -251,13 +281,16 @@ impl SyncEngine {
             lc.synced = true;
             lc.dirty = true;
         }
-        self.bump_pass(server, l);
+        self.bump_pass(server, l)?;
         self.fetch_waiting(conn, l, out)
     }
 
-    pub(crate) fn bump_pass(&mut self, server: ServerKey, l: LabelId) {
+    pub(crate) fn bump_pass(&mut self, server: ServerKey, l: LabelId) -> Result<()> {
+        // membership commits applied by this run count before the pass end
+        self.engine_events()?;
         self.seq += 1;
         self.passes.insert((server, l), self.seq);
+        Ok(())
     }
 
     /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
@@ -269,7 +302,7 @@ impl SyncEngine {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
             let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
             for ch in &cb.header.chunks {
-                if self.state.entries.contains_key(&(l, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob) {
+                if self.state.entries.contains_key(&(l, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob, conn).is_none() {
                     missing.push(ch.blob);
                 }
             }
@@ -283,18 +316,35 @@ impl SyncEngine {
     /// Drops a commit blob no label entry names any more whose deltas are not all held (its
     /// key and ciphertext: a dropped body's copies go, spec/commits.md §5).
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
-        if self.state.entries.keys().any(|(_, x)| x == b) {
-            return Ok(());
-        }
         let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
-        let gone = self.engine.core.commits.get(&r.commit).is_none_or(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
-        if gone || r.cert {
+        let dropped = self.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let unused = !self.state.entries.keys().any(|(_, x)| x == b);
+        if dropped || unused && (r.cert || !self.engine.core.commits.contains_key(&r.commit)) {
+            // its entries stay (deletes at servers need no copy) with their wraps shredded
+            let ls: Vec<LabelId> = self.state.entries.keys().filter(|(_, x)| x == b).map(|(l, _)| *l).collect();
+            for l in ls {
+                if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
+                    e.wrap = [0; osis_crypto::WRAP_LEN];
+                    e.stamp = None;
+                    self.state.set_entry(l, *b, e);
+                }
+            }
             self.state.remove_blob(b);
             let id = *b;
             self.engine.run(|tx| {
                 tx.txn.delete_blob(&id);
                 Ok(())
             })?;
+        }
+        Ok(())
+    }
+
+    /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
+    /// most, compaction): key and ciphertext (spec/commits.md §5).
+    pub(crate) fn forget_dropped(&mut self) -> Result<()> {
+        let ids: Vec<BlobId> = self.state.blobs.iter().filter(|(_, r)| self.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)))).map(|(id, _)| *id).collect();
+        for id in ids {
+            self.forget_blob(&id)?;
         }
         Ok(())
     }

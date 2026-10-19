@@ -39,7 +39,8 @@ impl SyncEngine {
 
     /// Creates a label for group `g` at `servers` (an admin; spec/sync.md §2) and connects.
     pub fn create_label(&mut self, g: &Tid, servers: Vec<Address>) -> Result<(LabelId, Vec<Action>)> {
-        let l = self.engine.create_label(g, servers, &mut *self.rng)?;
+        let (l, done) = self.engine.create_label(g, &servers)?;
+        self.take_done(done)?;
         Ok((l, self.handle(super::Event::Local)))
     }
 
@@ -50,7 +51,8 @@ impl SyncEngine {
     /// placing the replacement `/label` commit under the old label.
     pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
         let servers = self.engine.group_labels(g)?.into_iter().find(|l| l.id == *old).map(|l| l.servers).ok_or(Error::Misuse("no such label"))?;
-        let new = self.engine.create_label(g, servers, &mut *self.rng)?;
+        let (new, done) = self.engine.create_label(g, &servers)?;
+        self.take_done(done)?;
         let mut m = crate::Mutation::new();
         let path = vec![osis_crdt::PathSeg::Key(osis_schema::Codec::to_value(old)), osis_crdt::PathSeg::Field(3)];
         m.op(*g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(Value::Bool(true)) })?;
@@ -71,6 +73,9 @@ impl SyncEngine {
         let mut out = Vec::new();
         let mut sent = BTreeSet::new();
         for (conn, l, g) in self.labels_holding(t) {
+            if self.uncovered(&g)?.contains(&Role::Read) {
+                continue;
+            }
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };
             let Some(keys) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.keys.clone()) else { continue };
             let (key, blob) = osis_label::seal_signal(&body, &self.engine.identity().keys().signing, &mut *self.rng)?;
@@ -116,6 +121,7 @@ impl SyncEngine {
                 continue;
             }
             self.engine.drop_body(&c, t, ak)?;
+            self.state.set_carrier(c, s);
         }
         Ok(self.handle(super::Event::Local))
     }
@@ -124,7 +130,18 @@ impl SyncEngine {
     /// (spec/permissions.md §3, §4): a fresh encryption per label, uploaded or deposited at the
     /// label's next pass.
     pub fn place_certificate(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
+        self.place_certificate_in(g, c, aspects)?;
+        Ok(self.handle(super::Event::Local))
+    }
+
+    pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<()> {
+        if self.state.inbox_only.contains(c) {
+            return Ok(());
+        }
         let labels: Vec<LabelId> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id).collect();
+        if labels.is_empty() || self.uncovered(g)?.contains(&Role::Read) {
+            return Ok(());
+        }
         for l in labels {
             if self.state.certs.contains(&(l, *c)) {
                 continue;
@@ -139,7 +156,7 @@ impl SyncEngine {
             }
             self.state.add_cert(l, *c);
         }
-        Ok(self.handle(super::Event::Local))
+        Ok(())
     }
 
     /// Delivers commit `c`'s deltas on `aspects` to actor `recipient` as an inbox blob
@@ -197,7 +214,10 @@ impl SyncEngine {
                 continue;
             };
             let seed = self.engine.get_typed(&o.owner, &ct::KEYS)?.and_then(|k| k.deposit_seed);
-            let Some(seed) = seed else { continue };
+            let Some(seed) = seed else {
+                self.diag(format!("inbox blob for {}: no deposit seed held for the inbox", o.owner));
+                continue;
+            };
             let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &o.label);
             let wrap = osis_crypto::filler_wrap(&mut *self.rng);
             let sig = osis_label::sign_deposit(&d, &o.label, &osis_label::blob_id(&o.blob), &wrap);

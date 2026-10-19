@@ -150,8 +150,7 @@ proptest! {
 }
 
 fn hex(s: &str) -> Vec<u8> {
-    let s: String = s.split_whitespace().collect();
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    osis_core::hex::decode(s).unwrap()
 }
 
 fn tag_head(t: u64) -> String {

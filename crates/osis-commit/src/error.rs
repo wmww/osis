@@ -20,10 +20,13 @@ pub enum Error {
     Delta(osis_crdt::Error),
     /// A signature or key failed to parse (an unknown agility case parks).
     Crypto(osis_crypto::Error),
-    /// A blob of a linked header list is not held locally. Local (fetch it, then retry).
+    /// A blob of a chunk tree (a linked header list, a large value) is not held locally. Local
+    /// (fetch it, then retry).
     Missing,
-    /// A blob of a linked header list failed its content hash. BadInput.
+    /// A chunk-tree blob failed its content hash or level. BadInput.
     Corrupt,
+    /// Beyond a local bound (a tree read above the caller's size bound, a tree too deep). Local.
+    TooLarge(&'static str),
     /// A blob could not be written or read. Local.
     Storage(&'static str),
     /// The caller's input cannot make a valid commit (a secret not supplied, one delta too large
@@ -40,8 +43,9 @@ osis_core::impl_error!(Error {
     DeltaHash { ai, di } => ("delta {ai}/{di} does not match its hash"),
     Delta(e) => ("{e}"),
     Crypto(e) => ("{e}"),
-    Missing => ("header list blob not held"),
-    Corrupt => ("header list blob failed its content hash"),
+    Missing => ("blob not held"),
+    Corrupt => ("blob failed its content hash"),
+    TooLarge(m) => ("too large: {m}"),
     Storage(m) => ("blob storage: {m}"),
     Build(m) => ("cannot build commit: {m}"),
 });
@@ -53,7 +57,7 @@ impl Classified for Error {
             Error::UnknownVersion(_) => ErrorClass::Parked,
             Error::Delta(e) => e.class(),
             Error::Crypto(e) => e.class(),
-            Error::Missing | Error::Storage(_) | Error::Build(_) => ErrorClass::Local,
+            Error::Missing | Error::TooLarge(_) | Error::Storage(_) | Error::Build(_) => ErrorClass::Local,
         }
     }
 }

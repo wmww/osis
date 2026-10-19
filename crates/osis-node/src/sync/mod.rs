@@ -11,6 +11,7 @@
 //! must-hold bodies, relays, certificates and heartbeats, deletions of must-not-hold bodies.
 
 mod bundle;
+mod deliver;
 #[cfg(feature = "driver")]
 pub mod driver;
 mod inbound;
@@ -161,7 +162,7 @@ pub struct SyncEngine {
     /// Event counter: pass completions and remote membership commits are ordered by it.
     pub(crate) seq: u64,
     pub(crate) passes: BTreeMap<(ServerKey, LabelId), u64>,
-    membership_seen: BTreeMap<Tid, u64>,
+    pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
     /// Signals received (also sent as engine events).
     pub(crate) signals: Vec<osis_label::SignalBody>,
@@ -170,9 +171,15 @@ pub struct SyncEngine {
     /// Inbox blobs waiting for a connection to their server.
     pub(crate) outbox: Vec<local::Outgoing>,
     /// Blobs asked for and not received yet.
-    pub(crate) fetching: BTreeSet<osis_core::BlobId>,
+    pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
+    /// Commits for nodes over a direct connection (`take_direct`).
+    pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
+    /// Commits placed before any other upload (`Delivery::First`).
+    pub(crate) first: BTreeSet<osis_core::CommitId>,
+    /// Labels synced, with the actor their keys derive from and their servers.
+    pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
 }
 
 impl SyncEngine {
@@ -198,8 +205,11 @@ impl SyncEngine {
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox: Vec::new(),
-            fetching: BTreeSet::new(),
+            fetching: BTreeMap::new(),
             stranded_at: BTreeMap::new(),
+            direct: Vec::new(),
+            first: BTreeSet::new(),
+            label_actors: BTreeMap::new(),
         })
     }
 
@@ -280,7 +290,7 @@ impl SyncEngine {
                 }
             }
             Event::Down { conn } => {
-                self.fetching.clear();
+                self.fetching.retain(|_, c| *c != conn);
                 if let Some(c) = self.conns.remove(&conn) {
                     let at = self.raw_now().saturating_add(self.cfg.retry_ms);
                     self.retry.insert(c.server, (c.address, at));
@@ -296,7 +306,7 @@ impl SyncEngine {
 
     /// Drains engine events: changes mark every open label for a pass; remote membership
     /// commits restart `complete_pass` for the actors they touch.
-    fn engine_events(&mut self) -> Result<()> {
+    pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
         while let Ok(e) = self.events.try_recv() {
             match e {
@@ -323,28 +333,16 @@ impl SyncEngine {
                     l.dirty = true;
                 }
             }
+            self.forget_dropped()?;
         }
         Ok(())
     }
 
     /// Whether every server this node syncs `actor`'s labels with has had a complete pass since
-    /// the last membership commit of the actor applied from elsewhere
-    /// (issues/keys-established-epochs.md; spec/permissions.md §3 re-seal timing).
-    pub fn complete_pass(&mut self, actor: &Tid) -> bool {
-        let since = self.membership_seen.get(actor).copied().unwrap_or(0);
-        let mut any = false;
-        for (g, l) in self.labels() {
-            if self.engine.core.secret_actor(&g) != Some(*actor) {
-                continue;
-            }
-            for a in &l.servers {
-                any = true;
-                if self.passes.get(&(a.key, l.id)).is_none_or(|p| *p <= since) {
-                    return false;
-                }
-            }
-        }
-        any
+    /// the last membership commit of the actor applied from elsewhere (`flows::SyncState`;
+    /// spec/permissions.md §3 re-seal timing).
+    pub fn complete_pass(&self, actor: &Tid) -> bool {
+        crate::flows::SyncState::complete_pass(self, actor)
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
@@ -361,7 +359,21 @@ impl SyncEngine {
                 }
             }
         }
+        self.label_actors = out.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
         out
+    }
+
+    /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
+    /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
+    /// encrypt under.
+    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
+        if self.engine.core.is_key_actor(&a) {
+            return Ok(Default::default());
+        }
+        let (done, still) = self.engine.ensure_rotated(&a)?;
+        self.take_done(done)?;
+        Ok(still)
     }
 
     /// The servers to keep connections to.

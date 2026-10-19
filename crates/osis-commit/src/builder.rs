@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{AspectEntry, ChunkEntry, Form, Header, Kind, Links, ListField, Origin, PurgeItem, Token, aspect_key, purge_value, token_value};
 use crate::project::check_fits;
 use crate::tokens::{Prefix, Secrets, TokenSecret, token_secrets};
-use crate::tree::{BlobSink, write_tree};
+use crate::lists::{BlobSink, write_tree};
 use crate::Error;
 use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_COMMITMENTS};
 use osis_core::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};

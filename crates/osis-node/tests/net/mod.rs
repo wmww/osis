@@ -298,7 +298,7 @@ impl Net {
         }
         let e = self.engine(admin);
         rotation(e, g, &recipients, 1, true);
-        self.engine(admin).create_label(&g, addrs, &mut SeededRng::from_u64(77)).unwrap();
+        self.engine(admin).create_label(&g, &addrs).unwrap();
         for (m, _) in members {
             self.pair(admin, *m);
         }

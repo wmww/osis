@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 3 (transport, large-values, node-core, server running); wave 2 integration pass running.
+Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 
 ## Plans
 | plan | state | notes |
@@ -35,7 +35,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
-| node-core | review fixes | reviewer: 3 high (un-merge loses writes, content rules on received commits, expired missing deltas) + sim divergence; agent fixing; established epochs after the keys follow-up |
+| node-core | merged at b45a699, reviewed | plan folded into notes/node.md; issues/node-core-gaps.md; remaining obligations in issues/keys-established-epochs.md |
 | transport | merged, reviewed | plan stays until server and node run over both transports |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
 | server | merged, reviewed; serves over QUIC (osis_transport::link) | plan stays until node-sync and sim run through it |
@@ -43,9 +43,18 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
-| node-sync, membership-flows, api (first half) | not started | wave 4 |
-| apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
+| node-sync | review | done; reviewer running; issues/node-sync-gaps.md, issues/pending-boxes.md |
+| membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
+| api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
+| node-sync | running (opus, worktree) | |
+| membership-flows | review | done over LocalPeer; review fixes done; issues roster-snapshot-deltas, flows-gaps |
+| api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
+| tla rerun (round 2) | running (opus, worktree) | |
+| cli | running (opus, worktree) | on the api's first half |
+| apps-e2e, p2p, api (second half) | not started | wave 5, after node-sync merges |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
@@ -87,7 +96,9 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
   - S11, S13: spec/commits.md §5 a writer holding no covering snapshot writes one before dropping a body with live writes (local drop at a keep-at-most bound, offline included); a timed delete of a body with live writes goes with the snapshot like at most 0. S12: spec/sync.md §7 an identical body carries only the one with the higher blob ID; of covered-equal snapshots the higher commit ID goes. S14: spec/commits.md §5 nodes keep the headers of applied commits; a header-only rewrite is covered (may-hold). S15: accepted (offline copy; notes/sync.md). Purge commits' `MEMBERSHIP_KEEP` overrides keep-at-most too (wording).
 - keys review: spec/crypto.md §4 the covers rule for a departure inside a member is recursive (M's box names M's newest keyset epoch and that epoch covers the departure); spec/permissions.md §3 a node rotating for a departure inside M rotates the intermediates top-down where it may, else does not encrypt under the epoch (stranded until the intermediate rotates). Scenario: device D removed from person P, P member of team T, T member of doc U: U's writers kept encrypting under U's old epoch because T's box at U still named T's newest keyset. Also spec/crypto.md §4: a rotation that removes a key actor's box and writes it no role writes it one box with every role it holds; a grant to a key actor carries each role's newest current epoch; carried secrets are encrypting under their epochs (an uncovered carried role is rotated too). §5: the rotation commit wraps under the newest superseded read epoch whose secret the rotator holds. spec/sync.md §5 "greater (n, nonce)" → "newer". spec/permissions.md §3 cascade wording ("the roles M left").
 
+- membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
+
 ## Owner-calls pending
-- issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP).
+- issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP). membership-flows extended the omission to membership deltas (invite grants, self-removals, writers' rotations and re-seals are written by non-admins), receivers accept it.
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
 - issues/reseal-triggers.md: members no automatic re-seal trigger reaches when their deposits are refused (R2; the wrongful-re-seal residues were closed in TLC round 2); recommended: accept for the MVP, mechanisms listed.

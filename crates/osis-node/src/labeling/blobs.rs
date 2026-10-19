@@ -258,19 +258,20 @@ impl Engine {
         Ok(k)
     }
 
-    /// The delete tokens this node can derive for a commit blob's commitments (spec/crypto.md
-    /// §7): each with its level, tried over every held epoch of the level's secret.
-    pub fn tokens_for(&mut self, prefix: &osis_label::Prefix, c: &CommitId, parts: &[(usize, usize)]) -> Vec<(u8, Secret32)> {
+    /// The delete tokens this node can derive for the deltas `parts` of commit `c` (spec/crypto.md
+    /// §7): per token the header lists for their class, with its level, tried over every held
+    /// epoch of the level's secret. Needs no blob: a dropped body's copy may be gone.
+    pub fn tokens_of(&mut self, c: &CommitId, parts: &[(usize, usize)]) -> Vec<(u8, Secret32)> {
         let Some(h) = self.header(c) else { return Vec::new() };
-        let Some(t) = parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid) else { return Vec::new() };
-        let Some(thing) = self.epochs(&t) else { return Vec::new() };
+        let Some(a) = parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Vec::new() };
+        let Some(thing) = self.epochs(&a.tid) else { return Vec::new() };
         let author = if h.kind == Kind::Import { None } else { self.epochs(&h.actor) };
         let mut out = Vec::new();
-        for level in [osis_keys::tokens::LEVEL_ADMIN, osis_keys::tokens::LEVEL_AUTHOR, osis_keys::tokens::LEVEL_WRITER] {
-            for (_, s) in osis_keys::token_candidates(level, &thing, author.as_ref()) {
+        for t in a.tokens.iter().filter_map(|i| h.tokens.get(*i)) {
+            for (_, s) in osis_keys::token_candidates(t.level, &thing, author.as_ref()) {
                 let tok = osis_crypto::delete_token(s, &h.salt);
-                if prefix.match_token(tok.expose()) == Some(level) {
-                    out.push((level, tok));
+                if osis_crypto::token_hash(tok.expose()) == t.hash {
+                    out.push((t.level, tok));
                     break;
                 }
             }

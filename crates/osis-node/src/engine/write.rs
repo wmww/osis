@@ -41,6 +41,13 @@ pub struct Mutation {
     pub(crate) frontier: Option<Value>,
     /// Membership flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
+    /// A held key actor that signs instead of the node (commit form).
+    pub(crate) signer: Option<Tid>,
+    /// A roster snapshot (spec/permissions.md §6): membership kind with the marker.
+    pub(crate) roster: bool,
+    /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
+    /// of an edge already removed (membership flows).
+    pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
 }
 
 impl Default for Mutation {
@@ -55,12 +62,20 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = Some(actor);
+        self
+    }
+
+    /// Signs as a key actor whose seed the node holds (`Engine::hold_key_actor`): a recovery
+    /// key or link key (spec/crypto.md §2). Commit form: its holders share no counters.
+    pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
+        self.signer = Some(key_actor);
+        self.form = Form::Commit;
         self
     }
 
@@ -131,6 +146,13 @@ impl Mutation {
         self
     }
 
+    /// Makes this an undo of `target` (spec/commits.md §7) acting as the mutation's actor; the
+    /// mutation may carry no other ops (`Misuse` at commit).
+    pub fn undo(&mut self, target: CommitId) -> &mut Self {
+        self.undoes = Some(target);
+        self
+    }
+
     /// The frontier of an explicit demotion (membership flows).
     pub fn frontier(&mut self, v: Value) -> &mut Self {
         self.frontier = Some(v);
@@ -138,7 +160,6 @@ impl Mutation {
     }
 
     /// Skips the plain role check (membership flows judge invite grants and self-removals).
-    #[allow(dead_code)]
     pub(crate) fn unchecked(&mut self) -> &mut Self {
         self.unchecked = true;
         self
@@ -162,9 +183,9 @@ pub(crate) fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role
     core.timelines.get(tid)?.role(node, tid, At::now(ts))
 }
 
-/// May this node write `ak` of `tid` at `ts`? Things created by the commit take their owner's.
-pub(crate) fn check_authority(core: &Core, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
-    let node = core.id.tid();
+/// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
+/// created by the commit take their owner's.
+pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     let need = required_role(ak);
     let role = match creates.iter().find(|r| r.tid() == *tid) {
         Some(CreationRecord::KeyActor { .. }) => (*tid == node).then_some(Role::Admin),
@@ -210,6 +231,8 @@ pub(crate) struct CommitPlan {
     pub undoes: Option<CommitId>,
     pub frontier: Option<Value>,
     pub origins: Vec<osis_commit::Origin>,
+    /// The signing key actor: the node, or a key actor it holds.
+    pub signer: Tid,
 }
 
 /// Retention, expiry and blob framing of one aspect's delta in a commit (spec/commits.md §5,
@@ -233,7 +256,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, sc
 
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
-    let node = tx.core.id.tid();
+    let node = plan.signer;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (retention, expires, framing) = framing_for(tx.core, &plan, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
@@ -275,7 +298,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
         let mut sink = ListBlobs { blobs: TxBlobs::new(&mut tx.txn), rng: &mut list_rng };
-        b.build(&core.id.keys().signing, &secrets, &mut sink, &mut *tx.rng)
+        let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
+        b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = built?;
     let id = built.commit.id();
@@ -298,7 +322,14 @@ impl Engine {
 }
 
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
-    let node = tx.core.id.tid();
+    let node = match m.signer {
+        Some(k) if tx.core.key_actors.contains_key(&k) => k,
+        Some(_) => return Err(Error::Misuse("signer not held")),
+        None => tx.core.id.tid(),
+    };
+    if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.frontier.is_none()) {
+        return Err(Error::Misuse("an undo mutation carries no other ops"));
+    }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     for rec in &m.creates {
         let t = rec.tid();
@@ -309,12 +340,21 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
     }
+    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().cloned().collect();
+    for k in dead {
+        m.aspects.entry(k).or_default();
+    }
     let membership = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_membership_class(ak.as_str()));
     let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_membership_class(ak.as_str()));
     if membership && content {
         return Err(Error::Misuse("a commit is either content or membership"));
     }
-    let kind = if membership { Kind::Membership } else { Kind::Content };
+    let kind = match m.roster {
+        true if membership => Kind::RosterSnapshot,
+        true => return Err(Error::Misuse("a roster snapshot writes /members and /tenures only")),
+        false if membership => Kind::Membership,
+        false => Kind::Content,
+    };
     if let Some(u) = m.undoes {
         return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node)).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
@@ -322,7 +362,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         });
     }
     let ts = tx.core.hlc.next();
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new() };
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
@@ -331,7 +371,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
-            check_authority(tx.core, &plan.creates, &tid, ak.as_str(), ts)?;
+            check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
@@ -358,6 +398,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let out = match &view {
             Some(v) => run_ops(state, w, &am.ops, v)?,
             None => run_ops(state, w, &am.ops, &AnyView)?,
+        };
+        let w2 = Writer::new(ts, Source::node(node), lo);
+        let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
+            (o, None) => o,
+            (Some((mut f, r)), Some(ds)) => {
+                f.join(osis_crdt::reset_entries(&w2, ds));
+                Some((f, r))
+            }
+            (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
         };
         let Some((fragment, range)) = out else { continue };
         if m.form == Form::Commit {

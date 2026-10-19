@@ -139,6 +139,10 @@ pub(crate) struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side membership rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Key actors other than the node whose seed this node holds for now (a recovery key from
+    /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
+    /// open their boxes. In memory only.
+    pub key_actors: BTreeMap<Tid, Arc<Identity>>,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -254,6 +258,7 @@ impl Core {
             backup: None,
             written: Vec::new(),
             skip_writer_rules: false,
+            key_actors: BTreeMap::new(),
         }
     }
 
@@ -457,6 +462,18 @@ impl Engine {
         self.core.schemas.insert(s.id, s);
     }
 
+    /// A local record of the API layer (`osis`), never synced.
+    pub fn app_record(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        let k = [records::APP, name.as_bytes()].concat();
+        self.run(|tx| Ok(tx.txn.get_local(&k)?))
+    }
+
+    /// Writes a local record of the API layer.
+    pub fn set_app_record(&mut self, name: &str, value: &[u8]) -> Result<()> {
+        let k = [records::APP, name.as_bytes()].concat();
+        self.run(|tx| Ok(tx.txn.put_local(&k, value, Shred::No)?))
+    }
+
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
@@ -519,6 +536,7 @@ impl Engine {
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);
+        fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };

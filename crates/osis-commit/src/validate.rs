@@ -79,11 +79,12 @@ impl Header {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
             }
             // levels as listed (ascending, since tokens sort by level first): exactly those the
-            // retention calls for; only level 1 may be missing, and not on membership commits
-            // (provisional, issues/token-admin-secret.md)
+            // retention calls for; only level 1 may be missing (a writer without the admin
+            // secret: content, or a non-admin's membership write; provisional,
+            // issues/token-admin-secret.md)
             let required = token_levels(&a.retention, kind);
             let without_admin: Vec<u8> = required.iter().copied().filter(|l| *l != 1).collect();
-            if levels != required && (kind.is_membership() || levels != without_admin) {
+            if levels != required && levels != without_admin {
                 return Err(Error::Invalid("token levels do not match the retention"));
             }
             // expiry

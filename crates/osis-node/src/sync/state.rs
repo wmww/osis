@@ -26,6 +26,8 @@ const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
 const HINT: &[u8] = b"y/i";
 const TIMED: &[u8] = b"y/d";
+const INBOX_ONLY: &[u8] = b"y/n";
+const CARRIER: &[u8] = b"y/s";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +82,10 @@ pub struct State {
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes sent (spec/sync.md §5).
     pub timed: BTreeSet<(ServerKey, LabelId, BlobId)>,
+    /// Commits that travel by inbox only (re-seals): never placed under a label.
+    pub inbox_only: BTreeSet<CommitId>,
+    /// The snapshot carrying a body's live writes once it was dropped (spec/sync.md §7).
+    pub carriers: BTreeMap<CommitId, CommitId>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -192,6 +198,12 @@ impl State {
                 b"g" => {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
+                b"s" => {
+                    s.carriers.insert(CommitId(r.arr()?), CommitId(Rd::new(&v).arr()?));
+                }
+                b"n" => {
+                    s.inbox_only.insert(CommitId(r.arr()?));
+                }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
@@ -223,7 +235,8 @@ impl State {
         engine.run(|tx| {
             for (k, v) in writes {
                 match v {
-                    Some(v) => tx.txn.put_local(&k, &v, Shred::No)?,
+                    // a replaced wrap or key leaves no copy behind
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -334,6 +347,17 @@ impl State {
 
     pub fn is_gone(&self, l: &LabelId, b: &BlobId) -> bool {
         self.gone.iter().any(|(_, x, y)| x == l && y == b)
+    }
+
+    pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
+        self.put(key(CARRIER, &[&body.0]), snapshot.0.to_vec());
+        self.carriers.insert(body, snapshot);
+    }
+
+    pub fn set_inbox_only(&mut self, c: CommitId) {
+        if self.inbox_only.insert(c) {
+            self.put(key(INBOX_ONLY, &[&c.0]), Vec::new());
+        }
     }
 
     pub fn set_timed(&mut self, s: ServerKey, l: LabelId, b: BlobId) {

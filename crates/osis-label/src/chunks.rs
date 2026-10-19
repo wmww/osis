@@ -142,7 +142,7 @@ impl ValueWriter {
                 if !self.head.is_empty() {
                     t.write(sink, &std::mem::take(&mut self.head))?;
                 }
-                t.write(sink, data)
+                Ok(t.write(sink, data)?)
             }
             (None, Some(buf)) => {
                 buf.extend_from_slice(data);

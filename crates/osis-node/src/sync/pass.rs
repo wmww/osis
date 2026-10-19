@@ -11,7 +11,7 @@ use crate::error::Result;
 use crate::labeling::{Body, Facts, HeadKeys, Hold, Why, classify, delete_item, may_delete, seal_body};
 use osis_commit::Kind as CKind;
 use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
-use osis_core::{Ak, BlobId, CommitId, LabelId, Tid, WallMs};
+use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_crypto::Secret32;
 use osis_proto::Command;
 use osis_schema::core_types as ct;
@@ -38,10 +38,23 @@ impl SyncEngine {
         let Some(lc) = c.labels.get(&l) else { return Ok(()) };
         let (g, head, index) = (lc.group, lc.head.clone(), lc.index.unwrap_or(0));
         // secrets may have arrived since the head was accepted
-        let keys = match &head {
+        let mut keys = match &head {
             Some(h) => self.engine.head_keys(&g, index, h)?,
             None => return Ok(()),
         };
+        // never encrypt under an epoch that does not cover a known departure: rotate first
+        // (flows' cascade), else hold back what the uncovered roles would sign or wrap
+        let still = self.uncovered(&g)?;
+        if still.contains(&Role::Write) {
+            keys.write = None;
+        }
+        if still.contains(&Role::Admin) {
+            keys.delete = None;
+        }
+        let read_ok = !still.contains(&Role::Read);
+        if !read_ok {
+            keys.sync_established = false;
+        }
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.keys = keys.clone();
         }
@@ -58,23 +71,31 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
-        let bodies = self.engine.label_bodies(&g)?;
+        let mut bodies = self.engine.label_bodies(&g)?;
+        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
         let mut sends: Vec<Out> = Vec::new();
         let snaps = self.snapshots_at(&l);
+        let unsettled = self.unsettled(&l, &g)?;
         for b in &bodies {
-            if !self.must_hold(b, &snaps)? {
+            if !self.must_hold(b, &snaps, &unsettled)? {
                 continue;
             }
             let entry = self.entry_for(&server, &l, b);
             let id = match entry {
                 Some(id) => id,
-                None if keys.is_writer() || self.may_deposit(&keys, b) => match self.place(&g, l, b, false)? {
+                None if read_ok && (keys.is_writer() || self.may_deposit(&keys, b)) => match self.place(&g, l, b, false)? {
                     Some(id) => id,
                     None => continue,
                 },
                 None => continue,
             };
-            let prio = if b.membership { 0 } else { 2 };
+            let prio = if self.first.contains(&b.commit) {
+                0
+            } else if b.membership {
+                1
+            } else {
+                3
+            };
             sends.push(Out { prio, id });
             if keys.is_writer() {
                 for cb in self.chunk_blobs(&b.commit)? {
@@ -86,9 +107,29 @@ impl SyncEngine {
                 }
             }
         }
-        if keys.is_writer() || keys.deposit.is_some() {
-            self.certificates(&g, l, &mut sends)?;
-            self.heartbeat(&g, l, &keys, conn, &mut sends)?;
+        if read_ok && (keys.is_writer() || keys.deposit.is_some()) {
+            self.certificates(&g, l)?;
+            self.heartbeat(&g, l, &keys, conn)?;
+        }
+        // every certificate copy this node placed here: chain, card, flows' placements
+        let certs: Vec<(BlobId, Option<CommitId>)> = self
+            .state
+            .entries
+            .range((l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| *x == l)
+            .filter(|(_, e)| e.cert)
+            .map(|((_, id), e)| (*id, if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None }))
+            .collect();
+        for (id, c) in certs {
+            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "/seen"));
+            let prio = if c.is_some_and(|c| self.first.contains(&c)) {
+                0
+            } else if beat {
+                4
+            } else {
+                2
+            };
+            sends.push(Out { prio, id });
         }
         sends.sort_by_key(|o| o.prio);
         let mut seen = BTreeSet::new();
@@ -103,6 +144,10 @@ impl SyncEngine {
             if let Some(w) = &keys.write {
                 let stamp = osis_label::sign_stamp(w, &l, &o.id, &e.wrap);
                 uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+                // kept, so a later pass does not promote it again
+                let mut e = e;
+                e.stamp = Some(stamp);
+                self.state.set_entry(l, o.id, e);
             } else if let Some(stamp) = e.stamp {
                 uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
             } else if let Some(d) = &keys.deposit
@@ -121,7 +166,30 @@ impl SyncEngine {
         for (blob, wrap, sig) in deposits {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
-        self.deletions(conn, server, l, &keys, &bodies, &snaps, out)
+        let settled = unsettled.is_empty();
+        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)
+    }
+
+    /// Aspects this node cannot judge coverage of yet: those of pending commits; every aspect
+    /// (`None` in the set) while an entry of the label opens under a held secret and is not
+    /// applied (a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
+    fn unsettled(&mut self, l: &LabelId, g: &Tid) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
+        let mut out = BTreeSet::new();
+        for (c, r) in self.engine.pending() {
+            if r == crate::Reason::Parked {
+                continue;
+            }
+            let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
+            if let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) {
+                out.extend(cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone()))));
+            }
+        }
+        let secrets = self.read_secrets(g);
+        let unopened = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|((_, b), e)| e.kind == Kind::Unknown && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some());
+        if unopened {
+            out.insert(None);
+        }
+        Ok(out)
     }
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
@@ -181,7 +249,7 @@ impl SyncEngine {
 
     /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, or
     /// established uncovered by the label's snapshots.
-    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
+    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &BTreeSet<Option<(Tid, Ak)>>) -> Result<bool> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let now = self.now();
@@ -204,7 +272,9 @@ impl SyncEngine {
             }
             covered &= c;
         }
-        Ok(classify(&Facts { required: true, closure: true, before_at_least: before, covered: Some(covered), ..Facts::default() }) == Hold::Must)
+        let known = !unsettled.contains(&None) && !aspects.iter().any(|k| unsettled.contains(&Some(k.clone())));
+        let covered = if covered || known { Some(covered) } else { None };
+        Ok(classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must)
     }
 
     /// The entry under `l` holding exactly this body, not tombstoned at `server`.
@@ -244,8 +314,11 @@ impl SyncEngine {
 
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
     /// encryption per label, placed once per commit.
-    fn certificates(&mut self, g: &Tid, l: LabelId, sends: &mut Vec<Out>) -> Result<()> {
+    fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         for (c, ais) in self.engine.certificates(g) {
+            if self.state.inbox_only.contains(&c) {
+                continue;
+            }
             let placed: Vec<BlobId> = self
                 .state
                 .entries
@@ -256,13 +329,9 @@ impl SyncEngine {
                 .collect();
             if placed.is_empty() && !self.state.certs.contains(&(l, c)) {
                 for b in self.engine.partial_bodies(&c, &ais)? {
-                    if let Some(id) = self.place(g, l, &b, true)? {
-                        sends.push(Out { prio: 1, id });
-                    }
+                    self.place(g, l, &b, true)?;
                 }
                 self.state.add_cert(l, c);
-            } else {
-                sends.extend(placed.into_iter().map(|id| Out { prio: 1, id }));
             }
         }
         Ok(())
@@ -270,7 +339,7 @@ impl SyncEngine {
 
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),
     /// skipped by deposit when the budget is tight.
-    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, conn: ConnId, sends: &mut Vec<Out>) -> Result<()> {
+    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, conn: ConnId) -> Result<()> {
         if !self.cfg.heartbeats {
             return Ok(());
         }
@@ -285,9 +354,7 @@ impl SyncEngine {
         let Some(c) = self.heartbeat_commit(false)? else { return Ok(()) };
         let ais = BTreeSet::from([0usize]);
         for b in self.engine.partial_bodies(&c, &ais)? {
-            if let Some(id) = self.place(g, l, &b, true)? {
-                sends.push(Out { prio: 3, id });
-            }
+            self.place(g, l, &b, true)?;
         }
         self.state.set_beat(l, now);
         Ok(())
@@ -305,9 +372,12 @@ impl SyncEngine {
         {
             return Ok(Some(c));
         }
+        // `ts` of the commit: the HLC's next wall time (spec/permissions.md §4)
+        let ts = now.max(self.engine.core.hlc.last().wall_ms().0);
+        let life = self.cfg.heartbeat_lifetime_ms.clamp(osis_core::format::HEARTBEAT_MIN_LIFETIME_MS, osis_core::format::HEARTBEAT_MAX_LIFETIME_MS);
         let mut m = crate::Mutation::new();
-        m.set(me, &ct::SEEN, &ct::Seen { ts: WallMs(now), stranded })?;
-        m.expires(me, &ct::SEEN, WallMs(now.saturating_add(self.cfg.heartbeat_lifetime_ms)))?;
+        m.set(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded })?;
+        m.expires(me, &ct::SEEN, WallMs(ts.saturating_add(life)))?;
         self.engine.commit(m)
     }
 
@@ -339,14 +409,14 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let server = c.server;
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
-        let (g, keys, head, index) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.index.unwrap_or(0));
-        let (Some(delete), Some(write), Some(head)) = (keys.delete.clone(), keys.write.clone(), head) else { return Ok(false) };
+        let (g, keys, head) = (lc.group, lc.keys.clone(), lc.head.clone());
+        let (Some(_), Some(write), Some(head)) = (keys.delete.clone(), keys.write.clone(), head) else { return Ok(false) };
         let Some(e) = self.engine.epochs(&g) else { return Ok(false) };
         if !osis_keys::newer_than_head(&e, keys.epochs) {
             return Ok(false);
         }
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
-        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a)).map(|(id, _)| *id).collect();
+        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(id, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a) && !self.state.inbox_only.contains(id)).map(|(id, _)| *id).collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {
@@ -371,7 +441,9 @@ impl SyncEngine {
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
-        let (step, set) = self.engine.new_step(&g, index, Some((&head, &delete)), &mut *self.rng)?;
+        let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
+        self.take_done(done)?;
+        let Some((step, set)) = step else { return Ok(false) };
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.registering = Some((step.clone(), set.clone()));
         }
@@ -381,17 +453,16 @@ impl SyncEngine {
 
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
     /// judge it (may-hold).
-    fn judge(&mut self, l: &LabelId, id: &BlobId, e: &Entry, bodies: &[Body]) -> Result<Option<Judged>> {
+    #[allow(clippy::too_many_arguments)]
+    fn judge(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, bodies: &[Body], settled: bool) -> Result<Option<Judged>> {
         let now = self.now();
-        if let Some(b) = self.engine.blob(id)?
-            && let Ok(p) = osis_label::Prefix::parse(&b)
-            && p.expiry().is_some_and(|t| t.0 <= now)
-        {
-            return Ok(Some((Hold::MustNot(Why::Expired), false, Vec::new())));
-        }
         let Kind::Commit { commit, parts } = &e.kind else { return Ok(None) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok(None) };
         let h = m.header.clone();
+        // a blob expires whole with its class (spec/sync.md §3)
+        if parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).and_then(|a| a.expires).is_some_and(|t| t <= now) {
+            return Ok(Some((Hold::MustNot(Why::Expired), false, Vec::new())));
+        }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let dropped: Vec<(usize, usize)> = parts.iter().filter(|p| m.dropped.contains(p)).copied().collect();
         if !dropped.is_empty() {
@@ -410,8 +481,14 @@ impl SyncEngine {
         if desired.contains(&parts) {
             f.required = true;
             // the duplicate with the higher blob ID goes (spec/sync.md §7)
-            f.duplicate_higher = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).any(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && self.state.present_anywhere(l, b));
+            f.duplicate_higher = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).any(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && self.state.is_present(server, l, b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
+            // a superset projection: every delta in it must be one the label's actor may read
+            let x = self.engine.group_actor(g);
+            let foreign = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid)));
+            if foreign && settled {
+                return Ok(Some((Hold::MustNot(Why::Outside), true, aspects)));
+            }
             f.required = true;
         } else {
             let sup = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|((_, b), o)| {
@@ -432,7 +509,9 @@ impl SyncEngine {
                 // only deltas this node holds can be judged outside the label
                 let c = *commit;
                 let held: Vec<(usize, usize)> = self.engine.run(|tx| Ok(tx.get_commit(&c)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default()))?;
-                if !parts.iter().all(|p| held.contains(p)) {
+                // and only once the view is settled (a peer's placement this node cannot
+                // explain yet stays: a receiver keeps what a peer placed, spec/sync.md §3)
+                if !parts.iter().all(|p| held.contains(p)) || !settled {
                     return Ok(None);
                 }
             }
@@ -443,12 +522,12 @@ impl SyncEngine {
     /// Deletes must-not-hold entries present at the server, carriers first (spec/sync.md §6,
     /// §7); timed deletes for bodies under a relative keep-at-most (spec/commits.md §5).
     #[allow(clippy::too_many_arguments)]
-    fn deletions(&mut self, conn: ConnId, server: ServerKey, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, out: &mut Vec<super::Action>) -> Result<()> {
+    fn deletions(&mut self, conn: ConnId, server: ServerKey, l: LabelId, g: &Tid, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let ids = self.state.present_at(&server, &l);
         let mut items = Vec::new();
         for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
-            let Some((hold, live, aspects)) = self.judge(&l, &id, &e, bodies)? else { continue };
+            let Some((hold, live, aspects)) = self.judge(&server, &l, g, &id, &e, bodies, settled)? else { continue };
             let Hold::MustNot(why) = hold else { continue };
             if why == Why::Expired {
                 // the server drops it unattended (spec/sync.md §5)
@@ -464,7 +543,9 @@ impl SyncEngine {
                 _ => self.carried(&server, &l, &e, &aspects, snaps)?,
             };
             if !may_delete(why, live, carried) {
-                self.snapshot_first(&aspects)?;
+                if let Kind::Commit { commit, .. } = &e.kind {
+                    self.snapshot_first(&aspects, commit)?;
+                }
                 continue;
             }
             if let Some(item) = self.delete_for(keys, &l, &id, &e, None)? {
@@ -486,7 +567,7 @@ impl SyncEngine {
             let aspects = vec![(a.tid, a.ak.clone())];
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             if !self.carried(&server, &l, &e, &aspects, snaps)? {
-                self.snapshot_first(&aspects)?;
+                self.snapshot_first(&aspects, &b.commit)?;
                 continue;
             }
             if let Some(item) = self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
@@ -504,13 +585,24 @@ impl SyncEngine {
     /// a body's live writes (spec/sync.md §7).
     fn carried(&mut self, server: &ServerKey, l: &LabelId, e: &Entry, aspects: &[(Tid, Ak)], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
         let Kind::Commit { commit, .. } = &e.kind else { return Ok(false) };
-        let Some(ts) = self.engine.header(commit).map(|h| h.ts) else { return Ok(false) };
-        for k in aspects {
-            let ok = snaps.get(k).into_iter().flatten().any(|s| {
-                s != commit
-                    && self.engine.header(s).is_some_and(|h| h.ts > ts)
-                    && self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if c == s) && self.state.is_present(server, l, b))
-            });
+        let dropped = self.engine.core.commits.get(commit).is_some_and(|m| !m.dropped.is_empty());
+        for (t, a) in aspects {
+            // the snapshot that covered the body when it was dropped, else one covering it now
+            let candidates: Vec<CommitId> = match self.state.carriers.get(commit) {
+                Some(s) => vec![*s],
+                None if dropped => Vec::new(),
+                None => snaps.get(&(*t, a.clone())).cloned().unwrap_or_default(),
+            };
+            let mut ok = false;
+            for s in candidates {
+                if s == *commit || !self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if *c == s) && self.state.is_present(server, l, b)) {
+                    continue;
+                }
+                if self.state.carriers.get(commit) == Some(&s) || self.engine.covered(&s, commit, t, a)? == Some(true) {
+                    ok = true;
+                    break;
+                }
+            }
             if !ok {
                 return Ok(false);
             }
@@ -520,14 +612,17 @@ impl SyncEngine {
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a
     /// covering snapshot first when it may write the aspect (spec/sync.md §7).
-    fn snapshot_first(&mut self, aspects: &[(Tid, Ak)]) -> Result<()> {
+    fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
+        if self.state.carriers.contains_key(body) {
+            return Ok(());
+        }
         for (t, a) in aspects {
-            if is_membership(a) || self.engine.role_on(t) < Some(osis_core::Role::Write) {
+            if is_membership(a) || self.engine.role_on(t) < Some(Role::Write) {
                 continue;
             }
-            let newest_is_snapshot = self.engine.core.by_aspect.get(&(*t, a.clone())).and_then(|s| s.iter().next_back()).and_then(|(_, c)| self.engine.header(c)).is_some_and(|h| is_snapshot(h.kind));
-            if !newest_is_snapshot {
-                self.engine.snapshot(t, a)?;
+            // a snapshot from this node's whole state covers every body of the aspect it applied
+            if let Some(s) = self.engine.snapshot(t, a)? {
+                self.state.set_carrier(*body, s);
             }
         }
         Ok(())
@@ -535,11 +630,8 @@ impl SyncEngine {
 
     /// A delete item for an entry: delete key, else a token this node can derive.
     fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry, at: Option<WallMs>) -> Result<Option<osis_label::DeleteItem>> {
-        let tokens: Vec<(u8, Secret32)> = match (&e.kind, self.engine.blob(id)?) {
-            (Kind::Commit { commit, parts }, Some(b)) => match osis_label::Prefix::parse(&b) {
-                Ok(p) => self.engine.tokens_for(&p, commit, parts),
-                Err(_) => Vec::new(),
-            },
+        let tokens: Vec<(u8, Secret32)> = match &e.kind {
+            Kind::Commit { commit, parts } => self.engine.tokens_of(commit, parts),
             _ => Vec::new(),
         };
         Ok(delete_item(keys, l, *id, at, &tokens))
