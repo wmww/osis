@@ -132,9 +132,9 @@ Each line: command → API call. Options not listed follow the API's parameters 
 - Shell completion, a REPL, colour, paging. Aliases beyond `me`/`node`/`home`. Bearer read (`open_link`) follows the API if it lands.
 
 ## Steps
-- [ ] Skeleton: clap tree per §4 (every command parses, unimplemented ones fail "not yet"), store resolution and lock, global flags, error-to-exit mapping, `--json` plumbing; `init`, `whoami`, `server`, `create`, `get`, `set`, `replace`, `rm`, `show`, `aspects`, `delete`, `place`/`unplace`/`sub`/`groups`.
-- [ ] Value syntax: parser and printer for `Value` (numbered) with the round-trip property test (`parse(print(v)) == v` over the osis-core generator) and the JSON mapping; paths; schema registration and named forms; `op`, `edit`, `write`.
-- [ ] `watch`, `signal`, `history`/`undo`/`redo`/`undo-commit`, `ls`, `backlinks`, large values (`--stream`, `--len`, `--limit`).
+- [x] Skeleton: clap tree per §4 (every command parses, unimplemented ones fail "not yet"), store resolution and lock, global flags, error-to-exit mapping, `--json` plumbing; `init`, `whoami`, `server`, `create`, `get`, `set`, `replace`, `rm`, `show`, `aspects`, `delete`, `place`/`unplace`/`sub`/`groups`.
+- [x] Value syntax: parser and printer for `Value` (numbered) with the round-trip property test (`parse(print(v)) == v` over the osis-core generator) and the JSON mapping; paths; schema registration and named forms; `op`, `edit`, `write`.
+- [x] `watch`, `signal`, `history`/`undo`/`redo`/`undo-commit`, `ls`, `backlinks`, large values (`--stream`, `--len`, `--limit`).
 - [ ] Sharing, devices, links, cards, `move`, `same`; sync commands, bundles; `serve`; `pair`, `restore`.
 - [ ] `inspect`, `diag`, `daemon`, `schema`; the two-store localhost e2e (plans/apps-e2e.md) scripted entirely through `osis`; README with a ten-line session.
 
@@ -145,3 +145,4 @@ Tier 1: value syntax round trip and JSON mapping (property); argument parsing fo
 Every notes/api.md operation has a command; the localhost e2e runs through the CLI; a fresh agent given only `osis --help` and `osis show` can read and change data in a store. Delete this plan; §3, §5 and §6 move to notes/cli.md.
 
 ## Progress
+- Steps 1–3 landed (notes/cli.md: design, deviations, command table with now/2nd state, grammar, JSON mapping, exit codes); `ls`, `backlinks`, `--stream`, `--len` report Unsupported until the API has them. Step 4: every command wired and `serve` works (osis-server `serve::run`); sharing, devices, links, cards, sync, bundles, `pair`, `restore` return the API's Unsupported until its second half. Step 5: `inspect`, `diag`, `daemon`, `schema`, README done; the two-store localhost e2e waits for sync in the API.

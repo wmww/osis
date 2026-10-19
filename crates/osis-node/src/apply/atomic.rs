@@ -94,17 +94,10 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
     }
 }
 
-/// Applies a verified commit (`parts` decoded) in this transaction.
-pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usize, usize, Decoded)>, origin: Origin, received: WallMs) -> Result<()> {
-    tx.core.touch();
-    let id = blob.id();
-    let h = Arc::new(blob.header.clone());
-    tx.core.hlc.observe(h.ts);
-    tx.txn.put_local(records::HLC, &tx.core.hlc.last().to_u64().to_be_bytes(), Shred::No)?;
-
-    // creation records first: perm and dedup secrets need them
-    let mut held_changed = false;
-    for (ai, _, d) in &parts {
+/// Records the creation records `parts` carry that are not held yet; whether any was new.
+fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<bool> {
+    let mut any = false;
+    for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.created(&a.tid).is_some() {
             continue;
@@ -119,9 +112,22 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         if rec.tid() == a.tid {
             tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_core::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
-            held_changed = true;
+            any = true;
         }
     }
+    Ok(any)
+}
+
+/// Applies a verified commit (`parts` decoded) in this transaction.
+pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usize, usize, Decoded)>, origin: Origin, received: WallMs) -> Result<()> {
+    tx.core.touch();
+    let id = blob.id();
+    let h = Arc::new(blob.header.clone());
+    tx.core.hlc.observe(h.ts);
+    tx.txn.put_local(records::HLC, &tx.core.hlc.last().to_u64().to_be_bytes(), Shred::No)?;
+
+    // creation records first: perm and dedup secrets need them
+    let mut held_changed = note_created(tx, &h, &parts)?;
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, &id, &parts);
         validity::add_membership(tx.core, &h, &id, &parts);
@@ -203,13 +209,20 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     Ok(())
 }
 
-/// Joins deltas of an applied commit that arrived later (spec/commits.md §4).
+/// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
+/// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
+/// `/members` delta after its `/created` one), and held deltas are re-judged.
 pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Vec<(usize, usize, Decoded)>) -> Result<()> {
     tx.core.touch();
     let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
+    let mut held_changed = note_created(tx, &h, &parts)?;
+    let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+    if h.kind.is_membership() {
+        validity::note_required(tx.core, &h, id, &parts);
+    }
     let mut changed = BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -224,11 +237,41 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
     }
     tx.put_commit(id, merged, &meta, Shred::No)?;
+    if edges {
+        // the commit's edge writes again, from every held part
+        tx.core.held.remove(id);
+        let mut all = Vec::new();
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if matches!(a.ak.as_str(), "/members" | "/tenures") {
+                all.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
+            }
+        }
+        validity::add_membership(tx.core, &h, id, &all);
+        held_changed = true;
+    }
+    if held_changed {
+        tx.core.timelines.update(&tx.core.held);
+    }
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
+    let mut flipped = Vec::new();
+    if held_changed {
+        flipped = validity::rejudge_all(tx, true)?;
+        for (tid, ak) in &flipped {
+            observe_state(tx, tid, ak)?;
+        }
+    }
+    if edges {
+        for thing in h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid).collect::<BTreeSet<_>>() {
+            tx.core.events.queue(Event::Roster { thing });
+        }
+    }
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
+    }
+    if !flipped.is_empty() {
+        tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
     }
     Ok(())
 }

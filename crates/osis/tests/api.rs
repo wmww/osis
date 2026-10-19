@@ -403,3 +403,15 @@ fn stubs_unsupported_spec_api_sharing() {
     assert!("".parse::<osis::ServerAddr>().is_err());
     assert_eq!("quic://h:1#k".parse::<osis::ServerAddr>().unwrap().to_string(), "quic://h:1#k");
 }
+
+// spec/data-model.md §9: `/created` is typed by its exclusivity rule (owner or key), not the
+// missing-field rule, so a run-time core key (`Osis::key`, the CLI's) reads it.
+#[test]
+fn created_reads_through_run_time_key_spec_data_model_9() {
+    let db = Osis::create(osis::Config::memory()).unwrap();
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let v = db.get(t, db.key("/created").unwrap()).unwrap().unwrap();
+    assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Tid(db.me()))));
+}

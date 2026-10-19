@@ -43,19 +43,19 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase B running (opus, worktree) | C after flows/api |
-| node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md, issues/grant-history-boxes.md |
+| node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
 | node-sync | running (opus, worktree) | |
 | membership-flows | review | done over LocalPeer; review fixes done; issues roster-snapshot-deltas, flows-gaps |
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| tla rerun (round 2) | running (opus, worktree) | |
-| cli | review | done; sharing/sync commands return Unsupported until the api's second half; reviewer running |
+| tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
+| cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
 | api (second half) | running (opus, worktree) | sharing and sync surface |
-| flows/node-core follow-up | running (opus, worktree) | grant history boxes; /created rule for mixed commits |
+| flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | not started | after api second half |
-| p2p | not started | best effort, last |
+| p2p | running (opus, worktree) | best effort; co-reader dialing first |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
@@ -64,6 +64,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).
 - node-core review: spec/permissions.md §7 an import may be split into several import commits, one per origin commit, written in one local transaction (decided by the coordinator).
 - transport review: the §10 quic paragraph adds no 0-RTT, mandatory client auth, RFC 8410 Ed25519 SPKI and `ed25519` scheme only, SNI ignored, URL form (port required, IPv6 in brackets), a server dialing a server uses its address key, the dialer closes.
 - transport: spec/sync.md §10 defines `quic://host:port` (QUIC v1, TLS 1.3, ALPN `osis`, RFC 7250 raw Ed25519 keys both sides: server = address key, client fresh per connection; each sync session on a client-opened bidirectional stream). Filled an unspecified interop gap; no frozen bytes touched.
@@ -98,6 +99,8 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
   - R9, residue 1 (MC_reorder, MC_fork_reorder): spec/crypto.md §4 **established epochs**: own, fixed/derived, applied rotation commit with its whole superseded chain applied, or keyed by a held `/secrets` compaction snapshot; current = established not superseded by an established rotation; a node encrypts under, boxes (history boxes, grants, re-seals) and rotates over established epochs only, other secrets read only; `/secrets` compacted only from a fully established state. Opening a label is not encrypting under (a re-sealed member needs the sync key to fetch the commit). spec/permissions.md §3 re-seal only at chain-established current epochs (snapshot-established: no re-seal, MAY rotate), decided at the end of a complete pass (R8: the log of every server and peer it syncs the actor's labels with read to its end). spec/sync.md §5 the registrar uploads the actor's membership commits the server lacks (the rotation chain) under the head's keys, then registers, then the rest (was: register before any upload). spec/permissions.md §4, spec/crypto.md §5 the stranded heartbeat is placed after a complete pass at that server and wrapped under the newest established secret. Affects keys (`usable` → established), node-core (establishment fixpoint, persisted), node-sync (pass-complete event, upload order), membership-flows (re-seal gate).
   - S11, S13: spec/commits.md §5 a writer holding no covering snapshot writes one before dropping a body with live writes (local drop at a keep-at-most bound, offline included); a timed delete of a body with live writes goes with the snapshot like at most 0. S12: spec/sync.md §7 an identical body carries only the one with the higher blob ID; of covered-equal snapshots the higher commit ID goes. S14: spec/commits.md §5 nodes keep the headers of applied commits; a header-only rewrite is covered (may-hold). S15: accepted (offline copy; notes/sync.md). Purge commits' `MEMBERSHIP_KEEP` overrides keep-at-most too (wording).
 - keys review: spec/crypto.md §4 the covers rule for a departure inside a member is recursive (M's box names M's newest keyset epoch and that epoch covers the departure); spec/permissions.md §3 a node rotating for a departure inside M rotates the intermediates top-down where it may, else does not encrypt under the epoch (stranded until the intermediate rotates). Scenario: device D removed from person P, P member of team T, T member of doc U: U's writers kept encrypting under U's old epoch because T's box at U still named T's newest keyset. Also spec/crypto.md §4: a rotation that removes a key actor's box and writes it no role writes it one box with every role it holds; a grant to a key actor carries each role's newest current epoch; carried secrets are encrypting under their epochs (an uncovered carried role is rotated too). §5: the rotation commit wraps under the newest superseded read epoch whose secret the rotator holds. spec/sync.md §5 "greater (n, nonce)" → "newer". spec/permissions.md §3 cascade wording ("the roles M left").
+
+- wave 5 follow-up: spec/commits.md §4 a commit is pending on an unknown `/created` only of a thing whose delta the node holds or that it syncs (a member applied nothing of a commit that also touched the writer's private thing).
 
 - membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
 

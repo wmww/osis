@@ -16,6 +16,13 @@ T_Purges == [c \in T_Commits |-> {}]
 T_None == [c \in T_Commits |-> 99]
 T_MostRel == F(T_Commits, "c1", 1, 99)
 
+(* L: as T with a two-delta body: c2 kills d1 of c1 = {d1, e1}, e1 stays   *)
+(* live, so the replacer w2 snapshots before its timed delete (S13).         *)
+L_Commits == {"c1", "c2", "s"}
+L_Author == [c \in L_Commits |-> IF c = "c1" THEN "w1" ELSE "w2"]
+L_CD == [c \in L_Commits |-> CASE c = "c1" -> {"d1", "e1"} [] c = "c2" -> {"d2"} [] c = "s" -> {"ds"}]
+L_Covers == F(L_Commits, "s", {"d1", "e1", "d2"}, {})
+
 (* P: purge of a reset write inside a two-delta commit (rewrite, strict     *)
 (* subset rule), re-snapshot after the purge. No time.                       *)
 P_Commits == {"c3", "p", "s"}

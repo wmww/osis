@@ -1,0 +1,106 @@
+# CLI
+> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work now, which report Unsupported until the API's second half); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from plans/cli.md.
+
+## Design
+- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `link ls/revoke`, `group policy`, `bundle`, `status --watch`, `get --stream/--len`, `set --stream`, `op undelete`) report Unsupported from the CLI with the method's name.
+- **Store**: `-s DIR` / `OSIS_STORE` / `$XDG_DATA_HOME/osis/default`. Missing (`db.redb` absent) or locked: exit 8. The lock is redb's file lock; the CLI writes its pid to `<store>/pid` after opening so a second opener says `store in use by pid N`. `init` refuses a non-empty directory (exit 8). `<store>/cli.toml` holds registered schema paths (`schemas = [ "…", ]`, one quoted path per line; absolute). No other state.
+- **Entry points**: `osis_cli::main_with(args, stdin, stdout, stderr) -> i32`; `osis_cli::run(args, Option<StoreSel>, Io)` also takes a memory store (tests) and the terminal flag (`edit` opens `$EDITOR` only on a terminal).
+- **Futures** (`restore`, `pair`, `demote`, `redeem`, `remove_device`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6); no runtime in the CLI.
+- **Streaming** (`watch`, `signal listen`, `roster --watch`, `diag --follow`, `daemon`, `serve`): until `--count`, `--timeout` or SIGINT (default action: the process dies; commits are already durable). Streaming commands have no default timeout; `--timeout` reached with `--count` unmet: exit 6, without `--count`: exit 0. Other waits default to 30 s. `--timeout 0` is no deadline (deadlines use checked arithmetic; the API's `Duration`-taking `wait_synced` gets a 100-year bound).
+- **Named keys**: `db.key(ak)` types an AK by a registered schema (`schema add`, `--schema FILE`) or the core schema. Reads print named forms through the typed view (reader defaults filled); `--raw` uses the untyped key: stored value, numbered forms, ms. Writes through a typed key are validated (exit 5); `--raw` writes untyped.
+- **Paths**: typed positions follow the type. `[n]` on an untyped position: `get` reads the saved value (a list: index; else map key). Writes (`set`, `replace`, `rm`, `op`, script lines) take it as a map key, and refuse it (exit 2) when the saved value there is a list (untyped lists take no index writes; register a schema) or when the same batch already wrote that aspect or created/deleted the thing (`write` scripts: the pending state is invisible to reads, so the saved state cannot decide). Never a silent map write over a list.
+- **Commit ids** print as 64 lower-case hex digits (input for `undo-commit`, `inspect commit`).
+- **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
+- **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600), then `$EDITOR`.
+- **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
+- **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library behind feature `bin`); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
+- **`inspect`** is `Debug` dumps over `Osis::engine()` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
+
+## Deviations from plans/cli.md
+- `history --limit N` is `--max N` (`--limit` is the global materialization bound).
+- `same` false exits 3 (§6 table) rather than 1 (§4 text).
+- `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
+- `-v` is accepted and ignored (no engine log sink yet); `-q` silences `serve`'s log.
+- `diag --since` dropped: there is no stored diagnostics log yet.
+- `init --server`, `restore --server`, `pair join --server` call `add_server` after opening (the API's `Config` takes no servers yet); while that is Unsupported, `init --server` fails after creating the store.
+- `roster T --watch` added for `watch_roster`.
+
+## Command table
+Every public `Osis` method appears here (checked by tests/cli.rs). Now = works today; 2nd = returns Unsupported until plans/api.md's second half.
+
+| command | API | state |
+|---|---|---|
+| `init [--server A]` | `create`, `add_server` | now (servers 2nd) |
+| `restore CARD` | `restore` | 2nd |
+| `whoami` | `me`, `node`, `home`, `servers` | now |
+| `pair offer` / `pair join OFFER` | `pair_offer` / `pair` | 2nd |
+| `device ls` / `device rm N` | `devices` / `remove_device` | 2nd |
+| `server ls/add/rm` | `servers`, `add_server`, `remove_server` | 2nd |
+| `serve` | osis-server `serve::run` | now |
+| `create --owner A (--in G\|--in-all G,G\|--unsynced) [--group] [AK V]…` | `write`, `Write::create`, `make_group`, `set`, `commit` | now |
+| `get T AK [PATH]` | `get`, `at().path().get_value()` | now (`--stream`, `--len` 2nd) |
+| `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops | now (`--stream` 2nd) |
+| `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
+| `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
+| `write` (stdin) | one `write` batch | now |
+| `show T` | `aspects`, `get`, `knows`, `groups_of`, `role_on` | now |
+| `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
+| `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
+| `watch T [AK]` | `at().on_change` / `watch_thing` | now |
+| `signal send` / `signal listen` | `send_signal` / `on_signal` | now (local only) |
+| `history` / `undo` / `redo` / `undo-commit` | `history` / `undo` / `redo` / `undo_commit` | now |
+| `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` | now |
+| `roster T [--watch]` / `role T` | `roster`, `watch_roster` / `role_on` | now |
+| `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | 2nd |
+| `link make/redeem` / `link ls/revoke` | `make_link` / `redeem` / links, revoke_link | 2nd |
+| `card show/import` | `contact_card` / `import_contact` | 2nd |
+| `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
+| `status` / `sync` / `wait` | `status` / `sync_now`, `wait_synced` | 2nd |
+| `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | 2nd |
+| `bundle export/import` | export_bundle / import_bundle | 2nd |
+| `inspect thing/group/actor/commit` | `engine` (escape hatch), `read`, `knows` | now |
+| `diag [--follow]` / `daemon` | `on_diagnostic`, `settle` | now (no stored log yet) |
+| `schema add/rm/ls` / `check` / `gen` | `register_schema_file` (each run) / osis-schema `check_lock` / `generate_file` | now |
+| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source` | |
+
+## Value syntax
+CBOR diagnostic notation narrowed to one printed form per value (plans/cli.md §3). Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
+```text
+value  := string | blob | "true" | "false" | int | float | tid | list | map | set | enum | tag | alias
+string := JSON string ("\u" escapes incl. surrogate pairs; printer escapes ", \, controls, DEL)
+blob   := "h'" hex "'"  |  "b64'" base64 or base64url, padding optional "'"   (input only)
+int    := "-"? digits                          (i64; no leading zeros)
+float  := "-"? digits ("." digits)? (("e"|"E") ("+"|"-")? digits)?  with "." or exponent
+        | "NaN" | "Infinity" | "-Infinity"     (printer: Rust's shortest round-trip form; -0.0)
+tid    := "osis://" 20 base64url chars
+list   := "[" (value ","?)* "]"                set := "#{" (value ","?)* "}"
+map    := "{" (key ":" value ","?)* "}"        key := value | field-name (typed struct) | "name"
+enum   := "#" (u64 | case-name) ("(" value ")")?
+tag    := "tag(" u64 "," value ")"             (unknown tag; content as its value, or h'…' raw if undecodable)
+alias  := "me" | "node" | "home" | "$" name   (input only)
+typed  : timestamp := RFC 3339 (bare; `T` separator; real calendar dates; printed UTC, ms when nonzero; ints accepted)
+         duration  := "-"? (digits ("d"|"h"|"m"|"s"|"ms"))+   (printed largest unit first; "0s")
+```
+- A struct prints as a map with field names (unknown ids numbered); untyped it is a map with int keys. Option is `#none` / `#some(v)`. Timestamps outside years 0..=9999 print as ints.
+- Whitespace anywhere between tokens; trailing commas allowed; duplicate map keys or set elements are errors; `null` is not a value. JSON input works where it is unambiguous: string-keyed objects read as maps, or with a schema as the struct (quoted field names).
+- Paths: `.name`/`.id` field, `#name`/`#id` case payload, `[i]` list index, `[value]` map key, `{value}` set element; concatenated; empty = the aspect.
+- Flags: durations `30s`, `5m`, `1h30m`, `0`; timestamps RFC 3339 or ms; retention `by=NAME,at_least=DUR,at_least_abs=TS,at_most=DUR,at_most_abs=TS` over the key's default; roles `read`, `write`, `admin` (`remove` on `demote`). Arguments: literal, `@FILE`, or `-` (stdin).
+
+## JSON mapping
+One JSON document per command; streaming commands print JSON lines. int → number; float → number with `.` or exponent, `"NaN"`/`"Infinity"`/`"-Infinity"` strings; string → string; tid → `"osis://…"`; blob → `{"$blob": base64url}`; set → `{"$set": [...]}`; enum → `{"$case": name-or-id, "$payload": v}` (payload omitted when none); typed struct → object by field name (unknown ids as decimal strings); map with only string keys, none of them a marker (`$blob`, `$set`, `$case`, `$payload`, `$map`, `$tag`, `$bytes`) → object; every other map (untyped int keys included) → `{"$map": [[k, v], …]}`, so an object never reads as a marker form; unknown tag → `{"$tag": N, "$bytes": base64url of the content}`; timestamps and durations stay ms ints. Results name tids by API names (`tid`, `actor`, `node`, `me`, `home`, `commit`). Errors on stderr: `{"error": {"kind", "message", "tid", "needs"}}`; kind is the API `Error` variant, `Usage`, `Cli` or `Other`.
+
+## Exit codes
+| code | meaning |
+|---|---|
+| 0 | ok |
+| 1 | other: `Storage`, `Closed`, `NotUndoable`, `Unsupported`, I/O |
+| 2 | usage, unparsable argument or value |
+| 3 | `UnknownThing`, `UnknownActor`, absent on `get`, `same` false, nothing to undo/redo |
+| 4 | `Permission` |
+| 5 | `TooLarge`, `Type` |
+| 6 | `Network`, `Unsynced`, timeout |
+| 7 | `Invalid` (also a schema that does not parse or check) |
+| 8 | store missing, locked, or (on `init`) not empty |
+
+## Tests
+tests/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, Unsupported second-half commands, the command-table coverage check). Tier 2 (two stores and `osis serve` on localhost) waits for sync in the API.
