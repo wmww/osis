@@ -38,7 +38,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | node-core | steps 1–2 merged; continuing 3–6 | notes/node.md has the module ownership |
 | transport | review | reviewer running; quinn+rustls(ring) behind `quic`; InProcess + Sched |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
-| server | review | done except transport wiring; reviewer running |
+| server | merged, reviewed | transport wiring pending transport merge; plan stays until node-sync and sim run through it |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
