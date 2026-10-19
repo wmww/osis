@@ -423,3 +423,41 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
     let v = db.get(t, db.key("/created").unwrap()).unwrap().unwrap();
     assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Tid(db.me()))));
 }
+
+// notes/api.md Large values, spec/data-model.md §6: a blob above the bound is read by stream
+// (`Read + Seek`) and its length known without materializing it; `set_stream` writes one.
+#[test]
+fn stream_len_set_stream_spec_data_model_6() {
+    use std::io::{Read, Seek, SeekFrom};
+    let c = clock();
+    let mut cf = cfg(1, MemStore::new(), &c);
+    cf.materialize_limit = 64 * 1024;
+    let db = Osis::create(cf).unwrap().0;
+    let k = ak("/t/blob");
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.at(t, k.clone()).set_stream(&data[..]).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.get(t, k.clone()), Err(Error::TooLarge { limit: 64 * 1024 }));
+    assert_eq!(db.at(t, k.clone()).len().unwrap(), Some(300_000));
+    let mut st = db.at(t, k.clone()).stream().unwrap().unwrap();
+    let mut all = Vec::new();
+    st.read_to_end(&mut all).unwrap();
+    assert!(all == data, "whole payload");
+    st.seek(SeekFrom::Start(123_457)).unwrap();
+    let mut b = [0u8; 10];
+    st.read_exact(&mut b).unwrap();
+    assert_eq!(&b[..], &data[123_457..123_467]);
+    st.seek(SeekFrom::End(-3)).unwrap();
+    let mut rest = Vec::new();
+    st.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, data[299_997..]);
+    // a small value streams too; absent reads None; a non-string fails
+    let small = ak("/t/small");
+    db.write_with(|w| w.at(t, small.clone()).set(&s("hello"))).unwrap();
+    assert_eq!(db.at(t, small.clone()).len().unwrap(), Some(5));
+    assert_eq!(db.at(t, ak("/t/none")).len().unwrap(), None);
+    db.write_with(|w| w.at(t, ak("/t/n")).set(&Value::Int(1))).unwrap();
+    assert!(matches!(db.at(t, ak("/t/n")).len(), Err(Error::Invalid(_))));
+}

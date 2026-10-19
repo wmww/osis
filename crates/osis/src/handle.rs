@@ -130,7 +130,7 @@ pub(crate) struct Inner {
     pub net: Net,
     /// `close` waits on this until `closed` (the last field) is dropped.
     pub closing: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-    pub closed: std::sync::mpsc::Sender<()>,
+    pub _closed: std::sync::mpsc::Sender<()>,
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
@@ -278,7 +278,7 @@ impl Osis {
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
         let (closed, closing) = std::sync::mpsc::channel();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), closed });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;

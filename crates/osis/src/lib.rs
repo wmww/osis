@@ -142,11 +142,13 @@
 mod error;
 mod handle;
 mod keys;
+mod large;
 mod net;
 mod person;
 mod read;
 mod share;
 mod signal;
+mod text;
 mod undo;
 mod watch;
 mod write;
@@ -156,9 +158,11 @@ pub use handle::{CLOSE_WAIT, Config, DEFAULT_IDLE_COMMIT, DEFAULT_LIMIT, MemStor
 pub use net::{ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
+pub use large::ValueStream;
 pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, FINALIZE_DELAY_MS, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
+pub use text::TextSession;
 pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Place, Write};

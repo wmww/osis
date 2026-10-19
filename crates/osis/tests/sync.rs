@@ -235,3 +235,47 @@ fn disappearing_message_spec_commits_6() {
     assert_eq!(x(&alice, m), None);
     assert_eq!(x(bob, m), None);
 }
+
+const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 1;\naspect /n/body: text;\n";
+
+// notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
+// pause): two devices edit one text concurrently in sessions; each commit is one edit, the
+// remote edit merges into the other buffer and both converge with both edits.
+#[test]
+fn text_sessions_merge_spec_crdt_5_7() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (da, _) = w.person(1, &[sv]);
+    w.run();
+    let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    for d in [&da, &db] {
+        d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
+    }
+    let body = da.key("/n/body").unwrap();
+    let mut wr = da.write();
+    let t = wr.create(da.me(), Place::In(da.home())).unwrap();
+    wr.commit().unwrap();
+    let sa = da.edit_text(t, body.clone(), osis::Path::root()).unwrap();
+    sa.insert(0, "hello").unwrap();
+    assert!(sa.commit().unwrap().is_some());
+    assert_eq!(sa.commit().unwrap(), None, "nothing new");
+    w.run();
+    let sb = db.edit_text(t, db.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    assert_eq!(sb.text(), "hello");
+    let (tx, rx) = std::sync::mpsc::channel();
+    sa.on_remote(move |s| {
+        let _ = tx.send(s.to_string());
+    });
+    sb.insert(5, " world").unwrap();
+    sa.insert(0, ">").unwrap();
+    sb.commit().unwrap();
+    w.run();
+    let merged = recv(&rx);
+    assert_eq!(merged, ">hello world", "local edit committed first, then merged");
+    assert_eq!(sa.text(), merged);
+    w.run();
+    db.settle();
+    assert_eq!(sb.text(), merged);
+}

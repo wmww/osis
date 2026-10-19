@@ -1,0 +1,255 @@
+//! Large values (notes/api.md Large values; spec/data-model.md §6): a string or blob read as a
+//! stream (`Read + Seek`, chunks fetched one at a time under the database lock, memory one chunk
+//! plus the tree path), its payload length, and `set_stream` writes. A seek backwards restarts
+//! from the first chunk and a seek forward reads through (tree nodes carry no lengths,
+//! issues/large-value-seek.md).
+
+use crate::error::{Error, Result};
+use crate::handle::Osis;
+use crate::read::{AspectRef, PathRef, ak_of};
+use crate::write::{AspectWrite, PathWrite};
+use osis_core::{Link, Tid, Value};
+use osis_schema::{AspectKey, Path, Type, type_at};
+use std::io::{Read, Seek, SeekFrom};
+
+/// The payload of a string or blob position, read lazily.
+pub struct ValueStream {
+    db: Osis,
+    tid: Tid,
+    src: Src,
+    /// Payload length in bytes.
+    len: u64,
+    /// Payload bytes delivered (or skipped) so far.
+    pos: u64,
+}
+
+enum Src {
+    Inline(Vec<u8>),
+    Tree { link: Link, reader: osis_label::TreeReader, buf: Vec<u8>, at: usize, head: usize },
+}
+
+impl std::fmt::Debug for ValueStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ValueStream({} of {} bytes)", self.pos, self.len)
+    }
+}
+
+/// The length a canonical CBOR byte or text string head declares, with the head's size.
+fn string_head(b: &[u8]) -> Option<(u64, usize)> {
+    let first = *b.first()?;
+    if !matches!(first >> 5, 2 | 3) {
+        return None;
+    }
+    let info = first & 31;
+    let n = match info {
+        0..=23 => return Some((u64::from(info), 1)),
+        24 => 1,
+        25 => 2,
+        26 => 4,
+        27 => 8,
+        _ => return None,
+    };
+    let bytes = b.get(1..1 + n)?;
+    Some((bytes.iter().fold(0u64, |acc, x| (acc << 8) | u64::from(*x)), 1 + n))
+}
+
+fn not_string() -> Error {
+    Error::Invalid("not a string or blob".into())
+}
+
+fn tree_reader(link: Link) -> osis_label::TreeReader {
+    osis_label::TreeReader::new(link, osis_label::LargeParams::FORMAT.chunk.min, usize::MAX)
+}
+
+impl ValueStream {
+    fn open(db: &Osis, tid: Tid, v: Value) -> Result<ValueStream> {
+        match v {
+            Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
+            Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
+            Value::Link(link) => {
+                let mut s = ValueStream { db: db.clone(), tid, len: 0, src: Src::Tree { link, reader: tree_reader(link), buf: Vec::new(), at: 0, head: 0 }, pos: 0 };
+                s.start()?;
+                Ok(s)
+            }
+            _ => Err(not_string()),
+        }
+    }
+
+    /// (Re)starts a tree from its first chunk and reads the string head.
+    fn start(&mut self) -> Result<()> {
+        let tid = self.tid;
+        let Src::Tree { link, reader, buf, at, head } = &mut self.src else { return Ok(()) };
+        *reader = tree_reader(*link);
+        let mut first = Vec::new();
+        let parsed = loop {
+            if let Some(h) = string_head(&first) {
+                break h;
+            }
+            if first.len() > 9 {
+                return Err(not_string());
+            }
+            match self.db.engine(|e| e.next_chunk(&tid, reader))? {
+                Some(c) => first.extend(c),
+                None => return Err(not_string()),
+            }
+        };
+        self.len = parsed.0;
+        *head = parsed.1;
+        *buf = first;
+        *at = parsed.1;
+        self.pos = 0;
+        Ok(())
+    }
+
+    /// Payload length in bytes.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn read_some(&mut self, out: &mut [u8]) -> Result<usize> {
+        let left = usize::try_from(self.len.saturating_sub(self.pos)).unwrap_or(usize::MAX);
+        let want = out.len().min(left);
+        if want == 0 {
+            return Ok(0);
+        }
+        let tid = self.tid;
+        let n = match &mut self.src {
+            Src::Inline(b) => {
+                let start = usize::try_from(self.pos).unwrap_or(usize::MAX);
+                let piece = b.get(start..start.saturating_add(want)).unwrap_or_default();
+                out.get_mut(..piece.len()).unwrap_or_default().copy_from_slice(piece);
+                piece.len()
+            }
+            Src::Tree { reader, buf, at, .. } => {
+                while *at >= buf.len() {
+                    match self.db.engine(|e| e.next_chunk(&tid, reader))? {
+                        Some(c) => {
+                            *buf = c;
+                            *at = 0;
+                        }
+                        None => return Err(Error::Storage("large value shorter than its head".into())),
+                    }
+                }
+                let piece = buf.get(*at..).unwrap_or_default();
+                let n = piece.len().min(want);
+                out.get_mut(..n).unwrap_or_default().copy_from_slice(piece.get(..n).unwrap_or_default());
+                *at += n;
+                n
+            }
+        };
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+fn io(e: Error) -> std::io::Error {
+    std::io::Error::other(e)
+}
+
+impl Read for ValueStream {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        self.read_some(out).map_err(io)
+    }
+}
+
+impl Seek for ValueStream {
+    fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+        let target = match to {
+            SeekFrom::Start(n) => Some(n),
+            SeekFrom::End(d) => self.len.checked_add_signed(d),
+            SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        }
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start"))?;
+        let target = target.min(self.len);
+        if target < self.pos {
+            match &mut self.src {
+                Src::Inline(_) => self.pos = 0,
+                Src::Tree { .. } => self.start().map_err(io)?,
+            }
+        }
+        let mut scratch = vec![0u8; 64 << 10];
+        while self.pos < target {
+            let n = usize::try_from(target - self.pos).unwrap_or(usize::MAX).min(scratch.len());
+            let got = self.read_some(scratch.get_mut(..n).unwrap_or_default()).map_err(io)?;
+            if got == 0 {
+                break;
+            }
+        }
+        Ok(self.pos)
+    }
+}
+
+impl Osis {
+    /// The stored value at `path` of an aspect, links unmaterialized.
+    fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
+        let ak = ak_of(key)?;
+        self.read(|r| {
+            let tid = r.resolve(tid);
+            let Some(v) = r.raw_value(tid, &ak)? else { return Ok(None) };
+            Ok(osis_schema::value_at(&v, path).cloned().map(|x| (tid, x)))
+        })
+    }
+}
+
+impl<K: AspectKey> AspectRef<'_, K> {
+    /// The aspect's string or blob payload as a stream (`Read + Seek`; above the
+    /// materialization bound too). `None` when absent.
+    pub fn stream(&self) -> Result<Option<ValueStream>> {
+        self.path(Path::root()).stream()
+    }
+
+    /// The payload length in bytes of a string or blob aspect without materializing it.
+    pub fn len(&self) -> Result<Option<u64>> {
+        Ok(self.stream()?.map(|s| s.len()))
+    }
+}
+
+impl<K: AspectKey> PathRef<'_, '_, K> {
+    /// The string or blob at the path as a stream. `None` when absent.
+    pub fn stream(&self) -> Result<Option<ValueStream>> {
+        let (db, tid, key, path) = self.parts();
+        match db.raw_at(tid, key, path)? {
+            Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The payload length in bytes of the string or blob at the path.
+    pub fn len(&self) -> Result<Option<u64>> {
+        Ok(self.stream()?.map(|s| s.len()))
+    }
+}
+
+impl<K: AspectKey> AspectWrite<'_, '_, K> {
+    /// Sets a string or blob aspect from a reader (a string must be UTF-8).
+    pub fn set_stream(&mut self, r: impl Read) -> Result<()> {
+        self.path(Path::root()).set_stream(r)
+    }
+}
+
+impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
+    /// Sets the string or blob at the path from a reader: a string when the key's schema says
+    /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now
+    /// (issues/api-streaming-writes.md).
+    pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
+        let mut b = Vec::new();
+        r.read_to_end(&mut b).map_err(|e| Error::Invalid(format!("reading the value: {e}")))?;
+        let text = match self.position_type()? {
+            Some(Type::String | Type::Text) => true,
+            Some(Type::Named(n, _)) if n == "markdown" => true,
+            _ => false,
+        };
+        let v = if text { Value::Str(String::from_utf8(b).map_err(|_| Error::Invalid("not UTF-8".into()))?) } else { Value::Bytes(b) };
+        self.set_value(v)
+    }
+}
+
+/// The schema type at a path of a key, if typed.
+pub(crate) fn type_of<K: AspectKey>(key: &K, path: &Path) -> Result<Option<Type>> {
+    let (Some(s), Some(ty)) = (key.schema(), key.ty()) else { return Ok(None) };
+    Ok(Some(type_at(s, ty, path)?.0))
+}

@@ -71,7 +71,7 @@ fn read_only(ak: &str) -> bool {
     matches!(ak, "/tid" | "/aspects" | "/groups" | "/created")
 }
 
-fn segs(p: &Path) -> Result<Vec<PathSeg>> {
+pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
     p.0.iter()
         .map(|s| match s {
             Step::Field(id) => Ok(PathSeg::Field(*id)),
@@ -169,6 +169,13 @@ impl<'d> Write<'d> {
                 self.unplace(t, g)?;
             }
         }
+        Ok(())
+    }
+
+    /// A raw path op through `key` (text sessions).
+    pub(crate) fn raw_op(&mut self, tid: Tid, key: &crate::Key, op: PathOp) -> Result<()> {
+        let t = self.known(tid)?;
+        self.m.op(t, key, op)?;
         Ok(())
     }
 
@@ -357,6 +364,17 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         let v = v.to_value();
         self.check(extra, &v)?;
         Ok(v)
+    }
+
+    /// The key's schema type at this position (`None`: untyped).
+    pub(crate) fn position_type(&self) -> Result<Option<osis_schema::Type>> {
+        crate::large::type_of(&self.a.key, &self.path)
+    }
+
+    /// `set` of an untyped value, checked against the schema.
+    pub(crate) fn set_value(&mut self, v: Value) -> Result<()> {
+        self.check(None, &v)?;
+        self.at(None, Op::Set(v))
     }
 
     /// Makes the position read `v` (structural diff).
