@@ -1,5 +1,5 @@
 //! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess`, QUIC (`quic`), iroh (`iroh`); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
-//! Layer 1 (notes/architecture.md). Plan: plans/transport.md, plans/p2p.md.
+//! Layer 1 (notes/architecture.md). Plan: plans/transport.md; P2P: notes/networking.md, issues/p2p-deferred.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
 //! without tokio; the QUIC transport needs a tokio runtime. Framing is proto's job.
@@ -23,6 +23,12 @@ pub use manage::{close_gracefully, connect, Backoff};
 pub use link::{Link, LinkRx, LinkTx};
 #[cfg(feature = "quic")]
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
+// codec always; the socket with feature `lan`
+pub mod lan;
+#[cfg(feature = "iroh")]
+pub mod iroh;
+#[cfg(feature = "iroh")]
+pub use crate::iroh::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
 
 use std::future::Future;
 
@@ -42,6 +48,22 @@ impl Address {
     pub fn scheme(&self) -> Option<&str> {
         self.url.split_once("://").map(|(s, _)| s)
     }
+}
+
+/// Scheme of P2P addresses (spec/sync.md §10): a node dialed by its dialable key, through the
+/// relays the URL lists (`peer://` then relay URLs separated by single spaces; none: direct or
+/// LAN only). The transport finds the peer; the key is `Address::key`.
+pub const PEER_SCHEME: &str = "peer";
+
+/// The address URL of a peer reachable through `relays`.
+pub fn peer_url(relays: &[String]) -> String {
+    format!("{PEER_SCHEME}://{}", relays.join(" "))
+}
+
+/// The relays of a `peer://` URL; none for another scheme.
+pub fn peer_relays(url: &str) -> Option<Vec<String>> {
+    let rest = url.strip_prefix(PEER_SCHEME)?.strip_prefix("://")?;
+    Some(rest.split(' ').filter(|r| !r.is_empty()).map(str::to_owned).collect())
 }
 
 /// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §13).

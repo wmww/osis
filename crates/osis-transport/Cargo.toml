@@ -17,11 +17,16 @@ quinn = { version = "0.11", default-features = false, features = ["runtime-tokio
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 ring = { version = "0.17", optional = true }
 tokio = { workspace = true, features = ["rt", "net", "sync", "time"], optional = true }
+iroh = { version = "1.3", default-features = false, features = ["tls-ring"], optional = true }
 
 [features]
 quic = ["dep:quinn", "dep:rustls", "dep:ring", "dep:tokio"]
 # Sessions as channel pairs with tokio pump tasks, for node and server drivers.
 link = ["dep:tokio"]
+# P2P by dialable key (notes/networking.md): iroh endpoints, relays, hole punching.
+iroh = ["dep:iroh", "dep:tokio"]
+# LAN announcements over UDP (spec/sync.md §10).
+lan = ["dep:tokio"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

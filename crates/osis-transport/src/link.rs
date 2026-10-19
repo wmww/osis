@@ -126,13 +126,26 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
 
 /// Accepts connections on `l` and hands each stream they open to `out` as a session, until
 /// `out` or the listener closes. A connection with no live session for `idle` is closed.
-pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
+pub async fn serve<L: Listener>(l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>) {
+    serve_max(l, idle, wait, out, usize::MAX).await
+}
+
+/// `serve` with at most `max` connections open at once; more are closed on arrival.
+pub async fn serve_max<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: mpsc::Sender<Link>, max: usize) {
+    let open = Arc::new(AtomicUsize::new(0));
     while let Ok(c) = l.accept().await {
         if out.is_closed() {
             break;
         }
+        if open.load(Ordering::Acquire) >= max {
+            c.close();
+            continue;
+        }
+        open.fetch_add(1, Ordering::AcqRel);
+        let held = Live(open.clone());
         let out = out.clone();
         tokio::spawn(async move {
+            let _held = held;
             let live = Arc::new(AtomicUsize::new(0));
             loop {
                 match timeout(idle, c.accept_stream()).await {

@@ -53,6 +53,10 @@ pub struct Net {
     pub steps: usize,
     /// (node, server) pairs that cannot connect.
     pub blocked: BTreeSet<(usize, usize)>,
+    /// Node-to-node sessions, both directions: (node, conn) -> (node, conn).
+    plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
+    /// (node, node) pairs that cannot connect.
+    pub blocked_peers: BTreeSet<(usize, usize)>,
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -61,7 +65,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -130,6 +134,15 @@ impl Net {
     }
 
     fn disconnect(&mut self, n: usize) {
+        let peers: Vec<((usize, ConnId), (usize, ConnId))> = self.plinks.iter().filter(|((x, _), _)| *x == n).map(|(k, v)| (*k, *v)).collect();
+        for ((_, c), (m, pc)) in peers {
+            self.plinks.remove(&(n, c));
+            self.plinks.remove(&(m, pc));
+            self.queue.push_back(Msg::Close(m, pc));
+            if let Some(sy) = self.nodes[n].sync.as_mut() {
+                sy.handle(Event::Down { conn: c });
+            }
+        }
         let mine: Vec<(ConnId, (usize, u64))> = self.links.iter().filter(|((x, _), _)| *x == n).map(|((_, c), v)| (*c, *v)).collect();
         for (c, (s, hc)) in mine {
             self.links.remove(&(n, c));
@@ -162,6 +175,18 @@ impl Net {
                 eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
             }
             match a {
+                Action::Dial { conn, address } if address.url.starts_with("peer://") => {
+                    let target = (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key));
+                    let Some(m) = target.filter(|m| !self.blocked_peers.contains(&(n, *m)) && !self.blocked_peers.contains(&(*m, n))) else {
+                        self.queue.push_back(Msg::Close(n, conn));
+                        continue;
+                    };
+                    let (pc, acts) = self.sync(m).accept(address.key, [0xd0 + n as u8; 32]);
+                    self.plinks.insert((n, conn), (m, pc));
+                    self.plinks.insert((m, pc), (n, conn));
+                    self.queue.push_back(Msg::Up(n, conn));
+                    self.actions(m, acts);
+                }
                 Action::Dial { conn, address } => {
                     let Some(s) = self.servers.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
                         self.queue.push_back(Msg::Close(n, conn));
@@ -174,6 +199,15 @@ impl Net {
                     let now = self.now();
                     let out = self.servers[s].hub.accept(now, hc, [0xe0; 32]);
                     self.hub_out(s, out);
+                }
+                Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => {
+                    let (m, pc) = self.plinks[&(n, conn)];
+                    self.queue.push_back(Msg::ToNode(m, pc, bytes));
+                }
+                Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
+                    let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
+                    self.plinks.remove(&(m, pc));
+                    self.queue.push_back(Msg::Close(m, pc));
                 }
                 Action::Send { conn, bytes } => {
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {

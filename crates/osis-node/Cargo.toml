@@ -34,3 +34,5 @@ default = ["driver"]
 driver = ["dep:tokio", "osis-transport/link"]
 # Tier-2 tests against the real server over QUIC.
 quic = ["driver", "osis-transport/quic", "osis-server/quic"]
+# Tier-2 tests of peers over iroh on localhost.
+iroh = ["driver", "osis-transport/iroh"]
