@@ -592,6 +592,61 @@ fn stranded_device_repaired_spec_perm_3() {
     assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
 }
 
+/// Alice (0) grants carol (2) at e0 while bob (1) removes dave (rotation e1, without carol);
+/// carol gets the grant and bob's rotation. Alice then removes eve: e2 boxes carol, who holds no
+/// box at e1, the epoch e2's commit is wrapped under. Returns (lp, t, carol, e2's Done).
+fn raced_then_rotated(seed: u64) -> (LocalPeer, Tid, Tid, Done) {
+    let (mut lp, ps) = people(5, seed);
+    let (pa, pb, pc, pd, pe) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pd, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &pe, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    let g = lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+    carry(&mut lp, 0, &g);
+    let r1 = lp.peers[1].engine.demote(&t, &Demotion { member: pd, new: None, presync: PreSync::Synced }).unwrap();
+    send(&mut lp, 1, 0, &r1.commits);
+    send(&mut lp, 1, 2, &r1.commits);
+    let e1 = newest_read(&lp, 0, t).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e1).is_none(), "carol has no box at e1");
+    lp.advance(1000);
+    let r2 = lp.peers[0].engine.demote(&t, &Demotion { member: pe, new: None, presync: PreSync::Synced }).unwrap();
+    (lp, t, pc, r2)
+}
+
+// spec/permissions.md §3 (rotation), spec/sync.md §3: a rotation boxing a member that holds no
+// box at the current read epoch before it (a grant raced by an earlier rotation; the single-use
+// link race's winner) reaches that member by inbox: it could not open the rotation commit from
+// the label, which is wrapped under that epoch.
+#[test]
+fn rotation_reaches_unboxed_member_spec_perm_3() {
+    let (mut lp, t, pc, r2) = raced_then_rotated(515);
+    let inbox: Vec<&Vec<u8>> = r2.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    assert_eq!(inbox.len(), 1, "the rotation goes to carol's inbox");
+    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    let e2 = newest_read(&lp, 0, t).unwrap();
+    assert_eq!(newest_read(&lp, 2, t), Some(e2));
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.is_established(&e2), "carol holds e2's chain");
+    assert!(!r2.deliveries.iter().any(|x| matches!(x, Delivery::Inbox { to, .. } if *to == lp.peers[1].engine.tid())));
+}
+
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4: a re-seal of a member whose box at the
+// epoch sits in a commit it does not hold still reaches it (the box is re-written, not
+// overlaid on an entry the member never got).
+#[test]
+fn reseal_over_unheld_box_spec_perm_3() {
+    let (mut lp, t, pc, _) = raced_then_rotated(516);
+    let e2 = newest_read(&lp, 0, t).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_none());
+    let done = lp.peers[0].engine.reshare(&t, &pc).unwrap();
+    let inbox: Vec<&Vec<u8>> = done.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    assert_eq!(inbox.len(), 1);
+    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_some(), "carol reads e2");
+}
+
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]

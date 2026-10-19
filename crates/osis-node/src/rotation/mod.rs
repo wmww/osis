@@ -210,6 +210,38 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     Ok(rot)
 }
 
+/// Members a rotation `rot` of `a` boxes that hold no box at a current read epoch before it (a
+/// key actor: at any current epoch, its boxes are keyed at its top role): its commit is wrapped
+/// under that epoch, so they cannot open it from the label (a grant this node learned of after
+/// an epoch that left it out, the single-use link race's winner). They get it by inbox
+/// (spec/permissions.md §3). Called before the rotation is committed.
+pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
+    let secrets = secrets_in(tx, a)?;
+    let me = tx.core.id.tid();
+    let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.member).filter(|m| *m != me).collect();
+    out.sort();
+    out.dedup();
+    out.retain(|m| {
+        let key_actor = tx.core.is_key_actor(m);
+        !secrets.boxes.keys().any(|k| {
+            k.member == *m && (key_actor || k.role == Role::Read) && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e))
+        })
+    });
+    Ok(out)
+}
+
+/// The inbox (a node: direct) deliveries of rotation commit `c` of `a` to `members`.
+pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_core::CommitId>, members: &[Tid]) -> Result<Vec<Delivery>> {
+    let mut out = Vec::new();
+    if let Some(c) = c {
+        for m in members {
+            out.extend(flows::edges::deliver_to(tx, *m, c, &[a])?);
+        }
+    }
+    Ok(out)
+}
+
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
@@ -234,6 +266,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     let members = recipients(tx, &a, None)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, a, roles, &held, &members)?;
+    let unreached = unreached(tx, &a, &rot)?;
     if let Some(s) = signer_of(tx, who) {
         m.sign_as(s);
     }
@@ -241,6 +274,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     record(tx, a, &rot)?;
     let mut done = Done::default();
     done.add(c);
+    done.deliveries.extend(deliver_rotation(tx, a, c, &unreached)?);
     // the rotated actor's new /keys travels under the labels above it (spec/permissions.md §3)
     if let Some(c) = c {
         done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &a) });
