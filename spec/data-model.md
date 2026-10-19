@@ -79,7 +79,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
-The core aspects form the core schema, with a well-known schema ID (TBD), evolving under spec/versioning.md. Exact types of the composite core aspects: TBD (plans/protocol-spec.md).
+The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
 
 | AK | type | notes |
 |---|---|---|
@@ -101,6 +101,75 @@ The core aspects form the core schema, with a well-known schema ID (TBD), evolvi
 
 **Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
 
+```
+type role = enum { 0 read, 1 write, 2 admin };
+type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 16 bytes
+type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte server static key
+type edge_key = struct { 0 ts: int, 1 node: tid };                // (ts, author node) of a write
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key> };
+type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key };
+type inbox = struct { 0 label: blob, 1 servers: list<address> };  // label ID: 16 bytes
+type box_key = struct { 0 member: tid, 1 role: role, 2 epoch: epoch };
+type box = enum {
+    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
+    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob }),     // epoch of s; wrap: spec/wire.md §7
+};
+type history_key = struct { 0 role: role, 1 epoch: epoch };
+type frontier = struct {
+    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> counter
+    1 commits: set<blob>,                                       // commit IDs of commit-form writes
+};
+type tenure = struct { 0 member: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
+type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
+type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 servers: list<address>, 3 replaced: bool };
+
+aspect /tid: tid [synthetic, guaranteed];
+aspect /aspects: set<string> [synthetic, guaranteed];
+aspect /created: creation [guaranteed];
+aspect /members: map<tid, edge>;
+aspect /keys: struct {
+    0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
+    3 key: option<kem_key>,                                                       // a key actor's one KEM key
+    4 inbox: option<inbox>, 5 deposit_seed: option<blob>,                        // deposit seed: 32 bytes
+};
+aspect /secrets: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> };
+aspect /tenures: set<tenure>;
+aspect /label: map<blob, label>;                                // label ID -> label
+aspect /moved: tid;
+aspect /was: tid;
+aspect /node: struct { 0 software: string, 1 schemas: map<blob, int> };   // schema ID -> revision
+aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
+aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
+aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect /groups: set<tid> [synthetic, guaranteed];
+```
+- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen` and `/group`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
+- Box payloads, history box layout and AD tuples: spec/wire.md §7.
+
 ## 10. Schemas
 - A schema has a **schema ID** (128 random bits, minted once, never changed) and a **revision** (integer, bumped on every publish).
-- A parsed schema is itself an osis value (schema ID, revision, named types, aspects, signal kinds, doc comments); its canonical form is TBD. The core never distributes schemas.
+- A parsed schema is itself an osis value, of type `schema` below; its canonical form is the canonical encoding of that value. The core never distributes schemas.
+```
+type schema = struct {
+    0 id: blob, 1 revision: int,                                // id: 16 bytes
+    2 types: map<string, type_def>, 3 aspects: map<string, aspect_def>,   // by type name, by AK
+    4 signals: map<string, signal_def>, 5 doc: option<string>,
+};
+type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
+type type_expr = enum {
+    0 string, 1 blob, 2 bool, 3 int, 4 float, 5 tid, 6 any, 7 text,
+    8 list(type_expr), 9 set(type_expr), 10 map(struct { 0 key: type_expr, 1 value: type_expr }),
+    11 struct(struct { 0 fields: map<int, field_def>, 1 reserved: set<int> }),
+    12 enum(struct { 0 cases: map<int, case_def>, 1 reserved: set<int> }),
+    13 counter(type_expr), 14 max(type_expr), 15 min(type_expr),
+    16 named(struct { 0 name: string, 1 args: list<type_expr> }),   // schema types and option, markdown, timestamp, duration
+    17 param(string),                                            // a parameter of the enclosing type_def
+};
+type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<any>, 3 succeeds: set<int>, 4 doc: option<string> };
+type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
+type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
+type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author, 3 writer }, 1 at_least: bound, 2 at_most: bound };
+type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
+type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
+type signal_def = struct { 0 type: type_expr, 1 doc: option<string> };
+```
