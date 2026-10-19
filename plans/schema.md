@@ -21,7 +21,7 @@ Spec: spec/data-model.md §2–§5, §9–§10; spec/versioning.md (all); spec/c
 - [x] Type model, encoding mapping, DSL parser with error tests, example schemas (notes app from notes/data-model.md; the core schema file).
 - [x] Schema value form, lock file, additive checker (each §4 rule tested both ways).
 - [x] Typed reads, defaults, View, write validation; property: `typed_read(encode(typed)) == typed`.
-- [ ] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
+- [x] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
 - [ ] Codegen bin + a generated example compiled in tests (build.rs in examples later).
 
 ## Tests

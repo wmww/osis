@@ -6,8 +6,11 @@
 #![forbid(unsafe_code)]
 
 mod check;
+pub mod codec;
+pub mod core_types;
 mod error;
 mod form;
+mod keys;
 mod lex;
 mod lock;
 mod parse;
@@ -19,8 +22,10 @@ mod types;
 mod view;
 
 pub use check::{Rule, Violation, check};
+pub use codec::{Chunked, Codec};
 pub use error::{Error, ParseError};
 pub use form::{META_SRC, meta_schema, read_type, type_value};
+pub use keys::{Aspect, AspectKey, Signal};
 pub use lock::{Lock, LockStatus, check_lock};
 pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};

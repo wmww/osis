@@ -143,6 +143,7 @@ aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of
 aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect /groups: set<tid> [synthetic, guaranteed];
 ```
+- `creation`'s fields 0 and 1 are exclusive (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 - `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen` and `/group`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
