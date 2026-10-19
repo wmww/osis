@@ -69,9 +69,13 @@ impl Net {
     }
 
     pub fn add_server(&mut self) -> usize {
+        self.add_server_with(Policy::default())
+    }
+
+    pub fn add_server_with(&mut self, policy: Policy) -> usize {
         let i = self.servers.len();
         let backend = MemoryBackend::new();
-        let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(900 + i as u64)).unwrap();
+        let store = BackendStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(900 + i as u64)).unwrap();
         let hub = Hub::new(store, server_key(i), Box::new(SeededRng::from_u64(950 + i as u64)));
         self.servers.push(Server { hub, backend, address: Address { url: format!("quic://server{i}:1"), key: server_key(i) } });
         i
@@ -354,12 +358,16 @@ revision 1;
 aspect /t/reg: string;
 aspect /t/gone: string [by: writer, keep_at_most: 1h];
 aspect /t/brief: string [expires: 1h];
+aspect /t/blob: blob;
+aspect /t/big: map<string, string>;
 "#,
 );
 
 pub const REG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/reg", &TEST);
 pub const GONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gone", &TEST);
 pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/brief", &TEST);
+pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/blob", &TEST);
+pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/big", &TEST);
 
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())

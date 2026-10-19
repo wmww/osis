@@ -169,6 +169,8 @@ pub struct SyncEngine {
     diagnostics: Vec<String>,
     /// Inbox blobs waiting for a connection to their server.
     pub(crate) outbox: Vec<local::Outgoing>,
+    /// Blobs asked for and not received yet.
+    pub(crate) fetching: BTreeSet<osis_core::BlobId>,
 }
 
 impl SyncEngine {
@@ -194,6 +196,7 @@ impl SyncEngine {
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox: Vec::new(),
+            fetching: BTreeSet::new(),
         })
     }
 
@@ -274,6 +277,7 @@ impl SyncEngine {
                 }
             }
             Event::Down { conn } => {
+                self.fetching.clear();
                 if let Some(c) = self.conns.remove(&conn) {
                     let at = self.raw_now().saturating_add(self.cfg.retry_ms);
                     self.retry.insert(c.server, (c.address, at));

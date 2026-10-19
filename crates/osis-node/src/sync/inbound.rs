@@ -75,7 +75,10 @@ impl SyncEngine {
                     }
                     self.state.set_entry(l, blob_id, e);
                     match blob {
-                        Some(b) => blobs.push((blob_id, b)),
+                        Some(b) => {
+                            self.fetching.remove(&blob_id);
+                            blobs.push((blob_id, b));
+                        }
                         None if !self.engine.has_blob(&blob_id) => fetch.push(blob_id),
                         None => {}
                     }
@@ -112,10 +115,11 @@ impl SyncEngine {
         if let Some(c) = conn {
             let g = self.group_of(&l);
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
+            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).filter(|b| self.fetching.insert(*b)).collect();
             if !want.is_empty() {
                 self.command(c, Command::Fetch { label: l, ids: want }, out)?;
             }
+            self.fetch_waiting(c, l, out)?;
         }
         Ok(())
     }
@@ -256,14 +260,20 @@ impl SyncEngine {
         self.passes.insert((server, l), self.seq);
     }
 
-    /// Commits wait for pages: fetch every entry of the label whose bytes are not held (pages
-    /// before apply, spec/sync.md §6).
+    /// Commits wait for pages: fetch the blobs their headers list that are not held (pages
+    /// before apply, spec/sync.md §6; the chunks of other large values stay lazy).
     fn fetch_waiting(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        if !self.engine.pending().iter().any(|(_, r)| *r == crate::Reason::WaitBlobs) {
-            return Ok(());
+        let waiting: Vec<osis_core::CommitId> = self.engine.pending().into_iter().filter(|(_, r)| *r == crate::Reason::WaitBlobs).map(|(c, _)| c).collect();
+        let mut missing = Vec::new();
+        for c in waiting {
+            let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
+            let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            for ch in &cb.header.chunks {
+                if self.state.entries.contains_key(&(l, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob) {
+                    missing.push(ch.blob);
+                }
+            }
         }
-        let missing: Vec<BlobId> = self.state.entries.iter().filter(|((x, _), e)| *x == l && e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
-        let missing: Vec<BlobId> = missing.into_iter().filter(|b| !self.engine.has_blob(b)).collect();
         if !missing.is_empty() {
             self.command(conn, Command::Fetch { label: l, ids: missing }, out)?;
         }
@@ -314,6 +324,13 @@ impl SyncEngine {
             }
         }
         out
+    }
+
+    /// Fetches every entry not held yet from the servers holding it (lazy chunks, on demand).
+    pub fn fetch_missing(&mut self) -> Vec<super::Action> {
+        let ids: Vec<BlobId> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.engine.has_blob(b)).collect();
+        self.fetch(&ids)
     }
 
     /// Gained IDs the server lacks: upload the stamped entries held.
