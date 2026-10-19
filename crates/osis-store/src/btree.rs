@@ -287,8 +287,10 @@ fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Re
 
 /// Removes `key`; true if it was present.
 pub(crate) fn remove(u: &mut dyn Units, root: u64, key: &[u8], shred: bool) -> Result<bool, Error> {
-    if del(u, root, key, shred)?.is_none() {
-        return Ok(false);
+    match del(u, root, key, shred)? {
+        None => return Ok(false),
+        Some(p) if p.is_empty() => save(u, root, &Page::Leaf(Vec::new()), shred)?,
+        Some(_) => {}
     }
     // Collapse a root with one child into the root's slot.
     loop {
@@ -299,7 +301,6 @@ pub(crate) fn remove(u: &mut dyn Units, root: u64, key: &[u8], shred: bool) -> R
                 save(u, root, &page, shred)?;
                 u.delete(child, shred);
             }
-            Page::Inner(es) if es.is_empty() => save(u, root, &Page::Leaf(Vec::new()), shred)?,
             _ => return Ok(true),
         }
     }
@@ -561,9 +562,12 @@ mod tests {
     fn edit_touches_path_only() {
         let mut u = Mem { max: 1024, ..Mem::default() };
         let root = create(&mut u).unwrap();
+        let mut model = BTreeMap::new();
         for k in 0..5000u32 {
             put(&mut u, root, &k.to_be_bytes(), vec![1; 20], false).unwrap();
+            model.insert(k.to_be_bytes().to_vec(), vec![1; 20]);
         }
+        check(&mut u, root, &model);
         let before = u.units.clone();
         remove(&mut u, root, &1234u32.to_be_bytes(), true).unwrap();
         let changed = u.units.iter().filter(|(s, v)| before.get(s) != Some(v)).count();
@@ -589,6 +593,25 @@ mod tests {
             let key = format!("k{k:04}");
             remove(&mut u, root, key.as_bytes(), true).unwrap();
             assert!(u.units.values().all(|p| !p.windows(key.len()).any(|w| w == key.as_bytes())), "{key}");
+        }
+    }
+
+    // notes/local-store.md, Units: a table emptied and refilled stays consistent.
+    #[test]
+    fn empty_and_refill() {
+        let mut u = Mem { max: 256, ..Mem::default() };
+        let root = create(&mut u).unwrap();
+        for round in 0..3 {
+            let mut model = BTreeMap::new();
+            for k in 0..100u32 {
+                put(&mut u, root, &k.to_be_bytes(), vec![round; 9], false).unwrap();
+                model.insert(k.to_be_bytes().to_vec(), vec![round; 9]);
+            }
+            check(&mut u, root, &model);
+            for k in 0..100u32 {
+                assert!(remove(&mut u, root, &k.to_be_bytes(), round == 1).unwrap());
+            }
+            check(&mut u, root, &BTreeMap::new());
         }
     }
 

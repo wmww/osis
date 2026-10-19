@@ -3,7 +3,7 @@
 
 use osis_core::{Ak, Tid};
 use osis_crypto::SeededRng;
-use osis_store::{Backend, Faults, FaultyBackend, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig};
+use osis_store::{Backend, Faults, MemoryBackend, MemoryRoot, RootStorage, Store, StoreConfig};
 
 /// Small pages and a small key tree so tests exercise splits and several tree levels.
 pub fn cfg() -> StoreConfig {
@@ -84,7 +84,7 @@ impl Drop for FileDevice {
 impl Device for FileDevice {
     fn backend(&self) -> Box<dyn Backend> {
         let b = osis_store::RedbBackend::open(&self.dir.join("db")).unwrap();
-        Box::new(FaultyBackend::new(b, self.faults.clone()))
+        Box::new(osis_store::FaultyBackend::new(b, self.faults.clone()))
     }
     fn root(&self) -> Box<dyn RootStorage> {
         Box::new(self.root.clone())
@@ -99,6 +99,7 @@ impl Device for FileDevice {
 
 /// Every device kind this build has, fresh.
 pub fn devices(name: &str) -> Vec<Box<dyn Device>> {
+    #[allow(unused_mut)]
     let mut v: Vec<Box<dyn Device>> = vec![Box::new(MemDevice::new())];
     #[cfg(feature = "file-backend")]
     v.push(Box::new(FileDevice::new(name)));
