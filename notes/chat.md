@@ -14,11 +14,16 @@
 - **Not built**: time-bucket history groups (a label has no partial download, so one group per time bucket owned by C would let a new device fetch recent months first); deleting a removed persona's entries.
 
 ## Costs
-- Estimates: join = persona creation, two membership commits and one content commit, two sealed boxes (C's read and write secrets to the person) plus one box (C's read secret to P_i). Message ≈ 350 B plus content. Removal from a 200-person chat: 2 × 199 sealed boxes ≈ 480 KB in one paged commit, downloaded by every participant; sub-actors of about 50 (channels as actors under C) keep a removal near 120 KB.
-- Measured (chat of 4, upstream bytes at the server, `costs_join_message_removal`, tier 2): join ≈ 220 KB, message ≈ 2.5 KB, removal of a link joiner ≈ 350 KB from the moderator plus ≈ 160 KB from the others. Far over the estimates: issues/chat-costs.md, issues/sync-deposit-resend.md.
+- Old estimates: ~~join four commits and three boxes (~10–20 KB); message ≈ 350 B + content; removal 2 sealed boxes per remaining member (2 × 199 ≈ 480 KB at 200)~~.
+- Design cost (spec as written, engine waste removed; issues/chat-costs.md has the breakdown):
+  - **Join ≈ 38 KB.** Chain certificates under K's and C's labels (≈ 12 KB each, mostly hybrid KEM keys of 1216 B per role in `/keys`), the grant and the persona's own secrets (≈ 7.5 KB), the persona content commit (3 projections, 2 KB), two inbox blobs (4.5 KB).
+  - **Message ≈ 2.1 KB of blobs (2.5 KB on the wire).** One commit makes 3 projections (`/created`, text + sent, the placement on the persona's `/group`), and each repeats the 467 B header and the signature.
+  - **Removal of a link joiner.** Each K rotation costs 2.7 KB per remaining member (a read and a write sealed box) plus ≈ 5 KB fixed (`/keys` 2.6 KB, link-key and history boxes). C's rotation is ≈ 4 KB. `demote` plus `revoke_link` rotates both K and C twice, and K and C sit in the creator's home group, so the rotations go under the home label too. That is ≈ 79 KB at 4 members and ≈ 2.2 MB at 200. One rotation without the home copy is ≈ 45 KB at 4 and ≈ 0.55 MB at 200. Other members send only heartbeats.
+- Measured today (chat of 4, `costs_join_message_removal`): join ≈ 220 KB, message ≈ 2.5 KB, removal ≈ 300 KB from the moderator plus ≈ 160 KB from the others. The excess is engine waste: issues/sync-upload-resend.md and issues/labeling-cert-copies.md.
+- Cheaper by spec or app choices (issues/chat-costs.md, knobs): one rotation per link-joiner removal, chats not placed in the home group, one sealed box per member for all roles, one KEM key per keyset, the header once per commit, certificate dedup across nodes.
 - Vandalism: any participant can edit C's `/group` and `writer`-purgeable bodies of C's own aspects; honest clients re-add their own persona deterministically and admins remove the vandal (authenticated malicious writers are bounded, not prevented).
 
 ## Open
 - Whether participants writing C's `/group` is acceptable, or C's `/group` should list personas by an admin-only flow.
 - Wake priority per chat is undecided (notes/networking.md, Priority); timeline query shape (notes/api.md).
-- A second link made after joins plus a removal never settled in the test world (issues/chat-costs.md).
+- A second link made after joins plus a removal never settles: the later link's joiner rotates C without end (issues/rotation-uncoverable-loop.md).

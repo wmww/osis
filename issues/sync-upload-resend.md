@@ -1,0 +1,8 @@
+# A writer re-uploads every stamped entry on each pass until the server answers
+> Summary: `pass.rs` skips only entries the server is known to hold (`is_present`), and presence comes with the server's answer. Every pass started before that answer (one per applied commit) sends the same blobs again. In the chat cost test this is 72% of a join's upload bytes and 60–80% of a removal's. The same gap repeats Delete items.
+> Tags: sync, node
+
+- Seen in examples/chat `costs_join_message_removal` (osis-sim `World`, chat of 4). The late joiner sends 204 KB of blobs for 57 KB of distinct (label, blob) pairs: its chain-certificate set goes under C's and K's labels 4 to 6 times. Alice's removal sends 285 KB for 114 KB distinct, with one blob sent 9 times. At a chat of 8 the removal is 1.02 MB, 790 KB of it repeats, so the cost grows faster than linear. Delete items repeat 2 to 4 times for the same reason.
+- issues/sync-deposit-resend.md is the same gap for deposits. Its line "writers are unaffected" is wrong: `set_entry` keeps the stamp, but nothing records that the upload is in flight.
+- Fix (node-sync): when an Upload or Delete is sent, record it as in flight per (server, label, blob). Later passes skip in-flight entries. Clear the mark on the answer (OK: present; refusal: retry rules) or on disconnect. Fix both issues together. Expected saving: about 150 KB per join, about 170 KB from the remover and about 115 KB from the other members per removal (chat of 4).
+- Test: a tally assertion in the chat cost test, or a sim invariant that a node never sends one (label, blob) twice on a connection unless an answer refused it.

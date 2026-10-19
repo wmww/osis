@@ -44,7 +44,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | node-core, server, transport, large-values | not started | wave 3 |
 | sync bug-fix round 1 | merged at 261f7da | all six phase B issues fixed; phase B scenarios green at 8 seeds |
 | sync bug-fix round 2 | running (opus, worktree) | phase C sync issues, deposit re-send, LAN datagram spec text |
-| chat-costs analysis | running (opus, worktree) | why join/message/removal sizes exceed notes/chat.md |
+| chat-costs analysis | merged | two thirds engine waste: issues sync-upload-resend, labeling-cert-copies (→ sync round 2), rotation-uncoverable-loop (→ flows round 2); design costs recorded in notes/chat.md and issues/chat-costs.md |
 | crdt/flows bug-fix round | merged | expiring diff, single-use redemption, move copies, label replacement fixed; new issues/flows-race-winner-stranded.md, issues/flows-move-derived-owner.md |
 | flows round 2 | running (opus, worktree) | race-winner stranded, move with derived owner |
 | sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
