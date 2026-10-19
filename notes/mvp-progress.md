@@ -44,12 +44,13 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync | running (opus, worktree) | |
-| membership-flows | running (opus, worktree) | |
-| api (first half) | running (opus, worktree) | |
-| wave 3 integration pass | running (opus, worktree) | tree-unify, base64url, tier-2 run, freeze-ready list |
+| membership-flows | review | done over LocalPeer; reviewer running; issues/link-finalization.md (owner-call), roster-snapshot-deltas, flows-gaps |
+| api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations

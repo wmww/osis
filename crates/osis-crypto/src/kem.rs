@@ -238,8 +238,7 @@ mod tests {
     use super::*;
 
     fn hex<const N: usize>(s: &str) -> [u8; N] {
-        let v: Vec<u8> = (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect();
-        v.try_into().unwrap()
+        osis_core::hex::decode(s).unwrap().try_into().unwrap()
     }
 
     // spec/crypto.md §1: X25519 is RFC 7748 (§6.1 Diffie-Hellman example).

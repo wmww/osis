@@ -69,3 +69,45 @@ impl From<Error> for osis_crdt::PageError {
         }
     }
 }
+
+/// Chunk-tree errors (osis-commit's `tree`) into label errors, class kept.
+impl From<osis_commit::Error> for Error {
+    fn from(e: osis_commit::Error) -> Error {
+        use osis_commit::Error as C;
+        match e {
+            C::Cbor(e) => Error::Cbor(e),
+            C::Malformed(m) | C::Invalid(m) => Error::Malformed(m),
+            C::UnknownVersion(v) => Error::UnknownFormat(v),
+            C::Crypto(e) => Error::Crypto(e),
+            C::Missing => Error::Missing,
+            C::Corrupt => Error::Verify("content hash"),
+            C::BadSignature => Error::Verify("signature"),
+            C::DeltaHash { .. } => Error::Verify("delta hash"),
+            C::TooLarge(m) | C::Build(m) => Error::TooLarge(m),
+            C::Storage(_) => Error::Storage,
+            C::Delta(e) => match e.class() {
+                ErrorClass::BadInput => Error::Malformed("delta"),
+                ErrorClass::Parked => Error::UnknownFormat(0),
+                ErrorClass::Local => Error::Storage,
+            },
+        }
+    }
+}
+
+/// Label errors out of `TreeSink`/`LinkSource` impls (blob framing, the store), class kept.
+impl From<Error> for osis_commit::Error {
+    fn from(e: Error) -> osis_commit::Error {
+        use osis_commit::Error as C;
+        match e {
+            Error::Malformed(m) => C::Malformed(m),
+            Error::Cbor(e) => C::Cbor(e),
+            Error::Crypto(e) => C::Crypto(e),
+            Error::UnknownFraming(v) => C::UnknownVersion(u64::from(v)),
+            Error::UnknownFormat(v) => C::UnknownVersion(v),
+            Error::Verify(_) => C::Corrupt,
+            Error::TooLarge(m) => C::TooLarge(m),
+            Error::Missing => C::Missing,
+            Error::Storage => C::Storage("blob store"),
+        }
+    }
+}
