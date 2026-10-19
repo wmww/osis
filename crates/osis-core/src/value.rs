@@ -1,6 +1,9 @@
-//! Values (spec/data-model.md §4, §5). `Eq` and `Ord` are those of the canonical encoding: `Ord`
-//! is computed structurally and equals bytewise comparison of `cbor::encode` (tested), so maps and
-//! sets (`BTreeMap`, `BTreeSet`) iterate in canonical order with unique keys by construction.
+//! Values (spec/data-model.md §4, §5). `Eq`, `Ord` and `Hash` compare a link by its keyed content
+//! hash alone (spec/data-model.md §4, §6: two writes of one large value are equal); otherwise they
+//! are those of the canonical encoding. For values without links `Ord` equals bytewise comparison
+//! of `cbor::encode` (tested), so maps and sets (`BTreeMap`, `BTreeSet`) iterate in canonical order
+//! with unique keys by construction. With links the orders can differ (`[LA, 3]` < `[LB, 5]` while
+//! LA's bytes sort after LB's), so the encoder sorts the encodings of a set or map holding a link.
 
 use crate::cbor::CanonicalBytes;
 use crate::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID};
@@ -8,7 +11,7 @@ use crate::ids::{Link, Tid};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub enum Value {
     Int(i64),
     Float(Float),
@@ -120,7 +123,7 @@ fn kind_key(v: &Value) -> (u8, u64) {
 }
 
 impl Ord for Value {
-    /// Bytewise order of canonical encodings. Canonical heads compare like their arguments,
+    /// Bytewise order of canonical encodings, links by content hash only. Canonical heads compare like their arguments,
     /// and no canonical item is a prefix of another, so arrays compare element by element.
     fn cmp(&self, other: &Value) -> Ordering {
         use Value::*;
@@ -143,9 +146,38 @@ impl Ord for Value {
             (List(a), List(b)) => a.len().cmp(&b.len()).then_with(|| a.iter().cmp(b.iter())),
             (Set(a), Set(b)) => a.len().cmp(&b.len()).then_with(|| a.iter().cmp(b.iter())),
             (Map(a), Map(b)) => a.len().cmp(&b.len()).then_with(|| a.iter().cmp(b.iter())),
-            (Link(a), Link(b)) => a.hash.cmp(&b.hash).then(a.blob.0.cmp(&b.blob.0)).then(a.suite.cmp(&b.suite)).then(a.key.cmp(&b.key)),
+            (Link(a), Link(b)) => a.hash.cmp(&b.hash),
             (Unknown(a), Unknown(b)) => a.content.as_bytes().cmp(b.content.as_bytes()),
             _ => Ordering::Equal, // unreachable: equal kind keys mean equal variants
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Value) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Value {}
+
+impl std::hash::Hash for Value {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        use Value::*;
+        kind_key(self).hash(h);
+        match self {
+            Int(i) => i.hash(h),
+            Float(f) => f.hash(h),
+            Bool(_) => {}
+            Str(s) => s.hash(h),
+            Bytes(b) => b.hash(h),
+            Tid(t) => t.hash(h),
+            Enum(c, p) => (c, p).hash(h),
+            Map(m) => m.iter().for_each(|kv| kv.hash(h)),
+            List(l) => l.iter().for_each(|v| v.hash(h)),
+            Set(s) => s.iter().for_each(|v| v.hash(h)),
+            Link(l) => l.hash.hash(h),
+            Unknown(u) => u.content.as_bytes().hash(h),
         }
     }
 }

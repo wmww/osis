@@ -243,3 +243,50 @@ fn map_put_lowest_dot_spec_5_6() {
     assert_eq!(st.read(), Some(Value::Map(Default::default())));
 }
 
+
+/// §5.5, §5.6, §9, spec/data-model.md §6: large values compare by keyed content hash: two writes
+/// of one content (other blob and key) are one set element, one map key, an unchanged register;
+/// the read shows the lowest live dot's link (§5.5, §5.6).
+#[test]
+fn large_values_equal_by_hash_spec_5_5() {
+    use osis_core::{BlobId, Link};
+    let view = AnyView;
+    let link = |blob: u8| Value::Link(Link { hash: [9; 32], blob: BlobId([blob; 32]), suite: 1, key: [blob; 32] });
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let b = Source::node(Tid::from_bytes([2; 15]));
+    // Set: concurrent adds of one content read once; an add of it again writes nothing.
+    let set = |src: &Source, blob: u8| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &view, &Value::Set([link(blob)].into_iter().collect())).unwrap();
+    let mut st = set(&a, 1);
+    st.join(set(&b, 2));
+    assert_eq!(st.read(), Some(Value::Set([link(3)].into_iter().collect())));
+    // The read shows the link of the lowest live element in dot order, whatever the join order.
+    let blob_of = |v: Option<Value>| match v {
+        Some(Value::Set(s)) => s.iter().next().and_then(|v| if let Value::Link(l) = v { Some(l.blob) } else { None }),
+        Some(Value::Map(m)) => m.keys().next().and_then(|v| if let Value::Link(l) = v { Some(l.blob) } else { None }),
+        _ => None,
+    };
+    let Fragment::Set(s) = &st else { panic!("set") };
+    let lowest = s.elems.values().next().and_then(|e| e.frag.as_ref()?.read());
+    let mut st2 = set(&b, 2);
+    st2.join(set(&a, 1));
+    assert_eq!(blob_of(st.read()), blob_of(lowest.map(|v| Value::Set([v].into_iter().collect()))));
+    assert_eq!(blob_of(st.read()), blob_of(st2.read()));
+    let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), a.clone(), 2));
+    batch.apply(&PathOp { path: vec![], op: Op::Add(link(4)) }, &view).unwrap();
+    assert!(batch.finish().is_none());
+    // Map: a put under an equal-hash key writes into the live entry.
+    let m = |blob: u8, v: i64| Value::Map([(link(blob), Value::Int(v))].into_iter().collect());
+    let mut st = create(&mut Writer::new(ts(1 << 16), a.clone(), 1), &view, &m(1, 1)).unwrap();
+    st.join(create(&mut Writer::new(ts(1 << 16), b.clone(), 1), &view, &m(2, 2)).unwrap());
+    assert_eq!(st.read().map(|v| if let Value::Map(m) = v { m.len() } else { 0 }), Some(1));
+    let Fragment::Map(mf) = &st else { panic!("map") };
+    let lowest = mf.entries.values().next().and_then(|e| e.key.clone());
+    assert_eq!(blob_of(st.read()), blob_of(lowest.map(|k| Value::Map([(k, Value::Int(0))].into_iter().collect()))));
+    let mut st2 = create(&mut Writer::new(ts(1 << 16), b.clone(), 1), &view, &m(2, 2)).unwrap();
+    st2.join(create(&mut Writer::new(ts(1 << 16), a.clone(), 1), &view, &m(1, 1)).unwrap());
+    assert_eq!(blob_of(st.read()), blob_of(st2.read()));
+    // Register: a set to an equal-hash link is no write.
+    let reg = create(&mut Writer::new(ts(1 << 16), a.clone(), 1), &view, &link(1)).unwrap();
+    assert_eq!(diff(&mut Writer::new(ts(2 << 16), a, 2), Some(&reg), &view, &link(2)).unwrap(), None);
+}
+

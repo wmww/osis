@@ -19,6 +19,7 @@ pub fn rule(e: &DecodeError) -> &'static str {
         DecodeError::InvalidUtf8 => "utf8",
         DecodeError::MapKeyOrder => "map-order",
         DecodeError::SetOrder => "set-order",
+        DecodeError::EqualLinks => "equal-links",
         DecodeError::BadSimple => "simple",
         DecodeError::NonCanonicalNan => "nan",
         DecodeError::TagContent(_) => "tag-content",

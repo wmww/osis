@@ -54,6 +54,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "blob/prefix.vec" => Subject { generate: Some(blob::prefixes), check: None },
         "blob/blobs.vec" => Subject { generate: Some(blob::blobs), check: None },
         "chunker/tree.vec" => Subject { generate: Some(chunker::tree), check: None },
+        "chunker/pages.vec" => Subject { generate: Some(chunker::pages), check: None },
         "step/steps.vec" => Subject { generate: Some(step::steps), check: None },
         "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
         "signal/signal.vec" => Subject { generate: Some(signal::signal), check: None },
