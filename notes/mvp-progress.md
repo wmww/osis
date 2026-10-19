@@ -50,7 +50,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | membership-flows | review | done over LocalPeer; review fixes done; issues roster-snapshot-deltas, flows-gaps |
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| tla rerun (round 2) | running (opus, worktree) | |
+| tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
 | cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
 | api (second half) | running (opus, worktree) | sharing and sync surface |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
@@ -64,6 +64,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).
 - node-core review: spec/permissions.md §7 an import may be split into several import commits, one per origin commit, written in one local transaction (decided by the coordinator).
 - transport review: the §10 quic paragraph adds no 0-RTT, mandatory client auth, RFC 8410 Ed25519 SPKI and `ed25519` scheme only, SNI ignored, URL form (port required, IPv6 in brackets), a server dialing a server uses its address key, the dialer closes.
 - transport: spec/sync.md §10 defines `quic://host:port` (QUIC v1, TLS 1.3, ALPN `osis`, RFC 7250 raw Ed25519 keys both sides: server = address key, client fresh per connection; each sync session on a client-opened bidirectional stream). Filled an unspecified interop gap; no frozen bytes touched.
