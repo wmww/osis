@@ -22,7 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct Verdicts {
     /// It stamps here (uploads what it judges must-hold).
     pub writer: bool,
-    /// Bodies it judges must-hold: (commit, delta parts).
+    /// Bodies it judges must-hold: (commit, the delta parts no snapshot under the label covers).
+    /// A live entry of the commit holding those parts holds the body.
     pub must_hold: Vec<(CommitId, Vec<(usize, usize)>)>,
     /// Entries it knows under the label that it judges must-not-hold and may delete now with a
     /// delete item it can make: (blob, why).
@@ -86,13 +87,28 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
+        // content snapshots under the label: drop the bodies they cover (spec/sync.md §7)
+        let snaps = self.snapshots_at(&l);
+        let mut done = Vec::new();
+        for ((t, a), ss) in &snaps {
+            for s in ss {
+                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
+                    continue;
+                }
+                self.drop_covered(t, a, s)?;
+                done.push(*s);
+            }
+        }
+        self.snapshots_seen.extend(done);
+        self.forget_dropped()?;
         let mut bodies = self.engine.label_bodies(&g)?;
         bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
         let mut sends: Vec<Out> = Vec::new();
-        let snaps = self.snapshots_at(&l);
         let unsettled = self.unsettled(&l, &g)?;
         for b in &bodies {
-            if !self.must_hold(b, &snaps, &unsettled)? {
+            let Some(needed) = self.must_hold(b, &snaps, &unsettled)? else { continue };
+            // another projection of the commit (a right holder dropped covered deltas) holds it
+            if needed != b.parts && self.carried_by(&server, &l, &b.commit, &needed) {
                 continue;
             }
             let entry = self.entry_for(&server, &l, b);
@@ -197,8 +213,8 @@ impl SyncEngine {
         let unsettled = self.unsettled(l, &g)?;
         v.unsettled = unsettled.iter().cloned().collect();
         for b in &bodies {
-            if self.must_hold(b, &snaps, &unsettled)? {
-                v.must_hold.push((b.commit, b.parts.clone()));
+            if let Some(needed) = self.must_hold(b, &snaps, &unsettled)? {
+                v.must_hold.push((b.commit, needed));
             }
         }
         let entries: Vec<(BlobId, Entry)> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
@@ -294,9 +310,11 @@ impl SyncEngine {
     }
 
     /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, or
-    /// established uncovered by the label's snapshots.
-    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &BTreeSet<Option<(Tid, Ak)>>) -> Result<bool> {
-        let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
+    /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
+    /// must hold to hold the body (all of them before keep-at-least, else those of the aspects
+    /// no snapshot covers).
+    fn must_hold(&mut self, b: &Body, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, unsettled: &BTreeSet<Option<(Tid, Ak)>>) -> Result<Option<Vec<(usize, usize)>>> {
+        let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let now = self.now();
         let mut before = false;
@@ -304,7 +322,8 @@ impl SyncEngine {
             before = self.engine.body_keep(&b.commit, t, a)?.at_least > now;
         }
         let mut covered = !aspects.is_empty();
-        for (t, a) in &aspects {
+        let mut needed = Vec::new();
+        for (p, (t, a)) in b.parts.iter().zip(&aspects) {
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
                 if *s != b.commit && self.engine.covered(s, &b.commit, t, a)? == Some(true) {
@@ -317,10 +336,23 @@ impl SyncEngine {
                 }
             }
             covered &= c;
+            if before || !c {
+                needed.push(*p);
+            }
         }
         let known = !unsettled.contains(&None) && !aspects.iter().any(|k| unsettled.contains(&Some(k.clone())));
         let covered = if covered || known { Some(covered) } else { None };
-        Ok(classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must)
+        let must = classify(&Facts { required: true, closure: true, before_at_least: before, covered, ..Facts::default() }) == Hold::Must;
+        Ok(must.then_some(needed))
+    }
+
+    /// Whether an entry of commit `c` holding `parts` is present at `server` under `l`.
+    fn carried_by(&self, server: &ServerKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        self.state
+            .entries
+            .range((*l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| x == l)
+            .any(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && self.state.is_present(server, l, id))
     }
 
     /// The entry under `l` holding exactly this body, not tombstoned at `server`.

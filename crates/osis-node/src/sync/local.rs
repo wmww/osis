@@ -102,6 +102,15 @@ impl SyncEngine {
     /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
+        self.drop_covered(t, ak, &s)?;
+        Ok(self.handle(super::Event::Local))
+    }
+
+    /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
+    /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
+    /// right holder as it sees the snapshot); `s` carries them.
+    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
+        let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
         let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
@@ -123,7 +132,7 @@ impl SyncEngine {
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
         }
-        Ok(self.handle(super::Event::Local))
+        Ok(())
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`

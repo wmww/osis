@@ -71,7 +71,6 @@ fn replay_is_exact() {
 
 // spec/sync.md §7: compaction deletes covered bodies once the snapshot is there; then a purge.
 #[test]
-#[ignore = "issues/sync-compaction-ping-pong.md"]
 fn compaction() {
     ok("compaction", 1);
 }

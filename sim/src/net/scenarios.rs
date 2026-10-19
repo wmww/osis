@@ -169,7 +169,7 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
 
 /// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
 /// covered bodies are deleted at the server once the snapshot is there; then a purge; no
-/// ping-pong. Fails: issues/sync-compaction-ping-pong.md.
+/// ping-pong.
 pub fn compaction(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0);
     let mut sim = sim("compaction", seed, NetWeights::default());

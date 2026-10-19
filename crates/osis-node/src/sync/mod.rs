@@ -212,6 +212,8 @@ pub struct SyncEngine {
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+    /// Snapshots under a label whose covered bodies this node has dropped (spec/sync.md §7).
+    pub(crate) snapshots_seen: BTreeSet<osis_core::CommitId>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
@@ -260,6 +262,7 @@ impl SyncEngine {
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
             served: BTreeMap::new(),
+            snapshots_seen: BTreeSet::new(),
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
