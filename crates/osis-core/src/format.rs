@@ -1,7 +1,9 @@
-//! Format constants (spec/overview.md, Conventions; spec/versioning.md §1). Each says whether the
-//! spec fixes it (`fixed`) or plans/protocol-spec.md still has to (`provisional`).
+//! Format constants (spec/wire.md §2, §13; spec/versioning.md §1). All are fixed by format version
+//! 1 unless marked otherwise.
 
-/// Format version this build writes and the newest it reads. provisional (no version 1 freeze yet).
+use crate::SchemaId;
+
+/// Format version this build writes and the newest it reads (spec/wire.md §2). fixed.
 pub const FORMAT_VERSION: u64 = 1;
 
 const KIB: usize = 1024;
@@ -13,52 +15,81 @@ const DAY_MS: u64 = 24 * HOUR_MS;
 // CBOR tags (spec/data-model.md §5).
 /// Set: tag 258 around a sorted array. fixed.
 pub const TAG_SET: u64 = 258;
-/// Tid: tag around a 15-byte byte string. provisional (TBD in 256..65535, IANA check pending).
-pub const TAG_TID: u64 = 41500;
-/// Enum: tag around `[case]` or `[case, payload]`. provisional.
-pub const TAG_ENUM: u64 = 41501;
-/// Link: tag around `[content hash, blob ID, suite || key]`. provisional.
-pub const TAG_LINK: u64 = 41502;
-/// Reserved for structs, unused. provisional.
-pub const TAG_STRUCT_RESERVED: u64 = 41503;
+/// Tid: tag around a 15-byte byte string. fixed.
+pub const TAG_TID: u64 = 1616;
+/// Enum: tag around `[case]` or `[case, payload]`. fixed.
+pub const TAG_ENUM: u64 = 1617;
+/// Link: tag around `[content hash, blob ID, suite || key]`. fixed.
+pub const TAG_LINK: u64 = 1618;
+/// Reserved for structs, unused. fixed.
+pub const TAG_STRUCT_RESERVED: u64 = 1619;
 
-/// Largest blob (spec/data-model.md §6, "a few MB"). provisional.
-pub const MAX_BLOB: usize = 4 * MIB;
-/// Atomic values whose canonical encoding exceeds this are chunked (spec/data-model.md §6,
-/// "a few hundred KB"). provisional.
-pub const CHUNK_THRESHOLD: usize = 256 * KIB;
-/// A fragment's element array is paged above this (spec/crdt.md §8). fixed.
+/// Largest blob, prefix and ciphertext (spec/wire.md §2, §5). fixed.
+pub const MAX_BLOB: usize = 8 * MIB;
+/// Atomic values and header lists whose canonical encoding exceeds this are chunked
+/// (spec/wire.md §2, §4; spec/data-model.md §6). fixed.
+pub const CHUNK_THRESHOLD: usize = 128 * KIB;
+/// A fragment's links are grouped into link pages above this (spec/wire.md §2, §6). fixed.
 pub const PAGE_TARGET: usize = 64 * KIB;
 
-// Chunker (spec/crdt.md §8, shared with spec/data-model.md §6). Sizes fixed; gear table and mask
-// provisional (see `chunker`).
+// Chunker (spec/wire.md §2, §6), shared by chunk trees and pages.
 /// Smallest chunk or page, except the last. fixed.
 pub const CHUNK_MIN: usize = 16 * KIB;
-/// Average chunk or page size. fixed.
-pub const CHUNK_AVG: usize = 64 * KIB;
-/// Largest chunk. fixed.
+/// Largest chunk; a page closes at or above it. fixed.
 pub const CHUNK_MAX: usize = 256 * KIB;
+/// A cut needs the top this many bits of the gear hash zero (`h >> 48 == 0`, spec/wire.md §6). fixed.
+pub const CHUNK_MASK_BITS: u32 = 16;
+/// Most links per tree node or link page (spec/wire.md §2, §6). fixed.
+pub const TREE_FANOUT: usize = 512;
+/// Highest chunk tree level (spec/wire.md §6, §13). fixed.
+pub const TREE_MAX_LEVEL: u64 = 48;
 
-/// A commit more than this ahead of the receiver's wall clock is parked (spec/crdt.md §2.2). fixed.
+/// Blob framing version (spec/wire.md §5). fixed.
+pub const BLOB_FRAMING_VERSION: u8 = 1;
+/// Most token commitments in a blob prefix (spec/wire.md §2, §5). fixed.
+pub const MAX_COMMITMENTS: usize = 16;
+/// Most keys in a claim set (spec/wire.md §2, §8). fixed.
+pub const MAX_CLAIMS: usize = 65_536;
+
+/// A commit more than this ahead of the receiver's wall clock is parked (spec/wire.md §2,
+/// spec/crdt.md §2.2). fixed.
 pub const MAX_DRIFT_MS: u64 = HOUR_MS;
-/// Membership deltas are kept at least this long after replaced (spec/commits.md §5). fixed.
+/// Membership deltas are kept at least this long after replaced (spec/wire.md §2,
+/// spec/commits.md §5). fixed.
 pub const MEMBERSHIP_KEEP_MS: u64 = 90 * DAY_MS;
-/// Inbox blob lifetime (spec/sync.md §2; notes/sync.md). provisional (90 days proposed).
+/// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
-/// Heartbeat bounds (spec/permissions.md §4). fixed.
+/// Heartbeat bounds (spec/wire.md §2, spec/permissions.md §4). fixed.
 pub const HEARTBEAT_MIN_LIFETIME_MS: u64 = DAY_MS;
 /// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.
 pub const HEARTBEAT_MAX_LIFETIME_MS: u64 = 14 * DAY_MS;
 /// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.
 pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
-/// Blind-node policy default, not a format constant (spec/overview.md; notes/sync.md).
+/// Most import resolution hops (spec/wire.md §2, spec/permissions.md §7). fixed.
+pub const RESOLUTION_HOPS: usize = 8;
+/// Core schema ID (spec/wire.md §2, spec/data-model.md §9). fixed.
+pub const CORE_SCHEMA_ID: SchemaId = SchemaId([0; 16]);
+/// Core schema revision of format version 1 (spec/wire.md §2). fixed.
+pub const CORE_SCHEMA_REVISION: u64 = 1;
+
+/// Blind-node policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;
 
-// Decoder limits (plans/protocol-spec.md item 8 fixes per-object limits). provisional.
-/// Deepest nesting of a value (arrays, maps, tags each count one level).
-pub const MAX_VALUE_DEPTH: usize = 128;
+// Decoder limits (spec/wire.md §13, spec/data-model.md §5). Depth counts the arrays, maps and
+// tags on the deepest path; scalars add nothing.
+/// Deepest nesting of a value. fixed.
+pub const MAX_VALUE_DEPTH: usize = 64;
+/// Deepest nesting of any wire object; values inside it still obey `MAX_VALUE_DEPTH`. fixed.
+pub const MAX_OBJECT_DEPTH: usize = 512;
 /// Largest value encoding a decoder accepts by default: a value lives in one blob.
 pub const MAX_VALUE_BYTES: usize = MAX_BLOB;
+/// Longest AK or signal kind in bytes (spec/wire.md §4, §13). fixed.
+pub const MAX_AK_BYTES: usize = 1024;
+/// Longest URL (spec/wire.md §10, §13). fixed.
+pub const MAX_URL_BYTES: usize = 256;
+
+/// Largest node-to-node frame (spec/wire.md §11.1): protocol version 1, not a format constant.
+pub const MAX_MESSAGE: usize = 9 * MIB;
 
 /// Tid length in bytes: 120 bits (spec/data-model.md §1). fixed.
 pub const TID_LEN: usize = 15;

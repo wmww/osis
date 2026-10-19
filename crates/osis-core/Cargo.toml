@@ -3,6 +3,7 @@ name = "osis-core"
 description = "Values, canonical CBOR, tids, ids, format constants, chunker, hashing, shared plug traits"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 
