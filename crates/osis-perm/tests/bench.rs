@@ -44,6 +44,7 @@ fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
     (w, nodes)
 }
 
+// spec: none (cost measurement)
 #[test]
 #[ignore]
 fn bench_10k_edges() {

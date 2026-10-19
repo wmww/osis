@@ -1,4 +1,4 @@
-//! osis-core: values and their canonical CBOR, tids, ids, format constants, chunker, hashing,
+//! osis-core: values and their canonical CBOR, tids, ids, format constants, chunker, hashing, hex,
 //! `Clock`, `impl_error!` (spec/data-model.md, spec/versioning.md §1). Synchronous, no I/O.
 //! Layer 0 (notes/architecture.md). Surface: notes/architecture.md §7.
 #![forbid(unsafe_code)]
@@ -8,6 +8,7 @@ pub mod chunker;
 mod error;
 pub mod format;
 pub mod hash;
+pub mod hex;
 mod ids;
 mod time;
 mod value;
