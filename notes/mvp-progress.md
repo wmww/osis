@@ -51,7 +51,7 @@ Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
-| cli | running (opus, worktree) | on the api's first half |
+| cli | review | done; sharing/sync commands return Unsupported until the api's second half; reviewer running |
 | apps-e2e, p2p, api (second half) | not started | wave 5, after node-sync merges |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
