@@ -24,9 +24,9 @@ Wave 2 (all of wave 1 merged).
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
-| commit | review | reviewer running; owner-call issues/token-admin-secret.md (non-admin writer omits level-1 token, provisional) |
-| label | running (opus, worktree) | |
-| proto | running (opus, worktree) | |
+| commit | review fixes | reviewer found 1 high (tree DoS) + 2 medium; agent fixing; owner-call issues/token-admin-secret.md |
+| label | review fixes | reviewer done (2 medium); agent fixing |
+| proto | review | reviewer running; issues/proto-label-coupling.md to resolve at integration |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
