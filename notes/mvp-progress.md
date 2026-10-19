@@ -45,12 +45,12 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync | running (opus, worktree) | |
 | membership-flows | review | done over LocalPeer; reviewer running; issues/link-finalization.md (owner-call), roster-snapshot-deltas, flows-gaps |
-| api (first half) | running (opus, worktree) | |
-| wave 3 integration pass | running (opus, worktree) | tree-unify, base64url, tier-2 run, freeze-ready list |
+| api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
-| wave 3 integration pass | done at 4037e9e, merge pending | tree unified into osis-commit, base64url in osis-core; issues/store-shape-reduced-arity.md (tier 2); 3 uncited osis-node tests (cite notes, not spec) for wave 4 to fix; FC-2 candidates in notes/testing.md |
+| wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
