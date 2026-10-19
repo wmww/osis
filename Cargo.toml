@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "models/*", "vectors", "sim"]  # apps-e2e adds "examples/*" (an empty glob fails)
+members = ["crates/*", "models/crdt", "models/membership", "vectors", "sim"]  # apps-e2e adds "examples/*" (an empty glob fails)
 exclude = ["fuzz"]
 
 [workspace.package]

@@ -21,7 +21,7 @@ Wave 1 (tla-models still running from wave 0).
 | crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
-| schema | review | branch worktree-agent-abfb237e9b3308def; reviewer running |
+| schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | running (opus, worktree) | |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
 | node-core, server, transport, large-values | not started | wave 3 |
