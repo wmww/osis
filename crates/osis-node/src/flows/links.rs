@@ -32,6 +32,8 @@ pub struct LinkSpec {
     pub until: Option<WallMs>,
     pub servers: Vec<Address>,
     pub peers: Vec<osis_label::Peer>,
+    /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §9).
+    pub single_use: bool,
 }
 
 impl Engine {
@@ -47,7 +49,7 @@ impl Engine {
         let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
         self.drop_key_actor(&l);
         let (k, k_label, keep, done) = res?;
-        Ok((ShareLink { seed, target: spec.target, k, k_label, servers: spec.servers.clone(), peers: spec.peers.clone() }, keep, done))
+        Ok((ShareLink { seed, target: spec.target, k, k_label, servers: spec.servers.clone(), peers: spec.peers.clone(), single_use: spec.single_use }, keep, done))
     }
 
     /// Redeems a link once K's label was claimed by L's static entry and downloaded (node-sync;

@@ -24,6 +24,8 @@ use std::time::Duration;
 pub const DEFAULT_LIMIT: usize = 64 << 20;
 /// How long `Osis::close` waits for other holders of the database.
 pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
+/// Default wait for another node (`Config::wait_timeout`).
+pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
 /// Default inactivity before a text session commits.
 pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 
@@ -67,6 +69,9 @@ pub struct Config {
     pub servers: Vec<ServerAddr>,
     /// A text session commits after this much inactivity.
     pub idle_commit: Duration,
+    /// How long a call that waits for another node (`redeem`, `import_contact`, `restore`)
+    /// waits before failing `Network`.
+    pub wait_timeout: Duration,
 }
 
 impl Config {
@@ -76,7 +81,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
     }
 
     #[cfg(feature = "file-store")]
@@ -91,9 +96,8 @@ pub(crate) struct MadeLink {
     pub l: Tid,
     pub target: Tid,
     pub single_use: bool,
-    /// When this node first saw a joiner of a single-use link (memory only: a restart waits
-    /// again).
-    pub joined: Option<u64>,
+    /// Its single-use redemption was finalized here.
+    pub finalized: bool,
 }
 
 /// The sync engine with its event channel, the dispatcher sequence number and the handle's
@@ -123,6 +127,7 @@ pub(crate) struct Inner {
     pub me: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
+    pub wait_timeout: Duration,
     pub clock: Arc<dyn Clock>,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
     /// Serializes undo and redo: candidate selection and commit.
@@ -278,7 +283,7 @@ impl Osis {
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
         let (closed, closing) = std::sync::mpsc::channel();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -419,7 +424,7 @@ impl Osis {
         if !(any || handled) {
             return;
         }
-        self.upkeep_links(l, &roster);
+        self.upkeep_links(l, &roster, false);
         let status = crate::share::status_of(&mut l.sync);
         if status != l.status {
             for (g, s) in &status.groups {

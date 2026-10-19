@@ -15,8 +15,6 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// How long after the first joiner a single-use link is ended (`LinkOpts::single_use`).
-pub const FINALIZE_DELAY_MS: u64 = 10 * 60_000;
 /// How long a `WaitForSync::Required` demotion waits for its pre-sync.
 pub const PRESYNC_WAIT: Duration = Duration::from_secs(30);
 
@@ -56,9 +54,9 @@ pub enum Lower {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     pub until: Option<WallMs>,
-    /// The first redemption ends the link: this node removes the link key `FINALIZE_DELAY_MS`
-    /// after it sees a joiner (the link format carries no flag, so redeemers cannot remove it
-    /// themselves; issues/api-single-use-links.md).
+    /// The first redemption ends the link: the link says so (`flags`, spec/wire.md §10), the
+    /// redeemer removes the link key in its redemption, and this node finalizes the link when it
+    /// sees that (spec/permissions.md §9).
     pub single_use: bool,
 }
 
@@ -359,10 +357,10 @@ impl Osis {
         let t = self.resolved(target);
         let servers: Vec<osis_label::Address> = self.servers()?.into_iter().map(|s| s.0).collect();
         let me = self.me();
-        let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new() }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
+        let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
-            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, joined: None });
+            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false });
         });
         self.save_links()?;
         self.carry(done)?;
@@ -370,31 +368,38 @@ impl Osis {
     }
 
     /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, joins its actor
-    /// as this person, then waits until the target is here. Returns the target.
+    /// as this person (removing the link key in the same commit when the link is single use), then
+    /// waits until the target is here. Returns the target. Each wait fails `Network` after
+    /// `Config::wait_timeout`; a used single-use link is refused that way (its key is no member
+    /// of K any more). The link key is forgotten on every outcome, a dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         let link = link.parse()?;
         let (k, target) = (link.k, link.target);
-        let l = self.follow_link(&link)?;
-        self.wait_until(None, Box::new(move |s, _| {
+        let key = self.follow_link(&link)?;
+        let l = key.l;
+        let t = Some(self.inner.wait_timeout);
+        self.wait_until(t, Box::new(move |s, _| {
             let e = s.engine_mut();
             (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())).then_some(Ok(()))
         }))
         .await?;
         let me = self.me();
-        let done = self.engine(|e| e.redeem(&link, &me, false))?;
+        let done = self.engine(|e| e.redeem(&link, &me, link.single_use))?;
+        drop(key);
         self.carry(done)?;
-        self.wait_until(None, Box::new(move |s, _| s.engine().knows(&target).then_some(Ok(())))).await?;
+        self.wait_until(t, Box::new(move |s, _| s.engine().knows(&target).then_some(Ok(())))).await?;
         Ok(target)
     }
 
-    /// Holds a link's key and follows K's label; returns L.
-    fn follow_link(&self, link: &osis_label::ShareLink) -> Result<Tid> {
-        self.locked(|x| -> Result<Tid> {
+    /// Holds a link's key and follows K's label; the key goes with the guard.
+    fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
+        let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
             let acts = x.sync.follow(link.k, link.k_label, link.servers.clone());
             self.inner.net.apply(acts);
             Ok(l)
-        })
+        })?;
+        Ok(KeyGuard { db: self.downgrade(), l })
     }
 
     /// The links this node made to `target` that still work.
@@ -418,37 +423,39 @@ impl Osis {
         self.demote(id, l, Lower::Remove, d).await
     }
 
-    /// Ends single-use links `FINALIZE_DELAY` after this node first saw a joiner (the joiner
-    /// reaches the target first: K rotates at the end, issues/api-single-use-links.md).
-    pub(crate) fn upkeep_links(&self, l: &mut crate::handle::Locked, changed: &BTreeSet<Tid>) {
+    /// Finalizes single-use links whose redemption removed the link key (spec/permissions.md
+    /// §9), on a roster change of K and for every link at open (`all`). The trigger is K's roster
+    /// itself, so a restart re-arms it; `finalized` is persisted.
+    pub(crate) fn upkeep_links(&self, l: &mut crate::handle::Locked, changed: &BTreeSet<Tid>, all: bool) {
         let me = self.me();
-        let now = self.inner.clock.now_wall_ms().0;
-        let watch: Vec<Tid> = l.links.iter().filter(|(k, m)| m.single_use && (changed.contains(k) || m.joined.is_some())).map(|(k, _)| *k).collect();
-        for k in watch {
-            let Some(m) = l.links.get(&k).copied() else { continue };
+        let due: Vec<(Tid, Tid)> = l.links.iter().filter(|(k, m)| m.single_use && !m.finalized && (all || changed.contains(k))).map(|(k, m)| (*k, m.l)).collect();
+        let mut any = false;
+        for (k, lk) in due {
             let r = l.engine().roster(&k);
-            if !r.contains_key(&m.l) || !r.keys().any(|x| *x != m.l && *x != me) {
+            if r.contains_key(&lk) || !r.keys().any(|x| *x != me) {
                 continue;
             }
-            let Some(at) = m.joined else {
-                if let Some(x) = l.links.get_mut(&k) {
-                    x.joined = Some(now);
+            match l.engine().finalize_link(&k, &lk).and_then(|d| l.sync.carry_out(d)) {
+                Ok(acts) => {
+                    self.inner.net.apply(acts);
+                    if let Some(m) = l.links.get_mut(&k) {
+                        m.finalized = true;
+                        any = true;
+                    }
                 }
-                continue;
-            };
-            if now < at.saturating_add(FINALIZE_DELAY_MS) {
-                continue;
-            }
-            let done = l.engine().finalize_link(&k, &m.l);
-            match done.and_then(|d| l.sync.carry_out(d)) {
-                Ok(acts) => self.inner.net.apply(acts),
                 Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![k], commit: None, peer: None, detail: format!("finalizing a single-use link: {e}") }),
+            }
+        }
+        if any {
+            let v = osis_core::cbor::encode(&links_value(&l.links));
+            if let Err(e) = l.engine().set_app_record(LINKS, &v) {
+                l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: Vec::new(), commit: None, peer: None, detail: format!("links record: {e}") });
             }
         }
     }
 
     pub(crate) fn save_links(&self) -> Result<()> {
-        let v = self.locked(|x| Value::List(x.links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use)])).collect()));
+        let v = self.locked(|x| links_value(&x.links));
         self.engine(|e| e.set_app_record(LINKS, &osis_core::cbor::encode(&v)))?;
         Ok(())
     }
@@ -460,12 +467,16 @@ impl Osis {
         let mut links = BTreeMap::new();
         for i in items {
             if let Value::List(f) = i
-                && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s)] = f.as_slice()
+                && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s), rest @ ..] = f.as_slice()
             {
-                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, joined: None });
+                let finalized = matches!(rest, [Value::Bool(true)]);
+                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, finalized });
             }
         }
-        self.locked(|x| x.links = links);
+        self.locked(|x| {
+            x.links = links;
+            self.upkeep_links(x, &BTreeSet::new(), true);
+        });
         Ok(())
     }
 
@@ -511,16 +522,17 @@ impl Osis {
     }
 
     /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
-    /// written) until the person's `/keys` is here. Returns the person, usable in `grant`.
+    /// written) until the person's `/keys` is here. Returns the person, usable in `grant`. Fails
+    /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
         let link = osis_label::ShareLink::from_text(&card.0).map_err(bad("contact card"))?;
         let p = link.target;
-        let l = self.follow_link(&link)?;
+        let key = self.follow_link(&link)?;
         let found = std::sync::Arc::new(std::sync::Mutex::new(None));
         let f2 = found.clone();
         let r = self
             .wait_until(
-                None,
+                Some(self.inner.wait_timeout),
                 Box::new(move |s, _| {
                     let e = s.engine_mut();
                     let owner = e.owner(&p)?;
@@ -530,7 +542,7 @@ impl Osis {
                 }),
             )
             .await;
-        self.engine(|e| e.drop_key_actor(&l));
+        drop(key);
         r?;
         let who = *crate::watch::lock(&found);
         who.ok_or(Error::Invalid("contact card: no person".into()))
@@ -741,3 +753,22 @@ impl Osis {
 }
 
 const CONTACT: &str = "contact";
+
+fn links_value(links: &BTreeMap<Tid, MadeLink>) -> Value {
+    Value::List(links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized)])).collect())
+}
+
+/// A held link or recovery key, forgotten when the guard goes: every outcome of a waiting call,
+/// a dropped future included.
+pub(crate) struct KeyGuard {
+    pub db: crate::handle::WeakOsis,
+    pub l: Tid,
+}
+
+impl Drop for KeyGuard {
+    fn drop(&mut self) {
+        if let Some(db) = self.db.upgrade() {
+            db.engine(|e| e.drop_key_actor(&self.l));
+        }
+    }
+}

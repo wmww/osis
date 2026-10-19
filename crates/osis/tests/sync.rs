@@ -149,8 +149,9 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 }
 
 // spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
-// reads what was there before; Alice's device ends the link a while after it sees the joiner
-// (K rotates), and Bob stays a member.
+// reads what was there before; his redemption removes the link key (the link's `flags`, spec/
+// wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a member and
+// a second redeemer is refused (`Network` after `wait_timeout`).
 #[test]
 fn link_redeem_spec_permissions_9() {
     let mut w = World::new();
@@ -162,19 +163,24 @@ fn link_redeem_spec_permissions_9() {
     assert_eq!(alice.links(g).len(), 1);
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();
+    // a hinted label the joiner fails to open first is retried after `resync_ms`
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
     assert_eq!(x(bob, before), Some(s("before the link")));
     let u = item(bob, g, g, "from the joiner");
     w.run();
     assert_eq!(x(&alice, u), Some(s("from the joiner")));
-    assert_eq!(alice.links(g).len(), 1, "ended a while after the first joiner");
-    w.advance(osis::FINALIZE_DELAY_MS);
-    w.run();
-    assert!(alice.links(g).is_empty(), "single use: finalized");
+    assert!(alice.links(g).is_empty(), "single use: finalized on the redemption");
     let v = item(&alice, g, g, "after the link ended");
     w.run();
     assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
+    let mut c = w.cfg(9, &[0]);
+    c.wait_timeout = Duration::from_secs(5);
+    let carol = Osis::create(c).unwrap().0;
+    w.run();
+    assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Network(_))), "used once");
+    assert_eq!(carol.role_on(g), None);
+    assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
 
 // spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing

@@ -398,7 +398,7 @@ fn stolen_device_recovery_spec_perm_9() {
 }
 
 fn link_spec(target: Tid, role: Role, until: Option<osis_core::WallMs>) -> osis_node::flows::LinkSpec {
-    osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new() }
+    osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new(), single_use: false }
 }
 
 // spec/permissions.md §9: a stranger redeems a read link: signing as L it invite-grants its

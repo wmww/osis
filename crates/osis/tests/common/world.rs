@@ -247,6 +247,15 @@ impl World {
             if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
                 return v;
             }
+            if std::env::var_os("OSIS_TEST_TRACE").is_some() {
+                for (i, db) in self.dbs().iter().enumerate() {
+                    if let Some(db) = db {
+                        let (d, g) = db.sync_engine(|s| (s.describe(), s.take_diagnostics()));
+                        let d: Vec<String> = d.into_iter().filter(|x| !x.contains("Open synced true syncing false dirty false")).collect();
+                        eprintln!("t={} db {i}: {d:?} {g:?} pending {:?}", self.now(), db.engine(|e| e.pending()));
+                    }
+                }
+            }
             self.advance(step_ms);
         }
         panic!("future did not resolve");

@@ -166,7 +166,9 @@ impl Osis {
     /// Restores the person of a recovery card on this fresh device (spec/permissions.md §9):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
     /// makes this node an admin of the person. Needs a runtime; the card's servers are added
-    /// to `Config.servers`.
+    /// to `Config.servers`. Fails `Network` after `Config::wait_timeout`; on any failure (or a
+    /// dropped future) the recovery key is forgotten and the store gets no person record (it
+    /// does not open as a database; use a fresh store for the next attempt).
     pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
         let c = card.parse()?;
         let mut servers = cfg.servers.clone();
@@ -178,18 +180,21 @@ impl Osis {
         }
         let Fresh { mut sync, clock } = fresh_engine(&cfg, &servers)?;
         let engine = sync.engine_mut();
-        engine.hold_key_actor(c.seed.clone())?;
-        engine.set_app_record(PERSON, c.person.as_bytes())?;
+        let r = engine.hold_key_actor(c.seed.clone())?;
         save_servers(engine, &servers)?;
         let db = Osis::start(sync, clock, &cfg, c.person)?;
+        let key = crate::share::KeyGuard { db: db.downgrade(), l: r };
         db.locked(|x| {
             let acts = x.sync.follow(c.person, c.home_label, c.servers.clone());
             db.inner.net.apply(acts);
         });
         let p = c.person;
-        db.wait_until(None, Box::new(move |s, st| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
+        db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
+        drop(key);
         db.carry(done)?;
+        // the person record last: a store without it is no osis database yet
+        db.engine(|e| e.set_app_record(PERSON, c.person.as_bytes()))?;
         Ok(db)
     }
 

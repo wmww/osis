@@ -230,6 +230,10 @@ pub(crate) struct Waiter {
 impl Waiter {
     /// Resolves the slot when the check answers or the deadline passed; `true` when done.
     pub fn poll(&mut self, sync: &mut SyncEngine, status: &Status, now: u64) -> bool {
+        // the future was dropped: nobody waits any more
+        if Arc::strong_count(&self.slot) == 1 {
+            return true;
+        }
         if let Some(r) = (self.check)(sync, status) {
             self.slot.put(r);
             return true;

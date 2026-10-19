@@ -160,6 +160,8 @@ pub(crate) struct LConn {
     pub budget: Option<u64>,
     pub last_sync: u64,
     pub path: Vec<Step>,
+    /// A hinted open walked to an unverified step: the server's path is checked after the open.
+    pub walk: Option<Step>,
 }
 
 pub(crate) struct Conn {
@@ -420,6 +422,12 @@ impl SyncEngine {
                         for a in &h.aspects {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
                             self.membership_seen.insert(actor, self.seq);
+                        }
+                        // new secrets may open a label that failed: retry at the next tick
+                        for c in self.conns.values_mut() {
+                            for l in c.labels.values_mut().filter(|l| l.phase == Phase::Failed) {
+                                l.last_sync = 0;
+                            }
                         }
                     }
                 }

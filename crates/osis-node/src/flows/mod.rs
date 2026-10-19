@@ -345,6 +345,11 @@ impl Engine {
         Ok(t)
     }
 
+    /// How many key actors this node holds now (tests: a redeemer forgets the seed).
+    pub fn held_key_actors(&self) -> usize {
+        self.core.key_actors.len()
+    }
+
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §9).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
