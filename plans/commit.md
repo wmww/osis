@@ -18,7 +18,7 @@ Spec: spec/commits.md (all), spec/crdt.md §2.3–§2.4, spec/crypto.md §2, §6
 - Undo linkage `undoes`.
 
 ## Steps
-- [ ] Header types + canonical encoding (provisional field order behind one module if protocol-spec is not merged yet; switch and freeze vectors when it is); CommitId; sign/verify.
+- [x] Header types + canonical encoding (spec/wire.md §4 layout); CommitId; sign/verify.
 - [ ] Retention grammar, fixed tables, expiry rules; validation of kinds/markers.
 - [ ] Delta hashing and verification with crdt; token hashes/levels; chunk list.
 - [ ] Builder with list overflow; projection; purge rewrite; origins.
