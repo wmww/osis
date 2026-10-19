@@ -180,7 +180,7 @@ pub fn compaction(seed: u64) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, g)?;
     sim.quiet(40)?;
-    sim.run(120)?;
+    sim.run(60)?;
     sim.quiet(40)?;
     let deleted0 = deletions(&sim, s);
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS), (a, &workload::MAP)] {

@@ -348,6 +348,25 @@ impl SyncEngine {
         Ok(must.then_some(needed))
     }
 
+    /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
+    fn parts_covered(&mut self, l: &LabelId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+        let snaps = self.snapshots_at(l);
+        for (ai, _) in parts {
+            let Some(a) = h.aspects.get(*ai) else { return Ok(false) };
+            let mut ok = false;
+            for s in snaps.get(&(a.tid, a.ak.clone())).into_iter().flatten() {
+                if s != c && self.engine.covered(s, c, &a.tid, &a.ak)? == Some(true) {
+                    ok = true;
+                    break;
+                }
+            }
+            if !ok {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Whether an entry of commit `c` holding `parts` is present at `server` under `l`.
     fn carried_by(&self, server: &ServerKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         self.state
@@ -572,9 +591,27 @@ impl SyncEngine {
             }
             f.required = true;
         } else {
-            let sup = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|((_, b), o)| {
-                b != id && matches!(&o.kind, Kind::Commit { commit: c2, parts: p2 } if c2 == commit && p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p))) && self.state.present_anywhere(l, b)
-            });
+            let sups: Vec<Vec<(usize, usize)>> = self
+                .state
+                .entries
+                .range((*l, BlobId([0; 32]))..)
+                .take_while(|((x, _), _)| x == l)
+                .filter(|((_, b), _)| b != id && self.state.present_anywhere(l, b))
+                .filter_map(|(_, o)| match &o.kind {
+                    Kind::Commit { commit: c2, parts: p2 } if c2 == commit && p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) => Some(p2.clone()),
+                    _ => None,
+                })
+                .collect();
+            // a superset whose extra deltas a snapshot under the label covers carries nothing
+            // more: this projection is one a right holder dropped them from (spec/sync.md §7)
+            let mut sup = false;
+            for p2 in sups {
+                let extra: Vec<(usize, usize)> = p2.into_iter().filter(|p| !parts.contains(p)).collect();
+                if !self.parts_covered(l, commit, &h, &extra)? {
+                    sup = true;
+                    break;
+                }
+            }
             if sup {
                 f.required = true;
                 f.strict_subset = true;

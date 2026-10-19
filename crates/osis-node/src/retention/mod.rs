@@ -457,12 +457,23 @@ impl Engine {
 
     /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
-    /// unchanged. `None` when either is not held (nothing is established).
+    /// unchanged, and for a node-form body, the snapshot's frontier holds its counters (so every
+    /// holder of the snapshot counts the body as received once it is dropped, spec/crdt.md §8).
+    /// `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {
             let (Some(sai), Some(cai)) = (aspect_index(tx, &s, &tid, &ak), aspect_index(tx, &c, &tid, &ak)) else { return Ok(None) };
-            let snap: Vec<Fragment> = crate::apply::held_parts(tx, &s, sai)?.into_iter().map(frag).collect();
+            let parts = crate::apply::held_parts(tx, &s, sai)?;
+            if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.commits.get(&c), parts.as_slice())
+                && m.header.form == osis_commit::Form::Node
+                && m.header.kind.has_own_writes()
+                && let Some(a) = m.header.aspects.get(cai)
+                && sn.frontiers.0.get(&m.header.author).is_none_or(|f| f.saturating_add(1) < a.hi)
+            {
+                return Ok(Some(false));
+            }
+            let snap: Vec<Fragment> = parts.into_iter().map(frag).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
             let body: Vec<Fragment> = crate::apply::held_parts(tx, &c, cai)?.into_iter().map(frag).collect();
             let before = crate::engine::state::encode(snap)?;
