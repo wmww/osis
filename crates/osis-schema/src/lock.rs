@@ -23,16 +23,7 @@ pub enum LockStatus {
     Unpublished,
 }
 
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
-
-fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len() / 2).map(|i| s.get(2 * i..2 * i + 2).and_then(|b| u8::from_str_radix(b, 16).ok())).collect()
-}
+use osis_core::hex::{decode as unhex, encode as hex};
 
 impl Lock {
     pub fn of(schema: &Schema) -> Lock {
