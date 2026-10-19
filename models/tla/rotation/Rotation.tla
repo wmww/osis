@@ -15,8 +15,6 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           Writes,     \* content writes in a run
           DropClaims, \* TRUE: the server may drop superseded steps' claim sets
           Refresh,    \* TRUE: every rotation refreshes the deposit seed (a MAY)
-          HistApplied, \* TRUE: a history box carries only secrets whose rotation
-                      \* commit the rotator applied; FALSE: every secret it holds (R9)
           Offs,       \* offline transitions in a run
           InOrder     \* TRUE: one source, the server's log order (cursor sync);
                       \* FALSE: any order, and member peers serve rotations
@@ -39,39 +37,48 @@ VARIABLES ep,       \* ep[e] = [n, sup, boxes, ob, hist, rem]; ob = boxes at
           srvGrant, \* grant commits at the server: <<grantee, wrap epoch>>
           steps,    \* registration path: <<[ep, cl, dr]>>; dr = claim set dropped
           inbox,    \* grant and re-seal boxes in flight: <<member, epoch>>
+          via,      \* via[x]: member peers x received rotation commits from
           stranded, \* members whose stranded heartbeat is under the label
           enc,      \* content written: <<epoch, departures the writer knew>>
           online, budget
 vars == <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant,
-          steps, inbox, stranded, enc, online, budget>>
+          steps, inbox, via, stranded, enc, online, budget>>
 
 ep_n(e) == ep[e].n
 \* crypto §4: newest = greatest n, ties by lowest nonce (here: lowest id).
 Newer(e, f) == ep_n(e) > ep_n(f) \/ (ep_n(e) = ep_n(f) /\ e < f)
 NewestOf(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
-\* crypto §4: current = no held rotation supersedes it.
-Cur(x) == {e \in kn[x] : ~\E f \in kn[x] : e \in ep[f].sup}
+\* crypto §4: an epoch is established at x when it is x's own rotation, or x
+\* applied its rotation commit and every epoch it supersedes is established
+\* (own rotations are in kn at once and supersede established epochs only).
+\* Epoch 0 is the derived epoch. No /secrets snapshots (ASSUMPTIONS.md). A
+\* rotation supersedes lower ids only, so one pass in id order is the fixpoint.
+Est(x) == LET f[i \in Ids] == IF i = 0 THEN TRUE
+                              ELSE i \in kn[x] /\ \A j \in ep[i].sup : j < i /\ f[j]
+          IN {i \in Ids : f[i]}
+\* crypto §4: current = established, and no established rotation supersedes it.
+Cur(x) == LET E == Est(x) IN {e \in E : ~\E f \in E : e \in ep[f].sup}
 HeldCur(x) == Cur(x) \cap sec[x]
 \* crypto §5: an uploader wraps under the newest current read epoch whose
-\* secret it holds; a node holding none uses the newest secret it holds.
-EncEp(x) == NewestOf(IF HeldCur(x) # {} THEN HeldCur(x) ELSE sec[x])
+\* secret it holds; a node holding none uses the newest established secret it
+\* holds (its stranded heartbeat only). crypto §4: established epochs only.
+EncEp(x) == NewestOf(IF HeldCur(x) # {} THEN HeldCur(x) ELSE sec[x] \cap Est(x))
 \* crypto §4: an epoch covers a departure of M if it holds no box for M.
 Covers(x, e) == \A m \in dep[x] : m \notin ep[e].boxes
 \* crypto §5: a rotation commit is wrapped under the newest epoch it supersedes.
 WrapOf(k) == NewestOf(ep[k].sup)
 Top == steps[Len(steps)]
-\* crypto §4: the history box holds "every distinct earlier secret the rotator
-\* holds"; boxing a secret is encrypting under it, and "an epoch whose rotation
-\* commit is pending ... is never encrypted under" (R9: read as also covering a
-\* secret got by re-seal before its rotation commit arrived).
-Hist(a) == IF HistApplied THEN sec[a] \cap kn[a] ELSE sec[a]
+\* crypto §4: the history box holds "every distinct earlier secret of an
+\* established epoch the rotator holds".
+Hist(a) == sec[a] \cap Est(a)
 Mem == (Nodes \ Late) \cup granted
-\* sync §5 re-registration: an admin holding an epoch newer than the head's
-\* issues a child before any upload there.
-NeedsReg(a) == Newer(EncEp(a), Top.ep)
+\* sync §5 re-registration: an admin that holds the head's epoch and an
+\* established epoch newer than it issues a child at its newest (crypto §4).
+NeedsReg(a) == Top.ep \in sec[a] /\ HeldCur(a) # {} /\ Newer(EncEp(a), Top.ep)
 \* sync §2/§5 open: a sync key of the head, or of the newest superseded step
 \* bearing it, answered with its child; then claims at each later step (the
 \* n round trips are one step here); a dropped claim set refuses the claim.
+\* Opening is not encrypting under (crypto §4): any held secret opens.
 CanOpen(x) ==
   \E j \in 1..Len(steps) :
     /\ steps[j].ep \in sec[x]
@@ -80,24 +87,25 @@ CanOpen(x) ==
 
 \* Download of rotation commit k: readable under its wrap epoch. From the
 \* server (after an open; InOrder: in log order) or, if ~InOrder, from an
-\* online member peer that holds it.
+\* online member peer y that holds it.
 Readable(x, k) == k \notin kn[x] /\ WrapOf(k) \in sec[x]
 FromSrv(x, k) == /\ CanOpen(x) /\ k \in srvRot /\ Readable(x, k)
                  /\ InOrder => \A j \in before[k] : WrapOf(j) \in sec[x] => j \in kn[x]
-FromPeer(x, k) == ~InOrder /\ \E y \in Nodes \ {x} : online[y] /\ k \in kn[y] /\ Readable(x, k)
-CanRecv(x, k) == online[x] /\ (FromSrv(x, k) \/ FromPeer(x, k))
+FromPeer(x, y, k) == ~InOrder /\ y # x /\ online[y] /\ k \in kn[y] /\ Readable(x, k)
 
-\* permissions §3: re-seal decisions are taken "after a sync pass of the
-\* actor's labels that fetched everything": at the server, or (~InOrder) at a
-\* member peer (AMBIGUITIES.md R8).
+\* permissions §3: re-seal is decided "at the end of a complete sync pass of
+\* the actor's labels (one that read the log of every server and peer it
+\* syncs them with to its end)": the server, and every member peer the node
+\* has synced with (received from) that is online (R8).
 SrvDone(a) == /\ CanOpen(a)
               /\ \A k \in srvRot : ~Readable(a, k)
               /\ \A g \in srvGrant : g[2] \in sec[a] => g[1] \in mem[a]
-PeerDone(a) == ~InOrder /\ \E y \in Nodes \ {a} : online[y] /\ \A k \in kn[y] : ~Readable(a, k)
-FullPass(a) == SrvDone(a) \/ PeerDone(a)
+PeerDone(a, y) == \A k \in kn[y] : ~Readable(a, k)
+FullPass(a) == SrvDone(a) /\ \A y \in via[a] : online[y] => PeerDone(a, y)
 
 \* permissions §3 re-seal trigger: a current member seen without a box at a
-\* current epoch, or whose heartbeat reports it stranded.
+\* current epoch, or whose heartbeat reports it stranded; only at epochs
+\* established through their rotation commits (all of Est here).
 Miss(a, m) == {e \in HeldCur(a) : m \notin ep[e].boxes}
 ResealE(a, m) == IF Miss(a, m) # {} THEN Miss(a, m) ELSE HeldCur(a)
 ResealWanted(a, m) ==
@@ -118,15 +126,15 @@ Init ==
   /\ removed = {} /\ granted = {}
   /\ srvRot = {} /\ before = [k \in Ids |-> {}] /\ srvGrant = {}
   /\ steps = <<[ep |-> 0, cl |-> Nodes \ Late, dr |-> FALSE]>>
-  /\ inbox = {} /\ stranded = {}
+  /\ inbox = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
   /\ enc = {}
   /\ online = [x \in Nodes |-> TRUE]
   /\ budget = [w |-> 0, off |-> 0]
 
 \* permissions §3 / crypto §4: fresh epoch n+1 superseding the current ones
-\* the rotator holds, boxed to every current member it knows, history box of
-\* every secret it holds. R: the removals this commit carries (commits §2: a
-\* removal and the rotation it requires are one membership commit).
+\* of the rotator, boxed to every current member it knows, history box of
+\* every established secret it holds. R: the removals this commit carries
+\* (commits §2: a removal and the rotation it requires are one commit).
 RotateR(a, R) ==
   /\ online[a] /\ Cardinality(made) <= MaxE
   /\ LET k == Cardinality(made)
@@ -140,7 +148,8 @@ RotateR(a, R) ==
         /\ sec' = [sec EXCEPT ![a] = @ \cup {k}]
         /\ dep' = [dep EXCEPT ![a] = d]
         /\ removed' = removed \cup R
-  /\ UNCHANGED <<mem, granted, srvRot, before, srvGrant, steps, inbox, stranded, enc, online, budget>>
+  /\ UNCHANGED <<mem, granted, srvRot, before, srvGrant, steps, inbox, via, stranded, enc,
+                 online, budget>>
 Rotate(a) == RotateR(a, {})
 Remove(m) == m \in Departing \ removed /\ RotateR(Remover, {m})
 \* permissions §3 / crypto §4: MUST rotate before encrypting under an epoch
@@ -151,19 +160,23 @@ RotateForced(a) ==
      \/ \E m \in Nodes : ResealWanted(a, m) /\ \E e \in ResealE(a, m) : ~Covers(a, e)
   /\ Rotate(a)
 
+\* sync §5: first upload the actor's membership commits it holds that the
+\* server lacks (UploadRot), then register.
 Register(a) ==
-  /\ online[a] /\ NeedsReg(a)
+  /\ online[a] /\ NeedsReg(a) /\ kn[a] \ {0} \subseteq srvRot
   /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> ep[EncEp(a)].boxes, dr |-> FALSE])
   /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant,
-                 inbox, stranded, enc, online, budget>>
+                 inbox, via, stranded, enc, online, budget>>
 
+\* sync §5: rotation commits go up under the head's keys (write key never
+\* rotated here), before the step.
 UploadRot(a, k) ==
-  /\ online[a] /\ k \in kn[a] \ srvRot /\ k # 0 /\ ~NeedsReg(a)
+  /\ online[a] /\ k \in kn[a] \ srvRot /\ k # 0
   \* permissions §3: a remover places the removal before any other upload.
   /\ \A j \in kn[a] \ srvRot : ep[j].rem # {} => j = k
   /\ srvRot' = srvRot \cup {k}
   /\ before' = [before EXCEPT ![k] = srvRot]
-  /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvGrant, steps, inbox,
+  /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvGrant, steps, inbox, via,
                  stranded, enc, online, budget>>
 
 \* crypto §4: a grant writes the grantee's boxes at each current epoch (with
@@ -177,31 +190,41 @@ Grant(a, m) ==
   /\ ep' = [e \in Ids |-> IF e \in HeldCur(a) THEN [ep[e] EXCEPT !.boxes = @ \cup {m}] ELSE ep[e]]
   /\ inbox' = inbox \cup {<<m, e>> : e \in HeldCur(a)}
   /\ srvGrant' = srvGrant \cup {<<m, EncEp(a)>>}
-  /\ UNCHANGED <<made, kn, sec, dep, removed, srvRot, before, steps, stranded, enc, online, budget>>
+  /\ UNCHANGED <<made, kn, sec, dep, removed, srvRot, before, steps, via, stranded, enc,
+                 online, budget>>
 
 RecvGrant(x, g) ==
   /\ online[x] /\ CanOpen(x) /\ g \in srvGrant /\ g[1] \notin mem[x] /\ g[2] \in sec[x]
   /\ mem' = [mem EXCEPT ![x] = @ \cup {g[1]}]
   /\ UNCHANGED <<ep, made, kn, sec, dep, removed, granted, srvRot, before, srvGrant, steps,
-                 inbox, stranded, enc, online, budget>>
+                 inbox, via, stranded, enc, online, budget>>
 
-\* crypto §4: never encrypt under an epoch that does not cover a known departure.
+\* crypto §4: never encrypt under an epoch that does not cover a known
+\* departure; crypto §5: a node holding no current secret writes nothing.
 WriteContent(a) ==
-  /\ online[a] /\ budget.w < Writes /\ ~NeedsReg(a) /\ Covers(a, EncEp(a))
+  /\ online[a] /\ budget.w < Writes /\ ~NeedsReg(a) /\ HeldCur(a) # {}
+  /\ Covers(a, EncEp(a))
   /\ enc' = enc \cup {<<EncEp(a), dep[a]>>}
   /\ budget' = [budget EXCEPT !.w = @ + 1]
   /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant,
-                 steps, inbox, stranded, online>>
+                 steps, inbox, via, stranded, online>>
 
 \* A box for x gives the new secret and, by the history box, every secret the
 \* rotator held; the removals it carries become known.
-Recv(x, k) ==
-  /\ CanRecv(x, k)
+Apply(x, k) ==
   /\ kn' = [kn EXCEPT ![x] = @ \cup {k}]
   /\ sec' = [sec EXCEPT ![x] = @ \cup (IF x \in ep[k].boxes THEN {k} \cup ep[k].hist ELSE {})]
   /\ dep' = [dep EXCEPT ![x] = @ \cup ep[k].rem]
+RecvSrv(x, k) ==
+  /\ online[x] /\ FromSrv(x, k) /\ Apply(x, k)
+  /\ UNCHANGED <<ep, made, mem, removed, granted, srvRot, before, srvGrant, steps, inbox,
+                 via, stranded, enc, online, budget>>
+RecvPeer(x, y, k) ==
+  /\ online[x] /\ FromPeer(x, y, k) /\ Apply(x, k)
+  /\ via' = [via EXCEPT ![x] = @ \cup {y}]
   /\ UNCHANGED <<ep, made, mem, removed, granted, srvRot, before, srvGrant, steps, inbox,
                  stranded, enc, online, budget>>
+Recv(x, k) == RecvSrv(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 
 \* permissions §3: SHOULD re-seal (treated as done: fair), by inbox only, with
 \* the epochs' history boxes; boxing is encrypting under, so only at epochs
@@ -213,7 +236,7 @@ Reseal(a, m) ==
   /\ inbox' = inbox \cup {<<m, e>> : e \in ResealE(a, m)}
   /\ stranded' = stranded \ {m}
   /\ UNCHANGED <<made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant, steps,
-                 enc, online, budget>>
+                 via, enc, online, budget>>
 
 \* crypto §4: the grant or re-seal re-writes each boxed epoch's history box.
 InboxRecv(m, e) ==
@@ -221,13 +244,14 @@ InboxRecv(m, e) ==
   /\ sec' = [sec EXCEPT ![m] = @ \cup {e} \cup ep[e].hist]
   /\ inbox' = inbox \ {<<m, e>>}
   /\ UNCHANGED <<ep, made, kn, dep, mem, removed, granted, srvRot, before, srvGrant, steps,
-                 stranded, enc, online, budget>>
+                 via, stranded, enc, online, budget>>
 
 \* permissions §4: MUST place a stranded heartbeat when it cannot read the
-\* current epoch: it reached the head but cannot open the epoch it registers,
-\* or a claim on the way was refused. By deposit (no open needed), wrapped
-\* under the newest held secret; refused if the deposit seed was refreshed by
-\* a rotation whose /keys the node has not read (crypto §3).
+\* current epoch: it reached the head and after a complete pass there cannot
+\* open the epoch it registers, or a claim on the way was refused. By deposit
+\* (no open needed), wrapped under the newest established held secret;
+\* refused if the deposit seed was refreshed by a rotation whose /keys the
+\* node has not read (crypto §3).
 Heartbeat(x) ==
   /\ online[x] /\ x \in Mem /\ x \notin stranded /\ x \notin dep[x]
   /\ \/ CanOpen(x) /\ Top.ep \notin sec[x] /\ ~\E k \in srvRot : FromSrv(x, k)
@@ -235,22 +259,22 @@ Heartbeat(x) ==
   /\ Refresh => Top.ep \in kn[x]
   /\ stranded' = stranded \cup {x}
   /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant,
-                 steps, inbox, enc, online, budget>>
+                 steps, inbox, via, enc, online, budget>>
 
 \* sync §4: a superseded step's claim set is kept MEMBERSHIP_KEEP, then may go.
 Drop(i) ==
   /\ DropClaims /\ i < Len(steps) /\ ~steps[i].dr
   /\ steps' = [steps EXCEPT ![i].dr = TRUE]
   /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before, srvGrant,
-                 inbox, stranded, enc, online, budget>>
+                 inbox, via, stranded, enc, online, budget>>
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
             /\ online' = [online EXCEPT ![x] = FALSE] /\ budget' = [budget EXCEPT !.off = @ + 1]
             /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before,
-                           srvGrant, steps, inbox, stranded, enc>>
+                           srvGrant, steps, inbox, via, stranded, enc>>
 GoOn(x) == /\ ~online[x] /\ online' = [online EXCEPT ![x] = TRUE]
            /\ UNCHANGED <<ep, made, kn, sec, dep, mem, removed, granted, srvRot, before,
-                          srvGrant, steps, inbox, stranded, enc, budget>>
+                          srvGrant, steps, inbox, via, stranded, enc, budget>>
 
 Next ==
   \/ \E a \in Admins : Rotate(a) \/ Register(a) \/ WriteContent(a)
@@ -279,6 +303,7 @@ GCur == {e \in made : ~\E f \in made : e \in ep[f].sup}
 
 TypeOK == /\ made \subseteq Ids /\ removed \subseteq Departing /\ granted \subseteq Late
           /\ \A x \in Nodes : sec[x] \subseteq made /\ kn[x] \subseteq made
+                              /\ via[x] \subseteq Nodes
 
 \* crypto §4 covers rule, its purpose: content a writer encrypted while it
 \* knew of M's departure is never readable by M.

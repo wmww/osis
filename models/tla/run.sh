@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the TLC model instances. Usage: run.sh small|all [name-filter]
 #   small: the CI-sized instance of each model (about a minute in total)
-#   all:   every instance (the large ones take up to ~30 min each)
+#   all:   every instance (the large ones take up to ~20 min each)
 # Downloads tla2tools.jar into ~/.cache/tla/ if missing. Exits non-zero if
 # any instance fails, except those listed as expected failures below, which
 # must fail (an unexpected pass is an error too: update the docs).
@@ -16,18 +16,18 @@ instances=(
   "sync MC deposit.cfg small pass"
   "sync MC mostabs.cfg small pass"
   "sync MC purge_reach.cfg all pass"
-  "sync MC mostabs_serve.cfg small fail"  # S11, AMBIGUITIES.md
   "sync MC timed.cfg all pass"
+  "sync MC timed_live.cfg all pass"
   "sync MC purge.cfg all pass"
   "rotation Rotation MC_live.cfg small pass"
   "rotation Rotation MC_drop.cfg all pass"
   "rotation Rotation MC_drop_refresh.cfg all fail"  # issues/reseal-triggers.md residue 2
   "rotation Rotation MC_grant.cfg small pass"
-  "rotation Rotation MC_reorder.cfg all fail"  # issues/reseal-triggers.md residue 1, no fork
-  "rotation Rotation MC_hist.cfg all fail"  # R9, rotation/AMBIGUITIES.md
-  "rotation Rotation MC_safety.cfg all pass"
-  "rotation Rotation MC_fork.cfg all pass"
-  "rotation Rotation MC_fork_reorder.cfg all fail"  # issues/reseal-triggers.md residue 1
+  "rotation Rotation MC_reorder.cfg all pass"
+  "rotation Rotation MC_grant_remove.cfg all pass"
+  "rotation Rotation MC_safety.cfg small pass"
+  "rotation Rotation MC_fork.cfg small pass"
+  "rotation Rotation MC_fork_reorder.cfg all pass"
 )
 
 mode=${1:-}
