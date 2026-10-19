@@ -23,7 +23,7 @@ crates/osis-transport      plans/transport.md, plans/p2p.md
 crates/osis-server         plans/server.md
 crates/osis-node           plans/node-core.md, plans/node-sync.md, plans/membership-flows.md
 crates/osis                plans/api.md (public API; the only crate apps depend on)
-crates/osis-cli            plans/apps-e2e.md
+crates/osis-cli            plans/cli.md
 models/crdt                git mv from crdt-model/ (keep history)
 models/membership          git mv from tools/fixpoint/ (drop its own [workspace])
 vectors/                   plans/test-infra.md (runner crate `osis-vectors`)
