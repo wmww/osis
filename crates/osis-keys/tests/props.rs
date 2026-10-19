@@ -162,6 +162,13 @@ impl Sim {
                 let newest = self.view.role(r).newest().unwrap();
                 assert!(v.role(r).secret(&newest).is_some(), "member {i} role {r:?}");
             }
+            // Holding the state as a compaction snapshot, it agrees on the newest epoch.
+            let mut sv = v.clone();
+            osis_keys::snapshot_keyed(&self.s, &mut sv).unwrap();
+            assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
+            for r in ROLES.into_iter().filter(|r| r <= role) {
+                assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "member {i} role {r:?}");
+            }
         }
         for (i, (lost, known)) in &self.departed {
             let v = self.opened(*i);
@@ -176,7 +183,8 @@ impl Sim {
 
 proptest! {
     // spec/crypto.md §4, spec/permissions.md §3: departed members open nothing newer; current
-    // members open the newest epoch of each of their roles.
+    // members open the newest epoch of each of their roles and, establishing from a snapshot of
+    // the state, agree on it.
     #[test]
     fn departures_and_current_members(ops in prop::collection::vec(op(), 1..10)) {
         let mut sim = Sim::new();

@@ -44,7 +44,7 @@ fn lost_device_owner_rotation() {
     let mut pe2 = pe.clone();
     for (i, r) in ROLES.into_iter().enumerate() {
         pe2.role_mut(r).rotation(ep(2, 0x21), [ep(1, 0x20)]);
-        pe2.role_mut(r).set_usable(ep(2, 0x21), true);
+        pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Own);
         pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
     }
     // P's own /secrets after the rotation hold no box for the device.
@@ -93,12 +93,12 @@ fn grant_raced_by_rotation() {
     assert!(reseal_needed(&s, &v, &near, now, &|_, _, _| true).is_empty());
     let far = [Member { member: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
     assert_eq!(reseal_needed(&s, &v, &far, now, &|_, _, _| true).len(), 1);
-    let reseal = box_member(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
+    let reseal = osis_keys::reseal_member(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &members, now, &|_, _, _| true).is_empty());
     let mut gv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv).unwrap();
-    assert_eq!(gv.read.newest_held().map(|x| x.0), v.read.newest());
+    assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
 }
 
 // spec/crypto.md §4, spec/permissions.md §3: a node holding an eager rotation that boxes M, but

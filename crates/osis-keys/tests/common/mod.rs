@@ -4,7 +4,7 @@
 use osis_core::{Role, Tid};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::aspects::keyset;
-use osis_keys::{ActorEpochs, MemberKeys, ROLES, Recipient};
+use osis_keys::{ActorEpochs, MemberKeys, Provenance, ROLES, Recipient};
 use osis_schema::core_types::{KemKey, Keys};
 
 pub fn tid(b: u8) -> Tid {
@@ -24,7 +24,7 @@ pub fn person(b: u8) -> ActorEpochs {
     let mut a = ActorEpochs::default();
     for (i, r) in ROLES.into_iter().enumerate() {
         a.role_mut(r).set_secret(ep(1, b), Secret32::from_bytes([b.wrapping_add(i as u8); 32]));
-        a.role_mut(r).set_usable(ep(1, b), true);
+        a.role_mut(r).set_established(ep(1, b), Provenance::Own);
     }
     a
 }

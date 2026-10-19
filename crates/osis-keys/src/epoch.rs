@@ -1,5 +1,7 @@
-//! Per-role epochs of one actor as a node holds them (spec/crypto.md §4): forks kept, current =
-//! not superseded by a held rotation, newest = greatest n, ties by lowest nonce.
+//! Per-role epochs of one actor as a node holds them (spec/crypto.md §4): forks kept,
+//! established (own, fixed, derived, chain of applied rotation commits, snapshot), current =
+//! established and not superseded by an established rotation, newest = greatest n, ties by lowest
+//! nonce.
 
 use osis_core::{Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
@@ -23,25 +25,58 @@ pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoc
     })
 }
 
+/// How an epoch got established at this node (spec/crypto.md §4). `Own`, `Fixed` and `Derived`
+/// are set directly; `Chain` and `Snapshot` are computed by `RoleEpochs::establish`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Provenance {
+    /// This node's own rotation.
+    Own,
+    /// A key actor's fixed epoch.
+    Fixed,
+    /// Derived from an established epoch of the owner (a plain thing).
+    Derived,
+    /// Its rotation commit is applied and valid and every epoch it supersedes is established.
+    Chain,
+    /// A held compaction snapshot of `/secrets` keys a box or history box with it.
+    Snapshot,
+}
+
+impl Provenance {
+    /// Set directly, never recomputed.
+    pub fn sticky(self) -> bool {
+        matches!(self, Provenance::Own | Provenance::Fixed | Provenance::Derived)
+    }
+
+    /// A re-seal may box an epoch of this provenance (spec/permissions.md §3: established
+    /// through rotation commits; not by a snapshot alone).
+    pub fn reseals(self) -> bool {
+        matches!(self, Provenance::Own | Provenance::Chain)
+    }
+}
+
 /// What a node knows of one epoch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EpochInfo {
     /// Suite ID (from the keyset that named it; 1 until one is seen).
     pub suite: u64,
-    /// Epochs the rotation of this one superseded (removed boxes, or listed in its history box).
+    /// Epochs its rotation superseded: from its rotation commit (removed boxes, replaced keyset)
+    /// and from its opened history box (everything listed). Counts only once established.
     pub supersedes: BTreeSet<Epoch>,
-    /// Its rotation commit is applied and valid. False while pending or invalid (spec/crypto.md
-    /// §4): kept for reading, never encrypted under, supersedes nothing. An epoch first seen in a
-    /// commit (`SecretsWrite::observe`) starts false until the caller marks it (`set_usable`);
-    /// one seen in the applied `/secrets` state (`observe_secrets`) or made by this node's own
-    /// rotation (`Rotation::record`) starts true.
-    pub usable: bool,
+    /// Its rotation commit is applied and valid: the epochs that commit supersedes (the chain
+    /// condition of `establish`).
+    pub applied: Option<BTreeSet<Epoch>>,
+    /// A held `/secrets` compaction snapshot keys it.
+    pub snapshot: bool,
+    /// Established (spec/crypto.md §4): persisted, never inferred from the applied `/secrets`
+    /// state. Unestablished epochs are kept for reading only: never current, supersede nothing,
+    /// never encrypted under, never put in a history box.
+    pub established: Option<Provenance>,
     pub secret: Option<Secret32>,
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), usable: false, secret: None }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None }
     }
 }
 
@@ -67,8 +102,68 @@ impl RoleEpochs {
         self.observe(e).secret = Some(secret);
     }
 
-    pub fn set_usable(&mut self, e: Epoch, usable: bool) {
-        self.observe(e).usable = usable;
+    /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
+    /// here are recomputed by the next `establish`).
+    pub fn set_established(&mut self, e: Epoch, p: Provenance) {
+        self.observe(e).established = Some(p);
+    }
+
+    /// Records that `e`'s rotation commit is applied and valid, superseding `supersedes`
+    /// (`SecretsWrite::rotations`). Call `establish` after.
+    pub fn set_applied(&mut self, e: Epoch, supersedes: impl IntoIterator<Item = Epoch>) {
+        let sup: BTreeSet<Epoch> = supersedes.into_iter().filter(|s| s.n() < e.n()).collect();
+        let info = self.observe(e);
+        info.supersedes.extend(sup.iter().copied());
+        info.applied.get_or_insert_with(BTreeSet::new).extend(sup);
+    }
+
+    /// `e`'s rotation commit is no longer applied (found invalid). Call `establish` after.
+    pub fn unset_applied(&mut self, e: &Epoch) {
+        if let Some(i) = self.map.get_mut(e) {
+            i.applied = None;
+        }
+    }
+
+    /// Records that a held `/secrets` compaction snapshot keys `e`. Call `establish` after.
+    pub fn set_snapshot(&mut self, e: Epoch) {
+        self.observe(e).snapshot = true;
+    }
+
+    /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint: an epoch
+    /// whose rotation commit is applied is `Chain` once every epoch that commit supersedes is
+    /// established; else `Snapshot` when a held snapshot keys it. Sticky provenances stay.
+    /// Returns whether anything changed.
+    pub fn establish(&mut self) -> bool {
+        let before: Vec<Option<Provenance>> = self.map.values().map(|i| i.established).collect();
+        for i in self.map.values_mut() {
+            if !i.established.is_some_and(Provenance::sticky) {
+                i.established = i.snapshot.then_some(Provenance::Snapshot);
+            }
+        }
+        loop {
+            let ready: Vec<Epoch> = self
+                .map
+                .iter()
+                .filter(|(_, i)| !matches!(i.established, Some(p) if p.sticky() || p == Provenance::Chain))
+                .filter(|(_, i)| i.applied.as_ref().is_some_and(|sup| sup.iter().all(|s| self.is_established(s))))
+                .map(|(e, _)| *e)
+                .collect();
+            if ready.is_empty() {
+                break;
+            }
+            for e in ready {
+                self.observe(e).established = Some(Provenance::Chain);
+            }
+        }
+        self.map.values().map(|i| i.established).ne(before)
+    }
+
+    pub fn is_established(&self, e: &Epoch) -> bool {
+        self.provenance(e).is_some()
+    }
+
+    pub fn provenance(&self, e: &Epoch) -> Option<Provenance> {
+        self.map.get(e).and_then(|i| i.established)
     }
 
     pub fn set_suite(&mut self, e: Epoch, suite: u64) {
@@ -102,18 +197,18 @@ impl RoleEpochs {
         self.map.keys().map(Epoch::n).max()
     }
 
-    /// Superseded by a usable held rotation.
+    /// Superseded by an established rotation.
     pub fn superseded(&self, e: &Epoch) -> bool {
-        self.map.values().any(|i| i.usable && i.supersedes.contains(e))
+        self.map.values().any(|i| i.established.is_some() && i.supersedes.contains(e))
     }
 
-    /// Current epochs: usable and not superseded, ascending.
+    /// Current epochs: established and not superseded, ascending.
     pub fn current(&self) -> Vec<Epoch> {
-        self.map.iter().filter(|(e, i)| i.usable && !self.superseded(e)).map(|(e, _)| *e).collect()
+        self.map.iter().filter(|(e, i)| i.established.is_some() && !self.superseded(e)).map(|(e, _)| *e).collect()
     }
 
     pub fn is_current(&self, e: &Epoch) -> bool {
-        self.map.get(e).is_some_and(|i| i.usable) && !self.superseded(e)
+        self.is_established(e) && !self.superseded(e)
     }
 
     /// The newest current epoch.
@@ -128,11 +223,23 @@ impl RoleEpochs {
         self.secret(&e).map(|s| (e, s))
     }
 
-    /// The newest epoch whose secret is held, current or not (a stranded node's heartbeat,
-    /// spec/permissions.md §4).
+    /// The newest established epoch whose secret is held, current or not (a stranded node's
+    /// heartbeat, spec/permissions.md §4).
     pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
-        let e = newest_of(self.held().map(|(e, _)| e).collect::<Vec<_>>().iter())?;
+        let e = newest_of(self.held().map(|(e, _)| e).filter(|e| self.is_established(e)).collect::<Vec<_>>().iter())?;
         self.secret(&e).map(|s| (e, s))
+    }
+
+    /// Whether the newest current epoch is established by a snapshot alone: a re-sealer does not
+    /// re-seal at it and may rotate instead (spec/permissions.md §3).
+    pub fn newest_is_snapshot(&self) -> bool {
+        self.newest().is_some_and(|e| self.provenance(&e) == Some(Provenance::Snapshot))
+    }
+
+    /// Held established secrets, ascending by epoch: what a history box carries (spec/crypto.md
+    /// §4).
+    pub fn held_established(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
+        self.held().filter(|(e, _)| self.is_established(e))
     }
 
     /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5).
@@ -181,22 +288,34 @@ impl ActorEpochs {
         let mut a = ActorEpochs::default();
         for r in ROLES {
             a.role_mut(r).set_secret(Epoch::ZERO, key_actor_role_secret(seed, r));
-            a.role_mut(r).set_usable(Epoch::ZERO, true);
+            a.role_mut(r).set_established(Epoch::ZERO, Provenance::Fixed);
         }
         a
     }
 
     /// A plain thing's derived role secrets `kdf("thing <role>", owner's secret, tid)`, at the
-    /// owner's epochs, forks and flags included (spec/crypto.md §3). Epochs whose owner secret is
-    /// not held are known without a secret.
+    /// owner's epochs, forks included (spec/crypto.md §3); established (`Derived`) where the
+    /// owner's is. Epochs whose owner secret is not held are known without a secret.
     pub fn derived(owner: &ActorEpochs, tid: &Tid) -> ActorEpochs {
         let mut a = owner.clone();
         for r in ROLES {
             for info in a.role_mut(r).map.values_mut() {
                 info.secret = info.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
+                info.established = info.established.map(|_| Provenance::Derived);
+                info.applied = None;
+                info.snapshot = false;
             }
         }
         a
+    }
+
+    /// `RoleEpochs::establish` for every role. Returns whether anything changed.
+    pub fn establish(&mut self) -> bool {
+        let mut changed = false;
+        for r in ROLES {
+            changed |= self.role_mut(r).establish();
+        }
+        changed
     }
 
     pub fn drop_secrets(&mut self) {
@@ -223,7 +342,7 @@ mod tests {
         r.rotation(ep(2, 5), [ep(1, 0)]);
         r.rotation(ep(2, 3), [ep(1, 0)]);
         for e in [ep(1, 0), ep(2, 5), ep(2, 3)] {
-            r.set_usable(e, true);
+            r.set_established(e, Provenance::Own);
         }
         assert_eq!(r.current(), vec![ep(2, 3), ep(2, 5)]);
         assert_eq!(r.newest(), Some(ep(2, 3)));
@@ -232,17 +351,57 @@ mod tests {
         r.set_secret(ep(2, 5), Secret32::from_bytes([2; 32]));
         assert_eq!(r.newest_held().map(|x| x.0), Some(ep(2, 5)));
         r.rotation(ep(3, 9), [ep(2, 5)]);
-        r.set_usable(ep(3, 9), true);
+        r.set_established(ep(3, 9), Provenance::Own);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         assert_eq!(r.newest(), Some(ep(3, 9)));
-        // An unusable rotation (pending or invalid) supersedes nothing and is not current.
+        // An unestablished rotation (not applied, pending or invalid) supersedes nothing and is not
+        // current.
         r.rotation(ep(4, 1), [ep(3, 9), ep(2, 3)]);
-        r.set_usable(ep(4, 1), false);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
-        r.set_usable(ep(4, 1), true);
+        r.set_applied(ep(4, 1), [ep(3, 9), ep(2, 3)]);
+        assert!(r.establish());
         assert_eq!(r.current(), vec![ep(4, 1)]);
+        assert_eq!(r.provenance(&ep(4, 1)), Some(Provenance::Chain));
+        r.unset_applied(&ep(4, 1));
+        assert!(r.establish());
+        assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         let order: Vec<Epoch> = r.held_newest_first().into_iter().map(|x| x.0).collect();
         assert_eq!(order, vec![ep(2, 5), ep(1, 0)]);
+    }
+
+    // spec/crypto.md §4: chain establishment is a fixpoint over applied rotation commits, in any
+    // arrival order; a snapshot keying an epoch establishes it; a chain through an unestablished
+    // epoch does not.
+    #[test]
+    fn establish_fixpoint() {
+        let mut r = RoleEpochs::default();
+        r.set_established(ep(1, 0), Provenance::Own);
+        // e3 then e2 applied (reorder): e3 waits for e2.
+        r.set_applied(ep(3, 0), [ep(2, 0)]);
+        assert!(!r.establish());
+        assert_eq!(r.current(), vec![ep(1, 0)]);
+        r.set_applied(ep(2, 0), [ep(1, 0)]);
+        assert!(r.establish());
+        assert_eq!(r.current(), vec![ep(3, 0)]);
+        assert_eq!(r.provenance(&ep(2, 0)), Some(Provenance::Chain));
+        // A chain whose base is unknown here: established only once a snapshot keys the base.
+        let mut s = RoleEpochs::default();
+        s.set_applied(ep(5, 0), [ep(4, 0)]);
+        s.establish();
+        assert!(s.current().is_empty());
+        s.set_snapshot(ep(4, 0));
+        s.establish();
+        assert_eq!(s.provenance(&ep(4, 0)), Some(Provenance::Snapshot));
+        assert_eq!(s.provenance(&ep(5, 0)), Some(Provenance::Chain));
+        assert!(!s.newest_is_snapshot());
+        s.set_snapshot(ep(6, 0));
+        s.rotation(ep(6, 0), [ep(5, 0)]);
+        s.establish();
+        assert!(s.newest_is_snapshot());
+        // A snapshot-keyed epoch whose commit then applies is chain-established.
+        s.set_applied(ep(6, 0), [ep(5, 0)]);
+        s.establish();
+        assert_eq!(s.provenance(&ep(6, 0)), Some(Provenance::Chain));
     }
 
     // spec/crypto.md §3: derived secrets take the owner's epochs; a key actor's are fixed.
@@ -260,10 +419,13 @@ mod tests {
         owner.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
         owner.read.observe(ep(2, 0));
         for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
-            owner.read.set_usable(e, true);
+            owner.read.set_established(e, Provenance::Chain);
         }
+        owner.read.observe(ep(3, 0));
         let d = ActorEpochs::derived(&owner, &t);
         assert_eq!(d.read.current(), owner.read.current());
+        assert_eq!(d.read.provenance(&ep(1, 1)), Some(Provenance::Derived));
+        assert_eq!(d.read.provenance(&ep(3, 0)), None);
         assert_eq!(d.read.held().count(), 2);
     }
 }
