@@ -92,6 +92,11 @@ pub trait LabelStore {
         path.reverse();
         Ok(path)
     }
+    /// Whether a new label may be registered here (a verified genesis step): `Code::OK`, or a
+    /// refusal such as code 12 at a node-wide storage cap (spec/wire.md §11.2 Register).
+    fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
+        Ok(Code::OK)
+    }
     /// Appends a verified step (a child of the head, or a new label's genesis) and logs it.
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<(), StoreError>;
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError>;

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b6d221386eba0905b42cb59181aa2bc7e38727751ccd704e3e1d46467c358ce7 # shrinks to ops = [Put { n: 7, stamped: false, wrap: 0, label: false }, Put { n: 2, stamped: false, wrap: 0, label: false }, Schedule { n: 7, after: 216000000 }, Schedule { n: 2, after: 0 }, Sweep { advance: 259200000 }]
