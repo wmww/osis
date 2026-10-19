@@ -880,6 +880,7 @@ dependencies = [
 name = "osis-perm"
 version = "0.1.0"
 dependencies = [
+ "membership-model",
  "osis-core",
 ]
 

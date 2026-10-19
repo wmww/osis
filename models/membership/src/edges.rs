@@ -402,6 +402,11 @@ impl EHist {
     }
 }
 
+/// The timeline (§2, §5.1) with sticky drops, as specified.
+pub fn walk(h: &EHist) -> EOut {
+    h.eval(true)
+}
+
 /// a ≥ b in both components.
 fn covers(a: (Role, Role), b: (Role, Role)) -> bool {
     a.0 >= b.0 && a.1 >= b.1
@@ -581,7 +586,7 @@ fn rand_lower(rng: &mut Rng, e: Option<Edge>) -> Option<Edge> {
     Some(Edge { role, until, invite })
 }
 
-fn random_hist(rng: &mut Rng) -> EHist {
+pub fn random_hist(rng: &mut Rng) -> EHist {
     let n = 3 + rng.below(4);
     let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(4) == 0 { None } else { Some(rand_edge(rng)) }).collect();
     genesis[O] = None;

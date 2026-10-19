@@ -8,10 +8,13 @@
 //!
 //! A write applies iff its author has admin on the target (attributed to its class there) or
 //! it is a self-removal (lowers the edge of a member the author has admin on; never audited,
-//! audits nothing). After each applied write by A, every other node X whose class on some
-//! actor N fell below `held[X][N]` (its highest class there since its last audit) has its
+//! audits nothing). After each applied write by A on edge (M, T), every other node X reaching
+//! M whose class on an actor N reachable from T fell below its class with the edge restored
+//! as if the member still held its role (the highest role the edge had since the last
+//! explicit write on it, self-removals and A's own writes auditing nothing) has its
 //! earlier applied writes on N attributed to a class in (new, held] audited by A's frontier
-//! (A's receipts before t; A's chain and the write itself count), and the walk restarts on
+//! (A's receipts before t; A's chain writes, those setting the admin edges on A's admin paths
+//! to the target, and the write itself count), and the walk restarts on
 //! any drop. Drops are sticky. No invites, `until` or snapshots here (edges.rs, snapshot.rs).
 //!
 //! Checked (`cargo run --release [samples] joint`, `cargo test`): termination, input-order
@@ -68,6 +71,8 @@ pub enum Attr {
 pub struct JOut {
     pub edges: Vec<Vec<Role>>,
     pub roles: Vec<Vec<Role>>,
+    /// Writes applied in the final walk (bit per write index).
+    pub applied: u64,
     pub dropped: u64,
     pub passes: usize,
 }
@@ -133,11 +138,103 @@ impl JHist {
         }
     }
 
+    /// A's chain writes for a write on actor x: the writes that set the admin edges on A's
+    /// admin paths to x (spec/permissions.md §5.1, "A's own chain writes").
+    fn chain_writes(&self, edges: &[Vec<Role>], r: &[Vec<Role>], set_by: &[Vec<Option<usize>>], a: usize, x: usize) -> Vec<usize> {
+        let (nn, na) = (self.nodes, self.actors());
+        let mut to = vec![false; nn + na];
+        to[nn + x] = true;
+        loop {
+            let mut changed = false;
+            for e in 0..nn + na {
+                if to[e] {
+                    continue;
+                }
+                let owns = |y: usize| match self.owners[y] {
+                    Owner::Node(o) => o == e,
+                    Owner::Actor(z) => nn + z == e,
+                };
+                if (0..na).any(|y| to[nn + y] && (edges[e][y] == Role::Admin || owns(y))) {
+                    to[e] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut out = vec![];
+        for m in 0..nn + na {
+            let admin = m == a || m >= nn && r[a][m - nn] == Role::Admin;
+            for y in 0..na {
+                if admin && edges[m][y] == Role::Admin && to[nn + y] {
+                    out.extend(set_by[m][y]);
+                }
+            }
+        }
+        out
+    }
+
+    /// Entities reaching `m` (included) by edges of any role and owner links.
+    fn reaching(&self, edges: &[Vec<Role>], m: usize) -> Vec<bool> {
+        let (nn, na) = (self.nodes, self.actors());
+        let mut v = vec![false; nn + na];
+        v[m] = true;
+        loop {
+            let mut changed = false;
+            for e in 0..nn + na {
+                if v[e] {
+                    continue;
+                }
+                let via_owner = |x: usize| match self.owners[x] {
+                    Owner::Node(o) => o == e,
+                    Owner::Actor(y) => nn + y == e,
+                };
+                if (0..na).any(|x| v[nn + x] && (edges[e][x] > Role::None || via_owner(x))) {
+                    v[e] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return v;
+            }
+        }
+    }
+
+    /// Entities reachable from `t` (included) by edges of any role and owner links.
+    fn reachable(&self, edges: &[Vec<Role>], t: usize) -> Vec<bool> {
+        let (nn, na) = (self.nodes, self.actors());
+        let mut v = vec![false; nn + na];
+        v[t] = true;
+        loop {
+            let mut changed = false;
+            for x in 0..na {
+                if v[nn + x] {
+                    continue;
+                }
+                let owner = match self.owners[x] {
+                    Owner::Node(o) => o,
+                    Owner::Actor(y) => nn + y,
+                };
+                if v[owner] || (0..nn + na).any(|e| v[e] && edges[e][x] > Role::None) {
+                    v[nn + x] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return v;
+            }
+        }
+    }
+
     /// Whether node a has admin on member entity m.
     fn admin_of(&self, r: &[Vec<Role>], a: usize, m: usize) -> bool {
         m == a || m >= self.nodes && r[a][m - self.nodes] == Role::Admin
     }
 
+    /// §5.1: step 1 orders the writes; each pass is step 2 (apply iff the author has the
+    /// authority), step 3 (attribute by class) and step 4 (a class fall audits with the
+    /// demoter's frontier and restarts); step 5 returns the first pass adding nothing to D.
     pub fn eval(&self, audit: bool) -> JOut {
         let (nn, na) = (self.nodes, self.actors());
         let order = self.order();
@@ -147,17 +244,32 @@ impl JHist {
             passes += 1;
             let mut edges = self.genesis.clone();
             let mut r = self.roles(&edges);
-            let mut held: Vec<Vec<Class>> = (0..nn).map(|n| (0..na).map(|x| self.class(&r, n, x)).collect()).collect();
+            // prior[m][x]: the highest role m's edge on x had since the last explicit write on
+            // it (self-removals audit nothing); prior_self[(m, x, a)]: the same for a node a
+            // that lowered it by its own write (an author is never audited).
+            let mut prior: Vec<Vec<Role>> = vec![vec![Role::None; na]; nn + na];
+            let mut prior_self: std::collections::HashMap<(usize, usize, usize), Role> = Default::default();
             let mut attr = vec![Attr::Skipped; self.writes.len()];
-            let mut chain: Vec<Option<usize>> = vec![None; nn];
+            // set_by[m][x]: the applied write that set m's current edge on x.
+            let mut set_by: Vec<Vec<Option<usize>>> = vec![vec![None; na]; nn + na];
             for &i in &order {
                 let w = &self.writes[i];
                 let a = w.author;
-                if dropped >> i & 1 == 1 || self.owners[w.target] == Owner::Node(w.member) && w.member < nn {
+                // An edge for the target's owner (node or actor) is no write: the owner is
+                // implicitly admin and cannot be removed (spec/permissions.md §1).
+                let owner_member = match self.owners[w.target] {
+                    Owner::Node(o) => w.member == o,
+                    Owner::Actor(y) => w.member == nn + y,
+                };
+                if dropped >> i & 1 == 1 || owner_member {
                     continue;
                 }
                 let old = edges[w.member][w.target];
-                attr[i] = if w.role <= old && self.admin_of(&r, a, w.member) {
+                // Self-removal (spec/permissions.md §2): lowering one's own edge, or a member's
+                // one is admin of when one has no owner-chain or edge-admin authority on the
+                // target; otherwise an explicit demotion by its class there.
+                let self_only = w.member == a || self.class(&r, a, w.target) == Class::None;
+                attr[i] = if w.role <= old && self.admin_of(&r, a, w.member) && self_only {
                     Attr::SelfOnly
                 } else {
                     match self.class(&r, a, w.target) {
@@ -165,23 +277,39 @@ impl JHist {
                         c => Attr::By(c),
                     }
                 };
+                let chain_a = self.chain_writes(&edges, &r, &set_by, a, w.target);
+                let own = self.reaching(&edges, w.member)[a];
                 edges[w.member][w.target] = w.role;
-                let chain_a = chain[a];
-                if w.member < nn {
-                    chain[w.member] = Some(i);
-                }
+                set_by[w.member][w.target] = Some(i);
                 r = self.roles(&edges);
                 let mut grew = false;
+                let (m, t) = (w.member, w.target);
+                if attr[i] == Attr::SelfOnly {
+                    prior[m][t] = prior[m][t].max(old);
+                    continue;
+                }
+                // An explicit write demotes x on n when x's class is lower than with the edge
+                // restored as if the member still held its role (spec/permissions.md §5.1).
+                let base = prior[m][t].max(old);
+                prior[m][t] = Role::None;
+                let (up, down) = (self.reaching(&edges, m), self.reachable(&edges, nn + t));
                 for x in 0..nn {
-                    for n in 0..na {
-                        let now = self.class(&r, x, n);
-                        if x == a || attr[i] == Attr::SelfOnly || now >= held[x][n] {
-                            held[x][n] = held[x][n].max(now);
-                            continue;
+                    let restored = base.max(prior_self.remove(&(m, t, x)).unwrap_or(Role::None));
+                    if x == a {
+                        if own {
+                            prior_self.insert((m, t, a), restored);
                         }
-                        let before = held[x][n];
-                        held[x][n] = now;
-                        if !audit {
+                        continue;
+                    }
+                    if !up[x] || !audit {
+                        continue;
+                    }
+                    let mut was = edges.clone();
+                    was[m][t] = restored;
+                    let rw = self.roles(&was);
+                    for n in 0..na {
+                        let (now, before) = (self.class(&r, x, n), self.class(&rw, x, n));
+                        if !down[nn + n] || now >= before {
                             continue;
                         }
                         for j in 0..self.writes.len() {
@@ -193,7 +321,7 @@ impl JHist {
                             if !(now < c && c <= before) {
                                 continue;
                             }
-                            let covered = self.recv[j][a] < w.t || chain_a == Some(j);
+                            let covered = self.recv[j][a] < w.t || chain_a.contains(&j);
                             if !covered {
                                 dropped |= 1 << j;
                                 grew = true;
@@ -205,7 +333,8 @@ impl JHist {
                     continue 'walk;
                 }
             }
-            return JOut { edges, roles: r, dropped, passes };
+            let applied = (0..self.writes.len()).filter(|&j| attr[j] != Attr::Skipped).fold(0u64, |m, j| m | 1 << j);
+            return JOut { edges, roles: r, applied, dropped, passes };
         }
     }
 
@@ -225,6 +354,11 @@ impl JHist {
         ids.sort();
         (o.edges.clone(), o.roles.clone(), ids)
     }
+}
+
+/// The timeline of §5.1 with audits on.
+pub fn walk(h: &JHist) -> JOut {
+    h.eval(true)
 }
 
 // ---------- search ----------
@@ -270,7 +404,7 @@ impl Stats {
     }
 }
 
-fn random_hist(rng: &mut Rng) -> JHist {
+pub fn random_hist(rng: &mut Rng) -> JHist {
     let nodes = 2 + rng.below(3);
     let na = 2 + rng.below(2);
     // Actor 0 owned by node 0; others by a node or a lower actor (no owner cycles).
@@ -550,5 +684,42 @@ mod tests {
         let o = b.0.eval(true);
         assert_eq!(o.edges[EA][B], None);
         assert_eq!(o.dropped, 0);
+    }
+
+    /// Transitive ownership audit: P (owned by node 0) owns Q, Q owns D. Node 3 is admin of P,
+    /// so of the chain above D, and grants node 4 admin on D at t=1, seen by nobody. Removing 3
+    /// from P (t=3) drops the grant, two ownership levels below P; unless 3 keeps the chain
+    /// on D by an admin edge on Q, where its class on D does not fall and nothing is audited.
+    #[test]
+    fn transitive_ownership_audit() {
+        let (p, q, d) = (0, 1, 2);
+        for keeps_q in [false, true] {
+            let owners = vec![Owner::Node(0), Owner::Actor(p), Owner::Actor(q)];
+            let mut edges = vec![(3, p, Admin)];
+            if keeps_q {
+                edges.push((3, q, Admin));
+            }
+            let mut b = Jb::new(owners, &edges);
+            b.set(3, d, 4, Admin, 1, &[]);
+            b.set(0, p, 3, None, 3, &[]);
+            let o = b.0.eval(true);
+            assert_eq!(o.roles[4][d], if keeps_q { Admin } else { None }, "keeps Q {keeps_q}");
+            assert_order_independent(&b.0);
+        }
+    }
+
+    /// A owns group G and doc T; X is admin of G, G admin of T. X grants Y admin on T, unseen
+    /// by A. A, admin of G as its owner but also owner of T, removes G from T: an explicit
+    /// demotion (not a self-removal), so X's unseen grant is dropped.
+    #[test]
+    fn group_removal_by_owner_of_both() {
+        let (g, t) = (0, 1);
+        let mut b = Jb::new(vec![Owner::Node(0), Owner::Node(0)], &[(1, g, Admin), (NODES + g, t, Admin)]);
+        let grant = b.set(1, t, 2, Admin, 3, &[]);
+        b.set(0, t, NODES + g, None, 10, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(o.dropped >> grant & 1, 1);
+        assert_eq!(o.roles[2][t], None);
+        assert_order_independent(&b.0);
     }
 }
