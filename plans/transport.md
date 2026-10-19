@@ -12,7 +12,7 @@ Spec: spec/sync.md §10 (ordered bidirectional stream, confidentiality, authenti
 - Connection manager helpers used by node and server: reconnect with backoff, one connection syncing many labels (streams per purpose), graceful close.
 
 ## Steps
-- [ ] Traits + InProcess + fault layer; tests: a byte stream round trip, partition heals, deterministic under a fixed seed.
+- [x] Traits + InProcess + fault layer; tests: a byte stream round trip, partition heals, deterministic under a fixed seed.
 - [ ] Direct server transport behind the feature; test: pinned-key mismatch refused; ephemeral client keys differ per connection; large stream transfer.
 - [ ] Manager helpers; a loopback test driving osis-proto engines over InProcess and over the real transport on localhost.
 
@@ -20,3 +20,4 @@ Spec: spec/sync.md §10 (ordered bidirectional stream, confidentiality, authenti
 server and node run over both implementations through the traits only; `cargo test -p osis-transport` without `--features quic` builds no TLS stack; notes/networking.md "Implementation" section written. Delete this plan.
 
 ## Progress
+- Step 1: traits (own `SendStream`/`RecvStream`, `impl Future + Send`, no runtime types), `InProcess` on a `Net` with virtual steps (latency, jitter, bandwidth, partition, disconnect, kill), `Sched` seeded executor; deterministic, no tokio.

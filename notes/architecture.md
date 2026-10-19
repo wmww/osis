@@ -68,7 +68,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `x25519-dalek` 2.0 (crypto; `static_secrets`, `zeroize`, `precomputed-tables`): X25519 with the contributory check.
 - `libcrux-ml-kem` 0.0.11 (crypto; `mlkem768` only, no `rand` feature): ML-KEM-768. Chosen over RustCrypto `ml-kem` 0.3: keygen from the 64-byte `d || z` seed and encapsulation from 32 explicit bytes are plain array functions, and it is formally verified. Its `libcrux-traits` dependency still compiles `rand` 0.10 and `rand_core` 0.10 (no OS randomness, unused by us). Checked against NIST ACVP FIPS 203 answers (test `mlkem_fips203_acvp`).
 - `chacha20poly1305` 0.10 (crypto; `alloc`): XChaCha20-Poly1305.
-- `zeroize` 1.8 (crypto): secret wipe on drop.
+- `zeroize` 1.8 (crypto, transport): secret wipe on drop.
 - `subtle` 2.6 (crypto; no default features; already in the tree via the dalek crates): `ConstantTimeEq` for `Secret32`.
 - `rand_core` 0.6 (crypto; no default features; re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`rand_core/getrandom`, `osis_crypto::OsRng`), for drivers; `cargo tree -p osis-store` has no getrandom.
 - `proptest` (dev, all crates; models use their own version line): property tests.

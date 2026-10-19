@@ -12,3 +12,4 @@ workspace = true
 
 [dependencies]
 osis-core.workspace = true
+zeroize.workspace = true
