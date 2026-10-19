@@ -11,7 +11,7 @@ The two Rust models (crdt-model, tools/fixpoint) are random or bounded-exhaustiv
 - Instances: 2–3 nodes, 1 blind server (2 where server state matters), 1–2 labels, 2–3 epochs, a handful of writes; symmetry sets over nodes and things. State constraints bound counters.
 - Checked properties stated as invariants plus temporal properties under weak fairness of honest steps; adversarial steps unfair. Each property cites the spec sentence it checks.
 - Owner reviews the ambiguity list; spec fixes go through the normal process (significant ones need sign-off). Then the model is updated to the fixed text and rerun.
-- Lives under `tools/tla/<target>/` with a README (how to run TLC headless, instance sizes, run times). CI runs the smallest instance; larger ones by hand or nightly.
+- Lives under `models/tla/<target>/` (plans/workspace.md layout) with a README (how to run TLC headless, instance sizes, run times). CI runs the smallest instance; larger ones by hand or nightly.
 - Per target, choose TLA+ or stateright: TLA+ when the value is notation independence and the state is small; stateright when the model is actor-shaped and would be reused as the simulator's oracle (plans/testing.md). Default TLA+ for the two targets below.
 
 ## Targets, in order

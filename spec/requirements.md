@@ -26,10 +26,10 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 
 ## Cost (goal)
 - Bytes transferred are close to the size of the change: about 1.2x for large changes is fine, 2x-10x is not. Small changes may carry a fixed overhead of a few hundred bytes.
-- Round trips: a small constant in the common incremental case, logarithmic at worst.
+- Round trips: a small constant in the common incremental case, logarithmic at worst; a member that missed k membership rotations may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Compaction and deletion cost proportional to what changed, not to group size or history.
-- Removing a member costs proportional to the rosters of the actors and things it could read, never to content or history.
+- Removing a member costs proportional to the rosters of the actors and things it could read, plus one entry per aspect it wrote, never to content or history.
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
 ## Untrusted (blind) nodes

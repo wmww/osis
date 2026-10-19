@@ -16,7 +16,7 @@
 - Strict decoding means bytes are hashed and stored as received, never re-encoded; important for multi-GB blobs.
 - No serde on the wire: generic serde CBOR backends do not sort keys, enforce shortest heads or 8-byte floats, or reject non-canonical input, and serde's data model has no sets, tags or tids. Own encoder/decoder for `Value` (a few hundred lines). A serde layer converting app types to and from `Value` is an optional convenience.
 - Cycles are not allowed; alternatives: tids of things with the same aspect, or a map whose values reference other keys.
-- `any` is the raw value: struct and `map<int, T>` share an encoding, merge state tells them apart anyway, and a struct held in an `any` slot reading back as a map is the only loss. Rejected: an enum with one case per kind (eleven case IDs and a tag per node for a distinction that only matters for values held atomically).
+- `any` is the raw value: struct and `map<int, T>` share an encoding, merge state tells them apart anyway, and a struct held in an `any` slot reading back as a map is the only loss. Its merge encoding follows the value's kind (spec/crdt.md §3.1), so a map in an `any` position merges per key and a string merges as a register; different kinds over time meet as slots. Rejected: an enum with one case per kind (eleven case IDs and a tag per node for a distinction that only matters for values held atomically).
 - Set elements and map keys are atomic: choose `map<K, struct>` over `set<struct>` when parts of an element should be editable.
 
 ## Large values

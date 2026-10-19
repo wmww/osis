@@ -6,11 +6,11 @@ osis (Open Structured Information System) is a decentralized database optimized 
 ## Where things live
 - `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. Significant or breaking spec changes need owner sign-off.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
-- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`). `plans/`: the implementation run. plans/mvp_meta.md is the entry point (roles, rules, order of work); one plan per crate or subsystem (plans/workspace.md first), plans/protocol-spec.md (the TBDs in spec/), plans/testing.md and plans/tla-models.md (test strategy and model checking). `grep '^> Summary' plans/*.md` lists them.
+- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`); empty at the moment, every earlier issue was resolved into spec or notes (see git log for the history). `plans/`: the implementation run. plans/mvp_meta.md is the entry point (roles, rules, order of work); one plan per crate or subsystem (plans/workspace.md first), plans/protocol-spec.md (the TBDs in spec/), plans/testing.md and plans/tla-models.md (test strategy and model checking). `grep '^> Summary' plans/*.md` lists them.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
-- Design is settled apart from byte layouts and constants (plans/protocol-spec.md) and the open issues. The pre-implementation sweep (five reviews: permissions, key flows, blind nodes, CRDT, app developer) is folded in; what it changed is recorded in the notes' "why" sections and the issues it left are tagged `owner-call` or `tests`.
+- Design is settled apart from byte layouts and constants (plans/protocol-spec.md). The pre-implementation sweep (five reviews: permissions, key flows, blind nodes, CRDT, app developer) and the final pre-swarm review are folded in; what they changed is recorded in the notes' "why" and "Limits" sections. No issue is open.
 - Code: `crdt-model/` (reference model for spec/crdt.md, not the implementation; notes/crdt.md) and `tools/fixpoint/` (throwaway model of the membership rules; notes/permissions.md). No implementation yet.
 - MVP scope (owner): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
 - Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.

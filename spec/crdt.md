@@ -57,7 +57,7 @@ All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **d
 | 2 | max | `max<int>`, `max<float>` | max of live contributions |
 | 3 | min | `min<int>`, `min<float>` | min of live contributions |
 | 4 | struct | struct | struct |
-| 5 | enum | enum (incl. option, any) | enum |
+| 5 | enum | enum (incl. option) | enum |
 | 6 | set | set | set |
 | 7 | map | map | map |
 | 8 | list | list<T> | list |
@@ -65,6 +65,8 @@ All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **d
 | 10 | slots | (never a schema encoding) a position holding several encodings, §7 | the read of the chosen slot |
 
 Unknown id (or an unknown nested id) parks the whole delta (spec/versioning.md §2). A parked delta is kept as bytes with its header tuple and re-examined after upgrade.
+
+An `any` position (spec/data-model.md §3) has no encoding of its own: a write chooses the encoding of the value's kind (map → map, list → list, set → set, enum → enum, everything else → register), recursively; kinds written at different times meet as slots (§7).
 
 ### 3.2 Grammar
 ```
@@ -149,7 +151,7 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
 - fragment reset (remove_aspect, replace, enum case change): re-insert the pre-reset value from the undo buffer with fresh dots (`replace`); bags: §5.2.
 Originals whose body was dropped are not undoable. Redo = undo of the undo commit.
 
-**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging an author is the join of every body and value-less residue (§4.7) the node holds for the aspect, each with the writes whose dot's source belongs to that author removed (`Derived` dots count for the author of the underlying dot; writes a valid snapshot carries stay, spec/permissions.md §6). It is a function of the held set, never of the order in which the commits and the revocation arrived. Seq elements created by the author keep their record as a content-less, hidden anchor (`Derived` records with no remaining write go, §4.7). Removing the author's writes from the state in place is permitted only where it gives that join; a register or position whose winner or top-2 (§5.7) the author held needs the retained bodies.
+**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging an author is the join of every body and value-less residue (§4.7) the node holds for the aspect (its own current state counts as a snapshot it holds, so live writes of bodies dropped under keep-at-most survive), each with the writes whose dot's source belongs to that author removed (`Derived` dots count for the author of the underlying dot; writes a valid snapshot carries stay, spec/permissions.md §6). It is a function of the held set, never of the order in which the commits and the revocation arrived. Seq elements created by the author keep their record as a content-less, hidden anchor (`Derived` records with no remaining write go, §4.7). Removing the author's writes from the state in place is permitted only where it gives that join; a register or position whose winner or top-2 (§5.7) the author held needs the retained bodies.
 
 ### 4.7 Expiry and value-less writes
 A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) owns the writes of its source with a counter in its range (commit form: every write of its source in that aspect). Its **value-carrying** writes are register values, enum case writes, set and bag element values, map entry creations (the key is the creation's value) and sequence element creations (the text char or list element). Its other writes (resets, `W`, deleted flags, position writes) carry no app data. Writes are attributed by dot: a write, element or entry belongs to the delta whose range holds its dot (a `Derived` dot to the delta of its underlying dot).

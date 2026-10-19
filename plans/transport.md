@@ -7,7 +7,7 @@ Spec: spec/sync.md §10 (ordered bidirectional stream, confidentiality, authenti
 
 ## Deliverables
 - Traits: `Transport { dial(&Address) -> Connection; listen(ListenConfig) -> Listener }`, `Connection { peer_key(), open_stream(), accept_stream(), close() }`, `Stream` = ordered bidirectional bytes (`AsyncRead + AsyncWrite` or a minimal own pair of traits; keep tokio types out of the trait signatures if cheap). `Address` parse/print is osis-label's; transport maps URL schemes to implementations.
-- `InProcess`: a registry of listeners by name; connections are channel pairs; a fault layer (latency, drop connection, partition sets, bandwidth cap) controlled by a handle the simulator drives; fully deterministic under a seeded scheduler (no tokio timers inside; time comes from the sim's clock).
+- `InProcess`: a registry of listeners by name; connections are channel pairs; a fault layer (latency, drop connection, partition sets, bandwidth cap) controlled by a test handle. It tests the drivers and the stream layer on a plain tokio runtime; the simulator does not use it (it carries proto messages engine-to-engine, plans/sim.md), so it need not be deterministic.
 - Direct server transport: QUIC via quinn + rustls with a custom verifier pinning the server's static public key from the address, client uses a fresh ephemeral key per connection; or, if build time or complexity argues for it, a Noise-based framing over TCP; record the decision and its deps in notes/architecture.md. Server side: listener bound to a config (port, static key file).
 - Connection manager helpers used by node and server: reconnect with backoff, one connection syncing many labels (streams per purpose), graceful close.
 
