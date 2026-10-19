@@ -14,7 +14,8 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order.
-- A change may atomically cover any set of things and any amount of data, across owners and reader sets: a node that may read and syncs any of them fetches and applies all of it or none. Each part is still authorized on its own thing, so revoking the author on one thing removes only that part.
+- A change may touch any number of things, of any owners and reader sets, with no size limit. A node applies all the parts it may read and syncs at once, or none of them.
+- Each part of a change is authorized on its own thing. Revoking the author on one thing removes only that part.
 
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.
@@ -32,11 +33,12 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
 ## Untrusted (blind) nodes
-- Keyless always-on nodes are first-class: every property here holds for them, and two briefly-online devices syncing only through one is a primary use case.
+- Keyless nodes without access to the data they store or relay are a first-class feature.
 - They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses. They must not learn identifiers, keys, values, authors, membership, device identities, or structure beyond that.
 - Different groups of one owner are unlinkable beyond their overlap.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
-- An untrusted node may be the only backup. Read access never allows deleting its data or forcing a re-upload. Only the roles an edit names (its author, admins, or any writer where the author allowed it) can destroy it. The node judges that right as it stood when the edit was written, plus current membership of the group: a member demoted but still reading can delete there what its old role allowed, until the next member sync restores the data.
+- An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
+- Each edit names who may delete it: its author, admins, or every writer if the author allows. The right is judged by the role the deleter had when the edit was written, and needs current membership. So a demoted member can still delete what its old role allowed, until the next member sync restores the data.
 - Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's members. Members can clear the budget; while it is full, what goes through it (grants, readers' own membership writes) waits.
 - It knows no members and never waits on their liveness.
 - Goal: it can limit abuse (storage, rate) without learning identities.
