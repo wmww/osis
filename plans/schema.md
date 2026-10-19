@@ -31,3 +31,4 @@ Parser fuzz target (test-infra); checker rules; typed-read errors carry paths; o
 The core schema and an app schema parse, check and generate; node-core consumes retention defaults and typed writes from here; notes/data-model.md and notes/versioning.md updated with what is implemented vs convention. Delete this plan.
 
 ## Progress
+- Session 1: all five steps landed (worktree branch). Open: open-struct preservation through `set_field` needs the crdt diff (test it where the diff lands); `osis` re-export is the api plan's; proc macro skipped (codegen covers it); vectors under `vectors/schema/` in a provisional format until test-infra fixes one.

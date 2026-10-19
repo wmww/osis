@@ -190,3 +190,19 @@ fn core_aspects_only_in_core_schema() {
     let s = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect /a: int;").unwrap();
     assert_eq!(s.id, SchemaId([0; 16]));
 }
+
+proptest::proptest! {
+    /// The parser never panics: arbitrary text, and the notes schema with a byte range replaced
+    /// (errors only; fuzzing proper is test-infra's).
+    #[test]
+    fn parser_total_on_garbage(s in "\\PC{0,200}", cut in 0usize..1500, len in 0usize..40, junk in "[{}()<>;:,=\\[\\]/a-z0-9 \"-]{0,12}") {
+        let _ = parse("g.osis", &s);
+        let mut src = NOTES.to_string();
+        let a = cut.min(src.len());
+        let b = (a + len).min(src.len());
+        if src.is_char_boundary(a) && src.is_char_boundary(b) {
+            src.replace_range(a..b, &junk);
+            let _ = parse("g.osis", &src);
+        }
+    }
+}
