@@ -1,0 +1,624 @@
+//! Large atomic values (spec/data-model.md §6): the write path decides inline or link by
+//! `CHUNK_THRESHOLD` and streams canonical bytes into a chunk tree; readers stream them back
+//! lazily, one chunk plus the tree path in memory (spec/requirements.md, Scale).
+
+use crate::Error;
+use crate::tree::{LinkSource, TreeReader, TreeSink, TreeWriter, write_tree};
+use osis_core::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
+use osis_core::{ChunkParams, Limits, Link, Value, decode, encode};
+use osis_crypto::Secret32;
+
+/// Chunking parameters: `FORMAT` on the wire; tests shrink them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LargeParams {
+    pub chunk: ChunkParams,
+    /// A value whose canonical encoding exceeds this many bytes is chunked; at or below, never.
+    pub threshold: usize,
+}
+
+impl LargeParams {
+    pub const FORMAT: LargeParams = LargeParams { chunk: ChunkParams::FORMAT, threshold: CHUNK_THRESHOLD };
+}
+
+const MAJOR_BYTES: u8 = 2;
+const MAJOR_TEXT: u8 = 3;
+
+/// Canonical (shortest) CBOR head of a byte or text string of `len` bytes.
+fn string_head(major: u8, len: u64) -> Vec<u8> {
+    let m = major << 5;
+    // Each arm's cast is lossless for its range.
+    match len {
+        0..24 => vec![m | len as u8],
+        24..0x100 => vec![m | 24, len as u8],
+        0x100..0x1_0000 => [&[m | 25][..], &(len as u16).to_be_bytes()].concat(),
+        0x1_0000..0x1_0000_0000 => [&[m | 26][..], &(len as u32).to_be_bytes()].concat(),
+        _ => [&[m | 27][..], &len.to_be_bytes()].concat(),
+    }
+}
+
+/// Parses a canonical byte or text string head: `(major, len, head bytes)`, or `None` when `b`
+/// is too short to tell.
+fn parse_string_head(b: &[u8]) -> Result<Option<(u8, u64, usize)>, Error> {
+    let Some(&ib) = b.first() else { return Ok(None) };
+    let major = ib >> 5;
+    if major != MAJOR_BYTES && major != MAJOR_TEXT {
+        return Err(Error::Malformed("large value is not a byte or text string"));
+    }
+    let n = match ib & 31 {
+        a @ 0..24 => return Ok(Some((major, u64::from(a), 1))),
+        24 => 1,
+        25 => 2,
+        26 => 4,
+        27 => 8,
+        _ => return Err(Error::Malformed("string head")),
+    };
+    let Some(arg) = b.get(1..1 + n) else { return Ok(None) };
+    let len = arg.iter().fold(0u64, |a, &x| (a << 8) | u64::from(x));
+    if string_head(major, len).len() != 1 + n {
+        return Err(Error::Malformed("string head not shortest"));
+    }
+    Ok(Some((major, len, 1 + n)))
+}
+
+/// Streaming UTF-8 check: holds at most 3 bytes of an incomplete sequence.
+#[derive(Default)]
+struct Utf8 {
+    carry: Vec<u8>,
+}
+
+impl Utf8 {
+    fn feed(&mut self, mut data: &[u8]) -> Result<(), Error> {
+        const BAD: Error = Error::Malformed("text is not UTF-8");
+        while !self.carry.is_empty() {
+            let Some((&b, rest)) = data.split_first() else { return Ok(()) };
+            self.carry.push(b);
+            data = rest;
+            match std::str::from_utf8(&self.carry) {
+                Ok(_) => self.carry.clear(),
+                Err(e) if e.error_len().is_none() => {}
+                Err(_) => return Err(BAD),
+            }
+        }
+        match std::str::from_utf8(data) {
+            Ok(_) => Ok(()),
+            Err(e) if e.error_len().is_none() => {
+                self.carry = data.get(e.valid_up_to()..).unwrap_or_default().to_vec();
+                Ok(())
+            }
+            Err(_) => Err(BAD),
+        }
+    }
+
+    fn finish(&self) -> Result<(), Error> {
+        if self.carry.is_empty() { Ok(()) } else { Err(Error::Malformed("text is not UTF-8")) }
+    }
+}
+
+/// Streams a blob or string of a declared length into its place in a value: inline at or below
+/// the threshold (buffered, at most `threshold` bytes), else a chunk tree written through the
+/// sink as the bytes arrive.
+pub struct ValueWriter {
+    /// Large only: the string head, written with the first bytes.
+    head: Vec<u8>,
+    text: Option<Utf8>,
+    left: u64,
+    /// Inline only: the payload so far.
+    inline: Option<Vec<u8>>,
+    tree: Option<TreeWriter>,
+}
+
+impl ValueWriter {
+    pub fn bytes(params: LargeParams, len: u64) -> ValueWriter {
+        ValueWriter::new(params, MAJOR_BYTES, len)
+    }
+
+    /// Checks UTF-8 as the bytes arrive.
+    pub fn text(params: LargeParams, len: u64) -> ValueWriter {
+        ValueWriter::new(params, MAJOR_TEXT, len)
+    }
+
+    fn new(params: LargeParams, major: u8, len: u64) -> ValueWriter {
+        let head = string_head(major, len);
+        let total = u64::try_from(head.len()).unwrap_or(u64::MAX).saturating_add(len);
+        let large = total > u64::try_from(params.threshold).unwrap_or(u64::MAX);
+        let tree = large.then(|| TreeWriter::new(params.chunk));
+        let inline = (!large).then(Vec::new);
+        ValueWriter { head: if large { head } else { Vec::new() }, text: (major == MAJOR_TEXT).then(Utf8::default), left: len, inline, tree }
+    }
+
+    /// Whether the value goes by link.
+    pub fn is_large(&self) -> bool {
+        self.tree.is_some()
+    }
+
+    pub fn write(&mut self, sink: &mut dyn TreeSink, data: &[u8]) -> Result<(), Error> {
+        let n = u64::try_from(data.len()).map_err(|_| Error::TooLarge("write"))?;
+        self.left = self.left.checked_sub(n).ok_or(Error::TooLarge("value longer than its declared length"))?;
+        if let Some(u) = &mut self.text {
+            u.feed(data)?;
+        }
+        match (&mut self.tree, &mut self.inline) {
+            (Some(t), _) => {
+                if !self.head.is_empty() {
+                    t.write(sink, &std::mem::take(&mut self.head))?;
+                }
+                t.write(sink, data)
+            }
+            (None, Some(buf)) => {
+                buf.extend_from_slice(data);
+                Ok(())
+            }
+            (None, None) => Err(Error::Malformed("value writer state")),
+        }
+    }
+
+    /// The value's place in the enclosing value: `Value::Bytes`/`Value::Str` inline, or the
+    /// root `Value::Link`.
+    pub fn finish(self, sink: &mut dyn TreeSink) -> Result<Value, Error> {
+        if self.left != 0 {
+            return Err(Error::Malformed("value shorter than its declared length"));
+        }
+        if let Some(u) = &self.text {
+            u.finish()?;
+        }
+        if let Some(mut t) = self.tree {
+            t.write(sink, &self.head)?;
+            return Ok(Value::Link(t.finish(sink)?));
+        }
+        let buf = self.inline.unwrap_or_default();
+        Ok(match self.text {
+            Some(_) => Value::Str(String::from_utf8(buf).map_err(|_| Error::Malformed("text is not UTF-8"))?),
+            None => Value::Bytes(buf),
+        })
+    }
+
+    /// Bytes held: the inline payload, or the open chunk and tree path.
+    pub fn buffered(&self) -> usize {
+        self.inline.as_ref().map_or(0, Vec::len) + self.tree.as_ref().map_or(0, TreeWriter::buffered)
+    }
+}
+
+/// A set element, map key or whole value: chunked iff its canonical encoding exceeds the
+/// threshold. Returns what takes its place (itself, or its root link).
+pub fn chunk_value(sink: &mut dyn TreeSink, params: LargeParams, v: &Value) -> Result<Value, Error> {
+    let bytes = encode(v);
+    if bytes.len() <= params.threshold {
+        return Ok(v.clone());
+    }
+    Ok(Value::Link(write_tree(sink, params.chunk, &bytes)?))
+}
+
+/// Streams the canonical bytes of a large value from its root link, fetching chunks on demand.
+/// At the end the value must exceed the threshold (a chunked small value is bad input).
+pub struct LargeReader<'a> {
+    tree: TreeReader,
+    dedup: &'a Secret32,
+    src: &'a mut dyn LinkSource,
+    threshold: usize,
+    max_len: usize,
+    chunk: Vec<u8>,
+    pos: usize,
+    total: usize,
+    done: bool,
+}
+
+impl<'a> LargeReader<'a> {
+    /// `max_len`: the most bytes the caller accepts (`TooLarge` beyond).
+    pub fn new(root: Link, dedup: &'a Secret32, src: &'a mut dyn LinkSource, params: LargeParams, max_len: usize) -> LargeReader<'a> {
+        LargeReader { tree: TreeReader::new(root, params.chunk.min, max_len), dedup, src, threshold: params.threshold, max_len, chunk: Vec::new(), pos: 0, total: 0, done: false }
+    }
+
+    /// The unread rest of the current chunk, fetching the next chunk when it is used up; empty
+    /// at the end. A `Missing` chunk can be fetched and the call retried.
+    pub fn fill(&mut self) -> Result<&[u8], Error> {
+        while self.pos >= self.chunk.len() && !self.done {
+            match self.tree.next_chunk(self.dedup, self.src)? {
+                Some(c) => {
+                    self.total = self.total.saturating_add(c.len());
+                    if self.total > self.max_len {
+                        return Err(Error::TooLarge("value"));
+                    }
+                    self.chunk = c;
+                    self.pos = 0;
+                }
+                None => {
+                    if self.total <= self.threshold {
+                        return Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD"));
+                    }
+                    self.chunk = Vec::new();
+                    self.pos = 0;
+                    self.done = true;
+                }
+            }
+        }
+        Ok(self.chunk.get(self.pos..).unwrap_or_default())
+    }
+
+    pub fn consume(&mut self, n: usize) {
+        self.pos = self.pos.saturating_add(n).min(self.chunk.len());
+    }
+
+    /// Bytes held: the current chunk and the links on the tree path.
+    pub fn buffered(&self) -> usize {
+        self.chunk.len() + self.tree.path_links() * std::mem::size_of::<Link>()
+    }
+
+    /// Reads the whole value's canonical bytes.
+    pub fn read_all(mut self) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::new();
+        loop {
+            let b = self.fill()?;
+            if b.is_empty() {
+                return Ok(out);
+            }
+            out.extend_from_slice(b);
+            let n = b.len();
+            self.consume(n);
+        }
+    }
+}
+
+impl std::io::Read for LargeReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let b = self.fill().map_err(std::io::Error::other)?;
+        let n = b.len().min(out.len());
+        out.get_mut(..n).unwrap_or_default().copy_from_slice(b.get(..n).unwrap_or_default());
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+/// Reads a whole large value (set element, map key, or a value read in full) and decodes it.
+pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<Value, Error> {
+    let bytes = LargeReader::new(root, dedup, src, params, max_len).read_all()?;
+    Ok(decode(&bytes, &Limits { max_depth: MAX_VALUE_DEPTH, max_bytes: bytes.len() })?)
+}
+
+/// Streams the payload of a large blob or string: its declared length is known after the head,
+/// `skip` serves range reads (the chunks before the range are still fetched: nodes do not carry
+/// lengths). Text is checked as UTF-8 as it streams.
+pub struct StringReader<'a> {
+    inner: LargeReader<'a>,
+    text: Option<Utf8>,
+    len: u64,
+    left: u64,
+}
+
+impl<'a> StringReader<'a> {
+    pub fn open(root: Link, dedup: &'a Secret32, src: &'a mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<StringReader<'a>, Error> {
+        let mut inner = LargeReader::new(root, dedup, src, params, max_len);
+        let mut head = Vec::new();
+        let (major, len) = loop {
+            if let Some((major, len, _)) = parse_string_head(&head)? {
+                break (major, len);
+            }
+            let b = inner.fill()?;
+            let Some(&x) = b.first() else { return Err(Error::Malformed("truncated string head")) };
+            head.push(x);
+            inner.consume(1);
+        };
+        Ok(StringReader { inner, text: (major == MAJOR_TEXT).then(Utf8::default), len, left: len })
+    }
+
+    /// Payload length in bytes.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn is_text(&self) -> bool {
+        self.text.is_some()
+    }
+
+    pub fn buffered(&self) -> usize {
+        self.inner.buffered()
+    }
+
+    /// Reads up to `out.len()` payload bytes; 0 at the end, after checking nothing follows.
+    pub fn read_some(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+        if self.left == 0 {
+            if !self.inner.fill()?.is_empty() {
+                return Err(Error::Malformed("bytes after the string"));
+            }
+            if let Some(u) = &self.text {
+                u.finish()?;
+            }
+            return Ok(0);
+        }
+        let b = self.inner.fill()?;
+        if b.is_empty() {
+            return Err(Error::Malformed("string shorter than its head"));
+        }
+        let n = b.len().min(out.len()).min(usize::try_from(self.left).unwrap_or(usize::MAX));
+        let piece = b.get(..n).unwrap_or_default();
+        if let Some(u) = &mut self.text {
+            u.feed(piece)?;
+        }
+        out.get_mut(..n).ok_or(Error::Malformed("read buffer"))?.copy_from_slice(piece);
+        self.inner.consume(n);
+        self.left -= n as u64;
+        Ok(n)
+    }
+
+    /// Skips `n` payload bytes (range reads).
+    pub fn skip(&mut self, mut n: u64) -> Result<(), Error> {
+        let mut buf = vec![0u8; 64 * 1024];
+        while n > 0 {
+            let want = usize::try_from(n).unwrap_or(usize::MAX).min(buf.len());
+            let got = self.read_some(buf.get_mut(..want).unwrap_or_default())?;
+            if got == 0 {
+                return Err(Error::Malformed("skip past the end"));
+            }
+            n -= got as u64;
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Read for StringReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        self.read_some(out).map_err(std::io::Error::other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::{BlobReader, BlobWriter, Framing, HashSink, MemoryBlobs};
+    use osis_core::WallMs;
+    use osis_crypto::SeededRng;
+    use proptest::prelude::*;
+    use std::io::Read;
+
+    const SMALL: LargeParams = LargeParams { chunk: ChunkParams { min: 16, max: 64, mask_bits: 4 }, threshold: 128 };
+
+    fn data(n: usize, seed: u8) -> Vec<u8> {
+        let mut out = vec![0u8; n];
+        osis_core::hash::Hasher::new().update(&[seed, 1]).finalize_xof(&mut out);
+        out
+    }
+
+    fn framing() -> Framing {
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), tokens: vec![(3, Secret32::from_bytes([3; 32]))] }
+    }
+
+    fn write_bytes(store: &mut MemoryBlobs, f: &Framing, rng: &mut SeededRng, d: &[u8], piece: usize) -> Value {
+        let mut bw = BlobWriter::new(f, store, rng);
+        let mut w = ValueWriter::bytes(SMALL, d.len() as u64);
+        for p in d.chunks(piece.max(1)) {
+            w.write(&mut bw, p).unwrap();
+        }
+        w.finish(&mut bw).unwrap()
+    }
+
+    // spec/data-model.md §6: above CHUNK_THRESHOLD a blob is chunked, at or below it is not;
+    // the tree holds its canonical bytes; equal content gives equal root hashes, other links.
+    #[test]
+    fn threshold() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(1);
+        // Head of 2 bytes: 126 payload bytes is exactly the threshold.
+        for (n, large) in [(0, false), (126, false), (127, true), (1000, true)] {
+            let d = data(n, 3);
+            let v = write_bytes(&mut store, &f, &mut rng, &d, 50);
+            assert_eq!(matches!(v, Value::Link(_)), large, "{n}");
+            assert_eq!(encode(&Value::Bytes(d.clone())).len() > SMALL.threshold, large);
+            let Value::Link(l) = v else {
+                assert_eq!(v, Value::Bytes(d));
+                continue;
+            };
+            let mut r = BlobReader::new(&f.dedup, &mut store);
+            assert_eq!(read_value(l, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.clone()));
+            let mut hs = HashSink::new(f.dedup.clone());
+            let Value::Link(h) = chunk_value(&mut hs, SMALL, &Value::Bytes(d.clone())).unwrap() else { panic!() };
+            assert_eq!(h.hash, l.hash);
+            let Value::Link(l2) = write_bytes(&mut store, &f, &mut rng, &d, 7) else { panic!() };
+            assert_eq!(l2.hash, l.hash);
+            assert_ne!(l2.blob, l.blob);
+        }
+        assert_eq!(chunk_value(&mut HashSink::new(f.dedup.clone()), SMALL, &Value::Int(5)).unwrap(), Value::Int(5));
+    }
+
+    // spec/data-model.md §6: a chunked value at or below the threshold is bad input.
+    #[test]
+    fn small_chunked_rejected() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(2);
+        let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL.chunk, &encode(&Value::Bytes(vec![1; 20]))).unwrap();
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX), Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD")));
+    }
+
+    // spec/data-model.md §5, §6: text streams with UTF-8 checks across write boundaries; a
+    // declared length must be met exactly.
+    #[test]
+    fn text_and_lengths() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(3);
+        let s = "héllo wörld ✓ 𝄞 ".repeat(40);
+        let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
+        let mut w = ValueWriter::text(SMALL, s.len() as u64);
+        for p in s.as_bytes().chunks(3) {
+            w.write(&mut bw, p).unwrap();
+        }
+        let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
+        assert!(sr.is_text());
+        assert_eq!(sr.len(), s.len() as u64);
+        let mut out = String::new();
+        sr.read_to_string(&mut out).unwrap();
+        assert_eq!(out, s);
+        let mut w = ValueWriter::text(SMALL, 2);
+        assert!(w.write(&mut HashSink::new(f.dedup.clone()), &[0xc3, 0x28]).is_err());
+        let mut w = ValueWriter::text(SMALL, 1);
+        w.write(&mut HashSink::new(f.dedup.clone()), &[0xc3]).unwrap();
+        assert!(w.finish(&mut HashSink::new(f.dedup.clone())).is_err());
+        let mut w = ValueWriter::bytes(SMALL, 3);
+        assert!(w.write(&mut HashSink::new(f.dedup.clone()), &[1; 4]).is_err());
+        let mut w = ValueWriter::bytes(SMALL, 300);
+        w.write(&mut HashSink::new(f.dedup.clone()), &[1; 299]).unwrap();
+        assert!(w.finish(&mut HashSink::new(f.dedup.clone())).is_err());
+        assert_eq!(ValueWriter::text(SMALL, 2).finish(&mut HashSink::new(f.dedup.clone())), Err(Error::Malformed("value shorter than its declared length")));
+    }
+
+    // spec/data-model.md §6, spec/sync.md §6: range reads skip into the payload; a reader stops
+    // at a missing chunk and resumes once it is fetched (lazy fetch).
+    #[test]
+    fn range_and_lazy() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(4);
+        let d = data(5000, 5);
+        let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 333) else { panic!() };
+        // Opening fetches only the path to the first chunk: blobs arrive one by one on Missing.
+        let mut held = MemoryBlobs::default();
+        let mut fetched = 0;
+        loop {
+            let mut r = BlobReader::new(&f.dedup, &mut held);
+            match StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).map(|s| s.len()) {
+                Ok(n) => {
+                    assert_eq!(n, 5000);
+                    break;
+                }
+                Err(Error::Missing) => {}
+                Err(e) => panic!("{e}"),
+            }
+            fetched += 1;
+            let (id, b) = store.0.iter().find(|(id, _)| !held.0.contains_key(*id)).map(|(i, b)| (*i, b.clone())).unwrap();
+            held.0.insert(id, b);
+        }
+        assert!(fetched > 0 && held.0.len() < store.0.len());
+        let mut store2 = store;
+        let mut r = BlobReader::new(&f.dedup, &mut store2);
+        let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
+        sr.skip(1234).unwrap();
+        let mut out = vec![0; 100];
+        sr.read_exact(&mut out).unwrap();
+        assert_eq!(out, d[1234..1334]);
+        sr.skip(5000 - 1334).unwrap();
+        assert_eq!(sr.read_some(&mut out).unwrap(), 0);
+        assert!(sr.skip(1).is_err());
+    }
+
+    /// Serves blobs from a store but only those in `allow`, counting fetches.
+    struct Gate<'a> {
+        store: &'a mut MemoryBlobs,
+        fetches: usize,
+        missing_once: Option<osis_core::BlobId>,
+    }
+    impl crate::tree::BlobFetch for Gate<'_> {
+        fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+            if self.missing_once == Some(*id) {
+                self.missing_once = None;
+                return Err(Error::Missing);
+            }
+            self.fetches += 1;
+            self.store.fetch(id)
+        }
+    }
+
+    // spec/wire.md §6 (TreeReader), spec/sync.md §6: a Missing chunk mid-stream leaves the
+    // reader in place; the retry continues with the same bytes.
+    #[test]
+    fn resume_mid_stream() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(6);
+        let d = data(3000, 6);
+        let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 3000) else { panic!() };
+        let victim = *store.0.keys().next().unwrap();
+        let mut gate = Gate { store: &mut store, fetches: 0, missing_once: Some(victim) };
+        let mut r = BlobReader::new(&f.dedup, &mut gate);
+        let mut lr = LargeReader::new(root, &f.dedup, &mut r, SMALL, usize::MAX);
+        let mut out = Vec::new();
+        let mut misses = 0;
+        loop {
+            match lr.fill() {
+                Ok([]) => break,
+                Ok(b) => {
+                    let n = b.len();
+                    out.extend_from_slice(b);
+                    lr.consume(n);
+                }
+                Err(Error::Missing) => misses += 1,
+                Err(e) => panic!("{e}"),
+            }
+        }
+        assert_eq!(misses, 1);
+        assert_eq!(out, encode(&Value::Bytes(d)));
+    }
+
+    // spec/requirements.md (Scale: no whole value in memory), reduced constants: the writer
+    // holds one chunk and the open nodes, the reader one chunk and the tree path.
+    #[test]
+    fn memory_bound() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(7);
+        let n = 200_000;
+        // Three levels of open nodes at most here; the bound is below the value's size.
+        let path = 3 * osis_core::format::TREE_FANOUT * std::mem::size_of::<Link>();
+        assert!(SMALL.chunk.max + path < n);
+        let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
+        let mut w = ValueWriter::bytes(SMALL, n as u64);
+        let mut wmax = 0;
+        for i in 0..n / 1000 {
+            w.write(&mut bw, &data(1000, i as u8)).unwrap();
+            wmax = wmax.max(w.buffered());
+        }
+        let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        assert!(wmax <= SMALL.chunk.max + path, "{wmax}");
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
+        let (mut rmax, mut total) = (0, 0);
+        let mut buf = [0u8; 100];
+        loop {
+            let k = sr.read_some(&mut buf).unwrap();
+            rmax = rmax.max(sr.buffered());
+            if k == 0 {
+                break;
+            }
+            total += k;
+        }
+        assert_eq!(total, n);
+        assert!(rmax <= SMALL.chunk.max + path, "{rmax}");
+    }
+
+    proptest! {
+        // spec/data-model.md §6: round trip for random sizes around and above the threshold.
+        #[test]
+        fn round_trip(n in 0usize..3000, seed in any::<u8>(), piece in 1usize..400) {
+            let f = framing();
+            let d = data(n, seed);
+            let mut store = MemoryBlobs::default();
+            let mut rng = SeededRng::from_u64(u64::from(seed));
+            let v = write_bytes(&mut store, &f, &mut rng, &d, piece);
+            let enc = encode(&Value::Bytes(d.clone()));
+            match v {
+                Value::Link(root) => {
+                    prop_assert!(enc.len() > SMALL.threshold);
+                    let mut r = BlobReader::new(&f.dedup, &mut store);
+                    let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
+                    let mut out = Vec::new();
+                    sr.read_to_end(&mut out).unwrap();
+                    prop_assert_eq!(out, d);
+                    let mut r = BlobReader::new(&f.dedup, &mut store);
+                    prop_assert_eq!(LargeReader::new(root, &f.dedup, &mut r, SMALL, usize::MAX).read_all().unwrap(), enc.clone());
+                    let mut r = BlobReader::new(&f.dedup, &mut store);
+                    prop_assert!(matches!(LargeReader::new(root, &f.dedup, &mut r, SMALL, enc.len() - 1).read_all(), Err(Error::TooLarge(_))));
+                }
+                v => {
+                    prop_assert!(enc.len() <= SMALL.threshold);
+                    prop_assert_eq!(v, Value::Bytes(d));
+                }
+            }
+        }
+    }
+}

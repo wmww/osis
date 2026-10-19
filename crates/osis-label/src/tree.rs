@@ -157,6 +157,11 @@ impl TreeWriter {
         self.push(sink, li + 1, link)
     }
 
+    /// Bytes held: the open chunk and the links of the open nodes.
+    pub fn buffered(&self) -> usize {
+        self.buf.len() + self.levels.iter().map(|l| l.links.len()).sum::<usize>() * std::mem::size_of::<Link>()
+    }
+
     /// Closes every open node and returns the root link (always an interior node; an empty value
     /// is one empty chunk).
     pub fn finish(mut self, sink: &mut dyn TreeSink) -> Result<Link, Error> {
@@ -190,10 +195,12 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
     w.finish(sink)
 }
 
-/// Streaming reader: yields the chunks in order, holding one node per level. Verifies every
-/// content hash, levels and bounds; a mismatch is bad input. Work is bounded by the value size:
-/// a chunk other than the last shorter than `min_chunk` (or empty) is bad input, and at most
-/// `max_len / min_chunk + 1` chunks are visited (`TooLarge` beyond; issues/tree-reader-bounds.md).
+/// Streaming reader: yields the chunks in order, holding one node per level (memory: one chunk
+/// plus the path). Verifies every content hash, levels and bounds; a mismatch is bad input. Work
+/// is bounded by the value size: a chunk other than the last shorter than `min_chunk` (or empty)
+/// is bad input, and at most `max_len / min_chunk + 1` chunks are visited (`TooLarge` beyond;
+/// issues/tree-reader-bounds.md). An error leaves the reader where it was, so a `Missing` blob
+/// can be fetched and the call retried (lazy fetch, spec/sync.md §6).
 pub struct TreeReader {
     root: Option<Link>,
     /// Per open node: its level and the links not yet visited, reversed.
@@ -210,7 +217,12 @@ impl TreeReader {
         TreeReader { root: Some(root), stack: Vec::new(), min_chunk, chunks_left: (max_len / min_chunk).saturating_add(1) }
     }
 
-    fn enter(&mut self, dedup: &Secret32, src: &mut dyn LinkSource, link: &Link, expect: Option<u64>) -> Result<(), Error> {
+    /// Links held on the open path.
+    pub fn path_links(&self) -> usize {
+        self.stack.iter().map(|(_, l)| l.len()).sum()
+    }
+
+    fn node(dedup: &Secret32, src: &mut dyn LinkSource, link: &Link, expect: Option<u64>) -> Result<(u64, Vec<Link>), Error> {
         let (level, mut links) = parse_node(&src.plaintext(link)?)?;
         if expect.is_some_and(|e| e != level) {
             return Err(Error::Verify("tree level"));
@@ -220,38 +232,50 @@ impl TreeReader {
             return Err(Error::Verify("tree node content hash"));
         }
         links.reverse();
-        self.stack.push((level, links));
-        Ok(())
+        Ok((level, links))
     }
 
     /// The next chunk, or `None` at the end.
     pub fn next_chunk(&mut self, dedup: &Secret32, src: &mut dyn LinkSource) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(root) = self.root.take() {
-            self.enter(dedup, src, &root, None)?;
+        if let Some(root) = self.root {
+            let node = Self::node(dedup, src, &root, None)?;
+            self.root = None;
+            self.stack.push(node);
         }
         loop {
-            let Some((level, links)) = self.stack.last_mut() else { return Ok(None) };
+            let Some((level, links)) = self.stack.last() else { return Ok(None) };
             let level = *level;
-            let Some(link) = links.pop() else {
+            let Some(link) = links.last().copied() else {
                 self.stack.pop();
                 continue;
             };
-            if level == 1 {
-                if self.chunks_left == 0 {
-                    return Err(Error::TooLarge("value"));
-                }
-                self.chunks_left -= 1;
-                let last = self.stack.iter().all(|(_, l)| l.is_empty());
-                let chunk = src.plaintext(&link)?;
-                if link_hash(dedup, &chunk) != link.hash {
-                    return Err(Error::Verify("chunk content hash"));
-                }
-                if !last && chunk.len() < self.min_chunk {
-                    return Err(Error::Malformed("chunk below the minimum before the last"));
-                }
-                return Ok(Some(chunk));
+            if level > 1 {
+                let node = Self::node(dedup, src, &link, Some(level - 1))?;
+                self.pop_link();
+                self.stack.push(node);
+                continue;
             }
-            self.enter(dedup, src, &link, Some(level - 1))?;
+            if self.chunks_left == 0 {
+                return Err(Error::TooLarge("value"));
+            }
+            let n = self.stack.len();
+            let last = self.stack.iter().enumerate().all(|(i, (_, l))| l.len() <= usize::from(i + 1 == n));
+            let chunk = src.plaintext(&link)?;
+            if link_hash(dedup, &chunk) != link.hash {
+                return Err(Error::Verify("chunk content hash"));
+            }
+            if !last && chunk.len() < self.min_chunk {
+                return Err(Error::Malformed("chunk below the minimum before the last"));
+            }
+            self.pop_link();
+            self.chunks_left -= 1;
+            return Ok(Some(chunk));
+        }
+    }
+
+    fn pop_link(&mut self) {
+        if let Some((_, l)) = self.stack.last_mut() {
+            l.pop();
         }
     }
 }
