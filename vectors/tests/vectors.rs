@@ -31,6 +31,7 @@ vector_files! {
     wrap_wrap => "wrap/wrap.vec",
     token_tokens => "token/tokens.vec",
     sign_signatures => "sign/signatures.vec",
+    schema_core => "schema/core.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

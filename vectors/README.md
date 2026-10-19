@@ -22,7 +22,8 @@ Byte strings are lowercase hex. Inputs too large to inline are written as `xof("
 - `wrap/` (spec/crypto.md §5): `read-secret`, `blob-id`, `blob-key`, `wrap`; a blob over an opaque `prefix` with its `plaintext`, `padded`, `blob-key` (the randomness drawn), `blob`, `blob-id`. Rejections: `reject: decrypt`.
 - `token/` (spec/crypto.md §7): `secret`, `salt`, `token`, `token-hash`, `level`, `prefix-salt`, `commitment`.
 - `sign/` (spec/crypto.md §2, spec/wire.md §11.2): `domain` (or the open inputs and their `digest`), `seed`, `public`, `digest`, `signature`.
-- Further subjects (blob, commit, step, inbox, signal, link, schema, proto, bundle) are documented here as they land; MANIFEST lists them.
+- `schema/` (spec/data-model.md §9, §10): case `core schema` with `id`, `revision`, `value` (canonical bytes of the core schema as a `schema` value: every field written, `none` spelled out, docs included) and `hash` (unkeyed BLAKE3 of `value`); then per core aspect `ak` and `value` (canonical bytes of a typed write through the core schema type: every declared field present).
+- Further subjects (blob, commit, step, inbox, signal, link, proto, bundle) are documented here as they land; MANIFEST lists them.
 
 ## Manifest and freezing
 `MANIFEST` lists every file: `provisional` (checked; may change with the implementation), `pending` (named, not yet producible), or `frozen <blake3> <FC-n>`. A frozen file's bytes must hash to the listed BLAKE3; changing one is a format change: add a `## FC-<n>: <title>` entry to `FORMAT_CHANGES.md` naming the file and the reason, then run `gen-vectors freeze <path> FC-<n>` to record the new hash. The runner fails on an unlisted file, a missing listed file, a changed frozen file, or an entry that does not name the file.

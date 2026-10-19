@@ -22,7 +22,7 @@ step/steps.vec pending osis-label
 inbox/inbox.vec pending osis-label
 signal/signal.vec pending osis-label
 link/link.vec pending osis-label (link and card formats)
-schema/core.vec pending osis-schema
+schema/core.vec provisional
 proto/messages.vec pending osis-proto
 proto/reconcile.vec pending osis-proto
 bundle/bundle.vec pending osis-label

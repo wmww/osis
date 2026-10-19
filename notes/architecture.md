@@ -1,5 +1,5 @@
 # Architecture
-> Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and osis-core's public surface. Reopen a fixed item only through an issue.
+> Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-core and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
 Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (apps-e2e adds `examples/*`: an empty glob fails the build); `fuzz/` is excluded (cargo-fuzz). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
@@ -92,3 +92,14 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `hash`: `hash`, `keyed_hash`, `derive_key`, incremental `Hasher` (keyed, XOF). `kdf` and every purpose string live in osis-crypto.
 - Errors: `ErrorClass::{BadInput, Parked, Local}`, trait `Classified { fn class(&self) -> ErrorClass }`, `impl_error!(Enum { Variant => ("fmt", args), .. })` or `impl_error!(Struct, "msg")`.
 - Integration test files start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`: clippy.toml's test exemptions cover only `#[test]` functions and `#[cfg(test)]` modules.
+
+## 8. osis-schema public surface
+- Types (spec/data-model.md §3): `Type` (mirrors §10 `type_expr`: scalars, `Text`, `List`/`Set`/`Map`, `Struct(StructType)`, `Enum(EnumType)`, `Counter`/`Max`/`Min`, `Named(name, args)` incl. `option`/`markdown`/`timestamp`/`duration`, `Param`), `Field`, `Case`.
+- `Schema { id, revision, types, aspects: BTreeMap<AK, AspectDef>, signals, doc }`; `AspectDef { ty, retention: Retention, expires, flags: BTreeSet<Flag>, succeeds, doc }`; `Retention { by: PurgeBy, at_least: Bound, at_most: Bound }` (`Default` = untyped: author, no bounds), `Bound { abs, rel }` (ms), `AspectDefaults { retention, expires }`. Methods: `expand` (named types to a structure), `encoding(&Type) -> Option<Encoding>` (`None` = any), `default_of(&Field)` (declared, or `none` for option), `defaults(ak)`, `view(ak) -> SchemaView`, `validate`, `to_value`/`from_value`/`canonical_bytes`/`hash`.
+- `parse(file, src) -> Result<Schema, ParseError>` (file:line:col). `core_schema()`, `core_static()`, `meta_schema()`; `StaticSchema` (embedded source, parsed once).
+- Evolution: `check(old, new) -> Vec<Violation { rule: Rule, at }>`, `Lock` (`of`, `to_text`, `parse`), `check_lock(file, lock, allow) -> LockStatus`.
+- Typed access (spec/versioning.md §5): `typed_read(schema, v, ty) -> Result<Value, PathError>` (projection: known fields, defaults filled; links pass for large values), `read_path`, `type_at`, `value_at`, `validate_write` (every declared field, nothing undeclared, depth). `Path(Vec<Step>)`, `Step::{Field, Case, Key, Index, Elem}`, `FieldId`, `CaseId`, `p![..]`; `PathError { path, kind: PathErrorKind }` (UnknownCase/UnknownTag parked, Schema local, rest BadInput).
+- Diff: `SchemaView` implements `osis_crdt::View` (project = typed read at the position, `None` = opaque). `large_positions(schema, v, ty) -> Vec<Large { path, map_key }>`: atomic positions above `CHUNK_THRESHOLD`.
+- Keys: `trait AspectKey { type T; ak, schema, decode, encode; ty, schema_ref, defaults, validate }` for `Ak` (untyped, `T = Value`) and `Aspect<T>` (const, `Aspect::new(ak, &STATIC_SCHEMA)`); `Signal<T>`. `Codec` (to/from `Value`; std impls incl. `Option` = option enum, `Vec<u8>` = blob, `[u8; N]` fixed blobs, ids, `Role`, `Ts`, `WallMs`), `codec_struct!`, `Chunked<T>`.
+- `core_types`: Rust types of every core aspect (`Edge`, `Keys`, `Keyset`, `Epoch`, `Secrets`, `SecretBox`, `Tenures`, `Label`, `NodeInfo`, `Reach`, `Seen`, `Group`, agility enums, `CreationRecord` codec), constants `TID`..`GROUPS`, `MEMBERSHIP_CLASS`, `is_membership_class`.
+- Codegen: `generate(schema, file, src) -> Generated { code, warnings }`, `generate_file(path)` (checks the lock; for build.rs), bin `osis-schema-gen`. `transition`: `pick_form`, `default_policy`.

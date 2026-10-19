@@ -9,6 +9,7 @@ pub mod kdf;
 pub mod keys;
 pub mod padme;
 pub mod sign;
+pub mod schema;
 pub mod tid;
 pub mod token;
 pub mod wrap;
@@ -38,6 +39,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "wrap/wrap.vec" => Subject { generate: Some(wrap::wrap), check: None },
         "token/tokens.vec" => Subject { generate: Some(token::tokens), check: None },
         "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
+        "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         _ => return None,
     })
 }
