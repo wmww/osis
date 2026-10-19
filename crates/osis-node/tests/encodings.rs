@@ -92,3 +92,53 @@ fn paged_delta_spec_crdt_8() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/big")).unwrap(), Some(Value::Map(big)));
     assert_eq!(lp.peers[0].engine.state(&t, &ak("/t/big")).unwrap(), lp.peers[1].engine.state(&t, &ak("/t/big")).unwrap());
 }
+
+// spec/crdt.md §5.7: lists and texts through the write path; concurrent inserts converge.
+#[test]
+fn sequences_converge_spec_crdt_5_7() {
+    let mut lp = net(2, 13);
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.set(t, &LIST, &Value::List(vec![s("a"), s("b"), s("c")])).unwrap();
+    m.set(t, &TEXT, &s("hello")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Insert { at: 1, items: vec![s("x")] } }).unwrap();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 5, items: vec![s(" world")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Delete { at: 2, len: 1 } }).unwrap();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![s(">")] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 1, 0);
+    let a = states(&mut lp.peers[0].engine, &[t]);
+    assert_eq!(a, states(&mut lp.peers[1].engine, &[t]));
+    let l = a.iter().find(|x| x.1.as_str() == "/t/list").unwrap();
+    assert_eq!(l.2, Some(Value::List(vec![s("a"), s("x"), s("b")])));
+    let tx = a.iter().find(|x| x.1.as_str() == "/t/text").unwrap();
+    assert_eq!(tx.2, Some(s(">hello world")));
+}
+
+// spec/data-model.md §6: a large atomic value is a link to a chunk tree; its chunks travel as
+// blobs and read back whole; an equal rewrite changes nothing.
+#[test]
+fn large_value_spec_dm_6() {
+    let mut lp = net(2, 14);
+    let t = new_thing(&mut lp, 0);
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(!lp.peers[0].engine.header(&id).unwrap().chunks.is_empty());
+    assert!(matches!(lp.peers[0].engine.get(&t, &ak("/t/blob")).unwrap(), Some(Value::Link(_))));
+    assert_eq!(lp.peers[0].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data.clone())));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(data.clone())).unwrap();
+    assert_eq!(lp.peers[0].commit(m).unwrap(), None);
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data)));
+}

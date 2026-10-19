@@ -332,7 +332,7 @@ impl Engine {
             let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
             let schema = ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new() };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers) };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

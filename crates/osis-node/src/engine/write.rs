@@ -195,6 +195,8 @@ pub(crate) struct Resolved {
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers (spec/crdt.md §8).
     pub frontiers: Option<osis_crdt::Frontiers>,
+    /// Chunk blobs of large values the delta introduces (ID, prefix salt).
+    pub chunks: Vec<(osis_core::BlobId, [u8; 16])>,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -210,25 +212,31 @@ pub(crate) struct CommitPlan {
     pub origins: Vec<osis_commit::Origin>,
 }
 
+/// Retention, expiry and blob framing of one aspect's delta in a commit (spec/commits.md §5,
+/// §6; spec/crypto.md §7).
+pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
+    let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
+    let retention = match plan.kind {
+        Kind::ContentSnapshot | Kind::MembershipSnapshot => osis_commit::retention::snapshot_retention(ak.as_str(), defaults.as_ref()),
+        _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+    };
+    let expires = match plan.kind {
+        Kind::Content => osis_commit::retention::write_expires(ak.as_str(), plan.ts, defaults.as_ref(), e)?,
+        _ => None,
+    };
+    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates };
+    let tokens = osis_commit::token_secrets(&secrets, tid, &retention, plan.kind)?;
+    let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
+    let framing = Framing { dedup, expiry: expires.map(WallMs), tokens: tokens.iter().map(|t| (t.level, t.secret.clone())).collect() };
+    Ok((retention, expires, framing))
+}
+
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
     let node = tx.core.id.tid();
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let defaults = d.schema.as_ref().and_then(|s| s.defaults(d.ak.as_str()));
-        let retention = match plan.kind {
-            Kind::ContentSnapshot | Kind::MembershipSnapshot => osis_commit::retention::snapshot_retention(d.ak.as_str(), defaults.as_ref()),
-            _ => osis_commit::retention::write_retention(d.ak.as_str(), defaults.as_ref(), d.retention)?,
-        };
-        let expires = match plan.kind {
-            Kind::Content => osis_commit::retention::write_expires(d.ak.as_str(), plan.ts, defaults.as_ref(), d.expires)?,
-            _ => None,
-        };
-        let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates };
-        let tokens = osis_commit::token_secrets(&secrets, &d.tid, &retention, plan.kind)?;
-        let dedup = osis_commit::Secrets::dedup(&secrets, &d.tid).ok_or(Error::UnknownThing(d.tid))?;
-        let framing = Framing { dedup, expiry: expires.map(WallMs), tokens: tokens.iter().map(|t| (t.level, t.secret.clone())).collect() };
+        let (retention, expires, framing) = framing_for(tx.core, &plan, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
         let cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
@@ -240,7 +248,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
                 None => encode_delta(&Delta { nonce, fragment: d.fragment }, &cx, Some(&mut bw))?,
             }
         };
-        let chunks = std::mem::take(&mut blobs.written);
+        let mut chunks = std::mem::take(&mut blobs.written);
+        chunks.extend(d.chunks);
         if plan.form == Form::Node && plan.kind.has_own_writes() {
             let first = tx.txn.reserve_counters(&d.tid, &d.ak, d.hi.saturating_sub(d.lo))?;
             if first != d.lo {
@@ -310,15 +319,29 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         });
     }
     let ts = tx.core.hlc.next();
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new() };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
-    for ((tid, ak), am) in std::mem::take(&mut m.aspects) {
-        let created_here = m.creates.iter().any(|r| r.tid() == tid);
+    for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
+        let created_here = plan.creates.iter().any(|r| r.tid() == tid);
         if !created_here && tx.core.created(&tid).is_none() {
             return Err(Error::UnknownThing(tid));
         }
         if !m.unchecked {
-            check_authority(tx.core, &m.creates, &tid, ak.as_str(), ts)?;
+            check_authority(tx.core, &plan.creates, &tid, ak.as_str(), ts)?;
+        }
+        // large atomic values become chunk trees before the ops resolve
+        let mut chunks = Vec::new();
+        if kind == Kind::Content {
+            let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+            let mut blobs = TxBlobs::new(&mut tx.txn);
+            {
+                let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
+                for op in &mut am.ops {
+                    super::large::chunk_op(op, am.schema.as_deref(), ak.as_str(), &mut bw)?;
+                }
+            }
+            chunks = std::mem::take(&mut blobs.written);
         }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,
@@ -340,14 +363,13 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             tx.core.schemas.entry(s.id).or_insert_with(|| s.clone());
         }
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None });
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks });
     }
-    if deltas.is_empty() && m.purge.is_empty() {
+    if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);
     }
     if deltas.is_empty() {
         return Err(Error::Misuse("a purge request needs a delta (reset what it names)"));
     }
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: m.creates, purge: m.purge, undoes: None, frontier: m.frontier, origins: Vec::new() };
     build_and_apply(tx, plan, deltas).map(Some)
 }

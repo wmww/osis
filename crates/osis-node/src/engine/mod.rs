@@ -5,6 +5,7 @@
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
+mod large;
 mod read;
 pub(crate) mod records;
 pub(crate) mod secrets;

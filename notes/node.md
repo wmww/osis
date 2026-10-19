@@ -20,7 +20,7 @@
 - Writing: `Mutation` (`create(record)`, `set`/`replace`/`remove_aspect`/`op` through any `AspectKey`, `retention`, `expires`, `purge`, `frontier`, `act_as`, `commit_form`); `Engine::new_thing(&mut m, owner)`, `Engine::commit(m) -> Option<CommitId>`.
 - Receiving: `ingest(bytes, blobs)` / `ingest_from(.., peer)` -> `Ingested::{Applied, Duplicate, Pending(reason), Parked}`; `reexamine`, `set_syncing(tid, on)`, `tick` (expiry, keep-at-most, drift), `pending()`.
 - Relaying: `commit_ids`, `header`, `commit_bytes`, `blob`, `package`.
-- Reads: `get`, `get_typed`, `aspects`, `groups_of`, `roster`, `role_on`, `resolve`, `state`, `knows`, `all_aspects`.
+- Reads: `get`, `get_full`, `read_large`, `get_typed`, `aspects`, `groups_of`, `roster`, `role_on`, `resolve`, `state`, `knows`, `all_aspects`.
 - Retention: `snapshot(tid, ak)`, `covered(snapshot, body, tid, ak)`, `drop_body`, `body_keep`, `deaths`, `holds_body`, `deletions(from, limit)`.
 - Undo: `undo(id)`, `undo_stack(actor, scope)`, `changes(scope)`.
 - Membership inputs: `receipt(tid, ak)`, `frontier(scope, as_of)`.
@@ -40,5 +40,5 @@ In memory (`Core`, rebuilt by `apply::load` at open and after any failed transac
 - **Undo buffer**: pre-commit states of the last 16 local commits per aspect; cleared (shredded) whenever a body of the aspect drops.
 
 ## Open
-- Large atomic values (chunk trees) wait for plans/large-values.md; sequences for crdt-seq.
+- Large values: positions of root and path `set`/`replace`/`add` values are chunked (osis-label `chunk_value`, framed like the delta's pages, blobs in the store); no chunk reuse from the current tree yet (`Reuse`), no streaming reads (`read_large` reads whole); sequence `Insert` items are not chunked.
 - Cost: open replays all commit records; every membership change re-judges every delta; states load whole (no paged local state).
