@@ -49,13 +49,14 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | map | map (major 5), keys sorted by their canonical encoded bytes (bytewise lexicographic) |
 | struct | map with int keys (field IDs); unknown IDs preserved |
 | set | tag 258 around an array sorted by canonical encoded bytes of the elements |
-| tid | tag TID around a 15-byte byte string |
-| enum | tag ENUM around `[case_id]` or `[case_id, payload]` |
-| link | tag LINK around `[content hash, blob ID, key]` (§6) |
+| tid | tag 1616 (TID) around a 15-byte byte string |
+| enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]` |
+| link | tag 1618 (LINK) around `[content hash, blob ID, key]` (§6) |
 
-- Tag numbers TID, ENUM, LINK: TBD, in 256..65535, checked against the IANA registry. A STRUCT tag number is reserved, unused.
+- Tag numbers TID = 1616, ENUM = 1617, LINK = 1618 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused. Each encodes as `0xd9` plus two big-endian bytes.
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
 - No `null`, `undefined` or simple values other than true and false.
+- Depth: a value nests at most 64 arrays, maps and tags deep; writers refuse deeper values, decoders reject them. Decoder limits for every other object: spec/wire.md §13.
 - Floats: value identity is the IEEE 754 bit pattern. NaN is normalized at construction to the positive quiet NaN with zero payload; a decoder rejects any other NaN. -0.0 and 0.0 are distinct.
 - Unknown tags are not errors: the value keeps the tag and its content as raw canonical bytes, merges as an opaque register value and fails only a typed read. New osis types are added as new tags (spec/versioning.md).
 - Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides.
