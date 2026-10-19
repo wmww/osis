@@ -1,0 +1,14 @@
+# Node sync: what is approximate or not there yet
+> Summary: Open items of osis-node's sync layer after node-sync landed: replaced labels left unmaintained, no P2P member peers, inbox re-send and consumed-blob deletion, revokes about seen authors, cost of a pass, in-memory outbox and stranded times, lazy-chunk policy, certificate projections, simulator phase B.
+> Tags: sync, node
+
+- **Replaced labels**: `replace_label` creates the next index and marks the old one replaced; nothing places the replacement `/label` commit under the old label or deletes the old label's content entries at servers still controlled (spec/sync.md §2), since replaced labels are not opened any more. Needs a maintenance pass over replaced labels (membership-class commits only).
+- **P2P member peers** (spec/sync.md §5 last bullets, §10 LAN): only server connections; no serving side on a node, no `/reach`-authenticated peers, no LAN discovery.
+- **Inbox**: no re-send of an unconsumed inbox blob after `INBOX_LIFETIME` by the sender, no deletion of consumed inbox blobs by the inbox group's admins; the outbox of waiting deposits is in memory only. Grants by inbox also need issues/pending-boxes.md.
+- **Grantee certificate copy** (spec/sync.md §3) and **revokes / roster snapshots about authors seen under a label** (spec/permissions.md §4): the hook exists (`SyncEngine::place_certificate`), the triggers belong to membership-flows.
+- **Certificates**: roster snapshots go along whole (`/members`, `/tenures` deltas), not projected to the chain's members; others' certificates are never judged (left as may-hold), so a departed node's card stays until an admin deletes it.
+- **Cost**: every pass recomputes the label's bodies from every held commit touching the closure (projection, `covered` joins against each snapshot entry) and judges every present entry; fine for tests, O(commits) per change at scale. `/groups` is recomputed on every `/group` change (node-core, now also on late deltas), O(groups²) at open.
+- **Lazy chunks**: `fetch_missing` fetches every unopened entry; a read that misses a chunk should fetch that tree only (needs the missing blob ID from osis-label's reader).
+- **Volatile state**: stranded-heartbeat times and outstanding fetches are in memory (a restart may place one more stranded heartbeat).
+- **Hints**: a label learned from an inbox blob is opened by guessing its index 0..4 (a reader cannot derive the label ID); the hint goes once `/label` of the thing names it.
+- **Simulator**: phase B (plans/sim.md) drives `SyncEngine` directly; tests/net/mod.rs is the in-process step driver to grow from (one shared clock, no faults yet).

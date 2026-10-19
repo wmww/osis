@@ -12,8 +12,8 @@
 | `events/` | node-core | `Event`, `Diagnostic`, subscriber channels |
 | `moves.rs` | node-core | `move_thing`: copy with `/was`, one import commit per origin, re-sourcing (`Fragment::map_dots`), double-import guard |
 | `local_peer.rs` | node-core (sim grows it) | `Peer`, `LocalPeer`, `Package`, `Engine::package` |
-| `labeling/` | node-sync | closure, entitlement, projection, wraps, stamps, deposits, certificates |
-| `sync/` | node-sync | `SyncEngine` (sans-I/O) and its tokio driver |
+| `labeling/` | node-sync | reader actors, entitlement, closure, labels of a group (`actors.rs`), bodies, sealing, wraps, head keys, tokens (`blobs.rs`), certificates, step readers, new labels (`certs.rs`), the convergence rule (`converge.rs`) |
+| `sync/` | node-sync | `SyncEngine` (sans-I/O: `mod.rs`), durable sync state (`state.rs`), opening and walking (`open.rs`), inbound entries and signals (`inbound.rs`), the pass (`pass.rs`), app and flows requests (`local.rs`), bundles (`bundle.rs`), tokio driver (`driver.rs`) |
 | `flows/` (+ `rotation/`) | membership-flows | grants, demotions, rotations, roster snapshots, links, moves |
 
 ## Public surface (engine)
@@ -25,10 +25,11 @@
 - Retention: `snapshot(tid, ak)`, `covered(snapshot, body, tid, ak)`, `drop_body`, `body_keep`, `deaths`, `holds_body`, `deletions(from, limit)`.
 - Undo: `undo(id)`, `undo_stack(actor, scope)`, `changes(scope)`.
 - Membership inputs: `receipt(tid, ak)`, `frontier(scope, as_of)`, `epochs(actor)`, `register_schema`.
+- Labeling: `group_actor`, `may_read`, `closure`, `labeled_groups`, `group_labels`, `bodies`, `label_bodies`, `partial_bodies`, `wrap_secret`, `stranded_secret`, `deposit_seed`, `head_keys`, `tokens_for`, `certificates`, `create_label` (notes/sync.md, Implementation (osis-node sync)).
 - Move: `move_thing(t, owner) -> (copy, imports)`; `/moved` is an ordinary write by T's admins; reads resolve tids (except in `/tid`, `/created`, `/was`, `/moved`) through `/was` standing then `/moved`.
 
 ## Store records
-Local records (`*_local`): `seed`, `hlc`, `c/`+ID commit records (received, origin, dropped parts, current blob), `t/`+tid creation records, `r/` receipts, `v/` value-less deltas, `p/` purge requests per aspect, `x/`+T timers, `s/` synced things, `o/` voided commits, `k/`+tid opened epochs, `a/` aspect index; logs `deletions`, `resnapshot`. Store kinds: aspect units (state = snapshot grammar with its pages inline; undo = pre-commit states of recent local commits), counters, death records (body ID = commit ID), pending/parked commits, blob ciphertexts (pages, chunks, header-list trees).
+Local records (`*_local`): `y/` sync state (notes/sync.md), `seed`, `hlc`, `c/`+ID commit records (received, origin, dropped parts, current blob), `t/`+tid creation records, `r/` receipts, `v/` value-less deltas, `p/` purge requests per aspect, `x/`+T timers, `s/` synced things, `o/` voided commits, `k/`+tid opened epochs, `a/` aspect index; logs `deletions`, `resnapshot`. Store kinds: aspect units (state = snapshot grammar with its pages inline; undo = pre-commit states of recent local commits), counters, death records (body ID = commit ID), pending/parked commits, blob ciphertexts (pages, chunks, header-list trees).
 In memory (`Core`, rebuilt by `apply::load` at open and after any failed transaction): states cache, perm `MemoryHeldSet` + `Timelines`, commit headers with validity and dropped parts, per-aspect commit index, node-form ranges, pending reasons, value-less lists, secrets, `/was`/`/moved`/group indexes, `/members` entry keys.
 
 ## Readings fixed here

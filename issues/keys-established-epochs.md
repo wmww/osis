@@ -8,10 +8,7 @@
 - Carrier tiebreaks of spec/sync.md §7 (identical body: higher blob ID goes; covered-equal snapshots: higher commit ID goes).
 
 ## node-sync
-- Per (label, server/peer) a "pass complete" event (log read to its end, `more = false`); `complete_pass(actor)` = complete at every server and peer it syncs the actor's labels with since the last membership commit of the actor applied from elsewhere.
-- Re-registration order: download, then upload the actor's membership commits the server lacks under the head's keys, then register, then everything else (spec/sync.md §5).
-- Stranded heartbeat: after a complete pass at that server when the head's epoch cannot be opened, or on a refused claim; wrapped under the newest established secret.
-- Opens with the sync key of any held secret (an unestablished one included); stamps and deletes only with established epochs.
+- Done (notes/sync.md, Implementation (osis-node sync)): per (server, label) pass completion and `SyncEngine::complete_pass(actor)`; re-registration order (download, the actor's membership commits the server lacks, register, the rest); stranded heartbeat on a refused claim and after a complete pass without the head's read epoch, wrapped under the newest established secret; opens with any held secret, stamps, steps and token deletes only under established epochs.
 
 ## membership-flows
 - Re-seal: at the end of a complete pass, `reseal_member` for members `reseal_needed` reports, and for stranded heartbeats; when `newest_is_snapshot` do not re-seal (optionally rotate).
