@@ -43,7 +43,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
-| sim | phase C running (opus, worktree) | phase B merged; six sync issues filed (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
+| sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
@@ -63,6 +63,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
+- Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
