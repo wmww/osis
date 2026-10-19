@@ -23,6 +23,6 @@ inbox/inbox.vec provisional
 signal/signal.vec provisional
 link/link.vec provisional
 schema/core.vec provisional
-proto/messages.vec pending osis-proto
-proto/reconcile.vec pending osis-proto
+proto/messages.vec provisional
+proto/reconcile.vec provisional
 bundle/bundle.vec provisional

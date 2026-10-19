@@ -26,7 +26,7 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | crdt-seq | review | reviewer running; issues/crdt-seq-linearization-cost.md, issues/crdt-run-amplification.md |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
-| proto | review fixes | agent swapping in osis-label types, replay cursor design, perf fixes |
+| proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
 | keys | merged, reviewed | recursive covers rule in spec; plan stays until flows and node-sync use it |
 | crdt-seq | running (opus, worktree) | |
 | commit | running (opus, worktree) | |
@@ -36,7 +36,10 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
 | transport | running (opus, worktree) | |
 | large-values | running (opus, worktree) | library parts in osis-label |
-| server | not started | after proto merges |
+| server | running (opus, worktree) | |
+| proto | review | review fixes done (label coupling resolved) |
+| keys | running (opus, worktree) | |
+| node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
@@ -65,6 +68,8 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - label: spec/wire.md §13: a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB, so a step and its set fit one Register message.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
+- proto: spec/wire.md §11.2 Sync: a replay without a cursor pages in blob ID order with a replay cursor `[replay_id, pos]` and ends with the log cursor taken at its start (paging by log position failed on a compacted log: the next page's cursor was below the horizon).
+- proto: spec/wire.md §11.2 Opened's `entry_box` travels as the canonical bytes of the box value in a byte string, like steps and claim sets (the layout did not say).
 - commit: spec/commits.md §5: compaction snapshots of membership-class aspects and `/created` keep the fixed retention (the text read as if every snapshot delta were `writer`); `/created`'s "forever" is `abs` = forever on the wire. spec/wire.md §4: a header token no aspect lists is bad input.
 - keys: spec/crypto.md §3 a key actor's role secrets sit at the fixed epoch (0, 16 zero bytes) (derived things and symmetric boxes need an epoch); §4 a rotation's key-actor box also carries the newest secret of the roles below its key that it does not rotate (removing the old box stranded them); spec/permissions.md §3 the cascade rotates on each thing only the roles A holds there among those M could open through A (per-role KEM keys).
 - keys review: spec/crypto.md §4 the covers rule for a departure inside a member is recursive (M's box names M's newest keyset epoch and that epoch covers the departure); spec/permissions.md §3 a node rotating for a departure inside M rotates the intermediates top-down where it may, else does not encrypt under the epoch (stranded until the intermediate rotates). Scenario: device D removed from person P, P member of team T, T member of doc U: U's writers kept encrypting under U's old epoch because T's box at U still named T's newest keyset. Also spec/crypto.md §4: a rotation that removes a key actor's box and writes it no role writes it one box with every role it holds; a grant to a key actor carries each role's newest current epoch; carried secrets are encrypting under their epochs (an uncovered carried role is rotated too). §5: the rotation commit wraps under the newest superseded read epoch whose secret the rotator holds. spec/sync.md §5 "greater (n, nonce)" → "newer". spec/permissions.md §3 cascade wording ("the roles M left").

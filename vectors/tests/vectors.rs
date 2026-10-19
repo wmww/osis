@@ -32,6 +32,8 @@ vector_files! {
     token_tokens => "token/tokens.vec",
     sign_signatures => "sign/signatures.vec",
     schema_core => "schema/core.vec",
+    proto_messages => "proto/messages.vec",
+    proto_reconcile => "proto/reconcile.vec",
     commit_headers => "commit/headers.vec",
     blob_prefix => "blob/prefix.vec",
     blob_blobs => "blob/blobs.vec",
