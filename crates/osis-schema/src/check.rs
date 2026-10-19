@@ -35,7 +35,16 @@ pub enum Rule {
     AspectRemoved,
     /// A signal kind was removed.
     SignalRemoved,
+    /// The comparison exceeded its depth or size bound (not provably additive).
+    TooLarge,
+    /// A revision does not validate (`Schema::validate`), so it is not compared.
+    Invalid,
 }
+
+/// Deepest comparison path (two validated schemas stay well within it).
+const MAX_CHECK_DEPTH: usize = 2 * crate::schema::MAX_TYPE_DEPTH;
+/// Most type-pair comparisons per check.
+const MAX_CHECK_WORK: usize = 100_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
@@ -52,7 +61,16 @@ impl fmt::Display for Violation {
 
 /// Every violation of `new` against the last published `old`; empty when additive.
 pub fn check(old: &Schema, new: &Schema) -> Vec<Violation> {
-    let mut c = Checker { old, new, out: Vec::new(), seen: BTreeSet::new() };
+    // Only validated schemas are walked: regular recursion keeps the instances finite.
+    let invalid: Vec<Violation> = [("old", old), ("new", new)]
+        .into_iter()
+        .filter(|(_, s)| !s.validate().is_empty())
+        .map(|(w, _)| Violation { rule: Rule::Invalid, at: format!("{w} schema") })
+        .collect();
+    if !invalid.is_empty() {
+        return invalid;
+    }
+    let mut c = Checker { old, new, out: Vec::new(), seen: BTreeSet::new(), depth: 0, work: 0, stopped: false };
     if old.id != new.id {
         c.v(Rule::SchemaIdChanged, "schema".into());
     }
@@ -98,6 +116,9 @@ struct Checker<'a> {
     out: Vec<Violation>,
     /// Named-type pairs already compared (coinduction for recursive types).
     seen: BTreeSet<(String, String)>,
+    depth: usize,
+    work: usize,
+    stopped: bool,
 }
 
 impl Checker<'_> {
@@ -106,6 +127,20 @@ impl Checker<'_> {
     }
 
     fn ty(&mut self, o: &Type, n: &Type, at: &str) {
+        if self.stopped {
+            return;
+        }
+        if self.depth >= MAX_CHECK_DEPTH || self.work >= MAX_CHECK_WORK {
+            self.stopped = true;
+            return self.v(Rule::TooLarge, at.into());
+        }
+        self.depth += 1;
+        self.work += 1;
+        self.ty_inner(o, n, at);
+        self.depth -= 1;
+    }
+
+    fn ty_inner(&mut self, o: &Type, n: &Type, at: &str) {
         let named = matches!(o, Type::Named(..)) || matches!(n, Type::Named(..));
         if named && !self.seen.insert((format!("{o:?}"), format!("{n:?}"))) {
             return;

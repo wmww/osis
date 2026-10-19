@@ -34,6 +34,11 @@ const MAX_NEST: usize = 64;
 pub fn parse(file: &str, src: &str) -> Result<Schema, ParseError> {
     let toks = lex(src).map_err(|e| ParseError { file: file.into(), line: e.line, col: e.col, msg: e.msg })?;
     let first = Parser::new(file, &toks, None).file()?;
+    // Types must be sound before pass 2 types defaults against them.
+    if let Some(inv) = first.0.validate().into_iter().next() {
+        let (line, col) = first.1.get(&inv.item).copied().unwrap_or((1, 1));
+        return Err(ParseError { file: file.into(), line, col, msg: format!("{}: {}", inv.item, inv.msg) });
+    }
     let mut p = Parser::new(file, &toks, Some(&first.0));
     let (schema, locs) = p.file()?;
     if let Some(inv) = schema.validate().into_iter().next() {
@@ -535,7 +540,11 @@ fn lit_value(s: &Schema, lit: &Lit, ty: &Type) -> Result<Value, String> {
     let int = |n: &i128| i64::try_from(*n).map_err(|_| "integer out of range".to_string());
     Ok(match (t.as_ref(), lit) {
         (Type::Param(p), _) => return Err(format!("cannot type a default of parameter type {p}")),
-        (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => return lit_value(s, lit, i),
+        // Only int or float inside (never re-enter: `type a = counter<a>` must not loop).
+        (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => match s.expand(i).as_deref() {
+            Ok(n @ (Type::Int | Type::Float)) => return lit_value(s, lit, n),
+            _ => return Err("counter, max and min take int or float".into()),
+        },
         (Type::Any, _) => any_value(lit)?,
         (Type::Int, Lit::Int(n)) => Value::Int(int(n)?),
         (Type::Float, Lit::Float(f)) => Value::float(*f),

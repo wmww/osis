@@ -124,7 +124,13 @@ impl Walk<'_> {
         let t = t.as_ref();
         match (t, v) {
             (Type::Any, _) => return Ok(v.clone()),
-            (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => return self.walk(v, i, atomic),
+            (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => {
+                // Only int or float inside, so this never re-enters a wrapper.
+                return match self.schema.expand(i).map_err(|e| self.err(K::Schema(e)))?.as_ref() {
+                    n @ (Type::Int | Type::Float) => self.walk(v, n, atomic),
+                    _ => Err(self.err(K::Schema("counter, max and min take int or float".into()))),
+                };
+            }
             (_, Value::Unknown(u)) => return Err(self.err(K::UnknownTag(u.tag()))),
             (Type::String | Type::Blob, Value::Link(_)) => return Ok(v.clone()),
             (_, Value::Link(_)) if atomic => return Ok(v.clone()),
@@ -147,6 +153,8 @@ impl Walk<'_> {
             (Type::Set(e), Value::Set(items)) => {
                 let mut out = BTreeSet::new();
                 for x in items {
+                    // Distinct elements may project to one value (unknown fields dropped): the
+                    // projection holds it once, as the set read would.
                     out.insert(self.nested(Step::Elem(x.clone()), x, e, true)?);
                 }
                 Ok(Value::Set(out))
@@ -156,6 +164,8 @@ impl Walk<'_> {
                 for (k, x) in m {
                     let k2 = self.nested(Step::Key(k.clone()), k, kt, true)?;
                     let x2 = self.nested(Step::Key(k.clone()), x, vt, atomic)?;
+                    // Keys projecting to one value: the later entry wins in the projection. Only
+                    // for keys the writer sees as equal (unknown struct fields in a key).
                     out.insert(k2, x2);
                 }
                 Ok(Value::Map(out))

@@ -175,7 +175,7 @@ impl Schema {
             };
             cur = Cow::Owned(next);
         }
-        Err("type never expands to a structure".into())
+        Err(format!("named type does not reach a structure within {MAX_EXPAND} expansions (alias chain too long, or recursion through aliases only)"))
     }
 
     /// Whether the type is `option<T>` (possibly through aliases).
@@ -241,9 +241,9 @@ impl Schema {
                 }
             }
             self.check_syntax(&def.body, &def.params, &mut |m| bad(&item, m));
-            if def.params.is_empty() {
-                self.check_semantics(&def.body, false, &mut BTreeSet::new(), &mut |m| bad(&item, m));
-            }
+        }
+        for (name, msg) in self.irregular_recursion() {
+            bad(&format!("type {name}"), msg);
         }
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
@@ -255,7 +255,6 @@ impl Schema {
                 Err(_) => bad(&item, "invalid AK".into()),
             }
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            self.check_semantics(&def.ty, false, &mut BTreeSet::new(), &mut |m| bad(&item, m));
             if def.retention.at_most.rel.is_some() && def.retention.by != PurgeBy::Writer {
                 bad(&item, "a relative keep_at_most needs by: writer (spec/commits.md §5)".into());
             }
@@ -278,7 +277,56 @@ impl Schema {
                 bad(&item, "invalid signal kind".into());
             }
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            self.check_semantics(&def.ty, false, &mut BTreeSet::new(), &mut |m| bad(&item, m));
+        }
+        // Semantic rules only on a syntactically sound schema with regular recursion (so the set
+        // of named instances is finite); one walk shared by every root, memoized per instance.
+        if !out.is_empty() {
+            return out;
+        }
+        let mut sem = Sem { schema: self, heights: BTreeMap::new(), active: BTreeSet::new(), work: 0, stopped: false };
+        let roots = self
+            .types
+            .iter()
+            .filter(|(_, d)| d.params.is_empty())
+            .map(|(n, _)| (format!("type {n}"), Type::named(n)))
+            .chain(self.aspects.iter().map(|(ak, d)| (format!("aspect {ak}"), d.ty.clone())))
+            .chain(self.signals.iter().map(|(k, d)| (format!("signal {k}"), d.ty.clone())));
+        for (item, ty) in roots {
+            let mut msgs = Vec::new();
+            sem.walk(&ty, false, 0, &mut |m| msgs.push(m));
+            out.extend(msgs.into_iter().map(|msg| Invalid { item: item.clone(), msg }));
+            if sem.stopped {
+                break;
+            }
+        }
+        out
+    }
+
+    /// A reference to a type of its own recursive group must pass the referencing definition's
+    /// parameters unchanged (regular recursion); otherwise expansion never repeats an instance.
+    fn irregular_recursion(&self) -> Vec<(String, String)> {
+        let edges: BTreeMap<&str, Vec<&str>> = self
+            .types
+            .iter()
+            .map(|(n, d)| {
+                let mut refs = Vec::new();
+                named_refs(&d.body, &mut |r, _| {
+                    if self.types.contains_key(r) {
+                        refs.push(r.to_string());
+                    }
+                });
+                (n.as_str(), refs.into_iter().filter_map(|r| self.types.get_key_value(&r).map(|(k, _)| k.as_str())).collect())
+            })
+            .collect();
+        let comp = sccs(&edges);
+        let mut out = Vec::new();
+        for (n, d) in &self.types {
+            let own: Vec<Type> = d.params.iter().cloned().map(Type::Param).collect();
+            named_refs(&d.body, &mut |r, args| {
+                if comp.get(r).is_some_and(|c| Some(c) == comp.get(n.as_str())) && args != own.as_slice() {
+                    out.push((n.clone(), format!("recursive reference {r}<..> must pass the parameters of {n} unchanged")));
+                }
+            });
         }
         out
     }
@@ -328,58 +376,192 @@ impl Schema {
             Type::String | Type::Blob | Type::Bool | Type::Int | Type::Float | Type::Tid | Type::Any | Type::Text => {}
         }
     }
+}
 
-    /// Wrapper rules and termination, walking named types once per (instance, atomic context).
-    fn check_semantics(&self, ty: &Type, atomic: bool, seen: &mut BTreeSet<(String, bool)>, bad: &mut dyn FnMut(String)) {
-        let ty = match ty {
-            Type::Named(..) => {
-                if !seen.insert((format!("{ty:?}"), atomic)) {
-                    return;
+/// Deepest nesting of a type, counted in structures (beyond it no value fits the depth limit).
+pub(crate) const MAX_TYPE_DEPTH: usize = 256;
+/// Most named-type instances a validation expands (parametric types can multiply).
+const MAX_INSTANCES: usize = 10_000;
+
+/// Wrapper rules, termination and nesting depth; named instances walked once per atomic context.
+struct Sem<'s> {
+    schema: &'s Schema,
+    /// Height (structure levels below) per walked (instance, atomic).
+    heights: BTreeMap<(String, bool), usize>,
+    /// Instances on the current path: a repeat is a recursive reference (height 0 there).
+    active: BTreeSet<(String, bool)>,
+    work: usize,
+    /// Too deep or too large: reported once, the walk stops.
+    stopped: bool,
+}
+
+impl Sem<'_> {
+    fn stop(&mut self, msg: &str, bad: &mut dyn FnMut(String)) -> usize {
+        if !self.stopped {
+            self.stopped = true;
+            bad(msg.into());
+        }
+        0
+    }
+
+    /// Returns the type's height.
+    fn walk(&mut self, ty: &Type, atomic: bool, depth: usize, bad: &mut dyn FnMut(String)) -> usize {
+        if self.stopped {
+            return 0;
+        }
+        if depth > MAX_TYPE_DEPTH {
+            return self.stop("type nests too deeply", bad);
+        }
+        if let Type::Named(..) = ty {
+            let key = (format!("{ty:?}"), atomic);
+            if let Some(h) = self.heights.get(&key) {
+                let h = *h;
+                if depth + h > MAX_TYPE_DEPTH {
+                    return self.stop("type nests too deeply", bad);
                 }
-                match self.expand(ty) {
-                    Ok(t) => t,
-                    Err(e) => return bad(e),
-                }
+                return h;
             }
-            _ => Cow::Borrowed(ty),
-        };
-        match ty.as_ref() {
+            if self.active.contains(&key) {
+                return 0;
+            }
+            self.work += 1;
+            if self.work > MAX_INSTANCES {
+                return self.stop("schema expands too many type instances", bad);
+            }
+            let t = match self.schema.expand(ty) {
+                Ok(t) => t.into_owned(),
+                Err(e) => {
+                    bad(e);
+                    return 0;
+                }
+            };
+            self.active.insert(key.clone());
+            let h = self.walk(&t, atomic, depth, bad);
+            self.active.remove(&key);
+            self.heights.insert(key, h);
+            return h;
+        }
+        let d = depth + 1;
+        let schema = self.schema;
+        1 + match ty {
             Type::Counter(t) | Type::Max(t) | Type::Min(t) => {
                 if atomic {
                     bad("encoding wrappers are not allowed in set elements or map keys".into());
                 }
-                match self.expand(t).as_deref() {
+                match schema.expand(t).as_deref() {
                     Ok(Type::Int | Type::Float) => {}
                     Ok(_) => bad("counter, max and min take int or float".into()),
                     Err(e) => bad(e.clone()),
                 }
+                0
             }
-            Type::Text if atomic => bad("text is not allowed in set elements or map keys".into()),
-            Type::List(t) => self.check_semantics(t, atomic, seen, bad),
-            Type::Set(t) => self.check_semantics(t, true, seen, bad),
-            Type::Map(k, v) => {
-                self.check_semantics(k, true, seen, bad);
-                self.check_semantics(v, atomic, seen, bad);
+            Type::Text if atomic => {
+                bad("text is not allowed in set elements or map keys".into());
+                0
             }
+            Type::List(t) => self.walk(t, atomic, d, bad),
+            Type::Set(t) => self.walk(t, true, d, bad),
+            Type::Map(k, v) => self.walk(k, true, d, bad).max(self.walk(v, atomic, d, bad)),
             Type::Struct(st) => {
+                let mut h = 0;
                 for f in st.fields.values() {
-                    self.check_semantics(&f.ty, atomic, seen, bad);
-                    if let Some(Err(e)) = f.default.as_ref().map(|d| crate::typed::typed_read(self, d, &f.ty)) {
+                    h = h.max(self.walk(&f.ty, atomic, d, bad));
+                    if self.stopped {
+                        return 0;
+                    }
+                    if let Some(Err(e)) = f.default.as_ref().map(|v| crate::typed::typed_read(schema, v, &f.ty)) {
                         bad(format!("default of field {} does not fit its type: {e}", f.name));
                     }
                 }
+                h
             }
             Type::Enum(en) => {
-                for c in en.cases.values() {
-                    if let Some(p) = &c.payload {
-                        self.check_semantics(p, atomic, seen, bad);
-                    }
+                let mut h = 0;
+                for p in en.cases.values().filter_map(|c| c.payload.as_ref()) {
+                    h = h.max(self.walk(p, atomic, d, bad));
                 }
+                h
             }
-            Type::Param(p) => bad(format!("unbound type parameter {p}")),
-            _ => {}
+            Type::Param(p) => {
+                bad(format!("unbound type parameter {p}"));
+                0
+            }
+            _ => 0,
         }
     }
+}
+
+/// Every `Named(name, args)` inside a type (arguments included).
+fn named_refs(t: &Type, f: &mut dyn FnMut(&str, &[Type])) {
+    match t {
+        Type::Named(n, a) => {
+            f(n, a);
+            a.iter().for_each(|x| named_refs(x, f));
+        }
+        Type::List(e) | Type::Set(e) | Type::Counter(e) | Type::Max(e) | Type::Min(e) => named_refs(e, f),
+        Type::Map(k, v) => {
+            named_refs(k, f);
+            named_refs(v, f);
+        }
+        Type::Struct(st) => st.fields.values().for_each(|x| named_refs(&x.ty, f)),
+        Type::Enum(en) => en.cases.values().filter_map(|c| c.payload.as_ref()).for_each(|p| named_refs(p, f)),
+        _ => {}
+    }
+}
+
+/// Strongly connected components (iterative Tarjan): component number per node. A node alone
+/// without a self-edge gets its own component like any other; callers compare components.
+fn sccs<'a>(edges: &BTreeMap<&'a str, Vec<&'a str>>) -> BTreeMap<&'a str, usize> {
+    let (mut index, mut low, mut comp) = (BTreeMap::new(), BTreeMap::<&str, usize>::new(), BTreeMap::new());
+    let (mut stack, mut on) = (Vec::new(), BTreeSet::new());
+    let (mut counter, mut ncomp) = (0usize, 0usize);
+    let none: Vec<&str> = Vec::new();
+    for &s in edges.keys() {
+        if index.contains_key(s) {
+            continue;
+        }
+        index.insert(s, counter);
+        low.insert(s, counter);
+        counter += 1;
+        stack.push(s);
+        on.insert(s);
+        let mut call: Vec<(&str, usize)> = vec![(s, 0)];
+        while let Some((v, i)) = call.last().copied() {
+            if let Some(&w) = edges.get(v).unwrap_or(&none).get(i) {
+                if let Some(top) = call.last_mut() {
+                    top.1 += 1;
+                }
+                if !index.contains_key(w) {
+                    index.insert(w, counter);
+                    low.insert(w, counter);
+                    counter += 1;
+                    stack.push(w);
+                    on.insert(w);
+                    call.push((w, 0));
+                } else if on.contains(w) {
+                    let iw = index.get(w).copied().unwrap_or(0);
+                    low.entry(v).and_modify(|l| *l = (*l).min(iw));
+                }
+            } else {
+                call.pop();
+                let lv = low.get(v).copied().unwrap_or(0);
+                if let Some(&(u, _)) = call.last() {
+                    low.entry(u).and_modify(|l| *l = (*l).min(lv));
+                }
+                if Some(&lv) == index.get(v) {
+                    while let Some(w) = stack.pop() {
+                        on.remove(w);
+                        comp.insert(w, ncomp);
+                        if w == v {
+                            break;
+                        }
+                    }
+                    ncomp += 1;
+                }
+            }
+        }
+    }
+    comp
 }
 
 fn check_ids<'a>(

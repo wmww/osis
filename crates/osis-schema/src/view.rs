@@ -165,7 +165,7 @@ fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, ou
             };
             for (k, x) in m {
                 match (struct_like, k) {
-                    (true, Value::Int(id)) => at(Step::Field(id.unsigned_abs()), x, field_ty(*id), path, out),
+                    (true, Value::Int(id)) if *id >= 0 => at(Step::Field(id.unsigned_abs()), x, field_ty(*id), path, out),
                     _ => {
                         if too_big(k) {
                             path.push(Step::Key(k.clone()));
