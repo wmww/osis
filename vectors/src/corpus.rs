@@ -38,8 +38,14 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     tids.push(b"osis://_-_-_-_-_-_-_-_-_-_-".to_vec());
     let mut chunk = vec![3u8];
     chunk.extend(xof("osis fuzz chunker", 4000));
+    // schema_dsl: a leading 0 byte means a schema value (CBOR), anything else DSL text.
+    let mut schema: Vec<Vec<u8>> = field_bytes("schema", "value").into_iter().map(|v| [vec![0], v].concat()).collect();
+    for src in [osis_schema::CORE_SRC, osis_schema::META_SRC] {
+        schema.push([b"\x01".to_vec(), src.as_bytes().to_vec()].concat());
+    }
     vec![
         ("cbor_decode", cbor),
+        ("schema_dsl", schema),
         ("creation_record", records),
         ("tid_parse", tids),
         ("chunker", vec![vec![0], vec![1; 300], chunk]),

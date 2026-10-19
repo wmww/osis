@@ -1,5 +1,5 @@
 # Versioning: conventions and rationale
-> Summary: The problem, why the core rules of spec/versioning.md suffice, and the codegen conventions above them (decided with owner): transitions with read/write conversions and `succeeds` links, the timestamp tie-break between forms, the per-write policy for which form to write, blessed paths for hard changes, a worked example, rejected options, open details.
+> Summary: The problem, why the core rules of spec/versioning.md suffice, and the codegen conventions above them (decided with owner): transitions with read/write conversions and `succeeds` links, the timestamp tie-break between forms, the per-write policy for which form to write, blessed paths for hard changes, a worked example, rejected options, what osis-schema implements and what is open.
 
 ## Problem
 Many apps and app versions share data like a file format. Apps do not always upgrade schemas, users do not always upgrade apps, nodes on different versions must sync, and the sync layer itself must evolve (rarely). Schema maintainers will make arbitrarily large breaking changes; every such change needs a path no harder than the cursed alternative.
@@ -61,12 +61,9 @@ Format version 1 is the header's first field; the blob prefix has its own framin
 - Schema-relative AK indexes or hashed AK names (deltas unjoinable until the schema arrives).
 - Per-delta type hash in the header (above).
 
-## Open details
-- DSL syntax for IDs (with a tool that assigns next IDs), defaults, `reserved`, `succeeds`, `revision`, `schema` (sketch in notes/data-model.md).
-- What "published" means: a publish command that bumps the revision and rewrites the lock file. Whether a build whose file differs from the lock may write at all (data written under revision r with a closure that changes before r is published breaks the additive promise). Proposal: such a build writes as an untyped writer (no schema index).
-- Codegen contract: g returns exact / approximate / impossible and receives the current wire value; the "approximation acceptable" declaration; the policy hook and default thresholds; the optional reset-old-on-new-only write; where the per-group revision log lives; a read API returning the greatest commit `ts` under a path.
-- Lock file format.
-- Version-skew simulation as a standard test category: mixed schema revisions and format versions; wire convergence and stable per-reader projections, including that an old writer never removes or re-creates data it cannot read.
+## Implemented (osis-schema) vs open
+- Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive); a `DefaultAdded` passes only for locations the caller lists (the "explicitly marked" escape; the schema value has no marker bit). Lock file `<file>.osis.lock`: header, BLAKE3 of the canonical form, canonical bytes in hex (`provisional`). "Publishing" = `osis-schema-gen --publish`, which refuses a revision that breaks the rules. Transition helpers in `osis_schema::transition`: `pick_form` (tie-break), `Conversion`, `WriteForm`, `Policy` (fn pointer) and `default_policy`; `succeeds` links are data in the schema value.
+- Open: whether a build whose file differs from its lock may write (proposal: writes untyped); the per-group revision log and the read API returning the greatest commit `ts` under a path (node/api); the optional reset-old-on-new-only write; version-skew simulation (sim).
 
 ## Prior art
 Protobuf (IDs, reserved numbers, additive discipline, unknown-field preservation), Avro (reader/writer schema resolution, defaults), Cambria (Ink & Switch), SQLite's file-format promise.

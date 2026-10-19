@@ -2,9 +2,17 @@
 //! implementation must reproduce every case) or a generator (the implementation writes the file;
 //! the committed bytes must equal a fresh generation), or both.
 
+pub mod boxes;
 pub mod cbor;
 pub mod chunker;
+pub mod kdf;
+pub mod keys;
+pub mod padme;
+pub mod sign;
+pub mod schema;
 pub mod tid;
+pub mod token;
+pub mod wrap;
 
 use crate::file::VecFile;
 use crate::root;
@@ -23,8 +31,70 @@ pub fn get(path: &str) -> Option<Subject> {
         "cbor/values.vec" => Subject { generate: None, check: Some(cbor::check) },
         "tid/thing.vec" => Subject { generate: Some(tid::thing), check: None },
         "chunker/gear.vec" => Subject { generate: Some(chunker::gear), check: None },
+        "padme/padme.vec" => Subject { generate: None, check: Some(padme::check) },
+        "tid/key-actor.vec" => Subject { generate: Some(tid::key_actor), check: None },
+        "kdf/purposes.vec" => Subject { generate: Some(kdf::purposes), check: None },
+        "keys/seed.vec" => Subject { generate: Some(keys::seed), check: None },
+        "box/boxes.vec" => Subject { generate: Some(boxes::boxes), check: None },
+        "wrap/wrap.vec" => Subject { generate: Some(wrap::wrap), check: None },
+        "token/tokens.vec" => Subject { generate: Some(token::tokens), check: None },
+        "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
+        "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         _ => return None,
     })
+}
+
+/// An rng handing out the listed bytes in order, so a vector names the randomness it consumes.
+pub struct FixedRng(Vec<u8>);
+
+impl FixedRng {
+    pub fn new(parts: &[&[u8]]) -> FixedRng {
+        FixedRng(parts.concat())
+    }
+}
+
+impl osis_crypto::RngCore for FixedRng {
+    fn next_u32(&mut self) -> u32 {
+        unimplemented!("vectors draw bytes only")
+    }
+    fn next_u64(&mut self) -> u64 {
+        unimplemented!("vectors draw bytes only")
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        assert!(self.0.len() >= dest.len(), "FixedRng exhausted");
+        let rest = self.0.split_off(dest.len());
+        dest.copy_from_slice(&self.0);
+        self.0 = rest;
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), osis_crypto::RngError> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl osis_crypto::CryptoRng for FixedRng {}
+
+impl Drop for FixedRng {
+    fn drop(&mut self) {
+        // Unused randomness means the vector lists more than the computation drew.
+        if !std::thread::panicking() {
+            assert!(self.0.is_empty(), "FixedRng: {} bytes left over", self.0.len());
+        }
+    }
+}
+
+/// A 26-byte clear prefix, opaque to these vectors: framing version 1, salt 01*16, no expiry,
+/// no commitments (layout spec/wire.md §5, vectors of osis-label).
+pub const PREFIX: [u8; 26] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+/// 32 repeated bytes (the fixed seeds of plans/test-infra.md).
+pub fn s32(b: u8) -> osis_crypto::Secret32 {
+    osis_crypto::Secret32::from_bytes([b; 32])
+}
+
+/// A case record with its name and spec section.
+pub fn case(name: &str, spec: &str) -> crate::file::Record {
+    crate::file::Record::new().with("case", name).with("spec", spec)
 }
 
 /// Header shared by generated files.

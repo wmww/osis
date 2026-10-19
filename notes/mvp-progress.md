@@ -15,13 +15,13 @@ Wave 1 (tla-models still running from wave 0).
 | pre-flight plan diff | merged at cb6f1b0 | |
 | workspace | merged at 4b6ec14 | plan folded into notes/architecture.md |
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
-| tla-models | running (opus, worktree) | wave 0, ∥, low priority |
+| tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 with a fable agent | models to be updated to the fixed text and rerun afterwards; target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
-| crypto | merged at 3bd329c, reviewed | follow-up agent: getrandom gating, zeroization, vectors to .vec, benches to osis-bench |
+| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
-| schema | running (opus, worktree) | |
+| schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | running (opus, worktree) | |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
 | node-core, server, transport, large-values | not started | wave 3 |
@@ -31,7 +31,7 @@ Wave 1 (tla-models still running from wave 0).
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
-None.
+- TLC counterexamples S1, S2 (models/tla/sync/AMBIGUITIES.md) and R1, R2 (models/tla/rotation/AMBIGUITIES.md): fable agent deciding (clarifications or owner-calls).
 
 ## Spec edits
 - crypto: spec/crypto.md §3 fixes kdf input conventions (two-argument kdf = empty input, tid input = 15 bytes, Ed25519 key from a kdf output = that RFC 8032 seed) and the `kdf("kem", ..)` XOF split (64 bytes ML-KEM `d || z`, then 32 bytes X25519).
@@ -40,6 +40,7 @@ None.
 
 - protocol-spec (filling TBDs into spec/wire.md) also changed: tree-node link content hashes cover child hashes, not the subtree's bytes (spec/data-model.md §6, spec/crypto.md §6; O(change) edits); a recovery key's nonce derives from its seed like a link key's (spec/crypto.md §3); blob AEAD AD is the clear prefix and the inbox AD adds it (spec/crypto.md §5); the token, purge and origin lists go inline-or-link like the aspect list instead of a token cap (spec/commits.md §1); header-list chunk commitments capped (spec/crypto.md §7, owner-call); entry boxes live inside the claim set the step hashes (spec/sync.md §2); a link may carry the sharer node's dialable key and relays for first contact (spec/permissions.md §9).
 - crdt-core: spec/crdt.md §3.3 rule 2: a commit-form delta's own source sorts below every other commit ID in element/entry/run arrays (sorting by its real ID was circular: the ID hashes the delta).
+- schema: spec/data-model.md §9: `creation`'s exclusive fields 0/1 type `/created` by spec/wire.md §3, not by the missing-field rule (the type system cannot say "exactly one of").
 
 ## Owner-calls pending
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).

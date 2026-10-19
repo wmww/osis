@@ -27,7 +27,7 @@ Spec: spec/crdt.md §1–§5.6, §7–§9; spec/commits.md §4 (atomic apply exp
 - [ ] Wire encode/decode + rule 7; every rejection a negative test; the model's lenient cases covered here.
 - [ ] Ops, counter consumption, net effect; undo; diff with View.
 - [ ] Slots/embeddings, value-less/expiry, un-merge; snapshots, frontiers, paging through PageSink/PageSource (in-memory impl for tests).
-- [ ] Join laws proptests (commutative, associative, idempotent; across encodings); benches (join of a 10^5-entry map delta, read, encode) with criterion.
+- [ ] Join laws proptests (commutative, associative, idempotent; across encodings); benches (join of a 10^5-entry map delta, read, encode) in osis-bench (notes/testing.md).
 
 ## Tests
 Everything in notes/crdt.md "Reference model" plus the listed additions: own-counter range checks, strict rule 7, value-less embedding, bootstrap-from-snapshot-then-edit convergence, paging (every page within bounds, pages re-join to the state, equal states give equal pages). Tier 1 runs at small sizes; tier 2 (`#[ignore]`) at large.

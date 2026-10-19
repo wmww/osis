@@ -1,5 +1,5 @@
 # Architecture
-> Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and osis-core's public surface. Reopen a fixed item only through an issue.
+> Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-core and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
 Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (apps-e2e adds `examples/*`: an empty glob fails the build); `fuzz/` is excluded (cargo-fuzz). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
@@ -63,16 +63,16 @@ Compile and test time are the bottleneck of agent-driven work.
 
 ## 5. Dependency allowlist
 One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.
-- `blake3` (core, crypto; `default-features = false, features = ["std"]`): the only hash (spec/crypto.md §1); crypto uses it directly for the kdf XOF and `SeededRng`.
-- `ed25519-dalek` 2.2 (crypto; `std`, `zeroize`, `fast`; no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys.
-- `x25519-dalek` 2.0 (crypto; `static_secrets`, `zeroize`): X25519 with the contributory check.
-- `libcrux-ml-kem` 0.0.11 (crypto; `mlkem768` only, no `rand`): ML-KEM-768. Chosen over RustCrypto `ml-kem` 0.3: keygen from the 64-byte `d || z` seed and encapsulation from 32 explicit bytes are plain array functions (no rand_core 0.10 coupling next to dalek's 0.6), and it is formally verified. Output cross-checked against `ml-kem` 0.3.2 (test `mlkem_keygen_known_answer`).
+- `blake3` (core, crypto; `default-features = false, features = ["std"]`; crypto adds `zeroize`, which wipes kdf hasher state): the only hash (spec/crypto.md §1); crypto uses it directly for the kdf XOF and `SeededRng`.
+- `ed25519-dalek` 2.2 (crypto; `std`, `zeroize`, `fast` (curve25519-dalek `precomputed-tables`); no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys.
+- `x25519-dalek` 2.0 (crypto; `static_secrets`, `zeroize`, `precomputed-tables`): X25519 with the contributory check.
+- `libcrux-ml-kem` 0.0.11 (crypto; `mlkem768` only, no `rand` feature): ML-KEM-768. Chosen over RustCrypto `ml-kem` 0.3: keygen from the 64-byte `d || z` seed and encapsulation from 32 explicit bytes are plain array functions, and it is formally verified. Its `libcrux-traits` dependency still compiles `rand` 0.10 and `rand_core` 0.10 (no OS randomness, unused by us). Checked against NIST ACVP FIPS 203 answers (test `mlkem_fips203_acvp`).
 - `chacha20poly1305` 0.10 (crypto; `alloc`): XChaCha20-Poly1305.
 - `zeroize` 1.8 (crypto): secret wipe on drop.
-- `rand_core` 0.6 (crypto, re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`osis_crypto::OsRng`), for drivers.
+- `subtle` 2.6 (crypto; no default features; already in the tree via the dalek crates): `ConstantTimeEq` for `Secret32`.
+- `rand_core` 0.6 (crypto; no default features; re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`rand_core/getrandom`, `osis_crypto::OsRng`), for drivers; `cargo tree -p osis-store` has no getrandom.
 - `proptest` (dev, all crates; models use their own version line): property tests.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
-- `criterion` 0.8 (dev; `default-features = false`, `cargo_bench_support`): benchmarks (osis-crypto; to be replaced by the osis-bench harness, see notes/testing.md).
 - `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
 - Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
@@ -93,3 +93,14 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `hash`: `hash`, `keyed_hash`, `derive_key`, incremental `Hasher` (keyed, XOF). `kdf` and every purpose string live in osis-crypto.
 - Errors: `ErrorClass::{BadInput, Parked, Local}`, trait `Classified { fn class(&self) -> ErrorClass }`, `impl_error!(Enum { Variant => ("fmt", args), .. })` or `impl_error!(Struct, "msg")`.
 - Integration test files start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`: clippy.toml's test exemptions cover only `#[test]` functions and `#[cfg(test)]` modules.
+
+## 8. osis-schema public surface
+- Types (spec/data-model.md §3): `Type` (mirrors §10 `type_expr`: scalars, `Text`, `List`/`Set`/`Map`, `Struct(StructType)`, `Enum(EnumType)`, `Counter`/`Max`/`Min`, `Named(name, args)` incl. `option`/`markdown`/`timestamp`/`duration`, `Param`), `Field`, `Case`.
+- `Schema { id, revision, types, aspects: BTreeMap<AK, AspectDef>, signals, doc }`; `AspectDef { ty, retention: Retention, expires, flags: BTreeSet<Flag>, succeeds, doc }`; `Retention { by: PurgeBy, at_least: Bound, at_most: Bound }` (`Default` = untyped: author, no bounds), `Bound { abs, rel }` (ms), `AspectDefaults { retention, expires }`. Methods: `expand` (named types to a structure), `encoding(&Type) -> Option<Encoding>` (`None` = any), `default_of(&Field)` (declared, or `none` for option), `defaults(ak)`, `view(ak) -> SchemaView`, `validate`, `to_value`/`from_value`/`canonical_bytes`/`hash`.
+- `parse(file, src) -> Result<Schema, ParseError>` (file:line:col). `core_schema()`, `core_static()`, `meta_schema()`; `StaticSchema` (embedded source, parsed once).
+- Evolution: `check(old, new) -> Vec<Violation { rule: Rule, at }>`, `Lock` (`of`, `to_text`, `parse`), `check_lock(file, lock, allow) -> LockStatus`.
+- Typed access (spec/versioning.md §5): `typed_read(schema, v, ty) -> Result<Value, PathError>` (projection: known fields, defaults filled; links pass for large values), `read_path`, `type_at`, `value_at`, `validate_write` (every declared field, nothing undeclared, depth). `Path(Vec<Step>)`, `Step::{Field, Case, Key, Index, Elem}`, `FieldId`, `CaseId`, `p![..]`; `PathError { path, kind: PathErrorKind }` (UnknownCase/UnknownTag parked, Schema local, rest BadInput).
+- Diff: `SchemaView` implements `osis_crdt::View` (project = typed read at the position, `None` = opaque). `large_positions(schema, v, ty) -> Vec<Large { path, map_key }>`: atomic positions above `CHUNK_THRESHOLD`.
+- Keys: `trait AspectKey { type T; ak, schema, decode, encode; ty, schema_ref, defaults, validate }` for `Ak` (untyped, `T = Value`) and `Aspect<T>` (const, `Aspect::new(ak, &STATIC_SCHEMA)`); `Signal<T>`. `Codec` (to/from `Value`; std impls incl. `Option` = option enum, `Vec<u8>` = blob, `[u8; N]` fixed blobs, ids, `Role`, `Ts`, `WallMs`), `codec_struct!`, `Chunked<T>`.
+- `core_types`: Rust types of every core aspect (`Edge`, `Keys`, `Keyset`, `Epoch`, `Secrets`, `SecretBox`, `Tenures`, `Label`, `NodeInfo`, `Reach`, `Seen`, `Group`, agility enums, `CreationRecord` codec), constants `TID`..`GROUPS`, `MEMBERSHIP_CLASS`, `is_membership_class`.
+- Codegen: `generate(schema, file, src) -> Generated { code, warnings }`, `generate_file(path)` (checks the lock; for build.rs), bin `osis-schema-gen`. `transition`: `pick_form`, `default_policy`.

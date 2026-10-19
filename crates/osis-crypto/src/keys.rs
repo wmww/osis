@@ -15,19 +15,19 @@ pub struct KeyActorKeys {
 
 impl KeyActorKeys {
     pub fn from_seed(seed: &Secret32) -> KeyActorKeys {
-        let signing = SigningSecret::from_seed(&Secret32::from_bytes(kdf(kdf::SIGN, seed.expose(), b"")));
+        let signing = SigningSecret::from_seed(&kdf(kdf::SIGN, seed.expose(), b""));
         KeyActorKeys { signing, kem: KemSecret::derive(seed) }
     }
 }
 
 /// A key actor's role secret `kdf("role <role>", seed)`, never rotated.
 pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
-    Secret32::from_bytes(kdf(kdf::role_purpose(role), seed.expose(), b""))
+    kdf(kdf::role_purpose(role), seed.expose(), b"")
 }
 
 /// A plain thing's role secret `kdf("thing <role>", owner's secret, tid)`.
 pub fn thing_role_secret(owner_secret: &Secret32, role: Role, tid: &Tid) -> Secret32 {
-    Secret32::from_bytes(kdf(kdf::thing_purpose(role), owner_secret.expose(), tid.as_bytes()))
+    kdf(kdf::thing_purpose(role), owner_secret.expose(), tid.as_bytes())
 }
 
 /// A role's KEM key pair of one epoch, `kdf("kem", role secret)` (actors other than key actors).
@@ -37,7 +37,7 @@ pub fn role_kem(role_secret: &Secret32) -> KemSecret {
 
 /// Creation nonce of a link or recovery key, `kdf("creation nonce", seed, "")` (spec/wire.md §3).
 pub fn creation_nonce(seed: &Secret32) -> [u8; 32] {
-    kdf(kdf::CREATION_NONCE, seed.expose(), b"")
+    *kdf(kdf::CREATION_NONCE, seed.expose(), b"").expose()
 }
 
 /// Dedup secret of a thing, `derive_key("osis v1 dedup", creation nonce)`.
@@ -47,12 +47,12 @@ pub fn dedup_secret(creation_nonce: &[u8; 32]) -> Secret32 {
 
 /// Delta hash `kdf("delta", dedup secret, delta bytes)` (spec/crypto.md §6).
 pub fn delta_hash(dedup: &Secret32, delta: &[u8]) -> [u8; 32] {
-    kdf(kdf::DELTA, dedup.expose(), delta)
+    *kdf(kdf::DELTA, dedup.expose(), delta).expose()
 }
 
 /// Link content hash of a chunk, page or link page: `kdf("link", d, bytes)` (spec/wire.md §6).
 pub fn link_hash(dedup: &Secret32, bytes: &[u8]) -> [u8; 32] {
-    kdf(kdf::LINK, dedup.expose(), bytes)
+    *kdf(kdf::LINK, dedup.expose(), bytes).expose()
 }
 
 /// Link content hash of a tree node: `kdf("link tree", d, le64(level) || child hashes)`.
@@ -62,7 +62,7 @@ pub fn link_tree_hash(dedup: &Secret32, level: u64, children: &[[u8; 32]]) -> [u
     for c in children {
         input.extend_from_slice(c);
     }
-    kdf(kdf::LINK_TREE, dedup.expose(), &input)
+    *kdf(kdf::LINK_TREE, dedup.expose(), &input).expose()
 }
 
 /// LAN discovery tag: first 16 bytes of `kdf("lan tag", lan secret, le64(window))`, window =
@@ -70,7 +70,7 @@ pub fn link_tree_hash(dedup: &Secret32, level: u64, children: &[[u8; 32]]) -> [u
 pub fn lan_tag(lan_secret: &Secret32, unix_ms: u64) -> [u8; 16] {
     let full = kdf(kdf::LAN_TAG, lan_secret.expose(), &(unix_ms / 600_000).to_le_bytes());
     let mut t = [0u8; 16];
-    t.copy_from_slice(full.get(..16).unwrap_or(&[0; 16]));
+    t.copy_from_slice(full.expose().get(..16).unwrap_or(&[0; 16]));
     t
 }
 
@@ -87,14 +87,14 @@ mod tests {
         let b = KeyActorKeys::from_seed(&seed);
         assert_eq!(a.signing.verifying_key(), b.signing.verifying_key());
         assert_eq!(a.kem.public(), b.kem.public());
-        let expect = SigningSecret::from_seed(&Secret32::from_bytes(kdf("sign", &[5; 32], b"")));
+        let expect = SigningSecret::from_seed(&kdf("sign", &[5; 32], b""));
         assert_eq!(a.signing.verifying_key(), expect.verifying_key());
         let r = [Role::Read, Role::Write, Role::Admin].map(|role| key_actor_role_secret(&seed, role));
         assert!(r[0] != r[1] && r[1] != r[2] && r[0] != r[2]);
         let (t1, t2) = (Tid::from_bytes([1; 15]), Tid::from_bytes([2; 15]));
         assert_ne!(thing_role_secret(&r[0], Role::Read, &t1), thing_role_secret(&r[0], Role::Read, &t2));
         assert_ne!(thing_role_secret(&r[0], Role::Read, &t1), thing_role_secret(&r[0], Role::Write, &t1));
-        assert_eq!(*thing_role_secret(&r[0], Role::Read, &t1).expose(), kdf("thing read", r[0].expose(), &[1; 15]));
+        assert_eq!(*thing_role_secret(&r[0], Role::Read, &t1).expose(), *kdf("thing read", r[0].expose(), &[1; 15]).expose());
         assert_ne!(role_kem(&r[0]).public(), role_kem(&r[1]).public());
         assert_ne!(creation_nonce(&seed), *dedup_secret(&creation_nonce(&seed)).expose());
     }

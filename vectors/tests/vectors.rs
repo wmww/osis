@@ -23,6 +23,15 @@ vector_files! {
     cbor_values => "cbor/values.vec",
     tid_thing => "tid/thing.vec",
     chunker_gear => "chunker/gear.vec",
+    padme_padme => "padme/padme.vec",
+    tid_key_actor => "tid/key-actor.vec",
+    kdf_purposes => "kdf/purposes.vec",
+    keys_seed => "keys/seed.vec",
+    box_boxes => "box/boxes.vec",
+    wrap_wrap => "wrap/wrap.vec",
+    token_tokens => "token/tokens.vec",
+    sign_signatures => "sign/signatures.vec",
+    schema_core => "schema/core.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

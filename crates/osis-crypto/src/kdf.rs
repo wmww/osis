@@ -1,24 +1,32 @@
 //! `kdf` (spec/crypto.md §1) and every domain string the spec uses: kdf purposes, BLAKE3
 //! derive_key contexts and hash prefixes. Signature domains: `Domain`.
 
+use crate::Secret32;
 use osis_core::Role;
+use zeroize::{Zeroize, Zeroizing};
 
 /// `kdf(purpose, secret, input) = keyed_hash(derive_key("osis v1 " + purpose, secret), input)`.
-pub fn kdf(purpose: &str, secret: &[u8], input: &[u8]) -> [u8; 32] {
-    blake3::keyed_hash(&kdf_key(purpose, secret), input).into()
+/// Callers deriving a public value (a hash, a nonce) copy it out of the `Secret32`.
+pub fn kdf(purpose: &str, secret: &[u8], input: &[u8]) -> Secret32 {
+    Secret32::from_bytes(blake3::keyed_hash(&kdf_key(purpose, secret), input).into())
 }
 
 /// The XOF form of `kdf`, filling `out` (spec/crypto.md §1: where more than 32 bytes are needed).
 pub fn kdf_xof(purpose: &str, secret: &[u8], input: &[u8], out: &mut [u8]) {
     let mut h = blake3::Hasher::new_keyed(&kdf_key(purpose, secret));
     h.update(input);
-    h.finalize_xof().fill(out);
+    let mut reader = h.finalize_xof();
+    reader.fill(out);
+    reader.zeroize();
+    h.zeroize();
 }
 
-fn kdf_key(purpose: &str, secret: &[u8]) -> [u8; 32] {
+fn kdf_key(purpose: &str, secret: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut h = blake3::Hasher::new_derive_key(&format!("{PREFIX}{purpose}"));
     h.update(secret);
-    h.finalize().into()
+    let k = Zeroizing::new(h.finalize().into());
+    h.zeroize();
+    k
 }
 
 /// Prefix of every derive_key context.
@@ -116,10 +124,10 @@ mod tests {
     fn kdf_definition() {
         let secret = [0x11; 32];
         let k = blake3::derive_key("osis v1 wrap", &secret);
-        assert_eq!(kdf(WRAP, &secret, b"in"), *blake3::keyed_hash(&k, b"in").as_bytes());
+        assert_eq!(kdf(WRAP, &secret, b"in").expose(), blake3::keyed_hash(&k, b"in").as_bytes());
         let mut out = [0u8; 96];
         kdf_xof(KEM, &secret, b"", &mut out);
-        assert_eq!(out[..32], kdf(KEM, &secret, b""));
+        assert_eq!(out[..32], kdf(KEM, &secret, b"").expose()[..]);
         assert_ne!(kdf(LINK, &secret, b"x"), kdf(LINK_TREE, &secret, b"x"));
     }
 }

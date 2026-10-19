@@ -37,7 +37,8 @@ impl fmt::Debug for Secret32 {
 /// Constant-time comparison.
 impl PartialEq for Secret32 {
     fn eq(&self, other: &Secret32) -> bool {
-        self.0.iter().zip(other.0.iter()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+        use subtle::ConstantTimeEq;
+        self.0.ct_eq(&other.0).into()
     }
 }
 impl Eq for Secret32 {}
@@ -46,7 +47,7 @@ impl Eq for Secret32 {}
 mod tests {
     use super::*;
 
-    // notes/architecture.md §3: Debug of secrets is redacted.
+    // spec: none (notes/architecture.md §3: Debug of secrets is redacted)
     #[test]
     fn debug_redacted() {
         let s = Secret32::from_bytes([0xab; 32]);
