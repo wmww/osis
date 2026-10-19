@@ -33,8 +33,11 @@ fn root_type(key: &Key) -> Option<Type> {
     key.ty().cloned()
 }
 
-/// Parses a path, resolving `[n]` on untyped positions by the current value (list: index).
-pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str) -> anyhow::Result<Path> {
+/// Parses a path. `[n]` on an untyped position: for a read, a list index if the saved value
+/// there is a list, else a map key; for a write (`write: true`), a map key, and an error when
+/// the saved value there is a list (untyped lists take no index writes) or when this batch
+/// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
+pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyhow::Result<Path> {
     let rt = root_type(key);
     let ty = key.schema().zip(rt.as_ref()).map(|(s, t)| (&**s, t));
     let al = |w: &str| ctx.alias(w);
@@ -45,13 +48,17 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str) -> anyhow::Result<Pat
         let step = match st {
             PStep::Step(s) => s,
             PStep::IndexOrKey(i) => {
+                if write && (ctx.pending.contains(&(t, key.ak().as_str().to_string())) || ctx.pending.contains(&(t, String::new()))) {
+                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.ak().as_str())));
+                }
                 if cur.is_none() {
                     let untyped = Key::new(key.ak().clone(), None);
                     cur = Some(ctx.db.get(t, untyped).ok().flatten());
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
                 match here {
-                    Some(Value::List(_)) => Step::Index(i as usize),
+                    Some(Value::List(_)) if write => return Err(usage(format!("[{i}]: {} is an untyped list; index writes need a schema (--schema)", key.ak().as_str()))),
+                    Some(Value::List(_)) => Step::Index(usize::try_from(i).map_err(|_| usage("bad index"))?),
                     _ => Step::Key(Value::Int(i)),
                 }
             }
@@ -149,7 +156,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
     let key = ctx.key(&a.ak)?;
     let (p, val) = match a.rest.as_slice() {
         [v] => (Path::root(), v),
-        [p, v] => (path(ctx, t, &key, p)?, v),
+        [p, v] => (path(ctx, t, &key, p, true)?, v),
         _ => return Err(usage("expected [PATH] VALUE")),
     };
     let pt = type_at(&key, &p);
@@ -170,7 +177,7 @@ fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<
     match a.path.as_deref() {
         None | Some("") => w.at(t, key).remove()?,
         Some(s) => {
-            let p = path(ctx, t, &key, s)?;
+            let p = path(ctx, t, &key, s, true)?;
             w.at(t, key).path(p).remove()?
         }
     }
@@ -180,7 +187,7 @@ fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<
 fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
     let key = ctx.key(&a.ak)?;
-    let p = path(ctx, t, &key, &a.path)?;
+    let p = path(ctx, t, &key, &a.path, true)?;
     let pt = type_at(&key, &p);
     let sch = key.schema().cloned();
     let (et, vt) = match (&sch, &pt) {
@@ -294,6 +301,27 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
 
 /// Applies one write command to the batch.
 pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
+    apply_one(ctx, w, c, did)?;
+    // Record what this batch wrote (path resolution must not trust the saved state there).
+    let touched: Vec<(String, String)> = match c {
+        ScriptCmd::Set(a) | ScriptCmd::Replace(a) => vec![(a.t.clone(), a.ak.clone())],
+        ScriptCmd::Rm(a) => vec![(a.t.clone(), a.ak.clone())],
+        ScriptCmd::Op(a) => vec![(a.t.clone(), a.ak.clone())],
+        ScriptCmd::Delete { t } => vec![(t.clone(), String::new())],
+        ScriptCmd::Create(_) => {
+            let t = did.created.last().map(|(_, t)| t.to_uri()).unwrap_or_default();
+            vec![(t, String::new())]
+        }
+        _ => Vec::new(),
+    };
+    for (t, ak) in touched {
+        let t = ctx.tid(&t)?;
+        ctx.pending.insert((t, ak));
+    }
+    Ok(())
+}
+
+fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),
         ScriptCmd::Set(a) => set(ctx, w, a, false),
@@ -373,7 +401,7 @@ pub fn script(text: &str) -> anyhow::Result<Vec<(usize, ScriptCmd)>> {
             continue;
         }
         let words = split_line(l).map_err(|e| usage(format!("line {}: {e}", i + 1)))?;
-        let parsed = ScriptLine::try_parse_from(words).map_err(|e| usage(format!("line {}: {}", i + 1, e.render().to_string().lines().next().unwrap_or(""))))?;
+        let parsed = ScriptLine::try_parse_from(words).map_err(|e| usage(format!("line {}: {}", i + 1, e.render().to_string().lines().next().unwrap_or("").trim_start_matches("error: "))))?;
         out.push((i + 1, parsed.cmd));
     }
     Ok(out)

@@ -254,6 +254,8 @@ pub(crate) struct Ctx<'a> {
     pub sel: StoreSel,
     pub schemas: Vec<Arc<Schema>>,
     pub vars: BTreeMap<String, Tid>,
+    /// (tid, AK) this batch wrote; AK "" for the whole thing (created or deleted).
+    pub pending: std::collections::BTreeSet<(Tid, String)>,
 }
 
 impl Ctx<'_> {
@@ -265,9 +267,9 @@ impl Ctx<'_> {
         paths.extend(g.schemas.iter().cloned());
         let mut schemas = Vec::new();
         for p in paths {
-            schemas.push(db.register_schema_file(&p).map_err(|e| usage(format!("schema {}: {e}", p.display())))?);
+            schemas.push(db.register_schema_file(&p).map_err(|e| exit(7, format!("schema {}: {e}", p.display())))?);
         }
-        Ok(Ctx { g, db, out, stdin, tty, sel, schemas, vars: BTreeMap::new() })
+        Ok(Ctx { g, db, out, stdin, tty, sel, schemas, vars: BTreeMap::new(), pending: Default::default() })
     }
 
     pub fn line(&mut self, s: &str) -> anyhow::Result<()> {

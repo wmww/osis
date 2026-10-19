@@ -71,7 +71,8 @@ fn command_tree_is_consistent_plan_cli_tests() {
 #[test]
 fn things_and_aspects_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/note/title", "\"hi\"", "/note/n", "3"]).line().to_string();
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/note/title", "\"hi\"", "/note/n", "3", "/note/neg", "-3"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "/note/neg"]).line(), "-3");
     assert!(t.starts_with("osis://"));
     assert_eq!(s.ok(&["get", &t, "/note/title"]).line(), "\"hi\"");
     s.ok(&["set", &t, "/note/m", "{\"a\": [1, 2.5], 1: #{h'00'}}"]);
@@ -182,8 +183,49 @@ fn write_script_atomic_plan_cli_4() {
     let o = s.call(&["write"], bad);
     assert_eq!(o.code, 3, "{}", o.err);
     assert_eq!(s.ok(&["history", "--group", "home"]).out, before);
-    // a script parse error is usage
-    assert_eq!(s.call(&["write"], "frobnicate x\n").code, 2);
+    // a script parse error is usage, reported once
+    let o = s.call(&["write"], "frobnicate x\n");
+    assert_eq!(o.code, 2);
+    assert!(o.err.starts_with("error: line 1: ") && o.err.matches("error:").count() == 1, "{}", o.err);
+}
+
+// notes/cli.md Paths: `[n]` on an untyped position. Reads index a saved list; writes never turn
+// an index into a map key: a saved untyped list or an aspect written earlier in the same batch
+// (whose pending state is invisible) is an error, and nothing is committed.
+#[test]
+fn untyped_index_paths_notes_cli() {
+    let s = S::mem();
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/x/l", "[10, 20]", "/x/m", "{1: \"a\"}"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "/x/l", "[1]"]).line(), "20");
+    let o = s.call(&["set", &t, "/x/l", "[0]", "5"], "");
+    assert_eq!(o.code, 2, "{}", o.err);
+    assert!(o.err.contains("untyped list"), "{}", o.err);
+    assert_eq!(s.code(&["rm", &t, "/x/l", "[0]"]), 2);
+    assert_eq!(s.ok(&["get", &t, "/x/l"]).line(), "[10, 20]");
+    // a map key on a saved untyped map is fine
+    s.ok(&["set", &t, "/x/m", "[1]", "\"b\""]);
+    assert_eq!(s.ok(&["get", &t, "/x/m"]).line(), "{1: \"b\"}");
+    // in a script, an aspect written by an earlier line cannot be resolved against saved state
+    let before = s.ok(&["history", "--group", "home"]).out;
+    let o = s.call(&["write"], &format!("set {t} /x/m {{1: \"c\"}}\nset {t} /x/m [1] \"d\"\n"));
+    assert_eq!(o.code, 2, "{}", o.err);
+    assert!(o.err.contains("line 2") && o.err.contains("earlier in this batch"), "{}", o.err);
+    let o = s.call(&["write"], "create --owner me --in home --as a /x/l [1, 2]\nset $a /x/l [0] 5\n");
+    assert_eq!(o.code, 2, "{}", o.err);
+    assert_eq!(s.ok(&["history", "--group", "home"]).out, before);
+}
+
+// plans/cli.md §2 `--timeout 0` = no timeout; waits take it without overflow.
+#[test]
+fn timeout_zero_plan_cli_2() {
+    let s = S::mem();
+    for args in [vec!["--timeout", "0", "wait"], vec!["--timeout", "0", "sync"], vec!["--timeout", "0", "link", "redeem", "x"]] {
+        let o = s.call(&args, "");
+        assert_eq!(o.code, 1, "{args:?}: {}", o.err);
+        assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);
+    }
+    assert_eq!(s.code(&["--timeout", "5x", "wait"]), 2);
+    assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
 
 // plans/cli.md §4 History and undo.
@@ -324,6 +366,14 @@ fn named_keys_with_schema_plan_cli_1() {
     // signals reach local listeners only; sending is checked
     assert_eq!(call(&["signal", "send", t, "/todo/ping", "1"], "").0, 0);
     assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1 no lock\n");
+    // a schema that does not parse: exit 7
+    let bad = d.join("bad.osis");
+    std::fs::write(&bad, "schema nonsense").unwrap();
+    assert_eq!(call(&["--schema", bad.to_str().unwrap(), "get", t, "/todo/task"], "").0, 7);
+    assert_eq!(call(&["schema", "add", bad.to_str().unwrap()], "").0, 7);
+    // with a schema, typed index writes work (untyped ones are refused)
+    assert_eq!(call(&["set", t, "/todo/list", "[0].done", "true"], "").0, 0);
+    assert_eq!(call(&["get", t, "/todo/list", "[0].done"], "").1, "true\n");
     assert_eq!(call(&["schema", "rm", f.to_str().unwrap()], "").0, 0);
     assert_eq!(call(&["get", t, "/todo/task"], "").1, "{0: \"buy milk\", 1: true, 2: #0}\n");
     let _ = std::fs::remove_dir_all(&d);

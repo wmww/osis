@@ -56,7 +56,7 @@ revision 1;
 type prio = enum { 0 low, 1 high(int), 2 tagged(list<string>) };
 type rec = struct { 0 title: string, 1 done: bool, 2 when: timestamp, 3 tags: set<string>, 4 prio: prio,
   5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 owner: tid, 9 body: markdown,
-  10 n: counter<int> };
+  10 n: counter<int>, 11 at: map<timestamp, int>, 12 lens: map<duration, bool>, 13 when_set: set<timestamp> };
 aspect /t/rec: rec;
 ";
 
@@ -85,7 +85,13 @@ fn rec() -> impl Strategy<Value = Value> {
         s(),
         any::<i64>(),
     );
-    fields.prop_map(|(t, d, w, tags, p, waits, score, extra, owner, body, n)| {
+    let ms = || prop_oneof![any::<i64>(), -62_000_000_000_000i64..300_000_000_000_000].prop_map(Value::Int);
+    let maps = (
+        prop::collection::btree_map(ms(), any::<i64>().prop_map(Value::Int), 0..3),
+        prop::collection::btree_map(ms(), any::<bool>().prop_map(Value::Bool), 0..3),
+        prop::collection::btree_set(ms(), 0..3),
+    );
+    (fields, maps).prop_map(|((t, d, w, tags, p, waits, score, extra, owner, body, n), (at, lens, when_set))| {
         let f = [
             t,
             Value::Bool(d),
@@ -98,6 +104,9 @@ fn rec() -> impl Strategy<Value = Value> {
             Value::Tid(Tid::from_bytes(owner)),
             body,
             Value::Int(n),
+            Value::Map(at),
+            Value::Map(lens),
+            Value::Set(when_set),
         ];
         Value::Map(f.into_iter().enumerate().map(|(i, v)| (Value::Int(i as i64), v)).collect())
     })
@@ -127,7 +136,7 @@ proptest! {
 
     // notes/cli.md: durations and timestamps print and read back.
     #[test]
-    fn time_forms_round_trip(ms in any::<i64>()) {
+    fn time_forms_round_trip(ms in prop_oneof![any::<i64>(), Just(i64::MIN), Just(i64::MAX)]) {
         prop_assert_eq!(text::parse_duration(&text::duration_text(ms)), Some(ms));
         if let Some(t) = text::rfc3339(ms) {
             prop_assert_eq!(text::parse_rfc3339(&t), Some(ms), "{}", t);
@@ -176,6 +185,9 @@ fn input_forms_plan_cli_3() {
     assert_eq!(p("b64'AP8'"), Ok(Value::Bytes(vec![0, 255])));
     assert_eq!(p(r#"{"a": [1.5, true], "b": "😀"}"#), Ok(m(vec![(Value::Str("a".into()), Value::List(vec![Value::float(1.5), Value::Bool(true)])), (Value::Str("b".into()), Value::Str("😀".into()))])));
     assert!(p("null").is_err());
+    assert!(p("01").is_err() && p("-01").is_err() && p("00.5").is_err(), "leading zeros");
+    assert_eq!(p("0"), Ok(Value::Int(0)));
+    assert!(p(r#""\u+041""#).is_err());
     assert!(p("{1: 1, 1: 2}").is_err());
     assert!(p("#{1, 1}").is_err());
     assert!(p("99999999999999999999").is_err());
@@ -188,6 +200,23 @@ fn input_forms_plan_cli_3() {
     let ty = &sc.aspects["/t/rec"].ty;
     let v = parse(r#"{"title": "x", "done": true, "when": 0}"#, Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(v, m(vec![(Value::Int(0), Value::Str("x".into())), (Value::Int(1), Value::Bool(true)), (Value::Int(2), Value::Int(0))]));
+}
+
+// notes/cli.md Value syntax: timestamps and durations as map keys stop before the `:`;
+// impossible dates and the i64 extremes are handled.
+#[test]
+fn time_keys_and_edges_notes_cli() {
+    let sc = schema();
+    let ty = &sc.aspects["/t/rec"].ty;
+    let v = parse("{at: {2026-01-02T03:04:05Z: 1, 2026-01-02: 2}, lens: {1h30m: true, -5s: false}}", Some((&sc, ty)), &no_aliases).unwrap();
+    assert_eq!(print(&v, Some((&sc, ty))), "{at: {2026-01-02T00:00:00Z: 2, 2026-01-02T03:04:05Z: 1}, lens: {1h30m: true, -5s: false}}");
+    assert!(parse("{at: {2026-02-31T00:00:00Z: 1}}", Some((&sc, ty)), &no_aliases).is_err());
+    assert_eq!(text::parse_rfc3339("2024-02-29"), Some(1_709_164_800_000));
+    assert_eq!(text::parse_rfc3339("2023-02-29"), None);
+    let e = parse("{when: 2026-13-01T00:00:00Z}", Some((&sc, ty)), &no_aliases).unwrap_err();
+    assert!(e.ends_with("column 8"), "{e}");
+    assert_eq!(text::parse_duration(&text::duration_text(i64::MIN)), Some(i64::MIN));
+    assert_eq!(text::parse_duration(&text::duration_text(i64::MAX)), Some(i64::MAX));
 }
 
 // notes/cli.md Value syntax: named forms with a schema.
@@ -221,7 +250,12 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&Value::Enum(2, Some(Box::new(Value::Bool(true))))), r#"{"$case":2,"$payload":true}"#);
     assert_eq!(j(&m(vec![(Value::Bool(true), Value::Int(1))])), r#"{"$map":[[true,1]]}"#);
     assert_eq!(j(&m(vec![(Value::Str("a".into()), Value::Int(1))])), r#"{"a":1}"#);
-    assert_eq!(j(&m(vec![(Value::Int(0), Value::Int(1))])), r#"{"0":1}"#);
+    // plans/cli.md §5: a map whose keys are not all strings, or collide with a marker, is $map
+    assert_eq!(j(&m(vec![(Value::Int(0), Value::Int(1))])), r#"{"$map":[[0,1]]}"#);
+    for k in ["$set", "$blob", "$case", "$map", "$tag"] {
+        assert_eq!(j(&m(vec![(Value::Str(k.into()), Value::Int(1))])), format!(r#"{{"$map":[["{k}",1]]}}"#));
+    }
+    assert_eq!(j(&m(vec![(Value::Str("set".into()), Value::Int(1))])), r#"{"set":1}"#);
     assert_eq!(j(&Value::Unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap())), r#"{"$tag":259,"$bytes":"Bw"}"#);
     let sc = schema();
     let ty = &sc.aspects["/t/rec"].ty;

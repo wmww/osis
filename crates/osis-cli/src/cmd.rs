@@ -59,12 +59,21 @@ impl Wake for Unpark {
     }
 }
 
+/// `now + d`; `None` (no deadline) for no timeout or one too far to represent.
+fn deadline(d: Option<Duration>) -> Option<Instant> {
+    d.and_then(|d| Instant::now().checked_add(d))
+}
+
+/// What the API's `Duration`-taking waits get for "no timeout" (`--timeout 0`): the CLI's own
+/// deadline (none) ends the wait first.
+const FOREVER: Duration = Duration::from_secs(100 * 365 * 86_400);
+
 /// Polls `f` on this thread until it is ready or `timeout` passes (`None`: timed out).
 fn block_on<F: Future>(f: F, timeout: Option<Duration>) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
-    let end = timeout.map(|d| Instant::now() + d);
+    let end = deadline(timeout);
     loop {
         if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
             return Some(v);
@@ -299,7 +308,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 };
                 let _ = tx.send(l);
             });
-            let timeout = ctx.timeout()?;
+            let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, count, timeout)
         }
         Cmd::Role { t } => {
@@ -367,7 +376,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => SyncScope::All,
             };
             db.sync_now()?;
-            let t = ctx.timeout()?.unwrap_or(Duration::MAX);
+            let t = ctx.timeout()?.unwrap_or(FOREVER);
             wait(ctx, db.wait_synced(s, t))
         }
         Cmd::Wait { group } => {
@@ -375,7 +384,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(g) => SyncScope::Group(ctx.tid(&g)?),
                 None => SyncScope::All,
             };
-            let t = ctx.timeout()?.unwrap_or(Duration::MAX);
+            let t = ctx.timeout()?.unwrap_or(FOREVER);
             wait(ctx, db.wait_synced(s, t))
         }
         Cmd::Group(GroupCmd::Sync { g, server }) => {
@@ -387,8 +396,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (plans/api.md second half)")),
         Cmd::Bundle(_) => Err(not_supported("bundles (plans/api.md second half)")),
         Cmd::Inspect(i) => inspect(ctx, i),
-        Cmd::Diag { follow, since } => {
-            let _ = since.as_deref().map(parse_ts).transpose()?;
+        Cmd::Diag { follow } => {
             diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) })
         }
         Cmd::Daemon => {
@@ -436,7 +444,7 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
     let (v, pty) = match path {
         None | Some("") => (db.get(t, key.clone())?, key.ty().cloned()),
         Some(p) => {
-            let p = write::path(ctx, t, &key, p)?;
+            let p = write::path(ctx, t, &key, p, false)?;
             let pty = key.schema().and_then(|s| text::type_at_path(s, key.ty()?, &p.0));
             (db.at(t, key.clone()).path(p).get_value()?, pty)
         }
@@ -463,8 +471,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
         None if ctx.tty => {
             let cur = db.get(t, key.clone())?.ok_or_else(|| exit(3, "absent: nothing to edit (use set)"))?;
             let shown = text::print(&cur, if ctx.g.raw { None } else { ty });
-            let f = std::env::temp_dir().join(format!("osis-edit-{}.txt", std::process::id()));
-            std::fs::write(&f, format!("{shown}\n"))?;
+            let f = edit_file(&format!("{shown}\n"))?;
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
             let st = std::process::Command::new(&editor).arg(&f).status().map_err(|e| anyhow!("{editor}: {e}"))?;
             let edited = std::fs::read_to_string(&f)?;
@@ -481,6 +488,28 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let done = db.write_with(|w| w.at(t, key.clone()).edit(&base, &new))?;
     let commit = done.map(|c| commit_text(&c.commit));
     ctx.emit(&commit.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(commit.map(J::str)))]))
+}
+
+/// A new temp file (`create_new`, random name, owner-only) holding `text`.
+fn edit_file(text: &str) -> anyhow::Result<std::path::PathBuf> {
+    use std::hash::{BuildHasher, Hasher};
+    for _ in 0..16 {
+        let r = std::collections::hash_map::RandomState::new().build_hasher().finish();
+        let f = std::env::temp_dir().join(format!("osis-edit-{r:016x}.txt"));
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        match o.open(&f) {
+            Ok(mut h) => {
+                std::io::Write::write_all(&mut h, text.as_bytes())?;
+                return Ok(f);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(anyhow!("{}: {e}", f.display())),
+        }
+    }
+    Err(anyhow!("cannot create a temp file"))
 }
 
 fn write_script(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
@@ -578,7 +607,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
 fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
-    let end = timeout.map(|d| Instant::now() + d);
+    let end = deadline(timeout);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
         let r = match end {
@@ -613,7 +642,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
             let _ = tx.send(c);
         }),
     };
-    let end = ctx.timeout()?.map(|d| Instant::now() + d);
+    let end = deadline(ctx.timeout_or(None)?);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
         let r = match end {
@@ -662,7 +691,7 @@ fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, count: Option<usize>) -> anyho
         };
         let _ = tx.send(l);
     });
-    let timeout = ctx.timeout()?;
+    let timeout = ctx.timeout_or(None)?;
     stream_lines(ctx, &rx, count, timeout)
 }
 
@@ -950,4 +979,28 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
         }
     }
     crate::save_registered(d, &list)
+}
+
+#[cfg(test)]
+mod tests {
+    // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.
+    #[test]
+    fn edit_file_is_new_and_private_notes_cli() {
+        let a = super::edit_file("x").unwrap();
+        let b = super::edit_file("y").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "x");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions()) & 0o077, 0);
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+    }
+
+    // plans/cli.md §2: `--timeout 0` (no deadline) and huge timeouts do not overflow.
+    #[test]
+    fn deadline_never_overflows_plan_cli_2() {
+        assert_eq!(super::deadline(None), None);
+        assert_eq!(super::deadline(Some(std::time::Duration::MAX)), None);
+        assert!(super::deadline(Some(super::FOREVER)).is_some());
+    }
 }

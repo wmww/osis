@@ -160,7 +160,12 @@ fn plain(o: &mut String, v: &Value) {
             o.push_str(&format!("tag({}, ", u.tag()));
             match u.content().to_value() {
                 Ok(c) => plain(o, &c),
-                Err(_) => o.push_str("<undecodable>"),
+                // Not expected (the content was parsed canonical); raw bytes keep it readable.
+                Err(_) => {
+                    o.push_str("h'");
+                    o.push_str(&hex::encode(u.content().as_bytes()));
+                    o.push('\'');
+                }
             }
             o.push(')');
         }
@@ -246,7 +251,9 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
         return None;
     }
     let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1..=12).contains(&mo) || d < 1 || d > days[(mo - 1) as usize] {
         return None;
     }
     let mut ms = days_from_civil(y, mo, d) * 86_400_000;
@@ -286,6 +293,34 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
     }
 }
 
+/// Length of the RFC 3339 timestamp at the start of `r` as the printer writes it (date, then
+/// optionally `T` time, fraction, `Z` or offset); stops before a following `:` separator.
+fn ts_len(r: &str) -> usize {
+    let b = r.as_bytes();
+    let at = |i: usize, f: fn(u8) -> bool| b.get(i).copied().is_some_and(f);
+    let dig = |i: usize, n: usize| (i..i + n).all(|j| at(j, |c| c.is_ascii_digit()));
+    if !(dig(0, 4) && at(4, |c| c == b'-') && dig(5, 2) && at(7, |c| c == b'-') && dig(8, 2)) {
+        return 0;
+    }
+    if !(at(10, |c| c == b'T' || c == b't') && dig(11, 2) && at(13, |c| c == b':') && dig(14, 2) && at(16, |c| c == b':') && dig(17, 2)) {
+        return 10;
+    }
+    let mut i = 19;
+    if at(i, |c| c == b'.') {
+        i += 1;
+        while at(i, |c| c.is_ascii_digit()) {
+            i += 1;
+        }
+    }
+    if at(i, |c| c == b'Z' || c == b'z') {
+        i + 1
+    } else if at(i, |c| c == b'+' || c == b'-') && dig(i + 1, 2) && at(i + 3, |c| c == b':') && dig(i + 4, 2) {
+        i + 6
+    } else {
+        i
+    }
+}
+
 const UNITS: [(&str, i64); 5] = [("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1000), ("ms", 1)];
 
 /// `1d2h30m5s500ms`; `0s` for zero; a leading `-` when negative.
@@ -314,16 +349,16 @@ pub fn parse_duration(s: &str) -> Option<i64> {
     if rest.is_empty() {
         return None;
     }
-    let mut total: i64 = 0;
+    let mut total: i128 = 0;
     while !rest.is_empty() {
         let n = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-        let num: i64 = rest.get(..n)?.parse().ok()?;
+        let num: i128 = rest.get(..n)?.parse().ok()?;
         rest = rest.get(n..)?;
         let (unit, len) = if rest.starts_with("ms") { (1, 2) } else { (UNITS.iter().find(|(u, _)| rest.starts_with(u))?.1, 1) };
         rest = rest.get(len..)?;
-        total = total.checked_add(num.checked_mul(unit)?)?;
+        total = total.checked_add(num.checked_mul(i128::from(unit))?)?;
     }
-    Some(if neg { -total } else { total })
+    i64::try_from(if neg { -total } else { total }).ok()
 }
 
 // ---- parsing
@@ -539,10 +574,10 @@ impl<'a> Parser<'a> {
         self.pos += n;
         w
     }
-    /// A run of characters that may form a bare timestamp or duration.
+    /// A run of characters that may form a bare duration (`-1h30m`).
     fn bare(&mut self) -> &'a str {
         let r = self.rest();
-        let n = r.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '+' | '-'))).unwrap_or(r.len());
+        let n = r.char_indices().find(|&(i, c)| !(c.is_ascii_alphanumeric() || (i == 0 && c == '-'))).map_or(r.len(), |(i, _)| i);
         let w = r.get(..n).unwrap_or("");
         self.pos += n;
         w
@@ -565,18 +600,23 @@ impl<'a> Parser<'a> {
         let r = self.rest();
         let Some(c) = self.peek() else { return Err(self.err("expected a value")) };
         if matches!(k, Kind::Timestamp) && (c.is_ascii_digit() || c == '-') && !r.starts_with("-Infinity") {
-            let start = self.pos;
-            let w = self.bare().to_string();
-            if w.len() >= 10 && w.as_bytes().get(4) == Some(&b'-') {
-                return parse_rfc3339(&w).map(Value::Int).ok_or_else(|| self.err("bad RFC 3339 timestamp"));
+            let n = ts_len(r);
+            if n > 0 {
+                let w = r.get(..n).unwrap_or("");
+                let v = parse_rfc3339(w).map(Value::Int).ok_or_else(|| self.err("bad RFC 3339 timestamp"))?;
+                self.pos += n;
+                return Ok(v);
             }
-            self.pos = start;
         }
         if matches!(k, Kind::Duration) && (c.is_ascii_digit() || c == '-') {
             let start = self.pos;
             let w = self.bare().to_string();
             if w.ends_with(|c: char| c.is_ascii_alphabetic()) {
-                return parse_duration(&w).map(Value::Int).ok_or_else(|| self.err("bad duration"));
+                let end = self.pos;
+                self.pos = start;
+                let v = parse_duration(&w).map(Value::Int).ok_or_else(|| self.err("bad duration"))?;
+                self.pos = end;
+                return Ok(v);
             }
             self.pos = start;
         }
@@ -631,7 +671,7 @@ impl<'a> Parser<'a> {
                             let (id, ft) = p.field_key(st)?;
                             p.expect(':')?;
                             let v = p.value(ft.as_ref().and_then(|t| typed(s, t)))?;
-                            Ok((Value::Int(id as i64), v))
+                            Ok((Value::Int(i64::try_from(id).map_err(|_| p.err("field id out of range"))?), v))
                         })?;
                         self.unique(m)
                     }
@@ -780,8 +820,12 @@ impl<'a> Parser<'a> {
             }
             *i > s
         };
+        let int_start = i;
         if !digits(&mut i) {
             return Err(self.err("expected a number"));
+        }
+        if i - int_start > 1 && b.get(int_start) == Some(&b'0') {
+            return Err(self.err("leading zero"));
         }
         let mut float = false;
         if b.get(i) == Some(&b'.') {
@@ -836,7 +880,7 @@ impl<'a> Parser<'a> {
                         'u' => {
                             let hex4 = |it: &mut std::str::CharIndices<'_>| -> Option<u32> {
                                 let h: String = it.by_ref().take(4).map(|(_, c)| c).collect();
-                                if h.len() == 4 { u32::from_str_radix(&h, 16).ok() } else { None }
+                                if h.len() == 4 && h.chars().all(|c| c.is_ascii_hexdigit()) { u32::from_str_radix(&h, 16).ok() } else { None }
                             };
                             let hi = hex4(&mut it).ok_or_else(|| self.err("bad \\u escape"))?;
                             let cp = if (0xd800..0xdc00).contains(&hi) {

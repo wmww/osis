@@ -72,6 +72,9 @@ impl J {
     }
 }
 
+/// Keys of the marker objects (`{"$set": …}`).
+pub const MARKERS: [&str; 7] = ["$blob", "$set", "$case", "$payload", "$map", "$tag", "$bytes"];
+
 fn b64(b: &[u8]) -> J {
     J::Str(base64url::encode(b))
 }
@@ -117,9 +120,11 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
                     _ => vt.clone(),
                 }
             };
-            let ids = m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0));
-            let strs = m.keys().all(|k| matches!(k, Value::Str(_)));
-            if (ids && (st.is_some() || ty.is_none())) || strs {
+            // A typed struct is an object by field name; a map is an object only when every key
+            // is a string and none is a marker, so an object never reads as a marker form.
+            let is_struct = st.is_some() && m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0));
+            let strs = m.keys().all(|k| matches!(k, Value::Str(x) if !MARKERS.contains(&x.as_str())));
+            if is_struct || strs {
                 J::Obj(
                     m.iter()
                         .map(|(k, v)| {

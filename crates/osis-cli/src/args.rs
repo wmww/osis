@@ -191,7 +191,7 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// Print changes of a thing (or one aspect), initial value first
+    /// Print changes of a thing (or one aspect), initial value first, until Ctrl-C
     Watch {
         t: String,
         ak: Option<String>,
@@ -317,8 +317,6 @@ pub enum Cmd {
     Diag {
         #[arg(long)]
         follow: bool,
-        #[arg(long, value_name = "TS")]
-        since: Option<String>,
     },
     /// Keep the store open: sync, print diagnostics
     Daemon,
@@ -341,7 +339,7 @@ pub struct CreateArgs {
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,
     /// AK VALUE pairs
-    #[arg(value_name = "AK VALUE")]
+    #[arg(value_name = "AK VALUE", allow_hyphen_values = true)]
     pub pairs: Vec<String>,
 }
 
