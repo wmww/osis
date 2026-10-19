@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, large-values, node-core).
+Wave 3 (transport, large-values, node-core, server running); wave 2 integration pass running.
 
 ## Plans
 | plan | state | notes |
@@ -45,6 +45,7 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
+| wave 2 integration pass | running (opus, worktree) | workspace green, deny, tree-reader unification, notes, spec map |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
