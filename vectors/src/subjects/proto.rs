@@ -1,13 +1,35 @@
-//! `proto/`: frames, Hello, one message of every kind and rejections (spec/wire.md §11.1, §11.2);
-//! range reconciliation (§11.3). Generated.
+//! `proto/`: frames, Hello, one message of every kind on a fixed label, and rejections (spec/wire.md
+//! §11.1, §11.2, §13); range reconciliation fingerprints (§11.3). Generated.
 
 use super::{case, generated_header};
-use crate::file::VecFile;
+use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_core::{BlobId, LabelId, Value, cbor};
+use osis_core::{BlobId, Value, cbor};
+use osis_proto::examples::{CHALLENGE, Fixture, STATIC_KEY};
 use osis_proto::{Hello, Message, encode_frame, examples};
 
 const SPEC: &str = "spec/wire.md §11.2";
+
+fn int(n: i64) -> Value {
+    Value::Int(n)
+}
+
+fn bytes(n: usize, b: u8) -> Value {
+    Value::Bytes(vec![b; n])
+}
+
+/// A rejected body written as `head || item × count || tail` (vectors/README.md, proto).
+fn repeated(name: &str, rule: &str, full: Value, item: Value, count: usize, tail: &[Value]) -> Record {
+    let full = cbor::encode(&full);
+    let item = cbor::encode(&item);
+    let tail: Vec<u8> = tail.iter().flat_map(cbor::encode).collect();
+    let head_len = full.len() - tail.len() - count * item.len();
+    let head = &full[..head_len];
+    assert_eq!([head.to_vec(), item.repeat(count), tail.clone()].concat(), full, "{name}");
+    let r = Message::decode(&full).expect_err(name);
+    assert!(matches!(r.error, osis_proto::Error::Cap(_)), "{name}: {:?}", r.error);
+    case(name, SPEC).with("head", hex(head)).with("item", hex(&item)).with("count", count.to_string()).with("tail", hex(&tail)).with("reject", rule).with("answer", r.code().0.to_string())
+}
 
 pub fn messages() -> VecFile {
     let mut cases = Vec::new();
@@ -22,133 +44,127 @@ pub fn messages() -> VecFile {
             .with("challenge", hex(&hello.challenge))
             .with("hex", hex(&hello.encode())),
     );
+    let f = Fixture::new(0x10);
+    cases.push(
+        case("fixture", "spec/wire.md §8, §11.2")
+            .with("about", "the label of the messages below: osis-proto examples::Fixture::new(0x10) (group secrets 10..13 repeated, reader X25519 14.., key actor 15.., symmetric entry box under 16.., registration rng seed 17..); opens are signed for the challenge and static key below")
+            .with("label-id", hex(&f.label.0))
+            .with("genesis", hex(&f.genesis.to_bytes()))
+            .with("genesis-claim-set", hex(&f.genesis_claims.to_bytes()))
+            .with("child", hex(&f.child.to_bytes()))
+            .with("challenge", hex(&CHALLENGE))
+            .with("static-key", hex(&STATIC_KEY)),
+    );
     for (name, m) in examples::messages() {
         let enc = m.encode();
         assert_eq!(Message::decode(&enc), Ok(m.clone()));
         cases.push(case(name, SPEC).with("kind", m.kind().to_string()).with("hex", hex(&enc)));
     }
     // Rejections: `reject` names the broken rule, `answer` the Error code sent back.
-    let int = |n: i64| Value::Int(n);
-    let rejects: Vec<(&str, &str, Value, &str)> = vec![
-        ("unknown kind", "unknown-kind", Value::List(vec![int(99), int(7)]), "11"),
-        ("id at 2^32", "head", Value::List(vec![int(2), int(1 << 32), int(0)]), "2"),
-        ("push with an id", "id", Value::List(vec![int(23), int(5), Value::Bytes(vec![0; 16]), Value::List(vec![Value::List(vec![int(1), Value::Bytes(vec![0; 32])])]), Value::List(vec![Value::Bytes(vec![0; 16]), int(0)])]), "2"),
-        ("wrap of 48 bytes", "size", Value::List(vec![int(12), int(1), Value::Bytes(vec![0; 16]), Value::Bytes(vec![1]), Value::Bytes(vec![0; 48]), Value::Bytes(vec![0; 64])]), "2"),
+    let label = bytes(16, 0x0a);
+    let id = bytes(32, 0x01);
+    let entry = Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3)]);
+    let item = Value::List(vec![bytes(32, 1), Value::List(vec![]), Value::List(vec![]), bytes(64, 3)]);
+    let range = Value::List(vec![Value::Bytes(vec![]), Value::Bytes(vec![]), Value::List(vec![int(0), bytes(16, 0)])]);
+    let cursor = Value::List(vec![bytes(16, 0x1c), int(0)]);
+    let list = |v: &Value, n: usize| Value::List(vec![v.clone(); n]);
+    let step = Value::Bytes(f.genesis.to_bytes());
+    let fetched = Value::List(vec![id.clone(), Value::List(vec![])]);
+    let empty = Value::List(vec![]);
+    let caps: Vec<(&str, Value, Value, usize, Vec<Value>)> = vec![
+        ("upload of 1025 entries", Value::List(vec![int(10), int(1), label.clone(), list(&entry, 1025)]), entry.clone(), 1025, vec![]),
+        ("delete of 1025 items", Value::List(vec![int(14), int(1), label.clone(), list(&item, 1025)]), item.clone(), 1025, vec![]),
+        ("fetch of 1025 ids", Value::List(vec![int(19), int(1), label.clone(), list(&id, 1025)]), id.clone(), 1025, vec![]),
+        ("fetch reply of 1025 items", Value::List(vec![int(20), int(1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
+        ("subscribe to 1025 labels", Value::List(vec![int(21), int(1), list(&label, 1025)]), label.clone(), 1025, vec![]),
+        ("unsubscribe from 1025 labels", Value::List(vec![int(22), int(1), list(&label, 1025)]), label.clone(), 1025, vec![]),
+        ("sync with 4097 gained", Value::List(vec![int(15), int(1), label.clone(), empty.clone(), int(0), empty.clone(), list(&id, 4097)]), id.clone(), 4097, vec![]),
+        (
+            "sync reply with 4097 wanted",
+            Value::List(vec![int(16), int(1), empty.clone(), list(&id, 4097), empty.clone(), cursor.clone(), Value::Bool(false)]),
+            id.clone(),
+            4097,
+            vec![empty.clone(), cursor.clone(), Value::Bool(false)],
+        ),
+        ("reconcile of 257 ranges", Value::List(vec![int(17), int(1), label.clone(), list(&range, 257)]), range.clone(), 257, vec![]),
+        ("reconcile reply of 4097 ranges", Value::List(vec![int(18), int(1), list(&range, 4097)]), range.clone(), 4097, vec![]),
+        ("path reply of 1025 steps", Value::List(vec![int(9), int(1), list(&step, 1025), Value::Bool(false)]), step.clone(), 1025, vec![Value::Bool(false)]),
+        (
+            "mode 2 listing 1025 ids",
+            Value::List(vec![int(18), int(1), Value::List(vec![Value::List(vec![Value::Bytes(vec![]), Value::Bytes(vec![]), Value::List(vec![int(2), list(&id, 1025), empty.clone()])])])]),
+            id.clone(),
+            1025,
+            vec![empty.clone()],
+        ),
+    ];
+    for (name, full, item, n, tail) in caps {
+        cases.push(repeated(name, "cap", full, item, n, &tail));
+    }
+    let rejects: Vec<(&str, &str, Vec<u8>)> = vec![
+        ("unknown kind", "unknown-kind", cbor::encode(&Value::List(vec![int(99), int(7)]))),
+        ("id at 2^32", "head", cbor::encode(&Value::List(vec![int(2), int(1 << 32), int(0)]))),
+        ("request with id 0", "id", cbor::encode(&Value::List(vec![int(2), int(0), int(0)]))),
+        ("reply with id 0", "id", cbor::encode(&Value::List(vec![int(1), int(0)]))),
+        ("push with an id", "id", cbor::encode(&Value::List(vec![int(23), int(5), label.clone(), Value::List(vec![Value::List(vec![int(1), id.clone()])]), cursor.clone()]))),
+        ("non-canonical id", "cbor", vec![0x82, 0x01, 0x18, 0x01]),
+        ("trailing byte", "cbor", vec![0x82, 0x01, 0x01, 0x00]),
+        ("indefinite array", "cbor", vec![0x9f, 0x01, 0x01, 0xff]),
+        ("wrap of 48 bytes", "size", cbor::encode(&Value::List(vec![int(12), int(1), label.clone(), bytes(1, 1), bytes(48, 0), bytes(64, 0)]))),
+        ("step that does not parse", "step", cbor::encode(&Value::List(vec![int(6), int(1), bytes(300, 0)]))),
         (
             "mode 1 over 32 ids",
             "cap",
-            Value::List(vec![
+            cbor::encode(&Value::List(vec![
                 int(17),
                 int(1),
-                Value::Bytes(vec![0; 16]),
-                Value::List(vec![Value::List(vec![Value::Bytes(vec![]), Value::Bytes(vec![]), Value::List(vec![int(1), Value::List((0..33u8).map(|i| Value::Bytes(vec![i; 32])).collect())])])]),
-            ]),
-            "2",
+                label.clone(),
+                Value::List(vec![Value::List(vec![Value::Bytes(vec![]), Value::Bytes(vec![]), Value::List(vec![int(1), Value::List((0..33u8).map(|i| bytes(32, i)).collect())])])]),
+            ])),
         ),
-        ("empty upload", "count", Value::List(vec![int(10), int(1), Value::Bytes(vec![0; 16]), Value::List(vec![])]), "2"),
+        ("empty upload", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), empty.clone()]))),
         (
             "overlapping ranges",
             "ranges",
-            Value::List(vec![
+            cbor::encode(&Value::List(vec![
                 int(17),
                 int(1),
-                Value::Bytes(vec![0; 16]),
+                label.clone(),
                 Value::List(vec![
-                    Value::List(vec![Value::Bytes(vec![1]), Value::Bytes(vec![3]), Value::List(vec![int(0), Value::Bytes(vec![0; 16])])]),
-                    Value::List(vec![Value::Bytes(vec![2]), Value::Bytes(vec![4]), Value::List(vec![int(0), Value::Bytes(vec![0; 16])])]),
+                    Value::List(vec![Value::Bytes(vec![1]), Value::Bytes(vec![3]), Value::List(vec![int(0), bytes(16, 0)])]),
+                    Value::List(vec![Value::Bytes(vec![2]), Value::Bytes(vec![4]), Value::List(vec![int(0), bytes(16, 0)])]),
                 ]),
-            ]),
-            "2",
+            ])),
         ),
     ];
-    for (name, rule, v, answer) in rejects {
-        let enc = cbor::encode(&v);
+    for (name, rule, enc) in rejects {
         let r = Message::decode(&enc).expect_err(name);
-        assert_eq!(r.code().0.to_string(), answer, "{name}");
-        cases.push(case(name, SPEC).with("hex", hex(&enc)).with("reject", rule).with("answer", answer));
+        cases.push(case(name, SPEC).with("hex", hex(&enc)).with("reject", rule).with("answer", r.code().0.to_string()));
     }
+    let h17 = Value::List(vec![Value::Str("osis".into()), Value::List((1..=17).map(int).collect()), int(0), bytes(32, 0)]);
+    assert!(Hello::decode(&cbor::encode(&h17)).is_err());
+    cases.push(case("hello with 17 versions", "spec/wire.md §11.1").with("hex", hex(&cbor::encode(&h17))).with("reject", "cap"));
     cases.push(case("zero-length frame", "spec/wire.md §11.1").with("frame", "00000000").with("reject", "frame-length").with("answer", "2"));
+    let over = u32::try_from(osis_core::format::MAX_MESSAGE + 1).unwrap().to_be_bytes();
+    cases.push(case("frame of MAX_MESSAGE + 1", "spec/wire.md §11.1").with("frame", hex(&over)).with("reject", "frame-length").with("answer", "2"));
     VecFile { header: generated_header("proto", SPEC), cases }
 }
 
-/// The fixed reconciliation universe: 32-byte slices of `xof("osis proto reconcile", 32 n)`.
-fn universe(n: usize) -> Vec<BlobId> {
-    crate::xof("osis proto reconcile", 32 * n).chunks_exact(32).map(|c| BlobId(c.try_into().unwrap())).collect()
-}
-
-fn hash_ids(ids: &[BlobId]) -> String {
-    hex(&osis_core::hash::hash(&ids.iter().flat_map(|i| i.0).collect::<Vec<u8>>()))
-}
-
-fn ranges_of(m: &Message) -> &[osis_proto::Range] {
-    match m {
-        Message::Reconcile { ranges, .. } | Message::ReconcileReply { ranges, .. } => ranges,
-        _ => unreachable!(),
-    }
-}
-
 pub fn reconcile() -> VecFile {
-    use osis_proto::rbsr::{Reconciler, fingerprint, respond};
+    use osis_proto::rbsr::fingerprint;
     const SPEC3: &str = "spec/wire.md §11.3";
-    let mut cases = Vec::new();
-    let u = universe(10_100);
-    let mut first = u[..100].to_vec();
-    first.sort();
-    cases.push(case("fingerprint of 100 ids", SPEC3).with("ids", "the first 100 ids of the universe below").with("fingerprint", hex(&fingerprint(&first))));
-    cases.push(case("fingerprint of the empty set", SPEC3).with("fingerprint", hex(&fingerprint(&[]))));
+    let ids: Vec<BlobId> = {
+        let mut v: Vec<BlobId> = crate::xof("osis proto reconcile", 3200).as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect();
+        v.sort();
+        v
+    };
     let mut one = [0u8; 32];
     one[0] = 1;
-    cases.push(
+    let cases = vec![
+        case("fingerprint of 100 ids", SPEC3).with("ids", "xof(\"osis proto reconcile\", 3200) as 100 ids").with("fingerprint", hex(&fingerprint(&ids))),
+        case("fingerprint of the empty set", SPEC3).with("fingerprint", hex(&fingerprint(&[]))),
         case("fingerprint sum wraps mod 2^256", SPEC3)
             .with("ids", format!("{},{}", hex(&one), hex(&[0xff; 32])))
             .with("fingerprint", hex(&fingerprint(&[BlobId(one), BlobId([0xff; 32])]))),
-    );
-    // Requester A and responder B: 9900 common IDs, then 100 only A holds, then 100 only B holds.
-    let mut a: Vec<_> = u[..10_000].to_vec();
-    let mut b: Vec<_> = u[..9_900].iter().chain(&u[10_000..]).copied().collect();
-    a.sort();
-    b.sort();
-    let mut r = Reconciler::new(&a);
-    let (mut step, mut round) = (0, 0u32);
-    while r.has_queued() {
-        round += 1;
-        let mut replies = Vec::new();
-        while let Some(batch) = r.next_batch() {
-            let req = Message::Reconcile { id: round, label: LabelId([0x0a; 16]), ranges: batch };
-            let reply = Message::ReconcileReply { id: round, ranges: respond(&b, ranges_of(&req)).unwrap() };
-            for (dir, m) in [("request", &req), ("reply", &reply)] {
-                step += 1;
-                let enc = m.encode();
-                let mut c = case(&format!("transcript {step}"), SPEC3)
-                    .with("round", round.to_string())
-                    .with("direction", dir)
-                    .with("ranges", ranges_of(m).len().to_string())
-                    .with("body-blake3", hex(&osis_core::hash::hash(&enc)));
-                if step <= 2 {
-                    c = c.with("hex", hex(&enc));
-                }
-                cases.push(c);
-            }
-            replies.push(ranges_of(&reply).to_vec());
-        }
-        for rep in replies {
-            r.on_reply(&a, &rep);
-        }
-    }
-    let need: Vec<_> = r.need.iter().copied().collect();
-    let have: Vec<_> = r.have.iter().copied().collect();
-    let mut want_need = u[10_000..].to_vec();
-    let mut want_have = u[9_900..10_000].to_vec();
-    want_need.sort();
-    want_have.sort();
-    assert_eq!((&need, &have), (&want_need, &want_have));
-    cases.push(
-        case("transcript result", SPEC3)
-            .with("sets", "universe = xof(\"osis proto reconcile\", 323200) as 10100 ids; A = ids 0..10000, B = ids 0..9900 and 10000..10100; A requests")
-            .with("split", "16 subranges of near-equal own counts (subrange i holds own ids i*n/16..(i+1)*n/16), bounds the first own id of each (full 32 bytes); requests batch the queued ranges sorted by lower bound, 256 per message; replies are applied after the round")
-            .with("rounds", round.to_string())
-            .with("need", format!("{} ids, blake3 of the sorted concatenation {}", need.len(), hash_ids(&need)))
-            .with("have", format!("{} ids, blake3 of the sorted concatenation {}", have.len(), hash_ids(&have))),
-    );
+    ];
     VecFile { header: generated_header("proto", SPEC3), cases }
 }

@@ -5,7 +5,7 @@ use crate::Error;
 use crate::msg::{MAX_RECONCILE_RANGES, Mode, Range};
 use osis_core::BlobId;
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Most IDs in a mode 1 list.
 pub const LIST_MAX: usize = 32;
@@ -150,14 +150,23 @@ pub fn respond(own: &[BlobId], ranges: &[Range]) -> Result<Vec<Range>, Error> {
     Ok(out)
 }
 
-/// The requester's side: ranges still to send, and both differences found so far.
+/// The requester's side: ranges still to send, ranges asked per outstanding batch, and both
+/// differences found so far. Reply ranges outside what a batch asked are dropped.
 #[derive(Debug, Default)]
 pub struct Reconciler {
     queue: Vec<Range>,
+    /// Per batch token: the ranges sent, and whether each carried our ID list (mode 1).
+    asked: BTreeMap<u64, Vec<(Bound, Bound, bool)>>,
+    next: u64,
     /// IDs the responder holds that we lack.
     pub need: BTreeSet<BlobId>,
     /// IDs we hold that the responder lacks.
     pub have: BTreeSet<BlobId>,
+}
+
+/// Whether `[lower, upper)` lies inside `[lo, hi)`.
+fn within(lo: &Bound, hi: &Bound, lower: &Bound, upper: &Bound) -> bool {
+    cmp_bounds(lo, lower) != Ordering::Greater && (hi.is_end() || (!upper.is_end() && cmp_bounds(upper, hi) != Ordering::Greater))
 }
 
 impl Reconciler {
@@ -168,14 +177,18 @@ impl Reconciler {
         Reconciler { queue: vec![Range { lower: lo, upper: hi, mode }], ..Default::default() }
     }
 
-    /// The next Reconcile batch (at most 256 ranges, sorted), `None` when nothing is queued.
-    pub fn next_batch(&mut self) -> Option<Vec<Range>> {
+    /// The next Reconcile batch (at most 256 ranges, sorted) with its token for `on_reply`;
+    /// `None` when nothing is queued.
+    pub fn next_batch(&mut self) -> Option<(u64, Vec<Range>)> {
         if self.queue.is_empty() {
             return None;
         }
         self.queue.sort_by(|a, b| cmp_bounds(&a.lower, &b.lower));
         let n = self.queue.len().min(MAX_RECONCILE_RANGES);
-        Some(self.queue.drain(..n).collect())
+        let batch: Vec<Range> = self.queue.drain(..n).collect();
+        self.next += 1;
+        self.asked.insert(self.next, batch.iter().map(|r| (r.lower.clone(), r.upper.clone(), matches!(r.mode, Mode::Ids(_)))).collect());
+        Some((self.next, batch))
     }
 
     /// Whether ranges remain to be sent.
@@ -183,9 +196,24 @@ impl Reconciler {
         !self.queue.is_empty()
     }
 
-    /// Takes a ReconcileReply.
-    pub fn on_reply(&mut self, own: &[BlobId], ranges: &[Range]) {
+    /// Nothing queued and no batch unanswered.
+    pub fn is_done(&self) -> bool {
+        self.queue.is_empty() && self.asked.is_empty()
+    }
+
+    /// Takes the ReconcileReply to batch `token`; a range not inside an asked one, or a mode 2
+    /// range not answering one of our mode 1 ranges exactly, is dropped. Returns whether the
+    /// token was outstanding.
+    pub fn on_reply(&mut self, token: u64, own: &[BlobId], ranges: &[Range]) -> bool {
+        let Some(asked) = self.asked.remove(&token) else { return false };
         for r in ranges {
+            let ok = asked.iter().any(|(lo, hi, ids)| match r.mode {
+                Mode::Diff { .. } => *ids && within(lo, hi, &r.lower, &r.upper) && within(&r.lower, &r.upper, lo, hi),
+                _ => within(lo, hi, &r.lower, &r.upper),
+            });
+            if !ok {
+                continue;
+            }
             let mine = slice(own, &r.lower, &r.upper);
             match &r.mode {
                 Mode::Fingerprint(fp) => {
@@ -203,6 +231,7 @@ impl Reconciler {
                 }
             }
         }
+        true
     }
 }
 

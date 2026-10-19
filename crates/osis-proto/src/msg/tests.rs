@@ -115,6 +115,14 @@ fn reconcile_rules() {
 fn heads() {
     let r = rejected(Value::List(vec![Value::Int(99), Value::Int(7)]));
     assert_eq!((r.id, r.code()), (7, Code::UNSUPPORTED));
+    // id 0 only on Error, Push and Signal
+    assert_eq!(rejected(Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)])).error, Error::Malformed("id 0"));
+    assert_eq!(rejected(Value::List(vec![Value::Int(1), Value::Int(0)])).error, Error::Malformed("id 0"));
+    assert!(Message::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
+    // non-canonical head, trailing bytes, indefinite length
+    assert!(Message::decode(&[0x82, 0x01, 0x18, 0x01]).is_err());
+    assert!(Message::decode(&[0x82, 0x01, 0x01, 0x00]).is_err());
+    assert!(Message::decode(&[0x9f, 0x01, 0x01, 0xff]).is_err());
     let r = rejected(Value::List(vec![Value::Int(2), Value::Int(1 << 32), Value::Int(0)]));
     assert_eq!((r.id, r.code()), (0, Code::MALFORMED));
     let r = rejected(Value::List(vec![Value::Int(2), Value::Int(9), Value::Int(0), Value::Int(0)]));
@@ -137,11 +145,14 @@ fn field_sizes() {
     let mut d = dep.clone();
     d[3] = Value::Bytes(vec![0; MAX_BLOB + 1]);
     assert_eq!(rejected(Value::List(d)).error, Error::Cap("message"));
-    let sig = |n: usize| Message::Signal { label: LabelId([0; 16]), blob: vec![0; n], wrap: [0; 49], auth: SignalAuth { deposit: false, sig: [0; 64] } }.encode();
+    let auth = PublishAuth { key: PublishKey::Write, sig: Signature([0; 64]) };
+    let sig = |n: usize| Message::Signal { label: LabelId([0; 16]), blob: vec![0; n], wrap: [0; 49], auth: auth.clone() }.encode();
     assert!(Message::decode(&sig(MAX_SIGNAL)).is_ok());
     assert!(Message::decode(&sig(MAX_SIGNAL + 1)).is_err());
-    let st = |n: usize| Message::Step { id: 1, step: vec![0; n] }.encode();
-    assert!(Message::decode(&st(MAX_STEP_BYTES + 1)).is_err());
+    let st = |n: usize| Value::List(vec![Value::Int(6), Value::Int(1), Value::Bytes(vec![0; n])]);
+    assert_eq!(rejected(st(MAX_STEP_BYTES + 1)).error, Error::Cap("step"));
+    // a step must parse: 323 zero bytes do not
+    assert!(matches!(rejected(st(MAX_STEP_BYTES)).error, Error::Label(_)));
 }
 
 proptest! {

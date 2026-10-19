@@ -24,7 +24,7 @@ pub(crate) fn reconcile(a: &[BlobId], b: &[BlobId]) -> (BTreeSet<BlobId>, BTreeS
         rounds += 1;
         assert!(rounds < 64, "no convergence");
         let mut replies = Vec::new();
-        while let Some(batch) = r.next_batch() {
+        while let Some((token, batch)) = r.next_batch() {
             let req = Message::Reconcile { id: 1, label: LabelId([0; 16]), ranges: batch };
             let Ok(Message::Reconcile { ranges, .. }) = Message::decode(&req.encode()) else { panic!("request did not decode") };
             let out = respond(b, &ranges).unwrap();
@@ -32,12 +32,13 @@ pub(crate) fn reconcile(a: &[BlobId], b: &[BlobId]) -> (BTreeSet<BlobId>, BTreeS
             let enc = rep.encode();
             assert!(enc.len() <= osis_core::format::MAX_MESSAGE);
             let Ok(Message::ReconcileReply { ranges, .. }) = Message::decode(&enc) else { panic!("reply did not decode") };
-            replies.push(ranges);
+            replies.push((token, ranges));
         }
-        for rep in replies {
-            r.on_reply(a, &rep);
+        for (token, rep) in replies {
+            assert!(r.on_reply(token, a, &rep));
         }
     }
+    assert!(r.is_done());
     (r.need, r.have, rounds)
 }
 
@@ -141,4 +142,47 @@ proptest! {
         prop_assert_eq!(have, diff(&a, &b));
         prop_assert!(rounds <= 5, "{} rounds", rounds);
     }
+}
+
+// spec/wire.md §11.3: reply ranges must answer what was asked; unsolicited ones add nothing
+#[test]
+fn unsolicited_replies_are_dropped() {
+    let own = set(0..100);
+    let mut r = Reconciler::new(&own);
+    let (token, _) = r.next_batch().unwrap();
+    let fake = set(1_000_000..1_001_000);
+    // a mode 2 range answering our mode 0 range, and replies to tokens never issued
+    r.on_reply(token, &own, &[Range { lower: Bound::empty(), upper: Bound::empty(), mode: Mode::Diff { theirs: fake[..1000].to_vec(), lacking: vec![] } }]);
+    assert!(!r.on_reply(token, &own, &[Range { lower: Bound::empty(), upper: Bound::empty(), mode: Mode::Ids(fake[..5].to_vec()) }]));
+    assert!(!r.on_reply(99, &own, &[Range { lower: Bound::empty(), upper: Bound::empty(), mode: Mode::Fingerprint([1; 16]) }]));
+    assert!(r.need.is_empty());
+    assert!(r.is_done());
+    // a subrange inside an asked range is taken
+    let mut r = Reconciler::new(&own);
+    let (t, _) = r.next_batch().unwrap();
+    let (lo, hi) = (Bound::of(&fake[0]), Bound::of(&fake[3]));
+    assert!(r.on_reply(t, &own, &[Range { lower: lo, upper: hi, mode: Mode::Ids(fake[..3].to_vec()) }]));
+    assert_eq!(r.need.len(), 3);
+}
+
+/// IDs `0..n` of the transcript universe: 32-byte slices of BLAKE3 XOF("osis proto reconcile").
+fn universe(n: usize) -> Vec<BlobId> {
+    let mut out = vec![0u8; 32 * n];
+    osis_core::hash::Hasher::new().update(b"osis proto reconcile").finalize_xof(&mut out);
+    out.as_chunks::<32>().0.iter().map(|c| BlobId(*c)).collect()
+}
+
+// spec/wire.md §11.3: two 10 000-ID sets with 100 differences each way reconcile in 2 round trips
+// with the reference split (deterministic; records this implementation's batching choices)
+#[test]
+fn transcript_ten_thousand() {
+    let u = universe(10_100);
+    let mut a: Vec<_> = u[..10_000].to_vec();
+    let mut b: Vec<_> = u[..9_900].iter().chain(&u[10_000..]).copied().collect();
+    a.sort();
+    b.sort();
+    let (need, have, rounds) = reconcile(&a, &b);
+    assert_eq!(need, u[10_000..].iter().copied().collect());
+    assert_eq!(have, u[9_900..10_000].iter().copied().collect());
+    assert_eq!(rounds, 2);
 }

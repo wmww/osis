@@ -26,7 +26,7 @@ Wave 2 (all of wave 1 merged).
 | crdt-seq | running (opus, worktree) | |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
-| proto | review | reviewer running; issues/proto-label-coupling.md to resolve at integration |
+| proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
@@ -57,6 +57,7 @@ Wave 2 (all of wave 1 merged).
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - label: spec/wire.md §13: a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB, so a step and its set fit one Register message.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
+- proto: spec/wire.md §11.2 Sync: a replay without a cursor pages in blob ID order with a replay cursor `[replay_id, pos]` and ends with the log cursor taken at its start (paging by log position failed on a compacted log: the next page's cursor was below the horizon).
 - proto: spec/wire.md §11.2 Opened's `entry_box` travels as the canonical bytes of the box value in a byte string, like steps and claim sets (the layout did not say).
 - commit: spec/commits.md §5: compaction snapshots of membership-class aspects and `/created` keep the fixed retention (the text read as if every snapshot delta were `writer`); `/created`'s "forever" is `abs` = forever on the wire. spec/wire.md §4: a header token no aspect lists is bad input.
 

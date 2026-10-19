@@ -24,4 +24,5 @@ Spec: spec/sync.md §5 (operations), §6 (protocol, cursor sync, reconciliation,
 server and node-sync are thin drivers around these engines; a loopback sync of N random entries converges in the round counts the spec's cost goals name (constant common case, log worst case; tier-2 test); notes/sync.md "Protocol" section records the message layouts summary and RBSR parameters. Delete this plan.
 
 ## Progress
-- Steps 1-5 landed (frame, Hello, offset; messages and vectors; RBSR and reconcile vectors; engines, `LabelStore`, loopback tests; `BundleImport`). Label objects live in a coupling module until osis-label merges (issues/proto-label-coupling.md). Open for "done": server and node-sync as thin drivers; one connection serving both sides for P2P.
+- Steps 1-5 landed (frame, Hello, offset; messages and vectors; RBSR and reconcile vectors; engines, `LabelStore`, loopback tests; `BundleImport`). Open for "done": server and node-sync as thin drivers; one connection serving both sides for P2P.
+- Review fixes: osis-label types and reader replace proto's copies; cached paths and per-step claim-set lookups; replay cursor (spec/wire.md §11.2); reconcile replies checked against the ranges asked; vectors on a real fixture.
