@@ -44,7 +44,7 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync | running (opus, worktree) | |
-| membership-flows | running (opus, worktree) | |
+| membership-flows | review | done over LocalPeer; reviewer running; issues/link-finalization.md (owner-call), roster-snapshot-deltas, flows-gaps |
 | api (first half) | running (opus, worktree) | |
 | wave 3 integration pass | running (opus, worktree) | tree-unify, base64url, tier-2 run, freeze-ready list |
 | tla rerun (round 2) | running (opus, worktree) | |
