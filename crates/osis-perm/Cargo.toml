@@ -12,3 +12,6 @@ workspace = true
 
 [dependencies]
 osis-core.workspace = true
+
+[dev-dependencies]
+membership-model.workspace = true

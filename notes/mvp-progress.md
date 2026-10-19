@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
+Wave 2 (all of wave 1 merged).
 
 ## Plans
 | plan | state | notes |
@@ -19,15 +19,15 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
-| perm | running (opus, worktree) | |
+| perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
-| store | review | reviewer running |
+| store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
-| commit | running (opus, worktree) | |
+| commit | review | reviewer running; owner-call issues/token-admin-secret.md (non-admin writer omits level-1 token, provisional) |
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
-| keys | not started | after perm merges |
+| keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
@@ -38,6 +38,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 - None. (TLC findings S1–S10, R1–R7 decided: see Spec edits and Owner-calls pending.)
 
 ## Spec edits
+- perm review: spec/permissions.md §2 a lowering write by an admin of the member is a self-removal only when it lowers the author's own edge or admin on the member is its only authority (owner-chain or edge-admin authority on the target makes it an explicit demotion, which audits); §5.1 and spec/data-model.md §9: a frontier counter is the last counter received contiguously, inclusive.
 - crypto: spec/crypto.md §3 fixes kdf input conventions (two-argument kdf = empty input, tid input = 15 bytes, Ed25519 key from a kdf output = that RFC 8032 seed) and the `kdf("kem", ..)` XOF split (64 bytes ML-KEM `d || z`, then 32 bytes X25519).
 - Toplevel review of wire.md: `keyset` carries the epoch's suite ID (spec/data-model.md §9); spec/sync.md §5 says how a member peer authenticates another member's node (its `/reach` dialable key).
 - spec/sync.md §3: a projection class whose blob would exceed `MAX_BLOB` splits into several blobs, greedily in aspect-list order (pre-flight found no path under `MAX_BLOB` for a commit touching many aspects). spec/commits.md §1: one delta must fit a blob; the writer refuses the rare struct-of-many-large-registers shape (issues/struct-delta-size.md).
@@ -58,6 +59,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 - proto: spec/wire.md §11.2 Opened's `entry_box` travels as the canonical bytes of the box value in a byte string, like steps and claim sets (the layout did not say).
 
 ## Owner-calls pending
+- issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP).
 - issues/reseal-triggers.md (residual wrongful re-seal across a fork; members no automatic trigger reaches; recommended: accept for MVP).
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
 - issues/reseal-triggers.md: two re-seal residues after the TLC fixes: a wrongful re-seal across a fork read out of order (R1), and members no automatic trigger reaches when their deposits are refused (R2); recommended: accept for the MVP, mechanisms listed.
