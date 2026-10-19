@@ -2,7 +2,7 @@
 > Summary: A commit is a signed header plus deltas per touched aspect: header fields, commit ID and signature, commit kinds, dot forms, verification and atomic application, retention and purge, expiry, undo.
 
 ## 1. Header
-Field order and encoding: TBD (plans/protocol-spec.md). Fields:
+Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
 - Author node tid and the actor tid it acts for.
 - Kind: content or membership (§2); compaction-snapshot marker; import marker (content only, with the origins table, spec/permissions.md §7); roster-snapshot marker (membership only).
@@ -11,9 +11,9 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6), schema index or none, and the delta hashes of its deltas. A content commit has one delta per aspect; a membership commit may have several (§2), all sharing the aspect's range.
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
-- Delete token salt (16 random bytes) and token hashes (spec/crypto.md §7; list length capped, cap TBD).
+- Delete token salt (16 random bytes) and token hashes with their levels (spec/crypto.md §7); per aspect, the indices of the token hashes its deltas call for.
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
-- The aspect list and the chunk list are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry every token hash of the commit and belong to every projection of it (spec/sync.md §3).
+- The aspect, chunk, purge, token and origin lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's token commitments (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).

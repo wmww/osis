@@ -16,6 +16,9 @@
 5. **Transport keys are not node signing keys**, or every blind node and relay learns which device uploaded what. Clients dial blind nodes with an ephemeral key per connection (blind nodes never dial out). A node's dialable P2P key is separate, published only in `/reach`, rotatable at will.
 6. **Server addresses pin a key**: a transport URL plus the server's static public key, so a self-hosted server needs no certificate authority and a middlebox cannot pose as the server.
 
+## First contact
+A link (and so a contact card) may carry the sharer node's dialable key and relays (spec/wire.md §10): a redeemer sharing no server with the sharer dials that node, which serves K's label as a member peer (spec/sync.md §5). No new mechanism; redemption then needs the sharer online, as any P2P exchange does. Relay defaulting to the official server is client policy.
+
 ## Local and offline transports
 Owner wants "just works" across LAN, Bluetooth and similar. LAN works in iroh today. Custom transports (BLE, WiFi Aware, mixnets) use an iroh API that is unstable and outside 1.0 guarantees; the only BLE crate is experimental and AGPL, so BLE means our own transport on that API (owner's license call if the crate is used instead). Not MVP. Low-bandwidth links suit small commits and signals; large bodies wait for a fast path (chunk fetch is lazy, spec/sync.md §6). Recheck the iroh state before relying on any of this.
 
@@ -43,5 +46,4 @@ Mobile notifications need the server to wake a device with no live connection (s
 - Constraints to keep while implementing: per-entry upload-time attributes stay outside the hashed blob prefix (as the deposit flag does), so a wake bit never touches blob IDs; local-store root keys must be readable after first unlock while the device is locked, or a woken app cannot present the sync key.
 
 ## Open
-- First contact between two users with no shared blind node: invite link carrying dialable key plus relay URL (like iroh tickets), relay defaulting to the official server. A contact card is a link to a profile thing holding `/keys` (spec/sync.md §3).
 - Which free services the official server offers, and abuse limits for free relaying (deferred, notes/sync.md Open).

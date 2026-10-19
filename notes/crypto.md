@@ -18,6 +18,7 @@
 - **Blob encryption never takes a caller key**, so a rewritten blob (purged delta) always gets a fresh key and ID.
 - ML-KEM's internal SHA3/SHAKE is internal to that primitive; "one hash function" means every hash osis computes itself.
 
+- **Wire details** (spec/wire.md): one signature domain per signed object (deposit, delete and signal publish got their own, so no signature verifies as another kind). The symmetric box's nonce is BLAKE3(AD), because its key `kdf("box", s)` repeats across every epoch boxed under one s, while AD is unique per (actor, member, role, epoch). Agility enums are osis enum values in values and structures alike; case 1 matches suite 1.
 ## Costs
 - Grant or rotation: one sealed box (about 1.2 KB) per (member, role at or below the granted one), one per device for key-actor members. History: 32 bytes per earlier epoch plus a tag. `/keys`: about 3.6 KB for three roles.
 - A contact card (QR-sized) is a link to a profile thing holding `/keys`, since the keyset itself is too big for a QR code.
