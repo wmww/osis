@@ -18,7 +18,7 @@ Wave 1 (tla-models still running from wave 0).
 | tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 resolved (spec edits below, issues/reseal-triggers.md) | follow-up agent: write models/tla/run.sh, update both models to the edited text, rerun (list in plans/tla-models.md Progress); target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
-| crdt-core | review fixes | all steps done; reviewer found 3 bugs + text-embedding stamp order (spec); agent fixing |
+| crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
@@ -48,6 +48,9 @@ Wave 1 (tla-models still running from wave 0).
   - R1: spec/permissions.md §3 and spec/commits.md §2: a removal or demotion and the rotation of the target's roles it requires are one membership commit; re-seal decisions after a full sync pass, never for a member whose `until` is within `MAX_DRIFT`, boxes to the member's newest keyset the node holds; re-seal delivered by inbox only (label delivery dropped). spec/crypto.md §4: boxing an epoch's secret to a member is encrypting under it (R6). spec/sync.md §3 inbox blob = the parts about G; spec/permissions.md §4 certificate edge writes projected to their edge deltas.
   - R2: spec/permissions.md §4 stranded heartbeat also on a refused claim, wrapped under the newest secret held (spec/crypto.md §5); spec/sync.md §5 such a member is reached by re-seal. spec/crypto.md §3 deposit-seed refresh SHOULD → MAY (it refused stranded heartbeats).
   - R3: spec/crypto.md §4 a grant or re-seal re-writes the history boxes of the epochs it boxes. R4: spec/sync.md §5 re-registration compares (n, nonce) per role against a head epoch the admin holds; otherwise it walks first. R5: spec/crypto.md §5 wrap under the newest current epoch held; a node with no current secret places only its stranded heartbeat. R7: spec/sync.md §2 claim set is as of registration; a re-sealed member opens by sync key.
+- crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
+- crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
+- crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
 
 ## Owner-calls pending
 - issues/reseal-triggers.md (residual wrongful re-seal across a fork; members no automatic trigger reaches; recommended: accept for MVP).

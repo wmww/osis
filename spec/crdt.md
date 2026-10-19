@@ -26,7 +26,7 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 ### 2.2 Timestamps and stamps
 - `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`. HLC rules: a node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`; on receiving a commit the clock advances to the commit's ts. A commit with `wall_ms(ts)` more than `MAX_DRIFT = 1 h` (format constant) ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally. The node tiebreak lives in the dot, not in `ts`.
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts` and its own counter, so stamps inside a commit are ordered by counter, matching the writer's sequential intent.
-- Total order on stamps: by `ts`; then source kind (`Node` < `Commit` < `Derived`); then source bytes (tid, commit ID; for `Derived`, the order of the underlying dot); then counter. Two different writes never compare equal.
+- Total order on stamps: by `ts`; then the dot. Dots of `Node` and `Commit` sources order by source kind (`Node` < `Commit`), then source bytes (tid, commit ID), then counter. A dot `(Derived(d), i)` orders as the sequence `(d.source, d.ctr, i)` against the `(source, ctr)` of any other dot, so an embedded write sorts right after the write it embeds and below every other greater write (§7). Two different writes never compare equal.
 - "Later wins" everywhere means this order.
 
 ### 2.3 Counter consumption
@@ -87,7 +87,7 @@ Value    := any osis canonical value
 
 Fragment := Register | Bag | Struct | Enum | Set | Map | Seq | Slots
 Register := [0, R] | [0, R, Stamp] | [0, R, Stamp, Value]   ; [0, R, Stamp]: value-less write (§4.7)
-Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-register slots by ascending encoding id, at least two members in all; every member carries the position's reset
+Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-register slots by ascending encoding id, at least two members in all
 Bag      := [1|2|3, R, W, [Elem*]]           ; Elem as in Set; the value register holds int|float (anything else, only from §7, reads as nothing)
 Struct   := [4, R, W, {field_id: Fragment}]
 Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id] | [Stamp])
@@ -110,7 +110,7 @@ Set elements have no key; their value is a `Register` fragment. A map entry's ke
 1. `Sources` lists foreign sources in order of first appearance in the `Fragment`'s canonical encoding (stamps and dots alike, as they are encoded; a `Derived` source is preceded by its underlying source), then the frontier-only sources of a snapshot (§8) in ascending source-byte order. `Commits` holds exactly the commits other than this one with stamps in the fragment, grouped and ordered as in §3.2, each with `base` = its smallest counter in this delta. A `Dot` or `Stamp` uses the bare form whenever it can.
 2. Arrays of elements, entries, runs are sorted by dot (source as in §2.2, then counter), except that a commit-form delta's own source sorts below every other commit ID (its writer encodes before the commit ID exists). `PosW` sorted by `i`, then stamp descending; `FlagW` by `(i_from, Stamp)`; segments in element order with adjacent equal `Ci` merged. Maps sort by canonical key bytes as all osis maps do.
 3. Runs are maximal, up to `2^16` elements per run. A creation run extends over consecutive dots of one source as long as each element's creation write exists in the state, `e_i` was created anchored at `e_{i-1}`, and "carries something" (text: deleted flag `true` or has a char; list: has a reset or a non-empty fragment) and, for lists, "has a non-empty fragment" are the same for all. A non-creation run extends over consecutive dots that all have no creation write, no position writes, the same deleted write or element reset, and the same "carries something" and, for lists, "has a non-empty fragment".
-4. `W` is encoded whenever the state holds a surviving explicit presence write (§4.3). A `Slots` position lists its members in the order of §3.2 with every member carrying the position's effective reset (§7); a position with one member is that member, never a `Slots`.
+4. `W` is encoded whenever the state holds a surviving explicit presence write (§4.3). A `Slots` position lists its members in the order of §3.2 (§7); a position with one member is that member, never a `Slots`.
 5. A fragment never carries writes already implied by another write in the same delta (e.g. a creation run does not list its creation position writes in `PosW`), and a snapshot never carries content for deleted elements.
 6. Own-source counters lie in the header range; creations and position writes have distinct counters (§2.3).
 7. A reader rejects a delta (bad input, never a panic) if: non-canonical CBOR; a `Src`, `Ci` or counter is out of range or 0 where 1 is the minimum; a non-canonical table order or bare/array form; a segment's commit has another source than the run; n = 0 or n > `2^16`; a `FlagW` or `PosW` index out of range; a `FlagW` `false` in a list run; a non-empty `Content` whose length differs from the number of content-carrying elements of the run; a `Register` with a reset below a nested level (only aspect roots and the members of a `Slots` carry one); a keyed `Entry` without a fragment (tombstones are keyless); a `Slots` in a writer's delta, or one with fewer than two members, a non-register first member, unsorted or repeated slot encodings; a creation run of a `Derived` source in a writer's delta (only snapshots carry embedded characters, §7); foreign stamps in a delta that is neither a snapshot nor an import (spec/permissions.md §7).
@@ -123,10 +123,10 @@ Set elements have no key; their value is a `Register` fragment. A map entry's ke
 ### 4.2 Prune
 Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_root = own R` and `-inf` where none. A write with stamp `s` survives iff `s >= E`. Equality means the write and the reset come from the same commit (a replace: reset and content share the delta stamp, §2.3; embeddings §7 do the same), and then the content wins. Rules per structure:
 - Registers: the write is dropped if `s < E`.
-- Composites: the presence stamp (§4.3) is dropped if `< E`; children are pruned with `E` as their parent reset.
+- Composites: the presence stamp (§4.3) is dropped if `< E`; children are pruned with `E` as their parent reset. A nested fragment's own `R` below `E_parent` is dropped like any other write.
 - Collection elements: the element's own `R` survives iff `>= E_parent`; its content is pruned with `E_elem = max(E_parent, R_elem)`. A set, bag or map element record whose content is entirely pruned and whose own `R` is dropped is removed from the state. One whose content is pruned but whose `R` survives is a **tombstone** (dot plus reset stamp, nothing else). **Seq element records are never removed by prune**: a record whose writes are all pruned is a **bare anchor** (dot only), placed at END (§6.2) and never emitted, so writes anchored to it stay placeable. The one exception is a `Derived`-source record (§7), which exists only while it carries a write (§4.7, §6.1).
 - **Emptiness.** A fragment is empty iff it holds no surviving write and no record at any depth. Record existence is grow-only, so a struct field, map entry or list element whose only remaining content is a sequence of bare anchors is kept.
-- `Slots` positions (§7) have one effective reset, the greatest among their members, which every member carries after prune.
+- `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest member reset)`; every member is pruned under it, so a member's own reset below it goes.
 - A delta, after pruning against the state it joins, may contribute nothing. That is normal.
 
 ### 4.3 Presence
@@ -162,14 +162,14 @@ A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commi
 - Snapshots carry the delta's value-carrying writes value-less, before and after T, and never cover it, so its content lives only in its own blob, which blind nodes drop at T (§8). Before T a node holding the snapshot but not yet the delta reads those writes as absent, like any partial receipt.
 
 ### 4.8 Death of a write
-A write is **dead** at a node once the join has superseded it: pruned by a reset (§4.2); beaten as a register, case, flag or position winner by a greater stamp; its element deleted or tombstoned; or its value gone by expiry (§4.7). It dies at the `ts` of the superseding commit, or at T. Un-merge (§4.6) is the only way a dead write revives. Retention tracks deaths per body (spec/commits.md §5).
+A write is **dead** at a node once the join has superseded it: pruned by a reset (§4.2), a register's reset implied by its later write (§5.1) included; beaten as a register, case, flag or position winner by a greater stamp; its element deleted or tombstoned; or its value gone by expiry (§4.7). It dies at the `ts` of the superseding commit, or at T. Un-merge (§4.6) is the only way a dead write revives. Retention tracks deaths per body (spec/commits.md §5).
 
 ## 5. Encodings
 
 Each encoding below gives: state, delta shape (= grammar of §3.2, restated where helpful), join specifics beyond §4.1, read, ops, tombstones. Notation for op deltas: `D` is the delta stamp (bare `0` on the wire), `k, k+1, …` fresh counters (§2.3).
 
 ### 5.1 Register (0)
-- State: `R`, optional write `(stamp, value)`. Nested registers (struct fields, enum payload leaves, set element values) never carry their own `R` (always `[]`); only an aspect whose root is a register uses it, and the register slot of a `Slots` position carries the position's reset (§7).
+- State: `R`, optional write `(stamp, value)`. Nested registers (struct fields, enum payload leaves, set element values) never carry their own `R` (always `[]`); only an aspect whose root is a register uses it, and the register slot of a `Slots` position may (§7). An `R` below the write's stamp is dropped: the write resets everything older at the position (§7), so it implies `R`.
 - Join: greater stamp wins. Prune per §4.2.
 - Read: the value.
 - Ops: `set v` → `[0, [], D, v]` = `[0, [], 0, v]`. `remove_aspect` (root) → `[0, [D]]`. `replace v` (root) → `[0, [D], D, v]` (reset and content share the delta stamp; content wins by `>=`).
@@ -208,7 +208,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - State: `R`, `written`, entries `{dot: (R_entry, key, fragment)}`, plus a local index `key -> live dots` (not part of the lattice). The key is immutable and repeated in every record of the entry on the wire that carries a fragment. An entry is live iff its key is known and its fragment is present.
 - Join: union by dot; per entry `R` max, fragment join; prune. Tombstone = `(dot, R_entry)`; the key is dropped with the content (content-free tombstone).
 - Read: for each key with at least one live entry, `read(join of the live entries' fragments)`. Two live entries with one key (concurrent puts) read as one merged value.
-- Ops: `put(key, v)`: if a live entry with that key exists, write `v` by structural diff into the **lowest live dot** (lowest in §2.2 dot order) and leave the others alone; else create `[k, [], key, [fragment of v]]`. `remove(key)`: the reset stamp `D` on every live dot with that key, keyless records `[dot, [D], []]`. `set_field` and other path ops into an entry go to the lowest live dot. `replace` of the map: fragment reset then puts.
+- Ops: `put(key, v)`: if a live entry with that key exists, write `v` by structural diff (against the key's read, the join of its live entries) into the **lowest live dot** (lowest in §2.2 dot order) and leave the others alone; else create `[k, [], key, [fragment of v]]`. `remove(key)`: the reset stamp `D` on every live dot with that key, keyless records `[dot, [D], []]`. `set_field` and other path ops into an entry go to the lowest live dot. `replace` of the map: fragment reset then puts.
 - Resurrection: a nested write newer than the entry's reset makes the entry live again holding only the surviving writes; the record carries the key so the reader can index it. An older nested write is dropped by the tombstone. This is why map tombstones live **until the map fragment is reset** (then every tombstone older than the reset is itself pruned). No other GC.
 
 ### 5.7 Sequences: list (8) and text (9)
@@ -267,11 +267,11 @@ A position may see fragments of different encodings: an aspect upgraded from `st
 | struct, enum, set, map, list | reset `max(r, s)` only |
 A register with no write embeds as reset `r` only. A contribution that is not an int or float reads as nothing (§5.2). The edges are total, so a value-less write (§4.7) embeds exactly like its valued copy. Embedding commutes with join, so applying it eagerly after every join equals applying it at read.
 
-**One reset per position.** The effective reset of a `Slots` position is the greatest reset among its members; prune uses it for every member (§4.2) and every member then carries it. So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
+**One reset per position.** The effective reset of a `Slots` position is the greatest reset among its members (and the parent's); prune uses it for every member (§4.2). So a `replace` or `remove_aspect` in any encoding removes everything older at the position, whatever encoding wrote it, and a register write (an old app's save) is a reset of everything older in every slot plus its content where an edge exists.
 
 **Read.** A `Slots` position reads as its **chosen** member: the one with the greatest stamp anywhere inside it (resets included), ties by greater encoding id; the position is present iff that member is. Since every non-register slot holds the register's embedding, a slot's greatest stamp is at least the register's, so the register is chosen only when it is alone, and then the position is just that register. Two unrelated encodings at one position therefore read as "later writer wins", with the other encoding's history kept and readable again should it be written last later. Ops (§4.5, §9) see the position's read and write into the slot of their schema's encoding; a slot that does not exist yet is created by the write.
 
-**Canonical form.** A position with a single member is that member, never a `Slots`. Members are never dropped while they hold a stamp or a record; one holding only the position's reset still exists (the set of encodings seen is grow-only). Wire form in §3.2; §3.3 rule 7 for what a reader rejects.
+**Canonical form.** A position with a single member is that member, never a `Slots`. A member is dropped when it is empty or adds nothing to the register slot's embedding (`m ⊔ embed(R) = embed(R)`), so the members are a function of the surviving writes and do not depend on arrival order. Wire form in §3.2; §3.3 rule 7 for what a reader rejects.
 
 `Derived` dots never go on the wire from a writer, but a new-app insert anchored to an embedded char references `(Derived(s.dot), i)` through the delta's `Sources` (§3.2), and a snapshot of such a text carries them. A `Derived` record exists only while it carries a write (§4.7); an anchor naming an absent one still places (§6.1).
 
@@ -295,7 +295,7 @@ Input: local state fragment `S` (may be absent), new value `v`, and the writer's
 - struct: per field of `v`: recurse into `S.fields[id]`. Fields present in S but not in `v` are left alone (open structs: the writer only knows its fields; a typed `v` always has all the writer's fields). A field absent in S whose value in `v` equals the field's declared default produces no write (defaults are never materialized).
 - enum: same case → recurse into the payload; different case → `set_case`.
 - set: adds for values in `v` whose `view` matches no live element; removes for live, non-opaque elements whose `view` is not in `v` (one reset stamp). Large values compare by keyed content hash.
-- map: keys (under `view`) only in `v` → put; non-opaque keys only in S → remove; both → recurse into the lowest live entry.
+- map: keys (under `view`) only in `v` → put; non-opaque keys only in S → remove; both → recurse with the key's read (the join of its live entries) as S, writing into the lowest live entry.
 - list: opaque elements are removed from consideration first and keep their place; LCS (Myers) over the rest with equality = `view(read(elem)) == item` (deep); unmatched old elements and new items are then **paired in order** while both remain and recursed into (a changed entry is an edit, not delete+insert); leftover old → delete (element reset), leftover new → insert after the preceding matched/paired element.
 - text: Myers diff over chars → deletes and inserts (no move detection). Equal strings → no writes.
 - absent S: everything is a creation; composites with no content get an explicit `W`.

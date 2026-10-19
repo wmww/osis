@@ -92,6 +92,20 @@ pub fn live_entries(entries: &BTreeMap<Dot, Entry>) -> BTreeMap<Value, Vec<Dot>>
     }
     m
 }
+/// The value a key reads as: the join of its live entries' fragments (§5.6); a write by diff goes into the lowest
+/// live dot but is computed against this (§9).
+pub fn key_state(entries: &BTreeMap<Dot, Entry>, dots: &[Dot]) -> Option<Frag> {
+    let mut out: Option<Frag> = None;
+    for d in dots {
+        if let Some(f) = entries.get(d).and_then(|e| e.frag.as_deref()) {
+            match &mut out {
+                None => out = Some(f.clone()),
+                Some(o) => o.join(f.clone()),
+            }
+        }
+    }
+    out
+}
 /// Visible sequence elements: not deleted and with content.
 pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
     linearize(elems, text)
@@ -283,8 +297,8 @@ pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Val
     if let Some(Frag::Map { entries: st, .. }) = state {
         if let Some(dots) = live_entries(st).get(k) {
             let d = dots[0].clone();
-            let cur = st[&d].frag.as_deref();
-            let delta = crate::diff::diff(w, cur, vt, v)?;
+            let cur = key_state(st, dots);
+            let delta = crate::diff::diff(w, cur.as_ref(), vt, v)?;
             entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)) });
             let f = Frag::Map { c: comp(None), entries };
             return Some(f);
