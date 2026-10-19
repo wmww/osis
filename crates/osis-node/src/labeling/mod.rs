@@ -1,4 +1,13 @@
-//! Labeling (plans/node-sync.md): which blobs go under which label (closure, entitlement,
-//! projection by retention class, retag), wraps, stamps and deposits, certificate blobs.
-//! Local commits reach it as `Event::Applied { origin: Local, .. }`; node-core's deletion and
-//! re-snapshot queues (`Engine::deletions`, the `resnapshot` log) are its inputs.
+//! Labeling (plans/node-sync.md; spec/sync.md §1-§3, §6-§7): which blobs go under which label
+//! (closure, entitlement, projection by retention class), wraps, stamps and deposits, the keys a
+//! server's head calls for, delete tokens, certificate blobs, and the convergence rule.
+//! Synchronous functions over the `Engine`; `sync` acts on them.
+
+mod actors;
+mod blobs;
+mod certs;
+pub mod converge;
+
+pub use actors::GroupLabel;
+pub use blobs::{Body, HeadKeys, Sealed, delete_item, open_commit, seal_body};
+pub use converge::{Facts, Hold, Why, classify, may_delete};
