@@ -29,7 +29,7 @@ use std::sync::Arc;
 pub enum Reason {
     /// The `/created` record (key) of the author or of a thing on an owner chain is missing.
     MissingChain(Tid),
-    /// The `/created` record of a touched thing is unknown.
+    /// The `/created` record of a thing whose delta it holds or that it syncs is unknown.
     UnknownCreated(Tid),
     /// `ts` more than `MAX_DRIFT` ahead of the corrected clock.
     Drift,
@@ -118,7 +118,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift));
     }
-    for a in &h.aspects {
+    // only things whose deltas it holds or syncs gate the commit: a thing it neither holds a
+    // delta of nor syncs (another's private thing in a mixed commit) is not applied here
+    let held_ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
+    for (ai, a) in h.aspects.iter().enumerate() {
+        if !held_ais.contains(&ai) && !tx.core.syncing.contains(&a.tid) {
+            continue;
+        }
         if record(&a.tid).is_none() {
             return Ok(Exam::Pending(Reason::UnknownCreated(a.tid)));
         }
@@ -247,24 +253,44 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 }
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
-/// §4); dropped parts stay dropped.
-fn late_parts(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob) -> Result<Ingested> {
+/// §4); dropped parts stay dropped. Late deltas that wait (their thing's `/created`, chain or
+/// pages) are kept pending under the commit's ID and joined once they apply.
+fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
     skip.extend(meta.dropped.iter().copied());
-    if blob.parts.iter().all(|p| skip.contains(&(p.ai, p.di))) {
+    if tx.core.pending.contains_key(id)
+        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
+        && let Ok(old) = CommitBlob::decode(&old)
+    {
+        blob = merge_parts(old, blob);
+    }
+    blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
+    if blob.parts.is_empty() {
+        if tx.core.pending.remove(id).is_some() {
+            tx.core.touch();
+            tx.txn.remove_pending(id, Shred::No)?;
+        }
         return Ok(Ingested::Duplicate(*id));
     }
-    let mut merged = merge_parts(held, blob);
+    let mut merged = merge_parts(held, blob.clone());
     merged.header = (*meta.header).clone();
     match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
+            if tx.core.pending.remove(id).is_some() {
+                tx.core.touch();
+                tx.txn.remove_pending(id, Shred::No)?;
+            }
             atomic::join_late(tx, id, &merged, parts)?;
             Ok(Ingested::Applied(*id))
         }
-        // the commit applied already: what waits here is only this delta's pages
-        Exam::Pending(r) => Ok(Ingested::Pending(*id, r)),
+        Exam::Pending(r) => {
+            tx.core.touch();
+            tx.txn.put_pending(id, PendingKind::Pending, &blob.encode())?;
+            tx.core.pending.insert(*id, r.clone());
+            Ok(Ingested::Pending(*id, r))
+        }
         Exam::Parked => Ok(Ingested::Parked(*id)),
     }
 }
