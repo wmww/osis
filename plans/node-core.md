@@ -24,7 +24,7 @@ Spec: spec/commits.md (all), spec/crdt.md §2.2 (HLC, drift), §4.5–§4.8, §8
 - [x] Writing path end to end (ops → commit → local apply → events) for all encodings; paged deltas.
 - [x] Receiving path: verification, pending/parking, atomic apply, events; two-engine convergence tests under random delivery (crdt differential at the node level).
 - [x] Validity and un-merge with perm; the Bob revocation scenario and Carol variant as tests (notes/permissions.md) at the engine level with hand-fed membership commits.
-- [ ] Retention, expiry, purge, compaction snapshots, undo; tests per spec/commits.md §5–§7 sentence.
+- [x] Retention, expiry, purge, compaction snapshots, undo; tests per spec/commits.md §5–§7 sentence.
 - [ ] Synthetic aspects, move/import, diagnostics; version-skew unit tests (unknown encoding parks the commit, re-examined after "upgrade" flag flips).
 
 ## Done when
@@ -34,3 +34,4 @@ Two engines connected by `LocalPeer` converge for every encoding, honour revocat
 - Steps 1–2: layout (notes/node.md), identity, HLC, store wiring, creation records, writing path (all encodings but sequences, which wait for crdt-seq), paged deltas, receiving/pending skeleton, LocalPeer.
 - Step 3: receiving tests (signature, dedup, pending reasons, drift, atomic wait and late deltas, parking, grantee before grant, random-delivery convergence); sequences and chunked large values in the write path (`engine/large.rs`, `read_large`, `get_full`).
 - Step 4: Bob revocation and Carol variant, re-grant, register un-merge, overlapping counters, membership content rules (issues/commit-delta-content-rules.md resolved and deleted), perm reload on restart.
+- Step 5: deaths and bounds, keep at most 0, expiry (timers, late copies stripped), purge (rights, later-arriving deltas), compaction snapshot with covered test and frontiers, undo/redo/admin undo (pre-state of others' commits from held bodies).
