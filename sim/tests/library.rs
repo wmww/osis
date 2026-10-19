@@ -129,6 +129,27 @@ fn keep_at_most_seed_6() {
     ok("keep_at_most", 6);
 }
 
+// spec/commits.md §5, spec/sync.md §5: sweep seed 42, a timed delete lost on a cut connection.
+#[test]
+#[ignore = "issues/sync-timed-delete-lost.md"]
+fn keep_at_most_seed_42() {
+    ok("keep_at_most", 42);
+}
+
+// spec/commits.md §5: sweep seed 62, the node is never ticked again, nothing is dropped.
+#[test]
+#[ignore = "issues/sync-wake-lost.md"]
+fn keep_at_most_seed_62() {
+    ok("keep_at_most", 62);
+}
+
+// spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff loses a heartbeat field; the pass aborts.
+#[test]
+#[ignore = "issues/crdt-expiring-diff.md"]
+fn revocation_bob_seed_28() {
+    ok("revocation_bob", 28);
+}
+
 // spec/sync.md §6: a dishonest server; honest nodes converge through the honest one.
 #[test]
 #[ignore = "tier 2"]

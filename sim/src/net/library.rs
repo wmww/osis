@@ -13,7 +13,6 @@ use osis_crdt::{Op, PathOp};
 use osis_node::Mutation;
 use osis_node::flows::{Demotion, LinkSpec, PreSync};
 use osis_node::sync::Event;
-use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
@@ -720,21 +719,28 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     if v.is_none() {
         return Err(sim.fail("the current value of a keep-at-most aspect is gone"));
     }
-    // the replaced bodies: every written commit but the winners each node reads
+    // the replaced bodies: every written commit but the winner; the bodies each node holds
     let mut winners = BTreeSet::new();
+    let mut held = Vec::new();
     for n in [a, b] {
         let e = sim.engine(n)?;
-        for c in &written {
-            if e.holds_body(c, &t, &k) {
-                winners.insert(*c);
-            }
-        }
+        let h: Vec<usize> = (0..written.len()).filter(|i| written.get(*i).is_some_and(|c| e.holds_body(c, &t, &k))).collect();
+        winners.extend(h.iter().filter_map(|i| written.get(*i).copied()));
+        held.push(h);
     }
     let replaced: Vec<CommitId> = written.iter().filter(|c| !winners.contains(c)).copied().collect();
+    if winners.len() > 1 {
+        let now = sim.engine(a)?.now().0;
+        let wake = sim.nodes.get(a).and_then(|x| x.wake_at());
+        let mut deaths = Vec::new();
+        for c in &written {
+            deaths.push(sim.engine(a)?.deaths(c, &t, &k).ok().flatten().map(|x| x.0.wall_ms().0));
+        }
+        return Err(sim.fail(format!("replaced bodies kept past the keep-at-most bound: nodes hold writes {held:?} of {} (one is current); node {a} at {now}, wake {wake:?}, first deaths {deaths:?}", written.len())));
+    }
     if replaced.is_empty() {
         return Err(sim.fail("nothing was replaced"));
     }
     expired_absent(&mut sim, &replaced, &k)?;
-    let _ = workload::SHORT.ak();
     sim.finish()
 }

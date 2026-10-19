@@ -99,6 +99,13 @@ pub struct NetNode {
     pub tid: Tid,
 }
 
+impl NetNode {
+    /// When the node asked to be woken (its last `Wake` not yet fired).
+    pub fn wake_at(&self) -> Option<u64> {
+        self.wake
+    }
+}
+
 /// One blind server.
 pub struct NetServer {
     hub: Option<Hub<MemoryBackend>>,
@@ -116,9 +123,9 @@ pub struct NetServer {
 }
 
 /// A dishonest server's behavior on what it sends (adversary scenarios): per message, silently
-/// drop it (the stream stays up), hold it back and send it after the next one or at the next
-/// quiet period (reorder within the stream), or also replay an older message of the same
-/// connection.
+/// drop it (the stream stays up), hold it back and send it after the next one or when `quiet`
+/// starts (reorder within the stream; never while calm), or also replay an older message of the
+/// same connection.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Evil {
     pub drop_pct: u32,
@@ -644,7 +651,7 @@ impl NetSim {
         if self.dice.pct(e.drop_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
             self.note(format!("server {s} drops a message on conn {hc}"));
-        } else if !self.held.contains_key(&(s, hc)) && self.dice.pct(e.hold_pct) {
+        } else if !self.calm && !self.held.contains_key(&(s, hc)) && self.dice.pct(e.hold_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
             self.held.insert((s, hc), bytes.clone());
         } else {
