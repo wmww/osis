@@ -1,0 +1,76 @@
+# Architecture
+> Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and osis-core's public surface. Reopen a fixed item only through an issue.
+
+## 1. Crate map
+Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (apps-e2e adds `examples/*`: an empty glob fails the build); `fuzz/` is excluded (cargo-fuzz). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
+
+| layer | crate | plan(s) | contents |
+|---|---|---|---|
+| 0 | `osis-core` | (this note, §7) | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, `Clock`, `impl_error!` |
+| 1 | `osis-crypto` | crypto | suite 1 primitives, kdf, sealed boxes, wraps, delete tokens |
+| 1 | `osis-crdt` | crdt-core, crdt-seq | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
+| 1 | `osis-perm` | perm | membership validity rules over an abstract held set |
+| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`) |
+| 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
+| 2 | `osis-store` | store | `Backend`, `MemoryBackend`, file backend (`file-backend`), `Store` |
+| 3 | `osis-commit` | commit | commit header, kinds, retention, signatures |
+| 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
+| 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, chunk trees |
+| 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
+| 6 | `osis-server` | server | blind node used as a server (`bin` feature for the binary) |
+| 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows |
+| 8 | `osis` | api | public API; the only crate apps depend on |
+| 9 | `osis-cli` | cli | binary `osis` |
+| 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector runner |
+| 9 | `osis-sim` (`sim/`) | sim | deterministic simulator |
+| 9 | `examples/*` | apps-e2e | example apps, default members so they keep compiling |
+| - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
+| - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
+
+**Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, commit); proto (core, label); server (core, crypto, label, proto, store, transport); node (everything below); osis (node); cli (osis, schema, server); sim (osis, node, server, store). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. Models are dev-dependencies of the crates they check only, and use no workspace lints.
+
+## 2. Fixed abstractions
+Each is a trait (or small trait family) in the named crate with an in-memory or no-op implementation in the same crate for tests. Layers above never reach around them.
+- **Sync vs async**: core, crypto, crdt, schema, commit, label, perm, keys, proto, store are synchronous, do no I/O of their own, spawn no threads, and take randomness (`&mut dyn CryptoRngCore`, rand_core) and time (`Clock`) as parameters: deterministic under the simulator, wasm-friendly. tokio appears only in transport, server, node, osis, cli, sim.
+- **`Backend`** (osis-store): transactional KV of opaque bytes: ordered keys, get/put/delete, prefix scan, atomic write batches, durable commit, plus a large-blob area (ciphertext files by BlobId). Never sees plaintext (notes/local-store.md). `MemoryBackend` (tests, sim; crash simulation) and one file backend (redb or rusqlite, store plan decides; pure Rust preferred). Everything above talks to `Store`, the encrypted-unit layer on `Backend`; node never touches `Backend`.
+- **`Transport`** (osis-transport): `dial(Address) -> Connection`, `listen(Config) -> incoming Connections`; a `Connection` yields ordered, bidirectional, confidential byte streams with the authenticated peer's static public key, and a close. Nothing in proto, node or server names QUIC, TCP or iroh. `InProcess` (deterministic, fault-injectable), QUIC with a pinned server key, iroh. Framing messages onto a stream is proto's job.
+- **Sans-I/O protocol engines** (osis-proto): client and server sides of the sync protocol are state machines, `handle(Input) -> Vec<Output>`: inputs are decoded messages, timer fires, local events; outputs are messages, storage requests, timers. transport/node/server are thin drivers.
+- **Node sync layer is sans-I/O** (plans/node-sync.md): everything in `osis-node` reacting to messages, timers or engine events is `SyncEngine::handle(Event) -> Vec<Action>` over proto sessions, labeling and flows, with exactly two drivers: the tokio driver in `osis-node` and the simulator's step driver (seeded scheduler, virtual clocks, engine-to-engine delivery; never tokio, never the async transport). `InProcess` tests the drivers and the stream layer. Determinism rests on this split.
+- **`Clock`** (core): `now_wall_ms()`; node builds the HLC and the corrected clock on it. **Rng**: `rand_core::CryptoRngCore` passed in, never a global.
+- **`View`** (crdt defines, schema implements): projection of read values onto what the writer's schema can type, for the structural diff (spec/crdt.md §9).
+- **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, label implements with node): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link.
+- **Engine events** (node): typed events (commit applied with its changed `(tid, ak)` set, origin, author, `ts`, receipt time; roster change; signal; sync status; diagnostic) on a channel after durability and outside locks; the `osis` API builds watches on them and never reaches into engine internals. The data API is synchronous (notes/api.md): blocking reads and writes, async only where another node is waited on.
+- **Held-set queries for perm** (node implements perm's traits): "edge writes held for thing N", "roster snapshots held", "/created of N"; perm holds no state.
+
+## 3. Errors and pervasive rules
+- Three error classes, distinct in every crate's `Error` enum: **BadInput** (peer or stored data violates the format or a rule: reject, diagnostic, never panic, never store), **Parked** (data this build cannot interpret: unknown version, encoding, tag, field, case, suite; store and relay as bytes, re-examine after upgrade; spec/versioning.md §2), **Local** (storage, I/O, bug class: surfaced to the app, never attributed to a peer). Every error reports its class (`osis_core::ErrorClass` via a `class()` method); the node maps classes to behaviour mechanically. Note: an unknown CBOR tag is not an error at all (it decodes to `Value::Unknown`); parking happens where a typed read fails.
+- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli and examples allow them crate-wide). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
+- Hand-written `Error` enums with `Display` and `std::error::Error` via `osis_core::impl_error!`; no proc-macro dependencies in core-layer crates; `anyhow` only in cli and examples. `osis` exposes one `Error` with stable categories (`NotFound`, `TypeMismatch{path}`, `Permission`, `Storage`, `Protocol`) wrapping the inner ones.
+- Diagnostics: informational, structured (kind, tids, peer), rate-limited per peer, deduped; correctness never depends on them.
+- Determinism: seeded randomness, injected clocks, in-process transport in tests; a failure is a seed.
+- Secrets: zeroizing newtypes, redacted `Debug`, never in logs or errors (errors name tids and blob IDs, never keys).
+- `#![forbid(unsafe_code)]` in every crate (also the workspace lint); `cargo deny` for licences and duplicates (test-infra).
+
+## 4. Build and test performance
+Compile and test time are the bottleneck of agent-driven work.
+- **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `iroh`; `osis-store`: `file-backend`; `osis-server`: `bin`). `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
+- **Profiles** (root Cargo.toml): dev `debug = "line-tables-only"`, all dependencies at `opt-level = 2`, test inherits dev, release `codegen-units = 16`, `lto = "thin"`, incremental on. `.cargo/config.toml` has a commented fast-linker line (mold/lld are not required).
+- **Test tiers**: (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) nightly: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
+- **Targeted runs**: in crate X run `cargo test -p X` while iterating, `cargo test -p X -p <direct dependents>` before committing; `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` at integration.
+- `cargo nextest` when installed; plain `cargo test` must work. Nothing may require nextest, deny or fuzz.
+- Integration crates (sim, examples, cli) sit at the top so no library build pulls them.
+
+## 5. Dependency allowlist
+One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.
+- `blake3` (core; `default-features = false, features = ["std"]`): the only hash (spec/crypto.md §1).
+- `proptest` (dev, all crates; models use their own version line): property tests.
+- Planned, added by their plans with a line here: ed25519-dalek, x25519-dalek, ML-KEM (libcrux-ml-kem or ml-kem; crypto decides), chacha20poly1305, zeroize, rand_core + getrandom (rand_core 0.6 `CryptoRngCore` matches the dalek 2.x crates; crypto confirms), tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), criterion, arbitrary + libfuzzer-sys (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+
+## 6. Conventions
+- Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
+- Every test cites the spec section it checks (name or comment), so grep answers "what checks §X".
+- Provisional wire choices (tag numbers, creation record layout, constants not fixed by the spec) sit behind one constant or one function marked `provisional` (grep `provisional`); plans/protocol-spec.md fixes them, a one-line change each.
+- Prose, comments, errors and commit messages compact; no formatting tools.
+
+## 7. osis-core public surface
+Filled in by the osis-core steps below.
