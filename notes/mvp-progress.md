@@ -35,7 +35,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
-| node-core | review | all steps done; plan folded into notes/node.md; reviewer running; issues/node-core-gaps.md |
+| node-core | review fixes | reviewer: 3 high (un-merge loses writes, content rules on received commits, expired missing deltas) + sim divergence; agent fixing; established epochs after the keys follow-up |
 | transport | merged, reviewed | plan stays until server and node run over both transports |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
 | server | merged, reviewed; transport wiring running | plan stays until node-sync and sim run through it |
