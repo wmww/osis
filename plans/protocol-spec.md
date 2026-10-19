@@ -22,5 +22,8 @@ Output goes into the spec files themselves (new sections, or a spec/wire.md if l
 - First-contact invite format (notes/networking.md, Open).
 - Any open issue tagged `sync`, `crypto` or `permissions` that changes bytes on the wire.
 
+## Progress
+- All spec TBDs filled (spec/wire.md §1-13; core types and schema form in spec/data-model.md §9-10); vectors listed in plans/test-infra.md; owner-call: issues/header-list-commitments.md. Awaiting toplevel review.
+
 ## Then
 Test vectors for every blob type (frozen through plans/test-infra.md's freeze mechanism; the toplevel of plans/mvp_meta.md reviews every layout before the freeze); version-skew simulation as a test category (notes/versioning.md, Open details).

@@ -102,6 +102,8 @@ Model: `tools/fixpoint` (throwaway Rust, independent of any implementation). `ca
 - Self-removal lets an actor always leave or lower its own edge; single-use links use it to drop L's own edge.
 - Single-use links in teams: after redemption an admin may re-grant the joiner directly on T and remove it from K, so K becomes disposable and the roster flattens (spec/permissions.md §9: kicking one joiner otherwise kills the link for all).
 
+- Resolution hops are capped at 8 (`RESOLUTION_HOPS`): longer move chains are pathological, and the cap keeps a read O(1).
+
 ## Patterns
 - **Edge on a thing**: ad-hoc share of one or a few things (the thing gets secrets of its own: about 2.6 KB of boxes per member, so not per note in a folder).
 - **Shared owner** (spreadsheet): one actor owns everything, all writers edit everything, removal by the frontier rule.

@@ -14,6 +14,25 @@ Reference: plans/testing.md (strategy; this plan executes its infrastructure ite
 - Coverage job (llvm-cov) reporting untested decoder branches.
 - Spec-to-test map: a script that greps test names and comments for `§` citations per spec file and writes the table into notes/testing.md with gaps listed; gaps are treated like issues in hardening-signoff.
 
+## Vectors required (from protocol-spec)
+Generate each from the crates with the fixed inputs given (seeds are 32 repeated bytes unless stated; randomness injected through a test hook); spec/wire.md is the layout reference. Everything listed is frozen once reviewed.
+- `cbor/` (hand-written, trivially checkable): `0` → `00`; `23` → `17`; `24` → `1818`; `-1` → `20`; i64 max → `1b7fffffffffffffff`; i64 min → `3b7fffffffffffffff`; `1.0` → `fb3ff0000000000000`; `-0.0` → `fb8000000000000000`; NaN → `fb7ff8000000000000`; true/false → `f5`/`f4`; `"a"` → `6161`; `h'01'` → `4101`; `{1: 2, 0: 3}` → `a200030102`; `set{2, 1}` → `d90102820102`; tid of 15 zero bytes → `d906504f` + 15 × `00`; `option` none → `d906518100`, some(5) → `d90651820105`. Rejections: `f93c00` (short float), `f6` (null), `1800` (non-shortest), `9fff` (indefinite), `a201020003` (unsorted map), duplicate keys, `1b8000000000000000` (above i64), NaN with payload, value nested 65 deep.
+- `padme/` (hand-written): `L = len(P) + 1` → `padme(L)`: 1→1, 2→2, 4→4, 8→8, 9→10, 15→16, 17→18, 100→104, 255→256, 257→272, 1000→1024, 4097→4352, 65537→67584, 131073→135168, 1000000→1015808; unpad rejections: no `0x80`, nonzero after the marker, padded length not `padme`.
+- `tid/`: ordinary record (owner 15 × `01`, nonce 32 × `02`) and key-actor record (signing key from seed `03`; nonce random 32 × `04`, and seed-derived for a link key) → canonical bytes, tid, text form; rejection: both fields 0 and 1.
+- `kdf/`: every purpose string in spec/ (thing/role/label/claim/box/history/wrap/delete token/delta/link/link tree/lan tag/creation nonce/sign/kem, plus `derive_key("osis v1 dedup")`) with secret `11`, fixed input.
+- `keys/`: from seed `05`: Ed25519, X25519 and ML-KEM-768 public keys, claim key (DH with a second seed `06`, fixed label ID and step key), static entry, label role keys at index 0 and 1.
+- `box/`: hybrid sealed box (fixed ephemeral seeds), `/secrets` box in both forms with AD, history box, entry box; tamper and wrong-AD rejections.
+- `wrap/`: a wrap for a fixed blob ID, read secret and blob key.
+- `blob/`: prefixes with 0, 1, 3, 16 commitments, with and without expiry; a full commit blob, chunk blob and page blob from fixed keys and salts with blob IDs; rejections (17 commitments, unsorted, level 0 or 4, bad padding).
+- `chunker/`: hash of the 2048-byte gear table plus `G[0]`, `G[255]`; boundaries of 4 MiB of BLAKE3 XOF output of `"osis test chunker"` and of 1 MiB of zeros (forced `CHUNK_MAX`); chunk tree of a 64 MiB XOF value: levels, node sizes, root content hash (dedup secret `07`); page split of a fixed element list; link-page grouping.
+- `commit/`: one header per kind (0..5) with fixed fields, an aspect list just below and just above `CHUNK_THRESHOLD` (inline vs link), a purge item of each form, a demotion frontier → canonical bytes, commit ID, signature (node seed `08`); rejections from spec/commits.md §2.
+- `step/`: genesis and child step (admin secret `09`), claim set with two DH readers, one static entry with its entry box and fixed padding keys → bytes, claims hash, step IDs, label ID.
+- `inbox/`, `signal/`: one inbox blob and one signal envelope with publish authorization from fixed seeds.
+- `link/`, `card/`: canonical bytes and text forms, with and without peers; cap rejections.
+- `schema/`: the core schema (spec/data-model.md §9) as a `schema` value: canonical bytes.
+- `proto/`: Hello and one message of every kind; frame header; fingerprint of a fixed set; a full reconciliation transcript between two 10 000-ID sets (IDs from BLAKE3 XOF, 100 differences each way) with the reference split rule (subrange bounds = the first own ID of each subrange); a cursor sync and a push.
+- `bundle/`: a bundle with one label path, two blobs (one under two labels), entries, a deletion and a timed deletion.
+
 ## Steps
 - [ ] Vectors format + runner + first vectors (CBOR, tid, kdf) with core/crypto; freeze mechanism.
 - [ ] Fuzz skeleton with the first targets (CBOR, chunker); add a target as each parser lands (owning plans call this out).
