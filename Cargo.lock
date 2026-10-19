@@ -848,6 +848,7 @@ dependencies = [
  "osis-crypto",
  "osis-perm",
  "osis-schema",
+ "proptest",
 ]
 
 [[package]]

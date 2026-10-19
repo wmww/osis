@@ -27,7 +27,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 | commit | running (opus, worktree) | |
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
-| keys | not started | after perm merges |
+| keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
@@ -56,6 +56,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 - crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
+- keys: spec/crypto.md §3 a key actor's role secrets sit at the fixed epoch (0, 16 zero bytes) (derived things and symmetric boxes need an epoch); §4 a rotation's key-actor box also carries the newest secret of the roles below its key that it does not rotate (removing the old box stranded them); spec/permissions.md §3 the cascade rotates on each thing only the roles A holds there among those M could open through A (per-role KEM keys).
 
 ## Owner-calls pending
 - issues/reseal-triggers.md (residual wrongful re-seal across a fork; members no automatic trigger reaches; recommended: accept for MVP).

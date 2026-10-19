@@ -201,7 +201,15 @@ pub fn rotate(
     }
     let mut unboxed = Vec::new();
     for m in members {
-        let items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
+        let mut items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
+        // A key-actor member's one box replaces the box keyed at its top role, which carried
+        // the roles below it: carry their newest current secrets too.
+        if let (MemberKeys::KeyActor { seed: None, .. }, Some(top)) = (&m.keys, items.iter().map(|i| i.role).max()) {
+            for r in ROLES.into_iter().filter(|r| *r < top && !roles.contains(r)) {
+                let (epoch, secret) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
+                items.push(Item { role: r, epoch, secret });
+            }
+        }
         if !items.is_empty() && !box_items(actor, m, &items, rng, &mut secrets)? {
             unboxed.push(m.member);
         }
