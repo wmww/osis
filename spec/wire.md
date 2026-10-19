@@ -107,3 +107,34 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - **Entry box** (spec/sync.md §2): a `box` value, AD = `[label_id, step_key, form]`, payload as above with the read role only.
 - **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[n, nonce, secret]*]` ascending by `[n, nonce]`; the `/secrets` history map holds the ciphertext.
 - Suite 1 is the only suite: `suite` fields and suite bytes are 1.
+
+## 8. Labels: steps and claim sets
+```
+Step     := [label_id, prev, sync_pk, write_pk, delete_pk, deposit_pk, step_key, claims_hash, sig]
+ClaimSet := [[claim+], {entry: box}]
+```
+- Role keys (spec/sync.md §2) are Ed25519 key pairs whose 32-byte seed is the `kdf` output; `*_pk` are their raw public keys. `step_key`: the step's raw X25519 public key. `prev`: `Opt(step ID)`, `[]` in the genesis step.
+- `sig`: raw Ed25519 signature by the parent's delete key (the genesis step: by its own `delete_pk`) under `"osis v1 label register"`, digest BLAKE3(canonical bytes of the array of the first eight items). **Step ID** = BLAKE3(canonical bytes of `Step`).
+- **Label ID** = first 16 bytes of BLAKE3(`"osis v1 label id"` || genesis `delete_pk`).
+- `claims_hash` = BLAKE3(canonical bytes of the step's `ClaimSet`). `claim`: 32 bytes, a claim public key or static entry (spec/sync.md §2), the count a power of two from 1 to `MAX_CLAIMS`, order as the registrar wrote it. The map holds an entry box (§7) per static entry listed, keyed by the 32-byte entry; every key appears in the claims.
+- A claim key pair is the Ed25519 key pair with seed `kdf("label claim", DH(step private key, M's X25519 key), label_id || step_key)`; a static entry is `BLAKE3("osis v1 static claim" || label_id || pk)` with `pk` the key actor's raw Ed25519 signing key.
+- `/label` stores a step as the canonical bytes of `Step` and its claim set as those of `ClaimSet` (`step_record`, spec/data-model.md §9).
+
+## 9. Inbox blobs and signal envelopes
+- **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
+  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*]]*]]`:
+  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID and server addresses (`address` values, spec/data-model.md §9), sorted by tid.
+- **Signal envelope** (spec/sync.md §9): a blob (§5) with no expiry and no commitments, wrapped under the label like any blob, at most 64 KiB. Plaintext: the padded canonical bytes of `[SignalBody, signature]` with
+  `SignalBody := [node, actor, ts, tid, kind, target, schema, value]`: sender node tid, actor tid, `ts`, target thing tid, kind (text, as an AK), `Opt(target node tid)`, `Opt([schema_id, revision])`, the value. The `signature` value is the sender node's under `"osis v1 signal"`, digest BLAKE3(canonical `SignalBody`).
+- Publish authorization: `[key, sig]`, key 0 for the label's write key or 1 for its deposit key, `sig` raw Ed25519 under `"osis v1 signal publish"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`).
+
+## 10. Links and recovery cards
+```
+Link := [1, seed, target, k, k_label, [address*], [peer*]]
+peer := [dialable, [relay*]]
+Card := [1, seed, person, home_label, [address+]]
+```
+- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, server addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common server dials a peer, which serves K's label as a member peer (spec/sync.md §5).
+- `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, server addresses.
+- Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
+- Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
