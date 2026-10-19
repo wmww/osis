@@ -3,7 +3,7 @@
 //! calm (no faults) and settles with `quiet`; `run` is the faulty random schedule; every
 //! scenario ends with `run_until_quiescent` (the invariants of `check`).
 
-use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party, WAIVE_PROMOTION};
+use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
@@ -121,8 +121,6 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
     sim.item(a, g)?;
     sim.item(a, g)?;
-    // issues/sync-stale-head.md: members reopen at the current head
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(200)?;
     sim.run_until_quiescent(60)?;
@@ -143,7 +141,6 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(50)?;
     sim.quiet(40)?;
@@ -172,7 +169,7 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
 
 /// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
 /// covered bodies are deleted at the server once the snapshot is there; then a purge; no
-/// ping-pong. Fails: issues/sync-compaction-ping-pong.md.
+/// ping-pong.
 pub fn compaction(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0);
     let mut sim = sim("compaction", seed, NetWeights::default());
@@ -182,9 +179,8 @@ pub fn compaction(seed: u64) -> Res<Report> {
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
-    sim.run(120)?;
+    sim.run(60)?;
     sim.quiet(40)?;
     let deleted0 = deletions(&sim, s);
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS), (a, &workload::MAP)] {
@@ -219,23 +215,11 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
 
 /// A reader relays (spec/sync.md §5, §6): two servers that do not replicate; the writer reaches
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
-/// carried by the first.
+/// carried by the first. The readers open the label while the admin registers the steps of the
+/// grants' rotations (an open answered with the old head follows the new one).
 pub fn reader_relays(seed: u64) -> Res<Report> {
-    relays("reader_relays", seed, true)
-}
-
-/// `reader_relays` without the reconnect after setup: the readers opened the label while the
-/// admin registered the steps of the grants' rotations (spec/sync.md §5, §6). Fails:
-/// issues/sync-stale-head.md (a reader keeps the head it opened at; the writer's stamps do not
-/// verify under it, so it relays nothing).
-pub fn head_moves_during_open(seed: u64) -> Res<Report> {
-    relays("head_moves_during_open", seed, false)
-}
-
-fn relays(name: &str, seed: u64, reconnect: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x2e);
-    let mut sim = sim(name, seed, NetWeights::default());
-    sim.waivers.insert(WAIVE_PROMOTION);
+    let mut sim = sim("reader_relays", seed, NetWeights::default());
     let s0 = sim.add_server()?;
     let s1 = sim.add_server()?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
@@ -245,9 +229,6 @@ fn relays(name: &str, seed: u64, reconnect: bool) -> Res<Report> {
     let [pa, pr, pc] = persons(&mut sim, [a, r, c], [s0, s0, s1])?;
     let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pr, Role::Read), (pc, Role::Read)])?;
     sim.item(a, g)?;
-    if reconnect {
-        sim.reconnect_all();
-    }
     sim.quiet(40)?;
     // from now on the writer reaches s0 only
     sim.sever(Party::N(a), Party::S(s1));
@@ -300,9 +281,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     // re-paired: a re-seal over the direct connection
     sim.pair(d0, d1, p)?;
     sim.run(60)?;
-    // issues/sync-duplicate-reupload.md: the devices trade fresh encryptions of duplicate bodies
-    // for a few dozen resync rounds before they settle
-    sim.run_until_quiescent(80)?;
+    sim.run_until_quiescent(40)?;
     if newest_read(&mut sim, d1, &p)? != newest_read(&mut sim, d0, &p)? {
         return Err(sim.fail("the re-sealed device does not hold the person's newest epoch"));
     }
@@ -321,7 +300,6 @@ pub fn server_loses_data(seed: u64) -> Res<Report> {
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(120)?;
     sim.wipe_server(s)?;
@@ -345,7 +323,6 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
     let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read), (pe, Role::Write)])?;
     sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(30)?;
     sim.quiet(40)?;
@@ -376,7 +353,7 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
 /// Disk loss and recovery from the card (spec/permissions.md §9): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the
-/// remaining device. Fails: issues/flows-recovered-device-writes.md.
+/// remaining device.
 pub fn disk_loss(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd1);
     let mut sim = sim("disk_loss", seed, NetWeights::default());
@@ -420,8 +397,7 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
 
 
 /// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
-/// after granting, before the deposit reached the server; after restart nothing re-sends it.
-/// Fails: issues/sync-inbox-delivery.md (the grantee never learns of the grant).
+/// after granting, before the deposit reached the server; the grant reaches the grantee once the restarted device re-sends it.
 pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x9c);
     let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());

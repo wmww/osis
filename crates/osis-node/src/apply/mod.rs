@@ -176,11 +176,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if skip.contains(&(ai, di)) {
             continue;
         }
-        // expired or purged deltas count as held
+        // expired, purged or dropped deltas count as held (dropped: an applied snapshot's
+        // frontier already holds its counters, spec/crdt.md §8)
         if let Some(a) = h.aspects.get(ai)
             && tx.core.syncing.contains(&a.tid)
             && !a.expires.is_some_and(|t| t <= tx.now().0)
             && !crate::retention::known_purged(tx, &h, id, ai)?
+            && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && receipt::get(tx, &a.tid, &a.ak)?.holds(&h.author, a.lo, a.hi))
         {
             return Ok(Exam::Pending(Reason::WaitDeltas));
         }

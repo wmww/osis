@@ -51,6 +51,17 @@ impl Receipt {
         *v = out;
     }
 
+    /// Whether every counter in `[lo, hi)` of `node` was received.
+    pub fn holds(&self, node: &Tid, lo: u64, hi: u64) -> bool {
+        let mut next = lo;
+        for (a, b, _) in self.nodes.get(node).into_iter().flatten() {
+            if *a <= next && *b > next {
+                next = *b;
+            }
+        }
+        next >= hi
+    }
+
     /// Last counter (inclusive) of `node` received contiguously from 1 by time `t`; 0 if none.
     pub fn contiguous(&self, node: &Tid, t: u64) -> u64 {
         let mut next = 1u64;
@@ -202,5 +213,18 @@ mod tests {
         r.add(n, 1, 3, 400_000);
         assert_eq!(r.contiguous(&n, 15), 2);
         assert_eq!(Receipt::decode(&r.encode()).unwrap(), r);
+    }
+
+    // spec/commits.md §4 (dropped deltas count as held), spec/crdt.md §8 (snapshot frontiers):
+    // a counter range is held when received ranges cover it, across time buckets.
+    #[test]
+    fn holds_range_spec_commits_4() {
+        let n = Tid::from_bytes([1; 15]);
+        let mut r = Receipt::default();
+        r.add(n, 1, 4, 10);
+        r.add(n, 4, 9, 200_000);
+        assert!(r.holds(&n, 2, 9));
+        assert!(!r.holds(&n, 2, 10));
+        assert!(!r.holds(&Tid::from_bytes([2; 15]), 1, 2));
     }
 }

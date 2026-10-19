@@ -42,7 +42,9 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sync bug-fix round 1 | running (opus, worktree) | the six phase B issues |
+| sync bug-fix round 1 | merged at 261f7da | all six phase B issues fixed; phase B scenarios green at 8 seeds |
+| sync bug-fix round 2 | running (opus, worktree) | phase C sync issues, deposit re-send, LAN datagram spec text |
+| chat-costs analysis | running (opus, worktree) | why join/message/removal sizes exceed notes/chat.md |
 | crdt/flows bug-fix round | running (opus, worktree) | crdt-expiring-diff, single-use redemption, move copy, label replacement |
 | sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
@@ -68,6 +70,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- sync bug-fix round: spec/sync.md §6 a must-hold body is held by any blob of its commit holding its deltas that no snapshot under the label covers (a right holder that dropped covered deltas uploads a smaller projection; without this a co-writer that may not drop them re-uploads the whole body forever).
 - api second half (coordinator decision): spec/wire.md §10 `Link` takes an optional eighth item `flags` (bit 0 single use, present only when nonzero, other bits reserved); spec/permissions.md §9 names it; vector link/link.vec refrozen as FC-3.
 - Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).
 - node-core review: spec/permissions.md §7 an import may be split into several import commits, one per origin commit, written in one local transaction (decided by the coordinator).

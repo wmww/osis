@@ -238,6 +238,18 @@ impl SyncEngine {
     pub(crate) fn path_steps(&mut self, conn: ConnId, l: LabelId, steps: Vec<Step>, more: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
         lc.path.extend(steps);
+        // an opened head confirmed: steps registered since the Open reply move it on
+        if lc.phase == Phase::Open {
+            let steps = std::mem::take(&mut lc.path);
+            for s in steps {
+                self.new_head(conn, l, s, out)?;
+            }
+            let head = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).filter(|x| x.phase == Phase::Open).and_then(|x| x.head.as_ref().map(Step::id));
+            if more && let Some(h) = head {
+                self.command(conn, Command::Path { label: l, after: Some(h) }, out)?;
+            }
+            return Ok(());
+        }
         if more || lc.phase != Phase::Verifying {
             return Ok(());
         }
@@ -270,6 +282,7 @@ impl SyncEngine {
         let keys = self.engine.head_keys(&g, index, &head)?;
         self.state.set_head(server, l, &head);
         self.reopens.remove(&(conn, l));
+        let head_id = head.id();
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.phase = Phase::Open;
             lc.head = Some(head);
@@ -279,6 +292,9 @@ impl SyncEngine {
         if self.cfg.subscribe {
             self.command(conn, Command::Subscribe { labels: vec![l] }, out)?;
         }
+        // a step registered between the Open reply and the subscription is in neither the
+        // pushes nor a cursor-less replay: ask for the path after the opened head
+        self.command(conn, Command::Path { label: l, after: Some(head_id) }, out)?;
         self.sync_label(conn, l, out)
     }
 
@@ -356,6 +372,8 @@ impl SyncEngine {
                 self.reopen(conn, l, out)
             }
             (15, _) | (17, _) | (8, _) if code == Code::NOT_OPENED || code == Code::UNKNOWN_LABEL => self.reopen(conn, l, out),
+            // the opened head is no longer on the server's path
+            (8, Some(Phase::Open)) => self.reopen(conn, l, out),
             (15, _) => {
                 if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
                     lc.syncing = false;

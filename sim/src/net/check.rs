@@ -13,7 +13,7 @@
 //!   nothing at any server.
 //! - spec/commits.md §4: nothing pends at quiescence (every reason resolved).
 
-use super::{NetSim, Party, WAIVE_PROMOTION};
+use super::{NetSim, Party};
 use crate::harness::Res;
 use osis_core::{BlobId, LabelId, Role, Tid};
 use osis_node::Engine;
@@ -322,7 +322,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                     }
                 }
                 // spec/sync.md §5: a writer re-uploads stamped the deposited commits it verified
-                if v.writer && !sim.waived(WAIVE_PROMOTION) {
+                if v.writer {
                     for (dl, db) in &deposited {
                         if *dl != l {
                             continue;
