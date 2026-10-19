@@ -69,9 +69,16 @@ fn link_redeem() {
 
 // spec/permissions.md §9, §5.1: two concurrent redemptions of a single-use link: one joiner.
 #[test]
-#[ignore = "issues/flows-single-use-redemption-unplaced.md"]
+#[ignore = "tier 2"]
 fn link_race() {
     ok("link_race", 1);
+}
+
+// spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K.
+#[test]
+#[ignore = "issues/flows-race-winner-stranded.md"]
+fn link_race_seed_6() {
+    ok("link_race", 6);
 }
 
 // spec/permissions.md §7: move with import and re-grant.

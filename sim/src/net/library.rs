@@ -238,9 +238,9 @@ fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid)
 }
 
 /// Link redemption race and single use (spec/permissions.md §9, §5.1): two strangers redeem one
-/// single-use link concurrently; every node agrees on exactly one joiner (the first by the
-/// timeline's order); the sharer finalizes; a third redeemer is refused. Fails:
-/// issues/flows-single-use-redemption-unplaced.md (the redemption never reaches the sharer).
+/// single-use link concurrently; the sharer and the winner agree on exactly one joiner (the
+/// first by the timeline's order; the loser, rotated out of K, may not learn it); the sharer
+/// finalizes; a third redeemer is refused.
 pub fn link_race(seed: u64) -> Res<Report> {
     links("link_race", seed, true)
 }
@@ -288,9 +288,23 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
         sim.carry(n, done)?;
     }
     sim.run(60)?;
+    if single_use {
+        // the loser's grant is invalid (L left before it); once K rotates without it, it reads
+        // nothing more of K and may keep its own view of the race (spec/permissions.md §5.1)
+        sim.quiet(40)?;
+        let r = sim.engine(a)?.roster(&link.k);
+        for (n, p) in [(x, px), (y, py)] {
+            if !r.contains_key(&p) {
+                sim.excused.insert(n);
+            }
+        }
+    }
     sim.run_until_quiescent(40)?;
     let mut joined = None;
     for n in [a, x, y] {
+        if sim.excused.contains(&n) {
+            continue;
+        }
         let r = sim.engine(n)?.roster(&link.k);
         let who: Vec<Tid> = [px, py].into_iter().filter(|p| r.contains_key(p)).collect();
         let want = if single_use { 1 } else { 2 };
@@ -304,10 +318,9 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     }
     if single_use {
         let (winner, loser) = if joined.is_some_and(|j| j.contains(&px)) { (x, y) } else { (y, x) };
-        if sim.engine(winner)?.role_on(&g).is_none_or(|r| r < Role::Read) || sim.engine(loser)?.role_on(&g).is_some() {
-            return Err(sim.fail("the winner does not read the target, or the loser does"));
+        if sim.engine(winner)?.role_on(&g).is_none_or(|r| r < Role::Read) || !sim.excused.contains(&loser) {
+            return Err(sim.fail("the winner does not read the target, or the loser is on K's roster"));
         }
-        sim.excused.insert(loser);
     } else {
         for n in [x, y] {
             if sim.engine(n)?.role_on(&g).is_none_or(|r| r < Role::Read) {

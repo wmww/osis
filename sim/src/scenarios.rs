@@ -64,7 +64,6 @@ pub const BLOCKED: &[(&str, &str)] = &[
     ("disk_loss", "issues/flows-recovered-device-writes.md"),
     ("head_moves_during_open", "issues/sync-stale-head.md"),
     ("grant_lost_on_crash", "issues/sync-inbox-delivery.md"),
-    ("link_race", "issues/flows-single-use-redemption-unplaced.md"),
     ("label_replacement", "issues/node-sync-gaps.md"),
     ("label_replacement_offline", "issues/node-sync-gaps.md"),
     ("evil_server_drops", "issues/sync-request-timeout.md"),
