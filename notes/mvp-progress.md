@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 2 (all of wave 1 merged).
+Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, large-values, node-core).
 
 ## Plans
 | plan | state | notes |
@@ -33,7 +33,10 @@ Wave 2 (all of wave 1 merged).
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
-| node-core, server, transport, large-values | not started | wave 3 |
+| node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
+| transport | running (opus, worktree) | |
+| large-values | running (opus, worktree) | library parts in osis-label |
+| server | not started | after proto merges |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
