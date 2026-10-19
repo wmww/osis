@@ -1,0 +1,530 @@
+//! Receiving commits (spec/commits.md §4; spec/versioning.md §2; spec/crdt.md §2.2): decode,
+//! verify, dedup by commit ID, pending reasons and parking, re-examination, atomic apply in one
+//! store transaction (membership before content), late deltas of applied commits. Loading the
+//! engine's indexes from the store lives here too, since it replays what apply records.
+
+mod atomic;
+pub(crate) mod receipt;
+pub(crate) mod validity;
+
+pub(crate) use atomic::{apply_verified, rebuild, strip_valueless};
+
+use crate::engine::blobs::TxBlobs;
+use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
+use crate::error::{Error, Result};
+use crate::events::{Diagnostic, DiagnosticKind, Origin};
+use osis_commit::{CommitBlob, Decoded, Header, Kind, MAX_LIST_BYTES, delta_ctx, verify_part};
+use osis_core::format::MAX_DRIFT_MS;
+use osis_core::{BlobId, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
+use osis_crdt::Interner;
+use osis_crypto::{VerifyingKey, dedup_secret};
+use osis_label::BlobReader;
+use osis_store::{PendingKind, Shred};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+/// Why a commit is pending (spec/commits.md §4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// The `/created` record (key) of the author or of a thing on an owner chain is missing.
+    MissingChain(Tid),
+    /// The `/created` record of a touched thing is unknown.
+    UnknownCreated(Tid),
+    /// `ts` more than `MAX_DRIFT` ahead of the corrected clock.
+    Drift,
+    /// A delta under a thing this node syncs has not arrived (atomic apply).
+    WaitDeltas,
+    /// A page of a paged delta or a blob of a linked header list has not arrived.
+    WaitBlobs,
+    /// Stored pending; not examined since the node opened.
+    Unexamined,
+}
+
+/// What `ingest` did with a commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ingested {
+    Applied(CommitId),
+    /// Already held (nothing new in it).
+    Duplicate(CommitId),
+    Pending(CommitId, Reason),
+    /// Kept as bytes: this build cannot interpret part of it (spec/versioning.md §2).
+    Parked(CommitId),
+}
+
+pub(crate) enum Exam {
+    Ready(Vec<(usize, usize, Decoded)>),
+    Pending(Reason),
+    Parked,
+}
+
+/// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
+fn raw_id(bytes: &[u8]) -> Result<CommitId> {
+    let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() };
+    let v = osis_core::decode(bytes, &lim).map_err(|_| Error::BadInput("commit blob"))?;
+    let Value::List(items) = v else { return Err(Error::BadInput("commit blob")) };
+    let h = items.first().ok_or(Error::BadInput("commit blob"))?;
+    Ok(CommitId(osis_core::hash::hash(&osis_core::encode(h))))
+}
+
+fn is_missing_page(e: &osis_commit::Error) -> bool {
+    matches!(e, osis_commit::Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Missing)) | osis_commit::Error::Missing)
+}
+
+/// Creation records a commit carries on `/created` (decoded without a hash check; the part is
+/// verified later under the record's own dedup secret).
+fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTreeMap<Tid, CreationRecord>> {
+    let mut out = BTreeMap::new();
+    let mut interner = Interner::new();
+    for p in &blob.parts {
+        let Some(a) = h.aspects.get(p.ai) else { continue };
+        if a.ak.as_str() != osis_commit::retention::CREATED {
+            continue;
+        }
+        let cx = delta_ctx(h, id, p.ai, &mut interner)?;
+        let d = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None)?;
+        let v = d.fragment.read().ok_or(Error::BadInput("empty /created"))?;
+        let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
+        if rec.tid() != a.tid {
+            return Err(Error::BadInput("/created does not hash to its tid"));
+        }
+        out.insert(a.tid, rec);
+    }
+    Ok(out)
+}
+
+/// Checks a commit and decodes its parts, or says why it waits.
+pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
+    if !blob.header.is_resolved() {
+        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor))) };
+        match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES) {
+            Ok(()) => {}
+            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let h = blob.header.clone();
+    let carried = carried_records(&h, blob, id)?;
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
+    let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
+    let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author))) };
+    let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
+    let vk = VerifyingKey::from_slice(public_key)?;
+    osis_commit::verify_signature(id, &blob.signature, &vk)?;
+    h.validate()?;
+    if h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+        return Ok(Exam::Pending(Reason::Drift));
+    }
+    for a in &h.aspects {
+        if record(&a.tid).is_none() {
+            return Ok(Exam::Pending(Reason::UnknownCreated(a.tid)));
+        }
+        // the owner chain up to a key actor (spec/permissions.md §4)
+        let mut cur = a.tid;
+        let mut chain = vec![cur];
+        for _ in 0..64 {
+            match chain_rec(&cur, tx.core) {
+                Some(CreationRecord::Thing { owner, .. }) => {
+                    cur = owner;
+                    chain.push(cur);
+                }
+                Some(CreationRecord::KeyActor { .. }) => break,
+                None => return Ok(Exam::Pending(Reason::MissingChain(cur))),
+            }
+        }
+        // the author's chain certificates: it is on the owner chain, or some held edge write
+        // names it as a member (a revoked author's commits apply, judged invalid)
+        if !chain.contains(&h.author) && !tx.core.members_seen.contains(&h.author) {
+            return Ok(Exam::Pending(Reason::MissingChain(h.author)));
+        }
+    }
+    for (t, rec) in &carried {
+        if let Some(held) = tx.core.created(t)
+            && held != rec
+        {
+            let now = tx.now();
+            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
+        }
+    }
+    for (ai, di) in blob.missing() {
+        if skip.contains(&(ai, di)) {
+            continue;
+        }
+        if let Some(a) = h.aspects.get(ai)
+            && tx.core.syncing.contains(&a.tid)
+        {
+            return Ok(Exam::Pending(Reason::WaitDeltas));
+        }
+    }
+    let mut out = Vec::with_capacity(blob.parts.len());
+    let mut interner = Interner::new();
+    for p in &blob.parts {
+        if skip.contains(&(p.ai, p.di)) {
+            continue;
+        }
+        let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
+        let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
+        let mut blobs = TxBlobs::new(&mut tx.txn);
+        let mut reader = BlobReader::new(&dedup, &mut blobs);
+        match verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)) {
+            Ok(d) => out.push((p.ai, p.di, d)),
+            Err(e) if e.class() == ErrorClass::Parked => return Ok(Exam::Parked),
+            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    validity::check_content_rules(tx.core, &h, &out)?;
+    Ok(Exam::Ready(out))
+}
+
+/// Applies or stores one decoded commit blob.
+fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
+    let id = blob.id();
+    if tx.core.commits.contains_key(&id) {
+        return late_parts(tx, &id, blob);
+    }
+    if tx.core.pending.contains_key(&id)
+        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(&id)?
+        && let Ok(old) = CommitBlob::decode(&old)
+    {
+        blob = merge_parts(old, blob);
+    }
+    let received = tx.now();
+    match examine(tx, &mut blob, &id, &BTreeSet::new())? {
+        Exam::Ready(parts) => {
+            if tx.core.pending.remove(&id).is_some() {
+                tx.txn.remove_pending(&id, Shred::No)?;
+            }
+            apply_verified(tx, &blob, parts, origin, received)?;
+            Ok(Ingested::Applied(id))
+        }
+        Exam::Pending(r) => {
+            tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
+            tx.core.pending.insert(id, r.clone());
+            Ok(Ingested::Pending(id, r))
+        }
+        Exam::Parked => {
+            tx.txn.put_pending(&id, PendingKind::Parked, &blob.encode())?;
+            tx.core.pending.insert(id, Reason::Unexamined);
+            Ok(Ingested::Parked(id))
+        }
+    }
+}
+
+fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
+    for p in b.parts {
+        if let Err(i) = a.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)) {
+            a.parts.insert(i, p);
+        }
+    }
+    a
+}
+
+/// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
+/// §4); dropped parts stay dropped.
+fn late_parts(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob) -> Result<Ingested> {
+    let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
+    let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
+    skip.extend(meta.dropped.iter().copied());
+    if blob.parts.iter().all(|p| skip.contains(&(p.ai, p.di))) {
+        return Ok(Ingested::Duplicate(*id));
+    }
+    let mut merged = merge_parts(held, blob);
+    merged.header = (*meta.header).clone();
+    match examine(tx, &mut merged, id, &skip)? {
+        Exam::Ready(parts) => {
+            atomic::join_late(tx, id, &merged, parts)?;
+            Ok(Ingested::Applied(*id))
+        }
+        // the commit applied already: what waits here is only this delta's pages
+        Exam::Pending(r) => Ok(Ingested::Pending(*id, r)),
+        Exam::Parked => Ok(Ingested::Parked(*id)),
+    }
+}
+
+/// Applies a commit this node just built (no signature check: it signed it).
+pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) -> Result<()> {
+    let id = blob.id();
+    let mut b = blob.clone();
+    match examine(tx, &mut b, &id, &BTreeSet::new())? {
+        Exam::Ready(parts) => apply_verified(tx, &b, parts, Origin::Local, received),
+        _ => Err(Error::Misuse("own commit not applicable")),
+    }
+}
+
+impl Engine {
+    /// Receives a commit blob's plaintext (`CommitBlobPlaintext`, spec/wire.md §4) with the page,
+    /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
+    /// a diagnostic and returned as an error; nothing of it is stored.
+    pub fn ingest(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>) -> Result<Ingested> {
+        self.ingest_from(bytes, blobs, None)
+    }
+
+    /// `ingest`, attributing diagnostics to `peer`.
+    pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
+        let r = self.run(|tx| {
+            for (id, b) in blobs {
+                if osis_label::blob_id(&b) == id {
+                    tx.txn.put_blob(&id, b)?;
+                }
+            }
+            match CommitBlob::decode(bytes) {
+                Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
+                Err(e) if e.class() == ErrorClass::Parked => {
+                    let id = raw_id(bytes)?;
+                    tx.txn.put_pending(&id, PendingKind::Parked, bytes)?;
+                    tx.core.pending.insert(id, Reason::Unexamined);
+                    Ok(Ingested::Parked(id))
+                }
+                Err(e) => Err(e.into()),
+            }
+        });
+        match &r {
+            Err(e) if e.class() == ErrorClass::BadInput => {
+                let now = self.now();
+                self.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: raw_id(bytes).ok(), peer, detail: e.to_string() }, now);
+            }
+            Ok(Ingested::Applied(_)) => self.reexamine()?,
+            _ => {}
+        }
+        r
+    }
+
+    /// Re-examines pending and parked commits until none applies (after new certificates or
+    /// `/created` records, a change of what this node syncs, time passing, or an upgrade).
+    /// Membership commits are tried first.
+    pub fn reexamine(&mut self) -> Result<()> {
+        loop {
+            let ids: Vec<CommitId> = self.core.pending.keys().copied().collect();
+            if ids.is_empty() {
+                return Ok(());
+            }
+            let progressed = self.run(|tx| {
+                let mut blobs = Vec::new();
+                for id in ids {
+                    let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
+                        tx.core.pending.remove(&id);
+                        continue;
+                    };
+                    match CommitBlob::decode(&bytes) {
+                        Ok(b) => blobs.push(b),
+                        Err(_) => continue, // still unreadable by this build
+                    }
+                }
+                blobs.sort_by_key(|b| (!b.header.kind.is_membership(), b.header.ts));
+                let mut progressed = false;
+                for b in blobs {
+                    let id = b.id();
+                    match ingest_blob(tx, b, Origin::Remote) {
+                        Ok(Ingested::Applied(_)) => progressed = true,
+                        Ok(_) => {}
+                        Err(e) if e.class() == ErrorClass::BadInput => {
+                            tx.txn.remove_pending(&id, Shred::No)?;
+                            tx.core.pending.remove(&id);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(progressed)
+            })?;
+            if !progressed {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Starts or stops syncing `tid`: atomic apply waits only for deltas of synced things
+    /// (spec/commits.md §4). Re-examines pending commits.
+    pub fn set_syncing(&mut self, tid: Tid, on: bool) -> Result<()> {
+        self.run(|tx| {
+            let k = [records::SYNCING, tid.as_bytes()].concat();
+            if on {
+                tx.txn.put_local(&k, &[], Shred::No)?;
+                tx.core.syncing.insert(tid);
+            } else {
+                tx.txn.remove_local(&k, Shred::No)?;
+                tx.core.syncing.remove(&tid);
+            }
+            Ok(())
+        })?;
+        self.reexamine()
+    }
+
+    /// Pending and parked commits with their reasons (parked ones as `Unexamined`).
+    pub fn pending(&self) -> Vec<(CommitId, Reason)> {
+        self.core.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
+    }
+
+    /// The stored bytes of a held commit (applied: its current blob; pending or parked: as
+    /// received), for relaying.
+    pub fn commit_bytes(&mut self, id: &CommitId) -> Result<Option<Vec<u8>>> {
+        let id = *id;
+        self.run(|tx| {
+            if let Some(b) = tx.get_commit(&id)? {
+                return Ok(Some(b.encode()));
+            }
+            Ok(tx.txn.get_pending(&id)?.map(|x| x.1))
+        })
+    }
+
+    /// The blob ciphertext `id`, if held (pages, chunks, header-list trees).
+    pub fn blob(&mut self, id: &BlobId) -> Result<Option<Vec<u8>>> {
+        let id = *id;
+        self.run(|tx| Ok(tx.txn.get_blob(&id)?))
+    }
+
+    /// IDs of applied commits, in (`ts`, ID) order.
+    pub fn commit_ids(&self) -> Vec<CommitId> {
+        let mut v: Vec<(osis_core::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.header.ts, *id)).collect();
+        v.sort();
+        v.into_iter().map(|x| x.1).collect()
+    }
+
+    /// The header of an applied commit.
+    pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
+        self.core.commits.get(id).map(|m| m.header.clone())
+    }
+}
+
+/// Rebuilds the engine's indexes from the store (open, and after a failed transaction).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    if let Some(b) = tx.txn.get_local(records::HLC)?
+        && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
+        && let Some(ts) = osis_core::Ts::from_u64(u64::from_be_bytes(a))
+    {
+        tx.core.hlc.observe(ts);
+    }
+    let mut created = Vec::new();
+    tx.scan(records::CREATED, |_, v| {
+        let lim = osis_core::Limits { max_depth: 8, max_bytes: v.len() };
+        let rec = osis_core::decode(&v, &lim).ok().and_then(|v| CreationRecord::from_value(&v)).ok_or(Error::Corrupt("creation record"))?;
+        created.push(rec);
+        Ok(())
+    })?;
+    for r in created {
+        tx.core.held.create(r);
+    }
+    let mut syncing = Vec::new();
+    tx.scan(records::SYNCING, |k, _| {
+        syncing.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("syncing"))?));
+        Ok(())
+    })?;
+    tx.core.syncing.extend(syncing);
+    let mut void = Vec::new();
+    tx.scan(records::VOID, |k, _| {
+        void.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("void"))?));
+        Ok(())
+    })?;
+    tx.core.void.extend(void);
+    let mut vl = Vec::new();
+    tx.scan(records::VALUELESS, |k, v| {
+        vl.push((k.to_vec(), v));
+        Ok(())
+    })?;
+    for (k, v) in vl {
+        let mut r = records::Rd::new(&k);
+        let (tid, ak) = (r.tid()?, r.ak()?);
+        tx.core.valueless.insert((tid, ak), crate::retention::decode_owned(&v)?);
+    }
+    let mut secrets = Vec::new();
+    tx.scan(b"k/", |k, v| {
+        let t = Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("secrets"))?);
+        secrets.push((t, crate::engine::secrets::decode_epochs(&v)?));
+        Ok(())
+    })?;
+    tx.core.secrets.extend(secrets);
+    // applied commits
+    let mut recs = Vec::new();
+    tx.scan(records::COMMIT, |_, v| {
+        recs.push(decode_commit_record(&v)?);
+        Ok(())
+    })?;
+    let mut bodies = Vec::new();
+    for (received, origin, dropped, mut blob) in recs {
+        if !blob.header.is_resolved()
+            && let Some(dedup) = tx.core.dedup(&blob.header.actor)
+        {
+            blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+        }
+        let id = blob.id();
+        let h = Arc::new(blob.header.clone());
+        let valid = vec![true; h.aspects.len()];
+        atomic::index_commit(tx.core, &id, &h);
+        tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
+        if blob.header.kind.is_membership() {
+            bodies.push(blob);
+        }
+    }
+    // perm inputs from membership bodies, oldest first
+    bodies.sort_by_key(|b| b.header.ts);
+    for blob in bodies {
+        let id = blob.id();
+        let mut b = blob.clone();
+        if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
+            validity::add_membership(tx.core, &b.header, &id, &parts);
+        }
+    }
+    tx.core.timelines.update(&tx.core.held);
+    let mut pend = Vec::new();
+    let mut after: Option<CommitId> = None;
+    loop {
+        let page = tx.txn.pending(after.as_ref(), 256)?;
+        let n = page.len();
+        for (id, _, _) in page {
+            pend.push(id);
+            after = Some(id);
+        }
+        if n < 256 {
+            break;
+        }
+    }
+    for id in pend {
+        tx.core.pending.insert(id, Reason::Unexamined);
+    }
+    // derived indexes from states
+    let mut aspects = Vec::new();
+    tx.scan(b"a/", |k, _| {
+        let mut r = records::Rd::new(k);
+        aspects.push((r.tid()?, r.ak()?));
+        Ok(())
+    })?;
+    for (tid, ak) in aspects {
+        atomic::observe_state(tx, &tid, &ak)?;
+    }
+    atomic::recompute_groups(tx.core);
+    validity::rejudge_all(tx, false)?;
+    Ok(())
+}
+
+/// Decodes a stored (already verified) commit's parts.
+fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Result<Exam> {
+    let h = blob.header.clone();
+    let mut out = Vec::new();
+    let mut interner = Interner::new();
+    for p in &blob.parts {
+        let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
+        let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
+        let mut blobs = TxBlobs::new(&mut tx.txn);
+        let mut reader = BlobReader::new(&dedup, &mut blobs);
+        out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+    }
+    Ok(Exam::Ready(out))
+}
+
+/// Decoded parts of a held commit on aspect `ai`.
+pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<Decoded>> {
+    let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
+    if let Some(m) = tx.core.commits.get(id) {
+        blob.header = (*m.header).clone();
+    }
+    blob.parts.retain(|p| p.ai == ai);
+    match examine_stored(tx, &mut blob, id)? {
+        Exam::Ready(v) => Ok(v.into_iter().map(|x| x.2).collect()),
+        _ => Ok(Vec::new()),
+    }
+}
+
+pub(crate) fn is_kind_snapshot(k: Kind) -> bool {
+    matches!(k, Kind::ContentSnapshot | Kind::MembershipSnapshot)
+}

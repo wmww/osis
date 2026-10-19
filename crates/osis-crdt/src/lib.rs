@@ -3,6 +3,7 @@
 //! Layer 1 (notes/architecture.md). Plans: plans/crdt-core.md, plans/crdt-seq.md.
 #![forbid(unsafe_code)]
 
+mod access;
 mod batch;
 mod changes;
 mod codec;

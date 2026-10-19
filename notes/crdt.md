@@ -85,6 +85,7 @@
 - **Ops** (`ops.rs`, `batch.rs`): `diff`/`create`/`replace` match the model write for write under a `View`. `Batch` makes a commit's net effect: ops resolve against state ⊔ batch-so-far; `overlay` lets a later op override, drops a reset's earlier content, omits created-and-removed elements and then sets `W` if the collection would be left with no write (one-by-one ops would have left it present).
 - **Undo** (`undo.rs`): per §4.6 over the original delta; `UndoBuffer::before(path)` gives pre-commit fragments (a pre-commit state implements it). Restores values, not absence: a collection emptied by undo stays present, a register that did not exist is not written.
 - **Un-merge** (`lifecycle.rs`): `unmerge(held, author)` joins bodies with `remove_author` applied; `unmerge_in_place` only when the author holds no register, case, reset or `W` write (`W` is max-joined, so the author's may hide another's) (`author_supersedes`; sequences conservatively always need bodies).
+- **Access** (`access.rs`): `Map::entries()` read-only (node adapts `/members` entries into perm edge writes).
 - Not yet: a map `key -> live dots` index (ops scan entries and clone the joined map per path op); join over one page at a time (pages are fetched and joined whole).
 
 ## Implementation (`osis-commit`)
