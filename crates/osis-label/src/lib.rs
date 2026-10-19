@@ -8,8 +8,10 @@
 
 pub mod blob;
 mod error;
+pub mod step;
 pub mod tree;
 
 pub use blob::{Level, Prefix, blob_id, check_size, frame, open, server_prefix, unwrap_any};
 pub use error::Error;
+pub use step::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobWriter, Framing, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, read_tree, write_tree};

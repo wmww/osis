@@ -63,3 +63,10 @@ path = "fuzz_targets/blob_prefix.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "step"
+path = "fuzz_targets/step.rs"
+test = false
+doc = false
+bench = false
