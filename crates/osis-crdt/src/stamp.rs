@@ -211,7 +211,8 @@ pub(crate) fn max_opt(a: Option<Stamp>, b: Option<Stamp>) -> Option<Stamp> {
     }
 }
 
-/// A write with stamp `s` survives effective reset `e` iff `s >= e` (§4.2).
+/// A write with stamp `s` survives effective reset `e` iff `s >= e` (§4.2). For sequences.
+#[allow(dead_code)]
 pub(crate) fn survives(s: &Stamp, e: Option<&Stamp>) -> bool {
     e.is_none_or(|e| s >= e)
 }

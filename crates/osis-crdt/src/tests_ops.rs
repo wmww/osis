@@ -12,23 +12,6 @@ use crdt_model::ops::{Ty, Writer as MWriter};
 use osis_core::{Tid, Value};
 use proptest::prelude::*;
 
-fn mvalue(v: &Value) -> crdt_model::value::Value {
-    use crdt_model::value::Value as V;
-    match v {
-        Value::Bool(b) => V::Bool(*b),
-        Value::Int(i) => V::Int(*i),
-        Value::Float(f) => V::Float(f.to_bits()),
-        Value::Str(s) => V::Str(s.clone()),
-        Value::Bytes(b) => V::Bytes(b.clone()),
-        Value::Tid(t) => V::Tid(*t.as_bytes()),
-        Value::List(l) => V::List(l.iter().map(mvalue).collect()),
-        Value::Map(m) => V::Map(m.iter().map(|(k, v)| (mvalue(k), mvalue(v))).collect()),
-        Value::Set(s) => V::Set(s.iter().map(mvalue).collect()),
-        Value::Enum(id, p) => V::Enum(*id, p.as_ref().map(|p| Box::new(mvalue(p)))),
-        _ => panic!("value kind the model lacks"),
-    }
-}
-
 fn read(f: &Fragment) -> Option<Value> {
     f.read()
 }

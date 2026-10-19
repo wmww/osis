@@ -55,13 +55,6 @@ fn member(f: Option<&Fragment>, enc: Encoding) -> Option<&Fragment> {
     }
 }
 
-fn entry<'f>(f: Option<&'f Fragment>, d: &Dot) -> Option<&'f Entry> {
-    match f? {
-        Fragment::Map(x) => x.entries.get(d),
-        _ => None,
-    }
-}
-
 fn reset_of(f: Option<&Fragment>) -> Option<Stamp> {
     f.and_then(|f| f.meta()).and_then(|m| m.reset.clone())
 }
