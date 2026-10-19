@@ -1,0 +1,12 @@
+//! Generates the typed keys of chat.osis (osis-schema codegen).
+#![allow(clippy::panic)]
+
+fn main() {
+    println!("cargo::rerun-if-changed=chat.osis");
+    let g = osis_schema::generate_file(std::path::Path::new("chat.osis")).unwrap_or_else(|e| panic!("chat.osis: {e}"));
+    for w in &g.warnings {
+        println!("cargo::warning={w}");
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap_or_default()).join("chat.rs");
+    std::fs::write(&out, g.code).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+}

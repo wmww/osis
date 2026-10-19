@@ -76,3 +76,44 @@ async fn runtime_in_process_spec_sync_10() {
 async fn runtime_quic_localhost_spec_sync_10() {
     round_trip(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
 }
+
+/// Bob redeems Alice's write link to a synced group, both on the tokio driver.
+async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: Transport, b: Transport) {
+    let secret = StaticSecret::from_bytes([0x53; 32]);
+    let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
+    let addr = listener.address();
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(7)).unwrap();
+    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(8)));
+    let (sctl, srx) = mpsc::channel(8);
+    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let sv = ServerAddr::new(&addr.url, addr.key);
+    let alice = Osis::create(cfg(1, vec![sv.clone()], a)).unwrap().0;
+    let bob = Osis::create(cfg(2, vec![sv.clone()], b)).unwrap().0;
+    let mut w = alice.write();
+    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
+    assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
+    drop((alice, bob));
+    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    server.await.unwrap();
+}
+
+// spec/permissions.md §9 (links), spec/sync.md §10: a link redeemed over the tokio driver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redeem_in_process_spec_permissions_9() {
+    let net = osis_transport::Net::new(4);
+    redeem_over(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b"))).await;
+}
+
+// spec/permissions.md §9, spec/sync.md §10: the same over localhost QUIC (tier 2).
+#[cfg(feature = "quic")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn redeem_quic_localhost_spec_permissions_9() {
+    redeem_over(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
+}

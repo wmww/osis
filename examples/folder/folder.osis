@@ -1,0 +1,8 @@
+//! Shared folders (examples/folder, notes/permissions.md Patterns: folder with rights).
+schema 0x3512c94b34d3ef06fc689f718e7b945e;
+revision 1;
+
+/// A folder's or file's name.
+aspect /folder/name: string;
+/// A file's content.
+aspect /folder/content: string;

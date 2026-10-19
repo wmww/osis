@@ -2,7 +2,7 @@
 > Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-core and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
-Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (apps-e2e adds `examples/*`: an empty glob fails the build); `fuzz/` is excluded (cargo-fuzz). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
+Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim`, `examples/*`; `fuzz/` is excluded (cargo-fuzz). Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
 
 | layer | crate | plan(s) | contents |
 |---|---|---|---|
@@ -23,8 +23,8 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 9 | `osis-cli` | cli | binary `osis` |
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
-| 9 | `osis-sim` (`sim/`) | sim | deterministic simulator |
-| 9 | `examples/*` | apps-e2e | example apps, default members so they keep compiling |
+| 9 | `osis-sim` (`sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
+| 9 | `notes-app`, `chat`, `folder` (`examples/*`) | (notes/apps.md) | example apps: scenario libraries plus a tiny binary each, default members so they keep compiling; depend on osis (osis-schema to build, osis-sim to test) |
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
 
@@ -47,7 +47,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 
 ## 3. Errors and pervasive rules
 - Three error classes, distinct in every crate's `Error` enum: **BadInput** (peer or stored data violates the format or a rule: reject, diagnostic, never panic, never store), **Parked** (data this build cannot interpret: unknown version, encoding, tag, field, case, suite; store and relay as bytes, re-examine after upgrade; spec/versioning.md §2), **Local** (storage, I/O, bug class: surfaced to the app, never attributed to a peer). Every error reports its class (`osis_core::ErrorClass` via a `class()` method); the node maps classes to behaviour mechanically. Note: an unknown CBOR tag is not an error at all (it decodes to `Value::Unknown`); parking happens where a typed read fails.
-- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli, examples, osis-vectors' library and gen-vectors allow them crate-wide). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
+- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli, osis-vectors' library and gen-vectors allow them crate-wide; example binaries and build scripts allow them, example scenario libraries do not). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
 - Hand-written `Error` enums with `Display` and `std::error::Error` via `osis_core::impl_error!`; no proc-macro dependencies in core-layer crates; `anyhow` only in cli and examples. `osis` exposes one `Error` with the stable categories of notes/api.md (Errors), mapping the inner ones.
 - Diagnostics: informational, structured (kind, tids, peer), rate-limited per peer, deduped; correctness never depends on them.
 - Determinism: seeded randomness, injected clocks, in-process transport in tests; a failure is a seed.

@@ -1,0 +1,20 @@
+//! Group chat (examples/chat, notes/chat.md): a chat actor, one persona per participant.
+schema 0x0e92c95fe28e3191479265ca2a7a1ad5;
+revision 1;
+
+/// The chat's title (on the chat actor).
+aspect /chat/title: string;
+/// Messages a moderator hid (on the chat actor).
+aspect /chat/hidden: set<tid>;
+/// A participant's display name (on its persona).
+aspect /chat/nick: string;
+/// A message's text.
+aspect /chat/text: string;
+/// When the sender sent it (the sender's clock, ms).
+aspect /chat/sent: timestamp;
+/// A persona's reactions: message to emoji.
+aspect /chat/reactions: map<tid, set<string>>;
+/// A persona's read marker: the newest message it read.
+aspect /chat/read: tid;
+/// The persona's participant is typing (true) or stopped (false).
+signal /chat/typing: bool;

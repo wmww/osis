@@ -1,0 +1,20 @@
+[package]
+name = "notes-app"
+description = "Example: a notes app over the osis API (two devices, sharing, undo, large bodies)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis.workspace = true
+
+[build-dependencies]
+osis-schema.workspace = true
+
+[dev-dependencies]
+osis-sim.workspace = true

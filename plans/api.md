@@ -26,7 +26,7 @@ Spec: spec/requirements.md (API section, Offline), spec/versioning.md §5 (typed
 - [x] Dispatcher, `Watch`, `Subscription`, `on_change` initial call, `watch_thing`; signals (local delivery; remote with node-sync in step 4); undo and history; diagnostics; typed reads and writes through generated types from osis-schema codegen (the notes schema).
 - [x] Large values (bound, `stream`, `set_stream`, path reads O(entry)); text sessions; queries and backlinks (deferred: issues/api-deferred.md).
 - [x] Sharing, devices, links, cards, move; sync configuration, status, `wait_synced`, bundles; async surface tested from a plain executor; `Demotion` policies end to end in the simulator (tier-1 world: `Required` with removal and rotation; `Try`/`Skip` not yet end to end).
-- [ ] Iterate with examples/notes and examples/chat (plans/apps-e2e.md); refactor; write the "Implementation" section of notes/api.md (what differs from the shape and why).
+- [ ] Iterate with examples/notes and examples/chat (built: notes/apps.md; frictions to act on: issues/api-app-frictions.md); refactor; write the "Implementation" section of notes/api.md (what differs from the shape and why).
 
 ## Done when
 The example apps need nothing the API does not provide; every fixed direction and every closed footgun in notes/api.md has a test; the async surface runs from a non-tokio executor; notes/api.md updated to what was built. Delete this plan.

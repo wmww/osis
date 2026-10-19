@@ -1,8 +1,8 @@
 # CLI
-> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work now, which report Unsupported until the API's second half); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from plans/cli.md.
+> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work, which report Unsupported for API pieces not built); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from plans/cli.md.
 
 ## Design
-- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `get --stream/--len`, `set --stream`, `op undelete`) report Unsupported from the CLI with the method's name.
+- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
 - **Store**: `-s DIR` / `OSIS_STORE` / `$XDG_DATA_HOME/osis/default`. Missing (`db.redb` absent) or locked: exit 8. The lock is redb's file lock; the CLI writes its pid to `<store>/pid` after opening so a second opener says `store in use by pid N`. `init` refuses a non-empty directory (exit 8). `<store>/cli.toml` holds registered schema paths (`schemas = [ "…", ]`, one quoted path per line; absolute). No other state.
 - **Entry points**: `osis_cli::main_with(args, stdin, stdout, stderr) -> i32`; `osis_cli::run(args, Option<StoreSel>, Io)` also takes a memory store (tests) and the terminal flag (`edit` opens `$EDITOR` only on a terminal).
 - **Futures** (`restore`, `demote`, `redeem`, `import_contact`, `remove_device`, `revoke_link`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6); sync runs on the API's own runtime. Each invocation ends with `Osis::close`, which waits until the store is free.
@@ -12,11 +12,12 @@
 - **Commit ids** print as 64 lower-case hex digits (input for `undo-commit`, `inspect commit`).
 - **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
 - **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600), then `$EDITOR`.
+- **Delivering commands** (`grant`, `edge`, `leave`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
 - **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library behind feature `bin`); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
 - **`inspect`** is `Debug` dumps over `Osis::engine()` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
-## Deviations from plans/cli.md
+## Deviations from the original design (the deleted plans/cli.md)
 - `history --limit N` is `--max N` (`--limit` is the global materialization bound).
 - `same` false exits 3 (§6 table) rather than 1 (§4 text).
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
@@ -39,8 +40,8 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | `server ls/add/rm` | `servers`, `add_server`, `remove_server` | now |
 | `serve` | osis-server `serve::run` | now |
 | `create --owner A (--in G\|--in-all G,G\|--unsynced) [--group] [AK V]…` | `write`, `Write::create`, `make_group`, `set`, `commit` | now |
-| `get T AK [PATH]` | `get`, `at().path().get_value()` | now (`--stream`, `--len` 2nd) |
-| `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops | now (`--stream` 2nd) |
+| `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
+| `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops; `set --stream` (value on stdin): `set_stream` | now |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
 | (none: interactive editors only) | `edit_text` (text sessions) | |
@@ -66,7 +67,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `sync_act`, `take_actions`, `feed`, `waiting` | |
 
 ## Value syntax
-CBOR diagnostic notation narrowed to one printed form per value (plans/cli.md §3). Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
+CBOR diagnostic notation narrowed to one printed form per value. Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
 ```text
 value  := string | blob | "true" | "false" | int | float | tid | list | map | set | enum | tag | alias
 string := JSON string ("\u" escapes incl. surrogate pairs; printer escapes ", \, controls, DEL)
@@ -105,4 +106,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 8 | store missing, locked, or (on `init`) not empty |
 
 ## Tests
-tests/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, Unsupported second-half commands, the command-table coverage check). Tier 2 (two stores and `osis serve` on localhost) waits for sync in the API.
+tests/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, Unsupported commands, the command-table coverage check). Tier 2: tests/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/apps.md).
+
+## Not built
+A daemon other invocations proxy to (so the CLI can inspect a store an app holds open; the lock is the answer for now); `edit_text` sessions (keystroke editing is a UI concern; `edit` covers scripts); shell completion, REPL, colour, paging; aliases beyond `me`/`node`/`home`; bearer read (`open_link`).

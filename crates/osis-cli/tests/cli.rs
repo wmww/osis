@@ -270,13 +270,50 @@ fn groups_and_moves_plan_cli_4() {
     assert_eq!(s.code(&["same", &t, &n]), 0);
 }
 
-// plans/cli.md §4: commands over API pieces not built yet (queries, backlinks, `--len`) parse and
+// plans/cli.md §4 Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
+// written from stdin streams back raw; its length reads without materializing.
+#[test]
+fn stream_and_len_plan_cli_4() {
+    let s = S::mem();
+    let t = s.thing();
+    let big = "x".repeat(300_000);
+    assert_eq!(s.call(&["set", &t, "/a/doc", "--stream"], &big).code, 0);
+    assert_eq!(s.ok(&["get", &t, "/a/doc", "--len"]).line(), "300000");
+    assert_eq!(s.ok(&["--json", "get", &t, "/a/doc", "--len"]).line(), "{\"len\":300000}");
+    let o = s.ok(&["get", &t, "/a/doc", "--stream"]);
+    assert!(o.out.as_bytes() == big.as_bytes(), "untyped: stored as a blob, streamed raw");
+    assert_eq!(s.code(&["get", &t, "/a/none", "--len"]), 3);
+}
+
+// plans/cli.md §4 Sharing and membership, Sync, Identity and devices: the local half of the
+// sharing commands on one store (no servers): links, cards, devices, grants by error category,
+// status (bundles are binary: the localhost e2e).
+#[test]
+fn sharing_commands_local_plan_cli_4() {
+    let s = S::mem();
+    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group"]).line().to_string();
+    s.ok(&["group", "sync", &g]);
+    let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
+    assert!(link.starts_with("osis://link/"), "{link}");
+    let ls = s.ok(&["--json", "link", "ls", &g]).line().to_string();
+    assert!(ls.contains("\"single_use\":true") && ls.contains("\"role\":\"write\""), "{ls}");
+    assert!(s.ok(&["card", "show"]).line().starts_with("osis://"));
+    assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1);
+    let other = S::mem();
+    let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
+    assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
+    assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
+    let st = s.ok(&["--json", "status"]).line().to_string();
+    assert!(st.contains("no_servers") || st.contains("NoServers") || st.contains("\"groups\""), "{st}");
+}
+
+// plans/cli.md §4: commands over API pieces not built yet (queries, backlinks) parse and
 // report Unsupported; sharing commands without a runtime or servers fail as the API does.
 #[test]
 fn unbuilt_commands_report_unsupported_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
-    for args in [vec!["ls", "home"], vec!["backlinks", &t], vec!["get", &t, "/a/b", "--len"]] {
+    for args in [vec!["ls", "home"], vec!["backlinks", &t]] {
         let o = s.call(&args, "");
         assert_eq!(o.code, 1, "{args:?}: {}", o.err);
         assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);

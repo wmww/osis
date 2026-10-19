@@ -160,7 +160,22 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Watch { .. }
             | Cmd::Roster { watch: true, .. }
             | Cmd::Diag { follow: true }
-    )
+    ) || delivers(c)
+}
+
+/// Commands whose API call hands other nodes something the engine keeps only in memory until
+/// sent (inbox grants, a new label's first commits; issues/sync-deliveries-lost-on-close.md):
+/// they run with sync on and wait until it is at the servers before the process exits.
+fn delivers(c: &Cmd) -> bool {
+    matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
+}
+
+/// Sends what a `delivers` command queued (within `--timeout`).
+fn deliver(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
+    let db = ctx.db.clone();
+    db.sync_now()?;
+    let t = ctx.timeout()?.unwrap_or(FOREVER);
+    wait(ctx, db.wait_synced(SyncScope::All, t)).map_err(|e| exit(6, format!("done locally, not yet at the servers: {e}")))
 }
 
 /// Runs one parsed command.
@@ -219,7 +234,11 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         writeln!(out, "{c}")?;
     }
     let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
-    let r = run(&mut ctx, cli.cmd);
+    let flush = delivers(&cli.cmd);
+    let mut r = run(&mut ctx, cli.cmd);
+    if r.is_ok() && flush && !ctx.db.servers()?.is_empty() {
+        r = deliver(&mut ctx);
+    }
     ctx.db.settle();
     let db = ctx.db.clone();
     drop(ctx);
@@ -491,15 +510,26 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, len: bool) -> anyhow::Result<()> {
-    if stream {
-        return Err(not_supported("stream (plans/api.md second half)"));
-    }
-    if len {
-        return Err(not_supported("len (plans/api.md second half)"));
-    }
     let t = ctx.tid(t)?;
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
+    if stream || len {
+        let at = db.at(t, key.clone());
+        let s = match path {
+            None | Some("") => at.stream()?,
+            Some(p) => {
+                let p = write::path(ctx, t, &key, p, false)?;
+                at.path(p).stream()?
+            }
+        };
+        let Some(mut s) = s else { return Err(exit(3, "")) };
+        if len {
+            let n = s.len();
+            return ctx.emit(&[n.to_string()], J::obj([("len", J::int(n))]));
+        }
+        std::io::copy(&mut s, &mut *ctx.out)?;
+        return Ok(());
+    }
     let (v, pty) = match path {
         None | Some("") => (db.get(t, key.clone())?, key.ty().cloned()),
         Some(p) => {
