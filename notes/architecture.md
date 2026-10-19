@@ -73,7 +73,8 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `proptest` (dev, all crates; models use their own version line): property tests.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
 - `criterion` 0.8 (dev; `default-features = false`, `cargo_bench_support`): benchmarks (osis-crypto; to be replaced by the osis-bench harness, see notes/testing.md).
-- Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+- `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
+- Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
