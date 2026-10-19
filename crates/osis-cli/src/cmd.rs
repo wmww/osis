@@ -142,6 +142,27 @@ fn not_supported(what: &'static str) -> anyhow::Error {
     Error::Unsupported(what).into()
 }
 
+/// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay
+/// local (their writes go out with the next networked command, `sync` or `daemon`).
+fn needs_net(c: &Cmd) -> bool {
+    matches!(
+        c,
+        Cmd::Pair(_)
+            | Cmd::Device(DeviceCmd::Rm { .. })
+            | Cmd::Demote { .. }
+            | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
+            | Cmd::Card(CardCmd::Import { .. })
+            | Cmd::Status { .. }
+            | Cmd::Sync { .. }
+            | Cmd::Wait { .. }
+            | Cmd::Daemon
+            | Cmd::Signal(_)
+            | Cmd::Watch { .. }
+            | Cmd::Roster { watch: true, .. }
+            | Cmd::Diag { follow: true }
+    )
+}
+
 /// Runs one parsed command.
 pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, tty: bool) -> anyhow::Result<()> {
     let g = cli.g.clone();
@@ -171,7 +192,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             db
         }
         Cmd::Restore { card, server } => {
-            let mut cfg = crate::config(&sel, &g);
+            let mut cfg = crate::config(&sel, &g, true);
             cfg.servers = seed(server)?;
             let card: osis::RecoveryCard = card.parse()?;
             let t = Ctx::timeout_flag(&g)?;
@@ -182,7 +203,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         }
         Cmd::Pair(PairCmd::Join { offer, server }) => {
             // the app carries two messages: print the request, read the reply
-            let mut cfg = crate::config(&sel, &g);
+            let mut cfg = crate::config(&sel, &g, true);
             cfg.servers = seed(server)?;
             let offer: osis::PairOffer = offer.parse()?;
             let join = Osis::pair(cfg, &offer)?;
@@ -192,7 +213,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             stdin.read_line(&mut line)?;
             join.finish(&line.parse()?)?
         }
-        _ => open(&sel, &g)?,
+        c => open(&sel, &g, needs_net(c))?,
     };
     if let Some(c) = card {
         writeln!(out, "{c}")?;
@@ -202,8 +223,8 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     ctx.db.settle();
     let db = ctx.db.clone();
     drop(ctx);
-    db.close();
-    r
+    let closed = db.close();
+    r.and(closed.map_err(Into::into))
 }
 
 impl Ctx<'_> {

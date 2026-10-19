@@ -240,7 +240,7 @@ impl Osis {
             let grant = *done.commits.last().ok_or(Error::Invalid("pairing made no commit".into()))?;
             let acts = x.sync.carry_out(done)?;
             self.inner.net.apply(acts);
-            let mine = x.sync.take_direct().into_iter().filter(|(to, _)| *to == node).flat_map(|(_, p)| p).collect();
+            let mine = x.sync.take_direct_for(&node);
             Ok((grant, mine))
         })?;
         let body = Value::List(vec![Value::Int(1), Value::Bytes(grant.0.to_vec()), packages_value(&mine)]);

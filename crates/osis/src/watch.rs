@@ -131,7 +131,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn on_dispatcher(&self) -> bool {
+    pub(crate) fn on_dispatcher(&self) -> bool {
         self.thread.get() == Some(&std::thread::current().id())
     }
 }

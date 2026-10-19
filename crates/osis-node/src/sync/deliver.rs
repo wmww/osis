@@ -104,6 +104,13 @@ impl SyncEngine {
     pub fn take_direct(&mut self) -> Vec<(Tid, Vec<Package>)> {
         std::mem::take(&mut self.direct)
     }
+
+    /// The packages for node `to` only; those for other nodes stay.
+    pub fn take_direct_for(&mut self, to: &Tid) -> Vec<Package> {
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.direct).into_iter().partition(|(t, _)| t == to);
+        self.direct = rest;
+        mine.into_iter().flat_map(|(_, p)| p).collect()
+    }
 }
 
 impl SyncState for SyncEngine {

@@ -51,11 +51,15 @@ fn pairing_spec_permissions_1() {
     let (da, _) = w.person(1, &[sv]);
     w.run();
     let t = item(&da, da.me(), da.home(), "before pairing");
+    for i in 0..10 {
+        item(&da, da.me(), da.home(), &format!("{i}{}", "x".repeat(4000)));
+    }
     let offer = da.pair_offer().unwrap();
     let join = Osis::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
     let (node, reply) = da.pair_accept(&req).unwrap();
     assert_eq!(node, join.node());
+    assert!(reply.to_string().len() < 40_000, "certificates and /label only, no content: {}", reply.to_string().len());
     assert!(da.pair_accept(&req).is_err(), "an offer is used once");
     let db = join.finish(&reply).unwrap();
     assert_eq!(db.me(), da.me());

@@ -14,7 +14,7 @@ workspace = true
 # `Store::Dir`: the redb file store (notes/architecture.md §4: heavy deps off by default).
 file-store = ["osis-store/file-backend"]
 # `Transport::Quic`: direct server connections over QUIC (spec/sync.md §10).
-quic = ["osis-transport/quic", "osis-server/quic"]
+quic = ["osis-transport/quic"]
 
 [dependencies]
 osis-node.workspace = true

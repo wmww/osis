@@ -82,6 +82,10 @@ pub(crate) enum Net {
 
 impl Drop for Net {
     fn drop(&mut self) {
+        if let Net::Driver { ctl, .. } = self {
+            // the driver ends now, not when its last timer fires
+            let _ = ctl.send(Control::Shutdown);
+        }
         if let Net::Driver { own, .. } = self
             && let Some(rt) = lock(own).take()
         {
@@ -154,10 +158,13 @@ impl Net {
     /// Wakes the driver after `d` so waiters with a deadline are looked at.
     pub fn timer(&self, d: Duration) {
         if let Net::Driver { ctl, handle, .. } = self {
-            let ctl = ctl.clone();
+            // a weak sender: a pending timer does not keep the driver alive
+            let ctl = ctl.downgrade();
             handle.spawn(async move {
                 tokio::time::sleep(d).await;
-                let _ = ctl.send(Control::Call(Box::new(|_| Vec::new())));
+                if let Some(ctl) = ctl.upgrade() {
+                    let _ = ctl.send(Control::Call(Box::new(|_| Vec::new())));
+                }
             });
         }
     }

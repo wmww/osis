@@ -308,14 +308,20 @@ impl Osis {
 
     /// Closes this handle; the database closes with the last one (every commit is already
     /// durable). Returns once it is closed, so the store can be opened again at once; while
-    /// other handles keep it open, it returns after `CLOSE_WAIT`.
-    pub fn close(self) {
+    /// other handles keep it open, it returns after `CLOSE_WAIT`. From a callback (the
+    /// dispatcher thread, which holds the database while it runs) it fails `Invalid` at once:
+    /// drop the handle instead.
+    pub fn close(self) -> Result<()> {
+        if self.inner.dispatch.shared.on_dispatcher() {
+            return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
+        }
         let rx = lock(&self.inner.closing).take();
         drop(self);
         // the dispatcher or the sync driver may hold the database for a moment
         if let Some(rx) = rx {
             let _ = rx.recv_timeout(CLOSE_WAIT);
         }
+        Ok(())
     }
 
     /// This device's node tid.
@@ -359,6 +365,12 @@ impl Osis {
             let acts = f(&mut l.sync);
             self.inner.net.apply(acts);
         })
+    }
+
+    /// Calls waiting for another node right now (tests: a dropped future leaves none).
+    #[doc(hidden)]
+    pub fn waiting(&self) -> usize {
+        self.locked(|l| l.waiters.len())
     }
 
     /// With `Runtime::Manual`: the network actions queued so far (a test harness carries them).
