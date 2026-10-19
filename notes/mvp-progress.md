@@ -35,14 +35,14 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
-| node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
+| node-core | steps 1–2 merged; continuing 3–6 | notes/node.md has the module ownership |
 | transport | running (opus, worktree) | |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
 | server | review | done except transport wiring; reviewer running |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
+| sim | phase A running (opus, worktree) | B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
