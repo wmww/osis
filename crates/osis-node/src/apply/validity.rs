@@ -140,7 +140,6 @@ pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: 
                 }
             }
             core.unresolved.remove(id);
-            core.members_seen.extend(ops.iter().map(|o| o.member));
             if !ops.is_empty() {
                 core.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: header_frontier(h), ops });
             }
@@ -178,12 +177,85 @@ pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: 
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
-                core.members_seen.extend(roster.keys().copied());
-                core.members_seen.extend(ledger.iter().map(|t| t.member));
                 core.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
             }
         }
         _ => {}
+    }
+}
+
+/// Do held edge writes lead from `author` (as member, through member actors) to a thing on
+/// `chain`? (The author's chain certificates, spec/permissions.md §4.)
+pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
+    let mut frontier = vec![*author];
+    let mut seen: BTreeSet<Tid> = BTreeSet::new();
+    while let Some(x) = frontier.pop() {
+        if !seen.insert(x) || seen.len() > 4096 {
+            continue;
+        }
+        for cs in core.held.commits.values() {
+            for c in cs {
+                for o in &c.ops {
+                    if o.member == x {
+                        if chain.contains(&o.target) {
+                            return true;
+                        }
+                        frontier.push(o.target);
+                    }
+                }
+            }
+        }
+        for ss in core.held.snapshots.values() {
+            for sn in ss {
+                if sn.roster.contains_key(&x) || sn.ledger.iter().any(|t| t.member == x) {
+                    if chain.contains(&sn.thing) {
+                        return true;
+                    }
+                    frontier.push(sn.thing);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The role a `/secrets` or `/keys` delta needs (spec/permissions.md §3): a writer rotates
+/// read and write, only an admin the admin role; at least write.
+fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
+    let role_of = |v: &Value| match v {
+        Value::Enum(c, _) => [Role::Read, Role::Write, Role::Admin].get(usize::try_from(*c).ok()?).copied(),
+        _ => None,
+    };
+    let field = |v: &Value, id: i64| match v {
+        Value::Map(m) => m.get(&Value::Int(id)).cloned(),
+        _ => None,
+    };
+    let v = f.read()?;
+    let top = match ak {
+        "/secrets" => {
+            let mut roles = Vec::new();
+            for (fid, rid) in [(0, 1), (1, 0)] {
+                if let Some(Value::Map(m)) = field(&v, fid) {
+                    roles.extend(m.keys().filter_map(|k| field(k, rid)).filter_map(|r| role_of(&r)));
+                }
+            }
+            roles.into_iter().max()
+        }
+        "/keys" => field(&v, 2).map(|_| Role::Admin),
+        _ => return None,
+    };
+    Some(top.unwrap_or(Role::Write).max(Role::Write))
+}
+
+/// Records the roles `/secrets` and `/keys` deltas of a commit need.
+pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+    for (ai, _, d) in parts {
+        if let Some(a) = h.aspects.get(*ai)
+            && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
+        {
+            let e = core.rotation_role.entry((*id, *ai)).or_insert(r);
+            *e = (*e).max(r);
+        }
     }
 }
 
@@ -229,7 +301,8 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
         return true;
     }
     let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h, ai) };
-    tl.delta_valid(point, &a.tid, ak, dots, required_role(ak)) == Validity::Valid
+    let required = core.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
+    tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
 /// Re-judges every held delta after the held set changed; rebuilds aspects whose validity

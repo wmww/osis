@@ -163,7 +163,7 @@ pub(crate) fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role
 }
 
 /// May this node write `ak` of `tid` at `ts`? Things created by the commit take their owner's.
-fn check_authority(core: &Core, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
+pub(crate) fn check_authority(core: &Core, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     let node = core.id.tid();
     let need = required_role(ak);
     let role = match creates.iter().find(|r| r.tid() == *tid) {
@@ -237,6 +237,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
         let (retention, expires, framing) = framing_for(tx.core, &plan, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
+        if expires.is_some() && !plan.purge.is_empty() {
+            return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
+        }
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
         let cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);

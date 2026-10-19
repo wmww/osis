@@ -130,6 +130,9 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
     if deltas.is_empty() {
         return Err(Error::Misuse("nothing to undo"));
     }
+    for d in &deltas {
+        crate::engine::write::check_authority(tx.core, &[], &d.tid, d.ak.as_str(), ts)?;
+    }
     let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new() };
     build_and_apply(tx, plan, deltas)
 }

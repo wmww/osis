@@ -57,6 +57,9 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId) -> Result<Option<
     }
     let node = tx.core.id.tid();
     let ts = tx.core.hlc.next();
+    for d in &deltas {
+        crate::engine::write::check_authority(tx.core, &[], &d.tid, d.ak.as_str(), ts)?;
+    }
     let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }] };
     build_and_apply(tx, plan, deltas).map(Some)
 }
@@ -75,16 +78,20 @@ impl Engine {
         let mut m = Mutation::new();
         let copy = self.new_thing(&mut m, owner);
         m.set(copy, &ct::WAS, &t)?;
-        self.commit(m)?;
-        let mut origins: Vec<(Ts, CommitId)> = self.core.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
-        origins.sort();
-        origins.dedup();
-        let mut out = Vec::new();
-        for (_, c) in origins {
-            if let Some(id) = self.run(|tx| import_one(tx, &t, &copy, &c))? {
-                out.push(id);
+        // one local transaction: the copy, `/was` and every import (spec/permissions.md §7)
+        let out = self.run(|tx| {
+            crate::engine::write::commit_in(tx, m)?;
+            let mut origins: Vec<(Ts, CommitId)> = tx.core.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
+            origins.sort();
+            origins.dedup();
+            let mut out = Vec::new();
+            for (_, c) in origins {
+                if let Some(id) = import_one(tx, &t, &copy, &c)? {
+                    out.push(id);
+                }
             }
-        }
+            Ok(out)
+        })?;
         Ok((copy, out))
     }
 }

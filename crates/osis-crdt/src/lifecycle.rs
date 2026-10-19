@@ -65,7 +65,13 @@ impl Fragment {
     /// Removes every write whose dot's author matches `author` (`Derived` dots count for the
     /// author of the underlying dot), in place. Un-merge applies it to each held body (§4.6).
     pub fn remove_author(&mut self, author: &dyn Fn(&Source) -> bool) {
-        let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| author(s.dot.src.author()));
+        self.remove_dots(&|d| author(&d.src));
+    }
+
+    /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
+    /// in place: un-merge of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6).
+    pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
+        let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
         match self {
             Fragment::Slots(_) => {
                 let Fragment::Slots(Slots { reg, members }) = std::mem::take(self) else { return };
@@ -73,11 +79,11 @@ impl Fragment {
                 let mut ch = Changes::new();
                 if let Some(r) = reg {
                     let mut f = Fragment::Register(r);
-                    f.remove_author(author);
+                    f.remove_dots(pred);
                     out.join_into(f, None, &mut ch);
                 }
                 for (_, mut f) in members {
-                    f.remove_author(author);
+                    f.remove_dots(pred);
                     out.join_into(f, None, &mut ch);
                 }
                 *self = out;
@@ -87,7 +93,7 @@ impl Fragment {
                 if bad(&r.reset) {
                     r.reset = None;
                 }
-                if r.write.as_ref().is_some_and(|w| author(w.stamp.dot.src.author())) {
+                if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.owner())) {
                     r.write = None;
                 }
             }
@@ -102,28 +108,28 @@ impl Fragment {
             }
         }
         match self {
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_author_elems(elems, author),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_dots_elems(elems, pred),
             Fragment::Struct(s) => s.fields.retain(|_, f| {
-                f.remove_author(author);
+                f.remove_dots(pred);
                 !f.is_empty()
             }),
             Fragment::Enum(e) => {
-                if e.case.as_ref().is_some_and(|c| author(c.stamp.dot.src.author())) {
+                if e.case.as_ref().is_some_and(|c| pred(c.stamp.dot.owner())) {
                     e.case = None;
                 }
                 e.payloads.retain(|_, f| {
-                    f.remove_author(author);
+                    f.remove_dots(pred);
                     !f.is_empty()
                 });
             }
             Fragment::Map(Map { entries, .. }) => entries.retain(|d, en| {
-                if en.reset.as_ref().is_some_and(|r| author(r.dot.src.author())) {
+                if en.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
                     en.reset = None;
                 }
-                if author(d.src.author()) {
+                if pred(d.owner()) {
                     en.frag = None;
                 } else if let Some(f) = &mut en.frag {
-                    f.remove_author(author);
+                    f.remove_dots(pred);
                     if f.is_empty() {
                         en.frag = None;
                     }
@@ -133,7 +139,7 @@ impl Fragment {
                 }
                 en.reset.is_some() || en.frag.is_some()
             }),
-            Fragment::Seq(s) => seq::remove_author(s, author),
+            Fragment::Seq(s) => seq::remove_dots(s, pred),
             Fragment::Register(_) | Fragment::Slots(_) => {}
         }
     }
@@ -160,15 +166,15 @@ impl Fragment {
     }
 }
 
-fn remove_author_elems(elems: &mut BTreeMap<Dot, Elem>, author: &dyn Fn(&Source) -> bool) {
+fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool) {
     elems.retain(|d, el| {
-        if el.reset.as_ref().is_some_and(|r| author(r.dot.src.author())) {
+        if el.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
             el.reset = None;
         }
-        if author(d.src.author()) {
+        if pred(d.owner()) {
             el.frag = None;
         } else if let Some(f) = &mut el.frag {
-            f.remove_author(author);
+            f.remove_dots(pred);
             if f.is_empty() {
                 el.frag = None;
             }

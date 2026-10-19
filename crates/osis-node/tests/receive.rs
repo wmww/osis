@@ -255,14 +255,29 @@ fn random_delivery_converges_spec_crdt_4_1() {
     for seed in 0..4u64 {
         let mut rng = SeededRng::from_u64(seed);
         let mut lp = net(3, 100 + seed);
+        // node identities everywhere; the thing, grants and later a revoke travel out of order
+        lp.sync_all().unwrap();
         let t = new_thing(&mut lp, 0);
         for i in 1..3 {
             let m = lp.peers[i].engine.tid();
             set_edge(&mut lp.peers[0].engine, t, m, Some(edge(Role::Write)), None);
         }
-        lp.sync_all().unwrap();
-        let mut sent: Vec<osis_node::local_peer::Package> = Vec::new();
-        for step in 0..24 {
+        let mut sent: Vec<osis_node::local_peer::Package> = lp.packages(0).unwrap();
+        for i in 1..3 {
+            for p in sent.clone() {
+                lp.deliver(i, &p).unwrap();
+            }
+        }
+        let victim = lp.peers[2].engine.tid();
+        for step in 0..30 {
+            if step == 15 {
+                // revoke node 2 mid-run (spec/permissions.md §5.2), frontier from node 0's receipts
+                let scope = osis_perm::DemotionScope { membership: [(victim, [t].into())].into(), content: [(victim, [t].into())].into() };
+                let now = lp.peers[0].engine.now();
+                let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+                let id = set_edge(&mut lp.peers[0].engine, t, victim, None, Some(osis_schema::Codec::to_value(&f)));
+                sent.push(lp.peers[0].engine.package(&id).unwrap().unwrap());
+            }
             let i = (rng.next_u32() % 3) as usize;
             let mut m = Mutation::new();
             let x = rng.next_u32() as i64 % 5;

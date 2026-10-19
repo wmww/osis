@@ -36,6 +36,8 @@ pub enum Reason {
     WaitDeltas,
     /// A page of a paged delta or a blob of a linked header list has not arrived.
     WaitBlobs,
+    /// Parked: part of it is not interpretable by this build (spec/versioning.md §2).
+    Parked,
     /// Stored pending; not examined since the node opened.
     Unexamined,
 }
@@ -132,11 +134,28 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
                 None => return Ok(Exam::Pending(Reason::MissingChain(cur))),
             }
         }
-        // the author's chain certificates: it is on the owner chain, or some held edge write
-        // names it as a member (a revoked author's commits apply, judged invalid)
-        if !chain.contains(&h.author) && !tx.core.members_seen.contains(&h.author) {
+        // the author's chain certificates: it is on the owner chain, or held edge writes lead
+        // from it to the chain (a revoked author keeps its certificates and still applies,
+        // judged invalid)
+        if !chain.contains(&h.author) && !validity::reaches(tx.core, &h.author, &chain) {
             return Ok(Exam::Pending(Reason::MissingChain(h.author)));
         }
+    }
+    // a part that does not hash to its header entry is dropped alone (spec/commits.md §4)
+    let bad: Vec<(usize, usize)> = blob
+        .parts
+        .iter()
+        .filter(|p| {
+            let Some(a) = h.aspects.get(p.ai) else { return true };
+            let Some(want) = a.hashes.get(p.di) else { return true };
+            record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want)
+        })
+        .map(|p| (p.ai, p.di))
+        .collect();
+    if !bad.is_empty() {
+        blob.parts.retain(|p| !bad.contains(&(p.ai, p.di)));
+        let now = tx.now();
+        tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, now);
     }
     for (t, rec) in &carried {
         if let Some(held) = tx.core.created(t)
@@ -150,8 +169,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if skip.contains(&(ai, di)) {
             continue;
         }
+        // expired or purged deltas count as held
         if let Some(a) = h.aspects.get(ai)
             && tx.core.syncing.contains(&a.tid)
+            && !a.expires.is_some_and(|t| t <= tx.now().0)
+            && !crate::retention::known_purged(tx, &h, id, ai)?
         {
             return Ok(Exam::Pending(Reason::WaitDeltas));
         }
@@ -173,7 +195,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Err(e) => return Err(e.into()),
         }
     }
-    validity::check_content_rules(tx.core, &h, &out)?;
     Ok(Exam::Ready(out))
 }
 
@@ -192,6 +213,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
     let received = tx.now();
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
+            tx.core.touch();
             if tx.core.pending.remove(&id).is_some() {
                 tx.txn.remove_pending(&id, Shred::No)?;
             }
@@ -199,13 +221,15 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
             Ok(Ingested::Applied(id))
         }
         Exam::Pending(r) => {
+            tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
             tx.core.pending.insert(id, r.clone());
             Ok(Ingested::Pending(id, r))
         }
         Exam::Parked => {
+            tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Parked, &blob.encode())?;
-            tx.core.pending.insert(id, Reason::Unexamined);
+            tx.core.pending.insert(id, Reason::Parked);
             Ok(Ingested::Parked(id))
         }
     }
@@ -248,7 +272,18 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
     let id = blob.id();
     let mut b = blob.clone();
     match examine(tx, &mut b, &id, &BTreeSet::new())? {
-        Exam::Ready(parts) => apply_verified(tx, &b, parts, Origin::Local, received),
+        Exam::Ready(parts) => {
+            // writer-side rules: a received commit is judged by perm instead
+            if !tx.core.skip_writer_rules {
+                validity::check_content_rules(tx.core, &b.header, &parts)?;
+            }
+            apply_verified(tx, &b, parts, Origin::Local, received)?;
+            // never emit a delta others would un-merge
+            if !tx.core.skip_writer_rules && tx.core.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
+                return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid) });
+            }
+            Ok(())
+        }
         _ => Err(Error::Misuse("own commit not applicable")),
     }
 }
@@ -273,8 +308,9 @@ impl Engine {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
+                    tx.core.touch();
                     tx.txn.put_pending(&id, PendingKind::Parked, bytes)?;
-                    tx.core.pending.insert(id, Reason::Unexamined);
+                    tx.core.pending.insert(id, Reason::Parked);
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
@@ -313,6 +349,7 @@ impl Engine {
                     }
                 }
                 blobs.sort_by_key(|b| (!b.header.kind.is_membership(), b.header.ts));
+                tx.core.touch();
                 let mut progressed = false;
                 for b in blobs {
                     let id = b.id();
@@ -322,6 +359,8 @@ impl Engine {
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::No)?;
                             tx.core.pending.remove(&id);
+                            let now = tx.now();
+                            tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
                         }
                         Err(e) => return Err(e),
                     }
@@ -338,6 +377,7 @@ impl Engine {
     /// (spec/commits.md §4). Re-examines pending commits.
     pub fn set_syncing(&mut self, tid: Tid, on: bool) -> Result<()> {
         self.run(|tx| {
+            tx.core.touch();
             let k = [records::SYNCING, tid.as_bytes()].concat();
             if on {
                 tx.txn.put_local(&k, &[], Shred::No)?;
@@ -462,6 +502,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let id = blob.id();
         let mut b = blob.clone();
         if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
+            validity::note_required(tx.core, &b.header, &id, &parts);
             validity::add_membership(tx.core, &b.header, &id, &parts);
         }
     }
@@ -471,16 +512,16 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     loop {
         let page = tx.txn.pending(after.as_ref(), 256)?;
         let n = page.len();
-        for (id, _, _) in page {
-            pend.push(id);
+        for (id, k, _) in page {
+            pend.push((id, k));
             after = Some(id);
         }
         if n < 256 {
             break;
         }
     }
-    for id in pend {
-        tx.core.pending.insert(id, Reason::Unexamined);
+    for (id, k) in pend {
+        tx.core.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
     }
     // derived indexes from states
     let mut aspects = Vec::new();
@@ -527,4 +568,47 @@ pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Ve
 
 pub(crate) fn is_kind_snapshot(k: Kind) -> bool {
     matches!(k, Kind::ContentSnapshot | Kind::MembershipSnapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::local_peer::LocalPeer;
+    use crate::{Ingested, Mutation};
+    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::Codec;
+    use osis_schema::core_types as ct;
+
+    // spec/permissions.md §5.1; spec/commits.md §2: the membership content rules bind writers
+    // only; a received commit breaking them is applied and judged by perm per edge write, so
+    // delivery order cannot change the held set.
+    #[test]
+    fn content_rules_writer_side_only_spec_perm_5_1() {
+        let mut lp = LocalPeer::new(2, 900, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let p0 = &mut lp.peers[0];
+        let me = p0.engine.tid();
+        let mut m = Mutation::new();
+        let t = p0.engine.new_thing(&mut m, me);
+        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        p0.commit(m).unwrap();
+        let b = lp.peers[1].engine.tid();
+        let c = osis_core::Tid::from_bytes([7; 15]);
+        let mut m = Mutation::new();
+        for x in [b, c] {
+            let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
+        }
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+        for p in lp.packages(0).unwrap() {
+            if p.id != id {
+                lp.deliver(1, &p).unwrap();
+            }
+        }
+        assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
+        assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
+        assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
+    }
 }

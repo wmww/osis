@@ -40,7 +40,16 @@ impl Core {
         }
         match self.timelines.get(r) {
             Some(tl) => tl.resolve(&Moves(self), r, t, At::now(osis_core::Ts::make(self.now(), 0).unwrap_or_default())),
-            None => self.moved.get(t).copied().unwrap_or(*t),
+            None => {
+                let mut cur = *t;
+                for _ in 0..osis_perm::RESOLUTION_HOPS {
+                    match self.moved.get(&cur) {
+                        Some(x) => cur = *x,
+                        None => break,
+                    }
+                }
+                cur
+            }
         }
     }
 
