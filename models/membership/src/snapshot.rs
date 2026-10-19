@@ -285,7 +285,8 @@ impl SHist {
                         }
                     }
                 }
-                chain_of[w.target] = Some(i);
+                // A chain write is a link of the target's authority: an admin edge.
+                chain_of[w.target] = (w.role == Role::Admin).then_some(i);
                 roles_after.push(roles.clone());
             }
             debug_assert_eq!(roles_after.len(), order.len() + 1);
