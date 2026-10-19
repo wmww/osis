@@ -24,12 +24,12 @@ fn forked() -> Forked {
     let owner = Recipient { member: p, role: Role::Admin, keys: MemberKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut s = Secrets::default();
-    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &mut rng(1)).unwrap();
+    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &|_, _| true, &mut rng(1)).unwrap();
     r1.secrets.apply(&mut s);
     r1.record(&mut view);
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
-    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(2)).unwrap();
-    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(3)).unwrap();
+    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &|_, _| true, &mut rng(2)).unwrap();
+    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &|_, _| true, &mut rng(3)).unwrap();
     x.secrets.apply(&mut s);
     y.secrets.apply(&mut s);
     x.record(&mut view);
@@ -52,7 +52,7 @@ fn grant_boxes_every_current_epoch() {
     for (r, e) in [(Role::Read, f.forks[0]), (Role::Read, f.forks[1]), (Role::Write, ew)] {
         assert_eq!(w.history[&history_key(r, &e)], f.s.history[&history_key(r, &e)]);
     }
-    assert!(w.removed.is_empty() && w.rotations().unwrap().iter().all(|(_, _, sup)| sup.is_empty()));
+    assert!(w.removed.is_empty() && w.rotations(None).unwrap().iter().all(|(_, _, sup)| sup.is_empty()));
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
@@ -98,6 +98,7 @@ fn reseal_to_newest_keyset() {
     let mut me = person(0x30);
     for (i, r) in ROLES.into_iter().enumerate() {
         me.role_mut(r).rotation(ep(2, 0x31), [ep(1, 0x30)]);
+        me.role_mut(r).set_usable(ep(2, 0x31), true);
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();

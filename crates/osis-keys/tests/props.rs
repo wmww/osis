@@ -5,10 +5,10 @@
 
 mod common;
 use common::*;
-use osis_core::{Role, Tid, WallMs};
+use osis_core::{Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{
-    ActorEpochs, Member, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, reseal_needed, roles_up_to, rotate,
+    ActorEpochs, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
 use proptest::prelude::*;
@@ -93,7 +93,7 @@ impl Sim {
 
     fn rotate(&mut self, roles: &BTreeSet<Role>) {
         let mut r = self.next_rng();
-        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.members(), &mut r).unwrap();
+        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.members(), &|_, _| true, &mut r).unwrap();
         assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
         rot.record(&mut self.view);
@@ -130,7 +130,7 @@ impl Sim {
                 let mut forks = Vec::new();
                 for _ in 0..2 {
                     let mut r = self.next_rng();
-                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.members(), &mut r).unwrap());
+                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.members(), &|_, _| true, &mut r).unwrap());
                 }
                 for f in &forks {
                     f.secrets.apply(&mut self.s);
@@ -139,15 +139,8 @@ impl Sim {
             }
             _ => {}
         }
-        // Re-seal whoever lacks a box at a current epoch (a key actor demoted below the role its
-        // box was keyed at).
-        let members: Vec<Member> = self.roster.iter().map(|(i, r)| Member { member: self.pool[*i].0, role: *r, until: None }).collect();
-        for (m, roles) in reseal_needed(&self.s, &self.view, &members, WallMs(0)) {
-            let i = self.pool.iter().position(|(t, _)| *t == m).unwrap();
-            let mut r = self.next_rng();
-            let w = box_member(&self.a, &self.view, &self.s, &self.rcpt(i, self.roster[&i]), &roles, &mut r).unwrap().unwrap();
-            w.apply(&mut self.s);
-        }
+        // No re-seal: a key actor demoted below its box's key keeps its lower roles through the
+        // demotion's rotation (spec/crypto.md §4).
     }
 
     fn opened(&self, i: usize) -> ActorEpochs {

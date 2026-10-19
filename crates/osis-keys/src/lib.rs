@@ -14,7 +14,7 @@ pub mod produce;
 pub mod tokens;
 pub mod wrap;
 
-pub use covers::{Departure, Member, covers, expired, may_encrypt_under, reseal_needed, rotate_first, uncovered};
+pub use covers::{Carries, Departure, HeldActors, Member, MemoryHeldActors, covers, expired, may_encrypt_under, reseal_needed, rotate_first, uncovered};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_keys, observe_secrets};
 pub use epoch::{ActorEpochs, EpochInfo, ROLES, RoleEpochs, SUITE, is_newer, newest_of};
 pub use error::Error;

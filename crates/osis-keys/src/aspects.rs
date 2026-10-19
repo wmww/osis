@@ -49,9 +49,13 @@ impl SecretsWrite {
         s.history.extend(self.history.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
+    /// Appends a later write: its puts and removals win over this one's.
     pub fn extend(&mut self, other: SecretsWrite) {
         for k in &other.boxes {
             self.removed.remove(k.0);
+        }
+        for k in &other.removed {
+            self.boxes.remove(k);
         }
         self.boxes.extend(other.boxes);
         self.removed.extend(other.removed);
@@ -63,9 +67,12 @@ impl SecretsWrite {
     }
 
     /// The epochs this write introduces per role and what each supersedes: a history box
-    /// written for (r, e) with the boxes of r it removes at earlier epochs. A grant or re-seal
+    /// written for (r, e) with the boxes of r it removes at earlier epochs and, from `keys`
+    /// (the commit's `/keys` write and the keysets held before it), the keyset epoch of r it
+    /// replaces; the latter covers an actor whose members are all key actors (their boxes are
+    /// keyed at their top role, so a rotation of a lower role removes none). A grant or re-seal
     /// re-writes history boxes and removes nothing, so it supersedes nothing.
-    pub fn rotations(&self) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
+    pub fn rotations(&self, keys: Option<(&KeysWrite, &Keys)>) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
         let mut out = Vec::new();
         for k in self.history.keys() {
             let e = from_schema(&k.epoch)?;
@@ -76,14 +83,25 @@ impl SecretsWrite {
                     sup.insert(old);
                 }
             }
+            if let Some((w, prev)) = keys
+                && w.keysets.get(&k.role).is_some_and(|ks| ks.epoch == k.epoch)
+                && let Some(old) = keyset_of(prev, k.role)
+            {
+                let old = from_schema(&old.epoch)?;
+                if old.n() < e.n() {
+                    sup.insert(old);
+                }
+            }
             out.push((k.role, e, sup));
         }
         Ok(out)
     }
 
-    /// Records the write's epochs and rotations in `epochs` (an applied commit's delta).
-    pub fn observe(&self, epochs: &mut ActorEpochs) -> Result<(), Error> {
-        for (r, e, sup) in self.rotations()? {
+    /// Records the write's epochs and rotations in `epochs` (a received commit's delta; `keys` as
+    /// for `rotations`). Epochs it introduces stay unusable until the caller marks the commit
+    /// applied and valid (`RoleEpochs::set_usable`).
+    pub fn observe(&self, epochs: &mut ActorEpochs, keys: Option<(&KeysWrite, &Keys)>) -> Result<(), Error> {
+        for (r, e, sup) in self.rotations(keys)? {
             epochs.role_mut(r).rotation(e, sup);
         }
         for k in self.boxes.keys() {
@@ -93,13 +111,11 @@ impl SecretsWrite {
     }
 }
 
-/// Records every epoch a `/secrets` state names (box and history keys), e.g. after a snapshot.
+/// Records every epoch the applied `/secrets` state names (box and history keys) as usable:
+/// the state holds only applied, valid deltas.
 pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Error> {
-    for k in s.boxes.keys() {
-        epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
-    }
-    for k in s.history.keys() {
-        epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
+    for (r, e) in s.boxes.keys().map(|k| (k.role, &k.epoch)).chain(s.history.keys().map(|k| (k.role, &k.epoch))) {
+        epochs.role_mut(r).set_usable(from_schema(e)?, true);
     }
     Ok(())
 }
@@ -108,7 +124,9 @@ pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Erro
 pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
     for (r, ks) in [(Role::Read, &k.read), (Role::Write, &k.write), (Role::Admin, &k.admin)] {
         if let Some(ks) = ks {
-            epochs.role_mut(r).set_suite(from_schema(&ks.epoch)?, ks.suite);
+            let e = from_schema(&ks.epoch)?;
+            epochs.role_mut(r).set_suite(e, ks.suite);
+            epochs.role_mut(r).set_usable(e, true);
         }
     }
     Ok(())

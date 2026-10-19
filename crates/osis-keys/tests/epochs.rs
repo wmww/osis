@@ -50,7 +50,7 @@ impl World {
 fn own_secrets_switch() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.members(), &mut rng(1)).unwrap();
+    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.members(), &|_, _| true, &mut rng(1)).unwrap();
     assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
@@ -115,14 +115,14 @@ fn own_secrets_switch() {
 fn fork_merge() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.members(), &mut rng(1)).unwrap();
+    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.members(), &|_, _| true, &mut rng(1)).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
     let mut view = derived.clone();
     r1.record(&mut view);
 
-    let x = rotate(&w.a, &read(), &view, &base, &w.members(), &mut rng(2)).unwrap();
-    let y = rotate(&w.a, &read(), &view, &base, &w.members(), &mut rng(3)).unwrap();
+    let x = rotate(&w.a, &read(), &view, &base, &w.members(), &|_, _| true, &mut rng(2)).unwrap();
+    let y = rotate(&w.a, &read(), &view, &base, &w.members(), &|_, _| true, &mut rng(3)).unwrap();
     let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
@@ -150,7 +150,7 @@ fn fork_merge() {
     // A member's view after both deltas: both current, newest by lowest nonce; both secrets held.
     let mut ma = ActorEpochs::default();
     for wr in [&r1.secrets, &x.secrets, &y.secrets] {
-        wr.observe(&mut ma).unwrap();
+        wr.observe(&mut ma, None).unwrap();
     }
     ingest(&w.a, &s1, &Opener::Actor { member: w.m, epochs: &w.me }, &mut ma).unwrap();
     let mut cur = vec![ex, ey];
@@ -164,7 +164,7 @@ fn fork_merge() {
     let mut zview = view.clone();
     x.record(&mut zview);
     y.record(&mut zview);
-    let z = rotate(&w.a, &read(), &zview, &s1, &w.members(), &mut rng(4)).unwrap();
+    let z = rotate(&w.a, &read(), &zview, &s1, &w.members(), &|_, _| true, &mut rng(4)).unwrap();
     assert_eq!(z.rotated[0].supersedes, [ex, ey].into_iter().collect());
     assert_eq!(z.rotated[0].epoch.n(), 4);
     let mut s3 = s1.clone();

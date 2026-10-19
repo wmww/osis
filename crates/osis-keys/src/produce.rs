@@ -9,7 +9,7 @@ use osis_core::{Role, Tid};
 use osis_crypto::{
     BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, seal_box, seal_history, wrap_symmetric_box,
 };
-use osis_schema::core_types::{KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
+use osis_schema::core_types::{BoxKey, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What the writer knows of a member's keys.
@@ -144,6 +144,7 @@ pub struct Rotation {
     pub keys: KeysWrite,
     /// Members with no keyset known for a role they hold: left unboxed (re-seal later).
     pub unboxed: Vec<Tid>,
+    wrap: Option<Epoch>,
 }
 
 impl Rotation {
@@ -153,14 +154,41 @@ impl Rotation {
             let re = epochs.role_mut(r.role);
             re.rotation(r.epoch, r.supersedes.iter().copied());
             re.set_secret(r.epoch, r.secret.clone());
+            re.set_usable(r.epoch, true);
         }
     }
 
-    /// The newest read epoch it supersedes: what the rotation commit is wrapped under
-    /// (spec/crypto.md §5). None when read is not rotated.
+    /// The newest read epoch it supersedes whose secret the rotator holds: what the rotation
+    /// commit is wrapped under (spec/crypto.md §5). None when read is not rotated.
     pub fn wrap_epoch(&self) -> Option<Epoch> {
-        let r = self.rotated.iter().find(|r| r.role == Role::Read)?;
-        newest_of(&r.supersedes)
+        self.wrap
+    }
+}
+
+/// The boxes a rotation of `roles` removes: those keyed with a rotated role at one of its
+/// current epochs.
+fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) -> Result<BTreeSet<BoxKey>, Error> {
+    let mut out = BTreeSet::new();
+    for k in held_secrets.boxes.keys().filter(|k| roles.contains(&k.role)) {
+        if held.role(k.role).is_current(&from_schema(&k.epoch)?) {
+            out.insert(k.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// The roles a key-actor member's box carries besides the rotated ones (spec/crypto.md §4):
+/// below its top written role; or, when the rotation writes it nothing but removes its box,
+/// every role it holds.
+fn carried(m: &Recipient, roles: &BTreeSet<Role>, removed: &BTreeSet<BoxKey>) -> Vec<Role> {
+    if !matches!(m.keys, MemberKeys::KeyActor { seed: None, .. }) {
+        return Vec::new();
+    }
+    let held = ROLES.into_iter().filter(|r| *r <= m.role && !roles.contains(r));
+    match roles.iter().filter(|r| **r <= m.role).max() {
+        Some(top) => held.filter(|r| r < top).collect(),
+        None if removed.iter().any(|k| k.member == m.member) => held.collect(),
+        None => Vec::new(),
     }
 }
 
@@ -170,18 +198,39 @@ impl Rotation {
 /// distinct earlier secret held, the keyset, and the removal of the role's boxes held at the
 /// epochs it supersedes. `held` is the rotator's view of the actor (a plain thing's derived
 /// epochs for the switch to secrets of its own); `held_secrets` the actor's `/secrets`.
+/// Secrets of other roles carried to key-actor members are encrypting under their epochs: a
+/// carried role whose newest epoch `may_carry` refuses (the covers rule) is rotated too.
 pub fn rotate(
     actor: &Tid,
     roles: &BTreeSet<Role>,
     held: &ActorEpochs,
     held_secrets: &Secrets,
     members: &[Recipient],
+    may_carry: &dyn Fn(Role, &Epoch) -> bool,
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Rotation, Error> {
+    let mut roles = roles.clone();
+    loop {
+        let removed = removals(&roles, held, held_secrets)?;
+        let mut more = BTreeSet::new();
+        for m in members {
+            for r in carried(m, &roles, &removed) {
+                let (e, _) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
+                if !may_carry(r, &e) {
+                    more.insert(r);
+                }
+            }
+        }
+        if more.is_empty() {
+            break;
+        }
+        roles.extend(more);
+    }
     let mut rotated = Vec::new();
-    let mut secrets = SecretsWrite::default();
+    let mut secrets = SecretsWrite { removed: removals(&roles, held, held_secrets)?, ..SecretsWrite::default() };
     let mut keys = KeysWrite::default();
-    for &r in roles {
+    let mut wrap = None;
+    for &r in &roles {
         let re = held.role(r);
         let n = re.max_n().ok_or(Error::NoEpoch(r))?;
         let mut nonce = [0u8; 16];
@@ -189,32 +238,26 @@ pub fn rotate(
         let epoch = Epoch::new(n.saturating_add(1), nonce)?;
         let secret = Secret32::random(rng);
         let supersedes: BTreeSet<Epoch> = re.current().into_iter().collect();
+        if r == Role::Read {
+            wrap = newest_of(supersedes.iter().filter(|e| re.secret(e).is_some()));
+        }
         let earlier: Vec<(Epoch, Secret32)> = re.held().map(|(e, s)| (e, s.clone())).collect();
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier)?);
-        for k in held_secrets.boxes.keys().filter(|k| k.role == r) {
-            if supersedes.contains(&from_schema(&k.epoch)?) {
-                secrets.removed.insert(k.clone());
-            }
-        }
         keys.keysets.insert(r, keyset(&epoch, &secret));
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }
     let mut unboxed = Vec::new();
     for m in members {
         let mut items: Vec<Item> = rotated.iter().filter(|x| x.role <= m.role).map(|x| Item { role: x.role, epoch: x.epoch, secret: &x.secret }).collect();
-        // A key-actor member's one box replaces the box keyed at its top role, which carried
-        // the roles below it: carry their newest current secrets too.
-        if let (MemberKeys::KeyActor { seed: None, .. }, Some(top)) = (&m.keys, items.iter().map(|i| i.role).max()) {
-            for r in ROLES.into_iter().filter(|r| *r < top && !roles.contains(r)) {
-                let (epoch, secret) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
-                items.push(Item { role: r, epoch, secret });
-            }
+        for r in carried(m, &roles, &secrets.removed) {
+            let (epoch, secret) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
+            items.push(Item { role: r, epoch, secret });
         }
         if !items.is_empty() && !box_items(actor, m, &items, rng, &mut secrets)? {
             unboxed.push(m.member);
         }
     }
-    Ok(Rotation { rotated, secrets, keys, unboxed })
+    Ok(Rotation { rotated, secrets, keys, unboxed, wrap })
 }
 
 /// A grant or re-seal (spec/crypto.md §4, spec/permissions.md §3): `rcpt`'s boxes for `roles`

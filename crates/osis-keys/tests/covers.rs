@@ -4,9 +4,9 @@
 mod common;
 use common::*;
 use osis_core::{Role, Tid, WallMs};
-use osis_crypto::{Epoch, Secret32};
+use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, Departure, Member, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,
+    ActorEpochs, Departure, Member, MemoryHeldActors, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
@@ -24,7 +24,7 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
     let mut view = ActorEpochs::derived(pe, &a);
     let mut members = vec![owner_rcpt(p, pe)];
     members.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &members, &mut rng(1)).unwrap();
+    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &members, &|_, _| true, &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
     r.record(&mut view);
@@ -44,10 +44,13 @@ fn lost_device_owner_rotation() {
     let mut pe2 = pe.clone();
     for (i, r) in ROLES.into_iter().enumerate() {
         pe2.role_mut(r).rotation(ep(2, 0x21), [ep(1, 0x20)]);
+        pe2.role_mut(r).set_usable(ep(2, 0x21), true);
         pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
     }
-    let newest = |m: &Tid, r: Role| -> Option<Epoch> { (*m == p).then(|| pe2.role(r).newest()).flatten() };
-    let deps = [Departure::Inside { member: p }];
+    // P's own /secrets after the rotation hold no box for the device.
+    let mut newest = MemoryHeldActors::default();
+    newest.map.insert(p, (Secrets::default(), pe2.clone()));
+    let deps = [Departure::inside(p, &Departure::member(tid(9), Role::Read))];
     let all = roles_up_to(Role::Admin);
     for r in ROLES {
         let (e, _) = tview.role(r).newest_held().unwrap();
@@ -58,7 +61,7 @@ fn lost_device_owner_rotation() {
     let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
     assert_eq!(rotate_first(&ts, &tview, &all, &rw, &deps, &newest), rw);
     // T rotates, boxing P under its new secrets: covered.
-    let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &mut rng(2)).unwrap();
+    let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &|_, _| true, &mut rng(2)).unwrap();
     let (mut tv2, mut ts2) = (tview.clone(), ts.clone());
     r.secrets.apply(&mut ts2);
     r.record(&mut tv2);
@@ -77,7 +80,7 @@ fn grant_raced_by_rotation() {
     let (pe, ge) = (person(0x20), person(0x50));
     let (view, base) = switched(a, p, &pe, &[]);
     let grant = box_member(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
-    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &mut rng(4)).unwrap();
+    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &|_, _| true, &mut rng(4)).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
     grant.apply(&mut s);
@@ -85,14 +88,14 @@ fn grant_raced_by_rotation() {
     rot.record(&mut v);
     let now = WallMs(1_000_000_000);
     let members = [Member { member: p, role: Role::Admin, until: None }, Member { member: g, role: Role::Read, until: None }];
-    assert_eq!(reseal_needed(&s, &v, &members, now), vec![(g, read())]);
+    assert_eq!(reseal_needed(&s, &v, &members, now, &|_, _, _| true), vec![(g, read())]);
     let near = [Member { member: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_000)) }];
-    assert!(reseal_needed(&s, &v, &near, now).is_empty());
+    assert!(reseal_needed(&s, &v, &near, now, &|_, _, _| true).is_empty());
     let far = [Member { member: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
-    assert_eq!(reseal_needed(&s, &v, &far, now).len(), 1);
+    assert_eq!(reseal_needed(&s, &v, &far, now, &|_, _, _| true).len(), 1);
     let reseal = box_member(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &members, now).is_empty());
+    assert!(reseal_needed(&s, &v, &members, now, &|_, _, _| true).is_empty());
     let mut gv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv).unwrap();
     assert_eq!(gv.read.newest_held().map(|x| x.0), v.read.newest());
@@ -108,9 +111,9 @@ fn rotation_held_before_the_removal() {
     let (pe, me) = (person(0x20), person(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)]);
     let with_m = [owner_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
-    let eager = rotate(&a, &read(), &view, &base, &with_m, &mut rng(6)).unwrap();
-    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &mut rng(7)).unwrap();
-    let none = |_: &Tid, _: Role| None;
+    let eager = rotate(&a, &read(), &view, &base, &with_m, &|_, _| true, &mut rng(6)).unwrap();
+    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &|_, _| true, &mut rng(7)).unwrap();
+    let none = MemoryHeldActors::default();
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
@@ -121,13 +124,13 @@ fn rotation_held_before_the_removal() {
     removal.secrets.apply(&mut s);
     removal.record(&mut v);
     let e2r = removal.rotated[0].epoch;
-    let deps = [Departure::Member { member: m, from: Role::Read }];
+    let deps = [Departure::member(m, Role::Read)];
     assert!(!may_encrypt_under(&s, &v, Role::Read, &e2, &deps, &none));
     assert!(may_encrypt_under(&s, &v, Role::Read, &e2r, &deps, &none));
     let first = rotate_first(&s, &v, &read(), &read(), &deps, &none);
     assert_eq!(first.contains(&Role::Read), v.read.newest() == Some(e2));
     // Rotating past both forks excludes M.
-    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &mut rng(8)).unwrap();
+    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &|_, _| true, &mut rng(8)).unwrap();
     assert_eq!(heal.rotated[0].supersedes, [e2, e2r].into_iter().collect());
     heal.secrets.apply(&mut s);
     heal.record(&mut v);
@@ -140,7 +143,7 @@ fn rotation_held_before_the_removal() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let w = box_member(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     w.apply(&mut s);
-    let kdep = [Departure::Member { member: k, from: Role::Read }];
+    let kdep = [Departure::member(k, Role::Read)];
     assert!(!may_encrypt_under(&s, &v, Role::Read, &e3, &kdep, &none));
-    assert!(reseal_needed(&s, &v, &[Member { member: k, role: Role::Write, until: None }], WallMs(0)).is_empty());
+    assert!(reseal_needed(&s, &v, &[Member { member: k, role: Role::Write, until: None }], WallMs(0), &|_, _, _| true).is_empty());
 }

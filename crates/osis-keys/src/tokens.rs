@@ -36,14 +36,22 @@ fn source<'a>(level: u8, thing: &'a ActorEpochs, author_actor: Option<&'a ActorE
     }
 }
 
-/// Token secrets for a new delta: per level, the newest current secret held. `thing` is the
+/// Token secrets for a new delta: per level, the newest current secret held; level 1 is
+/// omitted when the admin secret is not held. `thing` is the
 /// thing's epochs (derived for a plain thing), `author_actor` the actor directly above the
 /// author node (none for an import).
 pub fn token_secrets(by: PurgeBy, thing: &ActorEpochs, author_actor: Option<&ActorEpochs>) -> Result<Vec<(u8, Epoch, Secret32)>, Error> {
     let mut out = Vec::new();
     for l in levels(by, author_actor.is_none()) {
         let Some((re, role)) = source(l, thing, author_actor) else { continue };
-        let (e, s) = re.newest_held().ok_or(Error::NoSecret(role))?;
+        let Some((e, s)) = re.newest_held() else {
+            // A writer that does not hold the admin secret omits level 1 (provisional,
+            // issues/token-admin-secret.md); the other levels' secrets it must hold.
+            if l == LEVEL_ADMIN {
+                continue;
+            }
+            return Err(Error::NoSecret(role));
+        };
         out.push((l, e, s.clone()));
     }
     Ok(out)

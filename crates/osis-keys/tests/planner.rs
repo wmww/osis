@@ -42,16 +42,20 @@ fn device_removal_cascade() {
     let plan = plan_departure(&g, p, d, Role::Read, Role::Admin);
     let all = roles_up_to(Role::Admin);
     assert_eq!(plan.immediate(), Some((p, &all)));
-    let req: Vec<(Tid, BTreeSet<Role>)> = plan.required().map(|(t, e)| (*t, e.roles.clone())).collect();
+    let req: Vec<(Tid, BTreeSet<Role>)> = plan.required().into_iter().map(|(t, e)| (*t, e.roles.clone())).collect();
     let rw = set(&[Role::Read, Role::Write]);
     assert_eq!(
         req,
-        vec![(p, all.clone()), (tid(10), all.clone()), (tid(12), all.clone()), (tid(20), rw.clone()), (tid(21), set(&[Role::Read])), (tid(22), rw.clone())]
+        vec![(p, all.clone()), (tid(10), all.clone()), (tid(20), rw.clone()), (tid(12), all.clone()), (tid(21), set(&[Role::Read])), (tid(22), rw.clone())]
     );
     assert!(!plan.entries[&tid(11)].own_secrets);
-    assert_eq!(plan.entries[&p].departures, [Departure::Member { member: d, from: Role::Read }].into_iter().collect());
-    assert_eq!(plan.entries[&tid(12)].departures, [Departure::Inside { member: tid(11) }].into_iter().collect());
-    assert_eq!(plan.entries[&tid(21)].departures, [Departure::Inside { member: tid(20) }].into_iter().collect());
+    let dd = Departure::member(d, Role::Read);
+    assert_eq!(plan.entries[&p].departures, [dd.clone()].into_iter().collect());
+    assert_eq!(plan.entries[&tid(12)].departures, [Departure::inside(tid(11), &Departure::inside(p, &dd))].into_iter().collect());
+    assert_eq!(plan.entries[&tid(21)].departures, [Departure::inside(tid(20), &Departure::inside(p, &dd))].into_iter().collect());
+    // Top-down: P, then what P reaches directly, then the next hop.
+    let order: Vec<Tid> = plan.required().into_iter().map(|(t, _)| *t).collect();
+    assert_eq!(order, vec![p, tid(10), tid(20), tid(12), tid(21), tid(22)]);
     // A writer of A2 rotates its read and write there; nothing elsewhere.
     let mine = plan.mine(&|t| if *t == tid(20) { rw.clone() } else { BTreeSet::new() });
     assert_eq!(mine, vec![(tid(20), rw.clone())]);
@@ -72,7 +76,7 @@ fn demotion_scope() {
     assert_eq!(plan.entries[&tid(22)].roles, set(&[Role::Write]));
     // A read member's removal: read only, everywhere.
     let plan = plan_departure(&g, tid(2), tid(1), Role::Read, Role::Read);
-    assert!(plan.required().all(|(_, e)| e.roles == set(&[Role::Read])));
+    assert!(plan.required().into_iter().all(|(_, e)| e.roles == set(&[Role::Read])));
     // Nothing lost: nothing to do.
     assert!(plan_departure(&g, tid(2), tid(1), Role::Admin, Role::Write).entries.is_empty());
 }
@@ -86,9 +90,10 @@ fn cycles_and_lost_access() {
     g.edges.insert(a, vec![(b, Role::Admin)]);
     g.edges.insert(b, vec![(a, Role::Read), (c, Role::Read)]);
     g.own_secrets = [a, b, c].into_iter().collect();
-    let plan = plan_inside(&g, a);
-    assert_eq!(plan.entries[&a].roles, set(&[Role::Read]));
+    let plan = plan_inside(&g, a, roles_up_to(Role::Admin), Departure::member(tid(9), Role::Read));
+    assert_eq!(plan.entries[&a].roles, roles_up_to(Role::Admin));
     assert_eq!(plan.entries[&b].roles, roles_up_to(Role::Admin));
+    assert_eq!(plan.entries[&c].roles, set(&[Role::Read]));
     let lost = lost_access(&g, b, &|t| *t == c);
     assert_eq!(lost, vec![b, a]);
 }
@@ -126,15 +131,16 @@ fn wrap_epochs() {
     let mut a = person(0x20);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Current(ep(1, 0x20)));
     a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
+    a.read.set_usable(ep(2, 5), true);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Stranded(ep(1, 0x20)));
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), WrapEpoch::None);
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
-    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &mut rng(1)).unwrap();
+    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &|_, _| true, &mut rng(1)).unwrap();
     assert_eq!(r.wrap_epoch(), Some(ep(1, 0x20)));
     r.record(&mut view);
     assert_eq!(wrap_epoch(&view.read), WrapEpoch::Current(r.rotated[0].epoch));
-    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &mut rng(2)).unwrap();
+    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &|_, _| true, &mut rng(2)).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
 
@@ -147,6 +153,7 @@ fn label_epochs() {
     assert_eq!((r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
     let key = label_role_key(label_role(Role::Read), r.1, 3).verifying_key();
     a.read.rotation(ep(2, 1), [ep(1, 0x20)]);
+    a.read.set_usable(ep(2, 1), true);
     a.read.set_secret(ep(2, 1), Secret32::from_bytes([9; 32]));
     assert_eq!(registered_epoch(&a.read, Role::Read, 3, &key), Some(ep(1, 0x20)));
     assert_eq!(registered_epoch(&a.read, Role::Read, 4, &key), None);
@@ -156,6 +163,7 @@ fn label_epochs() {
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     a.admin.observe(ep(2, 2));
     a.admin.rotation(ep(2, 2), [ep(1, 0x20)]);
+    a.admin.set_usable(ep(2, 2), true);
     assert!(registration_epochs(&a).is_none());
 }
 
@@ -176,10 +184,17 @@ fn tokens() {
     assert_eq!(&t[2].2, thing.write.secret(&ep(1, 0x20)).unwrap());
     assert_eq!(token_secrets(PurgeBy::Author, &thing, None).unwrap().len(), 1);
     thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
+    thing.write.set_usable(ep(2, 0), true);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
     let c: Vec<_> = token_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();
     assert_eq!(c, vec![ep(2, 0), ep(1, 0x20)]);
     assert!(token_candidates(2, &thing, None).is_empty());
-    let stale = ActorEpochs::default();
-    assert!(token_secrets(PurgeBy::Admin, &stale, None).is_err());
+    // spec/crypto.md §7 (issues/token-admin-secret.md): no admin secret held, no level 1.
+    let mut writer = person(0x40);
+    writer.admin = Default::default();
+    let t = token_secrets(PurgeBy::Writer, &writer, Some(&author)).unwrap();
+    assert_eq!(t.iter().map(|x| x.0).collect::<Vec<_>>(), vec![2, 3]);
+    assert!(token_secrets(PurgeBy::Admin, &writer, None).unwrap().is_empty());
+    writer.write = Default::default();
+    assert!(token_secrets(PurgeBy::Writer, &writer, None).is_err());
 }

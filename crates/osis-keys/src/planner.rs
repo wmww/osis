@@ -22,11 +22,13 @@ pub trait Graph {
 pub struct Entry {
     /// The roles of the thing whose secrets the departed party could open.
     pub roles: BTreeSet<Role>,
-    /// The departures its epochs must cover (spec/crypto.md §4): the member's own on the target,
-    /// "inside member X" for each actor X it was reached through.
+    /// The departures its epochs must cover (spec/crypto.md §4), one per path: the member's own
+    /// on the target, inside each chain of actors it was reached through.
     pub departures: BTreeSet<Departure>,
     /// Secrets of its own: it needs a rotation. A plain thing follows its owner's.
     pub own_secrets: bool,
+    /// Hops from the departure (shortest path): rotations go in this order, top-down.
+    pub depth: usize,
 }
 
 /// What a departure requires.
@@ -45,17 +47,22 @@ impl Plan {
         self.entries.get(&t).map(|e| (t, &e.roles))
     }
 
-    /// Every (thing, roles) requiring a rotation: things with secrets of their own.
-    pub fn required(&self) -> impl Iterator<Item = (&Tid, &Entry)> {
-        self.entries.iter().filter(|(_, e)| e.own_secrets)
+    /// Every (thing, entry) requiring a rotation (things with secrets of their own), top-down:
+    /// an intermediate actor before the things reached through it (spec/permissions.md §3).
+    pub fn required(&self) -> Vec<(&Tid, &Entry)> {
+        let mut v: Vec<(&Tid, &Entry)> = self.entries.iter().filter(|(_, e)| e.own_secrets).collect();
+        v.sort_by_key(|(t, e)| (e.depth, **t));
+        v
     }
 
     /// The required rotations this node may make (`may_rotate`: perm's roles it may rotate,
-    /// write and above rotates its role and below). Each is due before the node next encrypts
-    /// under the secret it replaces (the covers rule, with the entry's departures); it may rotate
-    /// eagerly.
+    /// write and above rotates its role and below), top-down. Each is due before the node next
+    /// encrypts under the secret it replaces (the covers rule, with the entry's departures); it
+    /// may rotate eagerly. Where it may not rotate an intermediate, the things below stay
+    /// uncovered and it does not encrypt under them.
     pub fn mine(&self, may_rotate: &dyn Fn(&Tid) -> BTreeSet<Role>) -> Vec<(Tid, BTreeSet<Role>)> {
         self.required()
+            .into_iter()
             .filter_map(|(t, e)| {
                 let r: BTreeSet<Role> = e.roles.intersection(&may_rotate(t)).copied().collect();
                 (!r.is_empty()).then_some((*t, r))
@@ -65,55 +72,53 @@ impl Plan {
 }
 
 /// The rotations required when `member` leaves roles `from` and above of `actor`, having held
-/// `held` (spec/permissions.md §3): on the actor the roles it lost; on every thing the actor's
+/// `held` (spec/permissions.md §3): on the actor the roles it left; on every thing the actor's
 /// roles open (owned things, targets of its edges, transitively) the roles the actor holds there
-/// among those the member could open through it (per-role KEM keys: a secret of role x opens
-/// only boxes sealed to role x).
+/// among those the roles it left open through it (per-role KEM keys).
 pub fn plan_departure(graph: &dyn Graph, actor: Tid, member: Tid, from: Role, held: Role) -> Plan {
     let lost: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r >= from && *r <= held).collect();
-    let mut plan = Plan { target: Some(actor), entries: BTreeMap::new() };
     if lost.is_empty() {
-        return plan;
+        return Plan { target: Some(actor), entries: BTreeMap::new() };
     }
-    let first = Entry { roles: lost.clone(), departures: [Departure::Member { member, from }].into_iter().collect(), own_secrets: graph.has_own_secrets(&actor) };
-    plan.entries.insert(actor, first);
-    cascade(graph, &mut plan, vec![(actor, lost)]);
+    let mut plan = plan_inside(graph, actor, lost, Departure::member(member, from));
+    plan.target = Some(actor);
     plan
 }
 
-/// The rotations required after actor X's own keysets rotated for a departure inside it (e.g. a
-/// device removed from a person): every thing X's roles open, transitively.
-pub fn plan_inside(graph: &dyn Graph, x: Tid) -> Plan {
-    let mut plan = Plan { target: None, entries: BTreeMap::new() };
-    cascade(graph, &mut plan, vec![(x, ROLES.into_iter().collect())]);
-    plan
-}
-
-fn cascade(graph: &dyn Graph, plan: &mut Plan, mut work: Vec<(Tid, BTreeSet<Role>)>) {
-    while let Some((x, roles)) = work.pop() {
+/// The rotations required by `departure` (as seen from actor X) exposing roles `roles` of X:
+/// X itself, then every thing X's roles open, transitively.
+pub fn plan_inside(graph: &dyn Graph, x: Tid, roles: BTreeSet<Role>, departure: Departure) -> Plan {
+    let first = Entry { roles: roles.clone(), departures: [departure.clone()].into_iter().collect(), own_secrets: graph.has_own_secrets(&x), depth: 0 };
+    let mut plan = Plan { target: None, entries: [(x, first)].into_iter().collect() };
+    let mut work = vec![(x, roles, departure)];
+    while let Some((x, roles, dep)) = work.pop() {
         let mut next: Vec<(Tid, Role)> = graph.owned(&x).into_iter().map(|t| (t, Role::Admin)).collect();
         next.extend(graph.edges(&x));
         for (t, via) in next {
             let opened: BTreeSet<Role> = roles.iter().filter(|r| **r <= via).copied().collect();
-            if opened.is_empty() {
+            // A path through t already: a cycle.
+            if opened.is_empty() || dep.via.contains(&t) || t == dep.member {
                 continue;
             }
-            let e = plan.entries.entry(t).or_insert_with(|| Entry { own_secrets: graph.has_own_secrets(&t), ..Entry::default() });
-            e.departures.insert(Departure::Inside { member: x });
-            let before = e.roles.len();
+            let d = Departure::inside(x, &dep);
+            let depth = d.via.len();
+            let e = plan.entries.entry(t).or_insert_with(|| Entry { own_secrets: graph.has_own_secrets(&t), depth, ..Entry::default() });
+            e.depth = e.depth.min(depth);
+            let grew = opened.iter().any(|r| !e.roles.contains(r));
             e.roles.extend(opened);
-            if e.roles.len() > before {
-                work.push((t, e.roles.clone()));
+            if e.departures.insert(d.clone()) || grew {
+                work.push((t, e.roles.clone(), d));
             }
         }
     }
+    plan
 }
 
 /// What a node drops on losing read access to `actor` (spec/permissions.md §3): the actor and
 /// every thing reached from it whose read it holds by no other path (`still_readable`). The store
 /// erases those secrets and units.
 pub fn lost_access(graph: &dyn Graph, actor: Tid, still_readable: &dyn Fn(&Tid) -> bool) -> Vec<Tid> {
-    let plan = plan_inside(graph, actor);
+    let plan = plan_inside(graph, actor, ROLES.into_iter().collect(), Departure::member(actor, Role::Read));
     let mut out = vec![actor];
     out.extend(plan.entries.keys().filter(|t| **t != actor && !still_readable(t)).copied());
     out

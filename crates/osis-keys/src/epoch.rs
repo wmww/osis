@@ -30,15 +30,18 @@ pub struct EpochInfo {
     pub suite: u64,
     /// Epochs the rotation of this one superseded (removed boxes, or listed in its history box).
     pub supersedes: BTreeSet<Epoch>,
-    /// False while its rotation commit is pending or invalid (spec/crypto.md §4): kept for
-    /// reading, never encrypted under, supersedes nothing.
+    /// Its rotation commit is applied and valid. False while pending or invalid (spec/crypto.md
+    /// §4): kept for reading, never encrypted under, supersedes nothing. An epoch first seen in a
+    /// commit (`SecretsWrite::observe`) starts false until the caller marks it (`set_usable`);
+    /// one seen in the applied `/secrets` state (`observe_secrets`) or made by this node's own
+    /// rotation (`Rotation::record`) starts true.
     pub usable: bool,
     pub secret: Option<Secret32>,
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), usable: true, secret: None }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), usable: false, secret: None }
     }
 }
 
@@ -178,6 +181,7 @@ impl ActorEpochs {
         let mut a = ActorEpochs::default();
         for r in ROLES {
             a.role_mut(r).set_secret(Epoch::ZERO, key_actor_role_secret(seed, r));
+            a.role_mut(r).set_usable(Epoch::ZERO, true);
         }
         a
     }
@@ -218,6 +222,9 @@ mod tests {
         r.set_secret(ep(1, 0), Secret32::from_bytes([1; 32]));
         r.rotation(ep(2, 5), [ep(1, 0)]);
         r.rotation(ep(2, 3), [ep(1, 0)]);
+        for e in [ep(1, 0), ep(2, 5), ep(2, 3)] {
+            r.set_usable(e, true);
+        }
         assert_eq!(r.current(), vec![ep(2, 3), ep(2, 5)]);
         assert_eq!(r.newest(), Some(ep(2, 3)));
         assert_eq!(r.newest_held(), None);
@@ -225,6 +232,7 @@ mod tests {
         r.set_secret(ep(2, 5), Secret32::from_bytes([2; 32]));
         assert_eq!(r.newest_held().map(|x| x.0), Some(ep(2, 5)));
         r.rotation(ep(3, 9), [ep(2, 5)]);
+        r.set_usable(ep(3, 9), true);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         assert_eq!(r.newest(), Some(ep(3, 9)));
         // An unusable rotation (pending or invalid) supersedes nothing and is not current.
@@ -251,6 +259,9 @@ mod tests {
         owner.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
         owner.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
         owner.read.observe(ep(2, 0));
+        for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
+            owner.read.set_usable(e, true);
+        }
         let d = ActorEpochs::derived(&owner, &t);
         assert_eq!(d.read.current(), owner.read.current());
         assert_eq!(d.read.held().count(), 2);
