@@ -1,8 +1,8 @@
 # Deterministic simulator
-> Summary: Build `osis-sim`, the deterministic multi-node simulator of plans/testing.md §5: seeded scheduler, per-node virtual clocks with skew and drift, InProcess transport with fault injection, real node and server code, crash/restart and disk loss, the invariant library checked at every step or quiescence, the scenario library from the notes, adversary nodes, version skew, seed replay and a nightly sweep. Phase A lands with node-core; phase B grows with node-sync and flows.
+> Summary: Build `osis-sim`, the deterministic multi-node simulator of plans/testing.md §5: seeded scheduler, per-node virtual clocks with skew and drift, real node and server sync engines exchanging proto messages with fault injection, crash/restart and disk loss, the invariant library checked at every step or quiescence, the scenario library from the notes, adversary nodes, version skew, seed replay and a nightly sweep. Phase A lands with node-core; phase B grows with node-sync and flows.
 > Tags: tests, sync, permissions, crdt
 
-Crate: `osis-sim` (also a `sim-sweep` binary). Depends on: osis (API), osis-node, osis-server, osis-transport (InProcess), osis-store (MemoryBackend with crash hook). Unblocks: apps-e2e, hardening-signoff.
+Crate: `osis-sim` (also a `sim-sweep` binary). Depends on: osis (API), osis-node, osis-server, osis-store (MemoryBackend with crash hook). Unblocks: apps-e2e, hardening-signoff.
 Reference: plans/testing.md §5 (the full list), scenarios named in notes/permissions.md, notes/sync.md (Limits), notes/chat.md, notes/crdt.md. Spec trumps this plan.
 
 ## Deliverables
@@ -17,7 +17,7 @@ Reference: plans/testing.md §5 (the full list), scenarios named in notes/permis
 
 ## Steps
 - [ ] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay.
-- [ ] Phase B (after node-sync, server): transport faults, servers, label invariants, crash/restart, disk loss.
+- [ ] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
 - [ ] Phase C (after flows): scenario library, adversaries, version skew, sweep binary, nightly CI job (test-infra).
 
 ## Done when

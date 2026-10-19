@@ -15,7 +15,7 @@ Output goes into the spec files themselves (new sections, or a spec/wire.md if l
 
 ## Node-to-node protocol (versioned separately; old clients must keep working with the official server)
 8. Framing and version negotiation over the transport abstraction (spec/sync.md §6, §10); fixed maximum message size (`MAX_MESSAGE`) and decoder limits (nesting depth, list lengths) per object; paging; the handshake (clock, challenge, static key).
-9. Messages (spec/sync.md §5, §6, §8): cursor sync, range reconciliation (choose and specify the RBSR variant), the registration step layout (four public keys incl. deposit, step key, claim set hash, entry boxes, signature), open (challenge signature, claims and step keys), upload (with stamps, no open), deposit (reply with remaining budget), delete (label delete key; token plus the signature its level needs, optionally timed, earliest wins), registration ("have k"), subscribe/push, signals (write or deposit key), specific-blob fetch, download.
+9. Messages (spec/sync.md §5, §6, §8): cursor sync, range reconciliation (choose and specify the RBSR variant), the registration step layout (four public keys incl. deposit, step key, claim set hash, entry boxes, signature), open (challenge signature, claims and step keys), upload (with stamps, no open), deposit (reply with remaining budget), delete (label delete key; token plus the signature its level needs, optionally timed, earliest wins), register (reply: the head), subscribe/push, signals (write or deposit key), specific-blob fetch, download.
 10. File bundle format (spec/sync.md §11); an importer treats the bundle's deletions as a peer's log events.
 
 ## Design gaps to close first

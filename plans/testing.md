@@ -31,12 +31,12 @@ From plans/protocol-spec.md: canonical CBOR of every value type, tid derivation,
 - Decoders: model decoder and implementation decoder agree on accept/reject for random and mutated inputs.
 
 ## 4. Per-crate property tests and fuzzing
-- proptest in every crate for its algebra: join laws, encode/decode round trips, canonical form, diff/read identities, HLC monotonicity under skew, retention arithmetic, paging (every page fits `PAGE_TARGET`, pages re-join to the state).
-- cargo-fuzz targets for every parser of bytes that can arrive from a peer: CBOR, blob prefix, commit header, delta, snapshot page, sync messages, bundle, inbox blob, link and card formats. Corpora seeded from vectors. Runs nightly; crashes become regression tests.
+- proptest in every crate for its algebra: join laws, encode/decode round trips, canonical form, diff/read identities, HLC monotonicity under skew, retention arithmetic, paging (every page within the chunker bounds, pages re-join to the state).
+- cargo-fuzz targets for every parser of bytes that can arrive from a peer: CBOR, blob prefix, commit header, delta, page, sync messages, bundle, inbox blob, link and card formats. Corpora seeded from vectors. Runs nightly; crashes become regression tests.
 - Crypto: known-answer tests from the primitive crates' vectors plus ours; test that each domain string is distinct and used once; a test that every signature verifies only under its own domain.
 
 ## 5. Deterministic simulation (the main tool once nodes exist)
-A simulator runs real node code with: an in-process transport, a simulated clock per node with configurable skew and drift, a seeded scheduler choosing which node acts, and fault injection: partitions, drops, reorders, duplicates, delays, crash and restart mid-write (storage must recover), disk loss (reinstall from card), blind servers that go away or lose data. Blind servers are real server code. The harness is built before networking, as soon as two nodes can exchange commits in memory.
+A simulator runs real node code with: proto messages delivered engine-to-engine (no transport, plans/sim.md), a simulated clock per node with configurable skew and drift, a seeded scheduler choosing which node acts, and fault injection: partitions, drops, reorders, duplicates, delays, crash and restart mid-write (storage must recover), disk loss (reinstall from card), blind servers that go away or lose data. Blind servers are real server code. The harness is built before networking, as soon as two nodes can exchange commits in memory.
 - **Invariants** checked after every step or at quiescence: all honest nodes with the same readable set read the same values; an un-authorized write is never read as valid on any node; a departed member holds no secret of a post-departure epoch and can decrypt no later body; label required sets hold at servers; purged bodies are absent from every reachable honest node and server once right holders synced; state size bounded per spec/requirements.md, Scale; no ping-pong (bounded uploads per quiescent period); every current member eventually reads (liveness by quiescence).
 - **Scenario library**: the reference scenarios from notes (revocation scenario with Bob, Carol variant; stolen device backdating; demotion without syncing below with and without pre-sync; link redemption races; move with import; rotation during offline spans; re-seal of stranded member; chat pattern join/leave; folder patterns). Each scenario is also a seed family for randomized exploration around it.
 - **Adversaries** as node implementations in the same harness: equivocating writer, backdating ex-member, flooding depositor, malformed-blob sender, replaying server, server that lies about tombstones, colluding ex-member plus dishonest server (checks that only content sealed before the removal leaks, spec/requirements.md, Out of scope). Each has an expected outcome: fails, bounded, or accepted by the requirements.
@@ -66,7 +66,7 @@ A simulator runs real node code with: an in-process transport, a simulated clock
 Superseded by plans/mvp_meta.md §7; the infrastructure items are plans/test-infra.md and plans/sim.md, the per-crate items live in each crate's plan. Kept for reference:
 1. Workspace layout; move the models; vectors runner with the first vectors (CBOR, tids, kdf).
 2. CRDT crate with differential tests against the model from the first commit.
-3. Simulator skeleton with in-process transport as soon as commits exist; invariants grow with features.
+3. Simulator skeleton with engine-to-engine delivery as soon as commits exist; invariants grow with features.
 4. Fuzz target per parser as it lands.
 5. Membership model refactor and differential tests when the timeline is implemented.
 6. TLA+ models in parallel (plans/tla-models.md).
