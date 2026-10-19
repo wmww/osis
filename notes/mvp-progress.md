@@ -20,7 +20,7 @@ Wave 1 (tla-models still running from wave 0).
 | crypto | running (opus, worktree) | |
 | crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
-| test-infra | running (opus, worktree) | |
+| test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | running (opus, worktree) | |
 | store | not started | wave 1, after crypto AEAD+kdf |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
