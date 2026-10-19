@@ -42,7 +42,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sim | phase A running (opus, worktree) | B after node-sync; C wave 5 |
+| sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
