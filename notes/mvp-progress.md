@@ -16,7 +16,7 @@ Wave 1 (tla-models still running from wave 0).
 | workspace | merged at 4b6ec14 | plan folded into notes/architecture.md |
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | running (opus, worktree) | wave 0, ∥, low priority |
-| core alignment to wire.md | running (opus, worktree) | narrow task, not a plan |
+| core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | running (opus, worktree) | |
 | crdt-core | running (opus, worktree) | returns after step 1 (skeleton) for merge, then continued by message |
 | perm | running (opus, worktree) | |
