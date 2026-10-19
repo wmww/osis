@@ -17,6 +17,7 @@ osis-label.workspace = true
 osis-proto.workspace = true
 osis-store.workspace = true
 osis-transport.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -24,3 +25,9 @@ proptest.workspace = true
 [features]
 # The redb file backend (notes/architecture.md §4: off by default).
 file-backend = ["osis-store/file-backend"]
+# The `osis-server` binary: file backend, OS randomness, multi-thread runtime, signals.
+bin = ["file-backend", "osis-crypto/os-rng", "tokio/rt-multi-thread", "tokio/signal"]
+
+[[bin]]
+name = "osis-server"
+required-features = ["bin"]
