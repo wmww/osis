@@ -26,8 +26,8 @@ Wave 2 (all of wave 1 merged).
 | crdt-seq | running (opus, worktree) | |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
-| proto | review | reviewer running; issues/proto-label-coupling.md to resolve at integration |
-| keys | running (opus, worktree) | |
+| proto | review fixes | agent swapping in osis-label types, replay cursor design, perf fixes |
+| keys | review | reviewer running |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
