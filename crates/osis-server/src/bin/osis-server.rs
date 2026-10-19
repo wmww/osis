@@ -1,11 +1,14 @@
 //! `osis-server <config file>`: a blind node (spec/sync.md §4-§9) on the redb file backend.
-//! Config format: `osis_server::config`. Logs to stderr; Ctrl-C (SIGINT) shuts down gracefully.
+//! Serves QUIC (`listen = quic://host:port`). Config format: `osis_server::config`. Logs to
+//! stderr, starting with `address <url>#<key>` (the static key, base64url); Ctrl-C (SIGINT) shuts
+//! down gracefully.
 #![forbid(unsafe_code)]
 
 use osis_core::SystemClock;
 use osis_crypto::{OsRng, RngCore};
-use osis_server::{BackendStore, Control, Hub, config, driver, net};
+use osis_server::{BackendStore, Control, Endpoint, Hub, config, driver};
 use osis_store::RedbBackend;
+use osis_transport::{ListenConfig, Listener, Quic, StaticSecret, Transport};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -55,8 +58,13 @@ fn start() -> Result<(), String> {
     let store = BackendStore::open(backend, clock.clone(), cfg.policy.clone(), &mut OsRng).map_err(|e| e.to_string())?;
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
-        let (listener, dialer) = net::listen(&cfg.listen, &secret)?;
-        let hub = Hub::new(store, listener.local_key, Box::new(OsRng));
+        let secret = StaticSecret::from_bytes(secret);
+        let transport = Quic::new();
+        let listener = transport.listen(ListenConfig { url: cfg.listen.clone(), secret: secret.clone() }).await.map_err(|e| format!("listen {}: {e}", cfg.listen))?;
+        let a = listener.address();
+        log(&format!("address {}", osis_label::address_to_text(&osis_label::Address { url: a.url, key: a.key })));
+        let ep = Endpoint { transport, listener, secret };
+        let hub = Hub::new(store, ep.key(), Box::new(OsRng));
         let (control, rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
             match tokio::signal::ctrl_c().await {
@@ -72,8 +80,7 @@ fn start() -> Result<(), String> {
                 }
             }
         });
-        log(&format!("listening on {}", cfg.listen));
-        driver::run(hub, listener, cfg.peers, dialer, clock, rx, Arc::new(log)).await;
+        driver::run(hub, ep, cfg.peers, clock, rx, Arc::new(log)).await;
         Ok::<(), String>(())
     })
 }

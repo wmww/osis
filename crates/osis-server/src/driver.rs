@@ -1,14 +1,18 @@
-//! The async driver: one task owns the `Hub` (and so the store); per link a reader task feeds it
-//! bytes; writes go to the link's queue (more than `max_queued_bytes` unread drops the
-//! connection); per configured peer a dial task reconnects with backoff; sweeps, Hello deadlines
-//! and replication work run when due. Hub calls (storage, fsyncs) run under `block_in_place` on
-//! a multi-thread runtime. The only async code of the crate (notes/architecture.md §2).
+//! The async driver over any `T: Transport` (notes/architecture.md §2): one task owns the `Hub`
+//! (and so the store); sessions arrive as osis-transport `Link`s (`link::serve`: one per stream a
+//! dialer opens, peer key as the transport authenticated it); per link a reader task feeds the
+//! hub bytes; writes go to the link's queue (more than `max_queued_bytes` the transport has not
+//! taken drops the session); per configured peer a dial task (`dial_as` with this server's static
+//! secret, so the peer sees its address key) reconnects with backoff; sweeps, Hello deadlines and
+//! replication work run when due. Hub calls (storage, fsyncs) run under `block_in_place` on a
+//! multi-thread runtime. The only async code of the crate.
 
 use crate::hub::{ConnId, Hub, HubOutput};
-use crate::net::{Dialer, Link, LinkTx, Listener};
 use osis_core::Clock;
 use osis_label::Address;
 use osis_store::Backend;
+use osis_transport::link::{self, Link, LinkTx};
+use osis_transport::{Backoff, Listener, StaticSecret, Transport};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,9 +21,26 @@ use tokio::task::JoinHandle;
 
 /// Longest wait between ticks (sweeps also run on this beat).
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
-/// Redial backoff bounds.
-const BACKOFF_MIN: Duration = Duration::from_secs(1);
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// Redial backoff bounds (ms).
+const BACKOFF_MIN: u64 = 1000;
+const BACKOFF_MAX: u64 = 60_000;
+/// How long a session's end waits for the peer to take our last bytes.
+pub const FINISH_WAIT: Duration = Duration::from_secs(10);
+
+/// What the driver serves on: a transport, its listener and the static secret it listens with
+/// (also used to dial peer servers).
+pub struct Endpoint<T: Transport> {
+    pub transport: T,
+    pub listener: T::Listener,
+    pub secret: StaticSecret,
+}
+
+impl<T: Transport> Endpoint<T> {
+    /// The key this node is reached under (the hub's static key).
+    pub fn key(&self) -> [u8; 32] {
+        self.listener.address().key
+    }
+}
 
 /// Commands to a running driver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,39 +145,50 @@ impl<B: Backend> Driver<B> {
     }
 }
 
-/// Keeps a link to `addr` up: dials, hands the link to the driver, waits for it to end, redials
-/// with backoff.
-async fn keep_dialing(dialer: Arc<dyn Dialer>, addr: Address, ev: mpsc::Sender<Ev>, log: Log) {
-    let mut backoff = BACKOFF_MIN;
+/// Keeps a session to `addr` up: dials as this server, hands the link to the driver, waits for it
+/// to end, redials with seeded backoff. Stops on errors redialing cannot fix (bad URL, unknown
+/// scheme).
+async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Address, ev: mpsc::Sender<Ev>, log: Log) {
+    let seed = addr.key.iter().take(8).fold(0u64, |s, b| s << 8 | u64::from(*b));
+    let mut backoff = Backoff::with(BACKOFF_MIN, BACKOFF_MAX, seed);
+    let target = osis_transport::Address { url: addr.url.clone(), key: addr.key };
     loop {
-        match dialer.dial(&addr).await {
-            Ok(link) if link.peer_key == addr.key => {
+        match link::dial(&*t, &target, Some(&secret), FINISH_WAIT).await {
+            Ok(link) => {
                 let (done, ended) = oneshot::channel();
                 if ev.send(Ev::PeerUp(link, done)).await.is_err() {
                     return;
                 }
                 let _ = ended.await;
-                backoff = BACKOFF_MIN;
+                backoff.reset();
             }
-            Ok(_) => log(&format!("peer {}: wrong key", addr.url)),
+            Err(e @ (osis_transport::Error::BadUrl(_) | osis_transport::Error::UnknownScheme(_))) => {
+                log(&format!("peer {}: {e}; not dialing it", addr.url));
+                return;
+            }
             Err(e) => log(&format!("peer {}: {e}", addr.url)),
         }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::time::sleep(Duration::from_millis(backoff.next_delay_ms())).await;
     }
 }
 
-/// Runs the blind node until `Control::Shutdown` (or the control sender is dropped): accepts
-/// links from `listener`, keeps a replication link to each of `peers`, and returns the hub.
-pub async fn run<B: Backend + 'static>(hub: Hub<B>, mut listener: Listener, peers: Vec<Address>, dialer: Arc<dyn Dialer>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub<B> {
+/// Runs the blind node until `Control::Shutdown` (or the control sender is dropped): serves
+/// sessions on `ep`, keeps a replication session to each of `peers`, and returns the hub. The
+/// hub's static key must be `ep.key()`.
+pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T>, peers: Vec<Address>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub<B> {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
-    let dials: Vec<JoinHandle<()>> = peers.into_iter().map(|a| tokio::spawn(keep_dialing(dialer.clone(), a, ev_tx.clone(), log.clone()))).collect();
+    let Endpoint { transport, listener, secret } = ep;
+    let transport = Arc::new(transport);
+    let dials: Vec<JoinHandle<()>> = peers.into_iter().map(|a| tokio::spawn(keep_dialing(transport.clone(), secret.clone(), a, ev_tx.clone(), log.clone()))).collect();
+    let (in_tx, mut incoming) = mpsc::channel(64);
+    let idle = Duration::from_millis(hub.store().policy().hello_ms);
+    let server = tokio::spawn(link::serve(listener, idle, FINISH_WAIT, in_tx));
     let mut d = Driver { hub, clock, log, conns: HashMap::new(), next: 1, ev_tx };
     let mut listening = true;
     loop {
         let idle = d.idle();
         tokio::select! {
-            link = listener.incoming.recv(), if listening => match link {
+            link = incoming.recv(), if listening => match link {
                 Some(link) => {
                     let key = link.peer_key;
                     let id = d.add(link, None);
@@ -189,6 +221,7 @@ pub async fn run<B: Backend + 'static>(hub: Hub<B>, mut listener: Listener, peer
             _ = tokio::time::sleep(idle) => d.tick(),
         }
     }
+    server.abort();
     for t in dials {
         t.abort();
     }

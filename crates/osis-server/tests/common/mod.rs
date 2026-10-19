@@ -13,6 +13,9 @@ use osis_store::MemoryBackend;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[cfg(feature = "driver")]
+pub mod driven;
+
 pub const T0: u64 = 1_700_000_000_000;
 
 pub fn s32(b: u8) -> Secret32 {

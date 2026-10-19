@@ -26,11 +26,13 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 [features]
 default = ["driver"]
 # The async driver and network adapter (tokio); off, the crate is the sans-I/O store and hub.
-driver = ["dep:tokio"]
+driver = ["dep:tokio", "osis-transport/link"]
+# The QUIC transport (spec/sync.md §10).
+quic = ["driver", "osis-transport/quic"]
 # The redb file backend (notes/architecture.md §4: off by default).
 file-backend = ["osis-store/file-backend"]
-# The `osis-server` binary: file backend, OS randomness, multi-thread runtime, signals.
-bin = ["driver", "file-backend", "osis-crypto/os-rng", "tokio/signal"]
+# The `osis-server` binary: QUIC, file backend, OS randomness, multi-thread runtime, signals.
+bin = ["quic", "file-backend", "osis-crypto/os-rng", "tokio/signal"]
 
 [[bin]]
 name = "osis-server"

@@ -1,4 +1,4 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess`, QUIC (`quic`), iroh (`iroh`) (spec/sync.md §10).
+//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess`, QUIC (`quic`), iroh (`iroh`); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
 //! Layer 1 (notes/architecture.md). Plan: plans/transport.md, plans/p2p.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
@@ -6,6 +6,8 @@
 #![forbid(unsafe_code)]
 
 mod error;
+#[cfg(feature = "link")]
+pub mod link;
 pub mod mem;
 #[cfg(feature = "quic")]
 pub mod quic;
@@ -17,6 +19,8 @@ pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
 pub use manage::{close_gracefully, connect, Backoff};
+#[cfg(feature = "link")]
+pub use link::{Link, LinkRx, LinkTx};
 #[cfg(feature = "quic")]
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 
