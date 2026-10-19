@@ -183,6 +183,26 @@ fn grant_by_inbox_spec_perm_2() {
     assert!(tags(&mut lp, 0, d).contains("bob"));
 }
 
+// spec/crypto.md §4, spec/permissions.md §3: a grant carries the history boxes of the epochs it
+// boxes, so the grantee holds the doc's epochs from before its own secrets (what its earlier
+// content is under) already from the pending grant, and after applying it.
+#[test]
+fn grant_carries_history_spec_crypto_4() {
+    let (mut lp, ps) = people(2, 503);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let done = lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    let held = |lp: &LocalPeer, i: usize| -> BTreeSet<osis_crypto::Epoch> { lp.peers[i].engine.epochs(&d).map(|e| e.read.held().map(|x| x.0).collect()).unwrap_or_default() };
+    let want = held(&lp, 0);
+    assert!(want.len() >= 2, "derived epoch and own epoch");
+    let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
+    lp.peers[1].engine.accept_inbox(blob).unwrap();
+    assert_eq!(held(&lp, 1), want, "from the pending grant");
+    sync(&mut lp, 0, 1);
+    assert!(lp.peers[1].engine.pending().is_empty());
+    assert_eq!(held(&lp, 1), want);
+}
+
 // spec/permissions.md §3; spec/commits.md §2: a removal and the target's rotation are one
 // commit; the removed member holds no secret of the new epoch and drops what it lost.
 #[test]
