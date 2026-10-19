@@ -1,20 +1,24 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
 //! over osis-transport `link` sessions (one dialed stream per server connection, an ephemeral
 //! transport key per connection, the server's key checked by the transport, spec/sync.md §10)
-//! and fires its timers. No sync logic lives here: every input is an `Event`, every output an
-//! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine
-//! lives in a `Host`: owned by the driver (`run`), or shared with the app (`run_host`: the
+//! and fires its timers. With a listener (`run_serving`), every session a peer opens on it is
+//! served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5). No sync logic lives
+//! here: every input is an `Event`, every output an `Action`. Engine calls run under
+//! `block_in_place` on a multi-thread runtime. The engine lives in a `Host`: owned by the driver (`run`), or shared with the app (`run_host`: the
 //! `osis` handle keeps it behind its own lock and hands the driver the actions of its calls).
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_core::Clock;
 use osis_transport::link::{self, Link, LinkTx};
-use osis_transport::Transport;
+use osis_transport::{Listener, Transport};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// A served connection with no session for this long is closed.
+pub const SERVE_IDLE: Duration = Duration::from_secs(120);
 
 /// Longest wait between ticks.
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
@@ -48,6 +52,18 @@ enum Ev {
     Failed(ConnId, String),
     Bytes(ConnId, Vec<u8>),
     Closed(ConnId),
+}
+
+/// Pumps a served session's bytes to the driver.
+fn pump(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(b) = rx.recv().await {
+            if ev.send(Ev::Bytes(conn, b)).await.is_err() {
+                return;
+            }
+        }
+        let _ = ev.send(Ev::Closed(conn)).await;
+    })
 }
 
 struct Conn {
@@ -161,19 +177,68 @@ impl<T: Transport, H: Host> Driver<T, H> {
 /// Runs the sync engine until `Control::Shutdown` (or the control sender is dropped) and
 /// returns it. Dials what it asks for over `transport`; ticks when its wake comes due.
 pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
-    let Owned(m) = run_host(Owned(std::sync::Mutex::new(sync)), transport, clock, control, log).await;
+    run_serving(sync, transport, Vec::new(), clock, control, log).await
+}
+
+/// `run`, also serving the peer sessions the `listeners` accept: one listening with the engine's
+/// `dialable_secret` (publish its `address().key` with `publish_reach`), and one per LAN join
+/// with a fresh secret whose key is announced with the LAN tag (spec/sync.md §10). Never put a
+/// listener's `address().url` into `/reach`: it lists bound IP addresses, which are never
+/// published (spec/sync.md §10); only its key and the relays go there.
+pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
+    let Owned(m) = run_host(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
     m.into_inner().unwrap_or_else(|p| p.into_inner())
 }
 
-/// `run` over a host; returns it at `Control::Shutdown`, when the control sender is dropped
-/// or when the host's engine is gone.
-pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
+/// `run_serving` over a host; returns it at `Control::Shutdown`, when the control sender is
+/// dropped or when the host's engine is gone.
+pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
+    let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
+    let mut serving = Vec::new();
+    let mut max = 0;
+    let _ = host.with(&mut |s| {
+        max = s.config().max_served;
+        Vec::new()
+    });
+    for l in listeners {
+        let key = l.address().key;
+        let (tx, mut rx) = mpsc::channel::<Link>(64);
+        serving.push(tokio::spawn(link::serve_max(l, SERVE_IDLE, FINISH_WAIT, tx, max)));
+        let out = link_tx.clone();
+        serving.push(tokio::spawn(async move {
+            while let Some(link) = rx.recv().await {
+                if out.send((key, link)).await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+    drop(link_tx);
     let mut d = Driver { host, gone: false, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
     d.feed(Event::Tick);
     while !d.gone {
         let idle = d.idle();
         tokio::select! {
+            Some((key, l)) = link_rx.recv() => {
+                let Link { peer_key, tx, rx } = l;
+                // the connection exists before its first actions are carried out
+                let mut conn = None;
+                let host = &d.host;
+                let acts = blocking(|| host.with(&mut |s| {
+                    let (c, acts) = s.accept(key, peer_key);
+                    conn = Some(c);
+                    acts
+                }));
+                if let Some(conn) = conn {
+                    let task = pump(conn, rx, d.ev_tx.clone());
+                    d.conns.insert(conn, Conn { tx: Some(tx), task });
+                }
+                match acts {
+                    Some(a) => d.apply(a),
+                    None => d.gone = true,
+                }
+            }
             Some(ev) = ev_rx.recv() => match ev {
                 Ev::Up(conn, tx) => {
                     if let Some(c) = d.conns.get_mut(&conn) {
@@ -212,6 +277,9 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, clock: Arc<d
                 d.feed(Event::Tick);
             }
         }
+    }
+    for s in serving {
+        s.abort();
     }
     let ids: Vec<ConnId> = d.conns.keys().copied().collect();
     for id in ids {

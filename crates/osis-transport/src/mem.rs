@@ -414,8 +414,17 @@ impl Transport for InProcess {
 impl InProcess {
     fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
         {
-            let name = mem_name(&addr.url)?;
+            crate::check_url(&addr.url)?;
             let mut st = lock(&self.net.0);
+            // `peer://`: the listener presenting the key, as P2P transports dial
+            let name = match crate::peer_relays(&addr.url) {
+                Some(_) => match st.listeners.iter().find(|(_, l)| l.key == addr.key) {
+                    Some((n, _)) => n.clone(),
+                    None => return Err(Error::Unreachable(addr.url.clone())),
+                },
+                None => mem_name(&addr.url)?.to_owned(),
+            };
+            let name = name.as_str();
             let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
             let (lend, lkey) = (l.endpoint.clone(), l.key);
             if st.cut.contains(&pair(&self.name, &lend)) {
@@ -707,6 +716,29 @@ mod tests {
         let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
         drop(c);
         assert_eq!(lock(&net.0).conns.len(), 0);
+        drop(l);
+    }
+
+    // spec/sync.md §10: a peer is dialed by its dialable key alone (`peer://`), never by a
+    // published address; the relays in the URL do not matter in process.
+    #[test]
+    fn peer_url_dials_by_key_spec_sync_10() {
+        let net = Net::new(2);
+        let mut s = Sched::new(2, Some(net.clone()));
+        let srv = net.endpoint("srv");
+        let l = s
+            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([3; 32]) }).await.unwrap() })
+            .unwrap();
+        let key = l.address().key;
+        let cli = net.endpoint("cli");
+        let url = crate::peer_url(&["https://relay.example".into()]);
+        assert_eq!(crate::peer_relays(&url), Some(vec!["https://relay.example".to_owned()]));
+        assert_eq!(crate::peer_relays(&crate::peer_url(&[])), Some(vec![]));
+        let (u, c2) = (url.clone(), cli.clone());
+        let c = s.block_on(async move { c2.dial(&Address { url: u, key }).await.unwrap() }).unwrap();
+        assert_eq!(c.peer_key(), key);
+        let r = s.block_on(async move { cli.dial(&Address { url, key: [9; 32] }).await }).unwrap();
+        assert!(matches!(r, Err(Error::Unreachable(_))));
         drop(l);
     }
 }

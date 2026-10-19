@@ -13,7 +13,7 @@
 | `moves.rs` | node-core | `move_thing`: copy with `/was`, one import commit per origin, re-sourcing (`Fragment::map_dots`), double-import guard |
 | `local_peer.rs` | node-core (sim grows it) | `Peer`, `LocalPeer`, `Package`, `Engine::package` |
 | `labeling/` | node-sync | reader actors, entitlement, closure, labels of a group (`actors.rs`), bodies, sealing, wraps, head keys, tokens (`blobs.rs`), certificates and partial bodies (`certs.rs`; labels and steps are flows'), the convergence rule (`converge.rs`) |
-| `sync/` | node-sync | `SyncEngine` (sans-I/O: `mod.rs`), durable sync state (`state.rs`), flows' results and `SyncState` (`deliver.rs`), opening and walking (`open.rs`), inbound entries and signals (`inbound.rs`), the pass (`pass.rs`), app and flows requests (`local.rs`), bundles (`bundle.rs`), tokio driver (`driver.rs`) |
+| `sync/` | node-sync | `SyncEngine` (sans-I/O: `mod.rs`), durable sync state (`state.rs`), flows' results and `SyncState` (`deliver.rs`), opening and walking (`open.rs`), inbound entries and signals (`inbound.rs`), the pass (`pass.rs`), app and flows requests (`local.rs`), bundles (`bundle.rs`), `/reach`, co-readers and LAN tags (`peers.rs`), member-peer serving (`serve.rs`), tokio driver (`driver.rs`) |
 | `flows/` | membership-flows | person actors and pairing (`person.rs`), grants, demotions, invite grants, self-removals, inbox delivery (`edges.rs`), labels and registration steps (`labels.rs`), links (`links.rs`), roster snapshots (`roster.rs`), moving with re-grant (`moving.rs`); `Delivery`, `Done`, `SyncState` |
 | `rotation/` | membership-flows | departures from the timeline, covers rule over held actors, the top-down cascade (`ensure_rotated`), own secrets, re-seal, lost access |
 

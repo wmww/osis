@@ -139,11 +139,11 @@ impl Net {
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         match transport {
             Some(Transport::InProcess(t)) => {
-                handle.spawn(driver::run_host(host, t, clock, rx, log));
+                handle.spawn(driver::run_host(host, t, Vec::new(), clock, rx, log));
             }
             #[cfg(feature = "quic")]
             Some(Transport::Quic) | None => {
-                handle.spawn(driver::run_host(host, osis_transport::Quic::new(), clock, rx, log));
+                handle.spawn(driver::run_host(host, osis_transport::Quic::new(), Vec::new(), clock, rx, log));
             }
             #[cfg(not(feature = "quic"))]
             None => return Err(Error::Invalid("a runtime needs a transport (Config.transport; QUIC needs feature `quic`)".into())),

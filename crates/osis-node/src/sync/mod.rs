@@ -18,6 +18,8 @@ mod inbound;
 mod local;
 mod open;
 mod pass;
+pub mod peers;
+mod serve;
 pub(crate) mod state;
 
 use crate::engine::Engine;
@@ -57,6 +59,21 @@ pub struct SyncConfig {
     pub retry_ms: u64,
     /// Deposits skip heartbeats when fewer entries are left in the budget.
     pub tight_budget: u64,
+    /// Dial co-reader nodes known from their `/reach` (spec/sync.md §5, §10).
+    pub peers: bool,
+    /// Pause before re-dialing a co-reader node.
+    pub peer_retry_ms: u64,
+    /// Co-readers dialed per label and in total (newest heartbeat first).
+    pub max_peers_per_label: usize,
+    pub max_peers: usize,
+    /// Bytes one peer key, and all peers together, may have uploaded or deposited here that
+    /// are not opened, not at a server and still held (member-peer serving).
+    pub peer_bytes: u64,
+    pub peer_total_bytes: u64,
+    /// Peer sessions served at once (more are closed at once).
+    pub max_served: usize,
+    /// A served session without bytes this long is closed.
+    pub serve_idle_ms: u64,
 }
 
 impl Default for SyncConfig {
@@ -70,6 +87,14 @@ impl Default for SyncConfig {
             resync_ms: 60_000,
             retry_ms: 5_000,
             tight_budget: 16,
+            peers: true,
+            peer_retry_ms: 60_000,
+            max_peers_per_label: 8,
+            max_peers: 64,
+            peer_bytes: 64 << 20,
+            peer_total_bytes: 1 << 30,
+            max_served: 64,
+            serve_idle_ms: 120_000,
         }
     }
 }
@@ -138,8 +163,12 @@ pub(crate) struct LConn {
 }
 
 pub(crate) struct Conn {
+    /// A server's address key, or a co-reader node's dialable key (its LAN address may present
+    /// another transport key).
     pub server: ServerKey,
     pub address: Address,
+    /// A co-reader node, not a server.
+    pub peer: bool,
     pub session: ClientSession,
     pub up: bool,
     pub labels: BTreeMap<LabelId, LConn>,
@@ -202,6 +231,20 @@ pub struct SyncEngine {
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+    /// Peer sessions this node serves (member peer, spec/sync.md §5).
+    pub(crate) served: BTreeMap<ConnId, serve::Served>,
+    /// Steps peers registered here since start, by label.
+    pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
+    /// Co-readers found on the LAN: their address there and when (raw ms).
+    pub(crate) lan: BTreeMap<ServerKey, peers::LanRoute>,
+    /// The next `publish_reach` writes a fresh lan secret.
+    pub(crate) lan_rotate: bool,
+    /// Served labels, until `/label`, membership or peer steps change.
+    pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
+    /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes).
+    pub(crate) charges: BTreeMap<(LabelId, osis_core::BlobId), ([u8; 32], u64)>,
+    /// `peers()` for LAN matching, per tag window.
+    pub(crate) lan_peers: Option<(u64, Vec<peers::LanSecret>)>,
 }
 
 impl SyncEngine {
@@ -209,7 +252,9 @@ impl SyncEngine {
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
-        let state = State::load(&mut engine)?;
+        let mut state = State::load(&mut engine)?;
+        let mut rng = rng;
+        rng.fill_bytes(&mut state.feed.log_id);
         Ok(SyncEngine {
             engine,
             events,
@@ -234,6 +279,13 @@ impl SyncEngine {
             first: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
+            served: BTreeMap::new(),
+            peer_steps: BTreeMap::new(),
+            lan: BTreeMap::new(),
+            lan_rotate: false,
+            served_cache: None,
+            charges: BTreeMap::new(),
+            lan_peers: None,
         })
     }
 
@@ -276,6 +328,7 @@ impl SyncEngine {
     /// Feeds one input; returns what the driver must do.
     pub fn handle(&mut self, ev: Event) -> Vec<Action> {
         let mut out = Vec::new();
+        self.state.now = self.now();
         if let Err(e) = self.step(ev, &mut out) {
             self.diag(format!("sync: {e}"));
         }
@@ -296,6 +349,7 @@ impl SyncEngine {
             Event::Tick => {
                 self.engine.tick()?;
                 self.timers(out)?;
+                self.serve_timers(out);
             }
             Event::Local => {}
             Event::Up { conn } => {
@@ -305,6 +359,10 @@ impl SyncEngine {
                     let o = c.session.handle(now, ClientInput::Start);
                     self.outputs(conn, o, out)?;
                 }
+            }
+            Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServerInput::Bytes(bytes), out)?,
+            Event::Down { conn } if self.served.contains_key(&conn) => {
+                self.served.remove(&conn);
             }
             Event::Bytes { conn, bytes } => {
                 let now = self.raw_now();
@@ -316,17 +374,31 @@ impl SyncEngine {
             Event::Down { conn } => {
                 self.fetching.retain(|_, c| *c != conn);
                 self.reopens.retain(|(c, _), _| *c != conn);
-                if let Some(c) = self.conns.remove(&conn) {
-                    let at = self.raw_now().saturating_add(self.cfg.retry_ms);
-                    self.retry.insert(c.server, (c.address, at));
-                }
+                self.lost(conn);
             }
         }
         self.engine_events()?;
         self.connect(out);
         self.send_outbox(out)?;
         self.run_dirty(out)?;
+        self.notify_served(out)?;
         Ok(())
+    }
+
+    /// A dialed connection ended: redial after the retry pause.
+    fn lost(&mut self, conn: ConnId) {
+        if let Some(c) = self.conns.remove(&conn) {
+            // a LAN candidate that never opened anything: back off that address, not the peer
+            if c.peer && self.lan_failed(c.server, &c.address) {
+                return;
+            }
+            // an untried LAN candidate is dialed without the pause
+            if c.peer && self.lan.get(&c.server).is_some_and(|r| r.candidate.is_some()) {
+                return;
+            }
+            let pause = if c.peer { self.cfg.peer_retry_ms } else { self.cfg.retry_ms };
+            self.retry.insert(c.server, (c.address, self.raw_now().saturating_add(pause)));
+        }
     }
 
     /// Drains engine events: changes mark every open label for a pass; remote membership
@@ -337,6 +409,9 @@ impl SyncEngine {
             match e {
                 crate::Event::Applied { id, origin, .. } => {
                     changed = true;
+                    if self.engine.header(&id).is_some_and(|h| h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label")) {
+                        self.served_cache = None;
+                    }
                     if origin == Origin::Remote
                         && let Some(h) = self.engine.header(&id)
                         && h.kind.is_membership()
@@ -348,7 +423,11 @@ impl SyncEngine {
                         }
                     }
                 }
-                crate::Event::Changed { .. } | crate::Event::Roster { .. } => changed = true,
+                crate::Event::Changed { .. } => changed = true,
+                crate::Event::Roster { .. } => {
+                    changed = true;
+                    self.served_cache = None;
+                }
                 _ => {}
             }
         }
@@ -443,17 +522,22 @@ impl SyncEngine {
         Ok(still)
     }
 
-    /// The servers to keep connections to.
-    fn wanted_servers(&mut self) -> BTreeMap<ServerKey, Address> {
-        let mut m: BTreeMap<ServerKey, Address> = self.cfg.servers.iter().map(|a| (a.key, a.clone())).collect();
+    /// The servers and co-reader nodes to keep connections to (true: a node).
+    fn wanted_servers(&mut self) -> BTreeMap<ServerKey, (Address, bool)> {
+        let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
             for a in l.servers {
-                m.entry(a.key).or_insert(a);
+                m.entry(a.key).or_insert((a, false));
             }
         }
         for h in self.state.hints.values() {
             for a in &h.servers {
-                m.entry(a.key).or_insert_with(|| a.clone());
+                m.entry(a.key).or_insert_with(|| (a.clone(), false));
+            }
+        }
+        if self.cfg.peers {
+            for (k, (a, _)) in self.peer_addresses() {
+                m.entry(k).or_insert((a, true));
             }
         }
         m
@@ -464,7 +548,7 @@ impl SyncEngine {
     fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let wanted = self.wanted_servers();
-        for (key, addr) in wanted {
+        for (key, (addr, peer)) in wanted {
             if self.conns.values().any(|c| c.server == key) {
                 continue;
             }
@@ -476,8 +560,9 @@ impl SyncEngine {
             self.next_conn += 1;
             let mut challenge = [0u8; 32];
             self.rng.fill_bytes(&mut challenge);
-            let session = ClientSession::new(ClientConfig { peer_static_key: key, challenge });
-            self.conns.insert(conn, Conn { server: key, address: addr.clone(), session, up: false, labels: BTreeMap::new(), timer: None, offset: None });
+            // the key the transport authenticates (a LAN address presents its own)
+            let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
+            self.conns.insert(conn, Conn { server: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None });
             out.push(Action::Dial { conn, address: addr });
         }
     }
@@ -489,10 +574,7 @@ impl SyncEngine {
                 ClientOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
                 ClientOutput::Close => {
                     out.push(Action::Close { conn });
-                    if let Some(c) = self.conns.remove(&conn) {
-                        let at = self.raw_now().saturating_add(self.cfg.retry_ms);
-                        self.retry.insert(c.server, (c.address, at));
-                    }
+                    self.lost(conn);
                 }
                 ClientOutput::SetTimer(t) => {
                     if let Some(c) = self.conns.get_mut(&conn) {
@@ -527,7 +609,13 @@ impl SyncEngine {
                     self.engine.set_clock_offset(*m);
                 }
             }
-            E::Opened { label, head, entry_box } => self.opened(conn, label, head, entry_box, out)?,
+            E::Opened { label, head, entry_box } => {
+                if let Some(c) = self.conns.get(&conn).filter(|c| c.peer) {
+                    let (k, a) = (c.server, c.address.clone());
+                    self.lan_proven(k, &a);
+                }
+                self.opened(conn, label, head, entry_box, out)?
+            }
             E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
             E::Head { label, head } => self.head_reply(conn, label, head, out)?,
@@ -571,6 +659,15 @@ impl SyncEngine {
         for (l, h) in &self.state.hints {
             if !want.iter().any(|(_, x, _)| x == l) {
                 want.push((h.thing, *l, h.servers.iter().map(|a| a.key).collect()));
+            }
+        }
+        if self.cfg.peers && self.conns.values().any(|c| c.peer) {
+            for (k, (_, labels)) in self.peer_addresses() {
+                for (_, l, keys) in want.iter_mut() {
+                    if labels.contains(l) {
+                        keys.push(k);
+                    }
+                }
             }
         }
         want
@@ -670,6 +767,9 @@ impl SyncEngine {
                     at(l.last_sync.saturating_add(self.cfg.resync_ms));
                 }
             }
+        }
+        if let Some(x) = self.serve_wake() {
+            at(x);
         }
         for (_, x) in self.retry.values() {
             at(*x);

@@ -10,7 +10,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 1 | `osis-crypto` | crypto | suite 1 primitives, kdf, sealed boxes, wraps, delete tokens |
 | 1 | `osis-crdt` | crdt-core, crdt-seq | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
 | 1 | `osis-perm` | perm | membership validity rules over an abstract held set |
-| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`); `link` sessions (channel pairs with tokio pump tasks) for the node and server drivers (`link`) |
+| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node and server drivers (`link`) |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot` (`file-backend`), `RootStorage`, `Store`, `Transaction` |
 | 3 | `osis-commit` | commit | commit header and blob, kinds, retention, tokens, signatures, builder, verification, projection, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
@@ -82,7 +82,8 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `tokio` 1.53 (no default features; transport features `quic` or `link`: `rt`, `net`, `sync`, `time` (dev: `rt`, `macros`, `time`); server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`; server dev: `rt`, `macros`; node feature `driver` (default): `rt`, `rt-multi-thread`, `sync`, `time`, `macros`; osis: `rt`, `rt-multi-thread`, `sync`, `time` (dev: `macros`)): the drivers' runtime, never in store or engine paths.
 - `clap` 4.5 (cli only; no default features: `std`, `derive`, `help`, `usage`, `error-context`, `suggestions`, `env`; no colour): the command tree and help of `osis`. Derive pulls proc-macro crates (syn, quote) into the cli build only.
 - `anyhow` 1.0 (cli, examples): command errors; the API's `Error` and the CLI's `Exit` are downcast for exit codes.
-- Planned, added by their plans with a line here: tokio features for sim, arbitrary (fuzz only), iroh (feature-gated). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime through its `bin` feature).
+- `iroh` 1.3 (transport, feature `iroh`; `default-features = false`, `tls-ring`; needs Rust 1.91): the P2P transport (notes/networking.md decisions 2-4): dial by key, self-hosted relays, hole punching. Brings ~190 crates (reqwest, noq, a second RustCrypto/dalek generation); `deny.toml` has a `skip-tree` and licence exceptions for it. Never in a default build. Tokio features: transport feature `iroh` and `lan` reuse the `quic` set.
+- Planned, added by their plans with a line here: tokio features for sim, arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime through its `bin` feature).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
