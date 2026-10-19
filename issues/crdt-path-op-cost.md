@@ -1,6 +1,6 @@
 # Path ops into large maps cost O(map)
 > Summary: `Batch` resolves each path op by joining the state's position with the batch's writes (a clone) and finds a key's live dots by scanning entries; a put into a 10^5-entry map is O(map) per op. Add the local `key -> live dots` index (spec/crdt.md §5.6) and resolve along the path without cloning.
-> Tags: crdt, performance
+> Tags: crdt
 
 - Where: `crates/osis-crdt/src/batch.rs` (`resolve`, `PathSeg::Key`, `PathSeg::Index`), `ops.rs` (`live_entries`, `diff` on maps).
 - Join itself is fine (a one-entry delta into a 10^5 map: ~0.3 µs, `budget_big_map_spec_4_1`).
