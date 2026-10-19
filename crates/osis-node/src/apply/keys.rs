@@ -327,3 +327,34 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Opens, read-only, the boxes of a pending membership commit addressed to this node or an actor
+/// it holds (issues/pending-boxes.md, decided; spec/crypto.md §4: such secrets are "kept for
+/// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
+/// target's `/created` and chain can open the target's label and download them. Parts are
+/// decoded unverified (a forged box only yields an unestablished epoch nothing encrypts under).
+pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
+    let h = &blob.header;
+    if !h.kind.is_membership() || !h.is_resolved() {
+        return Ok(());
+    }
+    let mut interner = osis_crdt::Interner::new();
+    for p in &blob.parts {
+        let Some(a) = h.aspects.get(p.ai) else { continue };
+        if a.ak.as_str() != "/secrets" {
+            continue;
+        }
+        let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
+        let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
+        let (w, _) = secrets_write(tx.core, &a.tid, &d.fragment);
+        if w.boxes.is_empty() && w.history.is_empty() {
+            continue;
+        }
+        let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
+        tx.core.touch();
+        if tx.core.ingest_secrets(&a.tid, &s) {
+            crate::flows::save_epochs(tx, &a.tid)?;
+        }
+    }
+    Ok(())
+}

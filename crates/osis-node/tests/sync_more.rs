@@ -228,3 +228,47 @@ fn label_replacement_spec_sync_2() {
     net.run();
     assert_eq!(net.read(a, t), Some(s("on the new label")));
 }
+
+// spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
+// issues/pending-boxes.md decided): a grant reaches another person's device only as an inbox
+// blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,
+// downloads the group's chain and content, and the grant applies.
+#[test]
+fn grant_by_inbox_end_to_end_spec_sync_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let addr = net.address(sv);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    // Alice's device knows Bob's card (his `/keys`), nothing more travels directly
+    net.pair(b, a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice.person);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    // label, grant, content, then the first sync: everything under the group's label is wrapped
+    // under the epoch the grant boxes (grants re-write no history: issues/node-sync-gaps.md)
+    let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let t = net.item(a, g, g, "for bob");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    diags(&mut net, &[a, b]);
+    assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
+    assert_eq!(net.read(b, t), Some(s("for bob")));
+}

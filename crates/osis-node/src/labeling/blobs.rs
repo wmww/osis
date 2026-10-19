@@ -233,17 +233,17 @@ impl Engine {
         if let Some(e) = self.epochs(g) {
             if let Some((ep, s)) = matching(&e, Role::Read, index, &head.keys.sync) {
                 k.sync = Some(label_role_key(LabelRole::Sync, &s, index));
-                k.sync_established = e.read.is_established(&ep);
+                k.sync_established = self.established(g, &e, Role::Read, &ep);
                 k.epochs[0] = Some(ep);
             }
             if let Some((ep, s)) = matching(&e, Role::Write, index, &head.keys.write) {
-                if e.write.is_established(&ep) {
+                if self.established(g, &e, Role::Write, &ep) {
                     k.write = Some(label_role_key(LabelRole::Write, &s, index));
                 }
                 k.epochs[1] = Some(ep);
             }
             if let Some((ep, s)) = matching(&e, Role::Admin, index, &head.keys.delete) {
-                if e.admin.is_established(&ep) {
+                if self.established(g, &e, Role::Admin, &ep) {
                     k.delete = Some(label_role_key(LabelRole::Delete, &s, index));
                 }
                 k.epochs[2] = Some(ep);
@@ -256,6 +256,17 @@ impl Engine {
             }
         }
         Ok(k)
+    }
+
+    /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing that
+    /// got secrets of its own, as the epoch derived from an established epoch of its owner it
+    /// had before (spec/crypto.md §3-§4; the history box carries it without establishment).
+    fn established(&self, g: &Tid, e: &ActorEpochs, r: Role, ep: &Epoch) -> bool {
+        if e.role(r).is_established(ep) {
+            return true;
+        }
+        let Some(osis_core::CreationRecord::Thing { owner, .. }) = self.core.created(g) else { return false };
+        self.epochs(owner).is_some_and(|o| ActorEpochs::derived(&o, g).role(r).is_established(ep))
     }
 
     /// The delete tokens this node can derive for the deltas `parts` of commit `c` (spec/crypto.md

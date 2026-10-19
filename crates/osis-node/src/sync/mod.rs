@@ -151,7 +151,7 @@ pub(crate) struct Conn {
 pub struct SyncEngine {
     pub(crate) engine: Engine,
     events: Receiver<crate::Event>,
-    clock: Arc<dyn Clock>,
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     pub(crate) cfg: SyncConfig,
     pub(crate) conns: BTreeMap<ConnId, Conn>,
@@ -178,6 +178,8 @@ pub struct SyncEngine {
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_core::CommitId>,
+    /// Reopens in a row per (connection, label).
+    pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
 }
@@ -210,6 +212,7 @@ impl SyncEngine {
             direct: Vec::new(),
             first: BTreeSet::new(),
             label_actors: BTreeMap::new(),
+            reopens: BTreeMap::new(),
         })
     }
 
@@ -291,6 +294,7 @@ impl SyncEngine {
             }
             Event::Down { conn } => {
                 self.fetching.retain(|_, c| *c != conn);
+                self.reopens.retain(|(c, _), _| *c != conn);
                 if let Some(c) = self.conns.remove(&conn) {
                     let at = self.raw_now().saturating_add(self.cfg.retry_ms);
                     self.retry.insert(c.server, (c.address, at));
@@ -494,38 +498,33 @@ impl SyncEngine {
 
     /// Hellos done: every label this server holds (by the labels' server lists, or a hint)
     /// starts opening.
-    fn ready(&mut self, conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let mut want: Vec<(Tid, LabelId)> = Vec::new();
-        for (g, l) in self.labels() {
-            if l.servers.iter().any(|a| a.key == server) {
-                want.push((g, l.id));
-            }
-        }
-        let hints: Vec<(Tid, LabelId)> = self.state.hints.iter().filter(|(_, h)| h.servers.iter().any(|a| a.key == server)).map(|(l, h)| (h.thing, *l)).collect();
-        for (g, l) in hints {
-            if !want.iter().any(|(_, x)| *x == l) {
-                want.push((g, l));
-            }
-        }
-        for (g, l) in want {
-            self.start_label(conn, g, l, out)?;
-        }
-        Ok(())
+    fn ready(&mut self, _conn: ConnId, out: &mut Vec<Action>) -> Result<()> {
+        self.add_new_labels(out)
     }
 
-    /// Adds labels new since the connection came up (a `/label` arrived, a label was created).
+    /// Labels to open, with their group and server keys: the synced labels and inbox hints.
+    fn wanted_labels(&mut self) -> Vec<(Tid, LabelId, Vec<ServerKey>)> {
+        let mut want: Vec<(Tid, LabelId, Vec<ServerKey>)> = self.labels().into_iter().map(|(g, l)| (g, l.id, l.servers.iter().map(|a| a.key).collect())).collect();
+        for (l, h) in &self.state.hints {
+            if !want.iter().any(|(_, x, _)| x == l) {
+                want.push((h.thing, *l, h.servers.iter().map(|a| a.key).collect()));
+            }
+        }
+        want
+    }
+
+    /// Starts every wanted label not yet on a ready connection to one of its servers.
     fn add_new_labels(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let conns: Vec<(ConnId, ServerKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
         if conns.is_empty() {
             return Ok(());
         }
-        let labels = self.labels();
+        let labels = self.wanted_labels();
         for (conn, server) in conns {
-            for (g, l) in &labels {
-                let known = self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&l.id));
-                if !known && l.servers.iter().any(|a| a.key == server) {
-                    self.start_label(conn, *g, l.id, out)?;
+            for (g, l, servers) in &labels {
+                let known = self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(l));
+                if !known && servers.contains(&server) {
+                    self.start_label(conn, *g, *l, out)?;
                 }
             }
         }
@@ -574,6 +573,16 @@ impl SyncEngine {
                 c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, _)| (*id, *lid))
             })
             .collect();
+        // labels no key opened: try again from scratch
+        let failed: Vec<(ConnId, LabelId, Tid)> = self
+            .conns
+            .iter()
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Failed && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, l)| (*id, *lid, l.group)))
+            .collect();
+        for (conn, label, g) in failed {
+            self.reopens.remove(&(conn, label));
+            self.start_label(conn, g, label, out)?;
+        }
         for (conn, label) in resync {
             if !self.cfg.subscribe || self.conns.get(&conn).and_then(|c| c.labels.get(&label)).is_some_and(|l| !l.synced) {
                 self.sync_label(conn, label, out)?;
@@ -594,7 +603,7 @@ impl SyncEngine {
                 at(x);
             }
             for l in c.labels.values() {
-                if l.phase == Phase::Open {
+                if l.phase == Phase::Open || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(self.cfg.resync_ms));
                 }
             }

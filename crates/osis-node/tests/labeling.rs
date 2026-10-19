@@ -116,7 +116,7 @@ fn head_keys_and_tokens_spec_sync_5() {
     let sealed = seal_body(&body, &mut SeededRng::from_u64(3)).unwrap();
     let p = Prefix::parse(&sealed.blob).unwrap();
     let toks = net.engine(b).tokens_of(&c, &body.parts);
-    assert!(toks.iter().any(|(lvl, _)| *lvl == 3), "a writer derives the level-3 token: {:?}", toks.iter().map(|x| x.0).collect::<Vec<_>>());
+    assert!(toks.iter().any(|(lvl, t)| *lvl == 3 && p.match_token(t.expose()) == Some(3)), "a writer derives the level-3 token: {:?}", toks.iter().map(|x| x.0).collect::<Vec<_>>());
     net.pair(a, r);
     assert!(net.engine(r).tokens_of(&c, &body.parts).iter().all(|(lvl, _)| *lvl != 3));
 }

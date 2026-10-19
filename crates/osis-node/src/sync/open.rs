@@ -16,6 +16,9 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::Codec;
 use std::collections::BTreeMap;
 
+/// Reopens of one label on one connection before backing off to the retry timer.
+const MAX_REOPENS: u32 = 3;
+
 /// Hint labels: indexes tried for the sync key when only the label ID is known.
 const HINT_INDEXES: u64 = 4;
 
@@ -155,6 +158,7 @@ impl SyncEngine {
         let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
         if lc.tries.is_empty() {
             lc.phase = Phase::Failed;
+            lc.last_sync = self.clock.now_wall_ms().0;
             let (g, claimed) = (lc.group, lc.tried_claim);
             if claimed {
                 self.stranded(conn, g, l, out)?;
@@ -217,8 +221,10 @@ impl SyncEngine {
             }
             _ => {
                 self.diag("server path does not verify".into());
+                let now = self.raw_now();
                 if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
                     lc.phase = Phase::Failed;
+                    lc.last_sync = now;
                 }
                 Ok(())
             }
@@ -232,6 +238,7 @@ impl SyncEngine {
         let (g, index) = (lc.group, lc.index.unwrap_or(0));
         let keys = self.engine.head_keys(&g, index, &head)?;
         self.state.set_head(server, l, &head);
+        self.reopens.remove(&(conn, l));
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.phase = Phase::Open;
             lc.head = Some(head);
@@ -317,8 +324,21 @@ impl SyncEngine {
     }
 
     /// Starts opening `l` on `conn` again from scratch.
+    /// More than `MAX_REOPENS` in a row (refused registrations, stale heads) waits for the
+    /// retry timer instead.
     pub(crate) fn reopen(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group) else { return Ok(()) };
+        let n = self.reopens.entry((conn, l)).or_insert(0);
+        *n += 1;
+        if *n > MAX_REOPENS {
+            let now = self.raw_now();
+            if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+                lc.phase = Phase::Failed;
+                lc.last_sync = now;
+            }
+            self.diag(format!("label {l:?}: reopened {MAX_REOPENS} times, retrying later"));
+            return Ok(());
+        }
         self.start_label(conn, g, l, out)
     }
 
