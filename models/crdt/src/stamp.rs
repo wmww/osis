@@ -32,14 +32,39 @@ impl Source {
     }
 }
 
+/// Order of sources that are not `Derived`: `Node` < `Commit`, then bytes (spec §2.2).
+pub fn base_cmp(a: &Source, b: &Source) -> Ordering {
+    match (a, b) {
+        (Source::Node(x), Source::Node(y)) => x.cmp(y),
+        (Source::Commit(x), Source::Commit(y)) => x.cmp(y),
+        _ => a.rank().cmp(&b.rank()),
+    }
+}
+
+/// Dot order (spec §2.2) over an order of non-`Derived` sources: `(Derived(d), i)` orders as the sequence
+/// `(d.source, d.ctr, i)`, any other dot as `(source, ctr)`: an embedded write sorts right after the write it embeds.
+pub fn dot_cmp(a: &Dot, b: &Dot, base: &dyn Fn(&Source, &Source) -> Ordering) -> Ordering {
+    let split = |d: &Dot| -> (Dot, Option<u64>) {
+        match &d.source {
+            Source::Derived(x) => ((**x).clone(), Some(d.ctr)),
+            _ => (d.clone(), None),
+        }
+    };
+    let ((x, i), (y, j)) = (split(a), split(b));
+    base(&x.source, &y.source).then(x.ctr.cmp(&y.ctr)).then(i.cmp(&j))
+}
+
+/// Sources as prefixes of the dot order.
 impl Ord for Source {
     fn cmp(&self, o: &Self) -> Ordering {
-        self.rank().cmp(&o.rank()).then_with(|| match (self, o) {
-            (Source::Node(a), Source::Node(b)) => a.cmp(b),
-            (Source::Commit(a), Source::Commit(b)) => a.cmp(b),
-            (Source::Derived(a), Source::Derived(b)) => a.cmp(b),
-            _ => unreachable!(),
-        })
+        let split = |s: &Source| -> (Source, Option<u64>) {
+            match s {
+                Source::Derived(d) => (d.source.clone(), Some(d.ctr)),
+                _ => (s.clone(), None),
+            }
+        };
+        let ((x, i), (y, j)) = (split(self), split(o));
+        base_cmp(&x, &y).then(i.cmp(&j))
     }
 }
 impl PartialOrd for Source {
@@ -48,10 +73,20 @@ impl PartialOrd for Source {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Dot {
     pub source: Source,
     pub ctr: u64,
+}
+impl Ord for Dot {
+    fn cmp(&self, o: &Self) -> Ordering {
+        dot_cmp(self, o, &base_cmp)
+    }
+}
+impl PartialOrd for Dot {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
 }
 
 /// `wall_ms * 2^16 + logical` (spec §2.2).

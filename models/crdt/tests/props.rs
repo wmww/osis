@@ -937,3 +937,34 @@ fn decoder_rejects_writer_rule_violations() {
     bytes[p] = 0xf4;
     assert!(decode_delta(&bytes, &mut Ctx::writer(b.ts, b.source.clone(), b.lo, b.hi())).is_err());
 }
+
+/// spec §2.2, §7: an embedded character sorts right after the register write it embeds, so a reset
+/// above the write removes its characters too, in any delivery order.
+#[test]
+fn embedded_chars_order_right_after_their_write() {
+    use crdt_model::stamp::{Dot, Stamp};
+    use crdt_model::state::{Anchor, Composite, SeqElem};
+    use std::collections::BTreeMap;
+    let t0 = 1000u64 << 16;
+    let st = |n: u8, c: u64| Stamp::new(t0, Source::node(n), c);
+    let s = st(1, 5);
+    let reg = Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str("ab".into())))) };
+    let reset = Frag::Register { reset: Some(st(9, 1)), write: None };
+    let d2 = Dot { source: Source::Derived(Box::new(s.dot.clone())), ctr: 2 };
+    let ti = st(4, 1);
+    let mut el = BTreeMap::new();
+    el.insert(ti.dot.clone(), SeqElem::new(ti.clone(), Anchor::Dot(d2), Content::Char('x')));
+    let text = Frag::Seq { text: true, c: Composite::default(), elems: el };
+    let run = |order: &[&Frag]| {
+        let mut a = Frag::empty(0);
+        for f in order {
+            a.join((*f).clone());
+        }
+        a
+    };
+    let a = run(&[&reg, &text, &reset]);
+    let b = run(&[&reset, &reg, &text]);
+    let c = run(&[&text, &reset, &reg]);
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+}

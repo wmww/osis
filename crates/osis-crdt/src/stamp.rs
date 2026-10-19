@@ -28,21 +28,30 @@ impl SourceKind {
     }
 }
 
-/// §2.2: kind (`Node` < `Commit` < `Derived`), then bytes (`Derived`: the underlying dot).
-impl Ord for SourceKind {
-    fn cmp(&self, o: &Self) -> Ordering {
-        match (self, o) {
-            (SourceKind::Node(a), SourceKind::Node(b)) => a.cmp(b),
-            (SourceKind::Commit(a), SourceKind::Commit(b)) => a.cmp(b),
-            (SourceKind::Derived(a), SourceKind::Derived(b)) => a.cmp(b),
-            _ => self.rank().cmp(&o.rank()),
-        }
+/// Order of two sources that are not `Derived`: `Node` < `Commit`, then bytes (§2.2).
+pub(crate) fn base_cmp(a: &Source, b: &Source) -> Ordering {
+    match (a.kind(), b.kind()) {
+        (SourceKind::Node(x), SourceKind::Node(y)) => x.cmp(y),
+        (SourceKind::Commit(x), SourceKind::Commit(y)) => x.cmp(y),
+        (x, y) => x.rank().cmp(&y.rank()),
     }
 }
-impl PartialOrd for SourceKind {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-        Some(self.cmp(o))
+
+/// Dot order (§2.2) over a given order of non-`Derived` sources: a dot `(Derived(d), i)` orders
+/// as the sequence `(d.src, d.ctr, i)`, any other dot as `(src, ctr)`, so an embedded write sorts
+/// right after the write it embeds and before anything else above it.
+pub(crate) fn dot_cmp(a: &Dot, b: &Dot, base: &dyn Fn(&Source, &Source) -> Ordering) -> Ordering {
+    let split = |d: &Dot| -> (Dot, Option<u64>) {
+        match d.src.kind() {
+            SourceKind::Derived(x) => (x.clone(), Some(d.ctr)),
+            _ => (d.clone(), None),
+        }
+    };
+    if Arc::ptr_eq(&a.src.0, &b.src.0) {
+        return a.ctr.cmp(&b.ctr);
     }
+    let ((x, i), (y, j)) = (split(a), split(b));
+    base(&x.src, &y.src).then(x.ctr.cmp(&y.ctr)).then(i.cmp(&j))
 }
 
 /// A shared, cheaply cloned source: a state holds a pointer per write, not 15 or 32 bytes. Equal
@@ -97,12 +106,20 @@ impl Hash for Source {
         self.0.hash(h)
     }
 }
+/// Sources as prefixes of the dot order: `Derived(d)` as `(d.src, d.ctr)` after `d.src` itself.
 impl Ord for Source {
     fn cmp(&self, o: &Self) -> Ordering {
         if Arc::ptr_eq(&self.0, &o.0) {
             return Ordering::Equal;
         }
-        self.0.cmp(&o.0)
+        let split = |s: &Source| -> (Source, Option<u64>) {
+            match s.kind() {
+                SourceKind::Derived(d) => (d.src.clone(), Some(d.ctr)),
+                _ => (s.clone(), None),
+            }
+        };
+        let ((x, i), (y, j)) = (split(self), split(o));
+        base_cmp(&x, &y).then(i.cmp(&j))
     }
 }
 impl PartialOrd for Source {
@@ -141,8 +158,8 @@ impl Interner {
 }
 
 /// `(source, counter)`, counter ≥ 1: one write forever, and the identity of the element it
-/// created (§2.1). Ordered by source, then counter.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// created (§2.1). Ordered by `dot_cmp` (§2.2).
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Dot {
     pub src: Source,
     pub ctr: u64,
@@ -160,13 +177,23 @@ impl Dot {
         }
     }
 }
+impl Ord for Dot {
+    fn cmp(&self, o: &Self) -> Ordering {
+        dot_cmp(self, o, &base_cmp)
+    }
+}
+impl PartialOrd for Dot {
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
+}
 impl fmt::Debug for Dot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}:{}", self.src, self.ctr)
     }
 }
 
-/// `(ts, dot)` with the total order of §2.2: `ts`, then the dot. Distinct writes compare equal
+/// `(ts, dot)` with the total order of §2.2: `ts`, then the dot (`dot_cmp`). Distinct writes compare equal
 /// only when they share a commit's delta stamp (§2.3).
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Stamp {
@@ -240,7 +267,11 @@ mod tests {
         assert!(Stamp::new(ts(1), d.clone(), 9) < Stamp::new(ts(2), n1.clone(), 1));
         // then kind: Node < Commit < Derived
         assert!(Stamp::new(ts(1), n2.clone(), 9) < Stamp::new(ts(1), c.clone(), 1));
-        assert!(Stamp::new(ts(1), c.clone(), 9) < Stamp::new(ts(1), d.clone(), 1));
+        // Derived(d) right after d: above node 1's counter 1, below its counter 2 and node 2
+        assert!(Stamp::new(ts(1), n1.clone(), 1) < Stamp::new(ts(1), d.clone(), 7));
+        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), n1.clone(), 2));
+        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), n2.clone(), 1));
+        assert!(Stamp::new(ts(1), d.clone(), 1) < Stamp::new(ts(1), d.clone(), 2));
         // then source bytes, then counter
         assert!(Stamp::new(ts(1), n1.clone(), 9) < Stamp::new(ts(1), n2.clone(), 1));
         assert!(Stamp::new(ts(1), n1.clone(), 1) < Stamp::new(ts(1), n1.clone(), 2));

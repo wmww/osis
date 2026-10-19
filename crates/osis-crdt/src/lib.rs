@@ -30,6 +30,8 @@ mod tests_ops;
 mod tests_life;
 #[cfg(test)]
 mod tests_laws;
+#[cfg(test)]
+mod tests_review;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};

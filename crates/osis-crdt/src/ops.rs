@@ -326,10 +326,11 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             let kview = view.key().ok_or(Error::Mismatch("map without key type"))?;
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
             let live = live_entries(&m.entries);
-            let keyed: Vec<(Option<Value>, &Vec<&Dot>)> = live.iter().map(|(k, ds)| (projected(&kview, k), ds)).collect();
+            // (projected key, stored key, live dots); a stored key is immutable (§5.6)
+            let keyed: Vec<(Option<Value>, &Value, &Vec<&Dot>)> = live.iter().map(|(k, ds)| (projected(&kview, k), *k, ds)).collect();
             let mut entries = BTreeMap::new();
             let r = w.delta_stamp();
-            for (k, dots) in &keyed {
+            for (k, _, dots) in &keyed {
                 if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
                     for d in dots.iter() {
                         entries.insert((*d).clone(), Entry { reset: Some(r.clone()), key: None, frag: None });
@@ -337,19 +338,20 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                 }
             }
             for (k, val) in kv {
-                match keyed.iter().find(|(p, _)| p.as_ref() == Some(k)).and_then(|(_, ds)| ds.first()) {
-                    Some(d) => {
-                        // against what the key reads as; written into the lowest live dot (§5.6)
-                        let dots = keyed.iter().find(|(p, _)| p.as_ref() == Some(k)).map(|(_, ds)| ds.as_slice()).unwrap_or_default();
-                        let cur = key_state(m, dots);
-                        if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
-                            entries.insert((*d).clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)) });
-                        }
+                let mut matched = false;
+                // every stored key the view projects to `k` is written, each into its lowest live dot,
+                // against what it reads as
+                for (_, stored, dots) in keyed.iter().filter(|(p, _, _)| p.as_ref() == Some(k)) {
+                    matched = true;
+                    let Some(d) = dots.first() else { continue };
+                    let cur = key_state(m, dots);
+                    if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
+                        entries.insert((*d).clone(), Entry { reset: None, key: Some((*stored).clone()), frag: Some(Box::new(delta)) });
                     }
-                    None => {
-                        let d = w.fresh().dot;
-                        entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)) });
-                    }
+                }
+                if !matched {
+                    let d = w.fresh().dot;
+                    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)) });
                 }
             }
             Fragment::Map(Map { meta: Meta::default(), entries })

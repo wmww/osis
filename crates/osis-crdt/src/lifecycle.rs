@@ -139,11 +139,12 @@ impl Fragment {
     }
 
     /// Whether removing `author`'s writes in place could expose a write it superseded: it holds
-    /// a register, case or reset (a position winner needs the retained bodies, §4.6).
+    /// a register, case, reset or `W` (a position winner needs the retained bodies, §4.6).
     pub fn author_supersedes(&self, author: &dyn Fn(&Source) -> bool) -> bool {
         let a = |s: &Stamp| author(s.dot.src.author());
         let sub = |f: &Fragment| f.author_supersedes(author);
-        if self.meta().and_then(|m| m.reset.as_ref()).is_some_and(a) || self.reset().as_ref().is_some_and(a) {
+        // `W` is max-joined like a register: the author's may have topped another's
+        if self.meta().is_some_and(|m| m.reset.as_ref().is_some_and(a) || m.w.as_ref().is_some_and(a)) || self.reset().as_ref().is_some_and(a) {
             return true;
         }
         match self {

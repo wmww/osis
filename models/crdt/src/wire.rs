@@ -31,18 +31,17 @@ pub struct Ctx {
 pub fn wire_src_cmp(a: &Source, b: &Source, own: &Source) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     if !matches!(own, Source::Commit(_)) || a == b {
-        return a.cmp(b);
+        return crate::stamp::base_cmp(a, b);
     }
     match (a, b) {
         (Source::Commit(_), Source::Commit(_)) if a == own => Ordering::Less,
         (Source::Commit(_), Source::Commit(_)) if b == own => Ordering::Greater,
-        (Source::Derived(x), Source::Derived(y)) => wire_cmp(x, y, own),
-        _ => a.cmp(b),
+        _ => crate::stamp::base_cmp(a, b),
     }
 }
-/// Wire order of dots: source in wire order, then counter.
+/// Wire order of dots: §2.2 dot order over `wire_src_cmp`.
 pub fn wire_cmp(a: &Dot, b: &Dot, own: &Source) -> std::cmp::Ordering {
-    wire_src_cmp(&a.source, &b.source, own).then(a.ctr.cmp(&b.ctr))
+    crate::stamp::dot_cmp(a, b, &|x, y| wire_src_cmp(x, y, own))
 }
 /// Map entries in wire order.
 pub fn wire_sorted<'a, T>(m: &'a BTreeMap<Dot, T>, own: &Source) -> Vec<(&'a Dot, &'a T)> {

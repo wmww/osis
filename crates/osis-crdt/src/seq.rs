@@ -95,6 +95,7 @@ pub(crate) fn strip_values(_s: &mut Seq, _expired: &dyn Fn(&Dot) -> bool) {}
 pub(crate) fn remove_author(_s: &mut Seq, _author: &dyn Fn(&Source) -> bool) {}
 
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.
+/// Their stamps `(s.ts, Derived(s.dot), i)` already order right after `s` (`Dot`'s order, §2.2).
 pub(crate) fn embed_text(_r: &Register) -> BTreeMap<Dot, SeqElem> {
     BTreeMap::new()
 }

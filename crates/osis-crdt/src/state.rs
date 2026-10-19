@@ -494,7 +494,7 @@ impl Fragment {
     pub fn written(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => reg_written(r),
-            Fragment::Slots(_) => self.chosen().written(),
+            Fragment::Slots(_) => self.chosen_member().with(Fragment::written),
             f => max_opt(f.meta().and_then(|m| m.w.clone()), f.inner_max(true)),
         }
     }
@@ -548,14 +548,24 @@ impl Fragment {
     /// The member a `Slots` position reads as: greatest stamp inside, ties by greater encoding
     /// id (§7 Read); the fragment itself otherwise.
     pub(crate) fn chosen(&self) -> Fragment {
+        self.chosen_member().to_fragment()
+    }
+
+    /// `chosen` without cloning the member.
+    pub(crate) fn chosen_member(&self) -> MemberRef<'_> {
         match self {
-            Fragment::Slots(_) => self
-                .members()
-                .into_iter()
-                .map(|m| m.to_fragment())
-                .max_by(|a, b| a.all_max().cmp(&b.all_max()).then(a.encoding().cmp(&b.encoding())))
-                .unwrap_or_default(),
-            f => f.clone(),
+            Fragment::Slots(_) => {
+                let key = |m: &MemberRef| (m.with(Fragment::all_max), m.with(Fragment::encoding));
+                let mut best: Option<(MemberRef, _)> = None;
+                for m in self.members() {
+                    let k = key(&m);
+                    if best.as_ref().is_none_or(|(_, bk)| k >= *bk) {
+                        best = Some((m, k));
+                    }
+                }
+                best.map_or(MemberRef::Frag(self), |(m, _)| m)
+            }
+            f => MemberRef::Frag(f),
         }
     }
 
@@ -565,7 +575,7 @@ impl Fragment {
             return None;
         }
         match self {
-            Fragment::Slots(_) => self.chosen().read(),
+            Fragment::Slots(_) => self.chosen_member().with(Fragment::read),
             Fragment::Register(r) => r.write.as_ref().and_then(|w| w.value.clone()),
             Fragment::Bag(b) => read_bag(b),
             Fragment::Struct(s) => Some(Value::Map(
@@ -680,19 +690,22 @@ fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Chang
             }
         }
     }
-    if let Some(r) = &reg {
-        for (k, f) in ma.iter_mut() {
-            if let Some(e) = embed(r, *k) {
-                f.join_into(e, None, ch);
-            }
-        }
-    }
     prune_slots(reg, ma, e_parent, ch)
 }
 
 /// Prunes a position's members under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
 fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+    // every member holds the register's embedding, whatever path the members came by (a
+    // received snapshot's `Slots` included)
+    let mut members = members;
+    if let Some(r) = &reg {
+        for (k, f) in members.iter_mut() {
+            if let Some(e) = embed(r, *k) {
+                f.join_into(e, None, ch);
+            }
+        }
+    }
     let resets = reg.iter().map(|r| r.reset.clone()).chain(members.values().map(|f| f.reset()));
     let e = resets.fold(e_parent.cloned(), max_opt);
     let fix = |mut f: Fragment, ch: &mut Changes| {

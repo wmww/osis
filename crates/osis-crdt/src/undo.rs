@@ -111,9 +111,25 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             } else {
+                let prev = buffer.before(path).map(|f| f.chosen());
+                let ev = view.element();
                 for (d, e) in &b.elems {
                     if e.frag.is_some() && u.made(d) {
                         elems.insert(d.clone(), Elem { reset: Some(r.clone()), frag: None });
+                    } else if e.reset.is_some() {
+                        // the undone commit cancelled a contribution (an undo): re-add it (redo)
+                        let v = match &prev {
+                            Some(Fragment::Bag(p)) => p.elems.get(d).and_then(|x| x.frag.as_ref()).and_then(|f| f.read()),
+                            _ => None,
+                        };
+                        if let Some(v) = v {
+                            let nd = w.fresh().dot;
+                            let f = match &ev {
+                                Some(ev) => create(w, ev, &v)?,
+                                None => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r.clone(), value: Some(v) }) }),
+                            };
+                            elems.insert(nd, Elem { reset: None, frag: Some(Box::new(f)) });
+                        }
                     }
                 }
             }

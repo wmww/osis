@@ -26,7 +26,7 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 ### 2.2 Timestamps and stamps
 - `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`. HLC rules: a node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`; on receiving a commit the clock advances to the commit's ts. A commit with `wall_ms(ts)` more than `MAX_DRIFT = 1 h` (format constant) ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally. The node tiebreak lives in the dot, not in `ts`.
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts` and its own counter, so stamps inside a commit are ordered by counter, matching the writer's sequential intent.
-- Total order on stamps: by `ts`; then source kind (`Node` < `Commit` < `Derived`); then source bytes (tid, commit ID; for `Derived`, the order of the underlying dot); then counter. Two different writes never compare equal.
+- Total order on stamps: by `ts`; then the dot. Dots of `Node` and `Commit` sources order by source kind (`Node` < `Commit`), then source bytes (tid, commit ID), then counter. A dot `(Derived(d), i)` orders as the sequence `(d.source, d.ctr, i)` against the `(source, ctr)` of any other dot, so an embedded write sorts right after the write it embeds and below every other greater write (§7). Two different writes never compare equal.
 - "Later wins" everywhere means this order.
 
 ### 2.3 Counter consumption
@@ -162,7 +162,7 @@ A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commi
 - Snapshots carry the delta's value-carrying writes value-less, before and after T, and never cover it, so its content lives only in its own blob, which blind nodes drop at T (§8). Before T a node holding the snapshot but not yet the delta reads those writes as absent, like any partial receipt.
 
 ### 4.8 Death of a write
-A write is **dead** at a node once the join has superseded it: pruned by a reset (§4.2); beaten as a register, case, flag or position winner by a greater stamp; its element deleted or tombstoned; or its value gone by expiry (§4.7). It dies at the `ts` of the superseding commit, or at T. Un-merge (§4.6) is the only way a dead write revives. Retention tracks deaths per body (spec/commits.md §5).
+A write is **dead** at a node once the join has superseded it: pruned by a reset (§4.2), a register's reset implied by its later write (§5.1) included; beaten as a register, case, flag or position winner by a greater stamp; its element deleted or tombstoned; or its value gone by expiry (§4.7). It dies at the `ts` of the superseding commit, or at T. Un-merge (§4.6) is the only way a dead write revives. Retention tracks deaths per body (spec/commits.md §5).
 
 ## 5. Encodings
 

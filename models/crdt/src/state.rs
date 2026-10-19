@@ -395,7 +395,14 @@ impl Frag {
             // one effective reset for every member (§7): each member is pruned with it like any nested fragment (an
             // own reset below it goes); members left empty or below the register's embedding go, fewer than two
             // collapse
-            let (reg, slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            let (reg, mut slots) = parts(std::mem::replace(self, Frag::empty(0)));
+            // every member holds the register's embedding, however the members arrived
+            if let Some(r) = &reg {
+                for (k, f) in slots.iter_mut() {
+                    let e = crate::embed::embed(r, *k).expect("embedding is total from a register");
+                    *f = std::mem::replace(f, Frag::empty(0)).join_raw(e);
+                }
+            }
             let fix = |mut f: Frag| {
                 f.prune(e);
                 f

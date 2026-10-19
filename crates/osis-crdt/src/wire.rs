@@ -303,7 +303,7 @@ impl<'p> Enc<'p> {
     /// except that the delta's own commit-form source sorts below every other commit, since a
     /// writer does not know its commit ID while encoding.
     pub fn dot_order(&self, a: &Dot, b: &Dot) -> Ordering {
-        self.src_order(&a.src, &b.src).then(a.ctr.cmp(&b.ctr))
+        crate::stamp::dot_cmp(a, b, &|x, y| self.src_order(x, y))
     }
 
     /// The entries of `m` in wire order (§3.3 rule 2).
@@ -315,15 +315,15 @@ impl<'p> Enc<'p> {
         v
     }
 
+    /// Order of non-`Derived` sources with the own commit-form source first among commits.
     fn src_order(&self, a: &Source, b: &Source) -> Ordering {
         if !matches!(self.own.kind(), SourceKind::Commit(_)) || a == b {
-            return a.cmp(b);
+            return crate::stamp::base_cmp(a, b);
         }
         match (a.kind(), b.kind()) {
             (SourceKind::Commit(_), SourceKind::Commit(_)) if *a == self.own => Ordering::Less,
             (SourceKind::Commit(_), SourceKind::Commit(_)) if *b == self.own => Ordering::Greater,
-            (SourceKind::Derived(x), SourceKind::Derived(y)) => self.dot_order(x, y),
-            _ => a.cmp(b),
+            _ => crate::stamp::base_cmp(a, b),
         }
     }
 
@@ -347,12 +347,16 @@ pub struct Dec<'a> {
     pub(crate) pages: Option<&'a mut dyn PageSource>,
     /// Pages fetched, with their links, for the canonical re-encode.
     pub(crate) fetched: Vec<(Vec<u8>, osis_core::Link)>,
+    /// Blobs of the pages read so far: each at most once.
+    pub(crate) links_seen: std::collections::HashSet<osis_core::BlobId>,
+    /// Fragment nesting, across pages.
+    pub(crate) depth: usize,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new() }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0 }
     }
 
     pub fn kind(&self) -> DeltaKind {

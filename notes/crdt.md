@@ -76,6 +76,7 @@
 
 ## Implementation (`osis-crdt`)
 - **Structures**: `Fragment` enum, one struct per encoding (`fragment.rs`), crate-private fields; collections are `BTreeMap<Dot, _>`, struct fields and enum payloads `BTreeMap<u64, _>`. Sequences (`seq.rs`) are plans/crdt-seq.md's: the generic code calls only the hooks listed there and owns a sequence's reset and `W`.
+- **Slots**: every prune of a `Slots` re-embeds the register slot into each member, so a received `Slots` lacking the embedding converges with one built by join.
 - **Interning**: `Source` is an `Arc<SourceKind>`; a stamp is `ts` + pointer + counter. Equality and order never depend on sharing; `Interner` dedupes per decode (a node may keep one per aspect).
 - **Join** (`state.rs`) is delta-driven: `join_into(other, e_parent, changes)` walks only what `other` carries; existing children are pruned only when an own reset rises. Equals union-then-prune (lockstep tests against the model after every join). An empty state takes the other side pruned.
 - **Change summary** (`Changes`): `is_changed` plus `Death { stamp, at }` for every write superseded (beaten register/case/reset, pruned write, late write dying on arrival). Writes sharing a delta stamp are reported per instance.
@@ -83,7 +84,7 @@
 - **Paging**: `PageParams` (format: 64 KiB target, 16/256 KiB cuts, 512 fanout) come from the `PageSink`/`PageSource`; tests shrink them. `osis_core::PageCutter` cuts; link pages use the tree-node rule; a third level is refused.
 - **Ops** (`ops.rs`, `batch.rs`): `diff`/`create`/`replace` match the model write for write under a `View`. `Batch` makes a commit's net effect: ops resolve against state ⊔ batch-so-far; `overlay` lets a later op override, drops a reset's earlier content, omits created-and-removed elements and then sets `W` if the collection would be left with no write (one-by-one ops would have left it present).
 - **Undo** (`undo.rs`): per §4.6 over the original delta; `UndoBuffer::before(path)` gives pre-commit fragments (a pre-commit state implements it). Restores values, not absence: a collection emptied by undo stays present, a register that did not exist is not written.
-- **Un-merge** (`lifecycle.rs`): `unmerge(held, author)` joins bodies with `remove_author` applied; `unmerge_in_place` only when the author holds no register, case or reset write (`author_supersedes`; sequences conservatively always need bodies).
+- **Un-merge** (`lifecycle.rs`): `unmerge(held, author)` joins bodies with `remove_author` applied; `unmerge_in_place` only when the author holds no register, case, reset or `W` write (`W` is max-joined, so the author's may hide another's) (`author_supersedes`; sequences conservatively always need bodies).
 - Not yet: a map `key -> live dots` index (ops scan entries and clone the joined map per path op); join over one page at a time (pages are fetched and joined whole).
 
 ## Reference model (`models/crdt/`)

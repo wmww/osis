@@ -245,8 +245,12 @@ fn links(items: &[Value]) -> Result<Option<Vec<osis_core::Link>>, Error> {
     Ok(Some(items.iter().filter_map(|i| if let Value::Link(l) = i { Some(*l) } else { None }).collect()))
 }
 
-/// Fetches a page and returns its items.
+/// Fetches a page and returns its items. Each blob is read once per delta, so expansion is
+/// bounded by the distinct pages that exist.
 fn page_items(cx: &mut Dec, link: &osis_core::Link) -> Result<Vec<Value>, Error> {
+    if !cx.links_seen.insert(link.blob) {
+        return Err(Error::Malformed("a page linked twice"));
+    }
     let src = cx.pages.as_mut().ok_or(Error::Page(PageError::Missing))?;
     let bytes = src.get(link)?;
     let v = osis_core::decode(&bytes, &LIMITS)?;
@@ -261,12 +265,19 @@ fn page_items(cx: &mut Dec, link: &osis_core::Link) -> Result<Vec<Value>, Error>
 pub(crate) fn elem_items(cx: &mut Dec, v: &Value) -> Result<Vec<Value>, Error> {
     let items = as_array(v)?;
     let Some(top) = links(items)? else { return Ok(items.to_vec()) };
+    let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+    if osis_core::encode(v).len() > params.target {
+        return Err(Error::Malformed("link list above the page target"));
+    }
     let mut out = Vec::new();
     for l in &top {
         let page = page_items(cx, l)?;
         match links(&page)? {
             None => out.extend(page),
             Some(inner) => {
+                if inner.len() > params.fanout {
+                    return Err(Error::Malformed("link page above the fan-out"));
+                }
                 for l in &inner {
                     let page = page_items(cx, l)?;
                     if links(&page)?.is_some() {
@@ -373,6 +384,17 @@ fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Registe
 
 /// Decodes a fragment; `may_reset` where a register may carry a reset (root, slot member).
 pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
+    // nesting counts across pages too (a page's fragments may hold paged arrays)
+    if cx.depth >= MAX_OBJECT_DEPTH {
+        return Err(Error::Malformed("fragments nest too deep"));
+    }
+    cx.depth += 1;
+    let r = decode_fragment_at(cx, v, may_reset);
+    cx.depth -= 1;
+    r
+}
+
+fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
     let a = as_array(v)?;
     let id = as_uint(a.first().ok_or(Error::Malformed("empty fragment"))?)?;
     let enc = Encoding::from_id(id).ok_or(Error::UnknownEncoding(id))?;
