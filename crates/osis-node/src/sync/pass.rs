@@ -87,12 +87,14 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
-        // content snapshots under the label: drop the bodies they cover (spec/sync.md §7)
+        // others' content snapshots under the label: drop the bodies they cover (spec/sync.md
+        // §7; this node's own were a compaction, or a carrier written for a keep-at-most bound)
         let snaps = self.snapshots_at(&l);
         let mut done = Vec::new();
+        let me = self.engine.tid();
         for ((t, a), ss) in &snaps {
             for s in ss {
-                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
+                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot && m.header.author != me) {
                     continue;
                 }
                 self.drop_covered(t, a, s)?;

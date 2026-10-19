@@ -2,8 +2,10 @@
 //! over osis-transport `link` sessions (one dialed stream per server connection, an ephemeral
 //! transport key per connection, the server's key checked by the transport, spec/sync.md §10)
 //! and fires its timers. With a listener (`run_serving`), every session a peer opens on it is
-//! served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5). No sync logic lives here: every input is an `Event`, every output an
-//! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime.
+//! served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5). No sync logic lives
+//! here: every input is an `Event`, every output an `Action`. Engine calls run under
+//! `block_in_place` on a multi-thread runtime. The engine lives in a `Host`: owned by the driver (`run`), or shared with the app (`run_host`: the
+//! `osis` handle keeps it behind its own lock and hands the driver the actions of its calls).
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_core::Clock;
@@ -36,6 +38,8 @@ pub enum Control {
     /// Run timers now.
     Tick,
     Call(Call),
+    /// Actions the host's own calls produced: carry them out.
+    Apply(Vec<Action>),
     /// Close every connection and return the engine.
     Shutdown,
 }
@@ -74,8 +78,25 @@ fn blocking<R>(f: impl FnOnce() -> R) -> R {
     }
 }
 
-struct Driver<T: Transport> {
-    sync: SyncEngine,
+/// Where the sync engine lives while a driver runs.
+pub trait Host: Send + Sync + 'static {
+    /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
+    fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
+}
+
+/// A host owning the engine (`run`).
+pub struct Owned(std::sync::Mutex<SyncEngine>);
+
+impl Host for Owned {
+    fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
+        let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        Some(f(&mut g))
+    }
+}
+
+struct Driver<T: Transport, H: Host> {
+    host: H,
+    gone: bool,
     transport: Arc<T>,
     clock: Arc<dyn Clock>,
     log: Log,
@@ -84,10 +105,17 @@ struct Driver<T: Transport> {
     ev_tx: mpsc::Sender<Ev>,
 }
 
-impl<T: Transport> Driver<T> {
+impl<T: Transport, H: Host> Driver<T, H> {
+    fn call(&mut self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) {
+        let host = &self.host;
+        match blocking(|| host.with(f)) {
+            Some(acts) => self.apply(acts),
+            None => self.gone = true,
+        }
+    }
+
     fn feed(&mut self, ev: Event) {
-        let acts = blocking(|| self.sync.handle(ev));
-        self.apply(acts);
+        self.call(&mut |s| s.handle(ev.clone()));
     }
 
     fn apply(&mut self, acts: Vec<Action>) {
@@ -148,7 +176,7 @@ impl<T: Transport> Driver<T> {
 
 /// Runs the sync engine until `Control::Shutdown` (or the control sender is dropped) and
 /// returns it. Dials what it asks for over `transport`; ticks when its wake comes due.
-pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
     run_serving(sync, transport, Vec::new(), clock, control, log).await
 }
 
@@ -157,11 +185,22 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 /// with a fresh secret whose key is announced with the LAN tag (spec/sync.md §10). Never put a
 /// listener's `address().url` into `/reach`: it lists bound IP addresses, which are never
 /// published (spec/sync.md §10); only its key and the relays go there.
-pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
+    let Owned(m) = run_host(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
+    m.into_inner().unwrap_or_else(|p| p.into_inner())
+}
+
+/// `run_serving` over a host; returns it at `Control::Shutdown`, when the control sender is
+/// dropped or when the host's engine is gone.
+pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let mut serving = Vec::new();
-    let max = sync.config().max_served;
+    let mut max = 0;
+    let _ = host.with(&mut |s| {
+        max = s.config().max_served;
+        Vec::new()
+    });
     for l in listeners {
         let key = l.address().key;
         let (tx, mut rx) = mpsc::channel::<Link>(64);
@@ -176,17 +215,29 @@ pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners
         }));
     }
     drop(link_tx);
-    let mut d = Driver { sync, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
+    let mut d = Driver { host, gone: false, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
     d.feed(Event::Tick);
-    loop {
+    while !d.gone {
         let idle = d.idle();
         tokio::select! {
             Some((key, l)) = link_rx.recv() => {
                 let Link { peer_key, tx, rx } = l;
-                let (conn, acts) = blocking(|| d.sync.accept(key, peer_key));
-                let task = pump(conn, rx, d.ev_tx.clone());
-                d.conns.insert(conn, Conn { tx: Some(tx), task });
-                d.apply(acts);
+                // the connection exists before its first actions are carried out
+                let mut conn = None;
+                let host = &d.host;
+                let acts = blocking(|| host.with(&mut |s| {
+                    let (c, acts) = s.accept(key, peer_key);
+                    conn = Some(c);
+                    acts
+                }));
+                if let Some(conn) = conn {
+                    let task = pump(conn, rx, d.ev_tx.clone());
+                    d.conns.insert(conn, Conn { tx: Some(tx), task });
+                }
+                match acts {
+                    Some(a) => d.apply(a),
+                    None => d.gone = true,
+                }
             }
             Some(ev) = ev_rx.recv() => match ev {
                 Ev::Up(conn, tx) => {
@@ -215,9 +266,10 @@ pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners
                 Some(Control::Local) => d.feed(Event::Local),
                 Some(Control::Tick) => d.feed(Event::Tick),
                 Some(Control::Call(f)) => {
-                    let acts = blocking(|| f(&mut d.sync));
-                    d.apply(acts);
+                    let mut f = Some(f);
+                    d.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
                 }
+                Some(Control::Apply(acts)) => d.apply(acts),
                 Some(Control::Shutdown) | None => break,
             },
             _ = tokio::time::sleep(idle) => {
@@ -233,5 +285,5 @@ pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners
     for id in ids {
         d.close(id);
     }
-    d.sync
+    d.host
 }

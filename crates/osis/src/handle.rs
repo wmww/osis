@@ -1,19 +1,33 @@
-//! The handle (notes/api.md Handle and lifecycle): `Osis` over one node engine behind one lock;
-//! every engine call drains the engine's events into the dispatcher queue before the lock is
-//! released, so the queue is in commit order.
+//! The handle (notes/api.md Handle and lifecycle): `Osis` over one node's sync engine (which owns
+//! the engine) behind one lock; every call drains the engine's events into the dispatcher queue
+//! before the lock is released, so the queue is in commit order, and lets the sync engine look
+//! at what changed. Network actions leave through `Net` under the same lock, so they keep their
+//! order.
 
 use crate::error::{Error, Result};
+use crate::net::{Net, Runtime, Transport, Waiter};
+use crate::share::{RecoveryCard, ServerAddr, Status};
 use crate::watch::{Dispatch, Msg, lock};
 use osis_core::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
+use osis_node::sync::{Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
 use osis_schema::Schema;
+use osis_schema::core_types as ct;
 use osis_store::{MemoryBackend, MemoryRoot};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Default materialization bound: 64 MiB (notes/api.md Reads).
 pub const DEFAULT_LIMIT: usize = 64 << 20;
+/// How long `Osis::close` waits for other holders of the database.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
+/// Default wait for another node (`Config::wait_timeout`).
+pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
+/// Default inactivity before a text session commits.
+pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 
 /// An in-memory store; clones share it, so a test can close a database and open it again.
 #[derive(Clone, Debug, Default)]
@@ -47,6 +61,17 @@ pub struct Config {
     pub clock: Option<Arc<dyn Clock>>,
     /// Seed for a deterministic rng (tests only; default OS randomness).
     pub seed: Option<u64>,
+    /// Where background sync runs (default `Runtime::None`: no network).
+    pub runtime: Runtime,
+    /// How servers are dialed (default: QUIC with feature `quic`).
+    pub transport: Option<Transport>,
+    /// Servers for `create`, `restore` and `pair`; an opened database keeps its stored list.
+    pub servers: Vec<ServerAddr>,
+    /// A text session commits after this much inactivity.
+    pub idle_commit: Duration,
+    /// How long a call that waits for another node (`redeem`, `import_contact`, `restore`)
+    /// waits before failing `Network`.
+    pub wait_timeout: Duration,
 }
 
 impl Config {
@@ -56,7 +81,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
     }
 
     #[cfg(feature = "file-store")]
@@ -65,11 +90,34 @@ impl Config {
     }
 }
 
-/// The engine with its event channel and the dispatcher sequence number.
+/// A share link this node made: K and L (spec/permissions.md §9).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MadeLink {
+    pub l: Tid,
+    pub target: Tid,
+    pub single_use: bool,
+    /// Its single-use redemption was finalized here.
+    pub finalized: bool,
+}
+
+/// The sync engine with its event channel, the dispatcher sequence number and the handle's
+/// bookkeeping, all under one lock.
 pub(crate) struct Locked {
-    pub engine: Engine,
+    pub sync: SyncEngine,
     events: Receiver<Event>,
     pub seq: u64,
+    pub waiters: Vec<Waiter>,
+    pub status: Status,
+    /// Pairing offers not yet used: secret, expiry (wall ms).
+    pub offers: Vec<([u8; 32], u64)>,
+    /// Links made here, by K.
+    pub links: BTreeMap<Tid, MadeLink>,
+}
+
+impl Locked {
+    pub fn engine(&mut self) -> &mut Engine {
+        self.sync.engine_mut()
+    }
 }
 
 pub(crate) struct Inner {
@@ -77,11 +125,17 @@ pub(crate) struct Inner {
     pub dispatch: Dispatch,
     pub node: Tid,
     pub me: Tid,
-    pub home: Tid,
     pub limit: usize,
+    pub idle_commit: Duration,
+    pub wait_timeout: Duration,
+    pub clock: Arc<dyn Clock>,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
+    pub net: Net,
+    /// `close` waits on this until `closed` (the last field) is dropped.
+    pub closing: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    pub _closed: std::sync::mpsc::Sender<()>,
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
@@ -99,7 +153,7 @@ impl std::fmt::Debug for Osis {
 
 /// A non-owning handle (`Osis::downgrade`).
 #[derive(Clone, Debug)]
-pub struct WeakOsis(std::sync::Weak<Inner>);
+pub struct WeakOsis(pub(crate) std::sync::Weak<Inner>);
 
 impl WeakOsis {
     /// The database, if still open.
@@ -114,8 +168,9 @@ impl std::fmt::Debug for Inner {
     }
 }
 
-const PERSON: &str = "person";
-const HOME: &str = "home";
+pub(crate) const PERSON: &str = "person";
+pub(crate) const SERVERS: &str = "servers";
+pub(crate) const LINKS: &str = "links";
 
 fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
     match &cfg.store {
@@ -129,9 +184,9 @@ fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_sto
     }
 }
 
-fn rng(cfg: &Config) -> Box<dyn CryptoRngCore + Send> {
+fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
     match cfg.seed {
-        Some(s) => Box::new(SeededRng::from_u64(s)),
+        Some(s) => Box::new(SeededRng::from_u64(s.wrapping_add(salt))),
         None => Box::new(OsRng),
     }
 }
@@ -150,43 +205,95 @@ fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
     Ok(Tid::from_bytes(a))
 }
 
+/// Server addresses as one local record (text lines).
+pub(crate) fn save_servers(e: &mut Engine, s: &[ServerAddr]) -> Result<()> {
+    let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
+    e.set_app_record(SERVERS, text.join("\n").as_bytes())?;
+    Ok(())
+}
+
+fn load_servers(e: &mut Engine) -> Result<Option<Vec<ServerAddr>>> {
+    let Some(b) = e.app_record(SERVERS)? else { return Ok(None) };
+    let s = String::from_utf8(b).map_err(|_| Error::Storage("servers record".into()))?;
+    Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
+}
+
+/// A sync engine over an engine, from the first commit on (it sees every event).
+pub(crate) struct Fresh {
+    pub sync: SyncEngine,
+    pub clock: Arc<dyn Clock>,
+}
+
+fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, servers: &[ServerAddr]) -> Result<SyncEngine> {
+    let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), ..SyncConfig::default() };
+    Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
+}
+
+/// A new store's sync engine (its servers set later by `set_servers` where they change).
+pub(crate) fn fresh_engine(cfg: &Config, servers: &[ServerAddr]) -> Result<Fresh> {
+    let (b, r) = parts(cfg)?;
+    let clock = clock(cfg);
+    let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
+    Ok(Fresh { sync: sync_over(engine, &clock, cfg, servers)?, clock })
+}
+
 impl Osis {
-    /// Creates a database: a new node, a person actor and its home group (notes/api.md).
-    /// Until membership flows land, the person actor is owned by this node and no recovery
-    /// card is produced (plans/api.md second half).
-    pub fn create(cfg: Config) -> Result<Osis> {
-        let (b, r) = parts(&cfg)?;
-        let mut e = Engine::create(b, r, engine_cfg(), clock(&cfg), rng(&cfg))?;
-        let node = e.tid();
+    /// Creates a database (notes/api.md, spec/permissions.md §1): a new node and a new person
+    /// actor owned by a fresh recovery key, this node its admin, its home group (the person
+    /// itself, spec/sync.md §2) labeled on `Config.servers`. Returns the recovery card, the only
+    /// copy of the recovery key: show or store it, osis keeps none of it. Without servers there
+    /// is nothing to restore from: no card (the key is discarded).
+    pub fn create(cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
+        let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.servers)?;
+        let engine = sync.engine_mut();
+        let servers: Vec<osis_label::Address> = cfg.servers.iter().map(|s| s.0.clone()).collect();
+        let (p, done) = engine.create_person(&servers)?;
         let mut m = osis_node::Mutation::new();
-        let me = e.new_thing(&mut m, node);
-        e.commit(m)?;
-        // the person must exist before this node's rights through it count
-        let mut m = osis_node::Mutation::new();
-        let home = e.new_thing(&mut m, me);
-        m.set(home, &osis_schema::core_types::GROUP, &osis_schema::core_types::Group::default())?;
-        e.commit(m)?;
-        e.set_app_record(PERSON, me.as_bytes())?;
-        e.set_app_record(HOME, home.as_bytes())?;
-        Osis::start(e, me, home, cfg.materialize_limit)
+        m.set(p.person, &ct::GROUP, &ct::Group::default())?;
+        engine.commit(m)?;
+        engine.set_app_record(PERSON, p.person.as_bytes())?;
+        save_servers(engine, &cfg.servers)?;
+        let card = if servers.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
+        let db = Osis::start(sync, clock, &cfg, p.person)?;
+        db.carry(done)?;
+        Ok((db, card))
     }
 
-    /// Opens an existing database.
+    /// Opens an existing database. A store whose person actor is owned by the device (made
+    /// before membership flows) is refused: it cannot be shared or recovered.
     pub fn open(cfg: Config) -> Result<Osis> {
         let (b, r) = parts(&cfg)?;
-        let mut e = Engine::open(b, r, engine_cfg(), clock(&cfg), rng(&cfg))?;
+        let clock = clock(&cfg);
+        let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, 0))?;
         let me = tid_record(&mut e, PERSON)?;
-        let home = tid_record(&mut e, HOME)?;
-        Osis::start(e, me, home, cfg.materialize_limit)
+        if e.get_typed(&me, &ct::KEYS)?.is_none() {
+            return Err(Error::Invalid("this store's person actor is owned by the device (made before membership flows): it cannot be shared or recovered; create a new store".into()));
+        }
+        let servers = load_servers(&mut e)?.unwrap_or_else(|| cfg.servers.clone());
+        let sync = sync_over(e, &clock, &cfg, &servers)?;
+        let db = Osis::start(sync, clock, &cfg, me)?;
+        db.load_links()?;
+        Ok(db)
     }
 
-    fn start(mut engine: Engine, me: Tid, home: Tid, limit: usize) -> Result<Osis> {
-        let node = engine.tid();
-        let events = engine.subscribe();
+    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
+        let node = sync.engine().tid();
+        let events = sync.engine_mut().subscribe();
         let (dispatch, queue) = Dispatch::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(Locked { engine, events, seq: 0 }), dispatch, node, me, home, limit, schemas: Mutex::new(Vec::new()), undo: Mutex::new(()) });
+        let (net, ctl) = Net::new(&cfg.runtime)?;
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
+        let (closed, closing) = std::sync::mpsc::channel();
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
-        Ok(Osis { inner })
+        if let Some(ctl) = ctl {
+            inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
+        }
+        let db = Osis { inner };
+        if let Runtime::Manual(m) = &cfg.runtime {
+            m.register(db.downgrade());
+        }
+        db.locked(|_| ());
+        Ok(db)
     }
 
     pub(crate) fn from_inner(inner: Arc<Inner>) -> Osis {
@@ -199,9 +306,23 @@ impl Osis {
         WeakOsis(Arc::downgrade(&self.inner))
     }
 
-    /// Closes this handle (the database closes with the last one; every commit is already
-    /// durable).
-    pub fn close(self) {}
+    /// Closes this handle; the database closes with the last one (every commit is already
+    /// durable). Returns once it is closed, so the store can be opened again at once; while
+    /// other handles keep it open, it returns after `CLOSE_WAIT`. From a callback (the
+    /// dispatcher thread, which holds the database while it runs) it fails `Invalid` at once:
+    /// drop the handle instead.
+    pub fn close(self) -> Result<()> {
+        if self.inner.dispatch.shared.on_dispatcher() {
+            return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
+        }
+        let rx = lock(&self.inner.closing).take();
+        drop(self);
+        // the dispatcher or the sync driver may hold the database for a moment
+        if let Some(rx) = rx {
+            let _ = rx.recv_timeout(CLOSE_WAIT);
+        }
+        Ok(())
+    }
 
     /// This device's node tid.
     pub fn node(&self) -> Tid {
@@ -213,9 +334,10 @@ impl Osis {
         self.inner.me
     }
 
-    /// The person's home group.
+    /// The person's home group: the person actor itself, synced under its home label
+    /// (spec/sync.md §2); things placed in it reach every device of the person.
     pub fn home(&self) -> Tid {
-        self.inner.home
+        self.inner.me
     }
 
     /// The materialization bound in bytes.
@@ -227,21 +349,124 @@ impl Osis {
     /// dispatcher. For inspection (the CLI's `inspect`) and tests; apps never need it.
     #[doc(hidden)]
     pub fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
-        self.locked(|l| f(&mut l.engine))
+        self.locked(|l| f(l.engine()))
+    }
+
+    /// Runs `f` on the sync engine (inspection and tests); its actions are carried out.
+    #[doc(hidden)]
+    pub fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R {
+        self.locked(|l| f(&mut l.sync))
+    }
+
+    /// Runs `f` on the sync engine and carries out its actions (tests).
+    #[doc(hidden)]
+    pub fn sync_act(&self, f: impl FnOnce(&mut SyncEngine) -> Vec<osis_node::sync::Action>) {
+        self.locked(|l| {
+            let acts = f(&mut l.sync);
+            self.inner.net.apply(acts);
+        })
+    }
+
+    /// Calls waiting for another node right now (tests: a dropped future leaves none).
+    #[doc(hidden)]
+    pub fn waiting(&self) -> usize {
+        self.locked(|l| l.waiters.len())
+    }
+
+    /// With `Runtime::Manual`: the network actions queued so far (a test harness carries them).
+    #[doc(hidden)]
+    pub fn take_actions(&self) -> Vec<osis_node::sync::Action> {
+        self.inner.net.take()
+    }
+
+    /// With `Runtime::Manual`: feeds a network event (a test harness).
+    #[doc(hidden)]
+    pub fn feed(&self, ev: SyncEvent) {
+        self.handled(|l| l.sync.handle(ev));
+    }
+
+    /// Runs `f` on the sync engine as the network driver does: its actions go out, and the
+    /// events it caused were already seen by the sync engine.
+    pub(crate) fn handled(&self, f: impl FnOnce(&mut Locked) -> Vec<osis_node::sync::Action>) {
+        self.locked_in(true, |l| {
+            let acts = f(l);
+            self.inner.net.apply(acts);
+        })
     }
 
     pub(crate) fn locked<R>(&self, f: impl FnOnce(&mut Locked) -> R) -> R {
+        self.locked_in(false, f)
+    }
+
+    fn locked_in<R>(&self, handled: bool, f: impl FnOnce(&mut Locked) -> R) -> R {
         let mut g = lock(&self.inner.eng);
         let holder = &self.inner.dispatch.shared.holder;
         *lock(holder) = Some(std::thread::current().id());
         let r = f(&mut g);
-        let l = &mut *g;
-        for e in l.events.try_iter() {
+        self.after(&mut g, handled);
+        *lock(holder) = None;
+        r
+    }
+
+    /// Queues events for the dispatcher; returns the things whose roster changed, or `None`
+    /// when there were none.
+    fn drain(&self, l: &mut Locked, roster: &mut BTreeSet<Tid>) -> bool {
+        let mut any = false;
+        while let Ok(e) = l.events.try_recv() {
+            any = true;
+            if let Event::Roster { thing } = &e {
+                roster.insert(*thing);
+            }
             l.seq += 1;
             self.inner.dispatch.send(l.seq, Msg::Event(e));
         }
-        *lock(holder) = None;
-        r
+        any
+    }
+
+    /// After every call under the lock: events to the dispatcher; local changes shown to the
+    /// sync engine; then status, link upkeep and waiters.
+    fn after(&self, l: &mut Locked, handled: bool) {
+        let mut roster = BTreeSet::new();
+        let any = self.drain(l, &mut roster);
+        if any && !handled {
+            let acts = l.sync.handle(SyncEvent::Local);
+            self.inner.net.apply(acts);
+            self.drain(l, &mut roster);
+        }
+        if !(any || handled) {
+            // nothing changed, but deadlines may have passed
+            if !l.waiters.is_empty() {
+                let now = self.inner.clock.now_wall_ms().0;
+                let Locked { waiters, sync, status, .. } = l;
+                waiters.retain_mut(|w| !w.poll(sync, status, now));
+            }
+            return;
+        }
+        self.upkeep_links(l, &roster, false);
+        let status = crate::share::status_of(&mut l.sync);
+        if status != l.status {
+            for (g, s) in &status.groups {
+                if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
+                    l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
+                }
+            }
+            l.status = status.clone();
+            l.seq += 1;
+            self.inner.dispatch.send(l.seq, Msg::Status(status));
+        }
+        self.drain(l, &mut roster);
+        let now = self.inner.clock.now_wall_ms().0;
+        let Locked { waiters, sync, status, .. } = l;
+        waiters.retain_mut(|w| !w.poll(sync, status, now));
+    }
+
+    /// Carries out a flow's result (deliveries) under the lock.
+    pub(crate) fn carry(&self, done: osis_node::flows::Done) -> Result<()> {
+        self.locked(|l| -> Result<()> {
+            let acts = l.sync.carry_out(done)?;
+            self.inner.net.apply(acts);
+            Ok(())
+        })
     }
 
     /// Blocks until every callback for changes made so far has run (returns at once on the

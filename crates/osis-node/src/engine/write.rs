@@ -275,13 +275,16 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
         let mut cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
+        // own writes already carry the commit-form placeholder (`own_source`), so foreign dots
+        // of this node's node-form writes stay node dots
         cx.own = own_source(plan.form, node);
+        let fragment = d.fragment;
         let mut blobs = TxBlobs::new(&mut tx.txn);
         let bytes = {
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             match d.frontiers {
-                Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment: d.fragment, frontiers }, &cx, Some(&mut bw))?,
-                None => encode_delta(&Delta { nonce, fragment: d.fragment }, &cx, Some(&mut bw))?,
+                Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers }, &cx, Some(&mut bw))?,
+                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             }
         };
         let mut chunks = std::mem::take(&mut blobs.written);

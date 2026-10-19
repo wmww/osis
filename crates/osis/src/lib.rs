@@ -7,7 +7,7 @@
 //! Owner and placement of new things are always explicit; `me()` is the usual owner.
 //! ```
 //! use osis::{Config, Osis, Place};
-//! let db = Osis::create(Config::memory())?;
+//! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
 //! let note = w.create(db.me(), Place::In(db.home()))?;
 //! w.commit()?;
@@ -20,7 +20,7 @@
 //! absent aspect reads as `None`.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("/note/title").unwrap();
 //! let note = db.write_with(|w| {
 //!     let t = w.create(db.me(), Place::Unsynced)?;
@@ -37,7 +37,7 @@
 //! materialized.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, p};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let tags = Ak::new("/note/tags").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -55,7 +55,7 @@
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value};
 //! # use std::collections::BTreeMap;
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let form = Ak::new("/app/form").unwrap();
 //! let shown = Value::Map(BTreeMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
@@ -74,7 +74,7 @@
 //! dropping the `Subscription` unsubscribes. `on_change` first delivers the current value.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, Source};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/count").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -94,7 +94,7 @@
 //! Undo and redo act on this actor's own changes in a scope; `history` lists everyone's.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, UndoScope};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/x").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -108,12 +108,108 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! # Sync, servers and the recovery card
+//! `create` makes a person (owned by a recovery key) whose home group is synced on
+//! `Config.servers`; it returns the recovery card, the only copy of that key. Sync runs on a
+//! runtime (`Runtime::Own`, or the app's tokio handle); without one everything works locally.
+//! Status, waiting until synced and restoring from the card are the network-facing calls.
+//! ```no_run
+//! # use osis::{Config, Osis, Runtime, ServerAddr, SyncScope};
+//! # async fn demo() -> osis::Result<()> {
+//! let mut cfg = Config::memory();
+//! cfg.runtime = Runtime::Own;
+//! cfg.servers = vec!["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
+//! let (db, card) = Osis::create(cfg.clone())?;
+//! db.wait_synced(SyncScope::All, std::time::Duration::from_secs(10)).await?;
+//! // on a fresh device: the same person from the card
+//! let again = Osis::restore(Config { store: osis::StoreAt::Memory(osis::MemStore::new()), ..cfg }, &card.unwrap()).await?;
+//! assert_eq!(again.me(), db.me());
+//! # Ok(()) }
+//! ```
+//! ```
+//! # use osis::{Config, Osis, SyncState};
+//! let (db, card) = Osis::create(Config::memory())?;
+//! assert!(card.is_none(), "no servers: nothing to restore from");
+//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NoServers);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Pairing a device
+//! Transport-agnostic: the app carries the offer to the new device, its request back, and the
+//! reply to it (QR, clipboard, a local socket).
+//! ```
+//! # use osis::{Config, Osis};
+//! let phone = Osis::create(Config::memory())?.0;
+//! let offer = phone.pair_offer()?;
+//! let joining = Osis::pair(Config::memory(), &offer)?;
+//! let (node, reply) = phone.pair_accept(joining.request())?;
+//! let laptop = joining.finish(&reply)?;
+//! assert_eq!(laptop.me(), phone.me());
+//! assert!(phone.devices()?.iter().any(|d| d.node == node));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Sharing
+//! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
+//! group owns are what its members read: create shared things with the group as owner.
+//! ```
+//! # use osis::{Config, Osis, Place, Role, LinkOpts};
+//! let db = Osis::create(Config::memory())?.0;
+//! let mut w = db.write();
+//! let g = w.create(db.me(), Place::In(db.home()))?;
+//! w.make_group(g)?;
+//! w.commit()?;
+//! db.sync(g, &[])?;
+//! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true })?;
+//! assert!(link.to_string().starts_with("osis://link/"));
+//! assert_eq!(db.links(g).len(), 1);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Signals
+//! Never stored; local listeners fire too; connected readers of the thing receive them.
+//! ```
+//! # use osis::{Config, Osis, Place, Ak, Value, Target};
+//! let db = Osis::create(Config::memory())?.0;
+//! let t = db.write_with(|w| w.create(db.me(), Place::Unsynced).map(|_| ()))?;
+//! # let t = db.engine(|e| e.header(&t.unwrap().commit)).unwrap().aspects[0].tid;
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let _sub = db.on_signal(t, Ak::new("/app/typing").unwrap(), move |_, e| { let _ = tx.send(e.value); });
+//! db.send_signal(t, &Ak::new("/app/typing").unwrap(), &Value::Bool(true), Target::All)?;
+//! assert_eq!(rx.recv().unwrap(), Ok(Value::Bool(true)));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Large values and text sessions
+//! A string or blob above the bound streams; text edited by a user goes through a session that
+//! commits once per pause.
+//! ```
+//! # use osis::{Config, Osis, Place, Ak, Path};
+//! # use std::io::Read;
+//! let db = Osis::create(Config::memory())?.0;
+//! let k = Ak::new("/app/body").unwrap();
+//! let mut w = db.write();
+//! let t = w.create(db.me(), Place::Unsynced)?;
+//! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
+//! w.commit()?;
+//! let mut s = String::new();
+//! db.at(t, k.clone()).stream()?.unwrap().read_to_string(&mut s).unwrap();
+//! assert_eq!(s, "some bytes");
+//! let title = Ak::new("/app/title").unwrap();
+//! let ed = db.edit_text(t, title.clone(), Path::root())?;
+//! ed.insert(0, "Hello")?;
+//! ed.insert(5, " world")?;
+//! ed.commit()?; // one commit for the whole pause
+//! assert_eq!(db.get(t, title)?, Some(osis::Value::Str("Hello world".into())));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Errors
 //! One `Error` with stable categories; rights are checked locally before signing.
 //! ```
 //! # use osis::{Config, Osis, Place, Error};
-//! let a = Osis::create(Config::memory())?;
-//! let b = Osis::create(Config::memory())?;
+//! let a = Osis::create(Config::memory())?.0;
+//! let b = Osis::create(Config::memory())?.0;
 //! let mut w = a.write();
 //! assert!(matches!(w.create(b.me(), Place::Unsynced), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
@@ -128,13 +224,13 @@
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
 //! db.on_diagnostic(|_, _| {});
 //! ```
 //! - A forgotten commit: `Write` is `#[must_use]`:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
 //! db.write();
 //! ```
 #![forbid(unsafe_code)]
@@ -142,19 +238,27 @@
 mod error;
 mod handle;
 mod keys;
+mod large;
+mod net;
+mod person;
 mod read;
 mod share;
 mod signal;
+mod text;
 mod undo;
 mod watch;
 mod write;
 
 pub use error::{Error, Result};
-pub use handle::{Config, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use handle::{CLOSE_WAIT, Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use net::{ManualNet, Runtime, Transport};
+pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
+pub use large::ValueStream;
 pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkOpts, Lower, PairOffer, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
+pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
+pub use text::TextSession;
 pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Place, Write};

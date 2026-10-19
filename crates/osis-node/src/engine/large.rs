@@ -110,6 +110,19 @@ impl Engine {
         })
     }
 
+    /// One step of a streaming read of a large value of `tid` (the API's `stream`): the next
+    /// plaintext chunk of the canonical bytes `r` walks (`TreeReader::new(link, CHUNK_MIN, ..)`),
+    /// `None` at the end. Memory: one chunk plus the tree path.
+    pub fn next_chunk(&mut self, tid: &Tid, r: &mut osis_label::TreeReader) -> Result<Option<Vec<u8>>> {
+        let tid = *tid;
+        self.run(|tx| {
+            let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
+            let mut blobs = TxBlobs::new(&mut tx.txn);
+            let mut src = BlobReader::new(&dedup, &mut blobs);
+            Ok(r.next_chunk(&dedup, &mut src)?)
+        })
+    }
+
     /// `get` with every link materialized (large values read whole).
     pub fn get_full(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let Some(v) = self.get(tid, ak)? else { return Ok(None) };

@@ -153,13 +153,19 @@ fn store_sel(g: &Global, given: Option<StoreSel>) -> anyhow::Result<StoreSel> {
     }
 }
 
-fn config(sel: &StoreSel, g: &Global) -> Config {
+/// The store's config; `net`: sync runs (`Runtime::Own` over QUIC) while the command runs,
+/// else the command stays local (`Runtime::None`).
+fn config(sel: &StoreSel, g: &Global, net: bool) -> Config {
     let mut c = match sel {
         StoreSel::Dir(d) => Config::dir(d),
         StoreSel::Memory(m) => Config::at(StoreAt::Memory(m.clone())),
     };
     if let Some(l) = g.limit {
         c.materialize_limit = l;
+    }
+    if net {
+        c.runtime = osis::Runtime::Own;
+        c.transport = Some(osis::Transport::Quic);
     }
     c
 }
@@ -179,31 +185,35 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
 }
 
 /// Opens an existing store (exit 8 when missing or locked).
-fn open(sel: &StoreSel, g: &Global) -> anyhow::Result<Osis> {
+fn open(sel: &StoreSel, g: &Global, net: bool) -> anyhow::Result<Osis> {
     match sel {
         StoreSel::Dir(d) => {
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
-            let db = Osis::open(config(sel, g)).map_err(|e| lock_err(d, e))?;
+            let db = Osis::open(config(sel, g, net)).map_err(|e| lock_err(d, e))?;
             let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
             Ok(db)
         }
-        StoreSel::Memory(_) => Osis::open(config(sel, g)).map_err(|e| match e {
+        StoreSel::Memory(_) => Osis::open(config(sel, g, net)).map_err(|e| match e {
             Error::Storage(m) if m.contains("not an osis database") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
     }
 }
 
-/// Creates a store; refuses a non-empty directory.
-fn create(sel: &StoreSel, g: &Global) -> anyhow::Result<Osis> {
+/// Creates a store with its home group on `servers`; refuses a non-empty directory. Returns the
+/// recovery card (none without servers).
+fn create(sel: &StoreSel, g: &Global, servers: Vec<osis::ServerAddr>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
     if let StoreSel::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
-    let db = Osis::create(config(sel, g)).map_err(|e| match sel {
+    let net = !servers.is_empty();
+    let mut cfg = config(sel, g, net);
+    cfg.servers = servers;
+    let db = Osis::create(cfg).map_err(|e| match sel {
         StoreSel::Dir(d) => lock_err(d, e),
         _ => e.into(),
     })?;

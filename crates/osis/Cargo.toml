@@ -13,6 +13,8 @@ workspace = true
 [features]
 # `Store::Dir`: the redb file store (notes/architecture.md §4: heavy deps off by default).
 file-store = ["osis-store/file-backend"]
+# `Transport::Quic`: direct server connections over QUIC (spec/sync.md §10).
+quic = ["osis-transport/quic"]
 
 [dependencies]
 osis-node.workspace = true
@@ -23,3 +25,9 @@ osis-commit.workspace = true
 osis-label.workspace = true
 osis-store.workspace = true
 osis-crypto = { workspace = true, features = ["os-rng"] }
+osis-transport = { workspace = true, features = ["link"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+osis-server.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

@@ -223,11 +223,22 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, id, &parts);
     }
-    // a late `/secrets` delta is a rotation applied now (spec/crypto.md §4 established)
-    let pend = super::keys::before_join(tx, &h, &parts, &meta.valid)?;
+    // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
+    // (held parts). The keysets "before" are the current `/keys` state, which already holds this
+    // commit's `/keys` when that part joined earlier: an approximation like `revalidated`'s (a
+    // keyset the commit replaced is no longer known; its removed keys come from the index of
+    // held keyed entries, and a write whose removed keys are unknown waits as usual).
+    let mut with_keys = parts.clone();
+    if h.kind == osis_commit::Kind::Membership && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/secrets")) {
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if a.ak.as_str() == "/keys" && !parts.iter().any(|(x, _, _)| *x == ai) {
+                with_keys.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
+            }
+        }
+    }
+    let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
-    for (ai, _, d) in &parts {
-        let (ai, d) = (*ai, d.clone());
+    for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
@@ -258,7 +269,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
-    super::keys::after_join(tx, &h, &parts, &meta.valid, pend)?;
+    super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
     let mut flipped = Vec::new();
     if held_changed {
         flipped = validity::rejudge_all(tx, true)?;

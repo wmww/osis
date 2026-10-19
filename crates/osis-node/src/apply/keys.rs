@@ -127,20 +127,13 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
         }
         let Decoded::Delta(d) = d else { continue };
         note_box_keys(tx.core, &a.tid, &d.fragment);
-        let mut keys = parts.iter().find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
-            (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "/keys" => Some(keys_write(&k.fragment)),
-            _ => None,
-        });
-        // a late `/secrets` delta: the commit's `/keys` delta joined earlier
-        if keys.is_none()
-            && let Some(ki) = h.aspects.iter().position(|b| b.tid == a.tid && b.ak.as_str() == "/keys")
-        {
-            keys = super::held_parts(tx, &h.id(), ki)?.into_iter().find_map(|d| match d {
-                Decoded::Delta(k) => Some(keys_write(&k.fragment)),
+        let keys = parts
+            .iter()
+            .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
+                (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "/keys" => Some(keys_write(&k.fragment)),
                 _ => None,
-            });
-        }
-        let keys = keys.unwrap_or_default();
+            })
+            .unwrap_or_default();
         let keys_ak = osis_core::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
         let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
         out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys, before });

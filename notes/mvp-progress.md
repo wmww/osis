@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA rerun running.
+Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 
 ## Plans
 | plan | state | notes |
@@ -43,7 +43,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
-| sim | phase B merged | six sync issues filed (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
+| sim | phase C running (opus, worktree) | phase B merged; six sync issues filed (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
@@ -53,9 +53,9 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
 | cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
-| api (second half) | review fixes | reviewer: no blockers; single-use link flag (FC-3), future timeouts, pairing reply size; agent fixing |
+| api (second half) | merged, reviewed | FC-3 (link flags) frozen; issues/api-deferred.md; plan step 5 (iterate with apps) with apps-e2e |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
-| apps-e2e | not started | after api second half |
+| apps-e2e | running (opus, worktree) | also finishes plans/cli.md steps 4–5 |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
@@ -67,6 +67,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 
 ## Spec edits
 - sync bug-fix round: spec/sync.md §6 a must-hold body is held by any blob of its commit holding its deltas that no snapshot under the label covers (a right holder that dropped covered deltas uploads a smaller projection; without this a co-writer that may not drop them re-uploads the whole body forever).
+- api second half (coordinator decision): spec/wire.md §10 `Link` takes an optional eighth item `flags` (bit 0 single use, present only when nonzero, other bits reserved); spec/permissions.md §9 names it; vector link/link.vec refrozen as FC-3.
 - Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).
 - node-core review: spec/permissions.md §7 an import may be split into several import commits, one per origin commit, written in one local transaction (decided by the coordinator).
 - transport review: the §10 quic paragraph adds no 0-RTT, mandatory client auth, RFC 8410 Ed25519 SPKI and `ed25519` scheme only, SNI ignored, URL form (port required, IPv6 in brackets), a server dialing a server uses its address key, the dialer closes.

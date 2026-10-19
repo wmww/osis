@@ -165,6 +165,7 @@ impl SyncEngine {
             budget: None,
             last_sync: 0,
             path: Vec::new(),
+            walk: None,
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
@@ -222,7 +223,8 @@ impl SyncEngine {
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
         let known = self.state.heads.get(&(server, l)).is_some_and(|h| h.id() == head.id());
         let tried_step = tried.as_ref().and_then(Try::step).is_some_and(|s| s.id() == head.id());
-        if recorded || known || tried_step {
+        let walked = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.walk.is_some());
+        if !walked && (recorded || known || tried_step) {
             return self.accept_head(conn, l, head, out);
         }
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
@@ -254,6 +256,7 @@ impl SyncEngine {
         let path = std::mem::take(&mut lc.path);
         let head = lc.head.take();
         let g = lc.group;
+        lc.walk = None;
         match (osis_label::verify_path(&l, &path), head) {
             (Ok(()), Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;
@@ -301,6 +304,15 @@ impl SyncEngine {
         let tried = self.current_try(conn, &l);
         let parent = tried.as_ref().and_then(Try::step).cloned();
         let Some(parent) = parent else {
+            // a hinted label (no recorded steps, so no parent to verify under): walk on, and
+            // verify the server's whole path once a key opens it (`opened`)
+            if let Some(Try::Sync { step: None, index, .. }) = &tried
+                && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+            {
+                lc.index = Some(*index);
+                lc.walk = Some(step.clone());
+                return self.walk_on(conn, l, step, out);
+            }
             self.diag("step reply to an open without a known step".into());
             return self.drop_try(conn, l, out);
         };
@@ -309,8 +321,15 @@ impl SyncEngine {
             return self.drop_try(conn, l, out);
         }
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let g = lc.group;
         self.record_steps(&g, &l, &[parent, step.clone()], None)?;
+        self.walk_on(conn, l, step, out)
+    }
+
+    /// Continues a walk at `step` (verified): its sync key if held, else claims on it.
+    fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
+        let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
+        let (g, index) = (lc.group, lc.index.unwrap_or(0));
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)

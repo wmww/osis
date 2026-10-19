@@ -164,7 +164,7 @@ fn watch_thing_all_aspects() {
 #[test]
 fn derived_change_on_expiry() {
     let c = clock();
-    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let k = ak("/t/x");
     let t = thing(&db);
     db.write_with(|w| w.at(t, k.clone()).expires_in(Duration::from_secs(5)).set(&Value::Int(1))).unwrap();
@@ -293,7 +293,7 @@ fn errors_not_coalesced() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.materialize_limit = 1000;
-    let db = Osis::create(cf).unwrap();
+    let db = Osis::create(cf).unwrap().0;
     let k = ak("/t/big");
     let t = thing(&db);
     let (tx, rx) = channel();
