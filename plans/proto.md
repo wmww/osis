@@ -14,8 +14,8 @@ Spec: spec/sync.md §5 (operations), §6 (protocol, cursor sync, reconciliation,
 - Bundle import adapter: a bundle reader (osis-label) presented as a peer's log events into the client engine.
 
 ## Steps
-- [ ] Frame codec, negotiation, handshake, offset estimator; fuzz target for the frame/message decoders.
-- [ ] Message types with layouts (provisional module until protocol-spec is merged); vectors.
+- [x] Frame codec, negotiation, handshake, offset estimator; fuzz target for the frame/message decoders.
+- [x] Message types with layouts (spec/wire.md §11.2); vectors.
 - [ ] RBSR with proptests; cursor sync shapes.
 - [ ] Client and server engines with an in-crate loopback test (engine ↔ engine, in-memory `LabelStore`), scripted fault cases (lost cursor → reconciliation; oversized gained list; stale sync key → one signed step).
 - [ ] Bundle adapter.

@@ -55,6 +55,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 - crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
+- proto: spec/wire.md §11.2 Opened's `entry_box` travels as the canonical bytes of the box value in a byte string, like steps and claim sets (the layout did not say).
 
 ## Owner-calls pending
 - issues/reseal-triggers.md (residual wrongful re-seal across a fork; members no automatic trigger reaches; recommended: accept for MVP).

@@ -43,8 +43,12 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     for src in [osis_schema::CORE_SRC, osis_schema::META_SRC] {
         schema.push([b"\x01".to_vec(), src.as_bytes().to_vec()].concat());
     }
+    // proto_frame: message bodies, Hello, and framed bodies.
+    let mut proto = field_bytes("proto", "hex");
+    proto.extend(field_bytes("proto", "frame"));
     vec![
         ("cbor_decode", cbor),
+        ("proto_frame", proto),
         ("schema_dsl", schema),
         ("creation_record", records),
         ("tid_parse", tids),

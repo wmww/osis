@@ -6,9 +6,14 @@
 
 mod dec;
 mod error;
+#[doc(hidden)]
+pub mod examples;
 pub mod frame;
 pub mod hello;
+pub mod msg;
+pub mod rbsr;
 
 pub use error::Error;
 pub use frame::{FrameDecoder, encode_frame};
 pub use hello::{Hello, OffsetSample, PROTOCOL_VERSION, estimate_offset, negotiate};
+pub use msg::{Code, Cursor, DeleteItem, Entry, Event, Fetched, Message, Mode, Proof, Range, Rejected, SignalAuth};

@@ -888,7 +888,9 @@ name = "osis-proto"
 version = "0.1.0"
 dependencies = [
  "osis-core",
+ "osis-crypto",
  "osis-label",
+ "proptest",
 ]
 
 [[package]]
@@ -943,6 +945,7 @@ version = "0.1.0"
 dependencies = [
  "osis-core",
  "osis-crypto",
+ "osis-proto",
  "osis-schema",
 ]
 

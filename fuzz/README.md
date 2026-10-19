@@ -34,7 +34,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `step` | step, claim set | osis-label | planned |
 | `inbox`, `signal` | inbox payload, signal envelope | osis-label | planned |
 | `link_card` | link and card, text forms | osis-label | planned |
-| `proto_frame` | frame codec, Hello, each message | osis-proto | planned |
+| `proto_frame` | frame codec, Hello, each message | osis-proto | live |
 | `bundle` | bundle reader | osis-label | planned |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |
 
