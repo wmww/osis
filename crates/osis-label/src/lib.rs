@@ -6,12 +6,20 @@
 //! Layer 4 (notes/architecture.md). Plans: plans/label.md, plans/large-values.md.
 #![forbid(unsafe_code)]
 
+pub mod addr;
+pub mod auth;
 pub mod blob;
 mod error;
+pub mod inbox;
+pub mod signal;
 pub mod step;
 pub mod tree;
 
+pub use addr::{Address, address_from_text, address_from_value, address_to_text};
+pub use auth::{DeleteItem, OpenOutcome, Proof, PublishAuth, PublishKey, entry_digest, evaluate_open, key_for_level, sign_deposit, sign_stamp, verify_deposit, verify_stamp};
 pub use blob::{Level, Prefix, blob_id, check_size, frame, open, server_prefix, unwrap_any};
 pub use error::Error;
+pub use inbox::{InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
+pub use signal::{MAX_SIGNAL, SignalBody, open_signal, seal_signal};
 pub use step::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};
 pub use tree::{BlobFetch, BlobReader, BlobSink, BlobWriter, Framing, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, read_tree, write_tree};

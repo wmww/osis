@@ -70,3 +70,17 @@ path = "fuzz_targets/step.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "inbox"
+path = "fuzz_targets/inbox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signal"
+path = "fuzz_targets/signal.rs"
+test = false
+doc = false
+bench = false

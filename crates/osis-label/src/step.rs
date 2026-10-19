@@ -426,7 +426,7 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, key: EntryKey) -> Result<(Opti
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use osis_crypto::{KeyActorKeys, SeededRng};
     use proptest::prelude::*;
