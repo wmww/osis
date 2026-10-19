@@ -34,3 +34,26 @@ pub fn gear() -> VecFile {
     }
     VecFile { header: generated_header("chunker", SPEC), cases }
 }
+
+/// `chunker/tree.vec`: chunk trees (spec/wire.md §6) by content hash alone (no encryption):
+/// chunk count, per level the link counts of its nodes in order, root content hash. Dedup
+/// secret `07`.
+pub fn tree() -> VecFile {
+    use osis_label::{HashSink, write_tree};
+    let dedup = osis_crypto::Secret32::from_bytes([0x07; 32]);
+    let inputs: [(&str, &str, Vec<u8>); 2] =
+        [("xof 64 MiB", "xof(\"osis test tree\", 67108864)", xof("osis test tree", 64 << 20)), ("zeros 1 MiB", "zeros(1048576)", vec![0; 1 << 20])];
+    let mut cases = Vec::new();
+    for (name, input, data) in inputs {
+        let mut hs = HashSink::new(dedup.clone());
+        let root = write_tree(&mut hs, ChunkParams::FORMAT, &data).unwrap();
+        let mut r = Record::new().with("case", name).with("spec", SPEC).with("input", input).with("dedup", hex(dedup.expose())).with("chunks", hs.chunks.to_string());
+        let top = hs.nodes.iter().map(|n| n.0).max().unwrap();
+        for level in 1..=top {
+            let sizes: Vec<String> = hs.nodes.iter().filter(|n| n.0 == level).map(|n| n.1.to_string()).collect();
+            r = r.with(&format!("level-{level}"), sizes.join(","));
+        }
+        cases.push(r.with("root-hash", hex(&root.hash)));
+    }
+    VecFile { header: generated_header("chunker", SPEC), cases }
+}

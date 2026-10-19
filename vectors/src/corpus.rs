@@ -46,13 +46,29 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     // proto_frame: message bodies, Hello, and framed bodies.
     let mut proto = field_bytes("proto", "hex");
     proto.extend(field_bytes("proto", "frame"));
+    let mut prefixes = field_bytes("blob", "prefix");
+    prefixes.extend(field_bytes("blob", "blob"));
+    prefixes.extend(field_bytes("blob", "padded"));
+    let mut steps = field_bytes("step", "step");
+    steps.extend(field_bytes("step", "claim-set"));
+    let mut signals = field_bytes("signal", "body");
+    signals.extend(field_bytes("signal", "publish-auth"));
+    let mut links = field_bytes("link", "bytes");
+    links.extend(field_text("link", "text").into_iter().map(|t| [vec![0], t].concat()));
     vec![
+        ("blob_prefix", prefixes),
+        ("step", steps),
+        ("inbox", field_bytes("inbox", "payload")),
+        ("signal", signals),
+        ("link_card", links),
+        ("bundle", field_bytes("bundle", "bundle")),
         ("cbor_decode", cbor),
         ("proto_frame", proto),
         ("schema_dsl", schema),
         ("creation_record", records),
         ("tid_parse", tids),
         ("chunker", vec![vec![0], vec![1; 300], chunk]),
+        ("commit_header", [field_bytes("commit", "header"), field_bytes("commit", "blob")].concat()),
     ]
 }
 

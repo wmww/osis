@@ -13,7 +13,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`) |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot` (`file-backend`), `RootStorage`, `Store`, `Transaction` |
-| 3 | `osis-commit` | commit | commit header, kinds, retention, signatures |
+| 3 | `osis-commit` | commit | commit header and blob, kinds, retention, tokens, signatures, builder, verification, projection, chunk trees of header lists (notes/crdt.md) |
 | 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, chunk trees |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
@@ -28,7 +28,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
 
-**Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, commit); proto (core, crypto, label); server (core, crypto, label, proto, store, transport); node (everything below); osis (node); cli (osis, schema, server); sim (osis, node, server, store). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. Models are dev-dependencies of the crates they check only, and use no workspace lints.
+**Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, crdt, schema, commit: `PageSink`/`PageSource` impls, `/label` and `address` codecs); proto (core, crypto, label); server (core, crypto, label, proto, store, transport); node (everything below); osis (node); cli (osis, schema, server); sim (osis, node, server, store). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. Models are dev-dependencies of the crates they check only, and use no workspace lints.
 
 ## 2. Fixed abstractions
 Each is a trait (or small trait family) in the named crate with an in-memory or no-op implementation in the same crate for tests. Layers above never reach around them.
@@ -39,7 +39,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 - **Node sync layer is sans-I/O** (plans/node-sync.md): everything in `osis-node` reacting to messages, timers or engine events is `SyncEngine::handle(Event) -> Vec<Action>` over proto sessions, labeling and flows, with exactly two drivers: the tokio driver in `osis-node` and the simulator's step driver (seeded scheduler, virtual clocks, engine-to-engine delivery; never tokio, never the async transport). `InProcess` tests the drivers and the stream layer. Determinism rests on this split.
 - **`Clock`** (core): `now_wall_ms()`; node builds the HLC and the corrected clock on it. **Rng**: `rand_core::CryptoRngCore` passed in, never a global.
 - **`View`** (crdt defines, schema implements): projection of read values onto what the writer's schema can type, for the structural diff (spec/crdt.md §9).
-- **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, label implements with node): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link.
+- **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, label implements with node): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link. osis-commit's `BlobSink` / `BlobSource` (prefix inputs in, plaintext out; content hashes checked by commit) carry chunk trees of header lists.
 - **Engine events** (node): typed events (commit applied with its changed `(tid, ak)` set, origin, author, `ts`, receipt time; roster change; signal; sync status; diagnostic) on a channel after durability and outside locks; the `osis` API builds watches on them and never reaches into engine internals. The data API is synchronous (notes/api.md): blocking reads and writes, async only where another node is waited on.
 - **Held-set queries for perm** (node implements perm's traits `HeldSet` and `MoveIndex`): "edge writes held for thing N", "roster snapshots held", "/created of N", valid `/was` and `/moved` reads; perm holds no state (notes/permissions.md, Implementation).
 

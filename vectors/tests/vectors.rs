@@ -34,6 +34,15 @@ vector_files! {
     schema_core => "schema/core.vec",
     proto_messages => "proto/messages.vec",
     proto_reconcile => "proto/reconcile.vec",
+    commit_headers => "commit/headers.vec",
+    blob_prefix => "blob/prefix.vec",
+    blob_blobs => "blob/blobs.vec",
+    chunker_tree => "chunker/tree.vec",
+    step_steps => "step/steps.vec",
+    inbox_inbox => "inbox/inbox.vec",
+    signal_signal => "signal/signal.vec",
+    link_link => "link/link.vec",
+    bundle_bundle => "bundle/bundle.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

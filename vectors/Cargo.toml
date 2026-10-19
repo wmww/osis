@@ -15,6 +15,9 @@ osis-core.workspace = true
 osis-crypto.workspace = true
 osis-schema.workspace = true
 osis-proto.workspace = true
+osis-crdt.workspace = true
+osis-commit.workspace = true
+osis-label.workspace = true
 
 [[bin]]
 name = "gen-vectors"

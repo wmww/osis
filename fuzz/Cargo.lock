@@ -723,8 +723,10 @@ name = "osis-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "osis-commit",
  "osis-core",
- "osis-proto",
+ "osis-crypto",
+ "osis-label",
  "osis-schema",
 ]
 
@@ -734,16 +736,9 @@ version = "0.1.0"
 dependencies = [
  "osis-commit",
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
-]
-
-[[package]]
-name = "osis-proto"
-version = "0.1.0"
-dependencies = [
- "osis-core",
- "osis-crypto",
- "osis-label",
+ "osis-schema",
 ]
 
 [[package]]

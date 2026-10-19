@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 osis-core.workspace = true
 osis-crypto.workspace = true
+osis-crdt.workspace = true
+osis-commit.workspace = true
 
 [[bench]]
 name = "core"

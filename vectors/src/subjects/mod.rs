@@ -2,14 +2,21 @@
 //! implementation must reproduce every case) or a generator (the implementation writes the file;
 //! the committed bytes must equal a fresh generation), or both.
 
+pub mod blob;
 pub mod boxes;
+pub mod bundle;
 pub mod cbor;
 pub mod chunker;
+pub mod commit;
+pub mod inbox;
 pub mod kdf;
 pub mod keys;
+pub mod link;
 pub mod padme;
 pub mod proto;
 pub mod sign;
+pub mod signal;
+pub mod step;
 pub mod schema;
 pub mod tid;
 pub mod token;
@@ -43,6 +50,15 @@ pub fn get(path: &str) -> Option<Subject> {
         "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         "proto/messages.vec" => Subject { generate: Some(proto::messages), check: None },
         "proto/reconcile.vec" => Subject { generate: Some(proto::reconcile), check: None },
+        "commit/headers.vec" => Subject { generate: Some(commit::headers), check: None },
+        "blob/prefix.vec" => Subject { generate: Some(blob::prefixes), check: None },
+        "blob/blobs.vec" => Subject { generate: Some(blob::blobs), check: None },
+        "chunker/tree.vec" => Subject { generate: Some(chunker::tree), check: None },
+        "step/steps.vec" => Subject { generate: Some(step::steps), check: None },
+        "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
+        "signal/signal.vec" => Subject { generate: Some(signal::signal), check: None },
+        "link/link.vec" => Subject { generate: Some(link::links), check: None },
+        "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },
         _ => return None,
     })
 }

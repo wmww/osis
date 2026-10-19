@@ -62,7 +62,7 @@ Header fields by position:
 9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`.
 10. `undoes`: `Opt(commit_id)`.
 11. `salt`: 16 random bytes (spec/crypto.md §7).
-12. `tokens`: `[Token*]` sorted by canonical bytes, distinct: one per token secret of the commit's deltas, `token_hash` 16 bytes.
+12. `tokens`: `[Token*]` sorted by canonical bytes, distinct: one per token secret of the commit's deltas, `token_hash` 16 bytes; a token no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
 14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
 
@@ -212,4 +212,4 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
-- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
