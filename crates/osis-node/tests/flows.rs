@@ -16,6 +16,25 @@ fn servers() -> Vec<Address> {
     vec![Address { url: "quic://s1:1".into(), key: [7; 32] }]
 }
 
+/// Every peer's new commits to every other peer, twice (cheaper than `sync_all`'s n rounds);
+/// commits that arrive before their chain wait and apply on the second pass.
+fn spread(lp: &mut LocalPeer) {
+    let n = lp.peers.len();
+    let mut sent: Vec<BTreeSet<CommitId>> = vec![BTreeSet::new(); n];
+    for _ in 0..2 {
+        for a in 0..n {
+            let ids: Vec<CommitId> = lp.peers[a].engine.commit_ids().into_iter().filter(|c| !sent[a].contains(c)).collect();
+            let pks: Vec<_> = ids.iter().filter_map(|id| lp.peers[a].engine.package(id).unwrap()).collect();
+            for b in (0..n).filter(|b| *b != a) {
+                for pk in &pks {
+                    lp.deliver(b, pk).unwrap();
+                }
+            }
+            sent[a].extend(ids);
+        }
+    }
+}
+
 /// Delivers commits `ids` of peer `from` to peer `to`.
 fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
     for id in ids {
@@ -126,7 +145,7 @@ fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
     for i in 0..n {
         ps.push(lp.peers[i].engine.create_person(&servers()).unwrap().0.person);
     }
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     (lp, ps)
 }
 
@@ -176,7 +195,7 @@ fn removal_rotates_spec_perm_3() {
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     let e0 = newest_read(&lp, 0, d).unwrap();
     assert_eq!(newest_read(&lp, 1, d), Some(e0));
     let done = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
@@ -189,7 +208,7 @@ fn removal_rotates_spec_perm_3() {
     assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::First { .. })));
     let e1 = newest_read(&lp, 0, d).unwrap();
     assert_ne!(e0, e1);
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     assert_eq!(newest_read(&lp, 2, d), Some(e1), "carol is boxed at the new epoch");
     assert_eq!(lp.peers[1].engine.epochs(&d).unwrap().read.secret(&e1), None, "bob is not");
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
@@ -206,12 +225,12 @@ fn invite_power_spec_perm_2() {
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None }).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     // bob invites carol with read, not with write
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Write)).is_err());
     let done = lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
     assert!(!done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { .. })), "a writer stamps its own invite grant");
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     for i in 0..3 {
         assert_eq!(lp.peers[i].engine.roster(&d).get(&pc).map(|e| e.role), Some(Role::Read), "peer {i}");
     }
@@ -222,7 +241,7 @@ fn invite_power_spec_perm_2() {
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).is_err());
     // carol leaves by herself (a reader: no rotation of d is hers to make)
     lp.peers[2].engine.demote(&d, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     for i in 0..3 {
         assert!(!lp.peers[i].engine.roster(&d).contains_key(&pc), "peer {i}");
     }
@@ -242,7 +261,7 @@ fn demotion_frontier_spec_perm_5_1() {
     let (pa, pb) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     add_tag(&mut lp, 1, d, "mon");
     sync(&mut lp, 1, 0);
     lp.advance(DAY);
@@ -255,7 +274,7 @@ fn demotion_frontier_spec_perm_5_1() {
     lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Unsynced { proceed: true } }).unwrap();
     lp.advance(DAY);
     add_tag(&mut lp, 1, d, "y");
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     for i in [0, 1] {
         assert_eq!(tags(&mut lp, i, d), BTreeSet::from(["mon".to_string()]), "node {i}");
     }
@@ -270,14 +289,249 @@ fn mutual_removal_spec_perm_5_1() {
     let t = thing_of(&mut lp, 2, pc);
     lp.peers[2].engine.grant(&t, &pa, &edge_of(Role::Admin)).unwrap();
     lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     lp.advance(1000);
     lp.peers[0].engine.demote(&t, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
     lp.advance(1000);
     lp.peers[1].engine.demote(&t, &Demotion { member: pa, new: None, presync: PreSync::Synced }).unwrap();
-    lp.sync_all().unwrap();
+    spread(&mut lp);
     for i in 0..3 {
         let r = lp.peers[i].engine.roster(&t);
         assert!(r.contains_key(&pa) && !r.contains_key(&pb), "peer {i}: {r:?}");
     }
+}
+
+/// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
+fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
+    let mut lp = net(3, seed);
+    let (p, _) = lp.peers[1].engine.create_person(&servers()).unwrap();
+    let d1 = lp.peers[0].engine.tid();
+    let ids = lp.peers[0].engine.commit_ids();
+    send(&mut lp, 0, 1, &ids);
+    let paired = lp.peers[1].engine.pair(&p.person, &d1).unwrap();
+    carry(&mut lp, 1, &paired);
+    let pa = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.role_on(&p.person), Some(Role::Admin));
+    (lp, p.person, pa, p.card)
+}
+
+// spec/permissions.md §3, spec/crypto.md §4 (recursive covers rule; the TLC two-hop scenario):
+// device d1 removed from person P, P a writer of team T, T a writer of doc U. Before P's other
+// device encrypts under U it rotates T, then U, top-down; d1 holds neither new secret.
+#[test]
+fn cascade_two_hops_spec_perm_3() {
+    let (mut lp, p, pa, _) = devices_and_alice(507);
+    let d1 = lp.peers[0].engine.tid();
+    let t = thing_of(&mut lp, 2, pa);
+    let u = thing_of(&mut lp, 2, pa);
+    lp.peers[2].engine.grant(&t, &p, &edge_of(Role::Write)).unwrap();
+    lp.peers[2].engine.grant(&u, &t, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let (t0, u0) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
+    assert_eq!(newest_read(&lp, 0, u), Some(u0), "d1 reads U through P and T");
+    // d2 removes d1 from P: P's rotation rides in the removal
+    lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: PreSync::Synced }).unwrap();
+    let deps = lp.peers[1].engine.departures(&u);
+    assert!(deps.iter().any(|d| d.member == d1 && d.via == vec![t, p]), "{deps:?}");
+    // nothing below rotated yet (lazy); before encrypting under U: T, then U
+    assert_eq!(newest_read(&lp, 1, t), Some(t0));
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&u).unwrap();
+    assert!(still.is_empty(), "{still:?}");
+    assert_eq!(done.commits.len(), 2, "T then U");
+    let ht = lp.peers[1].engine.header(&done.commits[0]).unwrap();
+    assert!(ht.aspects.iter().all(|a| a.tid == t));
+    let (t1, u1) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
+    assert!(t1 != t0 && u1 != u0);
+    assert!(lp.peers[1].engine.departures(&u).is_empty() || lp.peers[1].engine.ensure_rotated(&u).unwrap().0.commits.is_empty());
+    spread(&mut lp);
+    assert_eq!(newest_read(&lp, 2, u), Some(u1), "alice is boxed");
+    assert!(lp.peers[0].engine.epochs(&u).unwrap().read.secret(&u1).is_none(), "d1 is not");
+    assert!(lp.peers[0].engine.epochs(&t).unwrap().read.secret(&t1).is_none());
+}
+
+// spec/permissions.md §9 (recovery card), §5.1: a fresh device holding the card claims the
+// person (as the recovery key: grants itself admin) and removes the stolen device with the
+// person's rotation; the stolen device's later removal of the honest device is invalid.
+#[test]
+fn stolen_device_recovery_spec_perm_9() {
+    let (mut lp, p, _pa, card) = devices_and_alice(508);
+    let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let mut fresh = net(1, 509);
+    lp.peers.push(fresh.peers.remove(0));
+    // the fresh device downloaded the home label (here: every commit of the honest device)
+    sync(&mut lp, 1, 3);
+    lp.advance(1000);
+    let done = lp.peers[3].engine.recover(&card, &[d1], PreSync::Synced).unwrap();
+    assert_eq!(done.commits.len(), 2, "grant, then the removal");
+    let n = lp.peers[3].engine.tid();
+    assert_eq!(lp.peers[3].engine.role_on(&p), Some(Role::Admin));
+    let pe = newest_read(&lp, 3, p).unwrap();
+    // the thief removes the honest device afterwards: too late
+    lp.advance(1000);
+    lp.peers[0].engine.demote(&p, &Demotion { member: d2, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    for i in [1, 2, 3] {
+        let r = lp.peers[i].engine.roster(&p);
+        assert!(r.contains_key(&d2) && r.contains_key(&n) && !r.contains_key(&d1), "peer {i}: {r:?}");
+    }
+    assert_eq!(newest_read(&lp, 1, p), Some(pe), "the honest device holds the new epoch");
+    assert!(lp.peers[0].engine.epochs(&p).unwrap().read.secret(&pe).is_none(), "the thief does not");
+    assert!(lp.peers[3].engine.departures(&p).iter().any(|d| d.member == d1));
+}
+
+fn link_spec(target: Tid, role: Role, until: Option<osis_core::WallMs>) -> osis_node::flows::LinkSpec {
+    osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new() }
+}
+
+// spec/permissions.md §9: a stranger redeems a read link: signing as L it invite-grants its
+// own actor to K (deposited: read), single use removes L's edge in the same commit, so a
+// second redeemer finds no link; the redeemer reads the target through K.
+#[test]
+fn link_redeem_single_use_spec_perm_9() {
+    let (mut lp, ps) = people(3, 510);
+    let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, keep, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, None)).unwrap();
+    let text = link.to_text().unwrap();
+    assert_eq!(osis_label::ShareLink::from_text(&text).unwrap(), link);
+    assert_eq!(lp.peers[0].engine.roster(&link.k).get(&lp.peers[0].engine.tid()), None);
+    assert!(lp.peers[0].engine.get(&keep, &ak(osis_node::flows::LINK_SEED)).unwrap().is_some());
+    // the stranger downloads K's label (here: everything the sharer holds)
+    sync(&mut lp, 0, 1);
+    let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    assert_eq!(done.commits.len(), 1);
+    assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { under, .. } if *under == link.k)));
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    sync(&mut lp, 1, 0);
+    for i in [0, 1] {
+        let r = lp.peers[i].engine.roster(&link.k);
+        assert_eq!(r.get(&ps1).map(|e| e.role), Some(Role::Read), "peer {i}");
+        assert!(!r.contains_key(&l), "peer {i}: single use");
+    }
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Read));
+    assert_eq!(newest_read(&lp, 1, d), newest_read(&lp, 0, d));
+    // a second redeemer is too late
+    spread(&mut lp);
+    assert!(lp.peers[2].engine.redeem(&link, &ps2, true).is_err());
+    assert_eq!(lp.peers[2].engine.role_on(&d), None);
+}
+
+// spec/permissions.md §9: bearer use reads without writing; `until` expires the link.
+#[test]
+fn link_bearer_and_until_spec_perm_9() {
+    let (mut lp, ps) = people(2, 511);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Read, Some(until))).unwrap();
+    sync(&mut lp, 0, 1);
+    let before = lp.peers[1].engine.commit_ids().len();
+    lp.peers[1].engine.bear(&link).unwrap();
+    assert_eq!(newest_read(&lp, 1, d), newest_read(&lp, 0, d), "the bearer reads the target");
+    assert_eq!(lp.peers[1].engine.commit_ids().len(), before, "and writes nothing");
+    lp.advance(2 * 3_600_000);
+    assert!(lp.peers[1].engine.redeem(&link, &ps1, false).is_err(), "expired");
+}
+
+// spec/permissions.md §3 (re-seal): a grant raced by a rotation leaves the grantee without a
+// box at the new epoch; at the end of a complete pass a node that may rotate re-seals it by
+// inbox; the removed member is not re-sealed.
+#[test]
+fn reseal_raced_grant_spec_perm_3() {
+    struct Pass;
+    impl osis_node::flows::SyncState for Pass {
+        fn complete_pass(&self, _: &Tid) -> bool {
+            true
+        }
+    }
+    let (mut lp, ps) = people(4, 512);
+    let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pd, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    // concurrently: alice grants carol, bob removes dave
+    lp.advance(1000);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { member: pd, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    let e1 = newest_read(&lp, 1, t).unwrap();
+    assert_eq!(newest_read(&lp, 0, t), Some(e1));
+    assert!(lp.peers[2].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "carol stranded");
+    // no pass, no decision
+    struct NoPass;
+    impl osis_node::flows::SyncState for NoPass {
+        fn complete_pass(&self, _: &Tid) -> bool {
+            false
+        }
+    }
+    assert!(lp.peers[0].engine.reseal_due(&t, &NoPass).unwrap().commits.is_empty());
+    let done = lp.peers[0].engine.reseal_due(&t, &Pass).unwrap();
+    assert_eq!(done.commits.len(), 1, "carol only");
+    let inbox: Vec<&Vec<u8>> = done.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    assert_eq!(inbox.len(), 1);
+    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    assert_eq!(newest_read(&lp, 2, t), Some(e1));
+    spread(&mut lp);
+    assert!(lp.peers[3].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "dave stays out");
+    assert!(lp.peers[1].engine.reseal_due(&t, &Pass).unwrap().commits.is_empty(), "nothing left");
+}
+
+// notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a device whose
+// grant raced a rotation of its person is re-sealed over the pairing channel.
+#[test]
+fn stranded_device_repaired_spec_perm_3() {
+    let mut lp = net(4, 513);
+    let (p, _) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let p = p.person;
+    for i in [1, 2] {
+        let n = lp.peers[i].engine.tid();
+        let ids = lp.peers[i].engine.commit_ids();
+        send(&mut lp, i, 0, &ids);
+        let done = lp.peers[0].engine.pair(&p, &n).unwrap();
+        carry(&mut lp, 0, &done);
+    }
+    spread(&mut lp);
+    // d0 pairs n while d1, unaware, removes d2 (rotating P)
+    lp.advance(1000);
+    let n = lp.peers[3].engine.tid();
+    let ids = lp.peers[3].engine.commit_ids();
+    send(&mut lp, 3, 0, &ids);
+    let first = lp.peers[0].engine.pair(&p, &n).unwrap();
+    carry(&mut lp, 0, &first);
+    let d2 = lp.peers[2].engine.tid();
+    lp.peers[1].engine.demote(&p, &Demotion { member: d2, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    let e1 = newest_read(&lp, 1, p).unwrap();
+    assert!(lp.peers[3].engine.epochs(&p).unwrap().read.secret(&e1).is_none(), "n is stranded");
+    assert_eq!(lp.peers[3].engine.role_on(&p), Some(Role::Admin));
+    // re-pairing an existing member re-seals it
+    let again = lp.peers[0].engine.pair(&p, &n).unwrap();
+    assert_eq!(again.commits.len(), 1);
+    carry(&mut lp, 0, &again);
+    assert_eq!(newest_read(&lp, 3, p), Some(e1));
+    assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
+}
+
+// spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
+// newest epochs; the removed device has no claim key in it, the remaining one has.
+#[test]
+fn registration_step_after_rotation_spec_sync_5() {
+    let (mut lp, p, _pa, card) = devices_and_alice(514);
+    let d1 = lp.peers[0].engine.tid();
+    let labels = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    let genesis = osis_label::StepId(*labels.get(&card.home_label).unwrap().steps.keys().next().unwrap());
+    assert!(lp.peers[1].engine.issue_step(&p, &card.home_label, &genesis, false).unwrap().is_none(), "nothing newer");
+    lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: PreSync::Synced }).unwrap();
+    let (step, set) = lp.peers[1].engine.issue_step(&p, &card.home_label, &genesis, false).unwrap().unwrap();
+    let parent = osis_label::parse_record(&labels.get(&card.home_label).unwrap().steps[&genesis.0]).unwrap().0;
+    step.verify_child(&parent).unwrap();
+    let claims = |i: usize| step.claim_key(lp.peers[i].engine.identity().keys().kem.x25519()).unwrap().verifying_key().to_bytes();
+    assert!(set.contains(&claims(1)));
+    assert!(!set.contains(&claims(0)));
+    let rk = osis_crypto::KeyActorKeys::from_seed(&card.seed);
+    assert!(set.entry_box(&card.home_label, &rk.signing.verifying_key()).is_some(), "the recovery key keeps its entry");
+    let now = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
+    assert_eq!(now.get(&card.home_label).unwrap().steps.len(), 2);
 }
