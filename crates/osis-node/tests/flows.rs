@@ -647,6 +647,84 @@ fn reseal_over_unheld_box_spec_perm_3() {
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_some(), "carol reads e2");
 }
 
+/// Alice (0) owns C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
+/// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
+/// `/secrets` parts (they travel under K1's label only), as with `spread_hiding`. Returns
+/// (lp, c, k1, o0).
+fn two_links(seed: u64, late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
+    let (mut lp, ps) = people(3, seed);
+    let (pa, po, pl) = (ps[0], ps[1], ps[2]);
+    let c = thing_of(&mut lp, 0, pa);
+    let k1 = thing_of(&mut lp, 0, pa);
+    let k2 = thing_of(&mut lp, 0, pa);
+    for k in [k1, k2] {
+        lp.peers[0].engine.grant(&c, &k, &edge_of(Role::Write)).unwrap();
+    }
+    lp.peers[0].engine.grant(&k1, &po, &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&k2, &pl, &edge_of(Role::Write)).unwrap();
+    if late_reads_k1 {
+        lp.peers[0].engine.grant(&k1, &pl, &edge_of(Role::Read)).unwrap();
+        spread(&mut lp);
+    } else {
+        spread_hiding(&mut lp, 2, k1);
+    }
+    lp.advance(1000);
+    (lp, c, k1, po)
+}
+
+/// `spread`, but peer `to` gets every commit without its `/secrets` parts of `hidden`.
+fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
+    for _ in 0..2 {
+        for a in 0..lp.peers.len() {
+            let ids = lp.peers[a].engine.commit_ids();
+            let pks: Vec<_> = ids.iter().filter_map(|id| lp.peers[a].engine.package(id).unwrap()).collect();
+            for b in (0..lp.peers.len()).filter(|b| *b != a) {
+                for pk in &pks {
+                    if b != to {
+                        lp.deliver(b, pk).unwrap();
+                        continue;
+                    }
+                    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+                    let hide: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, x)| x.tid == hidden && x.ak.as_str() == "/secrets").map(|(i, _)| i).collect();
+                    blob.parts.retain(|p| !hide.contains(&p.ai));
+                    let _ = lp.peers[b].engine.ingest(&blob.encode(), pk.blobs.clone());
+                }
+            }
+        }
+    }
+}
+
+// spec/crypto.md §4 (covers rule; a node holding no secret of M judges by M's newest `/keys`
+// keyset), spec/permissions.md §3: after alice removes o0 from K1 and rotates K1 and C, a
+// writer of C that never read K1 sees C covered and rotates nothing.
+#[test]
+fn unheld_member_judged_by_keyset_spec_crypto_4() {
+    let (mut lp, c, k1, po) = two_links(517, false);
+    lp.peers[0].engine.demote(&k1, &Demotion { member: po, new: None, presync: PreSync::Synced }).unwrap();
+    let (rot, still) = lp.peers[0].engine.ensure_rotated(&c).unwrap();
+    assert!(still.is_empty() && !rot.commits.is_empty(), "alice rotates C");
+    spread_hiding(&mut lp, 2, k1);
+    assert!(lp.peers[2].engine.epochs(&k1).is_none_or(|e| e.read.held().next().is_none()), "late holds no K1 secret");
+    assert!(!lp.peers[2].engine.departures(&c).unwrap().is_empty(), "late knows the departure inside K1");
+    let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
+    assert!(rot.commits.is_empty() && still.is_empty(), "late rotates nothing: {still:?}");
+}
+
+// spec/permissions.md §3: o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may
+// not rotate K1, and a rotation of C would still box K1 at the uncovered epoch: it does not
+// rotate C (stranded on C until K1 rotates), however often it is asked.
+#[test]
+fn no_rotation_that_cannot_cover_spec_perm_3() {
+    let (mut lp, c, k1, po) = two_links(518, true);
+    lp.peers[1].engine.demote(&k1, &Demotion { member: po, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    for _ in 0..3 {
+        let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
+        assert!(rot.commits.is_empty(), "no useless rotation of C");
+        assert!(!still.is_empty(), "C stays uncovered for late");
+    }
+}
+
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]

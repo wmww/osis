@@ -112,7 +112,9 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Dep
     Ok(())
 }
 
-/// What the covers rule needs of every actor this node holds secrets of.
+/// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
+/// of its own whose secrets it does not hold is judged by its newest `/keys` keysets alone
+/// (spec/crypto.md §4): those epochs, established in this view only, with no boxes.
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.secrets.keys().copied().collect();
@@ -121,6 +123,17 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
         if let Some(e) = tx.core.secrets.get(&a) {
             h.map.insert(a, (s, e.clone()));
         }
+    }
+    let unheld: Vec<Tid> = tx.core.own_keys.iter().filter(|a| !h.map.contains_key(a)).copied().collect();
+    for a in unheld {
+        let Some(keys) = Core::keys_in(tx, &a)? else { continue };
+        let mut e = ActorEpochs::default();
+        for (r, ks) in [(Role::Read, &keys.read), (Role::Write, &keys.write), (Role::Admin, &keys.admin)] {
+            if let Some(ep) = ks.as_ref().and_then(|k| osis_keys::aspects::from_schema(&k.epoch).ok()) {
+                e.role_mut(r).set_established(ep, osis_keys::Provenance::Fixed);
+            }
+        }
+        h.map.insert(a, (Default::default(), e));
     }
     Ok(h)
 }
@@ -167,6 +180,45 @@ pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>
             introduced_by(tx.core, a, r, &e).is_some_and(|(au, ac, ts)| deps.iter().any(|d| d.from <= r && written_by(tx.core, &au, &ac, ts, &d.member)))
         };
         if !uncovered(&secrets, &epochs, r, &e, &deps, &held).is_empty() || by_departed() {
+            out.insert(r);
+        }
+    }
+    Ok(out)
+}
+
+/// The roles of `uncovered` that a fresh rotation of `a` would cover: one uncovered departure
+/// at least is a member's own (the rotation omits it), or lies inside a member M that is no
+/// longer current or whose newest epoch (the one its fresh box names) covers the rest. A role
+/// whose departures a rotation cannot help is not rotated: the node may not encrypt under it
+/// until the intermediate rotates (spec/permissions.md §3).
+fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    if uncovered_roles.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let deps = departures(tx, a)?;
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
+    let secrets = secrets_in(tx, a)?;
+    let held = held_actors(tx)?;
+    let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
+    let mut out = BTreeSet::new();
+    for &r in uncovered_roles {
+        let Some((e, _)) = epochs.role(r).newest_held() else {
+            out.insert(r);
+            continue;
+        };
+        let helps = deps.iter().filter(|d| !osis_keys::covers(&secrets, &epochs, r, &e, d, &held)).any(|d| {
+            let Some((m, rest)) = d.via.split_first() else { return true };
+            if !current.contains(m) {
+                return true;
+            }
+            let inner = Departure { via: rest.to_vec(), member: d.member, from: d.from };
+            match (osis_keys::HeldActors::epochs(&held, m), osis_keys::HeldActors::secrets(&held, m)) {
+                (Some(me), Some(ms)) => me.role(r).newest().is_some_and(|k| osis_keys::covers(ms, me, r, &k, &inner, &held)),
+                _ => false,
+            }
+        });
+        // an epoch introduced by the departed party is replaced by any rotation
+        if helps || uncovered(&secrets, &epochs, r, &e, &deps, &held).is_empty() {
             out.insert(r);
         }
     }
@@ -324,6 +376,7 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, visiting: &mut V
     let due = uncovered_roles(tx, &a)?;
     let may = may_rotate(tx.core, &who, &a);
     let mine: BTreeSet<Role> = due.intersection(&may).copied().collect();
+    let mine = rotation_helps(tx, &a, &mine)?;
     if !mine.is_empty() {
         done.extend(rotate_now(tx, who, a, &mine)?);
     }
