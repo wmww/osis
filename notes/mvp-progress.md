@@ -45,7 +45,7 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync | review | done; reviewer running; issues/node-sync-gaps.md, issues/pending-boxes.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
-| api (first half) | review fixes | reviewer: undo skips silently, watch source attribution, dispatcher robustness; agent fixing; issues/undo-chain-register.md (owner-call) |
+| api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
 | node-sync | running (opus, worktree) | |
 | membership-flows | review | done over LocalPeer; review fixes done; issues roster-snapshot-deltas, flows-gaps |
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |

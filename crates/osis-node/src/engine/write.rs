@@ -146,6 +146,13 @@ impl Mutation {
         self
     }
 
+    /// Makes this an undo of `target` (spec/commits.md §7) acting as the mutation's actor; the
+    /// mutation may carry no other ops (`Misuse` at commit).
+    pub fn undo(&mut self, target: CommitId) -> &mut Self {
+        self.undoes = Some(target);
+        self
+    }
+
     /// The frontier of an explicit demotion (membership flows).
     pub fn frontier(&mut self, v: Value) -> &mut Self {
         self.frontier = Some(v);
@@ -320,6 +327,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         Some(_) => return Err(Error::Misuse("signer not held")),
         None => tx.core.id.tid(),
     };
+    if m.undoes.is_some() && !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.frontier.is_none()) {
+        return Err(Error::Misuse("an undo mutation carries no other ops"));
+    }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     for rec in &m.creates {
         let t = rec.tid();
