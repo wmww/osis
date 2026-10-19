@@ -227,6 +227,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     // an explicit demotion carries the target's rotation of the roles the member left
     let mut rot = None;
+    let mut unreached = Vec::new();
     let held_role = old.filter(|o| o.alive_at(Some(ts))).map(|o| o.role);
     if !selfr
         && let Some(dep) = Departure::of_change(member, held_role, d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role))
@@ -239,7 +240,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             let members = rotation::recipients(tx, &target, Some((member, d.new.as_ref().map(|e| e.role))))?;
-            rot = Some(rotation::rotation_into(tx, &mut m, target, &roles, &held, &members)?);
+            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &members)?;
+            unreached = rotation::unreached(tx, &target, &r)?;
+            rot = Some(r);
         }
     }
     if let Some(s) = signer {
@@ -255,6 +258,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     done.add(c);
     if let Some(c) = c {
         done.deliveries.extend(deliver_parts(tx, member, c, &[target], Parts::Edge)?);
+        done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
         // every label the removed party could read: the target and what its roles open
         let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
         let plan = osis_keys::plan_inside(&graph, target, ROLES.into_iter().collect(), Departure::member(member, Role::Read));

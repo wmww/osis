@@ -230,9 +230,17 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     Ok(a)
 }
 
-/// The typed `/secrets` of a state value, if it reads as one.
+/// The typed `/secrets` of a state value, if it reads as one. A map field never written (a
+/// rotation that boxed nobody, a grant that carried no history box) reads as empty: the node
+/// otherwise lost every box and history box of the actor.
 pub(crate) fn secrets_value(v: &Value) -> Option<Secrets> {
-    osis_schema::core_types::SECRETS.decode(v).ok()
+    let mut v = v.clone();
+    if let Value::Map(m) = &mut v {
+        for f in [0, 1] {
+            m.entry(Value::Int(f)).or_insert_with(|| Value::Map(Default::default()));
+        }
+    }
+    osis_schema::core_types::SECRETS.decode(&v).ok()
 }
 
 pub(crate) fn keys_value(v: &Value) -> Option<Keys> {

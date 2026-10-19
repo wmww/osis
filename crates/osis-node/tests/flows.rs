@@ -592,6 +592,170 @@ fn stranded_device_repaired_spec_perm_3() {
     assert!(lp.peers[2].engine.epochs(&p).unwrap().read.secret(&e1).is_none());
 }
 
+/// Alice (0) grants carol (2) at e0 while bob (1) removes dave (rotation e1, without carol);
+/// carol gets the grant and bob's rotation. Alice then removes eve: e2 boxes carol, who holds no
+/// box at e1, the epoch e2's commit is wrapped under. Returns (lp, t, carol, e2's Done).
+fn raced_then_rotated(seed: u64) -> (LocalPeer, Tid, Tid, Done) {
+    let (mut lp, ps) = people(5, seed);
+    let (pa, pb, pc, pd, pe) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pd, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &pe, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    let g = lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+    carry(&mut lp, 0, &g);
+    let r1 = lp.peers[1].engine.demote(&t, &Demotion { member: pd, new: None, presync: PreSync::Synced }).unwrap();
+    send(&mut lp, 1, 0, &r1.commits);
+    send(&mut lp, 1, 2, &r1.commits);
+    let e1 = newest_read(&lp, 0, t).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e1).is_none(), "carol has no box at e1");
+    lp.advance(1000);
+    let r2 = lp.peers[0].engine.demote(&t, &Demotion { member: pe, new: None, presync: PreSync::Synced }).unwrap();
+    (lp, t, pc, r2)
+}
+
+// spec/permissions.md §3 (rotation), spec/sync.md §3: a rotation boxing a member that holds no
+// box at the current read epoch before it (a grant raced by an earlier rotation; the single-use
+// link race's winner) reaches that member by inbox: it could not open the rotation commit from
+// the label, which is wrapped under that epoch.
+#[test]
+fn rotation_reaches_unboxed_member_spec_perm_3() {
+    let (mut lp, t, pc, r2) = raced_then_rotated(515);
+    let inbox: Vec<&Vec<u8>> = r2.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    assert_eq!(inbox.len(), 1, "the rotation goes to carol's inbox");
+    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    let e2 = newest_read(&lp, 0, t).unwrap();
+    assert_eq!(newest_read(&lp, 2, t), Some(e2));
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.is_established(&e2), "carol holds e2's chain");
+    assert!(!r2.deliveries.iter().any(|x| matches!(x, Delivery::Inbox { to, .. } if *to == lp.peers[1].engine.tid())));
+}
+
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4: a re-seal of a member whose box at the
+// epoch sits in a commit it does not hold still reaches it (the box is re-written, not
+// overlaid on an entry the member never got).
+#[test]
+fn reseal_over_unheld_box_spec_perm_3() {
+    let (mut lp, t, pc, _) = raced_then_rotated(516);
+    let e2 = newest_read(&lp, 0, t).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_none());
+    let done = lp.peers[0].engine.reshare(&t, &pc).unwrap();
+    let inbox: Vec<&Vec<u8>> = done.deliveries.iter().filter_map(|x| if let Delivery::Inbox { to, blob, .. } = x { (*to == pc).then_some(blob) } else { None }).collect();
+    assert_eq!(inbox.len(), 1);
+    lp.peers[2].engine.accept_inbox(inbox[0]).unwrap();
+    assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_some(), "carol reads e2");
+}
+
+/// Alice (0) owns C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
+/// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
+/// `/secrets` parts (they travel under K1's label only), as with `spread_hiding`. Returns
+/// (lp, c, k1, o0).
+fn two_links(seed: u64, late_reads_k1: bool) -> (LocalPeer, Tid, Tid, Tid) {
+    let (mut lp, ps) = people(3, seed);
+    let (pa, po, pl) = (ps[0], ps[1], ps[2]);
+    let c = thing_of(&mut lp, 0, pa);
+    let k1 = thing_of(&mut lp, 0, pa);
+    let k2 = thing_of(&mut lp, 0, pa);
+    for k in [k1, k2] {
+        lp.peers[0].engine.grant(&c, &k, &edge_of(Role::Write)).unwrap();
+    }
+    lp.peers[0].engine.grant(&k1, &po, &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&k2, &pl, &edge_of(Role::Write)).unwrap();
+    if late_reads_k1 {
+        lp.peers[0].engine.grant(&k1, &pl, &edge_of(Role::Read)).unwrap();
+        spread(&mut lp);
+    } else {
+        spread_hiding(&mut lp, 2, k1);
+    }
+    lp.advance(1000);
+    (lp, c, k1, po)
+}
+
+/// `spread`, but peer `to` gets every commit without its `/secrets` parts of `hidden`.
+fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
+    for _ in 0..2 {
+        for a in 0..lp.peers.len() {
+            let ids = lp.peers[a].engine.commit_ids();
+            let pks: Vec<_> = ids.iter().filter_map(|id| lp.peers[a].engine.package(id).unwrap()).collect();
+            for b in (0..lp.peers.len()).filter(|b| *b != a) {
+                for pk in &pks {
+                    if b != to {
+                        lp.deliver(b, pk).unwrap();
+                        continue;
+                    }
+                    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+                    let hide: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, x)| x.tid == hidden && x.ak.as_str() == "/secrets").map(|(i, _)| i).collect();
+                    blob.parts.retain(|p| !hide.contains(&p.ai));
+                    let _ = lp.peers[b].engine.ingest(&blob.encode(), pk.blobs.clone());
+                }
+            }
+        }
+    }
+}
+
+// spec/crypto.md §4 (covers rule; a node holding no secret of M judges by M's newest `/keys`
+// keyset), spec/permissions.md §3: after alice removes o0 from K1 and rotates K1 and C, a
+// writer of C that never read K1 sees C covered and rotates nothing.
+#[test]
+fn unheld_member_judged_by_keyset_spec_crypto_4() {
+    let (mut lp, c, k1, po) = two_links(517, false);
+    lp.peers[0].engine.demote(&k1, &Demotion { member: po, new: None, presync: PreSync::Synced }).unwrap();
+    let (rot, still) = lp.peers[0].engine.ensure_rotated(&c).unwrap();
+    assert!(still.is_empty() && !rot.commits.is_empty(), "alice rotates C");
+    spread_hiding(&mut lp, 2, k1);
+    assert!(lp.peers[2].engine.epochs(&k1).is_none_or(|e| e.read.held().next().is_none()), "late holds no K1 secret");
+    assert!(!lp.peers[2].engine.departures(&c).unwrap().is_empty(), "late knows the departure inside K1");
+    let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
+    assert!(rot.commits.is_empty() && still.is_empty(), "late rotates nothing: {still:?}");
+}
+
+// spec/permissions.md §3: o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may
+// not rotate K1, and a rotation of C would still box K1 at the uncovered epoch: it does not
+// rotate C (stranded on C until K1 rotates), however often it is asked.
+#[test]
+fn no_rotation_that_cannot_cover_spec_perm_3() {
+    let (mut lp, c, k1, po) = two_links(518, true);
+    lp.peers[1].engine.demote(&k1, &Demotion { member: po, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    for _ in 0..3 {
+        let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
+        assert!(rot.commits.is_empty(), "no useless rotation of C");
+        assert!(!still.is_empty(), "C stays uncovered for late");
+    }
+}
+
+// spec/permissions.md §7, spec/crypto.md §3, §4: a doc moved into a team without secrets of
+// its own: the copy's own-secrets rotation boxes nobody (the team has no keyset). The writer,
+// who does not read the team, gets the re-grant before the rotation commit (wrapped under the
+// copy's derived epoch): its history box hands it that epoch, and once the rotation commit is
+// opened its write epoch is established.
+#[test]
+fn move_into_derived_owner_spec_perm_7() {
+    let (mut lp, ps) = people(2, 519);
+    let (pa, pb) = (ps[0], ps[1]);
+    let team = thing_of(&mut lp, 0, pa);
+    let doc = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let (copy, done) = lp.peers[0].engine.move_to(&doc, &team).unwrap();
+    let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let (own, rest): (Vec<CommitId>, Vec<CommitId>) = new.into_iter().partition(|c| {
+        let h = lp.peers[0].engine.header(c).unwrap();
+        h.aspects.iter().any(|a| a.tid == copy && a.ak.as_str() == "/keys") && !h.aspects.iter().any(|a| a.ak.as_str() == "/members")
+    });
+    assert_eq!(own.len(), 1, "the copy's own-secrets rotation");
+    send(&mut lp, 0, 1, &rest);
+    carry(&mut lp, 0, &done);
+    let e = lp.peers[1].engine.epochs(&copy).unwrap();
+    let derived = lp.peers[0].engine.epochs(&copy).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
+    assert!(e.read.secret(&derived).is_some(), "the grant's history box opens the derived epoch");
+    send(&mut lp, 0, 1, &own);
+    let e = lp.peers[1].engine.epochs(&copy).unwrap();
+    assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
+}
+
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]

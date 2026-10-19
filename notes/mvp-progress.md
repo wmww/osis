@@ -71,6 +71,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- wave 5 flows fixes: spec/permissions.md §3 a rotation boxing a member without a box at the current read epoch also goes to it by inbox (spec/sync.md §3 inbox blob list); no rotation of A for a departure inside a member that a fresh epoch would not cover; spec/crypto.md §4 a node holding no secret of M judges the inside-M covers rule by M's newest `/keys` keyset.
 - sync bug-fix round: spec/sync.md §6 a must-hold body is held by any blob of its commit holding its deltas that no snapshot under the label covers (a right holder that dropped covered deltas uploads a smaller projection; without this a co-writer that may not drop them re-uploads the whole body forever).
 - api second half (coordinator decision): spec/wire.md §10 `Link` takes an optional eighth item `flags` (bit 0 single use, present only when nonzero, other bits reserved); spec/permissions.md §9 names it; vector link/link.vec refrozen as FC-3.
 - Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).
