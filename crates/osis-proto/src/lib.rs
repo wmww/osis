@@ -4,6 +4,7 @@
 //! Layer 5 (notes/architecture.md). Plan: plans/proto.md.
 #![forbid(unsafe_code)]
 
+pub mod bundle;
 pub mod client;
 mod dec;
 mod error;

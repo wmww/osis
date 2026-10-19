@@ -91,8 +91,9 @@ pub enum ClientEvent {
     EntryStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Vec<u8>> },
     DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Vec<u8>> },
     Budget { label: LabelId, blob_id: BlobId, code: Code, entries_left: u64, bytes_left: u64, head: Option<Vec<u8>> },
-    /// Log events of a Sync reply or a Push, in order; then keep `cursor` for the label.
-    Events { label: LabelId, events: Vec<Event>, cursor: Cursor },
+    /// Log events of a Sync reply or a Push, in order; then keep `cursor` for the label (none:
+    /// a bundle, a peer with no cursor).
+    Events { label: LabelId, events: Vec<Event>, cursor: Option<Cursor> },
     /// Gained IDs the peer lacks: upload them.
     Want { label: LabelId, ids: Vec<BlobId> },
     /// A Sync ran through its last page.
@@ -422,7 +423,7 @@ impl ClientSession {
         };
         match msg {
             Message::Ping { id, .. } => send(out, Message::Pong { id, wall_ms: now }),
-            Message::Push { label, events, cursor } => event(out, ClientEvent::Events { label, events, cursor }),
+            Message::Push { label, events, cursor } => event(out, ClientEvent::Events { label, events, cursor: Some(cursor) }),
             Message::Signal { label, blob, wrap, auth } => event(out, ClientEvent::Signal { label, blob, wrap, auth }),
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
@@ -490,7 +491,7 @@ impl ClientSession {
                 if !blob_ids.is_empty() {
                     event(out, E::EntryStatus { label, blob_ids, codes, head: None });
                 }
-                event(out, E::Events { label, events, cursor });
+                event(out, E::Events { label, events, cursor: Some(cursor) });
                 if !want.is_empty() {
                     event(out, E::Want { label, ids: want });
                 }

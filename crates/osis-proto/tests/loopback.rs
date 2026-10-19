@@ -238,7 +238,7 @@ fn events_of(ev: &[ClientEvent]) -> (Vec<Event>, Option<Cursor>) {
     for e in ev {
         if let ClientEvent::Events { events, cursor: c, .. } = e {
             all.extend(events.iter().cloned());
-            cursor = Some(*c);
+            cursor = *c;
         }
     }
     (all, cursor)
