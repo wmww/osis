@@ -25,7 +25,7 @@ Wave 2 (all of wave 1 merged).
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
-| label | review fixes | reviewer done (2 medium); agent fixing |
+| label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | review | reviewer running; issues/proto-label-coupling.md to resolve at integration |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
