@@ -107,6 +107,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     // overlapping node-form counters void both commits
     let ov = overlaps(tx.core, &id, &h);
     if !ov.is_empty() {
+        held_changed = true;
         for c in ov.iter().chain(std::iter::once(&id)) {
             tx.core.void.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
