@@ -1,0 +1,136 @@
+//! Retention and expiry: fixed tables, write defaults, keep bounds (spec/commits.md §5, §6).
+
+use crate::header::{FOREVER, Header, Kind};
+use crate::Error;
+use osis_core::format::MEMBERSHIP_KEEP_MS;
+use osis_core::Ts;
+use osis_schema::core_types::is_membership_class;
+use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
+
+/// The fixed retention of membership deltas: `admin`, kept at least `MEMBERSHIP_KEEP` after
+/// replaced.
+pub const MEMBERSHIP_RETENTION: Retention =
+    Retention { by: PurgeBy::Admin, at_least: Bound { abs: None, rel: Some(MEMBERSHIP_KEEP_MS) }, at_most: Bound { abs: None, rel: None } };
+
+/// The fixed retention of `/created`: `nobody`, kept forever.
+pub const CREATED_RETENTION: Retention =
+    Retention { by: PurgeBy::Nobody, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound { abs: None, rel: None } };
+
+/// The AK of the creation record.
+pub const CREATED: &str = "/created";
+
+/// Fixed retention of an AK, if it has one (membership-class aspects, `/created`).
+pub fn fixed_retention(ak: &str) -> Option<Retention> {
+    if ak == CREATED {
+        Some(CREATED_RETENTION)
+    } else if is_membership_class(ak) {
+        Some(MEMBERSHIP_RETENTION)
+    } else {
+        None
+    }
+}
+
+/// A relative keep-at-most bound exists only under `writer`.
+pub fn check_retention(r: &Retention) -> Result<(), Error> {
+    if r.at_most.rel.is_some() && r.by != PurgeBy::Writer {
+        return Err(Error::Invalid("relative keep at most needs purgeable by writer"));
+    }
+    Ok(())
+}
+
+/// Retention of a write: the fixed one, else the commit's override, else the schema's default
+/// for the AK, else the untyped default (`author`, no bounds). An override that disagrees with a
+/// fixed retention is refused.
+pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
+    let r = match (fixed_retention(ak), set) {
+        (Some(f), Some(s)) if f != s => return Err(Error::Build("retention of this aspect is fixed")),
+        (Some(f), _) => f,
+        (None, Some(s)) => s,
+        (None, None) => defaults.map(|d| d.retention).unwrap_or_default(),
+    };
+    check_retention(&r).map_err(|_| Error::Build("relative keep at most needs purgeable by writer"))?;
+    Ok(r)
+}
+
+/// Retention of a compaction-snapshot delta: `writer` with the schema's default bounds for the
+/// aspect (never a commit's own); membership-class aspects keep their fixed retention.
+pub fn snapshot_retention(ak: &str, defaults: Option<&AspectDefaults>) -> Retention {
+    if let Some(f) = fixed_retention(ak) {
+        return f;
+    }
+    let d = defaults.map(|d| d.retention).unwrap_or_default();
+    Retention { by: PurgeBy::Writer, at_least: d.at_least, at_most: d.at_most }
+}
+
+/// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
+/// Membership-class aspects never expire.
+pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Option<u64> {
+    if fixed_retention(ak).is_some() {
+        return None;
+    }
+    set.or_else(|| defaults.and_then(|d| d.expires).map(|dur| ts.wall_ms().0.saturating_add(dur)))
+}
+
+/// Keep-at-least bound of a body (wall ms; 0 = none): the later of `abs` and last death plus
+/// `rel`. A body with no dead writes is past a relative bound.
+pub fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
+    let rel = match (r.at_least.rel, last_death) {
+        (Some(d), Some(t)) => t.saturating_add(d),
+        _ => 0,
+    };
+    r.at_least.abs.unwrap_or(0).max(rel)
+}
+
+/// Keep-at-most bound of a body (wall ms): the earlier of `abs` and first death plus `rel`;
+/// `None` while neither applies.
+pub fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
+    let rel = r.at_most.rel.zip(first_death).map(|(d, t)| t.saturating_add(d));
+    match (r.at_most.abs, rel) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
+/// MEMBERSHIP_KEEP`, whatever its deltas' bounds.
+pub fn purge_keep_until(h: &Header) -> Option<u64> {
+    (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(MEMBERSHIP_KEEP_MS))
+}
+
+/// What a node must do with a body of `h` holding deltas of retention `r`, given the first and
+/// last deaths of its writes so far (spec/commits.md §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Keep {
+    /// Before this wall ms the body leaves only by purge request (0 = no floor).
+    pub at_least: u64,
+    /// By this wall ms every node drops the body.
+    pub at_most: Option<u64>,
+}
+
+/// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
+/// which wins over both. Expiry (applied by the caller) beats everything.
+pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
+    let most = keep_at_most(r, first_death);
+    let mut least = keep_at_least(r, last_death);
+    if let Some(m) = most {
+        least = least.min(m);
+    }
+    match purge_keep_until(h) {
+        Some(p) => Keep { at_least: least.max(p), at_most: most.map(|m| m.max(p)) },
+        None => Keep { at_least: least, at_most: most },
+    }
+}
+
+/// Token levels a delta of retention `r` calls for (spec/crypto.md §7); level 2 is omitted for
+/// an import.
+pub fn token_levels(r: &Retention, kind: Kind) -> &'static [u8] {
+    let import = kind == Kind::Import;
+    match r.by {
+        PurgeBy::Nobody => &[],
+        PurgeBy::Admin => &[1],
+        PurgeBy::Author if import => &[1],
+        PurgeBy::Author => &[1, 2],
+        PurgeBy::Writer if import => &[1, 3],
+        PurgeBy::Writer => &[1, 2, 3],
+    }
+}

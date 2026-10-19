@@ -7,9 +7,13 @@
 mod cbor;
 mod error;
 mod header;
+pub mod retention;
+mod validate;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_validate;
 
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, Token, verify_signature};
