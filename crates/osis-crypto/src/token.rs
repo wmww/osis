@@ -6,7 +6,7 @@ use crate::{Error, Secret32};
 /// Token `kdf("delete token", secret, salt)`: header salt for a commit blob, the chunk's prefix
 /// salt for a chunk. Secret until presented.
 pub fn delete_token(secret: &Secret32, salt: &[u8; 16]) -> Secret32 {
-    Secret32::from_bytes(kdf(kdf::DELETE_TOKEN, secret.expose(), salt))
+    kdf(kdf::DELETE_TOKEN, secret.expose(), salt)
 }
 
 /// Token hash = BLAKE3(token)[..16], listed in the header.

@@ -25,18 +25,13 @@ pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8
 /// A 49-byte `suite || key` wrap (spec/wire.md §5, §7): wraps, symmetric boxes.
 pub const WRAP_LEN: usize = 1 + 32 + TAG_LEN;
 
-/// Encrypts `SUITE_1 || secret` with empty AD unless given.
-pub(crate) fn seal_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], secret: &Secret32) -> [u8; WRAP_LEN] {
+/// Encrypts `SUITE_1 || secret` under `ad`.
+pub(crate) fn seal_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], secret: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
     let mut pt = Zeroizing::new([SUITE_1; 33]);
     if let Some(dst) = pt.get_mut(1..) {
         dst.copy_from_slice(secret.expose());
     }
-    let mut out = [0u8; WRAP_LEN];
-    // Encryption of 33 bytes cannot fail.
-    if let Ok(ct) = seal(key, nonce, ad, &pt[..]) {
-        out.copy_from_slice(&ct);
-    }
-    out
+    seal(key, nonce, ad, &pt[..])?.try_into().map_err(|_| Error::Malformed("wrap length"))
 }
 
 /// Opens a `suite || key` wrap; an unknown suite parks.

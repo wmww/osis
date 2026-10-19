@@ -71,13 +71,13 @@ pub fn decrypt_blob(blob: &[u8], prefix_len: usize, key: &Secret32) -> Result<Ve
 }
 
 /// Wrap of a blob key under a label read secret: nonce = blob ID[..24], empty AD (spec/wire.md §5).
-pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32) -> [u8; WRAP_LEN] {
-    aead::seal_suite_key(&kdf(kdf::WRAP, read_secret.expose(), b""), &wrap_nonce(blob), b"", blob_key)
+pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
+    aead::seal_suite_key(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", blob_key)
 }
 
 /// Opens a wrap; a reader tries its read secrets newest first.
 pub fn unwrap(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<Secret32, Error> {
-    aead::open_suite_key(&kdf(kdf::WRAP, read_secret.expose(), b""), &wrap_nonce(blob), b"", wrap)
+    aead::open_suite_key(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", wrap)
 }
 
 /// 49 random bytes: the wrap of an inbox blob.
@@ -212,8 +212,8 @@ mod tests {
     #[test]
     fn wraps() {
         let (s, k, id) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]), BlobId([3; 32]));
-        let w = wrap(&s, &id, &k);
-        assert_eq!(w, wrap(&s, &id, &k));
+        let w = wrap(&s, &id, &k).unwrap();
+        assert_eq!(w, wrap(&s, &id, &k).unwrap());
         assert_eq!(unwrap(&s, &id, &w), Ok(k));
         assert_eq!(unwrap(&s, &BlobId([4; 32]), &w), Err(Error::Decrypt));
         assert_eq!(unwrap(&Secret32::from_bytes([5; 32]), &id, &w), Err(Error::Decrypt));

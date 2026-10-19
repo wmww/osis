@@ -43,3 +43,31 @@ pub fn thing() -> VecFile {
     }
     VecFile { header: generated_header("tid", SPEC), cases }
 }
+
+/// Key-actor records: a node (signing key from seed 03 via `kdf("sign", seed)`, random nonce
+/// 04*32) and a link key (same seed, nonce `kdf("creation nonce", seed, "")`).
+pub fn key_actor() -> VecFile {
+    let seed = osis_crypto::Secret32::from_bytes([3; 32]);
+    let key = osis_crypto::KeyActorKeys::from_seed(&seed).signing.verifying_key();
+    let mut cases = Vec::new();
+    for (name, nonce) in [("node", [4u8; 32]), ("link key", osis_crypto::creation_nonce(&seed))] {
+        // alg 1: `signing_key` case ed25519 (spec/wire.md §3).
+        let rec = CreationRecord::KeyActor { alg: 1, public_key: key.to_bytes().to_vec(), nonce };
+        let bytes = encode(&rec.to_value());
+        let tid = rec.tid();
+        assert_eq!(CreationRecord::from_value(&rec.to_value()), Some(rec.clone()));
+        cases.push(
+            Record::new()
+                .with("case", name)
+                .with("spec", SPEC)
+                .with("seed", hex(seed.expose()))
+                .with("signing-key", hex(&key.to_bytes()))
+                .with("nonce", hex(&nonce))
+                .with("record", hex(&bytes))
+                .with("tid", hex(tid.as_bytes()))
+                .with("text", tid.to_string())
+                .with("uri", tid.to_uri()),
+        );
+    }
+    VecFile { header: generated_header("tid", SPEC), cases }
+}

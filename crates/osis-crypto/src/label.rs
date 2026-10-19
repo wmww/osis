@@ -23,12 +23,12 @@ pub fn label_role_key(role: LabelRole, secret: &Secret32, index: u64) -> Signing
         LabelRole::Write => kdf::LABEL_WRITE,
         LabelRole::Delete => kdf::LABEL_DELETE,
     };
-    SigningSecret::from_seed(&Secret32::from_bytes(kdf(purpose, secret.expose(), &index.to_le_bytes())))
+    SigningSecret::from_seed(&kdf(purpose, secret.expose(), &index.to_le_bytes()))
 }
 
 /// Deposit key `kdf("label deposit", deposit seed, label ID)`.
 pub fn deposit_key(deposit_seed: &Secret32, label: &LabelId) -> SigningSecret {
-    SigningSecret::from_seed(&Secret32::from_bytes(kdf(kdf::LABEL_DEPOSIT, deposit_seed.expose(), &label.0)))
+    SigningSecret::from_seed(&kdf(kdf::LABEL_DEPOSIT, deposit_seed.expose(), &label.0))
 }
 
 /// Label ID = BLAKE3("osis v1 label id" || genesis delete key)[..16].
@@ -48,7 +48,7 @@ pub fn claim_key(own: &X25519Secret, their: &[u8; 32], label: &LabelId, step_key
     let mut input = Vec::with_capacity(48);
     input.extend_from_slice(&label.0);
     input.extend_from_slice(step_key);
-    Ok(SigningSecret::from_seed(&Secret32::from_bytes(kdf(kdf::LABEL_CLAIM, dh.expose(), &input))))
+    Ok(SigningSecret::from_seed(&kdf(kdf::LABEL_CLAIM, dh.expose(), &input)))
 }
 
 /// Static entry of a key actor: BLAKE3("osis v1 static claim" || label ID || signing key).
@@ -86,7 +86,7 @@ mod tests {
         assert_ne!(pk(LabelRole::Sync, 0), pk(LabelRole::Sync, 1));
         assert_ne!(pk(LabelRole::Sync, 0), pk(LabelRole::Write, 0));
         assert_ne!(pk(LabelRole::Delete, 0), pk(LabelRole::Write, 0));
-        let expect = SigningSecret::from_seed(&Secret32::from_bytes(kdf("label delete", &[9; 32], &1u64.to_le_bytes())));
+        let expect = SigningSecret::from_seed(&kdf("label delete", &[9; 32], &1u64.to_le_bytes()));
         assert_eq!(pk(LabelRole::Delete, 1), expect.verifying_key());
         let seed = Secret32::from_bytes([1; 32]);
         assert_ne!(deposit_key(&seed, &LabelId([1; 16])).verifying_key(), deposit_key(&seed, &LabelId([2; 16])).verifying_key());

@@ -225,7 +225,7 @@ mod tests {
         assert!(Signature::from_value(&pk.to_value()).is_err());
     }
 
-    // notes/architecture.md §3: Debug of a private key shows only the public half.
+    // spec: none (notes/architecture.md §3: Debug of a private key shows only the public half)
     #[test]
     fn debug_redacted() {
         let sk = SigningSecret::from_seed(&Secret32::from_bytes([0xab; 32]));

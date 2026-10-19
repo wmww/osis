@@ -19,7 +19,7 @@ mod token;
 
 pub use aead::WRAP_LEN;
 pub use blob::{blob_id, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad, padme, seal_inbox, unpad, unwrap, wrap};
-pub use boxes::{BoxForm, BoxItem, Epoch, entry_box_ad, open_box, open_history, open_symmetric_box, seal_box, seal_history, secrets_box_ad, wrap_symmetric_box};
+pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, open_box, open_history, open_symmetric_box, seal_box, seal_history, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
 pub use keys::{KeyActorKeys, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, lan_tag, link_hash, link_tree_hash, role_kem, thing_role_secret};
@@ -31,7 +31,7 @@ pub use token::{commitment, delete_token, token_hash, verify_presented_token};
 
 #[cfg(feature = "os-rng")]
 pub use rand_core::OsRng;
-pub use rand_core::{CryptoRng, CryptoRngCore, RngCore};
+pub use rand_core::{CryptoRng, CryptoRngCore, Error as RngError, RngCore};
 pub use zeroize::Zeroizing;
 
 /// The only suite (spec/crypto.md §8): suite byte of wraps and links, suite ID of epochs.

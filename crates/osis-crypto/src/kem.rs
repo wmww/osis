@@ -10,7 +10,6 @@ use std::fmt;
 use zeroize::{Zeroize, Zeroizing};
 
 const MLKEM_PK_LEN: usize = 1184;
-const MLKEM_SK_LEN: usize = 2400;
 /// ML-KEM-768 ciphertext.
 pub const MLKEM_CT_LEN: usize = 1088;
 /// `pk_x || pk_m` (spec/crypto.md §1).
@@ -106,12 +105,15 @@ pub struct KemSecret {
     public: KemPublicKey,
 }
 
+/// The libcrux private key, boxed so it does not move, wiped in place on drop.
 #[derive(Clone)]
-struct MlKemSk(Box<[u8; MLKEM_SK_LEN]>);
+struct MlKemSk(Box<mlkem768::MlKem768PrivateKey>);
 
 impl Drop for MlKemSk {
     fn drop(&mut self) {
-        self.0.zeroize();
+        // libcrux keys have no zeroize; `[0..]` is the whole key and cannot panic.
+        #[allow(clippy::indexing_slicing)]
+        self.0[0..].zeroize();
     }
 }
 
@@ -119,21 +121,24 @@ impl KemSecret {
     /// Key pair from a seed or role secret: `kdf("kem", secret, "")` as 96 XOF bytes, the first
     /// 64 the ML-KEM-768 keygen seed `d || z`, the last 32 the X25519 private key (spec/crypto.md §3).
     pub fn derive(secret: &Secret32) -> KemSecret {
-        let mut out = [0u8; 96];
-        kdf_xof(KEM, secret.expose(), b"", &mut out);
+        let mut out = Zeroizing::new([0u8; 96]);
+        kdf_xof(KEM, secret.expose(), b"", &mut out[..]);
         let (mut seed, mut x) = ([0u8; 64], [0u8; 32]);
         seed.copy_from_slice(out.get(..64).unwrap_or(&[0; 64]));
         x.copy_from_slice(out.get(64..).unwrap_or(&[0; 32]));
-        out.zeroize();
         let k = KemSecret::from_parts(seed, &Secret32::from_bytes(x));
         seed.zeroize();
         x.zeroize();
         k
     }
 
-    /// From the ML-KEM keygen seed `d || z` and the X25519 private key.
-    pub fn from_parts(mlkem_seed: [u8; 64], x25519: &Secret32) -> KemSecret {
+    /// From the ML-KEM keygen seed `d || z` and the X25519 private key. For tests and vectors;
+    /// keys come from `derive`.
+    #[doc(hidden)]
+    pub fn from_parts(mut mlkem_seed: [u8; 64], x25519: &Secret32) -> KemSecret {
         let (sk, pk) = mlkem768::generate_key_pair(mlkem_seed).into_parts();
+        mlkem_seed.zeroize();
+        let m = MlKemSk(Box::new(sk));
         let x = X25519Secret::from_secret(x25519);
         let mut public = Box::new([0u8; KEM_PUBLIC_LEN]);
         if let Some(dst) = public.get_mut(..32) {
@@ -142,9 +147,6 @@ impl KemSecret {
         if let Some(dst) = public.get_mut(32..) {
             dst.copy_from_slice(pk.as_slice());
         }
-        let mut skb: [u8; MLKEM_SK_LEN] = sk.into();
-        let m = MlKemSk(Box::new(skb));
-        skb.zeroize();
         KemSecret { x, m, public: KemPublicKey(public) }
     }
 
@@ -156,11 +158,7 @@ impl KemSecret {
         &self.x
     }
     pub(crate) fn decapsulate(&self, ct: &[u8; MLKEM_CT_LEN]) -> Secret32 {
-        let sk = mlkem768::MlKem768PrivateKey::from(&*self.m.0);
-        let ss = mlkem768::decapsulate(&sk, &(*ct).into());
-        let mut back: [u8; MLKEM_SK_LEN] = sk.into();
-        back.zeroize();
-        Secret32::from_bytes(ss)
+        Secret32::from_bytes(mlkem768::decapsulate(&self.m.0, &(*ct).into()))
     }
 }
 
@@ -185,7 +183,9 @@ pub fn seal(pk: &KemPublicKey, ad: &[u8], payload: &[u8], rng: &mut dyn CryptoRn
 }
 
 /// `seal` with explicit randomness: the ephemeral X25519 private key, then the ML-KEM
-/// encapsulation bytes, in the order `seal` draws them (vectors).
+/// encapsulation bytes, in the order `seal` draws them. For tests and vectors: reused
+/// randomness breaks the box.
+#[doc(hidden)]
 pub fn seal_with(pk: &KemPublicKey, ad: &[u8], payload: &[u8], eph: &Secret32, m: &[u8; 32]) -> Result<Vec<u8>, Error> {
     let e = X25519Secret::from_secret(eph);
     let ct_x = e.public();
@@ -277,7 +277,59 @@ mod tests {
         assert_eq!(k.decapsulate(&ct), ss);
         assert_eq!(KemPublicKey::from_slice(k.public().as_bytes()), Ok(k.public().clone()));
     }
-    const MLKEM_PK_HASH: &str = "fa88246c20b3b266f6dd762098c644f8758af78f1214964c87e50ac969082eb3";
+    fn acvp(field: &str) -> Vec<u8> {
+        let text = include_str!("../tests/data/mlkem768_acvp.txt");
+        let line = text.lines().find_map(|l| l.strip_prefix(field).and_then(|r| r.strip_prefix(": "))).unwrap();
+        (0..line.len()).step_by(2).map(|i| u8::from_str_radix(&line[i..i + 2], 16).unwrap()).collect()
+    }
+
+    // spec/crypto.md §1: ML-KEM-768 is FIPS 203. NIST ACVP known answers (tests/data/mlkem768_acvp.txt):
+    // keygen from d || z, encapsulation from m, decapsulation including implicit rejection.
+    #[test]
+    fn mlkem_fips203_acvp() {
+        let seed: [u8; 64] = [acvp("keygen-d"), acvp("keygen-z")].concat().try_into().unwrap();
+        let k = KemSecret::from_parts(seed, &Secret32::from_bytes([0x43; 32]));
+        assert_eq!(k.public().as_bytes()[32..], acvp("keygen-ek")[..]);
+        assert_eq!(k.m.0.as_slice()[..], acvp("keygen-dk")[..]);
+        let with_dk = |dk: Vec<u8>, ek: &[u8]| {
+            let mut public = Box::new([0u8; KEM_PUBLIC_LEN]);
+            public[..32].copy_from_slice(&k.public().x25519());
+            public[32..].copy_from_slice(ek);
+            let dk: [u8; 2400] = dk.try_into().unwrap();
+            KemSecret { x: k.x.clone(), m: MlKemSk(Box::new(dk.into())), public: KemPublicKey(public) }
+        };
+        let e = with_dk(acvp("encap-dk"), &acvp("encap-ek"));
+        let (ct, ss) = encapsulate(e.public(), &acvp("encap-m").try_into().unwrap());
+        assert_eq!(ct[..], acvp("encap-c")[..]);
+        assert_eq!(ss.expose()[..], acvp("encap-k")[..]);
+        assert_eq!(e.decapsulate(&ct), ss);
+        let d = with_dk(acvp("decap-dk"), &acvp("encap-ek"));
+        let c: [u8; MLKEM_CT_LEN] = acvp("decap-c").try_into().unwrap();
+        assert_eq!(d.decapsulate(&c).expose()[..], acvp("decap-k")[..]);
+    }
+
+    // spec/crypto.md §1: K = derive_key("osis v1 hybrid kem", ss_x || ss_m || ct_x || ct_m ||
+    // pk_x || pk_m), recomputed here from its inputs; the box body is AEAD_K(nonce 0, ad, payload).
+    #[test]
+    fn hybrid_k_formula() {
+        use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+        let k = KemSecret::derive(&Secret32::from_bytes([5; 32]));
+        let (eph, m) = (Secret32::from_bytes([0x0c; 32]), [0x0d; 32]);
+        let sealed = seal_with(k.public(), b"ad", b"payload", &eph, &m).unwrap();
+        let ss_x = X25519Secret::from_secret(&eph).dh(&k.public().x25519()).unwrap();
+        let (ct_m, ss_m) = encapsulate(k.public(), &m);
+        let ct_x = X25519Secret::from_secret(&eph).public();
+        assert_eq!(sealed[..32], ct_x);
+        assert_eq!(sealed[32..32 + MLKEM_CT_LEN], ct_m);
+        let material = [&ss_x.expose()[..], &ss_m.expose()[..], &ct_x, &ct_m, &k.public().as_bytes()[..]].concat();
+        let key = blake3::derive_key("osis v1 hybrid kem", &material);
+        let body = chacha20poly1305::XChaCha20Poly1305::new(&key.into())
+            .decrypt(&[0u8; 24].into(), Payload { msg: &sealed[32 + MLKEM_CT_LEN..], aad: b"ad" })
+            .unwrap();
+        assert_eq!(body, b"payload");
+    }
+
+    const MLKEM_PK_HASH: &str ="fa88246c20b3b266f6dd762098c644f8758af78f1214964c87e50ac969082eb3";
 
     // spec/crypto.md §1, §3: keys that fail validation are rejected at parse.
     #[test]
@@ -295,7 +347,7 @@ mod tests {
         assert_eq!(KemPublicKey::from_value(&k.public().to_value()), Ok(k.public().clone()));
     }
 
-    // notes/architecture.md §3: Debug of secrets redacted.
+    // spec: none (notes/architecture.md §3: Debug of secrets redacted)
     #[test]
     fn debug_redacted() {
         let k = KemSecret::derive(&Secret32::from_bytes([1; 32]));
