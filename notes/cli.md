@@ -63,7 +63,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | `inspect thing/group/actor/commit` | `engine` (escape hatch), `read`, `knows` | now |
 | `diag [--follow]` / `daemon` | `on_diagnostic`, `settle` | now (no stored log yet) |
 | `schema add/rm/ls` / `check` / `gen` | `register_schema_file` (each run) / osis-schema `check_lock` / `generate_file` | now |
-| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `sync_act`, `take_actions`, `feed` | |
+| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `sync_act`, `take_actions`, `feed`, `waiting` | |
 
 ## Value syntax
 CBOR diagnostic notation narrowed to one printed form per value (plans/cli.md §3). Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.
