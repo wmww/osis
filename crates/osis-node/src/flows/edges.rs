@@ -113,7 +113,10 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
     }
-    let admin = tx.core.role_now(&who, &target) == Some(Role::Admin);
+    let role = tx.core.role_now(&who, &target);
+    let admin = role == Some(Role::Admin);
+    // a non-writer of the target's label deposits its invite grant (spec/sync.md §5)
+    let deposit = role < Some(Role::Write);
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&member).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
@@ -127,20 +130,17 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     // a thing is made a member only with secrets of its own; a target gets them on its first
     // non-owner member (spec/permissions.md §3)
     if !tx.core.is_key_actor(&member) && !tx.core.has_own_secrets(&member) {
-        done.add(rotation::own_secrets(tx, member)?);
+        rotation::own_secrets(tx, member, &mut done)?;
     }
     if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
         if !admin {
             return Err(Error::Permission { tid: target });
         }
-        done.add(rotation::own_secrets(tx, target)?);
+        rotation::own_secrets(tx, target, &mut done)?;
     }
     // boxing is encrypting under: rotate first where a known departure is uncovered
-    let still = rotation::ensure_rotated(tx, target, &mut Vec::new(), &mut done)?;
     let roles = roles_up_to(edge.role);
-    if roles.iter().any(|r| still.contains(r)) {
-        return Err(Error::Misuse("an epoch to box does not cover a known departure (an intermediate actor must rotate first)"));
-    }
+    rotation::require_covered(tx, who, target, &roles, &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
     let rcpt = recipient(tx, member, edge.role)?;
@@ -164,40 +164,36 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     done.add(c);
     if let Some(c) = c {
         done.deliveries.extend(deliver_to(tx, member, c, &[target])?);
-        // a non-writer of the target's label deposits its invite grant (spec/sync.md §5)
-        if tx.core.role_now(&who, &target) < Some(Role::Write) {
+        if deposit {
             done.deliveries.push(Delivery::Deposit { commit: c, under: target });
         }
     }
     Ok(done)
 }
 
-/// Whether `who`'s lowering of `member`'s edge on `target` is a self-removal (spec/permissions.md
-/// §2): it lowers the author's own edge, or admin on the member is its only authority.
-fn is_self_removal(tx: &Tx<'_>, who: &Tid, target: &Tid, member: &Tid) -> bool {
-    if member == who {
-        return true;
-    }
-    let on_member = tx.core.role_now(who, member) == Some(Role::Admin);
-    let on_target = tx.core.role_now(who, target) == Some(Role::Admin);
-    on_member && !on_target
+/// The dots of `member`'s `/members` entries on `target` this node has seen, live or dead.
+fn entry_dots(tx: &Tx<'_>, target: &Tid, member: &Tid) -> Vec<osis_crdt::Dot> {
+    tx.core.member_keys.iter().filter(|((t, _), (m, _))| t == target && m == member).map(|((_, d), _)| d.clone()).collect()
 }
 
-/// A removal or demotion (or a self-removal) of `d.member` on `target` by `who`, with the
-/// target's rotation of the roles it left in the same commit (spec/permissions.md §3), the
-/// frontier for an explicit demotion, the inbox copy to the member, and placement before any
-/// other upload under every label the removed party could read.
+/// A removal or demotion (or a self-removal) of `d.member` on `target` by `who`: an explicit
+/// demotion carries the frontier and the target's rotation of the roles the member left in the
+/// same commit (spec/permissions.md §3), after the cascade on the target; a self-removal
+/// carries neither (the next node that may rotate does), and the leaver drops what it lost. An
+/// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). Then the
+/// inbox copy to the member, and placement before any other upload under every label the
+/// removed party could read.
 pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, frontier: Option<osis_core::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let member = d.member;
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
-    let old = tl.edges_at(None).get(&member, &target).copied().ok_or(Error::Misuse("no edge to lower"))?;
+    let old = tl.edges_at(None).get(&member, &target).copied();
     let new_p = d.new.as_ref().map(perm_edge);
-    if !osis_perm::types::lowers(new_p.as_ref(), Some(&old)) {
+    if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
-    let selfr = is_self_removal(tx, &who, &target, &member);
+    let selfr = old.is_some() && crate::apply::validity::self_removal(tx.core, &who, &target, &member, ts);
     let admin = tx.core.role_now(&who, &target) == Some(Role::Admin);
     if !selfr && !admin {
         return Err(Error::Permission { tid: target });
@@ -205,21 +201,37 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
         return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
     }
+    let mut done = Done::default();
     let mut m = Mutation::new();
-    remove_edge(&mut m, target, member)?;
+    match old {
+        Some(_) => remove_edge(&mut m, target, member)?,
+        None => {
+            if d.new.is_some() {
+                return Err(Error::Misuse("no edge to lower"));
+            }
+            let dots = entry_dots(tx, &target, &member);
+            if dots.is_empty() {
+                return Err(Error::Misuse("no edge of that member was ever seen"));
+            }
+            m.dead_resets.insert((target, super::ak("/members")?), dots);
+        }
+    }
     if let Some(n) = &d.new {
         put_edge(&mut m, target, member, n)?;
     }
     if !selfr && let Some(f) = frontier {
         m.frontier(f);
     }
-    // the target's rotation of the roles the member left, as far as the author may rotate
+    // an explicit demotion carries the target's rotation of the roles the member left
     let mut rot = None;
-    let held_role = old.alive_at(Some(ts)).then_some(old.role);
-    if let Some(dep) = Departure::of_change(member, held_role, d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role))
+    let held_role = old.filter(|o| o.alive_at(Some(ts))).map(|o| o.role);
+    if !selfr
+        && let Some(dep) = Departure::of_change(member, held_role, d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role))
         && tx.core.has_own_secrets(&target)
     {
-        let may = rotation::may_rotate(tx.core, &target);
+        // boxing to the remaining members encrypts under their keysets: the cascade first
+        rotation::ensure_rotated(tx, who, target, &mut Vec::new(), &mut done)?;
+        let may = rotation::may_rotate(tx.core, &who, &target);
         let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r >= dep.from && Some(*r) <= held_role && may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
@@ -237,7 +249,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if let Some(r) = &rot {
         rotation::record(tx, target, r)?;
     }
-    let mut done = Done::default();
     done.add(c);
     if let Some(c) = c {
         done.deliveries.extend(deliver_parts(tx, member, c, &[target], Parts::Edge)?);
@@ -249,6 +260,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         under.sort();
         under.dedup();
         done.deliveries.push(Delivery::First { commits: vec![c], under });
+    }
+    if selfr {
+        rotation::drop_lost(tx)?;
     }
     Ok(done)
 }
@@ -302,7 +316,15 @@ impl Engine {
         };
         let frontier = match self.core.timelines.get(&t) {
             Some(tl) => {
-                let scope = tl.demotion_scope(&who, &d.member, &t, d.new.as_ref().map(perm_edge), ts);
+                let scope = match tl.edges_at(None).get(&d.member, &t) {
+                    Some(_) => tl.demotion_scope(&who, &d.member, &t, d.new.as_ref().map(perm_edge), ts),
+                    // an absent edge (a used single-use link): audit the member's own writes on
+                    // the target as if it still held its role (spec/permissions.md §5.1)
+                    None => {
+                        let things: std::collections::BTreeSet<Tid> = [t].into_iter().collect();
+                        osis_perm::DemotionScope { membership: [(d.member, things.clone())].into_iter().collect(), content: [(d.member, things)].into_iter().collect() }
+                    }
+                };
                 Some(osis_schema::Codec::to_value(&self.frontier(&scope, as_of)?))
             }
             None => None,

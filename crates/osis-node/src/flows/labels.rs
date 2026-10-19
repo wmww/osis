@@ -3,7 +3,9 @@
 //! syncs there, after uploading the membership commits it registers: node-sync orders that),
 //! the claim set's readers.
 
-use super::{ak, own_label};
+use super::{Done, ak, own_label};
+use crate::rotation;
+use osis_keys::ROLES;
 use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
@@ -137,17 +139,21 @@ pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
 impl Engine {
     /// Gives `group` a label (its home label, for an actor) on `servers`: genesis step at its
     /// newest epochs, recorded in `/label` (spec/sync.md §2). node-sync registers it.
-    pub fn create_label(&mut self, group: &Tid, servers: &[Address]) -> Result<LabelId> {
+    pub fn create_label(&mut self, group: &Tid, servers: &[Address]) -> Result<(LabelId, Done)> {
         let g = *group;
         self.run(|tx| {
+            // signing the step and sealing entry boxes encrypt under the group's epochs
+            let mut done = Done::default();
+            let me = tx.core.id.tid();
+            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
             let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
             let deposit = deposit_seed(tx, &g)?;
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, servers)?;
-            Engine::commit_tx(tx, m)?;
-            Ok(id)
+            done.add(Engine::commit_tx(tx, m)?);
+            Ok((id, done))
         })
     }
 
@@ -157,12 +163,16 @@ impl Engine {
     /// (a membership commit; node-sync uploads the rotation commits first, then registers, then
     /// the rest). `None` when nothing is newer, or when it does not hold the head's epochs (it
     /// walks first). `fresh`: issue a step without a rotation (to list readers granted since).
-    pub fn issue_step(&mut self, group: &Tid, label: &LabelId, head: &StepId, fresh: bool) -> Result<Option<(Step, ClaimSet)>> {
+    pub fn issue_step(&mut self, group: &Tid, label: &LabelId, head: &StepId, fresh: bool) -> Result<(Option<(Step, ClaimSet)>, Done)> {
         let (g, l, h) = (*group, *label, *head);
-        self.run(|tx| {
-            if tx.core.role_now(&tx.core.id.tid(), &g) != Some(Role::Admin) {
+        let mut done = Done::default();
+        let step = self.run(|tx| {
+            let me = tx.core.id.tid();
+            if tx.core.role_now(&me, &g) != Some(Role::Admin) {
                 return Ok(None);
             }
+            // signing a step and sealing entry boxes encrypt under the group's epochs
+            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
             let labels = labels_of(tx, &g)?;
             let rec = labels.get(&l).ok_or(Error::Misuse("unknown label"))?;
             let steps = label_steps(rec)?;
@@ -190,9 +200,10 @@ impl Engine {
             let (step, set) = issue(tx, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
             put_label(&mut m, g, l, rec.index, &step, &set, None)?;
-            Engine::commit_tx(tx, m)?;
+            done.add(Engine::commit_tx(tx, m)?);
             Ok(Some((step, set)))
-        })
+        })?;
+        Ok((step, done))
     }
 
     /// The newest label of `group` with its servers.

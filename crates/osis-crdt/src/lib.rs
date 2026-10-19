@@ -48,7 +48,7 @@ pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, pa
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use batch::Batch;
-pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace};
+pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
 pub use undo::{UndoBuffer, Undone, undo};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource};
 pub use state::MemberRef;

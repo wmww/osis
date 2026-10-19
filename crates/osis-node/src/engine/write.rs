@@ -45,6 +45,9 @@ pub struct Mutation {
     pub(crate) signer: Option<Tid>,
     /// A roster snapshot (spec/permissions.md §6): membership kind with the marker.
     pub(crate) roster: bool,
+    /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
+    /// of an edge already removed (membership flows).
+    pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
 }
 
 impl Default for Mutation {
@@ -59,7 +62,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -327,6 +330,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
     }
+    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().cloned().collect();
+    for k in dead {
+        m.aspects.entry(k).or_default();
+    }
     let membership = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_membership_class(ak.as_str()));
     let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_membership_class(ak.as_str()));
     if membership && content {
@@ -381,6 +388,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let out = match &view {
             Some(v) => run_ops(state, w, &am.ops, v)?,
             None => run_ops(state, w, &am.ops, &AnyView)?,
+        };
+        let w2 = Writer::new(ts, Source::node(node), lo);
+        let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
+            (o, None) => o,
+            (Some((mut f, r)), Some(ds)) => {
+                f.join(osis_crdt::reset_entries(&w2, ds));
+                Some((f, r))
+            }
+            (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
         };
         let Some((fragment, range)) = out else { continue };
         if m.form == Form::Commit {

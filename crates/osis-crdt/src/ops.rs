@@ -210,6 +210,14 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
     Ok(f)
 }
 
+/// Map tombstones `[dot, [D], []]` for `dots` at the delta stamp (§5.6): a reset of entries
+/// whatever their liveness here (an explicit removal of an edge already removed).
+pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
+    let r = w.delta_stamp();
+    let entries = dots.iter().map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None })).collect();
+    Fragment::Map(Map { meta: Meta::default(), entries })
+}
+
 /// The slot of encoding `enc` at a position, present only.
 pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<Fragment> {
     st.and_then(|s| s.slot(enc)).map(|m| m.to_fragment()).filter(Fragment::present)

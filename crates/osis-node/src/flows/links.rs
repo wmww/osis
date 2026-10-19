@@ -41,12 +41,8 @@ impl Engine {
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
     pub fn create_link(&mut self, sharer: &Tid, spec: &LinkSpec) -> Result<(ShareLink, Tid, Done)> {
-        let mut sb = [0u8; 32];
-        self.run(|tx| {
-            tx.rng.fill_bytes(&mut sb);
-            Ok(())
-        })?;
-        let seed = Secret32::from_bytes(sb);
+        // a fresh seed, never copied to an unwiped stack array
+        let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
         let l = self.hold_key_actor(seed.clone())?;
         let res = self.run(|tx| create_link_in(tx, *sharer, spec, l, &seed));
         self.drop_key_actor(&l);
@@ -81,24 +77,18 @@ impl Engine {
     }
 
     /// Finalizes a link (spec/permissions.md §9): a sharer device's plain removal of L from K,
-    /// an explicit demotion (frontier, K's rotation), after `until` passed or to revoke the
-    /// link. A single-use link whose L already removed itself has no edge left to remove
-    /// (issues/link-finalization.md): an error.
+    /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
+    /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
+    /// to revoke the link. K rotates before its next encryption (L's departure).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
-        let has = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
-        if !has {
-            return Err(Error::Misuse("no edge of the link key left to remove (issues/link-finalization.md)"));
-        }
         self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync: crate::flows::PreSync::Synced })
     }
 
-    /// Revokes one joiner of a link (spec/permissions.md §9): removes it and L from K (it may
-    /// still hold the seed); the remaining joiners need a new link.
+    /// Revokes one joiner of a link (spec/permissions.md §9): removes L first (the joiner may
+    /// still hold the seed), then the joiner; the remaining joiners need a new link.
     pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync) -> Result<Done> {
-        let mut done = self.demote(k, &crate::flows::Demotion { member: *joiner, new: None, presync })?;
-        if self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some()) {
-            done.extend(self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync })?);
-        }
+        let mut done = self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync })?;
+        done.extend(self.demote(k, &crate::flows::Demotion { member: *joiner, new: None, presync })?);
         Ok(done)
     }
 
@@ -126,7 +116,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let mut m = Mutation::new();
     let k = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
     done.add(Engine::commit_tx(tx, m)?);
-    done.add(rotation::own_secrets(tx, k)?);
+    rotation::own_secrets(tx, k, &mut done)?;
     // L's edge (r, invite r, until) with its boxes, K's home label listing L, K's inbox
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
     let secrets = secrets_in(tx, &k)?;

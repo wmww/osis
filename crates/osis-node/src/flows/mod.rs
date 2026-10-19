@@ -72,6 +72,9 @@ pub trait SyncState {
 pub struct Done {
     pub commits: Vec<CommitId>,
     pub deliveries: Vec<Delivery>,
+    /// Commits never uploaded under labels: re-seals travel by inbox only (spec/permissions.md
+    /// §3); node-sync honours it.
+    pub inbox_only: Vec<CommitId>,
 }
 
 impl Done {
@@ -81,6 +84,7 @@ impl Done {
     pub(crate) fn extend(&mut self, o: Done) {
         self.commits.extend(o.commits);
         self.deliveries.extend(o.deliveries);
+        self.inbox_only.extend(o.inbox_only);
     }
 }
 
@@ -279,7 +283,6 @@ pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 /// secrets of `learned` (an actor's boxes open only once its member's epochs are held), to a
 /// fixpoint. Called by node-core's state observation (engine hook).
 pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
-    let secrets_ak = ak("/secrets")?;
     let mut work = vec![learned];
     let mut steps = 0usize;
     while let Some(m) = work.pop() {
@@ -287,12 +290,16 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         if steps > 4096 {
             break;
         }
-        let actors: BTreeSet<Tid> = tx.core.by_aspect.keys().filter(|(t, a)| *a == secrets_ak && *t != m).map(|(t, _)| *t).collect();
+        // the actors holding a box for `m`: from the index of keyed `/secrets` entries
+        let actors: BTreeSet<Tid> = tx
+            .core
+            .box_keys
+            .iter()
+            .filter(|((a, _), v)| *a != m && osis_schema::core_types::BoxKey::from_value(v).is_ok_and(|k| k.member == m))
+            .map(|((a, _), _)| *a)
+            .collect();
         for a in actors {
             let s = secrets_in(tx, &a)?;
-            if !s.boxes.keys().any(|k| k.member == m) {
-                continue;
-            }
             tx.core.touch();
             if tx.core.ingest_secrets(&a, &s) {
                 save_epochs(tx, &a)?;

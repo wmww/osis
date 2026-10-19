@@ -349,6 +349,23 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     Ok(flipped.into_iter().collect())
 }
 
+/// Whether `author` lowering `member`'s edge on `target` at `ts` is a self-removal
+/// (spec/permissions.md §2): its own edge, or its authority on the target comes only through the
+/// member (admin on the member, and no admin on the target without the member's edge).
+pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid, ts: osis_core::Ts) -> bool {
+    if author == member {
+        return true;
+    }
+    let Some(tl) = core.timelines.get(target) else { return false };
+    if tl.role(author, member, At::now(ts)) != Some(Role::Admin) {
+        return false;
+    }
+    let mut edges = tl.edges_at(None).into_owned();
+    edges.set(*member, *target, None);
+    let view = osis_perm::graph::View { owners: tl.owners(), edges: &edges, ts: Some(ts) };
+    view.roles_from(author).get(target).copied() != Some(Role::Admin)
+}
+
 /// Rules of a membership commit that need its deltas (issues/commit-delta-content-rules.md;
 /// spec/commits.md §2, spec/wire.md §4 position 13, spec/permissions.md §3).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
@@ -385,7 +402,8 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
     }
     let lowers = changed.iter().any(|(target, m, new)| {
         let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
-        old.is_some() && osis_perm::types::lowers(new.as_ref(), old.as_ref())
+        // an explicit removal of an absent edge is an edge write too (spec/permissions.md §2)
+        new.is_none() || (old.is_some() && osis_perm::types::lowers(new.as_ref(), old.as_ref()))
     });
     if h.frontier.is_some() && !lowers && !changed.is_empty() {
         return Err(Error::BadInput("a frontier on a commit that demotes nobody"));
@@ -401,10 +419,9 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             (Some(o), Some(n)) => n.role < o.role,
             _ => false,
         };
-        // an author that may not rotate the target (a self-removal through admin on the
-        // member alone) leaves the rotation to whoever may make it (spec/permissions.md §3)
-        let may_rotate = core.timelines.get(target).is_some_and(|tl| !tl.may_rotate(&h.author, target, At::now(h.ts)).is_empty());
-        if demotes && may_rotate && core.own_keys.contains(target) {
+        // a self-removal carries no rotation: the next node that may rotate does it
+        // (spec/permissions.md §3)
+        if demotes && !self_removal(core, &h.author, target, m, h.ts) && core.own_keys.contains(target) {
             let has = |ak: &str| h.aspects.iter().any(|a| a.tid == *target && a.ak.as_str() == ak);
             if !has("/secrets") || !has("/keys") {
                 return Err(Error::BadInput("a removal without the rotation it requires"));

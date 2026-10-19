@@ -10,7 +10,6 @@ use crate::engine::Engine;
 use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_core::{CommitId, Tid};
-use osis_perm::At;
 use osis_schema::Chunked;
 use osis_schema::core_types::{self as ct, EdgeKey, Members, Tenures};
 
@@ -42,12 +41,19 @@ impl Engine {
         let t = *thing;
         let who = signer.copied().unwrap_or(self.tid());
         let ts = super::now_ts(&self.core);
-        let tl = self.core.timelines.get(&t).ok_or(Error::UnknownThing(t))?;
-        if !tl.may_roster_snapshot(&who, &t, ts) {
+        if !self.core.timelines.get(&t).is_some_and(|tl| tl.may_roster_snapshot(&who, &t, ts)) {
             return Err(Error::Permission { tid: t });
         }
+        // the snapshot compacts the edge history departures are read from: every one must be
+        // covered first (rotated now where the author may; refused while any stays uncovered)
+        let mut done = self.run(|tx| {
+            let mut done = Done::default();
+            let all = osis_keys::ROLES.into_iter().collect();
+            crate::rotation::require_covered(tx, who, t, &all, &mut done)?;
+            Ok(done)
+        })?;
+        let tl = self.core.timelines.get(&t).ok_or(Error::UnknownThing(t))?;
         let state = tl.roster_state(&t);
-        let _ = At::END;
         let roster: Members = state
             .roster
             .iter()
@@ -68,7 +74,6 @@ impl Engine {
             m.sign_as(*s);
         }
         let c: Option<CommitId> = self.commit(m)?;
-        let mut done = Done::default();
         done.add(c);
         Ok(done)
     }

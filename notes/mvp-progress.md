@@ -44,7 +44,7 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
 | node-sync | running (opus, worktree) | |
-| membership-flows | review | done over LocalPeer; reviewer running; issues/link-finalization.md (owner-call), roster-snapshot-deltas, flows-gaps |
+| membership-flows | review | done over LocalPeer; review fixes done; issues roster-snapshot-deltas, flows-gaps |
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
@@ -92,8 +92,9 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
   - S11, S13: spec/commits.md §5 a writer holding no covering snapshot writes one before dropping a body with live writes (local drop at a keep-at-most bound, offline included); a timed delete of a body with live writes goes with the snapshot like at most 0. S12: spec/sync.md §7 an identical body carries only the one with the higher blob ID; of covered-equal snapshots the higher commit ID goes. S14: spec/commits.md §5 nodes keep the headers of applied commits; a header-only rewrite is covered (may-hold). S15: accepted (offline copy; notes/sync.md). Purge commits' `MEMBERSHIP_KEEP` overrides keep-at-most too (wording).
 - keys review: spec/crypto.md §4 the covers rule for a departure inside a member is recursive (M's box names M's newest keyset epoch and that epoch covers the departure); spec/permissions.md §3 a node rotating for a departure inside M rotates the intermediates top-down where it may, else does not encrypt under the epoch (stranded until the intermediate rotates). Scenario: device D removed from person P, P member of team T, T member of doc U: U's writers kept encrypting under U's old epoch because T's box at U still named T's newest keyset. Also spec/crypto.md §4: a rotation that removes a key actor's box and writes it no role writes it one box with every role it holds; a grant to a key actor carries each role's newest current epoch; carried secrets are encrypting under their epochs (an uncovered carried role is rotated too). §5: the rotation commit wraps under the newest superseded read epoch whose secret the rotator holds. spec/sync.md §5 "greater (n, nonce)" → "newer". spec/permissions.md §3 cascade wording ("the roles M left").
 
+- membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
+
 ## Owner-calls pending
 - issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP). membership-flows extended the omission to membership deltas (invite grants, self-removals, writers' rotations and re-seals are written by non-admins), receivers accept it.
-- issues/link-finalization.md: a used single-use link has no edge left for the sharer's plain removal; recommended: finalize by writing an expired edge for L (no wire change).
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
 - issues/reseal-triggers.md: members no automatic re-seal trigger reaches when their deposits are refused (R2; the wrongful-re-seal residues were closed in TLC round 2); recommended: accept for the MVP, mechanisms listed.

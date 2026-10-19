@@ -25,7 +25,7 @@ impl Engine {
             .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None }))
             .collect();
         let (copy, imports) = self.move_thing(t, *owner)?;
-        let mut done = Done { commits: imports, deliveries: Vec::new() };
+        let mut done = Done { commits: imports, ..Done::default() };
         for (m, e) in roster {
             if m != *owner {
                 done.extend(self.grant(&copy, &m, &e)?);

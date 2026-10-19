@@ -59,12 +59,8 @@ impl Engine {
     /// label) and deposit seed, the home label's genesis step on `servers` (the key listed by
     /// static entry) and this node's admin edge. The seed leaves only in the card.
     pub fn create_person(&mut self, servers: &[Address]) -> Result<(Person, Done)> {
-        let mut seed_b = [0u8; 32];
-        self.run(|tx| {
-            tx.rng.fill_bytes(&mut seed_b);
-            Ok(())
-        })?;
-        let seed = Secret32::from_bytes(seed_b);
+        // a fresh seed, never copied to an unwiped stack array
+        let seed = self.run(|tx| Ok(Secret32::random(&mut *tx.rng)))?;
         let r = self.hold_key_actor(seed.clone())?;
         let res = self.run(|tx| create_person_in(tx, r, &seed, servers));
         self.drop_key_actor(&r);
@@ -98,7 +94,9 @@ impl Engine {
                 all.extend(commits.iter().copied());
             }
         }
-        all.dedup();
+        // each commit once, in the order collected (the store's `ts` order first)
+        let mut seen = BTreeSet::new();
+        all.retain(|c| seen.insert(*c));
         done.deliveries.retain(|d| !matches!(d, Delivery::Direct { to, .. } if *to == n));
         done.deliveries.push(Delivery::Direct { to: n, commits: all });
         Ok(done)
@@ -111,7 +109,7 @@ impl Engine {
         if self.role_on(person) != Some(Role::Admin) {
             return Err(Error::Permission { tid: *person });
         }
-        Ok(Done { commits: Vec::new(), deliveries: vec![Delivery::Certificate { commits: vec![*grant], under: *person }] })
+        Ok(Done { deliveries: vec![Delivery::Certificate { commits: vec![*grant], under: *person }], ..Done::default() })
     }
 
     /// Recovery from a card on this (fresh) device (spec/permissions.md §9), once the home label
