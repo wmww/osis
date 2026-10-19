@@ -43,7 +43,22 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     for src in [osis_schema::CORE_SRC, osis_schema::META_SRC] {
         schema.push([b"\x01".to_vec(), src.as_bytes().to_vec()].concat());
     }
+    let mut prefixes = field_bytes("blob", "prefix");
+    prefixes.extend(field_bytes("blob", "blob"));
+    prefixes.extend(field_bytes("blob", "padded"));
+    let mut steps = field_bytes("step", "step");
+    steps.extend(field_bytes("step", "claim-set"));
+    let mut signals = field_bytes("signal", "body");
+    signals.extend(field_bytes("signal", "publish-auth"));
+    let mut links = field_bytes("link", "bytes");
+    links.extend(field_text("link", "text").into_iter().map(|t| [vec![0], t].concat()));
     vec![
+        ("blob_prefix", prefixes),
+        ("step", steps),
+        ("inbox", field_bytes("inbox", "payload")),
+        ("signal", signals),
+        ("link_card", links),
+        ("bundle", field_bytes("bundle", "bundle")),
         ("cbor_decode", cbor),
         ("schema_dsl", schema),
         ("creation_record", records),

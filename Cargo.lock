@@ -946,6 +946,7 @@ version = "0.1.0"
 dependencies = [
  "osis-core",
  "osis-crypto",
+ "osis-label",
  "osis-schema",
 ]
 

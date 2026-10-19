@@ -23,9 +23,10 @@ Spec: spec/sync.md §1–§5, §9 (envelope), §11; spec/crypto.md §5–§7; sp
 - [x] Labels, role keys, steps, step IDs, path validation; claim sets and claim keys both sides; entry boxes.
 - [x] Open/register/stamp signatures; token presentation/verification; inbox blob; signal envelope.
 - [x] `/label` types, Address, link and card formats; bundle writer/reader.
-- [ ] Vectors for each object; proptests: claim set size is a power of two and hides the count below it; a claim key verifies at its step only; a stamp binds the wrap (altered wrap fails).
+- [x] Vectors for each object; proptests: claim set size is a power of two and hides the count below it; a claim key verifies at its step only; a stamp binds the wrap (altered wrap fails).
 
 ## Done when
 server and node-sync use only this crate for label objects; vectors frozen after protocol-spec; notes/sync.md "Implementation" section lists layouts and limits. Delete this plan.
 
 ## Progress
+- Steps 1-5 landed on the worktree branch: blob framing, chunk trees and blob-backed pages, steps and claim sets, signatures and open evaluation, inbox, signal, `/label`, links and cards, bundles; vectors provisional; fuzz targets live. Open: commit-blob vector case and inbox commit typing wait for osis-commit; vectors freeze at toplevel review.

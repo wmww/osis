@@ -321,7 +321,9 @@ pub enum Parent<'a> {
 /// claim key per DH reader (a non-contributory result omits it), one static entry and entry box
 /// per key actor, padded with random public keys to a power of two, shuffled. `read` is the
 /// registered read epoch and its secret. The step private key is dropped (zeroized) on return.
-/// A step without rotation passes the parent's keys.
+/// A step without rotation passes the parent's keys. Randomness in draw order: the step key
+/// (32 bytes), per sealed entry box the seal's ephemeral key and ML-KEM randomness (32 + 32), 32
+/// per padding key, 8 per shuffle swap.
 pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch, &Secret32), rng: &mut dyn CryptoRngCore) -> Result<(Step, ClaimSet), Error> {
     let (label, prev, signer) = match parent {
         Parent::Genesis(own) => {
@@ -371,10 +373,13 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch
     Ok((step, set))
 }
 
+/// Fisher-Yates from the end; each draw is 8 bytes read as le64, reduced mod `i + 1`.
 fn shuffle<T>(v: &mut [T], rng: &mut dyn CryptoRngCore) {
     for i in (1..v.len()).rev() {
+        let mut b = [0u8; 8];
+        rng.fill_bytes(&mut b);
         let bound = u64::try_from(i + 1).unwrap_or(u64::MAX);
-        let j = usize::try_from(rng.next_u64() % bound).unwrap_or(0);
+        let j = usize::try_from(u64::from_le_bytes(b) % bound).unwrap_or(0);
         v.swap(i, j);
     }
 }
