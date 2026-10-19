@@ -384,7 +384,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         }
     }
     let lowers = changed.iter().any(|(target, m, new)| {
-        let old = core.timelines.get(target).map(|tl| tl.roster(target, At::END)).and_then(|r| r.get(m).copied());
+        let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
         old.is_some() && osis_perm::types::lowers(new.as_ref(), old.as_ref())
     });
     if h.frontier.is_some() && !lowers && !changed.is_empty() {

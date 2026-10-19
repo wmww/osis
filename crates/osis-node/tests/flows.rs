@@ -412,6 +412,8 @@ fn link_redeem_single_use_spec_perm_9() {
     spread(&mut lp);
     assert!(lp.peers[2].engine.redeem(&link, &ps2, true).is_err());
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
+    // a self-removed edge has no removal to write (issues/link-finalization.md)
+    assert!(lp.peers[0].engine.finalize_link(&link.k, &l).is_err());
 }
 
 // spec/permissions.md §9: bearer use reads without writing; `until` expires the link.
@@ -429,6 +431,19 @@ fn link_bearer_and_until_spec_perm_9() {
     assert_eq!(lp.peers[1].engine.commit_ids().len(), before, "and writes nothing");
     lp.advance(2 * 3_600_000);
     assert!(lp.peers[1].engine.redeem(&link, &ps1, false).is_err(), "expired");
+    // the sharer finalizes: a plain removal of L (with a frontier); K rotates before the next
+    // encryption under it (`until` was the departure)
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    let k0 = newest_read(&lp, 0, link.k).unwrap();
+    let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
+    assert!(lp.peers[0].engine.header(&fin.commits[0]).unwrap().frontier.is_some());
+    assert!(!lp.peers[0].engine.roster(&link.k).contains_key(&l));
+    let (rot, still) = lp.peers[0].engine.ensure_rotated(&link.k).unwrap();
+    assert!(still.is_empty() && rot.commits.len() == 1);
+    let k1 = newest_read(&lp, 0, link.k).unwrap();
+    assert_ne!(k0, k1);
+    sync(&mut lp, 0, 1);
+    assert!(lp.peers[1].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the bearer is out");
 }
 
 // spec/permissions.md §3 (re-seal): a grant raced by a rotation leaves the grantee without a

@@ -36,7 +36,8 @@ pub(crate) fn direct_departures(core: &Core, a: &Tid) -> BTreeSet<Departure> {
             continue;
         }
         let at = Some(mc.ts);
-        let old = tl.edges_at(Some(mc.point())).get(&op.member, a).filter(|e| e.alive_at(at)).map(|e| e.role);
+        // an edge past its `until` still counts: its departure is the `until`'s
+        let old = tl.edges_at(Some(mc.point())).get(&op.member, a).map(|e| e.role);
         let new = op.edge.filter(|e| e.alive_at(at)).map(|e| e.role);
         out.extend(Departure::of_change(op.member, old, new));
     }

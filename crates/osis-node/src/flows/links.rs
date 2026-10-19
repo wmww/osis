@@ -80,6 +80,28 @@ impl Engine {
         Ok(done)
     }
 
+    /// Finalizes a link (spec/permissions.md §9): a sharer device's plain removal of L from K,
+    /// an explicit demotion (frontier, K's rotation), after `until` passed or to revoke the
+    /// link. A single-use link whose L already removed itself has no edge left to remove
+    /// (issues/link-finalization.md): an error.
+    pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
+        let has = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
+        if !has {
+            return Err(Error::Misuse("no edge of the link key left to remove (issues/link-finalization.md)"));
+        }
+        self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync: crate::flows::PreSync::Synced })
+    }
+
+    /// Revokes one joiner of a link (spec/permissions.md §9): removes it and L from K (it may
+    /// still hold the seed); the remaining joiners need a new link.
+    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync) -> Result<Done> {
+        let mut done = self.demote(k, &crate::flows::Demotion { member: *joiner, new: None, presync })?;
+        if self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some()) {
+            done.extend(self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync })?);
+        }
+        Ok(done)
+    }
+
     /// Bearer use (spec/permissions.md §9): act as L without writing anything; reads open
     /// through L's boxes once K's label is downloaded. Returns L.
     pub fn bear(&mut self, link: &ShareLink) -> Result<Tid> {
