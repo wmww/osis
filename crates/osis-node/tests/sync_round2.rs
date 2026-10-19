@@ -208,3 +208,25 @@ fn deposits_in_flight_not_resent_spec_sync_5() {
     assert!((1..=2).contains(&burst), "deposits re-sent in the burst: {burst}");
     assert!(total <= burst + 3, "{total}");
 }
+
+// spec/sync.md §6 (a strict-subset blob of a commit is must-not-hold), spec/permissions.md §4:
+// a certificate copy of deltas an entry of the commit under the label already holds is not
+// placed (it was uploaded, then deleted by the holder of the fuller blob).
+#[test]
+fn no_certificate_copy_of_held_deltas_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    let t = net.item(a, g, g, "v1");
+    let c = net.write(a, t, "v2");
+    net.run();
+    let l = net.label(a);
+    let before = blobs_of(&mut net, a, &l, &c);
+    assert_eq!(before.len(), 1);
+    let ais: std::collections::BTreeSet<usize> = (0..net.engine(a).header(&c).unwrap().aspects.len()).collect();
+    let acts = net.sync(a).place_certificate(&g, &c, &ais).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert_eq!(blobs_of(&mut net, a, &l, &c), before);
+}
