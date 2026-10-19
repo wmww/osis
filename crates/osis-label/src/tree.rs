@@ -765,6 +765,38 @@ mod tests {
         assert_eq!(r.get(&bad), Err(PageError::Missing));
     }
 
+    // spec/crdt.md §8, spec/sync.md §6, spec/commits.md §1: a paged snapshot goes out through
+    // BlobWriter (pages framed with the delta's expiry and tokens, listed for the chunk list) and
+    // back through BlobReader; without a page the commit cannot apply (Missing, fetch and retry).
+    #[test]
+    fn paged_snapshot() {
+        use osis_crdt::{AnyView, CounterRange, DeltaCtx, DeltaKind, Frontiers, Interner, Snapshot, Source, Writer, create, decode_snapshot, encode_snapshot};
+        use osis_core::{Tid, Ts};
+        let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8 };
+        let ts = Ts::from_u64(1 << 40).unwrap();
+        let own = Source::node(Tid::from_bytes([5; 15]));
+        let elems: std::collections::BTreeSet<Value> = (0..500).map(|i| Value::Str(format!("element {i}"))).collect();
+        let fragment = create(&mut Writer::new(ts, own.clone(), 1), &AnyView, &Value::Set(elems)).unwrap();
+        let snap = Snapshot { nonce: [0; 16], fragment, frontiers: Frontiers::default() };
+        let cx = DeltaCtx { ts, own: Source::node(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(12);
+        let mut w = BlobWriter::new(&f, &mut store, &mut rng).with_page_params(params);
+        let bytes = encode_snapshot(&snap, &cx, Some(&mut w)).unwrap();
+        let written = w.into_written();
+        assert!(written.len() > 3);
+        for wr in &written {
+            let p = Prefix::parse(&store.0[&wr.id]).unwrap();
+            assert_eq!((p.expiry(), wr.token_hashes.len(), p.salt()), (f.expiry, 2, &wr.salt));
+        }
+        let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
+        assert_eq!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)).unwrap().fragment, snap.fragment);
+        store.0.remove(&written[1].id);
+        let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
+        assert!(matches!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)), Err(osis_crdt::Error::Page(PageError::Missing))));
+    }
+
     proptest! {
         // spec/wire.md §6: round trip for random sizes incl. empty; incremental equals one-shot.
         #[test]

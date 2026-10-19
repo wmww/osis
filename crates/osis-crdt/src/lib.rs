@@ -34,7 +34,7 @@ mod tests_laws;
 mod tests_review;
 
 pub use changes::{Changes, Death};
-pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
+pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use batch::Batch;

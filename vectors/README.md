@@ -15,6 +15,7 @@ Byte strings are lowercase hex. Inputs too large to inline are written as `xof("
 - `tid/` (spec/wire.md §3): `record` (canonical bytes of the creation record), `tid`, `text`, `uri`; or `record` with `reject: creation-fields` (both or neither of fields 0 and 1).
 - `chunker/` (spec/wire.md §6): `table-blake3`, `g0`, `g255` (little-endian bytes of the gear table and entries); `input` with `lengths` (chunk lengths in order).
 - `chunker/tree.vec` (spec/wire.md §6): chunk tree of `input` with the format chunker: `dedup` (dedup secret), `chunks` (leaf count), `level-<k>` (link counts of the level-k nodes in order), `root-hash` (root content hash). No encryption: the shape and hashes depend on the bytes and the dedup secret only.
+- `chunker/pages.vec` (spec/crdt.md §8, spec/wire.md §6): an element array (`input`) paged at the format's parameters: `pages` (element counts of the pages in order), `link-pages` (link counts of the link pages in order, when the page links exceed `PAGE_TARGET`), `top` (content hashes of the array's links as written, keyed by `dedup`).
 - `padme/` (spec/wire.md §5, hand-written): `l` and `padme` (= padme(l)); `p` and `padded` (= pad(p)); or `padded` with `reject: padding`.
 - `tid/key-actor.vec`: as `tid/`, plus `seed` and `signing-key` (from the seed as in `keys/`) and the `nonce` used (random for a node, `kdf("creation nonce", seed, "")` for a link key).
 - `kdf/` (spec/crypto.md §1): `purpose`, `secret`, `input`, `out` (the XOF form when longer than 32 bytes); `derive-key-context`, `material`, `out` for a direct BLAKE3 derive_key.

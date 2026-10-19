@@ -36,6 +36,7 @@ vector_files! {
     blob_prefix => "blob/prefix.vec",
     blob_blobs => "blob/blobs.vec",
     chunker_tree => "chunker/tree.vec",
+    chunker_pages => "chunker/pages.vec",
     step_steps => "step/steps.vec",
     inbox_inbox => "inbox/inbox.vec",
     signal_signal => "signal/signal.vec",
