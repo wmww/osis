@@ -42,6 +42,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
         "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         "proto/messages.vec" => Subject { generate: Some(proto::messages), check: None },
+        "proto/reconcile.vec" => Subject { generate: Some(proto::reconcile), check: None },
         _ => return None,
     })
 }

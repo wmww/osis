@@ -24,5 +24,5 @@ signal/signal.vec pending osis-label
 link/link.vec pending osis-label (link and card formats)
 schema/core.vec provisional
 proto/messages.vec provisional
-proto/reconcile.vec pending osis-proto
+proto/reconcile.vec provisional
 bundle/bundle.vec pending osis-label

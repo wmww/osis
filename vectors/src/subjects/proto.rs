@@ -4,7 +4,7 @@
 use super::{case, generated_header};
 use crate::file::VecFile;
 use crate::hex;
-use osis_core::{Value, cbor};
+use osis_core::{BlobId, LabelId, Value, cbor};
 use osis_proto::{Hello, Message, encode_frame, examples};
 
 const SPEC: &str = "spec/wire.md §11.2";
@@ -69,4 +69,86 @@ pub fn messages() -> VecFile {
     }
     cases.push(case("zero-length frame", "spec/wire.md §11.1").with("frame", "00000000").with("reject", "frame-length").with("answer", "2"));
     VecFile { header: generated_header("proto", SPEC), cases }
+}
+
+/// The fixed reconciliation universe: 32-byte slices of `xof("osis proto reconcile", 32 n)`.
+fn universe(n: usize) -> Vec<BlobId> {
+    crate::xof("osis proto reconcile", 32 * n).chunks_exact(32).map(|c| BlobId(c.try_into().unwrap())).collect()
+}
+
+fn hash_ids(ids: &[BlobId]) -> String {
+    hex(&osis_core::hash::hash(&ids.iter().flat_map(|i| i.0).collect::<Vec<u8>>()))
+}
+
+fn ranges_of(m: &Message) -> &[osis_proto::Range] {
+    match m {
+        Message::Reconcile { ranges, .. } | Message::ReconcileReply { ranges, .. } => ranges,
+        _ => unreachable!(),
+    }
+}
+
+pub fn reconcile() -> VecFile {
+    use osis_proto::rbsr::{Reconciler, fingerprint, respond};
+    const SPEC3: &str = "spec/wire.md §11.3";
+    let mut cases = Vec::new();
+    let u = universe(10_100);
+    let mut first = u[..100].to_vec();
+    first.sort();
+    cases.push(case("fingerprint of 100 ids", SPEC3).with("ids", "the first 100 ids of the universe below").with("fingerprint", hex(&fingerprint(&first))));
+    cases.push(case("fingerprint of the empty set", SPEC3).with("fingerprint", hex(&fingerprint(&[]))));
+    let mut one = [0u8; 32];
+    one[0] = 1;
+    cases.push(
+        case("fingerprint sum wraps mod 2^256", SPEC3)
+            .with("ids", format!("{},{}", hex(&one), hex(&[0xff; 32])))
+            .with("fingerprint", hex(&fingerprint(&[BlobId(one), BlobId([0xff; 32])]))),
+    );
+    // Requester A and responder B: 9900 common IDs, then 100 only A holds, then 100 only B holds.
+    let mut a: Vec<_> = u[..10_000].to_vec();
+    let mut b: Vec<_> = u[..9_900].iter().chain(&u[10_000..]).copied().collect();
+    a.sort();
+    b.sort();
+    let mut r = Reconciler::new(&a);
+    let (mut step, mut round) = (0, 0u32);
+    while r.has_queued() {
+        round += 1;
+        let mut replies = Vec::new();
+        while let Some(batch) = r.next_batch() {
+            let req = Message::Reconcile { id: round, label: LabelId([0x0a; 16]), ranges: batch };
+            let reply = Message::ReconcileReply { id: round, ranges: respond(&b, ranges_of(&req)).unwrap() };
+            for (dir, m) in [("request", &req), ("reply", &reply)] {
+                step += 1;
+                let enc = m.encode();
+                let mut c = case(&format!("transcript {step}"), SPEC3)
+                    .with("round", round.to_string())
+                    .with("direction", dir)
+                    .with("ranges", ranges_of(m).len().to_string())
+                    .with("body-blake3", hex(&osis_core::hash::hash(&enc)));
+                if step <= 2 {
+                    c = c.with("hex", hex(&enc));
+                }
+                cases.push(c);
+            }
+            replies.push(ranges_of(&reply).to_vec());
+        }
+        for rep in replies {
+            r.on_reply(&a, &rep);
+        }
+    }
+    let need: Vec<_> = r.need.iter().copied().collect();
+    let have: Vec<_> = r.have.iter().copied().collect();
+    let mut want_need = u[10_000..].to_vec();
+    let mut want_have = u[9_900..10_000].to_vec();
+    want_need.sort();
+    want_have.sort();
+    assert_eq!((&need, &have), (&want_need, &want_have));
+    cases.push(
+        case("transcript result", SPEC3)
+            .with("sets", "universe = xof(\"osis proto reconcile\", 323200) as 10100 ids; A = ids 0..10000, B = ids 0..9900 and 10000..10100; A requests")
+            .with("split", "16 subranges of near-equal own counts (subrange i holds own ids i*n/16..(i+1)*n/16), bounds the first own id of each (full 32 bytes); requests batch the queued ranges sorted by lower bound, 256 per message; replies are applied after the round")
+            .with("rounds", round.to_string())
+            .with("need", format!("{} ids, blake3 of the sorted concatenation {}", need.len(), hash_ids(&need)))
+            .with("have", format!("{} ids, blake3 of the sorted concatenation {}", have.len(), hash_ids(&have))),
+    );
+    VecFile { header: generated_header("proto", SPEC3), cases }
 }

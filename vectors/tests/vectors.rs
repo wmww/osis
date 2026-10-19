@@ -33,6 +33,7 @@ vector_files! {
     sign_signatures => "sign/signatures.vec",
     schema_core => "schema/core.vec",
     proto_messages => "proto/messages.vec",
+    proto_reconcile => "proto/reconcile.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes
