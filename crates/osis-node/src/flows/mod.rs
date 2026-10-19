@@ -281,7 +281,7 @@ pub(crate) fn deposit_of(tx: &mut Tx<'_>, actor: &Tid) -> Result<[u8; 32]> {
 }
 
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
-    Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| ct::SECRETS.decode(&v).ok()).unwrap_or_default())
+    Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).

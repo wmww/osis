@@ -725,6 +725,37 @@ fn no_rotation_that_cannot_cover_spec_perm_3() {
     }
 }
 
+// spec/permissions.md §7, spec/crypto.md §3, §4: a doc moved into a team without secrets of
+// its own: the copy's own-secrets rotation boxes nobody (the team has no keyset). The writer,
+// who does not read the team, gets the re-grant before the rotation commit (wrapped under the
+// copy's derived epoch): its history box hands it that epoch, and once the rotation commit is
+// opened its write epoch is established.
+#[test]
+fn move_into_derived_owner_spec_perm_7() {
+    let (mut lp, ps) = people(2, 519);
+    let (pa, pb) = (ps[0], ps[1]);
+    let team = thing_of(&mut lp, 0, pa);
+    let doc = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let (copy, done) = lp.peers[0].engine.move_to(&doc, &team).unwrap();
+    let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let (own, rest): (Vec<CommitId>, Vec<CommitId>) = new.into_iter().partition(|c| {
+        let h = lp.peers[0].engine.header(c).unwrap();
+        h.aspects.iter().any(|a| a.tid == copy && a.ak.as_str() == "/keys") && !h.aspects.iter().any(|a| a.ak.as_str() == "/members")
+    });
+    assert_eq!(own.len(), 1, "the copy's own-secrets rotation");
+    send(&mut lp, 0, 1, &rest);
+    carry(&mut lp, 0, &done);
+    let e = lp.peers[1].engine.epochs(&copy).unwrap();
+    let derived = lp.peers[0].engine.epochs(&copy).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
+    assert!(e.read.secret(&derived).is_some(), "the grant's history box opens the derived epoch");
+    send(&mut lp, 0, 1, &own);
+    let e = lp.peers[1].engine.epochs(&copy).unwrap();
+    assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
+}
+
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the server's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]

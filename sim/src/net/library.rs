@@ -354,7 +354,7 @@ pub fn move_import(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    // the team has no secrets of its own (derived from the sharer's person)
+    // the team has no secrets of its own: the copy's own-secrets rotation boxes nobody
     let team = sim.group(a, pa, &[s])?;
     let doc = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, doc)?;
