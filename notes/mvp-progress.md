@@ -18,10 +18,10 @@ Wave 1 (tla-models still running from wave 0).
 | tla-models | running (opus, worktree) | wave 0, ∥, low priority |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | running (opus, worktree) | |
-| crdt-core | running (opus, worktree) | returns after step 1 (skeleton) for merge, then continued by message |
+| crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
 | test-infra | running (opus, worktree) | |
-| schema | not started | starts on crdt-core skeleton merge |
+| schema | running (opus, worktree) | |
 | store | not started | wave 1, after crypto AEAD+kdf |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
 | node-core, server, transport, large-values | not started | wave 3 |
