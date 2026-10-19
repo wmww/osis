@@ -353,7 +353,7 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
 /// Disk loss and recovery from the card (spec/permissions.md §9): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the
-/// remaining device. Fails: issues/flows-recovered-device-writes.md.
+/// remaining device.
 pub fn disk_loss(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd1);
     let mut sim = sim("disk_loss", seed, NetWeights::default());

@@ -254,6 +254,15 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, sc
     Ok((retention, expires, framing))
 }
 
+/// The writer's own source: the author node, or for commit form a placeholder commit that
+/// sorts below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
+fn own_source(form: Form, node: Tid) -> Source {
+    match form {
+        Form::Node => Source::node(node),
+        Form::Commit => Source::commit(osis_core::CommitId([0; 32])),
+    }
+}
+
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
     let node = plan.signer;
@@ -265,7 +274,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
-        let cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
+        let mut cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
+        cx.own = own_source(plan.form, node);
         let mut blobs = TxBlobs::new(&mut tx.txn);
         let bytes = {
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
@@ -390,7 +400,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Form::Node => tx.txn.counter(&tid, &ak)?,
             Form::Commit => next_ctr,
         };
-        let w = Writer::new(ts, Source::node(node), lo);
+        let w = Writer::new(ts, own_source(m.form, node), lo);
         tx.load(&tid, &ak)?;
         let empty = Fragment::default();
         let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
@@ -399,7 +409,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Some(v) => run_ops(state, w, &am.ops, v)?,
             None => run_ops(state, w, &am.ops, &AnyView)?,
         };
-        let w2 = Writer::new(ts, Source::node(node), lo);
+        let w2 = Writer::new(ts, own_source(m.form, node), lo);
         let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
             (o, None) => o,
             (Some((mut f, r)), Some(ds)) => {

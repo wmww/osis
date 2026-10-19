@@ -223,8 +223,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, id, &parts);
     }
+    // a late `/secrets` delta is a rotation applied now (spec/crypto.md §4 established)
+    let pend = super::keys::before_join(tx, &h, &parts, &meta.valid)?;
     let mut changed = BTreeSet::new();
-    for (ai, _, d) in parts {
+    for (ai, _, d) in &parts {
+        let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
@@ -255,6 +258,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
+    super::keys::after_join(tx, &h, &parts, &meta.valid, pend)?;
     let mut flipped = Vec::new();
     if held_changed {
         flipped = validity::rejudge_all(tx, true)?;

@@ -77,7 +77,6 @@ fn compaction() {
 
 // spec/permissions.md §9: disk loss and recovery from the card.
 #[test]
-#[ignore = "issues/flows-recovered-device-writes.md"]
 fn disk_loss() {
     ok("disk_loss", 1);
 }
