@@ -21,6 +21,8 @@ macro_rules! vector_files {
 // A file leaving `pending` in MANIFEST adds its line here.
 vector_files! {
     cbor_values => "cbor/values.vec",
+    tid_thing => "tid/thing.vec",
+    chunker_gear => "chunker/gear.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

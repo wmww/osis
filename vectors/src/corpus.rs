@@ -46,12 +46,15 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
     ]
 }
 
-/// Writes the seeds; returns how many files were written.
+/// Replaces each target's seed directory with the seeds; returns how many files were written.
 pub fn write() -> Result<usize, String> {
     let base = root().join("../fuzz/corpus");
     let mut n = 0;
     for (target, seeds) in seeds() {
         let dir = base.join(target);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+        }
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         for s in seeds {
             let name = &crate::hex(&osis_core::hash::hash(&s))[..16];

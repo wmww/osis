@@ -16,12 +16,12 @@ Wave 1 (tla-models still running from wave 0).
 | workspace | merged at 4b6ec14 | plan folded into notes/architecture.md |
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | running (opus, worktree) | wave 0, ∥, low priority |
-| core alignment to wire.md | running (opus, worktree) | narrow task, not a plan |
+| core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | running (opus, worktree) | |
-| crdt-core | running (opus, worktree) | returns after step 1 (skeleton) for merge, then continued by message |
+| crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
 | test-infra | running (opus, worktree) | |
-| schema | not started | starts on crdt-core skeleton merge |
+| schema | running (opus, worktree) | |
 | store | not started | wave 1, after crypto AEAD+kdf |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
 | node-core, server, transport, large-values | not started | wave 3 |
@@ -38,6 +38,7 @@ None.
 - spec/sync.md §3: a projection class whose blob would exceed `MAX_BLOB` splits into several blobs, greedily in aspect-list order (pre-flight found no path under `MAX_BLOB` for a commit touching many aspects). spec/commits.md §1: one delta must fit a blob; the writer refuses the rare struct-of-many-large-registers shape (issues/struct-delta-size.md).
 
 - protocol-spec (filling TBDs into spec/wire.md) also changed: tree-node link content hashes cover child hashes, not the subtree's bytes (spec/data-model.md §6, spec/crypto.md §6; O(change) edits); a recovery key's nonce derives from its seed like a link key's (spec/crypto.md §3); blob AEAD AD is the clear prefix and the inbox AD adds it (spec/crypto.md §5); the token, purge and origin lists go inline-or-link like the aspect list instead of a token cap (spec/commits.md §1); header-list chunk commitments capped (spec/crypto.md §7, owner-call); entry boxes live inside the claim set the step hashes (spec/sync.md §2); a link may carry the sharer node's dialable key and relays for first contact (spec/permissions.md §9).
+- crdt-core: spec/crdt.md §3.3 rule 2: a commit-form delta's own source sorts below every other commit ID in element/entry/run arrays (sorting by its real ID was circular: the ID hashes the delta).
 
 ## Owner-calls pending
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).

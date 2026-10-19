@@ -3,6 +3,7 @@ name = "osis-vectors"
 description = "Conformance vector format, runner, generator and freeze check"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 

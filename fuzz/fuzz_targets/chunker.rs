@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 use osis_core::ChunkParams;
 use osis_core::chunker::{Chunker, chunk_lengths};
 
-const SMALL: ChunkParams = ChunkParams { min: 64, avg: 256, max: 1024 };
+const SMALL: ChunkParams = ChunkParams { min: 64, max: 1024, mask_bits: 8 };
 
 fuzz_target!(|data: &[u8]| {
     let Some((&split, data)) = data.split_first() else { return };

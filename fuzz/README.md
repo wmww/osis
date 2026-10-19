@@ -9,7 +9,7 @@ cargo +nightly fuzz run <target> /tmp/fz-<target> corpus/<target> -- -max_total_
 ```
 The first directory receives new inputs (keep it out of the repo); `corpus/<target>` is the committed seed corpus, read-only. Smoke run: `-- -runs=1000`. List targets: `cargo +nightly fuzz list`. Coverage of a target: `cargo +nightly fuzz coverage <target> corpus/<target>`.
 
-Seeds come from the vectors: `cargo run -p osis-vectors --bin gen-vectors -- corpus` rewrites `corpus/` (osis-vectors `corpus.rs`). Keep corpora small; never commit `artifacts/` or a minimized run's output.
+Seeds come from the vectors: `cargo run -p osis-vectors --bin gen-vectors -- corpus` replaces each target directory of `corpus/` (osis-vectors `corpus.rs`; seeds added by hand are lost, add them there). Keep corpora small; never commit `artifacts/` or a minimized run's output.
 
 ## A crash
 1. Reproduce: `cargo +nightly fuzz run <target> artifacts/<target>/crash-...`.

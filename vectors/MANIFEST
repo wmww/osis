@@ -4,7 +4,7 @@
 #   <path> pending <who or what produces it>
 cbor/values.vec provisional
 padme/padme.vec pending osis-crypto (spec/wire.md §5 padding)
-tid/thing.vec pending osis-core alignment to spec/wire.md §3 (creation record layout)
+tid/thing.vec provisional
 tid/key-actor.vec pending osis-crypto (Ed25519 key from seed 03; link-key nonce)
 kdf/purposes.vec pending osis-crypto
 keys/seed.vec pending osis-crypto
@@ -12,7 +12,7 @@ box/boxes.vec pending osis-crypto, osis-keys
 wrap/wrap.vec pending osis-crypto
 blob/prefix.vec pending osis-label
 blob/blobs.vec pending osis-label
-chunker/gear.vec pending osis-core alignment to spec/wire.md §6 (gear table, boundary rule)
+chunker/gear.vec provisional
 chunker/tree.vec pending osis-label (chunk tree of a 64 MiB XOF value)
 chunker/pages.vec pending osis-crdt (page split, link-page grouping)
 commit/headers.vec pending osis-commit

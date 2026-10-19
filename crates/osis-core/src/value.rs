@@ -16,7 +16,7 @@ pub enum Value {
     Str(String),
     Bytes(Vec<u8>),
     Tid(Tid),
-    /// Case ID and optional payload.
+    /// Case ID (a CBOR uint, so up to u64; schema case IDs are small) and optional payload.
     Enum(u64, Option<Box<Value>>),
     /// Also the struct representation (int keys).
     Map(BTreeMap<Value, Value>),
@@ -80,15 +80,15 @@ impl Value {
     pub fn float(f: f64) -> Value {
         Value::Float(Float::new(f))
     }
-    /// Nesting depth as the decoder counts it: a scalar is 1; arrays, maps and tags add one.
+    /// Nesting depth as the decoder counts it: arrays, maps and tags on the deepest path.
     pub fn depth(&self) -> usize {
         fn max(it: impl Iterator<Item = usize>) -> usize {
             it.max().unwrap_or(0)
         }
         match self {
-            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => 1,
-            Value::Tid(_) => 2,
-            Value::Enum(_, None) | Value::Link(_) => 3,
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => 0,
+            Value::Tid(_) => 1,
+            Value::Enum(_, None) | Value::Link(_) => 2,
             Value::Enum(_, Some(p)) => 2 + p.depth(),
             Value::List(l) => 1 + max(l.iter().map(Value::depth)),
             Value::Map(m) => 1 + max(m.iter().map(|(k, v)| k.depth().max(v.depth()))),

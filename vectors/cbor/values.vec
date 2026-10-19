@@ -202,10 +202,8 @@ case: reject 65 arrays deep
 spec: spec/data-model.md §5
 hex: 818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818181818100
 reject: too-deep
-pending: osis-core alignment to spec/wire.md (depth limit 64)
 
 case: reject tid of 14 bytes
 spec: spec/data-model.md §5
 hex: d906504e0000000000000000000000000000
 reject: tag-content
-pending: osis-core alignment to spec/wire.md (tag 1616)

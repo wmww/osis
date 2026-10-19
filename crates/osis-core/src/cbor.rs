@@ -22,7 +22,7 @@ const FLOAT64: u8 = 0xfb;
 /// Decoder limits; every decode takes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
-    /// Deepest nesting: a scalar is depth 1; arrays, maps and tags add one.
+    /// Deepest nesting: arrays, maps and tags on the deepest path (a scalar is 0).
     pub max_depth: usize,
     /// Most bytes one value may span.
     pub max_bytes: usize,
@@ -95,7 +95,7 @@ impl CanonicalBytes {
     /// Checks that `bytes` is exactly one value in the profile.
     pub fn parse(bytes: Vec<u8>, limits: &Limits) -> Result<CanonicalBytes, DecodeError> {
         let mut d = Decoder::new(&bytes, limits);
-        d.item(1)?;
+        d.item(0)?;
         if d.pos != bytes.len() {
             return Err(DecodeError::Trailing);
         }
@@ -240,7 +240,7 @@ pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
 /// Decodes one value from the start of `input`; returns it with the bytes it spans.
 pub fn decode_prefix<'a>(input: &'a [u8], limits: &Limits) -> Result<(Value, &'a [u8]), DecodeError> {
     let mut d = Decoder::new(input, limits);
-    let v = d.item(1)?;
+    let v = d.item(0)?;
     Ok((v, input.get(..d.pos).unwrap_or(input)))
 }
 
@@ -327,11 +327,17 @@ impl<'a> Decoder<'a> {
         Ok(b)
     }
 
-    fn item(&mut self, depth: usize) -> Result<Value, DecodeError> {
-        if depth > self.max_depth {
+    /// Opens an array, map or tag at nesting `level`.
+    fn enter(&mut self, level: usize) -> Result<(), DecodeError> {
+        if level > self.max_depth {
             return Err(DecodeError::TooDeep);
         }
-        self.deepest = self.deepest.max(depth);
+        self.deepest = self.deepest.max(level);
+        Ok(())
+    }
+
+    /// One item inside `depth` arrays, maps and tags.
+    fn item(&mut self, depth: usize) -> Result<Value, DecodeError> {
         let ib = self.byte()?;
         match ib >> 5 {
             MAJOR_UINT => {
@@ -353,6 +359,7 @@ impl<'a> Decoder<'a> {
                 Ok(Value::Str(s.to_owned()))
             }
             MAJOR_ARRAY => {
+                self.enter(depth + 1)?;
                 let n = self.len(ib, 1)?;
                 let mut l = Vec::new();
                 for _ in 0..n {
@@ -361,6 +368,7 @@ impl<'a> Decoder<'a> {
                 Ok(Value::List(l))
             }
             MAJOR_MAP => {
+                self.enter(depth + 1)?;
                 let n = self.len(ib, 2)?;
                 let mut m = BTreeMap::new();
                 let mut prev: &[u8] = &[];
@@ -397,12 +405,10 @@ impl<'a> Decoder<'a> {
 
     fn tagged(&mut self, tag: u64, depth: usize) -> Result<Value, DecodeError> {
         let inner = depth + 1;
-        if inner > self.max_depth {
-            return Err(DecodeError::TooDeep);
-        }
+        self.enter(inner)?;
         match tag {
             TAG_SET => {
-                self.deepest = self.deepest.max(inner);
+                self.enter(inner + 1)?;
                 let ib = self.byte()?;
                 if ib >> 5 != MAJOR_ARRAY {
                     return Err(DecodeError::TagContent(tag));
@@ -422,15 +428,9 @@ impl<'a> Decoder<'a> {
                 }
                 Ok(Value::Set(s))
             }
-            TAG_TID => {
-                self.deepest = self.deepest.max(inner);
-                Ok(Value::Tid(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?)))
-            }
+            TAG_TID => Ok(Value::Tid(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
             TAG_ENUM => {
-                self.deepest = self.deepest.max(inner + 1);
-                if inner + 1 > self.max_depth {
-                    return Err(DecodeError::TooDeep);
-                }
+                self.enter(inner + 1)?;
                 let n = self.expect(MAJOR_ARRAY, tag)?;
                 if n != 1 && n != 2 {
                     return Err(DecodeError::TagContent(tag));
@@ -440,10 +440,7 @@ impl<'a> Decoder<'a> {
                 Ok(Value::Enum(case, payload))
             }
             TAG_LINK => {
-                self.deepest = self.deepest.max(inner + 1);
-                if inner + 1 > self.max_depth {
-                    return Err(DecodeError::TooDeep);
-                }
+                self.enter(inner + 1)?;
                 if self.expect(MAJOR_ARRAY, tag)? != 3 {
                     return Err(DecodeError::TagContent(tag));
                 }
@@ -456,7 +453,7 @@ impl<'a> Decoder<'a> {
                 let start = self.pos;
                 let saved = std::mem::take(&mut self.deepest);
                 self.item(inner)?;
-                let content_depth = self.deepest - depth;
+                let content_depth = self.deepest.saturating_sub(inner);
                 self.deepest = self.deepest.max(saved);
                 let bytes = self.buf.get(start..self.pos).unwrap_or(&[]).to_vec();
                 let content = CanonicalBytes { bytes, depth: content_depth };
