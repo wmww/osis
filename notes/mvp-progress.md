@@ -17,11 +17,11 @@ Wave 1 (tla-models still running from wave 0).
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | running (opus, worktree) | wave 0, ∥, low priority |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
-| crypto | merged at 3bd329c, reviewed | follow-up agent: getrandom gating, zeroization, vectors to .vec, benches to osis-bench |
+| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
-| schema | running (opus, worktree) | |
+| schema | review | branch worktree-agent-abfb237e9b3308def; reviewer running |
 | store | running (opus, worktree) | |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
 | node-core, server, transport, large-values | not started | wave 3 |
