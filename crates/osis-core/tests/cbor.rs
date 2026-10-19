@@ -66,6 +66,43 @@ fn mutate(mut b: Vec<u8>, ops: &[(u8, usize, u8)]) -> Vec<u8> {
     b
 }
 
+fn check_ord(a: &Value, b: &Value) -> Result<(), TestCaseError> {
+    prop_assert_eq!(a.cmp(b), encode(a).cmp(&encode(b)));
+    prop_assert_eq!(a == b, encode(a) == encode(b));
+    Ok(())
+}
+
+fn check_mutation(v: &Value, ops: &[(u8, usize, u8)]) -> Result<(), TestCaseError> {
+    let b = mutate(encode(v), ops);
+    if let Ok(w) = d(&b) {
+        prop_assert_eq!(&encode(&w), &b);
+    }
+    if let Ok((w, used)) = decode_prefix(&b, &Limits::DEFAULT) {
+        prop_assert_eq!(encode(&w), used.to_vec());
+    }
+    Ok(())
+}
+
+/// Slow tier (notes/architecture.md §4): 20000 cases whatever `PROPTEST_CASES` says.
+fn slow_runner() -> proptest::test_runner::TestRunner {
+    proptest::test_runner::TestRunner::new(ProptestConfig { cases: 20_000, ..ProptestConfig::default() })
+}
+
+// §5, slow tier: `ord_is_byte_order` at size.
+#[test]
+#[ignore]
+fn slow_ord_is_byte_order() {
+    slow_runner().run(&(value(), value()), |(a, b)| check_ord(&a, &b)).unwrap();
+}
+
+// §5, slow tier: `mutation` at size.
+#[test]
+#[ignore]
+fn slow_mutation() {
+    let ops = prop::collection::vec((any::<u8>(), any::<usize>(), any::<u8>()), 1..6);
+    slow_runner().run(&(value(), ops), |(v, ops)| check_mutation(&v, &ops)).unwrap();
+}
+
 proptest! {
     // §5: round trip.
     #[test]
@@ -81,21 +118,14 @@ proptest! {
     // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order.
     #[test]
     fn ord_is_byte_order(a in value(), b in value()) {
-        prop_assert_eq!(a.cmp(&b), encode(&a).cmp(&encode(&b)));
-        prop_assert_eq!(a == b, encode(&a) == encode(&b));
+        check_ord(&a, &b)?;
     }
 
     // §5: strict decoding: any accepted input re-encodes to itself (no non-canonical form is
     // accepted), and nothing panics on mutated input.
     #[test]
     fn mutation(v in value(), ops in prop::collection::vec((any::<u8>(), any::<usize>(), any::<u8>()), 1..6)) {
-        let b = mutate(encode(&v), &ops);
-        if let Ok(w) = d(&b) {
-            prop_assert_eq!(&encode(&w), &b);
-        }
-        if let Ok((w, used)) = decode_prefix(&b, &Limits::DEFAULT) {
-            prop_assert_eq!(encode(&w), used.to_vec());
-        }
+        check_mutation(&v, &ops)?;
     }
 
     // §5: random bytes never panic; accepted ones are canonical.
@@ -112,7 +142,9 @@ proptest! {
         let b = encode(&v);
         let lim = |max_depth| Limits { max_depth, max_bytes: usize::MAX };
         prop_assert!(decode(&b, &lim(v.depth())).is_ok());
-        prop_assert_eq!(decode(&b, &lim(v.depth() - 1)), Err(DecodeError::TooDeep));
+        if v.depth() > 0 {
+            prop_assert_eq!(decode(&b, &lim(v.depth() - 1)), Err(DecodeError::TooDeep));
+        }
     }
 }
 
@@ -258,6 +290,10 @@ fn limits() {
     assert_eq!(decode(&b, &Limits { max_depth: 4, max_bytes: 101 }), Err(DecodeError::TooLarge));
     let deep = vec![0x81u8; 1_000_000];
     assert_eq!(d(&deep), Err(DecodeError::TooDeep));
+    // spec/data-model.md §5: 64 nested arrays around a scalar are allowed, 65 are not.
+    let nest = |n: usize| [vec![0x81u8; n], vec![0x00]].concat();
+    assert!(d(&nest(64)).is_ok());
+    assert_eq!(d(&nest(65)), Err(DecodeError::TooDeep));
     // A huge claimed length is rejected before allocation.
     assert_eq!(d(&hex("9b 0000000100000000")), Err(DecodeError::Truncated));
     assert_eq!(d(&hex("bb 0000000100000000")), Err(DecodeError::Truncated));

@@ -3,6 +3,7 @@ name = "osis-cli"
 description = "Command-line tool osis over the API"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 
