@@ -56,10 +56,15 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
 }
 
 /// spec/requirements.md (convergence) over up nodes that may hold different parts of a commit
-/// (projections): two nodes holding the same deltas of an aspect read it the same.
+/// (projections): two nodes holding the same deltas of an aspect read it the same (removed
+/// members excused).
 fn convergence(sim: &mut NetSim) -> Res<()> {
     let mut views: Vec<(usize, AspectView)> = Vec::new();
     for n in 0..sim.nodes.len() {
+        // a removed member's membership view stops at its removal: its validity judgments may differ
+        if sim.excused.contains(&n) {
+            continue;
+        }
         let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
         let v = aspect_view(s.engine_mut()).map_err(|w| format!("node {n}: read failed: {w}"));
         let v = v.map_err(|w| sim.fail(w))?;
@@ -359,16 +364,16 @@ pub fn log_heads(sim: &NetSim) -> Heads {
     m
 }
 
-/// Entries added or deleted since `heads` (same log instance), with what they hold.
+/// Log records since `heads` (a label not in it, or with another log instance, from its start;
+/// the last 40 records at most), with what the entries hold.
 pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
     let mut out = Vec::new();
-    for ((s, l), (log, seq)) in heads {
-        let Some(hub) = sim.hub(*s) else { continue };
-        let Ok((log2, _)) = hub.store().log_head(l) else { continue };
-        if log2 != *log {
-            continue;
-        }
-        for (_, r) in hub.store().log_after(l, *seq, 64).ok().flatten().unwrap_or_default() {
+    for (s, l) in log_heads(sim).into_keys() {
+        let Some(hub) = sim.hub(s) else { continue };
+        let Ok((log, top)) = hub.store().log_head(&l) else { continue };
+        let seq = heads.get(&(s, l)).filter(|h| h.0 == log).map_or(0, |h| h.1);
+        let recs = hub.store().log_after(&l, seq.max(top.saturating_sub(40)), 64);
+        for (_, r) in recs.ok().flatten().unwrap_or_default() {
             let (what, b) = match r {
                 LogRecord::Added(b) => ("added", b),
                 LogRecord::Deleted(b) => ("deleted", b),
@@ -378,7 +383,7 @@ pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
                     continue;
                 }
             };
-            let kind = sim.known.get(&(*l, b)).map(|(c, p)| {
+            let kind = sim.known.get(&(l, b)).map(|(c, p)| {
                 let h = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|s| s.engine().header(c)));
                 let aks: Vec<String> = h.as_ref().map(|h| p.iter().filter_map(|(ai, _)| h.aspects.get(*ai).map(|a| format!("{} {}", a.tid, a.ak.as_str()))).collect()).unwrap_or_default();
                 format!("{c:?} {p:?} {aks:?} kind {:?}", h.map(|h| h.kind))
