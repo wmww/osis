@@ -16,7 +16,7 @@ Reference: plans/testing.md §5 (the full list), scenarios named in notes/permis
 - Tier policy: a few short seeds per scenario in tier 1; sweeps in nightly.
 
 ## Steps
-- [ ] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay.
+- [x] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay (also crash/restart, mid-write crashes via the store fault plan).
 - [ ] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
 - [ ] Phase C (after flows): scenario library, adversaries, version skew, sweep binary, nightly CI job (test-infra).
 
@@ -24,3 +24,4 @@ Reference: plans/testing.md §5 (the full list), scenarios named in notes/permis
 Every scenario and adversary runs with its expected outcome; invariants green over a sweep of ≥ 10^4 seeds per headline scenario; notes/testing.md documents how to run and replay. Delete this plan (its content goes to notes/testing.md).
 
 ## Progress
+- Phase A: `osis-sim` harness (notes/testing.md, Simulator): seeded scheduler, skew/drift clocks, commit packages engine-to-engine with drop/dup/delay/reorder, crash (immediate or at a durable write) and restart, invariants (convergence, counters, HLC, parking, pending drains, quiescence), replay; scenarios two_devices, three_random, crash_restart, drift_parks, revoke_while_writing. Delivery is an anti-entropy oracle (sender sends what the receiver lacks) until `SyncEngine` exists.
