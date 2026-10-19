@@ -333,18 +333,18 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
 }
 
 /// Removes every write whose dot's author matches (un-merge, §4.6); records stay as anchors.
-pub(crate) fn remove_author(s: &mut Seq, author: &dyn Fn(&Source) -> bool) {
-    let bad = |st: &Stamp| author(st.dot.src.author());
+pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
+    let bad = |st: &Stamp| pred(st.dot.owner());
     for (d, el) in s.elems.iter_mut() {
         // the creation write of an invalid insert stays, so the element is a hidden anchor
         el.pos.retain(|p| !bad(&p.0) || p.0.dot == *d);
         if el.deleted.as_ref().is_some_and(|x| bad(&x.0)) {
             el.deleted = None;
         }
-        if author(d.src.author()) {
+        if pred(d.owner()) {
             el.content = SeqContent::None;
         } else if let SeqContent::Frag(f) = &mut el.content {
-            f.remove_author(author);
+            f.remove_dots(pred);
             if f.is_empty() {
                 el.content = SeqContent::None;
             }

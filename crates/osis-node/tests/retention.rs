@@ -1,0 +1,221 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+//! Retention, expiry, purge, compaction snapshots and undo (spec/commits.md §5–§7).
+
+mod common;
+use common::*;
+use osis_commit::{Kind, PurgeItem};
+use osis_core::{Role, Value, WallMs};
+use osis_crdt::{Op, PathOp};
+use osis_node::{Cause, Event, Mutation};
+
+fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_core::CommitId {
+    let mut m = Mutation::new();
+    m.set(t, k, &s(v)).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/commits.md §5, spec/crdt.md §4.8: a write dies when superseded, at the superseding
+// `ts`; per body the first and last death are kept; keep at least counts from the last.
+#[test]
+fn deaths_and_bounds_spec_commits_5() {
+    let mut lp = net(1, 51);
+    let t = new_thing(&mut lp, 0);
+    let c1 = set(&mut lp, 0, t, &KEPT, "one");
+    lp.advance(10);
+    let c2 = set(&mut lp, 0, t, &KEPT, "two");
+    let ts2 = lp.peers[0].engine.header(&c2).unwrap().ts;
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.deaths(&c1, &t, &ak("/t/kept")).unwrap(), Some((ts2, ts2)));
+    assert_eq!(e.deaths(&c2, &t, &ak("/t/kept")).unwrap(), None);
+    let k = e.body_keep(&c1, &t, &ak("/t/kept")).unwrap();
+    assert_eq!(k.at_least, ts2.wall_ms().0 + 86_400_000);
+    assert_eq!(k.at_most, None);
+    assert!(e.holds_body(&c1, &t, &ak("/t/kept")));
+}
+
+// spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
+// transaction that applies the kill (live state unchanged; a deletion for blind nodes queued);
+// a dropped body cannot be undone (§7).
+#[test]
+fn keep_at_most_zero_spec_commits_5() {
+    let mut lp = net(2, 52);
+    let t = new_thing(&mut lp, 0);
+    let c1 = set(&mut lp, 0, t, &GONE, "draft");
+    sync(&mut lp, 0, 1);
+    lp.advance(5);
+    set(&mut lp, 0, t, &GONE, "final");
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.holds_body(&c1, &t, &ak("/t/gone")));
+    assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
+    let dels = e.deletions(0, 10).unwrap();
+    assert!(dels.iter().any(|d| d.1 == c1));
+    assert_eq!(e.undo(&c1).unwrap(), None);
+    // every node drops it by the bound, here when it applies the kill
+    sync(&mut lp, 0, 1);
+    assert!(!lp.peers[1].engine.holds_body(&c1, &t, &ak("/t/gone")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
+}
+
+// spec/commits.md §6, spec/crdt.md §4.7: at T the delta's values go value-less everywhere and
+// its body is dropped; a copy arriving after T is stripped on arrival.
+#[test]
+fn expiry_spec_commits_6() {
+    let mut lp = net(3, 53);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let c = set(&mut lp, 0, t, &BRIEF, "soon gone");
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    let a = h.aspects.iter().find(|a| a.ak.as_str() == "/t/brief").unwrap();
+    assert_eq!(a.expires, Some(h.ts.wall_ms().0 + 3_600_000));
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/brief")).unwrap(), Some(s("soon gone")));
+    lp.advance(3_600_001);
+    for i in 0..2 {
+        lp.peers[i].drain_events();
+        lp.peers[i].engine.tick().unwrap();
+        assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/brief")).unwrap(), None, "node {i}");
+        assert!(!lp.peers[i].engine.holds_body(&c, &t, &ak("/t/brief")));
+        assert!(lp.peers[i].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: Cause::Expiry, .. })));
+    }
+    // a late copy (from a relay that still had it) is stripped on arrival
+    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
+    sync(&mut lp, 0, 2);
+    let _ = lp.deliver(2, &pk);
+    assert_eq!(lp.peers[2].engine.get(&t, &ak("/t/brief")).unwrap(), None);
+    // an explicit T on any aspect
+    let mut m = Mutation::new();
+    let now = lp.peers[0].engine.now();
+    m.set(t, &REG, &s("x")).unwrap();
+    m.expires(t, &REG, WallMs(now.0 + 1000)).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    lp.advance(1000);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), None);
+}
+
+// spec/commits.md §5, spec/permissions.md §8: a purge request drops the named deltas its author
+// may purge, everywhere it applies, and later copies arrive value-less; a writer without the
+// right purges nothing.
+#[test]
+fn purge_spec_commits_5() {
+    let mut lp = net(3, 54);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let secret = set(&mut lp, 0, t, &REG, "secret");
+    let full = lp.peers[0].engine.package(&secret).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    // b (author retention: only a's chain or an admin may purge a's delta) tries and fails
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("b's")).unwrap();
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    lp.peers[1].commit(m).unwrap();
+    assert!(lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    // a purges it
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("public")).unwrap();
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    let pc = lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    sync(&mut lp, 0, 1);
+    assert!(!lp.peers[1].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    // node 2 gets the purge before the purged delta: the delta arrives purged
+    let pks = lp.packages(1).unwrap();
+    let purge_pk = pks.iter().find(|p| p.id == pc).unwrap().clone();
+    for p in pks.iter().filter(|p| p.id != pc && p.id != secret) {
+        let _ = lp.deliver(2, p);
+    }
+    lp.deliver(2, &purge_pk).unwrap();
+    // a relay still holding the old full blob
+    lp.deliver(2, &full).unwrap();
+    assert!(lp.peers[2].engine.commit_ids().contains(&secret));
+    assert!(!lp.peers[2].engine.holds_body(&secret, &t, &ak("/t/reg")));
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("public")), "node {i}");
+    }
+}
+
+// spec/commits.md §2, §5; spec/crdt.md §8: a compaction snapshot of a node's whole state covers
+// every body it applied; a node holding only the snapshot reads the same.
+#[test]
+fn compaction_snapshot_spec_commits_5() {
+    let mut lp = net(2, 55);
+    let t = new_thing(&mut lp, 0);
+    let mut bodies = Vec::new();
+    for i in 0..4 {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{i}"))) }).unwrap();
+        bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("t0")) }).unwrap();
+    bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/tags")).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&snap).unwrap();
+    assert_eq!(h.kind, Kind::ContentSnapshot);
+    assert_eq!((h.aspects[0].lo, h.aspects[0].hi), (0, 0));
+    assert_eq!(h.aspects[0].retention.by, osis_schema::PurgeBy::Writer);
+    for c in &bodies {
+        assert_eq!(lp.peers[0].engine.covered(&snap, c, &t, &ak("/t/tags")).unwrap(), Some(true));
+    }
+    // the receiver gets the creation and the snapshot only
+    let me0 = lp.peers[0].engine.tid();
+    for p in lp.packages(0).unwrap() {
+        let h = lp.peers[0].engine.header(&p.id).unwrap();
+        let only_tags = h.aspects.iter().all(|a| a.ak.as_str() == "/t/tags");
+        if !only_tags || p.id == snap || h.author != me0 {
+            lp.deliver(1, &p).unwrap();
+        }
+    }
+    let want = lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), want);
+    // its frontiers count as received
+    let r = lp.peers[1].engine.receipt(&t, &ak("/t/tags")).unwrap();
+    assert_eq!(r.contiguous(&me0, u64::MAX), 5);
+}
+
+// spec/commits.md §7, spec/crdt.md §4.6: undo and redo; the derived stacks; an admin undoes
+// another's change.
+#[test]
+fn undo_redo_spec_commits_7() {
+    let mut lp = net(2, 56);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let me = lp.peers[0].engine.tid();
+    set(&mut lp, 0, t, &REG, "a");
+    let c2 = set(&mut lp, 0, t, &REG, "b");
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
+    let c3 = lp.peers[0].commit(m).unwrap().unwrap();
+    let scope = [(t, ak("/t/reg")), (t, ak("/t/tags"))];
+    let (undo, redo) = lp.peers[0].engine.undo_stack(&me, &scope);
+    assert_eq!(undo[0], c3);
+    assert!(redo.is_empty());
+    let u3 = lp.peers[0].engine.undo(&c3).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap(), Some(Value::Set(Default::default())));
+    let u2 = lp.peers[0].engine.undo(&c2).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("a")));
+    let (undo, redo) = lp.peers[0].engine.undo_stack(&me, &scope);
+    assert!(!undo.contains(&c2) && !undo.contains(&c3));
+    assert_eq!(redo, vec![u2, u3]);
+    // redo = undo of the undo commit
+    lp.peers[0].engine.undo(&u2).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+    // undo replicates like any commit
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), Some(Value::Set(Default::default())));
+    // an admin undoes another's change
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    lp.advance(5);
+    let cb = set(&mut lp, 1, t, &REG, "vandal");
+    sync(&mut lp, 1, 0);
+    assert!(lp.peers[0].engine.changes(&scope).iter().any(|c| c.0 == cb && c.1 == b));
+    lp.peers[0].engine.undo(&cb).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+}

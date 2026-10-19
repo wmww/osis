@@ -3,12 +3,12 @@
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
 use super::validity;
-use crate::engine::{Core, Meta, Tx, records};
+use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
 use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_core::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
-use osis_crdt::{Changes, Fragment, Source};
+use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -50,15 +50,40 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 }
 
 /// Joins `delta` into the state of `(tid, ak)`, holding value-less what must be.
-pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, delta: Fragment) -> Result<Changes> {
+pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
     tx.load(tid, ak)?;
     let mut st = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten().unwrap_or_default();
+    // writes owned by deltas invalid here go from every body before it joins (un-merge is a
+    // function of the held set: another's nested write under an invalid creation goes too)
+    let invalid = invalid_of(tx.core, tid, ak);
+    if !invalid.is_empty() {
+        delta.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
+    }
     let ch = st.join(delta);
     strip_valueless(tx.core, tid, ak, &mut st);
     if ch.is_changed() || !ch.deaths().is_empty() {
-        tx.set_state(tid, ak, Some(st), Shred::No, false)?;
+        let st = (!st.is_empty()).then_some(st);
+        tx.set_state(tid, ak, st, Shred::No, false)?;
     }
     Ok(ch)
+}
+
+/// The owners of writes of the held deltas on `(tid, ak)` that are invalid here.
+pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
+    let mut out = Vec::new();
+    for (_, c) in core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
+        let Some(m) = core.commits.get(c) else { continue };
+        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        if m.valid.get(ai).copied().unwrap_or(false) {
+            continue;
+        }
+        if m.header.kind.has_own_writes() {
+            out.extend(Owned::of(&m.header, c, ai));
+        } else if m.header.kind == osis_commit::Kind::Import {
+            out.extend(m.header.origins.iter().map(|o| Owned::Commit(o.commit)));
+        }
+    }
+    out
 }
 
 pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment) {
@@ -71,6 +96,7 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
 
 /// Applies a verified commit (`parts` decoded) in this transaction.
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usize, usize, Decoded)>, origin: Origin, received: WallMs) -> Result<()> {
+    tx.core.touch();
     let id = blob.id();
     let h = Arc::new(blob.header.clone());
     tx.core.hlc.observe(h.ts);
@@ -97,6 +123,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         }
     }
     if h.kind.is_membership() {
+        validity::note_required(tx.core, &h, &id, &parts);
         validity::add_membership(tx.core, &h, &id, &parts);
         held_changed = true;
     }
@@ -107,6 +134,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     // overlapping node-form counters void both commits
     let ov = overlaps(tx.core, &id, &h);
     if !ov.is_empty() {
+        held_changed = true;
         for c in ov.iter().chain(std::iter::once(&id)) {
             tx.core.void.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
@@ -130,10 +158,17 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             crate::undo::remember(tx, &id, &a.tid, &a.ak)?;
         }
     }
+    let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    for (ai, _, d) in parts {
+    for (ai, _, d) in &parts {
+        let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
         if !valid.get(ai).copied().unwrap_or(false) {
+            // others' writes already joined may sit under its creations
+            if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
+                rebuild(tx, &a.tid, &a.ak)?;
+                changed.insert((a.tid, a.ak.clone()));
+            }
             continue;
         }
         let (f, _) = fragment(d);
@@ -149,6 +184,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
+    super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     if changed.iter().any(|(_, ak)| ak.as_str() == "/group") {
         recompute_groups(tx.core);
     }
@@ -172,8 +208,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4).
 pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Vec<(usize, usize, Decoded)>) -> Result<()> {
+    tx.core.touch();
     let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
+    let received = tx.now();
+    super::receipt::record(tx, &h, id, &parts, received)?;
     let mut changed = BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -270,39 +309,31 @@ pub(crate) fn recompute_groups(core: &mut Core) {
     core.groups = out;
 }
 
-/// Rebuilds `(tid, ak)` from its held bodies after validity changed (spec/crdt.md §4.6): the
-/// join of every held body and the current state (a snapshot it holds) without the writes of
-/// sources with an invalid delta here, then those sources' valid deltas joined back.
+/// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):
+/// the join of the current state (a snapshot this node holds) and every held body, each first
+/// stripped of the writes of the deltas now invalid here (by counter range or commit ID, so the
+/// author's valid deltas, dropped bodies included, keep theirs).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<(osis_core::Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
-    let mut bodies: Vec<(bool, Option<Source>, Fragment)> = Vec::new();
-    let mut bad: BTreeSet<Source> = BTreeSet::new();
+    let invalid = invalid_of(tx.core, tid, ak);
+    let mut bodies: Vec<Fragment> = Vec::new();
     for (_, c) in held {
         let Some(m) = tx.core.commits.get(&c).cloned() else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        let ok = m.valid.get(ai).copied().unwrap_or(false);
-        let own = m.header.kind.has_own_writes().then(|| match m.header.form {
-            Form::Node => Source::node(m.header.author),
-            Form::Commit => Source::commit(c),
-        });
-        if !ok && let Some(s) = &own {
-            bad.insert(s.clone());
-        }
         for d in super::held_parts(tx, &c, ai)? {
-            bodies.push((ok, own.clone(), fragment(d).0));
+            bodies.push(fragment(d).0);
         }
     }
     tx.load(tid, ak)?;
     let current = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
-    let is_bad = |s: &Source| bad.contains(s.author());
-    let mut all: Vec<Fragment> = current.into_iter().collect();
-    all.extend(bodies.iter().filter(|b| b.0 || b.1.is_none()).map(|b| b.2.clone()));
-    let mut st = osis_crdt::unmerge(all, &is_bad);
-    for (ok, own, f) in bodies {
-        if ok && own.as_ref().is_some_and(|s| bad.contains(s)) {
-            st.join(f);
-        }
+    let bad = |d: &osis_crdt::Dot| invalid.iter().any(|o| o.owns(d));
+    let mut st = Fragment::default();
+    let mut ch = Changes::new();
+    for mut b in current.into_iter().chain(bodies) {
+        b.remove_dots(&bad);
+        st.join_into(b, None, &mut ch);
     }
     strip_valueless(tx.core, tid, ak, &mut st);
-    tx.set_state(tid, ak, Some(st), Shred::Yes, false)
+    let st = (!st.is_empty()).then_some(st);
+    tx.set_state(tid, ak, st, Shred::Yes, false)
 }

@@ -86,7 +86,27 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         let pre = match buffer {
             Some(b) if !b.is_empty() => Some(crate::engine::state::decode(&b)?),
             Some(_) => Some(Fragment::default()),
-            None => None,
+            // not a recent local commit: the join of the held bodies ordered before it
+            None => {
+                let before: Vec<CommitId> = tx.core.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| **x < (h.ts, target)).map(|x| x.1).collect();
+                let mut f: Option<Fragment> = None;
+                for c in before {
+                    let Some(ci) = tx.core.commits.get(&c).and_then(|m| m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak)) else { continue };
+                    for d in crate::apply::held_parts(tx, &c, ci)? {
+                        let d = match d {
+                            Decoded::Delta(x) => x.fragment,
+                            Decoded::Snapshot(x) => x.fragment,
+                        };
+                        match &mut f {
+                            Some(f) => {
+                                f.join(d);
+                            }
+                            None => f = Some(d),
+                        }
+                    }
+                }
+                f
+            }
         };
         tx.load(&a.tid, &a.ak)?;
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten().unwrap_or_default();
@@ -104,11 +124,14 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         };
         if let Some(f) = out {
             let r = w.range();
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new() });
         }
     }
     if deltas.is_empty() {
         return Err(Error::Misuse("nothing to undo"));
+    }
+    for d in &deltas {
+        crate::engine::write::check_authority(tx.core, &[], &d.tid, d.ak.as_str(), ts)?;
     }
     let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new() };
     build_and_apply(tx, plan, deltas)

@@ -28,8 +28,12 @@ aspect /t/tags: set<string>;
 aspect /t/map: map<string, item>;
 aspect /t/big: map<string, string>;
 aspect /t/gone: string [by: writer, keep_at_most: 0s];
+aspect /t/gone2: string [by: writer, keep_at_most: 0s];
 aspect /t/brief: string [expires: 1h];
 aspect /t/kept: string [by: writer, keep_at_least: 1d];
+aspect /t/list: list<string>;
+aspect /t/text: text;
+aspect /t/blob: blob;
 "#,
 );
 
@@ -43,8 +47,12 @@ pub const TAGS: Aspect<Value> = Aspect::new("/t/tags", &TEST);
 pub const MAP: Aspect<Value> = Aspect::new("/t/map", &TEST);
 pub const BIG: Aspect<Value> = Aspect::new("/t/big", &TEST);
 pub const GONE: Aspect<Value> = Aspect::new("/t/gone", &TEST);
+pub const GONE2: Aspect<Value> = Aspect::new("/t/gone2", &TEST);
 pub const BRIEF: Aspect<Value> = Aspect::new("/t/brief", &TEST);
 pub const KEPT: Aspect<Value> = Aspect::new("/t/kept", &TEST);
+pub const LIST: Aspect<Value> = Aspect::new("/t/list", &TEST);
+pub const TEXT: Aspect<Value> = Aspect::new("/t/text", &TEST);
+pub const BLOB: Aspect<Value> = Aspect::new("/t/blob", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()

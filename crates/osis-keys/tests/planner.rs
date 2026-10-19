@@ -131,7 +131,7 @@ fn wrap_epochs() {
     let mut a = person(0x20);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Current(ep(1, 0x20)));
     a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
-    a.read.set_usable(ep(2, 5), true);
+    a.read.set_established(ep(2, 5), osis_keys::Provenance::Own);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Stranded(ep(1, 0x20)));
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), WrapEpoch::None);
     let pe = person(0x20);
@@ -153,7 +153,7 @@ fn label_epochs() {
     assert_eq!((r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
     let key = label_role_key(label_role(Role::Read), r.1, 3).verifying_key();
     a.read.rotation(ep(2, 1), [ep(1, 0x20)]);
-    a.read.set_usable(ep(2, 1), true);
+    a.read.set_established(ep(2, 1), osis_keys::Provenance::Own);
     a.read.set_secret(ep(2, 1), Secret32::from_bytes([9; 32]));
     assert_eq!(registered_epoch(&a.read, Role::Read, 3, &key), Some(ep(1, 0x20)));
     assert_eq!(registered_epoch(&a.read, Role::Read, 4, &key), None);
@@ -163,7 +163,7 @@ fn label_epochs() {
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     a.admin.observe(ep(2, 2));
     a.admin.rotation(ep(2, 2), [ep(1, 0x20)]);
-    a.admin.set_usable(ep(2, 2), true);
+    a.admin.set_established(ep(2, 2), osis_keys::Provenance::Own);
     assert!(registration_epochs(&a).is_none());
 }
 
@@ -184,7 +184,7 @@ fn tokens() {
     assert_eq!(&t[2].2, thing.write.secret(&ep(1, 0x20)).unwrap());
     assert_eq!(token_secrets(PurgeBy::Author, &thing, None).unwrap().len(), 1);
     thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
-    thing.write.set_usable(ep(2, 0), true);
+    thing.write.set_established(ep(2, 0), osis_keys::Provenance::Own);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
     let c: Vec<_> = token_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();
     assert_eq!(c, vec![ep(2, 0), ep(1, 0x20)]);

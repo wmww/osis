@@ -10,10 +10,10 @@
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
-use crate::engine::{Engine, Owned, Tx};
+use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
-use osis_commit::{Decoded, Form, Kind, PurgeItem};
+use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
 use osis_core::{Ak, BlobId, CommitId, Tid, Ts, WallMs};
 use osis_crdt::{Death, Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
@@ -55,29 +55,78 @@ fn aspect_index(tx: &Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
     tx.core.commits.get(c)?.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)
 }
 
+/// The actor whose readers a delta's thing has (spec/sync.md §3 entitlement): the thing if it
+/// has secrets of its own, else its owner.
+fn reader(core: &Core, tid: &Tid) -> Tid {
+    if core.own_keys.contains(tid) {
+        return *tid;
+    }
+    match core.created(tid) {
+        Some(osis_core::CreationRecord::Thing { owner, .. }) => *owner,
+        _ => *tid,
+    }
+}
+
+/// The body holding aspect `ai` of a commit (spec/commits.md §5: one projection class, readable
+/// subset and retention class) and the aspects it holds. Its ID keys the death records.
+pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
+    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.tokens.clone());
+    let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
+    let k = key(me);
+    let members: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
+    let first = members.first().copied().unwrap_or(ai) as u32;
+    let mut hs = osis_core::hash::Hasher::new();
+    hs.update(&c.0);
+    hs.update(&first.to_be_bytes());
+    (BlobId(hs.finalize()), members)
+}
+
+/// First and last death so far over a body's deltas.
+fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
+    let mut out: Option<(Ts, Ts)> = None;
+    for ai in members {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if let Some(d) = tx.txn.death(&a.tid, &a.ak, body)? {
+            out = Some(match out {
+                Some((f, l)) => (f.min(d.first), l.max(d.last)),
+                None => (d.first, d.last),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Records deaths per body and drops bodies past keep at most (spec/commits.md §5).
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
     let mut bodies = BTreeSet::new();
     for d in deaths {
         let Some(c) = tx.core.commit_of(tid, ak, &d.stamp.dot) else { continue };
-        tx.txn.note_death(tid, ak, &BlobId(c.0), d.at)?;
-        bodies.insert(c);
+        let Some(ai) = aspect_index(tx, &c, tid, ak) else { continue };
+        let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
+        let (body, _) = body_class(tx.core, &h, &c, ai);
+        tx.txn.note_death(tid, ak, &body, d.at)?;
+        bodies.insert((c, ai));
     }
-    for c in bodies {
-        check_at_most(tx, &c, tid, ak)?;
+    for (c, ai) in bodies {
+        check_at_most(tx, &c, ai)?;
     }
     Ok(())
 }
 
-fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
-    let Some(ai) = aspect_index(tx, c, tid, ak) else { return Ok(()) };
+fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    let d = tx.txn.death(tid, ak, &BlobId(c.0))?;
-    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.first.wall_ms().0), d.map(|d| d.last.wall_ms().0));
+    let (body, members) = body_class(tx.core, &m.header, c, ai);
+    let d = class_deaths(tx, &m.header, &body, &members)?;
+    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
     if let Some(t) = keep.at_most {
-        if t <= tx.now().0 {
-            drop_part(tx, c, ai)?;
+        // at most 0: the replacing node drops in the killing transaction, even when the
+        // killing `ts` is ahead of its clock
+        let zero = a.retention.at_most.rel == Some(0) && d.is_some();
+        if t <= tx.now().0 || zero {
+            for x in members {
+                drop_part(tx, c, x)?;
+            }
         } else {
             tx.txn.put_local(&records::timer_key(t, c, ai), &[T_AT_MOST], Shred::No)?;
         }
@@ -85,10 +134,12 @@ fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()
     Ok(())
 }
 
-/// Drops the body of aspect `ai` of `c` (spec/commits.md §5): the commit is kept without that
-/// delta (same header), its death records shredded, the aspect's state rewritten shredded with
-/// its undo buffer cleared; node-sync is told to delete it at blind nodes.
+/// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
+/// without it (same header), the body's death records for it shredded, the aspect's state
+/// rewritten shredded with its undo buffer cleared; node-sync is told to delete it at blind
+/// nodes.
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    tx.core.touch();
     let Some(mut m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     let n = a.hashes.len();
@@ -102,8 +153,9 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes)?;
     }
+    let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
-    tx.txn.drop_body(&BlobId(c.0), &[(a.tid, a.ak.clone())])?;
+    tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.load(&a.tid, &a.ak)?;
     let st = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten();
     tx.set_state(&a.tid, &a.ak, st, Shred::Yes, true)?;
@@ -115,6 +167,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
 fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Tid, Ak)>> {
+    tx.core.touch();
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
     let Some(o) = Owned::of(&m.header, c, ai).filter(|_| m.header.kind.has_own_writes()) else { return Ok(None) };
@@ -144,34 +197,80 @@ fn purge_by(p: osis_schema::PurgeBy) -> PurgeBy {
     PurgeBy::from_code(p as u64).unwrap_or(PurgeBy::Nobody)
 }
 
-/// Applies purge item `item` of commit `pc` to held delta `(c, ai)` if it names it and its
-/// author held the right at the request's time (spec/permissions.md §8).
-fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    let (Some(p), Some(m)) = (tx.core.commits.get(pc).cloned(), tx.core.commits.get(c).cloned()) else { return Ok(()) };
-    let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
+/// Does purge item `item` of commit `pc` (header `p`) name aspect `ai` of commit `c` (header
+/// `ch`), with its author holding the right at the request's time (spec/permissions.md §8)?
+fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &Header, c: &CommitId, ai: usize) -> bool {
+    let Some(a) = ch.aspects.get(ai) else { return false };
     if is_membership_class(a.ak.as_str()) || a.tid != *item.tid() || a.ak != *item.ak() {
-        return Ok(());
+        return false;
     }
     let names = match item {
         PurgeItem::Commit { commit, .. } => commit == c,
-        PurgeItem::Aspect { .. } => m.header.ts < p.header.ts,
+        PurgeItem::Aspect { .. } => ch.ts < p.ts,
     };
     if !names {
-        return Ok(());
+        return false;
     }
-    let point = Point { ts: p.header.ts, node: p.header.author, commit: *pc };
-    let actor = match m.header.kind {
-        Kind::Import => m.header.origins.first().map_or(m.header.actor, |o| o.actor),
-        _ => m.header.actor,
+    let point = Point { ts: p.ts, node: p.author, commit: *pc };
+    let actor = match ch.kind {
+        Kind::Import => ch.origins.first().map_or(ch.actor, |o| o.actor),
+        _ => ch.actor,
     };
-    let allowed = tx.core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.header.author, &a.tid, purge_by(a.retention.by), &actor, At::before(point)));
-    if !allowed {
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, purge_by(a.retention.by), &actor, At::before(point)))
+}
+
+fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
+    let mut out = Vec::new();
+    if let Some(b) = tx.txn.get_local(&records::aspect_key(records::PURGES, tid, ak))? {
+        let mut r = Rd::new(&b);
+        while !r.is_empty() {
+            out.push(CommitId(r.arr()?));
+        }
+    }
+    Ok(out)
+}
+
+/// Is aspect `ai` of commit `c` (not applied yet) already purged by a held request? Such a
+/// missing delta counts as held (spec/commits.md §4).
+pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
+    for pc in purge_requests(tx, &a.tid, &a.ak)? {
+        let Some(p) = tx.core.commits.get(&pc).map(|m| m.header.clone()) else { continue };
+        if p.purge.iter().any(|item| purge_allowed(tx.core, &p, &pc, item, ch, c, ai)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Applies purge item `item` of commit `pc` to held delta `(c, ai)` if it may: its values go
+/// value-less, its body and every snapshot body carrying them drop, a re-snapshot is queued.
+fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    let (Some(p), Some(m)) = (tx.core.commits.get(pc).cloned(), tx.core.commits.get(c).cloned()) else { return Ok(()) };
+    if !purge_allowed(tx.core, &p.header, pc, item, &m.header, c, ai) {
         return Ok(());
     }
+    let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     if let Some(k) = make_valueless(tx, c, ai)? {
         changed.insert(k);
     }
     drop_part(tx, c, ai)?;
+    // snapshots carrying the purged values (spec/commits.md §5)
+    if let Some(o) = Owned::of(&m.header, c, ai) {
+        let snaps: Vec<CommitId> = tx.core.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| tx.core.commits.get(s).is_some_and(|x| crate::apply::is_kind_snapshot(x.header.kind))).collect();
+        for s in snaps {
+            let Some(sai) = aspect_index(tx, &s, &a.tid, &a.ak) else { continue };
+            for d in crate::apply::held_parts(tx, &s, sai)? {
+                let f = frag(d);
+                let mut g = f.clone();
+                g.strip(&|x| o.owns(x));
+                if g != f {
+                    drop_part(tx, &s, sai)?;
+                    break;
+                }
+            }
+        }
+    }
     let entry = Wr::new().raw(a.tid.as_bytes()).bytes(a.ak.as_str().as_bytes()).take();
     tx.txn.log_append(records::RESNAPSHOT, &entry)?;
     Ok(())
@@ -192,14 +291,8 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
             }
         }
         // purge requests held before this delta arrived
-        let key = records::aspect_key(records::PURGES, &a.tid, &a.ak);
-        if let Some(b) = tx.txn.get_local(&key)? {
-            let mut r = Rd::new(&b);
-            let mut reqs = Vec::new();
-            while !r.is_empty() {
-                reqs.push(CommitId(r.arr()?));
-            }
-            for pc in reqs {
+        {
+            for pc in purge_requests(tx, &a.tid, &a.ak)? {
                 let items: Vec<PurgeItem> = tx.core.commits.get(&pc).map(|p| p.header.purge.clone()).unwrap_or_default();
                 for item in items {
                     purge_one(tx, &pc, &item, id, ai, &mut purged)?;
@@ -277,15 +370,21 @@ impl Engine {
             let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
             let m = tx.core.commits.get(&c).cloned().ok_or(Error::UnknownCommit(c))?;
             let a = m.header.aspects.get(ai).ok_or(Error::UnknownCommit(c))?;
-            let d = tx.txn.death(&tid, &ak, &BlobId(c.0))?;
-            Ok(osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.first.wall_ms().0), d.map(|d| d.last.wall_ms().0)))
+            let (body, members) = body_class(tx.core, &m.header, &c, ai);
+            let d = class_deaths(tx, &m.header, &body, &members)?;
+            Ok(osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
         })
     }
 
-    /// First and last death so far of a body's writes.
+    /// First and last death so far of the writes of the body holding aspect `ak` of `c`.
     pub fn deaths(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(Ts, Ts)>> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| Ok(tx.txn.death(&tid, &ak, &BlobId(c.0))?.map(|d| (d.first, d.last))))
+        self.run(|tx| {
+            let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
+            let h = tx.core.commits.get(&c).map(|m| m.header.clone()).ok_or(Error::UnknownCommit(c))?;
+            let (body, members) = body_class(tx.core, &h, &c, ai);
+            class_deaths(tx, &h, &body, &members)
+        })
     }
 
     /// Whether a body is held (not dropped).
@@ -306,11 +405,12 @@ impl Engine {
         self.run(|tx| {
             let node = tx.core.id.tid();
             let ts = tx.core.hlc.next();
-            if crate::engine::write::role_of(tx.core, &node, &tid, ts) < Some(crate::engine::write::required_role(ak.as_str())) {
-                return Err(Error::Permission { tid });
-            }
+            crate::engine::write::check_authority(tx.core, &[], &tid, ak.as_str(), ts)?;
             tx.load(&tid, &ak)?;
             let Some(mut st) = tx.core.states.get(&(tid, ak.clone())).cloned().flatten() else { return Ok(None) };
+            if ak.as_str() == "/secrets" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+                return Err(Error::Misuse("/secrets keys an epoch not established here (spec/crypto.md §4)"));
+            }
             let expiring: Vec<Owned> = tx
                 .core
                 .by_aspect
@@ -327,12 +427,30 @@ impl Engine {
             if !expiring.is_empty() {
                 st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
             }
-            let r = crate::apply::receipt::get(tx, &tid, &ak)?;
-            let frontiers = Frontiers(r.nodes.keys().map(|n| (*n, r.contiguous(n, u64::MAX))).filter(|x| x.1 > 0).collect());
+            // frontiers cover only counters whose writes this state reflects: applied, valid
+            let mut fr = std::collections::BTreeMap::new();
+            for ((t, a, n), ranges) in tx.core.ranges.iter() {
+                if *t != tid || *a != ak {
+                    continue;
+                }
+                let mut next = 1u64;
+                for (lo, (hi, c)) in ranges {
+                    let ok = tx.core.commits.get(c).is_some_and(|m| m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak));
+                    if *lo != next || !ok {
+                        break;
+                    }
+                    next = *hi;
+                }
+                if next > 1 {
+                    fr.insert(*n, next - 1);
+                }
+            }
+            let frontiers = Frontiers(fr);
             let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
-            let schema = ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
+            // the schema's default bounds: core, or a registered schema declaring the AK
+            let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new() };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers) };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

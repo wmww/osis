@@ -79,8 +79,8 @@ fn key_actor_demoted_keeps_lower_roles() {
     assert_eq!(s.boxes.keys().filter(|b| b.member == k).cloned().collect::<Vec<_>>(), vec![box_key(k, Role::Write, &ew)]);
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
-    assert_eq!(kv.read.newest_held().map(|x| x.0), v.read.newest());
-    assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
+    assert!(kv.read.secret(&v.read.newest().unwrap()).is_some());
+    assert!(kv.write.secret(&ew).is_some());
     assert!(kv.admin.secret(&rot.rotated[0].epoch).is_none());
 }
 
@@ -107,7 +107,7 @@ fn wrap_under_held_superseded() {
     // A fork the rotator knows but holds no secret of, newer than its own.
     let fork = Epoch::new(e1.n(), [0; 16]).unwrap();
     view.read.rotation(fork, view.read.get(&e1).unwrap().supersedes.clone());
-    view.read.set_usable(fork, true);
+    view.read.set_established(fork, osis_keys::Provenance::Own);
     assert_eq!(view.read.newest(), Some(fork));
     let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &|_, _| true, &mut rng(2)).unwrap();
     assert_eq!(rot.rotated[0].supersedes, [e1, fork].into_iter().collect());
@@ -133,11 +133,17 @@ fn supersedes_from_keyset_bump() {
     assert!(r2.secrets.removed.is_empty());
     let er1 = r1.rotated[0].epoch;
     let er2 = r2.rotated[0].epoch;
+    // A non-holder applying both rotation commits.
     let observe = |with_keys: bool| {
         let mut v = ActorEpochs::default();
-        osis_keys::observe_secrets(&s, &mut v).unwrap();
-        r2.secrets.observe(&mut v, with_keys.then_some((&r2.keys, &keys))).unwrap();
-        v.read.set_usable(er2, true);
+        assert!(r1.secrets.applied(&mut v, (&r1.keys, &Keys::default())).unwrap());
+        if with_keys {
+            assert!(r2.secrets.applied(&mut v, (&r2.keys, &keys)).unwrap());
+        } else {
+            r2.secrets.observe(&mut v, None).unwrap();
+            v.read.set_applied(er2, []);
+            v.establish();
+        }
         v.read.current()
     };
     assert_eq!(observe(true), vec![er2]);
@@ -146,8 +152,9 @@ fn supersedes_from_keyset_bump() {
     assert_eq!(observe(false), both);
 }
 
-// spec/crypto.md §4: an epoch first seen in a commit is unusable until marked; joining writes,
-// a later removal wins over an earlier put.
+// spec/crypto.md §4: an epoch first seen in a commit is not established until its rotation commit
+// is applied (`Chain`); a grant re-writing a history box establishes nothing; joining writes, a
+// later removal wins over an earlier put.
 #[test]
 fn observe_and_extend() {
     let (a, p, pe, view, s) = switched(&[]);
@@ -156,8 +163,19 @@ fn observe_and_extend() {
     rot.secrets.observe(&mut v, None).unwrap();
     let e2 = rot.rotated[0].epoch;
     assert!(!v.read.is_current(&e2));
-    v.read.set_usable(e2, true);
+    // The rotated view re-sealing someone at e2: applying that re-seal establishes nothing.
+    let mut rv = view.clone();
+    rot.record(&mut rv);
+    let mut s2 = s.clone();
+    rot.secrets.apply(&mut s2);
+    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
+    let reseal = osis_keys::reseal_member(&a, &rv, &s2, &key_rcpt(k, Role::Read, &seed), &set(&[Role::Read]), &mut rng(3)).unwrap().unwrap();
+    assert!(!reseal.history.is_empty());
+    assert!(!reseal.applied(&mut v, (&osis_keys::KeysWrite::default(), &Keys::default())).unwrap());
+    assert!(!v.read.is_current(&e2));
+    assert!(rot.secrets.applied(&mut v, (&rot.keys, &Keys::default())).unwrap());
     assert_eq!(v.read.current(), vec![e2]);
+    assert_eq!(v.read.provenance(&e2), Some(osis_keys::Provenance::Chain));
     let key = box_key(p, Role::Read, &e2);
     let mut w = rot.secrets.clone();
     w.extend(SecretsWrite { removed: [key.clone()].into_iter().collect(), ..SecretsWrite::default() });

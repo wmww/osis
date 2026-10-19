@@ -5,6 +5,7 @@
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
+mod large;
 mod read;
 pub(crate) mod records;
 pub(crate) mod secrets;
@@ -121,16 +122,108 @@ pub(crate) struct Core {
     pub groups: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
     pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
-    /// Every member named by a held edge write or roster: authors with a chain here.
-    pub members_seen: BTreeSet<Tid>,
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: BTreeSet<CommitId>,
+    /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
+    pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
+    pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
+    /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
+    pub rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
+    /// The indexes as they were before the running transaction first changed them.
+    pub backup: Option<Box<Backup>>,
+    /// States the running transaction wrote (dropped from the cache on rollback).
+    pub written: Vec<(Tid, Ak)>,
+    /// Tests: let local commits break the writer-side membership rules (to test receivers).
+    pub skip_writer_rules: bool,
+}
+
+/// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
+/// re-evaluating the restored held set).
+pub(crate) struct Backup {
+    held: MemoryHeldSet,
+    commits: BTreeMap<CommitId, Meta>,
+    by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
+    ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
+    pending: BTreeMap<CommitId, Reason>,
+    syncing: BTreeSet<Tid>,
+    void: BTreeSet<CommitId>,
+    valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
+    secrets: BTreeMap<Tid, ActorEpochs>,
+    own_keys: BTreeSet<Tid>,
+    was: BTreeMap<Tid, BTreeSet<Tid>>,
+    moved: BTreeMap<Tid, Tid>,
+    group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
+    groups: BTreeMap<Tid, BTreeSet<Tid>>,
+    member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
+    unresolved: BTreeSet<CommitId>,
+    rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }
 
 impl Core {
+    /// Saves the indexes before the running transaction's first change to them.
+    pub fn touch(&mut self) {
+        if self.backup.is_some() {
+            return;
+        }
+        self.backup = Some(Box::new(Backup {
+            held: self.held.clone(),
+            commits: self.commits.clone(),
+            by_aspect: self.by_aspect.clone(),
+            ranges: self.ranges.clone(),
+            pending: self.pending.clone(),
+            syncing: self.syncing.clone(),
+            void: self.void.clone(),
+            valueless: self.valueless.clone(),
+            secrets: self.secrets.clone(),
+            own_keys: self.own_keys.clone(),
+            was: self.was.clone(),
+            moved: self.moved.clone(),
+            group_defs: self.group_defs.clone(),
+            groups: self.groups.clone(),
+            member_keys: self.member_keys.clone(),
+            unresolved: self.unresolved.clone(),
+            rotation_role: self.rotation_role.clone(),
+            box_keys: self.box_keys.clone(),
+            secrets_unresolved: self.secrets_unresolved.clone(),
+        }));
+    }
+
+    /// Undoes the aborted transaction's changes to the caches.
+    fn rollback(&mut self) {
+        for k in std::mem::take(&mut self.written) {
+            self.states.remove(&k);
+        }
+        if let Some(b) = self.backup.take() {
+            let b = *b;
+            self.held = b.held;
+            self.commits = b.commits;
+            self.by_aspect = b.by_aspect;
+            self.ranges = b.ranges;
+            self.pending = b.pending;
+            self.syncing = b.syncing;
+            self.void = b.void;
+            self.valueless = b.valueless;
+            self.secrets = b.secrets;
+            self.own_keys = b.own_keys;
+            self.was = b.was;
+            self.moved = b.moved;
+            self.group_defs = b.group_defs;
+            self.groups = b.groups;
+            self.member_keys = b.member_keys;
+            self.unresolved = b.unresolved;
+            self.rotation_role = b.rotation_role;
+            self.box_keys = b.box_keys;
+            self.secrets_unresolved = b.secrets_unresolved;
+            self.timelines.update(&self.held);
+        }
+    }
+
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
         Core {
             id,
@@ -153,9 +246,14 @@ impl Core {
             groups: BTreeMap::new(),
             member_keys: BTreeMap::new(),
             unresolved: BTreeSet::new(),
-            members_seen: BTreeSet::new(),
+            rotation_role: BTreeMap::new(),
+            box_keys: BTreeMap::new(),
+            secrets_unresolved: BTreeMap::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),
+            backup: None,
+            written: Vec::new(),
+            skip_writer_rules: false,
         }
     }
 
@@ -207,6 +305,8 @@ impl Tx<'_> {
 
     /// Writes a state (keeping the unit's undo buffer unless `clear_undo`).
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
+        self.core.touch();
+        self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         unit.state = match &f {
             Some(f) => state::encode(f)?,
@@ -351,6 +451,12 @@ impl Engine {
         Ok(())
     }
 
+    /// Registers an app schema: typed views for undo and default bounds for snapshots of its
+    /// AKs (local writes through typed keys register theirs).
+    pub fn register_schema(&mut self, s: Arc<osis_schema::Schema>) {
+        self.core.schemas.insert(s.id, s);
+    }
+
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
@@ -392,13 +498,14 @@ impl Engine {
         };
         match r {
             Ok(v) => {
+                self.core.backup = None;
+                self.core.written.clear();
                 self.core.events.flush();
                 Ok(v)
             }
             Err(e) => {
                 self.core.events.discard();
-                // caches may hold the aborted transaction's changes
-                self.reload()?;
+                self.core.rollback();
                 Err(e)
             }
         }

@@ -40,7 +40,16 @@ impl Core {
         }
         match self.timelines.get(r) {
             Some(tl) => tl.resolve(&Moves(self), r, t, At::now(osis_core::Ts::make(self.now(), 0).unwrap_or_default())),
-            None => self.moved.get(t).copied().unwrap_or(*t),
+            None => {
+                let mut cur = *t;
+                for _ in 0..osis_perm::RESOLUTION_HOPS {
+                    match self.moved.get(&cur) {
+                        Some(x) => cur = *x,
+                        None => break,
+                    }
+                }
+                cur
+            }
         }
     }
 
@@ -139,6 +148,12 @@ impl Engine {
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
         let (tid, ak) = (*tid, ak.clone());
         self.run(|tx| Ok(tx.state(&tid, &ak)?.cloned()))
+    }
+
+    /// The epochs this node holds for actor `tid` (its own, opened ones with their
+    /// establishment, or derived from the owner's).
+    pub fn epochs(&self, tid: &Tid) -> Option<osis_keys::ActorEpochs> {
+        self.core.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
     }
 
     /// Whether `/created` of `tid` is held.

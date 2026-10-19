@@ -93,7 +93,8 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
 }
 
 /// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly, adding the
-/// earlier secrets and marking them superseded by the epoch whose history lists them.
+/// earlier secrets and marking them superseded by the epoch whose history lists them (counted
+/// once that epoch is established).
 pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) -> Vec<(HistoryKey, Error)> {
     let mut failed: BTreeMap<HistoryKey, Error> = BTreeMap::new();
     let mut done: std::collections::BTreeSet<HistoryKey> = std::collections::BTreeSet::new();
@@ -134,7 +135,9 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
 }
 
 /// Everything a node learns from `actor`'s `/secrets`: the epochs named, its boxes' secrets,
-/// then older ones by history. Returns what could not be opened.
+/// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
+/// `SecretsWrite::applied` per applied rotation commit and `snapshot_keyed` per held snapshot.
+/// Returns what could not be opened.
 pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs) -> Result<Vec<Error>, Error> {
     observe_secrets(secrets, epochs)?;
     let (opened, failed) = open_boxes(actor, secrets, opener);
@@ -154,7 +157,8 @@ pub fn has_history(secrets: &Secrets, role: Role, epoch: &Epoch) -> bool {
     secrets.history.contains_key(&history_key(role, epoch))
 }
 
-/// Persistence of held epochs and secrets per actor (the store implements it).
+/// Persistence of held epochs and secrets per actor (the store implements it), establishment
+/// included (`EpochInfo::{established, applied, snapshot}`): never re-inferred on load.
 pub trait SecretStore {
     fn load(&self, actor: &Tid) -> Option<ActorEpochs>;
     fn save(&mut self, actor: &Tid, epochs: &ActorEpochs);

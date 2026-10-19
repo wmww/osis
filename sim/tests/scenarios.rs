@@ -49,9 +49,8 @@ fn revoke_while_writing_converges() {
 }
 
 // spec/permissions.md §5.2; spec/crdt.md §4.6: sweep seeds that diverge after the removal
-// (issues/node-revoke-divergence.md); un-ignore when fixed.
+// (fixed: un-merge by invalid delta, every body stripped before it joins).
 #[test]
-#[ignore]
 fn revoke_regression_seeds() {
     for seed in [98, 244, 271] {
         ok("revoke_while_writing", seed);

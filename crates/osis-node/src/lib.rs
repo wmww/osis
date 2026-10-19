@@ -2,7 +2,7 @@
 //! parking, atomic apply, validity and un-merge, receipt record), retention (deaths, bounds,
 //! expiry, purge, snapshots), undo, engine events; `labeling`, `sync`, `flows` are filled by
 //! plans/node-sync.md and plans/membership-flows.md. Module ownership: notes/node.md.
-//! Layer 7 (notes/architecture.md). Plans: plans/node-core.md, plans/node-sync.md,
+//! Layer 7 (notes/architecture.md). Plans: node-core (done; notes/node.md), plans/node-sync.md,
 //! plans/membership-flows.md.
 #![forbid(unsafe_code)]
 
@@ -14,6 +14,7 @@ pub mod flows;
 pub mod identity;
 pub mod labeling;
 pub mod local_peer;
+pub mod moves;
 pub mod retention;
 pub mod sync;
 pub mod undo;

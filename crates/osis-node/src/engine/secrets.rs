@@ -7,7 +7,7 @@ use super::Core;
 use crate::error::{Error, Result};
 use osis_core::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{Epoch, Secret32, dedup_secret};
-use osis_keys::{ActorEpochs, Opener, ROLES};
+use osis_keys::{ActorEpochs, Opener, Provenance, ROLES};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets};
 
@@ -74,7 +74,7 @@ impl Core {
         for (m, e) in &openers {
             let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs);
         }
-        let held_any = ROLES.iter().any(|r| epochs.role(*r).newest_held().is_some());
+        let held_any = ROLES.iter().any(|r| epochs.role(*r).held().next().is_some());
         if held_any && Some(&epochs) != before.as_ref() {
             self.secrets.insert(*actor, epochs);
             return true;
@@ -133,6 +133,21 @@ fn uint(n: u64) -> Value {
     Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
+fn provenance_code(p: Provenance) -> u64 {
+    match p {
+        Provenance::Own => 0,
+        Provenance::Fixed => 1,
+        Provenance::Derived => 2,
+        Provenance::Chain => 3,
+        Provenance::Snapshot => 4,
+    }
+}
+
+fn provenance_of(c: i64) -> Option<Provenance> {
+    [Provenance::Own, Provenance::Fixed, Provenance::Derived, Provenance::Chain, Provenance::Snapshot].get(usize::try_from(c).ok()?).copied()
+}
+
+/// Persisted as is: establishment is stored, never re-inferred on load (spec/crypto.md §4).
 pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
     let roles = ROLES
         .iter()
@@ -144,7 +159,9 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                         Value::List(vec![
                             e.to_wire(),
                             uint(i.suite),
-                            Value::Bool(i.usable),
+                            Value::List(i.applied.iter().map(|a| Value::List(a.iter().map(Epoch::to_wire).collect())).collect()),
+                            Value::Bool(i.snapshot),
+                            Value::List(i.established.iter().map(|p| uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                         ])
@@ -165,11 +182,17 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::Int(suite), Value::Bool(usable), Value::List(sup), Value::List(sec)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             info.suite = u64::try_from(*suite).map_err(|_| bad())?;
-            info.usable = *usable;
+            info.snapshot = *snapshot;
+            if let [Value::List(ap)] = applied.as_slice() {
+                info.applied = Some(ap.iter().map(Epoch::from_wire).collect::<std::result::Result<_, _>>().map_err(|_| bad())?);
+            }
+            if let [Value::Int(p)] = est.as_slice() {
+                info.established = Some(provenance_of(*p).ok_or_else(bad)?);
+            }
             for s in sup {
                 info.supersedes.insert(Epoch::from_wire(s).map_err(|_| bad())?);
             }

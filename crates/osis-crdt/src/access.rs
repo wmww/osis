@@ -11,3 +11,10 @@ impl Map {
         self.entries.iter().map(|(d, e)| (d, e.reset.as_ref(), e.key.as_ref(), e.frag.as_deref()))
     }
 }
+
+impl crate::fragment::Struct {
+    /// A field's fragment.
+    pub fn field(&self, id: u64) -> Option<&Fragment> {
+        self.fields.get(&id)
+    }
+}
