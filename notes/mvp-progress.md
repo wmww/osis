@@ -51,7 +51,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
-| cli | review fixes | reviewer: script path resolution, timestamp map keys, JSON `$map` rule (decided per plans/cli.md §5); agent fixing |
+| cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
 | api (second half) | running (opus, worktree) | sharing and sync surface |
 | flows/node-core follow-up | running (opus, worktree) | grant history boxes; /created rule for mixed commits |
 | apps-e2e | not started | after api second half |

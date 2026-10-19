@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3dbc6b1f7232c59412572eb40971627fbbe6cd8db403adf50f84224ac7cf0d23 # shrinks to v = Unknown(Unknown { tag: 18446744073709551615, content: CanonicalBytes(d9065182001a000c94a1) })
+cc 9e5104e3d4bec2baf6a5083d5c2c8ecfbb33a084ad1f0d3fd19d55db570415d1 # shrinks to v = Map({Int(0): Str(""), Int(1): Bool(false), Int(2): Int(0), Int(3): Set({}), Int(4): Enum(1, Some(Int(-66739349865084))), Int(5): Map({Int(5076408964122586692): Int(1198421115224937595), Int(-1616570348861830917): Int(8710454522126104294)}), Int(6): Enum(1, Some(Float(Float(9094988921128908188)))), Int(7): List([Unknown(Unknown { tag: 18446744073709551615, content: CanonicalBytes(67690d3cf186b699) }), Int(-242693519389351907), Bool(true)]), Int(8): Tid(Tid(nMz7di9vDlHaIgiF_oZT)), Int(9): Str(".\u{202e}"), Int(10): Int(8313614111134567555)})

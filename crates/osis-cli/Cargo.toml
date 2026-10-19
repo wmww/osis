@@ -10,7 +10,16 @@ publish = false
 [lints]
 workspace = true
 
+[[bin]]
+name = "osis"
+path = "src/main.rs"
+
 [dependencies]
-osis.workspace = true
+osis = { workspace = true, features = ["file-store"] }
 osis-schema.workspace = true
-osis-server.workspace = true
+osis-server = { workspace = true, features = ["bin"] }
+clap.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
