@@ -18,7 +18,7 @@ Spec: spec/crypto.md §3–§5, §7; spec/permissions.md §3; spec/sync.md §2 (
 - A removed node drops the actor's secrets and what it can no longer read (list what to drop; store executes).
 
 ## Steps
-- [ ] Epoch model, aspects and their delta rules (fork merge test: two concurrent rotations' boxes both survive; members hold both secrets).
+- [x] Epoch model, aspects and their delta rules (fork merge test: two concurrent rotations' boxes both survive; members hold both secrets).
 - [ ] Box production/opening/history; sizes (≈1.2 KB per sealed box; symmetric 49 B + epoch).
 - [ ] Derived secrets; own-secrets switch; covers rule with the notes scenarios (lost device → owner rotation → owned thing's derived epoch stale; grant raced by rotation → re-seal trigger; a removal and the rotation it requires are one commit, so a rotation is never held without its removal).
 - [ ] Planner over an abstract graph trait; wrap epoch choice; token secrets.
