@@ -22,7 +22,7 @@ Spec: spec/sync.md §1–§5, §9 (envelope), §11; spec/crypto.md §5–§7; sp
 - [x] Prefix/framing/blob ID/open; wraps; MAX_BLOB; fuzz target for prefix and bundle parsers (bundle target with step 4); chunk trees and blob-backed pages.
 - [x] Labels, role keys, steps, step IDs, path validation; claim sets and claim keys both sides; entry boxes.
 - [x] Open/register/stamp signatures; token presentation/verification; inbox blob; signal envelope.
-- [ ] `/label` types, Address, link and card formats; bundle writer/reader.
+- [x] `/label` types, Address, link and card formats; bundle writer/reader.
 - [ ] Vectors for each object; proptests: claim set size is a power of two and hides the count below it; a claim key verifies at its step only; a stamp binds the wrap (altered wrap fails).
 
 ## Done when
