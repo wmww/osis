@@ -1,5 +1,8 @@
 //! Chunk trees of linked header lists and frontiers (spec/wire.md §4 "Inline or link", §6).
 //! Usable for any chunk tree; osis-label frames and stores the blobs behind the traits.
+//! Writes and accepts exactly the trees of osis-label's `TreeWriter`/`TreeReader` (same shape,
+//! same read bounds; checked by osis-label's tests/tree_compat.rs) until the two are one module
+//! (issues/tree-unify.md).
 
 use crate::cbor::{as_idx, as_list, uint};
 use crate::header::{Header, ListField};
@@ -49,12 +52,16 @@ fn put_link(sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Result<Prefix, 
     Ok(Link { hash, blob, suite: 1, key })
 }
 
-/// Writes the chunk tree of `bytes` and returns its root link. `prefix` gives each blob's
-/// prefix inputs (a fresh salt each call).
+/// Writes the chunk tree of `bytes` and returns its root link (empty input: one empty chunk).
+/// `prefix` gives each blob's prefix inputs (a fresh salt each call).
 pub fn write_tree(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Result<Prefix, Error>) -> Result<Link, Error> {
     let mut links = Vec::new();
     let mut rest = bytes;
-    for len in chunker::chunk_lengths(bytes, ChunkParams::FORMAT) {
+    let mut lens = chunker::chunk_lengths(bytes, ChunkParams::FORMAT);
+    if lens.is_empty() {
+        lens.push(0);
+    }
+    for len in lens {
         let (chunk, tail) = rest.split_at_checked(len).ok_or(Error::Build("chunker"))?;
         rest = tail;
         links.push(put_link(sink, prefix, link_hash(dedup, chunk), chunk)?);
@@ -142,9 +149,6 @@ fn read_node(r: &mut Reader<'_>, link: &Link, level: Option<u64>) -> Result<(), 
         if link_hash(dedup, &chunk) != c.hash {
             return Err(Error::Corrupt);
         }
-        if chunk.is_empty() {
-            return Err(Error::Malformed("chunk tree: empty chunk"));
-        }
         if r.out.len().saturating_add(chunk.len()) > r.max {
             return Err(Error::Storage("chunk tree above the local size bound"));
         }
@@ -155,7 +159,7 @@ fn read_node(r: &mut Reader<'_>, link: &Link, level: Option<u64>) -> Result<(), 
 }
 
 /// Reads the bytes of the chunk tree under `root`, checking every content hash. A non-final
-/// chunk below `CHUNK_MIN` or an empty chunk is bad input; output above `max` bytes is refused
+/// chunk below `CHUNK_MIN` (empty included) is bad input; output above `max` bytes is refused
 /// (a local bound), which also bounds the chunks visited.
 pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
     let mut r = Reader { dedup, src, out: Vec::new(), max, chunks: 0, last: None };

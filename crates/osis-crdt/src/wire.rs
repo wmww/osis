@@ -351,12 +351,14 @@ pub struct Dec<'a> {
     pub(crate) links_seen: std::collections::HashSet<osis_core::BlobId>,
     /// Fragment nesting, across pages.
     pub(crate) depth: usize,
+    /// Sequence elements in runs without `Content` so far, across pages (§3.3 rule 7).
+    pub(crate) bare: u64,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0 }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0 }
     }
 
     pub fn kind(&self) -> DeltaKind {

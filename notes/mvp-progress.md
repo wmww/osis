@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, large-values, node-core).
+Wave 3 (transport, large-values, node-core, server running); wave 2 integration pass running.
 
 ## Plans
 | plan | state | notes |
@@ -17,13 +17,15 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 resolved (spec edits below, issues/reseal-triggers.md) | follow-up agent: write models/tla/run.sh, update both models to the edited text, rerun (list in plans/tla-models.md Progress); target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
-| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
+| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | |
 | crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
 | perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
+| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq; issues/crdt-path-op-cost.md |
+| perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
-| crdt-seq | review | reviewer running; issues/crdt-seq-linearization-cost.md, issues/crdt-run-amplification.md |
+| crdt-seq | merged, reviewed | crdt plans folded into notes/crdt.md; issues/crdt-seq-linearization-cost.md, issues/crdt-run-amplification.md (snapshots) |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
@@ -35,14 +37,15 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
 | node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
 | transport | running (opus, worktree) | |
-| large-values | running (opus, worktree) | library parts in osis-label |
-| server | running (opus, worktree) | |
+| large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
+| server | review | done except transport wiring; reviewer running |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
+| wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
@@ -56,6 +59,7 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 
 - protocol-spec (filling TBDs into spec/wire.md) also changed: tree-node link content hashes cover child hashes, not the subtree's bytes (spec/data-model.md §6, spec/crypto.md §6; O(change) edits); a recovery key's nonce derives from its seed like a link key's (spec/crypto.md §3); blob AEAD AD is the clear prefix and the inbox AD adds it (spec/crypto.md §5); the token, purge and origin lists go inline-or-link like the aspect list instead of a token cap (spec/commits.md §1); header-list chunk commitments capped (spec/crypto.md §7, owner-call); entry boxes live inside the claim set the step hashes (spec/sync.md §2); a link may carry the sharer node's dialable key and relays for first contact (spec/permissions.md §9).
 - crdt-core: spec/crdt.md §3.3 rule 2: a commit-form delta's own source sorts below every other commit ID in element/entry/run arrays (sorting by its real ID was circular: the ID hashes the delta).
+- large-values: spec/data-model.md §5 a set or map with two elements or keys equal by link content hash is rejected; spec/crdt.md §5.5, §5.6 of equal links a read shows the lowest live element's or entry's (dot order).
 - schema: spec/data-model.md §9: `creation`'s exclusive fields 0/1 type `/created` by spec/wire.md §3, not by the missing-field rule (the type system cannot say "exactly one of").
 - TLC findings (models/tla; rationale in notes/sync.md, notes/permissions.md, notes/crypto.md, notes/ephemeral.md):
   - S1: spec/commits.md §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `ts + MEMBERSHIP_KEEP` whatever its deltas' bounds (spec/wire.md §4 bad-input list extended). Affects commit (header validation), node-core (retention), api (a purge and its resets form a commit of their own).
@@ -65,6 +69,8 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
   - R2: spec/permissions.md §4 stranded heartbeat also on a refused claim, wrapped under the newest secret held (spec/crypto.md §5); spec/sync.md §5 such a member is reached by re-seal. spec/crypto.md §3 deposit-seed refresh SHOULD → MAY (it refused stranded heartbeats).
   - R3: spec/crypto.md §4 a grant or re-seal re-writes the history boxes of the epochs it boxes. R4: spec/sync.md §5 re-registration compares (n, nonce) per role against a head epoch the admin holds; otherwise it walks first. R5: spec/crypto.md §5 wrap under the newest current epoch held; a node with no current secret places only its stranded heartbeat. R7: spec/sync.md §2 claim set is as of registration; a re-sealed member opens by sync key.
 - crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
+- crdt-seq: spec/crdt.md §4.5: an element created and removed in one commit is omitted only once no other write of the commit anchors at it (repeatedly); re-anchoring its dependants to its anchor, as before, reordered them among that anchor's children, so a batch read differently from the same ops one by one (found by `text_batch_is_net_effect_spec_4_5`).
+- crdt-seq (decided in review): spec/crdt.md §3.3 rule 7, spec/wire.md §2: outside snapshots a bare-anchor run is rejected; a writer or import delta carries at most `MAX_DELTA_BARE` = 2^18 elements in runs without `Content`, pages included (longer deletes split across commits); a writer's `FlagW` stamp is the delta stamp.
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - label: spec/wire.md §13: a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB, so a step and its set fit one Register message.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).

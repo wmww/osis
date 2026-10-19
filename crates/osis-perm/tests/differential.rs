@@ -134,6 +134,7 @@ fn joint_model_agrees() {
     joint_run(300, 0x5eed_0001);
 }
 
+/// spec/permissions.md §5.1: as above, more samples (tier 2).
 #[test]
 #[ignore]
 fn joint_model_agrees_large() {
@@ -244,6 +245,7 @@ fn edges_model_agrees() {
     edges_run(300, 0x5eed_0003);
 }
 
+/// spec/permissions.md §2, §5.1, §9: as above, more samples (tier 2).
 #[test]
 #[ignore]
 fn edges_model_agrees_large() {
@@ -402,6 +404,7 @@ fn snapshot_model_agrees() {
     snap_run(300, 0x5eed_0005);
 }
 
+/// spec/permissions.md §6: as above, more samples (tier 2).
 #[test]
 #[ignore]
 fn snapshot_model_agrees_large() {

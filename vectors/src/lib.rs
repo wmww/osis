@@ -18,16 +18,10 @@ pub fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
+pub use osis_core::hex::encode as hex;
 
 pub fn unhex(s: &str) -> Result<Vec<u8>, String> {
-    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !s.len().is_multiple_of(2) || !s.is_ascii() {
-        return Err(format!("bad hex: {s}"));
-    }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("bad hex {s}: {e}"))).collect()
+    osis_core::hex::decode(s).ok_or_else(|| format!("bad hex: {s}"))
 }
 
 /// `n` bytes of the unkeyed BLAKE3 XOF of `seed` (the `xof` input form of README.md).

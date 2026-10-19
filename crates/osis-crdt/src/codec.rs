@@ -41,13 +41,23 @@ pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Erro
     if cx.collecting() {
         return Ok(Value::List(items));
     }
-    let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+    match cx.pages.as_mut() {
+        Some(p) => page_array(Some(&mut **p), items),
+        None => page_array(None, items),
+    }
+}
+
+/// An element array as written (§8, spec/wire.md §6): itself at or below the sink's page target,
+/// else `[Link+]` to pages, or to link pages when that list is above the target. Pages are put
+/// through the sink; `None` is fine only for an array that does not page.
+pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result<Value, Error> {
+    let params = pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     let encoded: Vec<Vec<u8>> = items.iter().map(osis_core::encode).collect();
     let size = encoded.iter().fold(array_head(items.len()), |n, e| n.saturating_add(e.len()));
     if size <= params.target {
         return Ok(Value::List(items));
     }
-    let sink = cx.pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+    let sink = pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
     let mut cutter = PageCutter::new(params.cut);
     let mut links = Vec::new();
     let mut page = Vec::new();

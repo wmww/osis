@@ -23,6 +23,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | tree fan-out | at most 512 links per interior node or link page (§6) |
 | `MAX_COMMITMENTS` | 16 token commitments per blob prefix |
 | `MAX_CLAIMS` | 65 536 keys per claim set |
+| `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MEMBERSHIP_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
@@ -212,4 +213,4 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
-- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

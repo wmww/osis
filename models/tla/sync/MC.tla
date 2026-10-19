@@ -37,8 +37,8 @@ D_Empty == [c \in D_Commits |-> {}]
 D_None == [c \in D_Commits |-> 99]
 D_Exp == F(D_Commits, "c4", 1, 99)
 
-(* M: a live write under an absolute keep-at-most, its snapshot carrying the *)
-(* aspect's bounds (commits §5), a writer and a reader.                      *)
+(* M: a live write under an absolute keep-at-most; the snapshot takes the  *)
+(* schema default bounds (none), a writer and a reader.                     *)
 M_Commits == {"c5", "s"}
 M_Author == [c \in M_Commits |-> "w1"]
 M_Deps == [c \in M_Commits |-> IF c = "s" THEN {"c5"} ELSE {}]
@@ -46,5 +46,5 @@ M_CD == [c \in M_Commits |-> IF c = "s" THEN {"ds"} ELSE {"d5"}]
 M_Empty == [c \in M_Commits |-> {}]
 M_Covers == F(M_Commits, "s", {"d5"}, {})
 M_None == [c \in M_Commits |-> 99]
-M_MostAbs == [c \in M_Commits |-> 1]
+M_MostAbs == F(M_Commits, "c5", 1, 99)
 =============================================================================

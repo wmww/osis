@@ -9,9 +9,13 @@ mod codec;
 mod error;
 mod fragment;
 mod lifecycle;
+mod linearize;
 mod ops;
 mod page;
 mod seq;
+mod seq_diff;
+mod seq_ops;
+mod seq_wire;
 mod stamp;
 mod state;
 mod undo;
@@ -32,9 +36,13 @@ mod tests_life;
 mod tests_laws;
 #[cfg(test)]
 mod tests_review;
+#[cfg(test)]
+mod tests_seq;
+#[cfg(test)]
+mod tests_seq_ops;
 
 pub use changes::{Changes, Death};
-pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
+pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use batch::Batch;
@@ -43,6 +51,7 @@ pub use undo::{UndoBuffer, Undone, undo};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
+pub use seq_ops::cut_dots;
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
 pub use lifecycle::{unmerge, unmerge_in_place};

@@ -58,103 +58,121 @@ proptest! {
     /// §4.7: strip equals the model's, commutes with join, is idempotent; a valued copy wins.
     #[test]
     fn expiry_laws_spec_4_7(seed in any::<u64>()) {
-        let ty = sink_no_seq();
-        let (s, m, ranges, mranges) = three(seed, &ty);
-        let mut r = Rng(seed ^ 0x55);
-        let pick: Vec<bool> = ranges.iter().map(|_| r.chance(1, 2)).collect();
-        let expired: Vec<Range> = ranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
-        let mexpired: Vec<(MSource, u64, u64)> = mranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
-        let strip = |f: &Fragment| { let mut g = f.clone(); g.strip(&in_ranges(&expired)); g };
-        for (o, mo) in s.iter().zip(&m) {
-            let mut ms = mo.clone();
-            ms.strip(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
-            prop_assert_eq!(strip(o), frag(&ms), "strip equals the model");
-        }
-        let (a, b) = (&s[0], &s[1]);
-        prop_assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
-        prop_assert_eq!(strip(&strip(a)), strip(a), "idempotent");
-        prop_assert_eq!(join(a, &strip(a)), a.clone(), "valued copy wins");
+        expiry_laws(seed, &sink_no_seq());
     }
 
     /// §4.6: removing an author in place equals the model; un-merge of held bodies is
     /// order-independent and agrees with the in-place fast path where that applies.
     #[test]
     fn unmerge_spec_4_6(seed in any::<u64>()) {
-        let ty = sink_no_seq();
-        let mut r = Rng(seed | 1);
-        let commits = history(&mut r, std::slice::from_ref(&ty), 3, 4);
-        let mut mstate = None;
-        for c in &commits {
-            mapply(&mut mstate, c.delta.clone());
-        }
-        let state = ostate(&mstate);
-        let bad = source(&MSource::node(2));
-        let author = |s: &Source| *s == bad;
-        if let Some(ms) = &mstate {
-            let mut mm = ms.clone();
-            mm.unmerge(&|s| *s == MSource::node(2));
-            let mut ours = state.clone();
-            ours.remove_author(&author);
-            prop_assert_eq!(ours, frag(&mm), "remove_author equals the model");
-        }
-        let mut held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
-        held.push(state.clone());
-        let u1 = unmerge(held.clone(), &author);
-        held.reverse();
-        let u2 = unmerge(held, &author);
-        prop_assert_eq!(&u1, &u2, "order-independent");
-        let mut fast = state.clone();
-        if unmerge_in_place(&mut fast, &author) {
-            prop_assert_eq!(fast.read(), u1.read(), "fast path agrees");
-        }
+        unmerge_check(seed, &sink_no_seq());
     }
 
     /// §8: a node bootstrapped from a snapshot and then editing converges with the source node;
     /// frontiers cover every commit.
     #[test]
     fn bootstrap_then_edit_spec_8(seed in any::<u64>()) {
-        let ty = sink_no_seq();
-        let mut r = Rng(seed | 1);
-        let commits = history(&mut r, std::slice::from_ref(&ty), 3, 4);
-        let mut a = Fragment::default();
-        let mut received = Received::new();
-        for c in &commits {
-            a.join(frag(&c.delta));
-            received.add(source(&c.w.source).as_node().unwrap(), CounterRange { lo: c.w.lo, hi: c.w.hi() });
-        }
-        for c in &commits {
-            let tid = source(&c.w.source).as_node().unwrap();
-            prop_assert!(received.frontier(&tid) >= c.w.hi() - 1);
-        }
-        let scx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-        let snap = Snapshot { nonce: [0; 16], fragment: a.clone(), frontiers: received.frontiers() };
-        let bytes = encode_snapshot(&snap, &scx, None).unwrap();
-        let got = decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap();
-        let mut b = Fragment::default();
-        b.join(got.fragment);
-        let mut rb = Received::new();
-        rb.add_frontiers(&got.frontiers);
-        prop_assert_eq!(rb.frontiers(), received.frontiers());
-        prop_assert_eq!(b.read(), a.read());
-        // b edits; a edits concurrently; both exchange
-        let view = TyView(ty.clone());
-        let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, &ty, 0));
-        let mut bb = Batch::new(&b, crate::Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([9; 15])), 1));
-        bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &view).unwrap();
-        let mut mw = crdt_model::ops::Writer::new(MSource::node(1), (1 << 30) + 1, 100);
-        mw.next_commit((1 << 30) + 2);
-        let da = random_op(&mut r, &mut mw, &ty, None).map(|d| frag(&d));
-        if let Some((db, _)) = bb.finish() {
-            a.join(db.clone());
-            b.join(db);
-        }
-        if let Some(da) = da {
-            a.join(da.clone());
-            b.join(da);
-        }
-        prop_assert_eq!(&a, &b);
+        bootstrap_check(seed, &sink_no_seq());
     }
 }
+
+/// §4.7 laws of `strip` over random states of type `ty`.
+pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
+    let (s, m, ranges, mranges) = three(seed, ty);
+    let mut r = Rng(seed ^ 0x55);
+    let pick: Vec<bool> = ranges.iter().map(|_| r.chance(1, 2)).collect();
+    let expired: Vec<Range> = ranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
+    let mexpired: Vec<(MSource, u64, u64)> = mranges.iter().zip(&pick).filter(|x| *x.1).map(|x| x.0.clone()).collect();
+    let strip = |f: &Fragment| {
+        let mut g = f.clone();
+        g.strip(&in_ranges(&expired));
+        g
+    };
+    for (o, mo) in s.iter().zip(&m) {
+        let mut ms = mo.clone();
+        ms.strip(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
+        assert_eq!(strip(o), frag(&ms), "strip equals the model");
+    }
+    let (a, b) = (&s[0], &s[1]);
+    assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
+    assert_eq!(strip(&strip(a)), strip(a), "idempotent");
+    assert_eq!(join(a, &strip(a)), a.clone(), "valued copy wins");
+}
+
+/// §4.6 un-merge over a random history of type `ty`.
+pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
+    let mut r = Rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let mut mstate = None;
+    for c in &commits {
+        mapply(&mut mstate, c.delta.clone());
+    }
+    let state = ostate(&mstate);
+    let bad = source(&MSource::node(2));
+    let author = |s: &Source| *s == bad;
+    if let Some(ms) = &mstate {
+        let mut mm = ms.clone();
+        mm.unmerge(&|s| *s == MSource::node(2));
+        let mut ours = state.clone();
+        ours.remove_author(&author);
+        assert_eq!(ours, frag(&mm), "remove_author equals the model");
+    }
+    let mut held: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+    held.push(state.clone());
+    let u1 = unmerge(held.clone(), &author);
+    held.reverse();
+    let u2 = unmerge(held, &author);
+    assert_eq!(&u1, &u2, "order-independent");
+    let mut fast = state.clone();
+    if unmerge_in_place(&mut fast, &author) {
+        assert_eq!(fast.read(), u1.read(), "fast path agrees");
+    }
+}
+
+/// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.
+pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
+    let mut r = Rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let mut a = Fragment::default();
+    let mut received = Received::new();
+    for c in &commits {
+        a.join(frag(&c.delta));
+        received.add(source(&c.w.source).as_node().unwrap(), CounterRange { lo: c.w.lo, hi: c.w.hi() });
+    }
+    for c in &commits {
+        let tid = source(&c.w.source).as_node().unwrap();
+        assert!(received.frontier(&tid) >= c.w.hi() - 1);
+    }
+    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
+    let bytes = snap(&a, received.frontiers());
+    let got = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap();
+    let mut b = Fragment::default();
+    b.join(got.fragment);
+    let mut rb = Received::new();
+    rb.add_frontiers(&got.frontiers);
+    assert_eq!(rb.frontiers(), received.frontiers());
+    assert_eq!(b.read(), a.read());
+    // b edits; a edits concurrently; both exchange
+    let view = TyView(ty.clone());
+    let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, ty, 0));
+    let mut bb = Batch::new(&b, crate::Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([9; 15])), 1));
+    bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &view).unwrap();
+    let mut mw = crdt_model::ops::Writer::new(MSource::node(1), (1 << 30) + 1, 100);
+    mw.next_commit((1 << 30) + 2);
+    let da = random_op(&mut r, &mut mw, ty, None).map(|d| frag(&d));
+    if let Some((db, _)) = bb.finish() {
+        a.join(db.clone());
+        b.join(db);
+    }
+    if let Some(da) = da {
+        a.join(da.clone());
+        b.join(da);
+    }
+    // equal up to the chars of deleted text, which a snapshot does not carry (§3.3 rule 5)
+    assert_eq!(a.read(), b.read());
+    assert_eq!(snap(&a, Frontiers::default()), snap(&b, Frontiers::default()));
+}
+
 
 // ---- paging (§8, spec/wire.md §6)
 

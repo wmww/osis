@@ -83,7 +83,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     (h, tids)
 }
 
-/// notes/architecture.md §3: no panics on data, and evaluation converges.
+/// spec: none (notes/architecture.md §3): no panics on data, and evaluation converges.
 #[test]
 fn junk_never_panics() {
     let mut rng = Rng(0x0b5e55ed);
