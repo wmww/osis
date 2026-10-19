@@ -36,8 +36,18 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
-    /// Records a flow's deliveries; the next step sends them.
+    /// Records a flow's deliveries; the next step sends them. A key actor's own departure
+    /// (`Done::departed`) is ignored by the cover check while its commits are placed.
     pub(crate) fn take_done(&mut self, done: Done) -> Result<()> {
+        let added: Vec<Tid> = done.departed.iter().copied().filter(|t| self.leaving.insert(*t)).collect();
+        let r = self.take_deliveries(done);
+        for t in added {
+            self.leaving.remove(&t);
+        }
+        r
+    }
+
+    fn take_deliveries(&mut self, done: Done) -> Result<()> {
         for c in done.inbox_only {
             self.state.set_inbox_only(c);
         }

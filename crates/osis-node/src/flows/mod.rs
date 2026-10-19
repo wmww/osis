@@ -78,6 +78,10 @@ pub struct Done {
     /// A self-removal: drop the secrets this node lost (`Engine::drop_lost_secrets`) once the
     /// commit is placed (node-sync's `carry_out` does).
     pub drop_lost: bool,
+    /// Things a key actor signing these commits removed itself from (a single-use redemption
+    /// removes L from K): placing these commits under them ignores that departure, as a node's
+    /// own self-removal does (the next node that may rotate does).
+    pub departed: Vec<Tid>,
 }
 
 impl Done {
@@ -89,6 +93,7 @@ impl Done {
         self.deliveries.extend(o.deliveries);
         self.inbox_only.extend(o.inbox_only);
         self.drop_lost |= o.drop_lost;
+        self.departed.extend(o.departed);
     }
 }
 

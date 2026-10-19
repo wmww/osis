@@ -10,11 +10,11 @@
 
 ## Tests
 - Tier 1, `cargo test -p <example>`: `tests/e2e.rs` drives databases on `Runtime::Manual` against osis-server `Hub`s in process through `osis_sim::world::World` (one `ManualClock`, `run`/`advance`/`until`, `set_online` for partitions; offline databases still tick, so expiry and timeouts run). No sleeps, no network, seeded.
-- Tier 2: chat `costs_join_message_removal` (upstream bytes per message kind via `World::start_tally`/`tally`, budgets from notes/chat.md, failing today: issues/chat-costs.md); crates/osis-cli/tests/localhost.rs (a real `osis serve` and three store directories through the binary: init, pair offer/join, link make/redeem, writes on three devices, sync, status, undo, bundle, inspect; about 35 s).
+- Tier 2: chat `costs_join_message_removal` (upstream bytes per message kind via `World::start_tally`/`tally`, budgets from notes/chat.md, failing today: issues/chat-costs.md; per-entry attribution: a temporary log in `SyncEngine::command` that classifies each Upload/Deposit/Delete entry from `state.entries` (kind, cert flag), the commit header and `get_commit` delta sizes, plus per-phase markers in the test); crates/osis-cli/tests/localhost.rs (a real `osis serve` and three store directories through the binary: init, pair offer/join, link make/redeem, writes on three devices, sync, status, undo, bundle, inspect; about 35 s).
 - Tier-1 wall time (4 cores under load ~8, debug): notes-app ≈ 5 s alone, chat ≈ 11 s, folder ≈ 30 s before the deposit re-send fix (persons and introductions cost ~1 s each in a debug build).
 
 ## Findings (all filed)
 - Undo steps back once per register (issues/undo-chain-register.md): the notes undo test walks two aspects.
 - `wait_synced` resolved while inbox deposits were still unanswered, and those live only in memory: a link made, synced and closed could not be redeemed. Fixed: `wait_synced` waits for `SyncEngine::deliveries_pending() == 0`; the CLI runs delivering commands networked and flushes before exit. Persisting the outbox stays in issues/sync-inbox-delivery.md.
-- Chat costs and a non-settling removal (issues/chat-costs.md), API frictions (issues/api-app-frictions.md).
+- Chat costs (issues/chat-costs.md) and a non-settling removal (issues/rotation-uncoverable-loop.md), API frictions (issues/api-app-frictions.md).
 - The mirrored-edges folder variant needs an edge for the folder's actor, not per member (notes/permissions.md Patterns, corrected).

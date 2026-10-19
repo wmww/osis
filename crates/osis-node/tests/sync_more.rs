@@ -204,7 +204,8 @@ fn label_published_under_home_label_spec_sync_2() {
 }
 
 // spec/sync.md §2 (replacement): a new label at the next index takes the live blobs; the old
-// one is marked replaced and no longer synced.
+// one is marked replaced and no longer synced by members; the admin places the replacement's
+// `/label` commit under it and deletes its content entries there.
 #[test]
 fn label_replacement_spec_sync_2() {
     let mut net = Net::new();
@@ -215,8 +216,10 @@ fn label_replacement_spec_sync_2() {
     let t = net.item(a, g, g, "kept");
     net.run();
     let old = net.label(a);
-    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
-    net.actions(a, acts);
+    let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
+    let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    // the admin restarts before syncing: it reopens the replaced label as well
+    net.restart(a, 9);
     net.run();
     net.run();
     diags(&mut net, &[a, b]);
@@ -224,6 +227,17 @@ fn label_replacement_spec_sync_2() {
     let labels: Vec<_> = net.sync(b).labels().into_iter().map(|(_, l)| (l.id, l.index)).collect();
     assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
     assert!(!net.server_ids(sv, &new).is_empty());
+    let live: BTreeSet<_> = net.server_ids(sv, &old).into_iter().collect();
+    let under: Vec<_> = net.sync(a).entries(&old).into_iter().filter(|(id, _)| live.contains(id)).collect();
+    let mut labels_after = 0;
+    for (_, k) in under {
+        let EntryKind::Commit { commit, .. } = k else { continue };
+        let h = net.engine(a).header(&commit).unwrap();
+        assert!(h.aspects.iter().all(|x| x.tid != t), "content of the item left under the old label");
+        labels_after += usize::from(!before.contains(&commit) && h.aspects.iter().any(|x| x.ak.as_str() == "/label"));
+    }
+    // the new label's record and the one marking the old one replaced
+    assert_eq!(labels_after, 2, "the replacement's /label commits under the old label");
     net.write(b, t, "on the new label");
     net.run();
     assert_eq!(net.read(a, t), Some(s("on the new label")));
@@ -338,4 +352,24 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     diags(&mut net, &[a, b]);
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("before bob")));
+}
+
+// spec/crdt.md §9, §4.7; spec/permissions.md §4: a heartbeat writes `/seen` whole, so the
+// expiry of an earlier heartbeat takes no field of a later one.
+#[test]
+fn heartbeat_outlives_earlier_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let _g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.run();
+    let at = net.tid(a);
+    // a second heartbeat shortly before the first one's expiry (two days), which then passes
+    // within the interval (no third heartbeat yet)
+    net.advance(44 * 3_600_000);
+    net.advance(5 * 3_600_000);
+    let seen = net.engine(a).get_typed(&at, &ct::SEEN).unwrap().unwrap();
+    assert!(!seen.stranded);
+    assert!(net.sync(a).take_diagnostics().iter().all(|d| !d.contains("missing field")));
 }

@@ -71,9 +71,16 @@ fn link_redeem() {
 
 // spec/permissions.md §9, §5.1: two concurrent redemptions of a single-use link: one joiner.
 #[test]
-#[ignore = "issues/flows-single-use-redemption-unplaced.md"]
+#[ignore = "tier 2"]
 fn link_race() {
     ok("link_race", 1);
+}
+
+// spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K.
+#[test]
+#[ignore = "issues/flows-race-winner-stranded.md"]
+fn link_race_seed_6() {
+    ok("link_race", 6);
 }
 
 // spec/permissions.md §7: move with import and re-grant.
@@ -100,14 +107,14 @@ fn folders() {
 
 // spec/sync.md §2: label replacement.
 #[test]
-#[ignore = "issues/node-sync-gaps.md"]
+#[ignore = "tier 2"]
 fn label_replacement() {
     ok("label_replacement", 1);
 }
 
 // spec/sync.md §2: label replacement with a member offline; old label cleaned up.
 #[test]
-#[ignore = "issues/node-sync-gaps.md"]
+#[ignore = "tier 2"]
 fn label_replacement_offline() {
     ok("label_replacement_offline", 1);
 }
@@ -157,9 +164,8 @@ fn keep_at_most_seed_62() {
     ok("keep_at_most", 62);
 }
 
-// spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff loses a heartbeat field; the pass aborts.
+// spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff lost a heartbeat field; the pass aborted.
 #[test]
-#[ignore = "issues/crdt-expiring-diff.md"]
 fn revocation_bob_seed_28() {
     ok("revocation_bob", 28);
 }

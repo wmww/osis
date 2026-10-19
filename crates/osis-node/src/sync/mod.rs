@@ -522,15 +522,18 @@ impl SyncEngine {
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of.
+    /// secrets of; an admin also keeps its replaced labels (spec/sync.md §2: it places the
+    /// membership-class commits there, the replacement's `/label` among them, and deletes the
+    /// content entries).
     pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
             if self.engine.epochs(&g).is_none_or(|e| e.read.held().next().is_none()) {
                 continue;
             }
+            let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
             for l in self.engine.group_labels(&g).unwrap_or_default() {
-                if !l.replaced {
+                if !l.replaced || admin {
                     out.push((g, l));
                 }
             }

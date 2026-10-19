@@ -54,9 +54,9 @@ impl SyncEngine {
 
     /// Replaces label `old` of `g` (spec/sync.md §2; an admin): a new label one index above the
     /// highest at the same servers (rotate the admin secret first when the loss calls for it),
-    /// the old one marked replaced; passes then upload the live blobs under the new label.
-    /// Not yet: deleting the old label's content entries at servers still controlled, and
-    /// placing the replacement `/label` commit under the old label.
+    /// the old one marked replaced; passes then upload the live blobs under the new label, and
+    /// under the old one (an admin keeps syncing it, `labels`) only membership-class commits,
+    /// the replacement's `/label` among them, deleting its content entries; certificates stay.
     pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
         let servers = self.engine.group_labels(g)?.into_iter().find(|l| l.id == *old).map(|l| l.servers).ok_or(Error::Misuse("no such label"))?;
         let (new, done) = self.engine.create_label(g, &servers)?;

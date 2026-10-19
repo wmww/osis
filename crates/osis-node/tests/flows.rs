@@ -437,6 +437,8 @@ fn link_redeem_single_use_spec_perm_9() {
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     assert_eq!(done.commits.len(), 1);
     assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { under, .. } if *under == link.k)));
+    // L's own departure does not hold back the deposit (node-sync's cover check)
+    assert_eq!(done.departed, vec![link.k]);
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
     sync(&mut lp, 1, 0);
     for i in [0, 1] {
@@ -844,4 +846,30 @@ fn backdated_revoke_spec_perm_5_3() {
     for i in [1, 2] {
         assert_eq!(tags(&mut lp, i, u), BTreeSet::from(["honest".to_string()]), "peer {i}");
     }
+}
+
+// spec/permissions.md §7, spec/sync.md §2: a labeled doc's copy gets a label of its own at the
+// doc's servers before its members are re-granted, so they sync and write it whatever else of
+// the new owner they read.
+#[test]
+fn move_labels_copy_spec_perm_7() {
+    let (mut lp, ps) = people(2, 518);
+    let (pa, pb) = (ps[0], ps[1]);
+    let team = thing_of(&mut lp, 0, pa);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.create_label(&d, &servers()).unwrap();
+    spread(&mut lp);
+    let (copy, _) = lp.peers[0].engine.move_to(&d, &team).unwrap();
+    spread(&mut lp);
+    for i in [0, 1] {
+        let ls = lp.peers[i].engine.group_labels(&copy).unwrap();
+        assert_eq!(ls.len(), 1, "peer {i}");
+        assert_eq!(ls[0].servers, servers());
+    }
+    assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
+    // an unlabeled doc's copy gets none
+    let e = thing_of(&mut lp, 0, pa);
+    let (copy, _) = lp.peers[0].engine.move_to(&e, &team).unwrap();
+    assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }

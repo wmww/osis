@@ -316,3 +316,30 @@ fn remove_then_put_same_key_round_trips_spec_5_6() {
     }
 }
 
+
+/// §9, §4.7: S is the state as read now. A struct field whose only write went value-less reads
+/// as absent, so the diff writes it again; a field whose value is still live is matched and not
+/// rewritten (it keeps its expiry).
+#[test]
+fn diff_rewrites_value_less_field_spec_9() {
+    let ty = Ty::Struct([(0, Ty::Register), (1, Ty::Register)].into_iter().collect());
+    let view = TyView(ty);
+    let v = |a: i64, b: Option<i64>| Value::Map([(Value::Int(0), Value::Int(a))].into_iter().chain(b.map(|b| (Value::Int(1), Value::Int(b)))).collect());
+    let first = Source::node(Tid::from_bytes([1; 15]));
+    let mut w1 = Writer::new(ts(1 << 16), first.clone(), 1);
+    let mut st = create(&mut w1, &view, &v(1, Some(7))).unwrap();
+    let mut w2 = Writer::new(ts(2 << 16), Source::node(Tid::from_bytes([2; 15])), 1);
+    let d = diff(&mut w2, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
+    let Fragment::Struct(s) = &d else { panic!("struct delta") };
+    assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![0], "the live field 1 is not rewritten");
+    st.join(d);
+    // the first delta expires: field 1 goes, field 0 keeps the second delta's value
+    st.strip(&|d: &crate::stamp::Dot| d.src == first);
+    assert_eq!(read(&st), Some(v(2, None)));
+    let mut w3 = Writer::new(ts(3 << 16), Source::node(Tid::from_bytes([3; 15])), 1);
+    let d = diff(&mut w3, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
+    let Fragment::Struct(s) = &d else { panic!("struct delta") };
+    assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![1]);
+    st.join(d);
+    assert_eq!(read(&st), Some(v(2, Some(7))));
+}

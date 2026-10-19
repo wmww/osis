@@ -300,3 +300,4 @@ Input: local state fragment `S` (may be absent), new value `v`, and the writer's
 - text: Myers diff over chars → deletes and inserts (no move detection). Equal strings → no writes.
 - absent S: everything is a creation; composites with no content get an explicit `W`.
 A replace ignores S: fragment reset then the writes of a diff against absent.
+S is compared as it reads now (§4.7): a value-less write reads as absent, so its position is written again; a value still carried is matched and keeps its expiry, and goes at its T even though the new delta lives longer. A writer needing all of `v` to live as long as its own delta writes a replace.
