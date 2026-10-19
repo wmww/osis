@@ -12,11 +12,16 @@ Spec: spec/sync.md §10 (ordered bidirectional stream, confidentiality, authenti
 - Connection manager helpers used by node and server: reconnect with backoff, one connection syncing many labels (streams per purpose), graceful close.
 
 ## Steps
-- [ ] Traits + InProcess + fault layer; tests: a byte stream round trip, partition heals, deterministic under a fixed seed.
-- [ ] Direct server transport behind the feature; test: pinned-key mismatch refused; ephemeral client keys differ per connection; large stream transfer.
-- [ ] Manager helpers; a loopback test driving osis-proto engines over InProcess and over the real transport on localhost.
+- [x] Traits + InProcess + fault layer; tests: a byte stream round trip, partition heals, deterministic under a fixed seed.
+- [x] Direct server transport behind the feature; test: pinned-key mismatch refused; ephemeral client keys differ per connection; large stream transfer.
+- [x] Manager helpers; a loopback test driving framed sessions over InProcess and over the real transport on localhost.
+- [ ] The same loopback test with osis-proto engines once osis-proto merges (tests/common/mod.rs is the stand-in).
 
 ## Done when
 server and node run over both implementations through the traits only; `cargo test -p osis-transport` without `--features quic` builds no TLS stack; notes/networking.md "Implementation" section written. Delete this plan.
 
 ## Progress
+- Step 1: traits (own `SendStream`/`RecvStream`, `impl Future + Send`, no runtime types), `InProcess` on a `Net` with virtual steps (latency, jitter, bandwidth, partition, disconnect, kill), `Sched` seeded executor; deterministic, no tokio.
+- Step 2: `Quic` (feature `quic`): quinn + rustls (ring), TLS 1.3 with RFC 7250 raw Ed25519 keys both ways, server key pinned by a custom verifier, fresh client key per dial; `quic://host:port` written into spec/sync.md §10; localhost tests `#[ignore]` (tier 2).
+- Step 3: `Backoff`, `connect`, `close_gracefully`; `finish` now waits for delivery; framed-session loopback over InProcess (tier 1) and QUIC (tier 2). notes/networking.md Implementation written. Open: proto-engine loopback (proto not merged); plan stays until server and node drive both transports.
+- Review fixes: concurrent QUIC handshakes with a deadline, bounded transport config, `Protocol` for peer TLS failures, fresh UDP socket per dial, no SNI/0-RTT/tickets, `dial_as` (server-to-server static key), listener close resets queued `InProcess` connections, no leaked entries, `Sched::capped`, timer skipping, URL cap; spec §10 quic paragraph completed.
