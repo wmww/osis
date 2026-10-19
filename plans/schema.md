@@ -22,7 +22,7 @@ Spec: spec/data-model.md §2–§5, §9–§10; spec/versioning.md (all); spec/c
 - [x] Schema value form, lock file, additive checker (each §4 rule tested both ways).
 - [x] Typed reads, defaults, View, write validation; property: `typed_read(encode(typed)) == typed`.
 - [x] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
-- [ ] Codegen bin + a generated example compiled in tests (build.rs in examples later).
+- [x] Codegen bin + a generated example compiled in tests (build.rs in examples later).
 
 ## Tests
 Parser fuzz target (test-infra); checker rules; typed-read errors carry paths; open-struct preservation through a write (unknown field survives `set_field`); version-skew unit tests (old schema reads data written by a newer revision; new reads old).

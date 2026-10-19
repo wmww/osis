@@ -5,8 +5,12 @@
 //! Layer 2 (notes/architecture.md). Plan: plans/schema.md.
 #![forbid(unsafe_code)]
 
+/// Re-exported for generated code.
+pub use osis_core;
+
 mod check;
 pub mod codec;
+mod codegen;
 pub mod core_types;
 mod error;
 mod form;
@@ -17,12 +21,14 @@ mod parse;
 mod path;
 mod schema;
 mod statics;
+pub mod transition;
 mod typed;
 mod types;
 mod view;
 
 pub use check::{Rule, Violation, check};
 pub use codec::{Chunked, Codec};
+pub use codegen::{Generated, generate, generate_file};
 pub use error::{Error, ParseError};
 pub use form::{META_SRC, meta_schema, read_type, type_value};
 pub use keys::{Aspect, AspectKey, Signal};
