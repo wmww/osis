@@ -22,8 +22,8 @@ Spec: spec/requirements.md (API section, Offline), spec/versioning.md §5 (typed
 - Docs: rustdoc example on every public item; a README in the crate with the notes-app walk-through; a "Footguns" section pointing at `edit` vs `set`, the bound, `Place`.
 
 ## Steps
-- [ ] Keys, `Error`, handle over the engine with the memory store and no network: reads, `at()` paths, `Write` with every op, create/place, commit with local rights check; tests per op and per closed footgun (`edit` keeps a concurrent remote field write that `set` would clobber; bound; must-use).
-- [ ] Dispatcher, `Watch`, `Subscription`, `on_change` initial call, `watch_thing`; signals; undo and history; diagnostics; typed reads and writes through generated types from osis-schema codegen (the notes schema).
+- [x] Keys, `Error`, handle over the engine with the memory store and no network: reads, `at()` paths, `Write` with every op, create/place, commit with local rights check; tests per op and per closed footgun (`edit` keeps a concurrent remote field write that `set` would clobber; bound; must-use).
+- [x] Dispatcher, `Watch`, `Subscription`, `on_change` initial call, `watch_thing`; signals (local delivery; remote with node-sync in step 4); undo and history; diagnostics; typed reads and writes through generated types from osis-schema codegen (the notes schema).
 - [ ] Large values (bound, `stream`, `set_stream`, path reads O(entry)); text sessions; queries and backlinks.
 - [ ] Sharing, devices, links, cards, move; sync configuration, status, `wait_synced`, bundles; async surface tested from a plain executor; `Demotion` policies end to end in the simulator.
 - [ ] Iterate with examples/notes and examples/chat (plans/apps-e2e.md); refactor; write the "Implementation" section of notes/api.md (what differs from the shape and why).
@@ -32,3 +32,4 @@ Spec: spec/requirements.md (API section, Offline), spec/versioning.md §5 (typed
 The example apps need nothing the API does not provide; every fixed direction and every closed footgun in notes/api.md has a test; the async surface runs from a non-tokio executor; notes/api.md updated to what was built. Delete this plan.
 
 ## Progress
+- First half (steps 1–2): crates/osis over the local engine; sharing/sync surface stubbed (`Unsupported`); text sessions, queries, `stream`/`len`/`set_stream` open (step 3); notes/api.md Implementation written; issues/undo-chain-register.md.

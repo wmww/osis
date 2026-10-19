@@ -21,7 +21,8 @@
 - Writing: `Mutation` (`create(record)`, `set`/`replace`/`remove_aspect`/`op` through any `AspectKey`, `retention`, `expires`, `purge`, `frontier`, `act_as`, `commit_form`); `Engine::new_thing(&mut m, owner)`, `Engine::commit(m) -> Option<CommitId>`.
 - Receiving: `ingest(bytes, blobs)` / `ingest_from(.., peer)` -> `Ingested::{Applied, Duplicate, Pending(reason), Parked}`; `reexamine`, `set_syncing(tid, on)`, `tick` (expiry, keep-at-most, drift), `pending()`.
 - Relaying: `commit_ids`, `header`, `commit_bytes`, `blob`, `package`.
-- Reads: `get`, `get_full`, `read_large`, `get_typed`, `aspects`, `groups_of`, `roster`, `role_on`, `resolve`, `state`, `knows`, `all_aspects`.
+- API layer: `app_record`/`set_app_record` (local `u/` records the `osis` crate keeps: person, home group), `Mutation::undo(target)` (undo acting as the mutation's actor).
+- Reads: `get`, `get_full`, `read_large`, `read_large_max` (fails `TooLarge` past a bound), `get_typed`, `aspects`, `groups_of`, `roster`, `role_on`, `resolve`, `state`, `knows`, `all_aspects`.
 - Retention: `snapshot(tid, ak)`, `covered(snapshot, body, tid, ak)`, `drop_body`, `body_keep`, `deaths`, `holds_body`, `deletions(from, limit)`.
 - Undo: `undo(id)`, `undo_stack(actor, scope)`, `changes(scope)`.
 - Membership inputs: `receipt(tid, ak)`, `frontier(scope, as_of)`, `epochs(actor)`, `register_schema`.

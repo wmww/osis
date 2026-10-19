@@ -36,6 +36,10 @@ fn create_and_reopen_spec_api_handle() {
         assert_eq!(db.role_on(db.me()), Some(Role::Admin));
         (db.node(), db.me(), db.home())
     };
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Osis>();
+    send_sync::<osis::Watch<String>>();
+    send_sync::<osis::Subscription>();
     let db = Osis::open(cfg(2, store, &c)).unwrap();
     assert_eq!((db.node(), db.me(), db.home()), (node, me, home));
     // an empty store is not a database
