@@ -24,7 +24,7 @@ Wave 2 (all of wave 1 merged).
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
-| commit | review fixes | reviewer found 1 high (tree DoS) + 2 medium; agent fixing; owner-call issues/token-admin-secret.md |
+| commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | review fixes | reviewer done (2 medium); agent fixing |
 | proto | review | reviewer running; issues/proto-label-coupling.md to resolve at integration |
 | keys | running (opus, worktree) | |
@@ -56,6 +56,7 @@ Wave 2 (all of wave 1 merged).
 - crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
+- commit: spec/commits.md §5: compaction snapshots of membership-class aspects and `/created` keep the fixed retention (the text read as if every snapshot delta were `writer`); `/created`'s "forever" is `abs` = forever on the wire. spec/wire.md §4: a header token no aspect lists is bad input.
 
 ## Owner-calls pending
 - issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP).

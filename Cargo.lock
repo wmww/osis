@@ -784,7 +784,9 @@ dependencies = [
 name = "osis-bench"
 version = "0.1.0"
 dependencies = [
+ "osis-commit",
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
 ]
 
@@ -805,6 +807,7 @@ dependencies = [
  "osis-crdt",
  "osis-crypto",
  "osis-schema",
+ "proptest",
 ]
 
 [[package]]
@@ -944,7 +947,9 @@ dependencies = [
 name = "osis-vectors"
 version = "0.1.0"
 dependencies = [
+ "osis-commit",
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
  "osis-schema",
 ]

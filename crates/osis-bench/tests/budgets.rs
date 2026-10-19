@@ -14,3 +14,39 @@ fn budget_creation_record() {
     let rec = CreationRecord::Thing { owner: Tid::from_bytes([1; 15]), nonce: [2; 32] };
     assert_budget("creation record (thing)", encode(&rec.to_value()).len(), 64);
 }
+
+struct Secrets;
+
+impl osis_commit::Secrets for Secrets {
+    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([1; 32]))
+    }
+    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([2; 32]))
+    }
+    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([3; 32]))
+    }
+    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([4; 32]))
+    }
+}
+
+// spec/commits.md §1: a minimal content commit (header plus one register delta, untyped `author`
+// retention) is about 300 bytes before encryption (notes/crdt.md, Commit floor).
+#[test]
+#[ignore]
+fn budget_minimal_commit() {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_core::{Ak, Ts, Value, WallMs};
+    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    let (author, at) = (Tid::from_bytes([1; 15]), Ts::make(WallMs(1_700_000_000_000), 0).unwrap());
+    let mut w = Writer::new(at, Source::node(author), 1);
+    let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
+    let d = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap();
+    let mut b = CommitBuilder::new(Kind::Content, at, author, Tid::from_bytes([2; 15]), Form::Node);
+    b.aspects.push(AspectWrite::new(Tid::from_bytes([3; 15]), Ak::new("/app/title").unwrap(), 1, 2, d));
+    let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
+    let c = b.build(&key, &Secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    assert_budget("minimal content commit plaintext", c.encode().len(), 330);
+}

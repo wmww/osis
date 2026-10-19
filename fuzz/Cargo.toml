@@ -16,6 +16,7 @@ members = ["."]
 libfuzzer-sys = "0.4"
 osis-core = { path = "../crates/osis-core" }
 osis-schema = { path = "../crates/osis-schema" }
+osis-commit = { path = "../crates/osis-commit" }
 
 [profile.release]
 debug = 1
@@ -51,6 +52,13 @@ bench = false
 [[bin]]
 name = "schema_dsl"
 path = "fuzz_targets/schema_dsl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "commit_header"
+path = "fuzz_targets/commit_header.rs"
 test = false
 doc = false
 bench = false
