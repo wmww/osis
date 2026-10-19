@@ -48,6 +48,16 @@ fn revoke_while_writing_converges() {
     ok("revoke_while_writing", 1);
 }
 
+// spec/permissions.md §5.2; spec/crdt.md §4.6: sweep seeds that diverge after the removal
+// (issues/node-revoke-divergence.md); un-ignore when fixed.
+#[test]
+#[ignore]
+fn revoke_regression_seeds() {
+    for seed in [98, 244, 271] {
+        ok("revoke_while_writing", seed);
+    }
+}
+
 // spec: none (replay by name)
 #[test]
 fn unknown_scenario_fails() {
