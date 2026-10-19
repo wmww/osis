@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod btree;
 mod codec;
 mod error;
 #[cfg(feature = "file-backend")]
@@ -11,6 +12,7 @@ mod file;
 mod memory;
 mod pager;
 mod root;
+mod store;
 
 pub use backend::{Backend, BackendError, Op, WriteBatch, prefix_end};
 #[cfg(feature = "file-backend")]
@@ -21,3 +23,4 @@ pub use pager::{StoreConfig, forensic_node_keys, forensic_open};
 #[cfg(feature = "file-backend")]
 pub use root::FileRoot;
 pub use root::{MemoryRoot, RootRecord, RootStorage, RootTier};
+pub use store::{AspectUnit, Deaths, PendingKind, Shred, Store, Table, Transaction};

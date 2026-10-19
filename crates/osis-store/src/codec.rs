@@ -71,9 +71,6 @@ impl<'a> R<'a> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    pub fn rest(&mut self) -> &'a [u8] {
-        std::mem::take(&mut self.0)
-    }
     pub fn end(&self) -> Result<(), Error> {
         if self.0.is_empty() { Ok(()) } else { Err(BAD) }
     }

@@ -25,8 +25,8 @@ use osis_crypto::aead::{self, NONCE_LEN};
 use osis_crypto::{CryptoRngCore, Secret32, Zeroizing};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Shape and budgets. `arity` and `depth` are fixed when the store is created (stored in the
-/// meta); the rest are per open.
+/// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
+/// (stored in the meta); the rest are per open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreConfig {
     /// Children per key tree node (256: a full node is about 11 KB).
@@ -116,6 +116,7 @@ impl Node {
 pub(crate) struct Meta {
     pub arity: u32,
     pub depth: u32,
+    pub page_max: u32,
     pub next_slot: u64,
     pub next_ver: u64,
     /// Slot of the catalog table's root page (`u64::MAX` before the store layer sets it).
@@ -124,10 +125,10 @@ pub(crate) struct Meta {
 
 impl Meta {
     fn encode(&self, w: &mut W) {
-        w.u32(self.arity).u32(self.depth).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
+        w.u32(self.arity).u32(self.depth).u32(self.page_max).u64(self.next_slot).u64(self.next_ver).u64(self.catalog);
     }
     fn decode(r: &mut R) -> Result<Meta, Error> {
-        Ok(Meta { arity: r.u32()?, depth: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()? })
+        Ok(Meta { arity: r.u32()?, depth: r.u32()?, page_max: r.u32()?, next_slot: r.u64()?, next_ver: r.u64()?, catalog: r.u64()? })
     }
 }
 
@@ -255,7 +256,8 @@ impl Pager {
         }
         let mut backend = backend;
         let root_key = Secret32::random(rng);
-        let meta = Meta { arity: cfg.arity, depth: cfg.depth, next_slot: 0, next_ver: 1, catalog: u64::MAX };
+        let page_max = u32::try_from(cfg.page_max).map_err(|_| Error::Misuse("config"))?;
+        let meta = Meta { arity: cfg.arity, depth: cfg.depth, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX };
         let top_row = top_row(0);
         let mut w = W::new();
         meta.encode(&mut w);
@@ -325,6 +327,7 @@ impl Pager {
         r.end()?;
         cfg.arity = meta.arity;
         cfg.depth = meta.depth;
+        cfg.page_max = meta.page_max as usize;
         cfg.capacity()?;
         Ok(Pager::new(backend, root, cfg, epoch, rec.key, ver, meta, top))
     }
@@ -505,6 +508,18 @@ impl Pager {
     pub fn txn_delete_blob(&mut self, d: &mut Dirty, id: BlobId) {
         d.blob_puts.retain(|(b, _)| *b != id);
         d.blob_dels.push(id);
+    }
+
+    /// Bytes `offset..offset+len` of a blob as the transaction sees it.
+    pub fn txn_get_blob(&self, d: &Dirty, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, Error> {
+        self.check()?;
+        if d.blob_dels.contains(id) {
+            return Ok(None);
+        }
+        if let Some((_, b)) = d.blob_puts.iter().rev().find(|(b, _)| b == id) {
+            return Ok(Some(crate::backend::blob_slice(b, offset, len)));
+        }
+        Ok(self.backend.read_blob(id, offset, len)?)
     }
 
     /// Writes plain units and blobs early, under a journal record.
