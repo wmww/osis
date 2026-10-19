@@ -29,7 +29,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
-| keys | merged, reviewed; follow-up running (established epochs, issues/keys-established-epochs.md) | plan stays until flows and node-sync use it |
+| keys | merged, reviewed; established-epochs follow-up done on branch worktree-agent-ab6014dd9867b61e8, merged via node-core's branch | plan stays until flows and node-sync use it |
 | crdt-seq | running (opus, worktree) | |
 | commit | running (opus, worktree) | |
 | label | running (opus, worktree) | |
