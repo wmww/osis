@@ -605,3 +605,34 @@ fn move_regrants_spec_perm_7() {
     }
     assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
 }
+
+// spec/crypto.md §4 (forks): two admins removing different members concurrently fork the read
+// epoch; each fork boxes a member the other removed, so the next node to encrypt under it
+// rotates again, and that epoch covers both departures; both admins converge on it.
+#[test]
+fn fork_from_concurrent_rotations_spec_crypto_4() {
+    let (mut lp, ps) = people(4, 517);
+    let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&t, &pd, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    lp.peers[0].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { member: pd, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    let forks = lp.peers[0].engine.epochs(&t).unwrap().read.current();
+    assert_eq!(forks.len(), 2, "{forks:?}");
+    assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current(), forks);
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
+    assert!(still.is_empty());
+    assert_eq!(done.commits.len(), 1);
+    let e3 = newest_read(&lp, 0, t).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.epochs(&t).unwrap().read.current(), vec![e3]);
+    for i in [2, 3] {
+        assert!(lp.peers[i].engine.epochs(&t).unwrap().read.secret(&e3).is_none(), "peer {i}");
+    }
+    assert!(lp.peers[1].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "nothing left to rotate");
+}

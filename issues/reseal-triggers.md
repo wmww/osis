@@ -16,4 +16,4 @@ Options:
 Recommendation: (a) now; (b) is the right mechanism if stranded members turn out common.
 
 ## Conservative reading meanwhile
-Implement the spec as edited. Clients: offer "re-share with M" by hand to any member that may rotate; do not refresh the deposit seed on rotation by default. notes/sync.md Limits records it.
+Implement the spec as edited. Clients: offer "re-share with M" by hand to any member that may rotate (`Engine::reshare`); do not refresh the deposit seed on rotation by default (`Engine::refresh_deposit_seed` is explicit only). notes/sync.md Limits records it.
