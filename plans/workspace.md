@@ -75,7 +75,7 @@ Compile time and test time are the bottleneck of an agent-driven workflow. Rules
 - Hash wrappers (BLAKE3 hash, keyed hash, derive_key); `Clock` trait with a `ManualClock`; `impl_error!`.
 
 ## Steps
-- [ ] Workspace, profiles, lints, skeletons, `git mv` of models (their tests pass from the new paths; notes/crdt.md and notes/permissions.md paths updated).
+- [x] Workspace, profiles, lints, skeletons, `git mv` of models (their tests pass from the new paths; notes/crdt.md and notes/permissions.md paths updated).
 - [ ] notes/architecture.md with §2–§4 above plus the crate map; notes/overview.md updated (code layout, plans index).
 - [ ] `osis-core` Value + CBOR: proptest round trip, canonical re-encode identity, each rejection rule as a negative test, mutation test (never panics).
 - [ ] Tid/Ak/Link/ids, `format`, chunker (boundaries depend only on content; min/max honoured; equal inputs give equal chunks; incremental equals one-shot), hashing, Clock, error macro.

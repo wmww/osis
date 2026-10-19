@@ -1,0 +1,15 @@
+[package]
+name = "osis-label"
+description = "Blobs, labels, registration steps, stamps, chunk trees"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true
+osis-crypto.workspace = true
+osis-commit.workspace = true

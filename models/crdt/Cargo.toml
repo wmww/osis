@@ -12,3 +12,7 @@ proptest = "1"
 [[bin]]
 name = "text-bench"
 path = "src/bin/text_bench.rs"
+
+# Reference model: style lints off; correctness is checked by its tests.
+[lints.clippy]
+all = { level = "allow", priority = -1 }

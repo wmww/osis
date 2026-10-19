@@ -13,6 +13,7 @@
 
 use std::collections::HashSet;
 
+#[cfg(test)]
 mod content;
 mod edges;
 mod joint;

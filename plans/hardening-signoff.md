@@ -3,7 +3,7 @@
 > Tags: tests, security
 
 Depends on: every other plan merged. Produces: the final state of notes/, issues/, and the report.
-Reference: plans/testing.md §6–§7, notes/sync.md (Limits; What a blind node learns), notes/permissions.md (Revocation; Links; fixpoint findings), spec/requirements.md (every section is a checklist). Spec trumps this plan.
+Reference: plans/testing.md §6–§7, notes/sync.md (Limits; What a blind node learns), notes/permissions.md (Revocation; Links; membership model findings), spec/requirements.md (every section is a checklist). Spec trumps this plan.
 
 ## Deliverables
 - Spec-to-test map regenerated (test-infra script); every MUST / MUST NOT in spec/ either cites a test or has an issue tagged `tests` naming the gap; the owner-call and escalate issues listed.

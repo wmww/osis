@@ -1,5 +1,5 @@
 # CRDTs and commits: rationale
-> Summary: Why spec/crdt.md and spec/commits.md look the way they do: owner decisions, design choices with reasons, known anomalies, rejected alternatives, implementation hints, the reference model `crdt-model/` and its tests, text size measurements, worked examples (cited by tests), research pointers.
+> Summary: Why spec/crdt.md and spec/commits.md look the way they do: owner decisions, design choices with reasons, known anomalies, rejected alternatives, implementation hints, the reference model `models/crdt/` and its tests, text size measurements, worked examples (cited by tests), research pointers.
 
 ## Owner decisions
 - One conflict rule everywhere: every state element carries a timestamp and an author dot, later wins, removal is a reset. No causal contexts; no multi-value register.
@@ -74,7 +74,7 @@
 - A commit has no size limit: any delta pages like a snapshot (§8), so a bulk `replace` of a huge map or an import is one atomic commit; the writer streams pages out, readers stream them in. Runs are capped at 2^16 elements so a page always fits.
 - Commit floor: a minimal commit is about 300 bytes once nonce, framing, tag and padding count, plus a 49-byte wrap per label and a prefix of about 35 bytes. Fine for editing workloads; revisit only if huge commit volumes appear (owner).
 
-## Reference model (`crdt-model/`)
+## Reference model (`models/crdt/`)
 A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully resolved stamps), join, prune, read, the ops, un-merge, the wire encoder/decoder (own canonical CBOR subset), embeddings, diff. Not the implementation; the implementation will be tested against it. Property tests (`tests/props.rs`):
 - convergence under random delivery orders, duplication and omitted prefixes: equal reads and equal encoded states;
 - join laws on random states, within and across encodings (every association and order of three states);
@@ -88,7 +88,7 @@ A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully 
 Not modeled: the schema projection of the diff (the model's diff is untyped); un-merge by re-joining held bodies (the model removes writes in place, which the spec permits only where it gives the same result). The model's decoder is lenient on several §3.3 rule 7 rejections (run maximality, nested register resets, Slots reset equality); the implementation's conformance tests must reject them, and must add: random text undelete, bootstrap-from-snapshot-then-edit convergence, list delete vs concurrent nested write, own-counter range checks.
 
 ## Text size
-Benchmark `crdt-model/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target was 1.5–3x the plain text.
+Benchmark `models/crdt/src/bin/text_bench.rs`: Kleppmann's automerge-paper trace (259,778 single-character edits, final text 104,852 bytes, 182k elements of which 77k deleted), one writer, net effect per commit, encoded as a foreign node's snapshot. Target was 1.5–3x the plain text.
 
 | edits per commit | commits | commit table | runs | flag writes | snapshot | ratio |
 |---|---|---|---|---|---|---|
@@ -103,7 +103,7 @@ Kept from tuning: deleted elements carry no content on the wire (182k → 6k run
 Accepted (spec/requirements.md, Scale): about 13 bytes per commit forever, so clients commit per editing pause. Stability-based GC (drop per-commit stamps once every writer acknowledged) would need every writer's frontier and stall on offline members, which the requirements forbid ("whether others are alive is never a protocol condition").
 
 ## Worked examples
-Dots `a1`, `b3` (source letter, counter); stamps `(t, dot)`. Tests in `crdt-model/tests/props.rs` cite these.
+Dots `a1`, `b3` (source letter, counter); stamps `(t, dot)`. Tests in `models/crdt/tests/props.rs` cite these.
 - **Typing**: a at t=1 types `FOOBAR`: run `[1, 6, [0, [[0, 6]]], "FOOBAR", [], []]`. F=a1→HEAD, O₁=a2→a1, O₂=a3→a2, B=a4→a3, A=a5→a4, R=a6→a5.
 - **Concurrent inserts at one anchor**: b at t=2 inserts `x` after O₂ (`[1, 1, [[1,3], [[0, 1]]], "x", [], []]`, sources `[a]`); c at t=3 inserts `y` after O₂. Children of O₂: y, x, B → FOOyxBAR.
 - **Move with a concurrent insert**: from FOOBAR, b at t=2 inserts x after O₂ (x=b1→a3); a at t=3 moves FOO to the end: roots [F], pred HEAD, outside [B]. Writes B→HEAD (3,a7), F→R (3,a8). Read: BARFOOx.

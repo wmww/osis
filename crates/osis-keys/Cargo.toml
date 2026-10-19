@@ -1,0 +1,16 @@
+[package]
+name = "osis-keys"
+description = "Key management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true
+osis-crypto.workspace = true
+osis-schema.workspace = true
+osis-perm.workspace = true

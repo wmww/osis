@@ -166,15 +166,19 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.190"
+version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "membership-model"
+version = "0.0.0"
 
 [[package]]
 name = "memchr"
@@ -196,6 +200,153 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "osis"
+version = "0.1.0"
+dependencies = [
+ "osis-node",
+]
+
+[[package]]
+name = "osis-cli"
+version = "0.1.0"
+dependencies = [
+ "osis",
+ "osis-schema",
+ "osis-server",
+]
+
+[[package]]
+name = "osis-commit"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-schema",
+]
+
+[[package]]
+name = "osis-core"
+version = "0.1.0"
+
+[[package]]
+name = "osis-crdt"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
+name = "osis-crypto"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
+name = "osis-keys"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crypto",
+ "osis-perm",
+ "osis-schema",
+]
+
+[[package]]
+name = "osis-label"
+version = "0.1.0"
+dependencies = [
+ "osis-commit",
+ "osis-core",
+ "osis-crypto",
+]
+
+[[package]]
+name = "osis-node"
+version = "0.1.0"
+dependencies = [
+ "osis-commit",
+ "osis-core",
+ "osis-crdt",
+ "osis-crypto",
+ "osis-keys",
+ "osis-label",
+ "osis-perm",
+ "osis-proto",
+ "osis-schema",
+ "osis-store",
+ "osis-transport",
+]
+
+[[package]]
+name = "osis-perm"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
+name = "osis-proto"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-label",
+]
+
+[[package]]
+name = "osis-schema"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crdt",
+]
+
+[[package]]
+name = "osis-server"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crypto",
+ "osis-label",
+ "osis-proto",
+ "osis-store",
+ "osis-transport",
+]
+
+[[package]]
+name = "osis-sim"
+version = "0.1.0"
+dependencies = [
+ "osis",
+ "osis-node",
+ "osis-server",
+ "osis-store",
+]
+
+[[package]]
+name = "osis-store"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crypto",
+]
+
+[[package]]
+name = "osis-transport"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
+name = "osis-vectors"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
 
 [[package]]
 name = "proc-macro-crate"

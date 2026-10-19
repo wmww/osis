@@ -1,0 +1,16 @@
+[package]
+name = "osis-sim"
+description = "Deterministic multi-node simulator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis.workspace = true
+osis-node.workspace = true
+osis-server.workspace = true
+osis-store.workspace = true

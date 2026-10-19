@@ -20,7 +20,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
-- notes/permissions.md: permission rules' reasons, fixpoint findings, move (copy) and revocation reasoning, sharing patterns.
+- notes/permissions.md: permission rules' reasons, membership model findings, move (copy) and revocation reasoning, sharing patterns.
 - notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: signals vs expiry vs the all-nodes predicate, heartbeats and the stranded flag.

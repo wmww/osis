@@ -1,0 +1,23 @@
+[package]
+name = "osis-node"
+description = "The node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true
+osis-crypto.workspace = true
+osis-crdt.workspace = true
+osis-schema.workspace = true
+osis-commit.workspace = true
+osis-perm.workspace = true
+osis-keys.workspace = true
+osis-label.workspace = true
+osis-store.workspace = true
+osis-proto.workspace = true
+osis-transport.workspace = true

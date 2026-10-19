@@ -1,0 +1,18 @@
+[package]
+name = "osis-server"
+description = "Blind node used as a server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true
+osis-crypto.workspace = true
+osis-label.workspace = true
+osis-proto.workspace = true
+osis-store.workspace = true
+osis-transport.workspace = true
