@@ -1,10 +1,11 @@
 //! The async driver: one task owns the `Hub` (and so the store); per link a reader task feeds it
-//! bytes; writes go to the link's queue (a full queue drops the slow connection); per configured
-//! peer a dial task reconnects with backoff; sweeps and replication timers run when due. The
-//! only async code of the crate (notes/architecture.md §2).
+//! bytes; writes go to the link's queue (more than `max_queued_bytes` unread drops the
+//! connection); per configured peer a dial task reconnects with backoff; sweeps, Hello deadlines
+//! and replication work run when due. Hub calls (storage, fsyncs) run under `block_in_place` on
+//! a multi-thread runtime. The only async code of the crate (notes/architecture.md §2).
 
 use crate::hub::{ConnId, Hub, HubOutput};
-use crate::net::{Dialer, Link, Listener};
+use crate::net::{Dialer, Link, LinkTx, Listener};
 use osis_core::Clock;
 use osis_label::Address;
 use osis_store::Backend;
@@ -39,7 +40,7 @@ enum Ev {
 }
 
 struct ConnState {
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: LinkTx,
     reader: JoinHandle<()>,
     /// A dial task waiting for this peer link to end.
     done: Option<oneshot::Sender<()>>,
@@ -52,6 +53,14 @@ struct Driver<B: Backend> {
     conns: HashMap<ConnId, ConnState>,
     next: ConnId,
     ev_tx: mpsc::Sender<Ev>,
+}
+
+/// Runs blocking hub work off the async worker when the runtime allows it.
+fn blocking<R>(f: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(f),
+        _ => f(),
+    }
 }
 
 impl<B: Backend> Driver<B> {
@@ -90,7 +99,8 @@ impl<B: Backend> Driver<B> {
         for o in out {
             match o {
                 HubOutput::Send(id, b) => {
-                    let full = self.conns.get(&id).is_some_and(|c| c.tx.try_send(b).is_err());
+                    let cap = self.hub.store().policy().max_queued_bytes;
+                    let full = self.conns.get(&id).is_some_and(|c| !c.tx.send(b, cap));
                     if full {
                         (self.log)(&format!("connection {id}: closed (slow or gone)"));
                         self.drop_conn(id);
@@ -104,13 +114,13 @@ impl<B: Backend> Driver<B> {
 
     fn tick(&mut self) {
         let now = self.now();
-        let out = self.hub.tick(now);
+        let out = blocking(|| self.hub.tick(now));
         self.apply(out);
     }
 
     fn idle(&self) -> Duration {
         let now = self.now();
-        self.hub.next_due().map_or(MAX_IDLE, |t| Duration::from_millis(t.saturating_sub(now)).min(MAX_IDLE))
+        self.hub.next_due(now).map_or(MAX_IDLE, |t| Duration::from_millis(t.saturating_sub(now)).min(MAX_IDLE))
     }
 }
 
@@ -148,9 +158,10 @@ pub async fn run<B: Backend + 'static>(hub: Hub<B>, mut listener: Listener, peer
         tokio::select! {
             link = listener.incoming.recv(), if listening => match link {
                 Some(link) => {
+                    let key = link.peer_key;
                     let id = d.add(link, None);
                     let now = d.now();
-                    let out = d.hub.accept(now, id);
+                    let out = blocking(|| d.hub.accept(now, id, key));
                     d.apply(out);
                 }
                 None => listening = false,
@@ -159,14 +170,14 @@ pub async fn run<B: Backend + 'static>(hub: Hub<B>, mut listener: Listener, peer
                 let now = d.now();
                 match ev {
                     Ev::Bytes(id, b) => {
-                        let out = d.hub.input(now, id, b);
+                        let out = blocking(|| d.hub.input(now, id, b));
                         d.apply(out);
                     }
                     Ev::Closed(id) => d.drop_conn(id),
                     Ev::PeerUp(link, done) => {
                         let key = link.peer_key;
                         let id = d.add(link, Some(done));
-                        let out = d.hub.peer_up(now, id, key);
+                        let out = blocking(|| d.hub.peer_up(now, id, key));
                         d.apply(out);
                     }
                 }

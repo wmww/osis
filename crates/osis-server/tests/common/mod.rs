@@ -125,6 +125,8 @@ pub fn bid(n: u64) -> BlobId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
     Client(usize),
+    /// Reads and drops everything, says nothing.
+    Sink(usize),
     Hub(usize, ConnId),
 }
 
@@ -190,7 +192,7 @@ impl World {
         self.next_conn += 1;
         self.links.push(Link { a: End::Client(c), b: End::Hub(h, conn), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
         let now = self.now();
-        let out = self.hubs[h].accept(now, conn);
+        let out = self.hubs[h].accept(now, conn, [0xe0 + c as u8; 32]);
         self.hub_out(h, out);
         let out = self.clients[c].handle(now, ClientInput::Start);
         self.client_out(c, out);
@@ -206,11 +208,12 @@ impl World {
         self.next_conn += 2;
         self.links.push(Link { a: End::Hub(from, ca), b: End::Hub(to, cb), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
         let now = self.now();
-        let out = self.hubs[to].accept(now, cb);
+        let out = self.hubs[to].accept(now, cb, hub_key(from));
         self.hub_out(to, out);
         let out = self.hubs[from].peer_up(now, ca, hub_key(to));
         self.hub_out(from, out);
         self.pump();
+        self.settle();
         self.links.len() - 1
     }
 
@@ -265,6 +268,7 @@ impl World {
     fn deliver(&mut self, to: End, bytes: Vec<u8>) {
         let now = self.now();
         match to {
+            End::Sink(_) => {}
             End::Client(c) => {
                 let out = self.clients[c].handle(now, ClientInput::Bytes(bytes));
                 self.client_out(c, out);
@@ -302,24 +306,60 @@ impl World {
         }
     }
 
-    /// Runs a command to quiescence and returns the client's events.
+    /// Hands a command to client `c` without delivering anything yet.
+    pub fn send(&mut self, c: usize, cmd: Command) {
+        let now = self.now();
+        let out = self.clients[c].handle(now, ClientInput::Command(cmd));
+        self.client_out(c, out);
+    }
+
+    /// Runs a command to quiescence (hubs' due work included) and returns the client's events.
     pub fn run(&mut self, c: usize, cmd: Command) -> Vec<ClientEvent> {
         let now = self.now();
         let out = self.clients[c].handle(now, ClientInput::Command(cmd));
         self.client_out(c, out);
         self.pump();
+        self.settle();
         std::mem::take(&mut self.events[c])
     }
 
-    /// Advances the clock and ticks every hub (sweeps, timers).
+    /// Advances the clock and ticks every hub while it has work due (sweeps, timers).
     pub fn advance(&mut self, ms: u64) {
         self.clock.advance(ms);
+        self.settle();
+    }
+
+    /// Ticks hubs with work due now until none has any (at most 1000 rounds).
+    pub fn settle(&mut self) {
         let now = self.now();
-        for h in 0..self.hubs.len() {
-            let out = self.hubs[h].tick(now);
-            self.hub_out(h, out);
+        for _ in 0..1000 {
+            let due: Vec<usize> = (0..self.hubs.len()).filter(|h| self.hubs[*h].next_due(now).is_some_and(|t| t <= now)).collect();
+            if due.is_empty() {
+                return;
+            }
+            for h in due {
+                let out = self.hubs[h].tick(now);
+                self.hub_out(h, out);
+            }
+            self.pump();
         }
+        panic!("hubs never settle");
+    }
+
+    /// A raw connection to hub `h` that never speaks; returns its link index.
+    pub fn connect_silent(&mut self, h: usize) -> (usize, ConnId) {
+        let conn = self.next_conn;
+        self.next_conn += 1;
+        self.links.push(Link { a: End::Sink(self.links.len()), b: End::Hub(h, conn), to_b: VecDeque::new(), to_a: VecDeque::new(), open: true });
+        let now = self.now();
+        let out = self.hubs[h].accept(now, conn, [0xd0; 32]);
+        self.hub_out(h, out);
         self.pump();
+        (self.links.len() - 1, conn)
+    }
+
+    pub fn link_open(&self, link: usize) -> bool {
+        self.links[link].open
     }
 
     pub fn take(&mut self, c: usize) -> Vec<ClientEvent> {

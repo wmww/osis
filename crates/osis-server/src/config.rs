@@ -2,9 +2,9 @@
 //! a comment (an address's `url#key` has none before it); blank lines ignored.
 //!
 //! ```text
-//! listen = quic://0.0.0.0:7400        # transport URL to listen on
-//! key = /var/lib/osis/server.key      # 32-byte static secret (created if missing)
-//! data = /var/lib/osis                # data directory (server.redb inside)
+//! listen = quic://0.0.0.0:7400        # required: transport URL to listen on
+//! key = /var/lib/osis/server.key      # required: 32-byte static secret (created if missing)
+//! data = /var/lib/osis                # data directory, server.redb inside (default: osis-server-data)
 //! peer = quic://b.example:7400#<key>  # replication peer, repeatable (address text form)
 //! cap_entries = 1048576               # policy knobs, all optional (`Policy` field names)
 //! ```
@@ -21,6 +21,9 @@ pub struct Config {
     pub peers: Vec<Address>,
     pub policy: Policy,
 }
+
+/// The data directory when the config names none (relative to the working directory).
+pub const DEFAULT_DATA: &str = "osis-server-data";
 
 pub fn parse(text: &str) -> Result<Config, String> {
     let (mut listen, mut key, mut data, mut peers, mut p) = (None, None, None, Vec::new(), Policy::default());
@@ -51,10 +54,16 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "deposits" => p.deposits = n32()?,
             "signals" => p.signals = n32()?,
             "entry_replacements" => p.entry_replacements = n32()?,
+            "max_labels" => p.max_labels = n()?,
+            "max_entries" => p.max_entries = n()?,
+            "max_bytes" => p.max_bytes = n()?,
+            "max_connections" => p.max_connections = usize::try_from(n()?).map_err(|_| bad("too large"))?,
+            "hello_ms" => p.hello_ms = n()?,
+            "max_queued_bytes" => p.max_queued_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,
             _ => return Err(bad(&format!("unknown key {k}"))),
         }
     }
-    Ok(Config { listen: listen.ok_or("missing listen")?, key: key.ok_or("missing key")?, data: data.ok_or("missing data")?, peers, policy: p })
+    Ok(Config { listen: listen.ok_or("missing listen")?, key: key.ok_or("missing key")?, data: data.unwrap_or_else(|| PathBuf::from(DEFAULT_DATA)), peers, policy: p })
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -82,7 +91,8 @@ mod tests {
         assert_eq!(c.data, PathBuf::from("/d"));
         assert_eq!(c.peers, vec![Address { url: "quic://b:7400".into(), key: [7; 32] }]);
         assert_eq!((c.policy.signals, c.policy.cap_bytes, c.policy.deposits), (5, 1000, Policy::default().deposits));
-        assert!(parse("listen = x\nkey = k\n").is_err());
+        assert_eq!(parse("listen = x\nkey = k\nmax_connections = 3\n").unwrap().data, PathBuf::from(DEFAULT_DATA));
+        assert!(parse("listen = x\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nbogus = 1\n").is_err());
         assert!(parse("listen = x\nkey = k\ndata = d\nsignals = many\n").is_err());
     }

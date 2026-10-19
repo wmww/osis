@@ -2,6 +2,7 @@
 //! two servers replicating through dialed links, shutdown and restart (spec/sync.md §5-§9).
 //! Event-driven only: nothing sleeps; a timeout guards against a hang.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+#![cfg(feature = "driver")]
 
 mod common;
 
@@ -43,7 +44,7 @@ impl Client {
     fn out(&mut self, out: Vec<ClientOutput>) {
         for o in out {
             match o {
-                ClientOutput::Send(b) => self.link.tx.try_send(b).unwrap(),
+                ClientOutput::Send(b) => assert!(self.link.tx.send(b, usize::MAX)),
                 ClientOutput::Event(e) => self.events.push(e),
                 _ => {}
             }
@@ -71,7 +72,7 @@ impl Client {
 
     /// Bytes already queued on the link.
     fn drain(&mut self) -> Vec<ClientEvent> {
-        while let Ok(b) = self.link.rx.try_recv() {
+        while let Some(b) = self.link.rx.try_recv() {
             let out = self.s.handle(T0, ClientInput::Bytes(b));
             self.out(out);
         }
@@ -93,17 +94,21 @@ struct Server {
 }
 
 fn start(net: &MemNet, key: [u8; 32], backend: MemoryBackend, peers: Vec<Address>) -> Server {
+    start_with(net, key, backend, peers, Policy::default())
+}
+
+fn start_with(net: &MemNet, key: [u8; 32], backend: MemoryBackend, peers: Vec<Address>, policy: Policy) -> Server {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let store = BackendStore::open(backend, clock.clone(), Policy::default(), &mut SeededRng::from_seed(key)).unwrap();
+    let store = BackendStore::open(backend, clock.clone(), policy, &mut SeededRng::from_seed(key)).unwrap();
     let listener = net.listen(key);
     let hub = Hub::new(store, listener.local_key, Box::new(SeededRng::from_seed([1; 32])));
     let (control, rx) = mpsc::channel(4);
-    let task = tokio::spawn(run(hub, listener, peers, Arc::new(net.clone()), clock, rx, Arc::new(|m: &str| eprintln!("{m}"))));
+    let task = tokio::spawn(run(hub, listener, peers, Arc::new(net.dialer(key)), clock, rx, Arc::new(|m: &str| eprintln!("{m}"))));
     Server { control, task }
 }
 
-// spec/sync.md §5, §8: clients through the driver: register, open, upload, download, subscription push
-#[tokio::test]
+// spec/sync.md §5, §8: clients through the driver (multi-thread runtime: hub calls in block_in_place): register, open, upload, download, subscription push
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clients_end_to_end() {
     let net = MemNet::new();
     let key = [0x51; 32];
@@ -161,4 +166,47 @@ async fn servers_replicate_through_dialed_links() {
         s.control.send(Control::Shutdown).await.unwrap();
         s.task.await.unwrap();
     }
+}
+
+// spec: none (server policy): a connection that does not read is dropped once `max_queued_bytes` would wait for it
+#[tokio::test]
+async fn reader_that_never_reads_is_dropped() {
+    let net = MemNet::new();
+    let key = [0x51; 32];
+    let server = start_with(&net, key, MemoryBackend::new(), vec![], Policy { max_queued_bytes: 64 << 10, ..Policy::default() });
+    let mut a = Client::connect(&net, key).await;
+    let l = Label::new(3);
+    a.run(l.register_cmd(0)).await;
+    let big = |n: u64| {
+        let mut b = osis_label::Prefix::new(salt(n), None, vec![]).unwrap().to_bytes();
+        b.extend(std::iter::repeat_n(n as u8, 30_000));
+        b
+    };
+    a.run(Command::Upload { label: l.id, entries: (0..8).map(|n| l.entry(big(n))).collect() }).await;
+    // the stalled client reads the server's Hello only, then asks for everything inline
+    let mut link = net.connect(key).await.unwrap();
+    let mut s = ClientSession::new(ClientConfig { peer_static_key: key, challenge: [8; 32] });
+    let send = |link: &Link, out: Vec<ClientOutput>| {
+        for o in out {
+            if let ClientOutput::Send(b) = o {
+                assert!(link.tx.send(b, usize::MAX));
+            }
+        }
+    };
+    send(&link, s.handle(T0, ClientInput::Start));
+    let hello = link.rx.recv().await.unwrap();
+    send(&link, s.handle(T0, ClientInput::Bytes(hello)));
+    send(&link, s.handle(T0, ClientInput::Command(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) })));
+    send(&link, s.handle(T0, ClientInput::Command(Command::Sync { label: l.id, cursor: None, inline_limit: u64::MAX, entries: vec![], gained: vec![] })));
+    // the server gives up on it: the stream ends after what was queued
+    let mut got = 0;
+    while let Some(b) = tokio::time::timeout(GUARD, link.rx.recv()).await.expect("connection kept") {
+        got += b.len();
+    }
+    assert!(got < 64 << 10, "{got} bytes queued");
+    // the reading client is unaffected
+    let ev = a.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
+    assert!(matches!(&ev[..], [ClientEvent::Opened { .. }]), "{ev:?}");
+    server.control.send(Control::Shutdown).await.unwrap();
+    server.task.await.unwrap();
 }

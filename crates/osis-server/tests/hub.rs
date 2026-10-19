@@ -139,7 +139,7 @@ fn timed_deletes_and_expiry() {
     assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(now + 8_000)] })), vec![Code::OK]);
     let (pushed, _) = events_of(&w.take(b));
     assert_eq!(pushed, vec![Event::Pending { blob_id: tid, at: now + 10_000 }, Event::Pending { blob_id: tid, at: now + 5_000 }]);
-    assert_eq!(w.hubs[h].next_due(), Some(now + 3_000));
+    assert_eq!(w.hubs[h].next_due(w.now()), Some(now + 3_000));
     w.advance(3_000);
     assert!(w.take(b).is_empty(), "expiry pushes nothing");
     let eid = osis_label::blob_id(&expiring);
@@ -267,7 +267,7 @@ fn two_servers_replicate() {
     assert!(w.diagnostics.is_empty(), "{:?}", w.diagnostics);
 }
 
-// spec/sync.md §5: replication of a label whose log no longer reaches the peer's position replays the path and the live stamped entries
+// spec/sync.md §5: replication of a label whose log no longer reaches the peer's position replays the path and the live stamped entries, each run of steps before the entries stamped under its key
 #[test]
 fn replication_replays_past_the_horizon() {
     let mut w = World::new();
@@ -275,9 +275,11 @@ fn replication_replays_past_the_horizon() {
     let a = w.connect(s1);
     let mut l = Label::new(3);
     w.setup(a, &l);
+    // entries stamped under the genesis key, then under the child's: each run goes before the next step
+    w.run(a, Command::Upload { label: l.id, entries: (0..100).map(|n| l.entry(blob(n))).collect() });
     let (child, set) = l.rotate(20);
     w.run(a, Command::Register { label: l.id, step: child, claim_set: Some(set) });
-    w.run(a, Command::Upload { label: l.id, entries: (0..300).map(|n| l.entry(blob(n))).collect() });
+    w.run(a, Command::Upload { label: l.id, entries: (100..300).map(|n| l.entry(blob(n))).collect() });
     assert!(osis_proto::LabelStore::log_after(w.hubs[s1].store(), &l.id, 0, 1).unwrap().is_none());
     w.peer(s1, s2);
     let b = w.connect(s2);

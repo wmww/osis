@@ -76,7 +76,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `proptest` (dev, all crates; models use their own version line): property tests.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
 - `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
-- `tokio` 1.53 (no default features; server: `rt`, `sync`, `time`, `macros` for `select!`; its `bin` feature adds `rt-multi-thread`, `signal`): the drivers' runtime, never in store or engine paths.
+- `tokio` 1.53 (no default features; server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`): the drivers' runtime, never in store or engine paths.
 - Planned, added by their plans with a line here: tokio features for node, osis, cli, sim, quinn + rustls (feature-gated; transport may choose lighter and record why), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions

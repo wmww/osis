@@ -17,7 +17,15 @@ fn log(msg: &str) {
 /// The 32-byte static secret at `path`, created (owner-only) if missing.
 fn static_secret(path: &Path) -> Result<[u8; 32], String> {
     match std::fs::read(path) {
-        Ok(b) => b.try_into().map_err(|_| format!("{}: not a 32-byte key", path.display())),
+        Ok(b) => {
+            #[cfg(unix)]
+            if let Ok(m) = std::fs::metadata(path)
+                && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o077 != 0
+            {
+                log(&format!("warning: {} is readable by others (want mode 0600)", path.display()));
+            }
+            b.try_into().map_err(|_| format!("{}: not a 32-byte key", path.display()))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut k = [0u8; 32];
             OsRng.fill_bytes(&mut k);
@@ -45,16 +53,24 @@ fn start() -> Result<(), String> {
     let backend = RedbBackend::open(&cfg.data.join("server.redb")).map_err(|e| e.to_string())?;
     let clock = Arc::new(SystemClock);
     let store = BackendStore::open(backend, clock.clone(), cfg.policy.clone(), &mut OsRng).map_err(|e| e.to_string())?;
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_time().build().map_err(|e| e.to_string())?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let (listener, dialer) = net::listen(&cfg.listen, &secret)?;
         let hub = Hub::new(store, listener.local_key, Box::new(OsRng));
         let (control, rx) = tokio::sync::mpsc::channel(4);
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                log("shutting down");
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    log("shutting down");
+                    let _ = control.send(Control::Shutdown).await;
+                }
+                Err(e) => {
+                    // No signal handling: keep running (and keep the control channel open).
+                    log(&format!("cannot watch for Ctrl-C: {e}"));
+                    std::future::pending::<()>().await;
+                    drop(control);
+                }
             }
-            let _ = control.send(Control::Shutdown).await;
         });
         log(&format!("listening on {}", cfg.listen));
         driver::run(hub, listener, cfg.peers, dialer, clock, rx, Arc::new(log)).await;

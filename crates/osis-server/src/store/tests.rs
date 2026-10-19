@@ -122,7 +122,7 @@ fn deposit_budget() {
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 1);
     e.store.delete(&l, &osis_label::blob_id(&blobs[2]), T0).unwrap();
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 2);
-    e.store.sweep(T0 + 5).unwrap();
+    e.store.sweep(T0 + 5, 1024).unwrap();
     assert_eq!(e.store.budget(&l).unwrap().entries_left, 3);
     // bytes: an entry larger than what remains
     let left = e.store.budget(&l).unwrap().bytes_left;
@@ -197,17 +197,17 @@ fn timed_deletes_expiry_tombstones() {
     e.store.schedule_delete(&l, &id(1), T0 + 80).unwrap();
     assert_eq!(e.store.entry(&l, &id(1)).unwrap().unwrap().pending_delete, Some(T0 + 80));
     assert_eq!(e.store.next_due().unwrap(), Some(T0 + 50));
-    assert!(e.store.sweep(T0 + 50).unwrap().is_empty());
+    assert!(e.store.sweep(T0 + 50, 1024).unwrap().grew.is_empty());
     assert_eq!(e.store.entry(&l, &id(2)).unwrap(), None);
     assert!(!e.store.tombstoned(&l, &id(2)).unwrap());
     assert_eq!(e.store.blob(&id(2)).unwrap(), None);
-    assert_eq!(e.store.sweep(T0 + 80).unwrap(), BTreeSet::from([l]));
+    assert_eq!(e.store.sweep(T0 + 80, 1024).unwrap().grew, BTreeSet::from([l]));
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
     let recs = e.store.log_after(&l, seq, 10).unwrap().unwrap();
     assert_eq!(recs.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Pending(id(1), T0 + 80), LogRecord::Deleted(id(1))]);
-    e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS - 1).unwrap();
+    e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS - 1, 1024).unwrap();
     assert!(e.store.tombstoned(&l, &id(1)).unwrap());
-    e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS).unwrap();
+    e.store.sweep(T0 + 80 + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
     assert!(!e.store.tombstoned(&l, &id(1)).unwrap());
     assert_eq!(e.store.next_due().unwrap(), None);
 }
@@ -219,9 +219,9 @@ fn claim_sets_dropped_after_membership_keep() {
     let l = e.f.label;
     e.store.push_step(&l, e.f.child.clone(), Some(e.f.child_claims.clone())).unwrap();
     let g = e.f.genesis.id();
-    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS - 1).unwrap();
+    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS - 1, 1024).unwrap();
     assert!(e.store.claim_set(&l, &g).unwrap().is_some());
-    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS).unwrap();
+    e.store.sweep(T0 + MEMBERSHIP_KEEP_MS, 1024).unwrap();
     assert!(e.store.claim_set(&l, &g).unwrap().is_none());
     assert!(e.store.claim_set(&l, &e.f.child.id()).unwrap().is_some());
     assert!(e.store.step(&l, &g).unwrap().is_some());
@@ -332,7 +332,7 @@ proptest! {
                     now += advance;
                     e.clock.set(WallMs(now));
                     expired |= (0..12).any(|n| expiry_of(n).is_some_and(|t| t <= now));
-                    e.store.sweep(now).unwrap();
+                    e.store.sweep(now, usize::MAX).unwrap();
                     r.sweep(now);
                 }
             }

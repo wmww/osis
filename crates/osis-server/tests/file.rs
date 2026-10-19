@@ -46,7 +46,7 @@ fn redb_store_survives_reopen() {
     assert!(s.tombstoned(&l, &osis_label::blob_id(&blobs[0])).unwrap());
     assert_eq!(s.blob(&osis_label::blob_id(&blobs[2])).unwrap().as_deref(), Some(&blobs[2][..]));
     assert_eq!(s.blob(&osis_label::blob_id(&blobs[0])).unwrap(), None);
-    s.sweep(T0 + 100).unwrap();
+    s.sweep(T0 + 100, 1024).unwrap();
     let last = s.log_after(&l, head, 10).unwrap().unwrap();
     assert_eq!(last.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Deleted(osis_label::blob_id(&blobs[1]))]);
     assert_eq!(s.live_ids(&l).unwrap(), vec![osis_label::blob_id(&blobs[2])]);

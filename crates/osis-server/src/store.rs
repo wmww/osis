@@ -8,7 +8,7 @@
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count;
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop);
-//! `Q peer label` replication position.
+//! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
 
 use osis_core::format::{MEMBERSHIP_KEEP_MS, TOMBSTONE_LIFETIME_MS};
 use osis_core::{BlobId, Clock, LabelId};
@@ -16,7 +16,7 @@ use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, LabelStore, LogRecord, Put, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
@@ -45,6 +45,16 @@ pub struct Policy {
     pub signals: u32,
     /// Wrap replacements per entry and window.
     pub entry_replacements: u32,
+    /// Node-wide caps: new entries beyond them get code 12, new labels Error 12.
+    pub max_labels: u64,
+    pub max_entries: u64,
+    pub max_bytes: u64,
+    /// Connections served at once (the driver closes any beyond).
+    pub max_connections: usize,
+    /// A connection without the peer's Hello this long after accept is closed.
+    pub hello_ms: u64,
+    /// Bytes queued for one connection beyond which it is dropped (a peer that does not read).
+    pub max_queued_bytes: usize,
 }
 
 impl Default for Policy {
@@ -62,6 +72,12 @@ impl Default for Policy {
             deposits: 600,
             signals: 1_200,
             entry_replacements: 4,
+            max_labels: 1 << 20,
+            max_entries: 1 << 26,
+            max_bytes: 256 << 30,
+            max_connections: 10_000,
+            hello_ms: 10_000,
+            max_queued_bytes: 32 << 20,
         }
     }
 }
@@ -78,6 +94,9 @@ impl Policy {
             deposits: u32::MAX,
             signals: u32::MAX,
             entry_replacements: u32::MAX,
+            max_labels: u64::MAX,
+            max_entries: u64::MAX,
+            max_bytes: u64::MAX,
             ..Policy::default()
         }
     }
@@ -268,6 +287,8 @@ impl Rates {
 struct Tx {
     label: LabelId,
     meta: Meta,
+    /// Entries and bytes before this mutation, and whether the label is new (node totals).
+    before: (u64, u64, bool),
     batch: WriteBatch,
     grew: bool,
 }
@@ -281,6 +302,26 @@ impl Tx {
     }
 }
 
+/// Node-wide totals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    pub labels: u64,
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+/// What a bounded sweep did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Swept {
+    /// Labels whose logs grew (timed deletes ran).
+    pub grew: BTreeSet<LabelId>,
+    /// The budget ran out with due work left.
+    pub more: bool,
+}
+
+/// Remembered entry origins (in memory) beyond which the map is cleared.
+const MAX_ORIGINS: usize = 1 << 20;
+
 /// `LabelStore` over a `Backend`. Holds the backend, the clock for rate windows and supersession
 /// times, and the policy.
 pub struct BackendStore<B: Backend> {
@@ -289,6 +330,10 @@ pub struct BackendStore<B: Backend> {
     clock: Arc<dyn Clock>,
     policy: Policy,
     rates: Rates,
+    /// Peer key of the connection whose request is being handled (set by the hub).
+    origin: Option<[u8; 32]>,
+    /// Who last added or replaced an entry, when known: replication skips sending it back.
+    origins: HashMap<(LabelId, BlobId), [u8; 32]>,
 }
 
 impl<B: Backend> BackendStore<B> {
@@ -306,7 +351,9 @@ impl<B: Backend> BackendStore<B> {
                 s
             }
         };
-        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default() })
+        let mut policy = policy;
+        policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
+        Ok(BackendStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new() })
     }
 
     pub fn backend(&self) -> &B {
@@ -319,6 +366,21 @@ impl<B: Backend> BackendStore<B> {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// The peer key of the connection whose requests follow (none: unknown).
+    pub fn set_origin(&mut self, peer: Option<[u8; 32]>) {
+        self.origin = peer;
+    }
+
+    /// The peer key an entry's current wrap and stamp came from, if remembered.
+    pub fn origin(&self, label: &LabelId, blob: &BlobId) -> Option<[u8; 32]> {
+        self.origins.get(&(*label, *blob)).copied()
+    }
+
+    pub fn totals(&self) -> Result<Totals, StoreError> {
+        let Some(b) = self.backend.get(b"N").map_err(err)? else { return Ok(Totals::default()) };
+        Ok(Totals { labels: read_u64(&b, 0)?, entries: read_u64(&b, 8)?, bytes: read_u64(&b, 16)? })
     }
 
     fn now(&self) -> u64 {
@@ -335,21 +397,31 @@ impl<B: Backend> BackendStore<B> {
 
     fn tx(&self, label: &LabelId) -> Result<Tx, StoreError> {
         let meta = self.meta(label)?.ok_or_else(unknown)?;
-        Ok(Tx { label: *label, meta, batch: WriteBatch::new(), grew: false })
+        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: WriteBatch::new(), grew: false })
     }
 
     /// Trims the log to `log_keep` records (in steps of 1/8 of it) and commits.
     fn commit(&mut self, mut tx: Tx) -> Result<(), StoreError> {
         let keep = self.policy.log_keep.max(1);
-        let held = tx.meta.next_seq - tx.meta.horizon;
+        let held = tx.meta.next_seq.checked_sub(tx.meta.horizon).ok_or_else(|| corrupt("log horizon"))?;
         if held > keep.saturating_add(keep / 8) {
-            let upto = tx.meta.next_seq - keep;
+            let upto = tx.meta.next_seq.saturating_sub(keep);
             for seq in tx.meta.horizon + 1..=upto {
                 tx.batch.delete(key(b'G', &[&tx.label.0, &be(seq)]));
             }
             tx.meta.horizon = upto;
         }
         tx.batch.put(key(b'L', &[&tx.label.0]), tx.meta.encode());
+        let (entries, bytes, new) = tx.before;
+        if new || entries != tx.meta.entries || bytes != tx.meta.bytes {
+            let t = self.totals()?;
+            let t = Totals {
+                labels: t.labels.saturating_add(u64::from(new)),
+                entries: t.entries.saturating_add(tx.meta.entries).saturating_sub(entries),
+                bytes: t.bytes.saturating_add(tx.meta.bytes).saturating_sub(bytes),
+            };
+            tx.batch.put(b"N".to_vec(), [be(t.labels), be(t.entries), be(t.bytes)].concat());
+        }
         self.backend.commit(tx.batch).map_err(err)
     }
 
@@ -409,62 +481,74 @@ impl<B: Backend> BackendStore<B> {
     }
 
     /// Expires entries (no tombstone, no event), executes due timed deletes, drops old tombstones
-    /// and claim sets superseded for `claim_keep_ms`. Returns the labels whose logs grew.
-    pub fn sweep(&mut self, now: u64) -> Result<BTreeSet<LabelId>, StoreError> {
-        const BATCH: usize = 1024;
-        let mut grew = BTreeSet::new();
-        let split = |rest: &[u8]| -> Result<(LabelId, BlobId), StoreError> { Ok((LabelId(read_arr(rest, 0)?), BlobId(read_arr(rest, 16)?))) };
+    /// and claim sets superseded for `claim_keep_ms`; at most `budget` index rows, one commit per
+    /// label. An index row that does not parse, or names a label not held, is dropped.
+    pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
+        let mut out = Swept::default();
+        let mut left = budget.max(1);
+        let mut junk = WriteBatch::new();
+        let mut by_label: BTreeMap<LabelId, Vec<(Vec<u8>, BlobId, bool)>> = BTreeMap::new();
         for (tag, tomb) in [(b'X', false), (b'P', true)] {
-            loop {
-                let due = self.due(tag, now, BATCH)?;
-                if due.is_empty() {
-                    break;
-                }
-                for (k, rest) in due {
-                    let (label, blob) = split(&rest)?;
-                    let mut tx = self.tx(&label)?;
-                    tx.batch.delete(k);
-                    if let Some(row) = self.row(&label, &blob)? {
-                        self.remove(&mut tx, &blob, &row, tomb.then_some(now))?;
-                    }
-                    if tx.grew {
-                        grew.insert(label);
-                    }
-                    self.commit(tx)?;
+            let due = self.due(tag, now, left)?;
+            left -= due.len();
+            for (k, rest) in due {
+                match (read_arr(&rest, 0).map(LabelId), read_arr(&rest, 16).map(BlobId)) {
+                    (Ok(l), Ok(b)) if rest.len() == 48 => by_label.entry(l).or_default().push((k, b, tomb)),
+                    _ => junk.delete(k),
                 }
             }
         }
-        loop {
-            let due = self.due(b'Y', now, BATCH)?;
-            if due.is_empty() {
-                break;
+        for (label, rows) in by_label {
+            let Some(mut tx) = self.meta(&label).ok().flatten().map(|meta| Tx { label, before: (meta.entries, meta.bytes, false), meta, batch: WriteBatch::new(), grew: false }) else {
+                for (k, _, _) in rows {
+                    junk.delete(k);
+                }
+                continue;
+            };
+            let mut done = BTreeSet::new();
+            for (k, blob, tomb) in rows {
+                tx.batch.delete(k);
+                if !done.insert(blob) {
+                    continue;
+                }
+                let raw = self.backend.get(&key(b'E', &[&label.0, &blob.0])).map_err(err)?;
+                if let Some(Ok(row)) = raw.map(|r| Row::decode(&r)) {
+                    self.remove(&mut tx, &blob, &row, tomb.then_some(now))?;
+                }
             }
-            let mut b = WriteBatch::new();
-            for (k, rest) in due {
-                let (label, blob) = split(&rest)?;
-                b.delete(k);
-                b.delete(key(b'T', &[&label.0, &blob.0]));
+            if tx.grew {
+                out.grew.insert(label);
             }
+            self.commit(tx)?;
+        }
+        let mut b = WriteBatch::new();
+        let due = self.due(b'Y', now, left)?;
+        left -= due.len();
+        for (k, rest) in due {
+            b.delete(key(b'T', &[&rest]));
+            b.delete(k);
+        }
+        let due = self.due(b'Z', now, left)?;
+        left -= due.len();
+        for (k, rest) in due {
+            b.delete(key(b'C', &[&rest]));
+            b.delete(k);
+        }
+        b.ops.extend(junk.ops);
+        if !b.is_empty() {
             self.backend.commit(b).map_err(err)?;
         }
-        loop {
-            let due = self.due(b'Z', now, BATCH)?;
-            if due.is_empty() {
-                break;
-            }
-            let mut b = WriteBatch::new();
-            for (k, rest) in due {
-                b.delete(k);
-                b.delete(key(b'C', &[&rest]));
-            }
-            self.backend.commit(b).map_err(err)?;
-        }
-        Ok(grew)
+        out.more = left == 0;
+        Ok(out)
     }
 
-    /// Every label held, ascending.
-    pub fn labels(&self) -> Result<Vec<LabelId>, StoreError> {
-        let rows = self.backend.scan_prefix(b"L", usize::MAX).map_err(err)?;
+    /// Up to `max` labels held above `after` (from the lowest when none), ascending.
+    pub fn labels_after(&self, after: Option<&LabelId>, max: usize) -> Result<Vec<LabelId>, StoreError> {
+        let start = match after {
+            Some(a) => key(b'L', &[&a.0, &[0]]),
+            None => b"L".to_vec(),
+        };
+        let rows = self.backend.scan(&start, Some(b"M"), max).map_err(err)?;
         rows.iter().map(|(k, _)| read_arr(k, 1).map(LabelId)).collect()
     }
 
@@ -508,15 +592,21 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         ClaimSet::parse(&b).map(|c| Some(Arc::new(c))).map_err(|_| corrupt("claim set"))
     }
 
+    fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
+        let t = self.totals()?;
+        let p = &self.policy;
+        Ok(if t.labels >= p.max_labels || t.entries >= p.max_entries || t.bytes >= p.max_bytes { Code::STORAGE_CAP } else { Code::OK })
+    }
+
     fn push_step(&mut self, label: &LabelId, step: Step, claim_set: Option<ClaimSet>) -> Result<(), StoreError> {
-        let meta = match self.meta(label)? {
-            Some(m) => m,
+        let (meta, new) = match self.meta(label)? {
+            Some(m) => (m, false),
             None => {
                 let h = osis_core::hash::hash(&[&self.seed[..], &label.0[..]].concat());
-                Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }
+                (Meta { log_id: read_arr(&h, 0)?, ..Meta::default() }, true)
             }
         };
-        let mut tx = Tx { label: *label, meta, batch: WriteBatch::new(), grew: false };
+        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
         let id = step.id();
         if let Some(prev) = tx.meta.head {
             let drop = self.now().saturating_add(self.policy.claim_keep_ms.max(MEMBERSHIP_KEEP_MS));
@@ -569,6 +659,11 @@ impl<B: Backend> LabelStore for BackendStore<B> {
                 if m.entries.saturating_add(1) > p.cap_entries || m.bytes.saturating_add(size) > p.cap_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
+                let t = self.totals()?;
+                let p = &self.policy;
+                if t.entries.saturating_add(1) > p.max_entries || t.bytes.saturating_add(size) > p.max_bytes {
+                    return Ok(Code::STORAGE_CAP);
+                }
                 if put.stamp.is_none() {
                     let max = self.budget_max(m);
                     if m.dep_n.saturating_add(1) > max || m.dep_bytes.saturating_add(size) > max.saturating_mul(DEPOSIT_ENTRY_BYTES) {
@@ -610,6 +705,17 @@ impl<B: Backend> LabelStore for BackendStore<B> {
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
         self.commit(tx)?;
+        match self.origin {
+            Some(o) => {
+                if self.origins.len() >= MAX_ORIGINS {
+                    self.origins.clear();
+                }
+                self.origins.insert((*label, put.blob_id), o);
+            }
+            None => {
+                self.origins.remove(&(*label, put.blob_id));
+            }
+        }
         Ok(Code::OK)
     }
 
