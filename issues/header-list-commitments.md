@@ -1,6 +1,6 @@
 # Header-list chunks cannot carry every token commitment of a large commit
-> Summary: spec/crypto.md §7 gave header-list chunks one commitment per token secret of the commit, which is unbounded for a commit touching many things; spec/wire.md §5 caps prefixes at 16 and gives such chunks only the author-chain tokens when the commit has more than 16 (provisional). Owner to confirm.
-> Tags: owner-call, sync, crypto
+> Summary: spec/crypto.md §7 gave header-list chunks one commitment per token secret of the commit, which is unbounded for a commit touching many things; spec/wire.md §5 caps prefixes at 16 and gives such chunks only the author-chain tokens when the commit has more than 16 (provisional). Owner accepted (a) for the MVP; the 16 cutoff is arbitrary, find a better design post-MVP (with issues/token-admin-secret.md).
+> Tags: sync, crypto, post-mvp
 
 A header list goes by link only when it exceeds `CHUNK_THRESHOLD`, i.e. commits touching thousands of aspects; their token secrets (an admin and a write secret per thing) number in the thousands, while every wire object needs a fixed maximum size.
 
