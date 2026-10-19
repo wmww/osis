@@ -24,7 +24,7 @@ Wave 2 (all of wave 1 merged).
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
-| commit | running (opus, worktree) | |
+| commit | review | reviewer running; owner-call issues/token-admin-secret.md (non-admin writer omits level-1 token, provisional) |
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (opus, worktree) | |
@@ -58,6 +58,7 @@ Wave 2 (all of wave 1 merged).
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
 
 ## Owner-calls pending
+- issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP).
 - issues/reseal-triggers.md (residual wrongful re-seal across a fork; members no automatic trigger reaches; recommended: accept for MVP).
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
 - issues/reseal-triggers.md: two re-seal residues after the TLC fixes: a wrongful re-seal across a fork read out of order (R1), and members no automatic trigger reaches when their deposits are refused (R2); recommended: accept for the MVP, mechanisms listed.
