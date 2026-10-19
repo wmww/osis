@@ -112,6 +112,8 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 
 - membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
 
+- wave 5 bug-fix round (clarification): spec/crdt.md §9 the diff compares S as it reads now; a value-less write reads absent and is written again, a live value keeps its expiry (no re-materializing expiring content into a longer-lived delta); whole-lifetime writes use a replace (the heartbeat does).
+
 ## Owner-calls pending
 
 ### Decided by the owner

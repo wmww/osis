@@ -238,9 +238,9 @@ fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid)
 }
 
 /// Link redemption race and single use (spec/permissions.md §9, §5.1): two strangers redeem one
-/// single-use link concurrently; every node agrees on exactly one joiner (the first by the
-/// timeline's order); the sharer finalizes; a third redeemer is refused. Fails:
-/// issues/flows-single-use-redemption-unplaced.md (the redemption never reaches the sharer).
+/// single-use link concurrently; the sharer and the winner agree on exactly one joiner (the
+/// first by the timeline's order; the loser, rotated out of K, may not learn it); the sharer
+/// finalizes; a third redeemer is refused.
 pub fn link_race(seed: u64) -> Res<Report> {
     links("link_race", seed, true)
 }
@@ -286,9 +286,23 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
         sim.carry(n, done)?;
     }
     sim.run(60)?;
+    if single_use {
+        // the loser's grant is invalid (L left before it); once K rotates without it, it reads
+        // nothing more of K and may keep its own view of the race (spec/permissions.md §5.1)
+        sim.quiet(40)?;
+        let r = sim.engine(a)?.roster(&link.k);
+        for (n, p) in [(x, px), (y, py)] {
+            if !r.contains_key(&p) {
+                sim.excused.insert(n);
+            }
+        }
+    }
     sim.run_until_quiescent(40)?;
     let mut joined = None;
     for n in [a, x, y] {
+        if sim.excused.contains(&n) {
+            continue;
+        }
         let r = sim.engine(n)?.roster(&link.k);
         let who: Vec<Tid> = [px, py].into_iter().filter(|p| r.contains_key(p)).collect();
         let want = if single_use { 1 } else { 2 };
@@ -302,10 +316,9 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     }
     if single_use {
         let (winner, loser) = if joined.is_some_and(|j| j.contains(&px)) { (x, y) } else { (y, x) };
-        if sim.engine(winner)?.role_on(&g).is_none_or(|r| r < Role::Read) || sim.engine(loser)?.role_on(&g).is_some() {
-            return Err(sim.fail("the winner does not read the target, or the loser does"));
+        if sim.engine(winner)?.role_on(&g).is_none_or(|r| r < Role::Read) || !sim.excused.contains(&loser) {
+            return Err(sim.fail("the winner does not read the target, or the loser is on K's roster"));
         }
-        sim.excused.insert(loser);
     } else {
         for n in [x, y] {
             if sim.engine(n)?.role_on(&g).is_none_or(|r| r < Role::Read) {
@@ -331,8 +344,9 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
 }
 
 /// Move with import (spec/permissions.md §7): a shared doc moves to a team the sharer owns and
-/// the writer also writes; the copy carries its history, its writer is re-granted on it, the old thing
-/// points at it; writes continue on the copy under a lossy network.
+/// the writer does not read; the copy carries its history and a label of its own, its writer is
+/// re-granted on it, the old thing points at it; writes continue on the copy under a lossy
+/// network.
 pub fn move_import(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x30);
     let mut sim = sim("move_import", seed, NetWeights::default());
@@ -340,9 +354,9 @@ pub fn move_import(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    // the team is shared with B (write): the copy is in a label B syncs and stamps (a copy in
-    // no label B writes is unreachable for B, issues/flows-move-unlabeled-copy.md)
-    let team = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
+    // the team has secrets of its own (a copy owned by an actor without them stays unwritable for
+    // a member that does not read that actor, issues/flows-move-derived-owner.md)
+    let team = sim.group_with(a, pa, &[s], true)?;
     let doc = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, doc)?;
     sim.reconnect_all();
@@ -516,7 +530,6 @@ pub fn folders(seed: u64) -> Res<Report> {
 
 /// Label replacement (spec/sync.md §2): the admin replaces a group's label; members follow the
 /// new label and converge. (Old-label cleanup is checked by `label_replacement_offline`.)
-/// Fails some seeds (0): issues/node-sync-gaps.md (replaced labels).
 pub fn label_replacement(seed: u64) -> Res<Report> {
     replacement("label_replacement", seed, false)
 }
@@ -558,11 +571,22 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
         return Err(sim.fail(format!("the member does not follow the replacement label: {bl:?}")));
     }
     if offline {
-        // the old label keeps membership commits only
-        let left = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default().len()).unwrap_or(0);
-        let content = sim.known.iter().filter(|((l, b), (c, _))| *l == old && sim.hub(s).is_some_and(|h| h.store().live_ids(l).unwrap_or_default().contains(b)) && sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))).is_some_and(|h| !h.kind.is_membership())).count();
+        // the old label keeps membership-class commits and certificates (chain certificates,
+        // node cards, heartbeats: they verify what stays, spec/permissions.md §4) only
+        let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
+        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen" | "/keys");
+        let mut content = 0;
+        for ((l, b), (c, parts)) in &sim.known {
+            if *l != old || !live.contains(b) {
+                continue;
+            }
+            let Some(h) = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))) else { continue };
+            if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
+                content += 1;
+            }
+        }
         if content > 0 {
-            return Err(sim.fail(format!("the replaced label still holds {content} content entries ({left} live)")));
+            return Err(sim.fail(format!("the replaced label still holds {content} content entries ({} live)", live.len())));
         }
     }
     sim.finish()
