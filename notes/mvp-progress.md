@@ -43,7 +43,7 @@ Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
-| node-sync | review | done; reviewer running; issues/node-sync-gaps.md, issues/pending-boxes.md |
+| node-sync | review fixes | reviewer: rotate-first missing, purged ciphertext kept, complete_pass never true when subscribed, coverage/carrier rules; merging flows; agent fixing |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
 | node-sync | running (opus, worktree) | |
