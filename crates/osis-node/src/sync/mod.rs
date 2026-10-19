@@ -187,6 +187,9 @@ pub struct SyncEngine {
     diagnostics: Vec<String>,
     /// Inbox blobs waiting for a connection to their server.
     pub(crate) outbox: Vec<local::Outgoing>,
+    /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
+    /// limit, sends them again after `retry_ms`).
+    pub(crate) inbox_sent: BTreeMap<osis_core::BlobId, local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
     /// When a stranded heartbeat last went under each label.
@@ -224,6 +227,7 @@ impl SyncEngine {
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox: Vec::new(),
+            inbox_sent: BTreeMap::new(),
             fetching: BTreeMap::new(),
             stranded_at: BTreeMap::new(),
             direct: Vec::new(),
@@ -669,6 +673,9 @@ impl SyncEngine {
         }
         for (_, x) in self.retry.values() {
             at(*x);
+        }
+        for o in self.outbox.iter().filter(|o| o.after > 0) {
+            at(o.after);
         }
         t
     }

@@ -87,3 +87,47 @@ fn restore_from_card_spec_permissions_9() {
     w.run();
     assert_eq!(x(&da, u), Some(s("after restore")));
 }
+
+/// A group owned by `db`'s person, synced on its servers.
+fn group(db: &Osis) -> Tid {
+    let mut w = db.write();
+    let g = w.create(db.me(), Place::In(db.home())).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
+    db.sync(g, &[]).unwrap();
+    g
+}
+
+// spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
+// contact card and grants him write on a synced group; the grant reaches Bob's device through
+// his inbox; both read and write the group.
+#[test]
+fn grant_by_inbox_spec_sync_3() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    w.run();
+    let g = group(&alice);
+    let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
+    assert_eq!(bob.contact_card().unwrap(), card, "made once");
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    assert_eq!(b, bob.me());
+    assert!(matches!(alice.grant(g, alice.node(), Role::Read, Default::default()), Ok(()) | Err(osis::Error::UnknownActor { .. })));
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
+    let t = item(&alice, alice.me(), g, "for bob");
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    let gl = alice.engine(|e| e.group_labels(&g).unwrap()[0].id);
+    eprintln!("G entries alice {:?}", alice.sync_engine(|s| s.entries(&gl)));
+    eprintln!("G entries bob {:?}", bob.sync_engine(|s| s.entries(&gl)));
+    eprintln!("bob knows A {} alice-person {} roster {:?}", bob.knows(alice.node()), bob.knows(alice.me()), bob.roster(alice.me()));
+    eprintln!("bob knows g {} t {} pending {:?} diag {:?} desc {:?} alice diag {:?}", bob.knows(g), bob.knows(t), bob.engine(|e| e.pending()), bob.sync_engine(|s| s.take_diagnostics()), bob.sync_engine(|s| s.describe()), alice.sync_engine(|s| s.take_diagnostics()));
+    assert_eq!(x(&bob, t), Some(s("for bob")));
+    assert_eq!(bob.role_on(g), Some(Role::Write));
+    let u = item(&bob, bob.me(), g, "from bob");
+    w.run();
+    assert_eq!(x(&alice, u), Some(s("from bob")));
+}

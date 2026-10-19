@@ -493,6 +493,12 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.budget = Some(entries_left);
         }
+        if let Some(mut o) = self.inbox_sent.remove(&b)
+            && matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD)
+        {
+            o.after = self.raw_now().saturating_add(self.cfg.retry_ms);
+            self.outbox.push(o);
+        }
         match code {
             Code::OK => self.state.set_present(server, l, b, true),
             Code::NOT_HEAD => {

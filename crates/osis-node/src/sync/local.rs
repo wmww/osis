@@ -22,6 +22,8 @@ pub(crate) struct Outgoing {
     pub blob: Vec<u8>,
     /// The actor whose `/keys` named the inbox (its deposit seed signs).
     pub owner: Tid,
+    /// Not sent before this raw wall ms (a refused deposit waits `retry_ms`).
+    pub after: u64,
 }
 
 impl SyncEngine {
@@ -208,7 +210,7 @@ impl SyncEngine {
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         for server in inbox.servers {
-            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner });
+            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0 });
         }
         Ok(self.handle(super::Event::Local))
     }
@@ -216,9 +218,10 @@ impl SyncEngine {
     /// Deposits waiting inbox blobs on connections to their servers (no open needed).
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
+        let now = self.raw_now();
         let mut keep = Vec::new();
         for o in std::mem::take(&mut self.outbox) {
-            let Some((conn, _)) = ready.iter().find(|(_, k)| *k == o.server.key) else {
+            let Some((conn, _)) = ready.iter().find(|(_, k)| *k == o.server.key).filter(|_| o.after <= now) else {
                 keep.push(o);
                 continue;
             };
@@ -229,7 +232,9 @@ impl SyncEngine {
             };
             let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &o.label);
             let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-            let sig = osis_label::sign_deposit(&d, &o.label, &osis_label::blob_id(&o.blob), &wrap);
+            let id = osis_label::blob_id(&o.blob);
+            let sig = osis_label::sign_deposit(&d, &o.label, &id, &wrap);
+            self.inbox_sent.insert(id, o.clone());
             self.command(*conn, Command::Deposit { label: o.label, blob: o.blob, wrap, sig }, out)?;
         }
         self.outbox = keep;
