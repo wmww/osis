@@ -7,12 +7,12 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Pre-flight.
+Wave 0.
 
 ## Plans
 | plan | state | notes |
 |---|---|---|
-| pre-flight plan diff | running | opus agent in worktree |
+| pre-flight plan diff | merged at cb6f1b0 | |
 | workspace | not started | wave 0, serial |
 | protocol-spec | not started | wave 0, ∥; toplevel reviews every layout |
 | tla-models | not started | wave 0, ∥, low priority |
@@ -29,7 +29,7 @@ Pre-flight.
 None.
 
 ## Spec edits
-None.
+- spec/sync.md §3: a projection class whose blob would exceed `MAX_BLOB` splits into several blobs, greedily in aspect-list order (pre-flight found no path under `MAX_BLOB` for a commit touching many aspects). spec/commits.md §1: one delta must fit a blob; the writer refuses the rare struct-of-many-large-registers shape (issues/struct-delta-size.md).
 
 ## Owner-calls pending
 None.

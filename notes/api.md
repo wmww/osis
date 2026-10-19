@@ -9,7 +9,7 @@
 
 ## Design rules
 - **Local and synchronous.** Every data operation completes against the local store with nobody online (spec/requirements.md, Offline), so reads, writes, watches, undo, sending signals and membership writes are plain synchronous calls. Only operations that wait for another node are `async`: redeem a link, pair a device, restore from a card, a demotion's pre-sync, "wait until synced". Those futures are runtime-agnostic (resolved by a channel from the handle's own background runtime, which is tokio by default or a `Handle` the app passes). A browser build later gets the same sync API over a worker-backed store; nothing in the shape assumes blocking is impossible.
-- **Explicit where a wrong default is silent**: the owner of a new thing, its sync placement, the materialization bound, splitting an oversized commit, waiting for the pre-sync before a demotion.
+- **Explicit where a wrong default is silent**: the owner of a new thing, its sync placement, the materialization bound, waiting for the pre-sync before a demotion.
 - **One `Error` enum** with stable categories; an absent aspect or unknown tid reads as `None`, never as an error.
 - **No callback under a lock.** Callbacks run on one dispatcher thread per database, in commit order, after the commit is durable; any API call is allowed inside a callback.
 - Nothing about CRDT internals, labels, blobs, epochs, keys or servers' innards reaches the API except in diagnostics and sync status. Vocabulary: thing, aspect, group, actor, member, role, device, server.
