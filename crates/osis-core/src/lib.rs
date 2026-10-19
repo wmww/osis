@@ -1,6 +1,6 @@
 //! osis-core: values and their canonical CBOR, tids, ids, format constants, chunker, hashing,
 //! `Clock`, `impl_error!` (spec/data-model.md, spec/versioning.md §1). Synchronous, no I/O.
-//! Layer 0 (notes/architecture.md). Plan: plans/workspace.md (folded into notes/architecture.md).
+//! Layer 0 (notes/architecture.md). Plan: plans/workspace.md, done and folded into notes/architecture.md.
 #![forbid(unsafe_code)]
 
 pub mod cbor;

@@ -1,0 +1,35 @@
+# Tier-1 CI (notes/architecture.md §4). plans/test-infra.md extends it (vectors, nightly jobs).
+name: ci
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --workspace --all-targets --locked
+      - name: test (tier 1)
+        run: cargo test --workspace --locked
+      - name: clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: deny (once deny.toml exists)
+        run: if [ -f deny.toml ]; then cargo deny check; else echo "no deny.toml yet"; fi

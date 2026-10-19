@@ -3,7 +3,7 @@
 > Tags: api, tests, cli
 
 Crate: `crates/osis-cli`, binary `osis`. Depends on: osis (the API; nothing below it except where inspection needs osis-node diagnostics), osis-schema (DSL, codegen), osis-server (`serve`). Unblocks: apps-e2e (localhost e2e is driven through the CLI), hardening-signoff.
-Reference: notes/api.md (every command maps onto one call there), spec/data-model.md §1, §3–§5 (text forms), plans/server.md (binary config). Spec trumps this plan. `anyhow` and `clap` are allowed here (plans/workspace.md).
+Reference: notes/api.md (every command maps onto one call there), spec/data-model.md §1, §3–§5 (text forms), plans/server.md (binary config). Spec trumps this plan. `anyhow` and `clap` are allowed here (notes/architecture.md §5).
 
 ## 1. Principles
 - **One call per command.** A command is a thin wrapper over one API call (a few compose two). The CLI contains no logic of its own beyond parsing and printing; anything that feels like CLI logic belongs in the API.
