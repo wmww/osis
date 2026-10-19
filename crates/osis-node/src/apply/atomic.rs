@@ -289,6 +289,10 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         if !ok && let Some(s) = &own {
             bad.insert(s.clone());
         }
+        // an invalid import: the re-sourced writes of its origins
+        if !ok && m.header.kind == osis_commit::Kind::Import {
+            bad.extend(m.header.origins.iter().map(|o| Source::commit(o.commit)));
+        }
         for d in super::held_parts(tx, &c, ai)? {
             bodies.push((ok, own.clone(), fragment(d).0));
         }
