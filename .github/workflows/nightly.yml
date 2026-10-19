@@ -1,0 +1,127 @@
+# Slow tiers (notes/testing.md): tier 2 (ignored tests, big property runs, size budgets), fuzzing,
+# simulator seed sweeps, model instances, coverage. Failing seeds and crash inputs are uploaded.
+name: nightly
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: seconds per fuzz target
+        default: "300"
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      OSIS_SLOW: "1"
+      PROPTEST_CASES: "1024"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: tier 1 and tier 2 (--include-ignored, large property runs)
+        run: cargo test --workspace --locked --release -- --include-ignored
+      - name: upload proptest regressions
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: proptest-regressions
+          path: "**/proptest-regressions/**"
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - name: fuzz every target
+        working-directory: fuzz
+        run: |
+          secs="${{ github.event.inputs.fuzz_seconds || '300' }}"
+          for t in $(cargo +nightly fuzz list); do
+            mkdir -p "$RUNNER_TEMP/corpus/$t"
+            echo "::group::$t"
+            cargo +nightly fuzz run "$t" "$RUNNER_TEMP/corpus/$t" "corpus/$t" -- -max_total_time="$secs"
+            echo "::endgroup::"
+          done
+      - name: upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
+  sim-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # plans/sim.md adds the sweep binary; until then this job only reports that.
+      - name: simulator seed sweep
+        run: |
+          if [ -f sim/src/bin/sim-sweep.rs ]; then
+            cargo run -p osis-sim --release --locked --bin sim-sweep -- --seeds 10000 --out "$RUNNER_TEMP/failing-seeds"
+          else
+            echo "no sim-sweep binary yet (plans/sim.md)"
+          fi
+      - name: upload failing seeds
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failing-seeds
+          path: ${{ runner.temp }}/failing-seeds
+
+  models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: membership model, exhaustive tiers and large random samples
+        run: |
+          cargo run -p membership-model --release --locked
+          for mode in snapshot joint; do cargo run -p membership-model --release --locked -- 2000000 "$mode"; done
+      # plans/tla-models.md adds models/tla with a runner script for the smallest instances.
+      - name: TLC smallest instances
+        run: |
+          if [ -x models/tla/run.sh ]; then models/tla/run.sh small; else echo "no TLA+ models yet (plans/tla-models.md)"; fi
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Measured, never gated.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: coverage (tier 1)
+        run: |
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: |
+            lcov.info
+            coverage-summary.txt
