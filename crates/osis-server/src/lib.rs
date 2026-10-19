@@ -3,7 +3,7 @@
 //! engines per connection, cross-connection notices, sweeps, push replication to peer servers),
 //! the async `driver` over any osis-transport `Transport` (feature `driver`, default; QUIC: feature
 //! `quic`), and the binary's `config`
-//! (binary: feature `bin`).
+//! (binary and `serve::run`, which `osis serve` calls: feature `bin`).
 //! Layer 6 (notes/architecture.md). Plan: plans/server.md.
 #![forbid(unsafe_code)]
 
@@ -12,6 +12,8 @@ pub mod config;
 pub mod driver;
 pub mod hub;
 pub mod replicate;
+#[cfg(feature = "bin")]
+pub mod serve;
 pub mod store;
 
 pub use config::Config;
