@@ -51,7 +51,7 @@ fn budget_minimal_commit() {
     assert_budget("minimal content commit plaintext", c.encode().len(), 330);
 }
 
-// notes/crdt.md, Text size: a text's snapshot is at most 3.5x the plain text at 100 edits per
+// spec: none (budget from notes/crdt.md, Text size): a text's snapshot is at most 3.5x the plain text at 100 edits per
 // commit and 7x at 10 (automerge-paper trace: 3.2x, 6.6x). Replays that trace if
 // `OSIS_TEXT_TRACE` names it, else a synthetic typist of the same shape (osis_bench::text;
 // measured 2.9x, 6.7x).
