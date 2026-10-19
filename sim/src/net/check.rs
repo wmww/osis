@@ -104,6 +104,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
             });
             let c0 = p.first().map(|x| x.0);
             let keys: Vec<[u8; 32]> = sim.servers.iter().map(|x| x.key).collect();
+            let ks: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, _))| Some(*kc) == c0).map(|(k, _)| *k).collect();
             let mut bodies = Vec::new();
             for m in 0..sim.nodes.len() {
                 let Some((c, s)) = c0.zip(sim.nodes.get_mut(m).and_then(|x| x.sync.as_mut())) else { continue };
@@ -126,7 +127,9 @@ fn pending(sim: &mut NetSim) -> Res<()> {
                         }
                     }
                 }
-                bodies.push(format!("node {m}: {b:?} verdicts {v:?} unknown entries {unknown:?}"));
+                let mine: Vec<String> = ks.iter().map(|(l, id)| format!("{id:?}: {:?}", s.entries(l).into_iter().find(|e| e.0 == *id).map(|e| e.1))).collect();
+                let pend = s.engine().pending();
+                bodies.push(format!("node {m}: {b:?} verdicts {v:?} unknown entries {unknown:?}, its entries of the commit's blobs {mine:?}, pending {pend:?}"));
             }
             let detail = format!("{detail:?}; bodies {bodies:?}");
             return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}; first: {detail:?}", p.len())));

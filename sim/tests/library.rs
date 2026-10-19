@@ -52,6 +52,14 @@ fn demotion_unsynced() {
     ok("demotion_unsynced", 1);
 }
 
+// spec/sync.md §6, spec/commits.md §4: sweep seed 72, two writers' pending commits stop each
+// other's uploads.
+#[test]
+#[ignore = "issues/sync-unsettled-deadlock.md"]
+fn move_import_seed_72() {
+    ok("move_import", 72);
+}
+
 // spec/permissions.md §9: two concurrent redemptions of a multi-use link; then revoked.
 #[test]
 #[ignore = "tier 2"]
