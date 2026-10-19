@@ -1,12 +1,13 @@
 //! X25519, ML-KEM-768 (FIPS 203, libcrux-ml-kem) and their hybrid key pair (spec/crypto.md §1, §3).
 
-use crate::kdf::{KEM, kdf_xof};
+use crate::aead::{self, TAG_LEN, ZERO_NONCE};
+use crate::kdf::{HYBRID_KEM, KEM, kdf_xof};
 use crate::{Error, Secret32, agility_bytes, agility_value};
 use libcrux_ml_kem::mlkem768;
 use osis_core::Value;
 use rand_core::CryptoRngCore;
 use std::fmt;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const MLKEM_PK_LEN: usize = 1184;
 const MLKEM_SK_LEN: usize = 2400;
@@ -14,6 +15,8 @@ const MLKEM_SK_LEN: usize = 2400;
 pub const MLKEM_CT_LEN: usize = 1088;
 /// `pk_x || pk_m` (spec/crypto.md §1).
 pub const KEM_PUBLIC_LEN: usize = 32 + MLKEM_PK_LEN;
+/// Sealed box size minus payload: `ct_x || ct_m || tag`.
+pub const SEALED_OVERHEAD: usize = 32 + MLKEM_CT_LEN + TAG_LEN;
 
 /// X25519 private key. Zeroized on drop; `Debug` redacted.
 #[derive(Clone)]
@@ -173,6 +176,63 @@ pub(crate) fn encapsulate(pk: &KemPublicKey, m: &[u8; 32]) -> ([u8; MLKEM_CT_LEN
     (*ct.as_slice(), Secret32::from_bytes(ss))
 }
 
+/// Hybrid sealed box `ct_x || ct_m || AEAD_K(nonce 0, ad, payload)` (spec/crypto.md §1).
+pub fn seal(pk: &KemPublicKey, ad: &[u8], payload: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
+    let eph = Secret32::random(rng);
+    let mut m = Zeroizing::new([0u8; 32]);
+    rng.fill_bytes(&mut m[..]);
+    seal_with(pk, ad, payload, &eph, &m)
+}
+
+/// `seal` with explicit randomness: the ephemeral X25519 private key, then the ML-KEM
+/// encapsulation bytes, in the order `seal` draws them (vectors).
+pub fn seal_with(pk: &KemPublicKey, ad: &[u8], payload: &[u8], eph: &Secret32, m: &[u8; 32]) -> Result<Vec<u8>, Error> {
+    let e = X25519Secret::from_secret(eph);
+    let ct_x = e.public();
+    let ss_x = e.dh(&pk.x25519())?;
+    let (ct_m, ss_m) = encapsulate(pk, m);
+    let k = combine(&ss_x, &ss_m, &ct_x, &ct_m, pk);
+    let body = aead::seal(k.expose(), &ZERO_NONCE, ad, payload)?;
+    let mut out = Vec::with_capacity(SEALED_OVERHEAD + payload.len());
+    out.extend_from_slice(&ct_x);
+    out.extend_from_slice(&ct_m);
+    out.extend_from_slice(&body);
+    Ok(out)
+}
+
+/// Opens a sealed box; any malformed or tampered box is `BadInput`.
+pub fn open_sealed(sk: &KemSecret, ad: &[u8], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, Error> {
+    if sealed.len() < SEALED_OVERHEAD {
+        return Err(Error::Malformed("sealed box length"));
+    }
+    let (ct_x, rest) = sealed.split_first_chunk::<32>().ok_or(Error::Malformed("sealed box length"))?;
+    let (ct_m, body) = rest.split_first_chunk::<MLKEM_CT_LEN>().ok_or(Error::Malformed("sealed box length"))?;
+    let ss_x = sk.x.dh(ct_x)?;
+    let ss_m = sk.decapsulate(ct_m);
+    let k = combine(&ss_x, &ss_m, ct_x, ct_m, &sk.public);
+    Ok(Zeroizing::new(aead::open(k.expose(), &ZERO_NONCE, ad, body)?))
+}
+
+fn combine(ss_x: &Secret32, ss_m: &Secret32, ct_x: &[u8; 32], ct_m: &[u8; MLKEM_CT_LEN], pk: &KemPublicKey) -> Secret32 {
+    let mut h = blake3::Hasher::new_derive_key(HYBRID_KEM);
+    h.update(ss_x.expose()).update(ss_m.expose()).update(ct_x).update(ct_m).update(&pk.0[..]);
+    Secret32::from_bytes(h.finalize().into())
+}
+
+/// The `sealed` agility value `1617([1, h'box'])` (spec/wire.md §3).
+pub fn sealed_to_value(sealed: &[u8]) -> Value {
+    agility_value(sealed)
+}
+
+/// Box bytes of a `sealed` value; another case parks.
+pub fn sealed_from_value(v: &Value) -> Result<&[u8], Error> {
+    let b = agility_bytes(v, None)?;
+    if b.len() < SEALED_OVERHEAD {
+        return Err(Error::Malformed("sealed box length"));
+    }
+    Ok(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +301,42 @@ mod tests {
         let k = KemSecret::derive(&Secret32::from_bytes([1; 32]));
         let d = format!("{k:?} {:?}", k.x25519());
         assert!(d.starts_with("KemSecret(KemPublicKey(") && d.ends_with("X25519Secret(..)"), "{d}");
+    }
+
+    // spec/crypto.md §1: hybrid sealed box round trip, layout, and AD/tamper rejection.
+    #[test]
+    fn hybrid_box() {
+        let mut rng = crate::SeededRng::from_u64(1);
+        let k = KemSecret::derive(&Secret32::from_bytes([1; 32]));
+        let b = seal(k.public(), b"ad", b"payload", &mut rng).unwrap();
+        assert_eq!(b.len(), SEALED_OVERHEAD + 7);
+        assert_eq!(&open_sealed(&k, b"ad", &b).unwrap()[..], b"payload");
+        assert_eq!(open_sealed(&k, b"ae", &b), Err(Error::Decrypt));
+        let other = KemSecret::derive(&Secret32::from_bytes([2; 32]));
+        assert_eq!(open_sealed(&other, b"ad", &b), Err(Error::Decrypt));
+        for i in [0, 40, 32 + MLKEM_CT_LEN, b.len() - 1] {
+            let mut t = b.clone();
+            t[i] ^= 1;
+            assert!(open_sealed(&k, b"ad", &t).is_err(), "byte {i}");
+        }
+        assert!(open_sealed(&k, b"ad", &b[..SEALED_OVERHEAD - 1]).is_err());
+        let mut low = b.clone();
+        low[..32].copy_from_slice(&[0; 32]);
+        assert_eq!(open_sealed(&k, b"ad", &low), Err(Error::NonContributory));
+        // Deterministic given its randomness; ct_x is the ephemeral public key.
+        let eph = Secret32::from_bytes([3; 32]);
+        let b1 = seal_with(k.public(), b"ad", b"p", &eph, &[4; 32]).unwrap();
+        assert_eq!(b1, seal_with(k.public(), b"ad", b"p", &eph, &[4; 32]).unwrap());
+        assert_eq!(b1[..32], X25519Secret::from_secret(&eph).public());
+        assert_eq!(sealed_from_value(&sealed_to_value(&b1)), Ok(&b1[..]));
+    }
+
+    proptest::proptest! {
+        // spec/crypto.md §1: no panic on malformed boxes.
+        #[test]
+        fn open_never_panics(bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..1300)) {
+            let k = KemSecret::derive(&Secret32::from_bytes([1; 32]));
+            proptest::prop_assert!(open_sealed(&k, b"", &bytes).is_err());
+        }
     }
 }

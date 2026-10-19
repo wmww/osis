@@ -21,7 +21,7 @@ Spec: spec/crypto.md (all), spec/sync.md §2 (label keys, claim keys, static ent
 
 ## Steps
 - [x] Primitives + kdf + domains, KATs from the primitive crates' vectors.
-- [ ] Hybrid box, key derivations, box forms, history boxes.
+- [x] Hybrid box, key derivations, box forms, history boxes.
 - [ ] Blob encrypt/decrypt, padding, wraps, tokens, label and claim keys.
 - [ ] Vectors: every derivation and box with fixed randomness, written to vectors/ (plans/test-infra.md format; provisional until protocol-spec freezes layouts).
 - [ ] Benchmarks: box seal/open, blob encrypt per MB, Ed25519 verify (criterion, not gated).

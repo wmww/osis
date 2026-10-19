@@ -5,15 +5,19 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
+mod boxes;
 mod error;
 pub mod kdf;
 mod kem;
+mod keys;
 mod rng;
 mod secret;
 mod sign;
 
+pub use boxes::{BoxForm, BoxItem, Epoch, entry_box_ad, open_box, open_history, open_symmetric_box, seal_box, seal_history, secrets_box_ad, wrap_symmetric_box};
 pub use error::Error;
-pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, X25519Secret};
+pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
+pub use keys::{KeyActorKeys, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, lan_tag, link_hash, link_tree_hash, role_kem, thing_role_secret};
 pub use rng::SeededRng;
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};
