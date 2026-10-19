@@ -31,10 +31,15 @@ fn prefix_case(name: &str, p: &Prefix) -> Record {
 
 fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
     let got = Prefix::parse(bytes);
-    match rule {
-        "framing" => assert_eq!(got, Err(Error::UnknownFraming(bytes[0]))),
-        _ => assert!(got.is_err(), "{name}"),
-    }
+    let want = match rule {
+        "framing" => Error::UnknownFraming(bytes[0]),
+        "prefix-order" => Error::Malformed("commitments not strictly ascending"),
+        "prefix-level" => Error::Malformed("commitment level"),
+        "prefix-count" => Error::Malformed("more than MAX_COMMITMENTS"),
+        "prefix-short" => Error::Malformed("short prefix"),
+        _ => panic!("unknown rule {rule}"),
+    };
+    assert_eq!(got, Err(want), "{name}");
     let key = if rule == "framing" { "parked" } else { "reject" };
     case(name, SPEC).with("prefix", hex(bytes)).with(key, rule)
 }
@@ -123,7 +128,7 @@ pub fn blobs() -> VecFile {
     let pb = p0.to_bytes();
     let mut blob = pb.clone();
     blob.extend(aead::seal(&key, &aead::ZERO_NONCE, &pb, &[1, 0, 0, 0]).unwrap());
-    assert!(open(&blob, &osis_crypto::Secret32::from_bytes(key)).is_err());
+    assert_eq!(open(&blob, &osis_crypto::Secret32::from_bytes(key)).map(|_| ()), Err(Error::Crypto(osis_crypto::Error::BadPadding)));
     cases.push(case("bad padding", SPEC).with("blob-key", hex(&key)).with("blob", hex(&blob)).with("reject", "padding"));
     VecFile { header: generated_header("blob", SPEC), cases }
 }

@@ -191,16 +191,23 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
 }
 
 /// Streaming reader: yields the chunks in order, holding one node per level. Verifies every
-/// content hash, levels and bounds; a mismatch is bad input.
+/// content hash, levels and bounds; a mismatch is bad input. Work is bounded by the value size:
+/// a chunk other than the last shorter than `min_chunk` (or empty) is bad input, and at most
+/// `max_len / min_chunk + 1` chunks are visited (`TooLarge` beyond; issues/tree-reader-bounds.md).
 pub struct TreeReader {
     root: Option<Link>,
     /// Per open node: its level and the links not yet visited, reversed.
     stack: Vec<(u64, Vec<Link>)>,
+    min_chunk: usize,
+    chunks_left: usize,
 }
 
 impl TreeReader {
-    pub fn new(root: Link) -> TreeReader {
-        TreeReader { root: Some(root), stack: Vec::new() }
+    /// `min_chunk` is `CHUNK_MIN` on the wire (`ChunkParams::min`); `max_len` the most bytes the
+    /// caller accepts.
+    pub fn new(root: Link, min_chunk: usize, max_len: usize) -> TreeReader {
+        let min_chunk = min_chunk.max(1);
+        TreeReader { root: Some(root), stack: Vec::new(), min_chunk, chunks_left: (max_len / min_chunk).saturating_add(1) }
     }
 
     fn enter(&mut self, dedup: &Secret32, src: &mut dyn LinkSource, link: &Link, expect: Option<u64>) -> Result<(), Error> {
@@ -230,9 +237,17 @@ impl TreeReader {
                 continue;
             };
             if level == 1 {
+                if self.chunks_left == 0 {
+                    return Err(Error::TooLarge("value"));
+                }
+                self.chunks_left -= 1;
+                let last = self.stack.iter().all(|(_, l)| l.is_empty());
                 let chunk = src.plaintext(&link)?;
                 if link_hash(dedup, &chunk) != link.hash {
                     return Err(Error::Verify("chunk content hash"));
+                }
+                if !last && chunk.len() < self.min_chunk {
+                    return Err(Error::Malformed("chunk below the minimum before the last"));
                 }
                 return Ok(Some(chunk));
             }
@@ -241,9 +256,9 @@ impl TreeReader {
     }
 }
 
-/// Reads a whole tree; `TooLarge` beyond `max_len` bytes.
-pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn LinkSource, max_len: usize) -> Result<Vec<u8>, Error> {
-    let mut r = TreeReader::new(*root);
+/// Reads a whole tree chunked with `params`; `TooLarge` beyond `max_len` bytes.
+pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn LinkSource, params: ChunkParams, max_len: usize) -> Result<Vec<u8>, Error> {
+    let mut r = TreeReader::new(*root, params.min, max_len);
     let mut out = Vec::new();
     while let Some(c) = r.next_chunk(dedup, src)? {
         if out.len().saturating_add(c.len()) > max_len {
@@ -461,8 +476,8 @@ mod tests {
         }
         let dedup = f.dedup.clone();
         let mut r = BlobReader::new(&dedup, &mut store);
-        assert_eq!(read_tree(&root, &dedup, &mut r, usize::MAX).unwrap(), d);
-        assert!(matches!(read_tree(&root, &dedup, &mut r, 100), Err(Error::TooLarge(_))));
+        assert_eq!(read_tree(&root, &dedup, &mut r, SMALL, usize::MAX).unwrap(), d);
+        assert!(matches!(read_tree(&root, &dedup, &mut r, SMALL, 100), Err(Error::TooLarge(_))));
         // Same content, another writer: same root hash, other blobs.
         let mut store2 = MemoryBlobs::default();
         let mut w2 = BlobWriter::new(&f, &mut store2, &mut rng);
@@ -481,19 +496,59 @@ mod tests {
         let root = write_tree(&mut BlobWriter::new(&f, &mut store, &mut rng), SMALL, &d).unwrap();
         let dedup = f.dedup.clone();
         let other = Secret32::from_bytes([8; 32]);
-        assert_eq!(read_tree(&root, &other, &mut BlobReader::new(&other, &mut store), usize::MAX), Err(Error::Verify("tree node content hash")));
+        assert_eq!(read_tree(&root, &other, &mut BlobReader::new(&other, &mut store), SMALL, usize::MAX), Err(Error::Verify("tree node content hash")));
         let mut bad = root;
         bad.hash[0] ^= 1;
-        assert!(read_tree(&bad, &dedup, &mut BlobReader::new(&dedup, &mut store), usize::MAX).is_err());
+        assert!(read_tree(&bad, &dedup, &mut BlobReader::new(&dedup, &mut store), SMALL, usize::MAX).is_err());
         // Replace one chunk blob by another's bytes: blob ID mismatch.
         let ids: Vec<BlobId> = store.0.keys().copied().collect();
         let swapped = store.0[&ids[1]].clone();
         store.0.insert(ids[0], swapped);
-        assert!(read_tree(&root, &dedup, &mut BlobReader::new(&dedup, &mut store), usize::MAX).is_err());
+        assert!(read_tree(&root, &dedup, &mut BlobReader::new(&dedup, &mut store), SMALL, usize::MAX).is_err());
         // A level-2 root claimed over chunk links fails its level check.
         assert!(parse_node(&node_plaintext(49, &[root]).unwrap()).is_err());
         assert!(parse_node(&node_plaintext(1, &[]).unwrap()).is_err());
         assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(0)])]))).is_err());
+    }
+
+    /// Plaintexts by content hash, counting fetches (hostile trees built by hand).
+    #[derive(Default)]
+    struct ByHash(HashMap<[u8; 32], Vec<u8>>, usize);
+    impl LinkSource for ByHash {
+        fn plaintext(&mut self, link: &Link) -> Result<Vec<u8>, Error> {
+            self.1 += 1;
+            self.0.get(&link.hash).cloned().ok_or(Error::Missing)
+        }
+    }
+
+    // spec/wire.md §6 (issues/tree-reader-bounds.md): reader work is bounded by the value size:
+    // an empty or short chunk before the last is bad input; repeated links (legal: identical
+    // chunks share a blob) cost at most max_len / min + 1 chunk fetches.
+    #[test]
+    fn reader_bounds() {
+        let d = Secret32::from_bytes([7; 32]);
+        let mut src = ByHash::default();
+        let node = |src: &mut ByHash, level: u64, child: Link| {
+            let links = vec![child; TREE_FANOUT];
+            let hash = link_tree_hash(&d, level, &vec![child.hash; TREE_FANOUT]);
+            src.0.insert(hash, node_plaintext(level, &links).unwrap());
+            hash_link(hash)
+        };
+        let empty = hash_link(link_hash(&d, b""));
+        src.0.insert(empty.hash, vec![]);
+        let n1 = node(&mut src, 1, empty);
+        let root = node(&mut src, 2, n1);
+        assert_eq!(read_tree(&root, &d, &mut src, SMALL, usize::MAX), Err(Error::Malformed("chunk below the minimum before the last")));
+        assert!(src.1 < 5);
+        let full = vec![9u8; SMALL.min];
+        let c = hash_link(link_hash(&d, &full));
+        src.0.insert(c.hash, full);
+        let n1 = node(&mut src, 1, c);
+        let n2 = node(&mut src, 2, n1);
+        let root = node(&mut src, 3, n2);
+        src.1 = 0;
+        assert_eq!(read_tree(&root, &d, &mut src, SMALL, 10 * SMALL.min), Err(Error::TooLarge("value")));
+        assert!(src.1 <= 11 + 3, "{}", src.1);
     }
 
     // spec/crdt.md §8, spec/wire.md §6: pages go through PageSink/PageSource as blobs with
@@ -533,7 +588,7 @@ mod tests {
             let mut hs = HashSink::new(f.dedup.clone());
             prop_assert_eq!(write_tree(&mut hs, SMALL, &d).unwrap().hash, root.hash);
             let dedup = f.dedup.clone();
-            prop_assert_eq!(read_tree(&root, &dedup, &mut BlobReader::new(&dedup, &mut store), usize::MAX).unwrap(), d);
+            prop_assert_eq!(read_tree(&root, &dedup, &mut BlobReader::new(&dedup, &mut store), SMALL, usize::MAX).unwrap(), d);
         }
     }
 }

@@ -240,6 +240,13 @@ impl Importer {
             Record::Path { label, steps } => {
                 let path: Vec<Step> = steps.iter().map(|(s, _)| s.clone()).collect();
                 verify_path(&label, &path)?;
+                // Like a server: a later path must pass through the current head (extend it).
+                if let Some(cur) = self.heads.get(&label) {
+                    let id = cur.id();
+                    if !path.iter().any(|s| s.id() == id) {
+                        return Err(Error::Verify("path does not extend the head"));
+                    }
+                }
                 if let Some(head) = path.last() {
                     self.heads.insert(label, head.clone());
                 }
@@ -334,6 +341,27 @@ pub(crate) mod tests {
         assert_eq!(r.next_record().unwrap(), Some(Record::Unknown(9)));
         assert_eq!(imp.import(Record::Unknown(9)).unwrap(), None);
         assert_eq!(r.next_record().unwrap(), None);
+    }
+
+    // spec/sync.md §5, spec/wire.md §12: a later path record replaces the head only if it
+    // extends it (no other branch, no rollback to an ancestor).
+    #[test]
+    fn path_extends_head() {
+        let mut rng = SeededRng::from_u64(3);
+        let g = Group::new(10);
+        let e = Epoch::new(0, [0; 16]).unwrap();
+        let (s0, _) = register(Parent::Genesis(&g.delete(0)), g.keys(0), &[], (e, &g.read), &mut rng).unwrap();
+        let child = |p: &Step, rng: &mut SeededRng| register(Parent::Child { step: p, delete: &g.delete(0) }, p.keys, &[], (e, &g.read), rng).unwrap().0;
+        let (a, b) = (child(&s0, &mut rng), child(&s0, &mut rng));
+        let a2 = child(&a, &mut rng);
+        let path = |steps: &[&Step]| Record::Path { label: s0.label, steps: steps.iter().map(|s| ((*s).clone(), None)).collect() };
+        let mut imp = Importer::new();
+        imp.import(path(&[&s0, &a])).unwrap();
+        assert!(imp.import(path(&[&s0, &b])).is_err());
+        assert!(imp.import(path(&[&s0])).is_err());
+        assert_eq!(imp.head(&s0.label), Some(&a));
+        imp.import(path(&[&s0, &a, &a2])).unwrap();
+        assert_eq!(imp.head(&s0.label), Some(&a2));
     }
 
     // spec/wire.md §12, spec/sync.md §5: an altered stamp, an entry before its blob or path, a

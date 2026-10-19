@@ -92,6 +92,8 @@ pub fn steps() -> VecFile {
     cases.push(step_fields(
         case("child step, one DH reader", SPEC)
             .with("parent-step-id", hex(&s0.id().0))
+            .with("signer-admin-secret", hex(admin.expose()))
+            .with("signer-index", "0")
             .with("read-secret", hex(r1.expose()))
             .with("write-secret", hex(w1.expose()))
             .with("admin-secret", hex(a1.expose()))

@@ -33,9 +33,12 @@ impl Prefix {
     }
 
     /// Prefix of an encryption of a commit: commitments of the header's `(level, token hash)`
-    /// pairs its deltas call for, under this prefix's salt (spec/crypto.md §7).
+    /// pairs its deltas call for, under this prefix's salt (spec/crypto.md §7). Repeated pairs
+    /// (two deltas of one thing and retention share a token) give one commitment.
     pub fn for_tokens(salt: [u8; 16], expiry: Option<WallMs>, tokens: &[(Level, [u8; 16])]) -> Result<Prefix, Error> {
-        let cs = tokens.iter().map(|(l, h)| commitment(*l, h, &salt)).collect::<Result<Vec<_>, _>>()?;
+        let mut cs = tokens.iter().map(|(l, h)| commitment(*l, h, &salt)).collect::<Result<Vec<_>, _>>()?;
+        cs.sort();
+        cs.dedup();
         Prefix::new(salt, expiry, cs)
     }
 
@@ -289,6 +292,9 @@ mod tests {
         assert!(!p.agrees(Some(WallMs(10)), &[]));
         assert_eq!(p.match_token(tok.expose()), Some(2));
         assert_eq!(p.match_token(&[0; 32]), None);
+        // Repeated token pairs on either side give one commitment.
+        assert_eq!(Prefix::for_tokens(salt, Some(WallMs(10)), &[(2, th), (2, th)]).unwrap(), p);
+        assert!(p.agrees(Some(WallMs(10)), &[(2, th), (2, th)]));
         let (cp, hashes) = Prefix::for_chunk(salt, None, &[(1, &secret)]).unwrap();
         assert_eq!(hashes, vec![token_hash(delete_token(&secret, &salt).expose())]);
         assert_eq!(cp.match_token(delete_token(&secret, &salt).expose()), Some(1));

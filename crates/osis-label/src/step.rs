@@ -90,6 +90,17 @@ fn get_key(v: &Value, what: &'static str) -> Result<VerifyingKey, Error> {
 /// Limits for steps, claim sets and the structures holding them (spec/wire.md §13).
 pub(crate) const OBJECT_LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_MESSAGE };
 
+/// Largest encoded claim set with its entry boxes, so a step and its set fit one message
+/// (spec/wire.md §13).
+pub const MAX_CLAIM_SET: usize = MAX_MESSAGE - 64 * 1024;
+
+fn check_claim_set_size(len: usize) -> Result<(), Error> {
+    if len > MAX_CLAIM_SET {
+        return Err(Error::TooLarge("claim set above MAX_CLAIM_SET"));
+    }
+    Ok(())
+}
+
 impl Step {
     fn unsigned(&self) -> Vec<Value> {
         let k = &self.keys;
@@ -245,7 +256,11 @@ impl ClaimSet {
         osis_core::hash::hash(&self.to_bytes())
     }
 
+    /// `Malformed` above `MAX_CLAIM_SET` bytes.
     pub fn parse(b: &[u8]) -> Result<ClaimSet, Error> {
+        if b.len() > MAX_CLAIM_SET {
+            return Err(Error::Malformed("claim set above MAX_CLAIM_SET"));
+        }
         ClaimSet::from_value(&decode(b, &OBJECT_LIMITS)?)
     }
 
@@ -368,6 +383,7 @@ pub fn register(parent: Parent, keys: StepKeys, readers: &[Reader], read: (Epoch
     }
     shuffle(&mut claims, rng);
     let set = ClaimSet { claims, entries };
+    check_claim_set_size(set.to_bytes().len())?;
     let mut step = Step { label, prev, keys, step_key, claims_hash: set.hash(), sig: Signature([0; 64]) };
     step.sig = signer.sign(Domain::LabelRegister, &step.digest());
     Ok((step, set))
@@ -581,6 +597,19 @@ pub(crate) mod tests {
         assert!(ClaimSet::from_value(&set(Value::List(vec![bytes(&[0; 31])]), vec![])).is_err());
         let parked = Value::Enum(7, None);
         assert_eq!(ClaimSet::from_value(&set(c(1), vec![(bytes(&[0; 32]), parked)])), Err(Error::Crypto(osis_crypto::Error::UnknownCase(7))));
+    }
+
+    // spec/wire.md §13: a claim set with its entry boxes is at most MAX_MESSAGE − 64 KiB, on
+    // read and when registering.
+    #[test]
+    fn claim_set_size_cap() {
+        let big = SecretBox::Symmetric(SymmetricBox { epoch: EpochValue { n: 1, nonce: [0; 16] }, wrap: vec![0; MAX_CLAIM_SET] });
+        let set = ClaimSet { claims: vec![[1; 32]], entries: [([1; 32], big)].into_iter().collect() };
+        let b = set.to_bytes();
+        assert!(b.len() > MAX_CLAIM_SET && b.len() < MAX_MESSAGE);
+        assert_eq!(ClaimSet::parse(&b), Err(Error::Malformed("claim set above MAX_CLAIM_SET")));
+        assert!(check_claim_set_size(MAX_CLAIM_SET).is_ok());
+        assert!(matches!(check_claim_set_size(MAX_CLAIM_SET + 1), Err(Error::TooLarge(_))));
     }
 
     proptest! {
