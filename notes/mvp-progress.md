@@ -29,16 +29,16 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
-| keys | merged, reviewed | recursive covers rule in spec; plan stays until flows and node-sync use it |
+| keys | merged, reviewed; follow-up running (established epochs, issues/keys-established-epochs.md) | plan stays until flows and node-sync use it |
 | crdt-seq | running (opus, worktree) | |
 | commit | running (opus, worktree) | |
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
 | node-core | review | all steps done; plan folded into notes/node.md; reviewer running; issues/node-core-gaps.md |
-| transport | review fixes | reviewer: serialized handshakes, unbounded quinn windows, deny dup; agent fixing + `dial_as` for the server |
+| transport | merged, reviewed | plan stays until server and node run over both transports |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
-| server | merged, reviewed | transport wiring pending transport merge; plan stays until node-sync and sim run through it |
+| server | merged, reviewed; transport wiring running | plan stays until node-sync and sim run through it |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
