@@ -19,7 +19,7 @@ Spec: spec/sync.md §4 (state), §5 (operations and authorization, re-registrati
 - [x] Engine wiring over osis-proto; loopback tests with a scripted client; subscriptions and signals; budget and tombstone behaviour; timed deletes and expiry with a `Clock`.
 - [x] Persistence over the file backend; restart test; replication push.
 - [x] Binary + transport; localhost end-to-end with a scripted client; limits.
-- [ ] Negative tests from notes/sync.md Limits (an ex-member's stale sync key gets exactly one step; a reader cannot upload; a token deletes only its own body; deposits over budget refused; tombstoned ID refused).
+- [x] Negative tests from notes/sync.md Limits (an ex-member's stale sync key gets exactly one step; a reader cannot upload; a token deletes only its own body; deposits over budget refused; tombstoned ID refused).
 
 ## Done when
 node-sync syncs through it in the simulator and over localhost; every §5 sentence has a test; notes/sync.md "Server" section records defaults and knobs. Delete this plan.
@@ -29,3 +29,4 @@ node-sync syncs through it in the simulator and over localhost; every §5 senten
 - Step 2: sans-I/O `Hub` (server engines per connection, Changed/Signal fan-out, sweeps on `tick`, `Replicator` per dialed peer: push-only, acknowledged positions stored, replay past the horizon); tests over scripted `ClientSession`s (tests/hub.rs), metadata hygiene (tests/hygiene.rs).
 - Step 3: feature `file-backend`; redb reopen test (tier 2, tests/file.rs); restart over the same backend in tests/hub.rs; replication landed in step 2.
 - Step 4: async `driver` (hub task, reader tasks, bounded write queues, dial tasks with backoff, `Control::{Tick, Shutdown}`), `net` adapter (`Link`, `Listener`, `Dialer`, in-process `MemNet`), `config`, binary behind `bin`. osis-transport had not landed: `net::listen` refuses, so the binary cannot serve yet; the localhost end-to-end test waits for it.
+- Step 5: tests/limits.rs (stale key gets one step, reader cannot write, token scope, budget and tombstone, fetch scope, registration squatting); notes/sync.md "Implementation (osis-server)" records defaults and knobs. Open: map osis-transport connections to `Link`s in `net` and a localhost test (tier 2) once transport lands; node-sync and sim through it.
