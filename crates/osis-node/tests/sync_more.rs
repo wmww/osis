@@ -202,3 +202,29 @@ fn label_published_under_home_label_spec_sync_2() {
     // the epoch it superseded (derived from P's), opens its boxes and reads
     assert_eq!(net.read(b, t), Some(s("inside")));
 }
+
+// spec/sync.md §2 (replacement): a new label at the next index takes the live blobs; the old
+// one is marked replaced and no longer synced.
+#[test]
+fn label_replacement_spec_sync_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "kept");
+    net.run();
+    let old = net.label(a);
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.run();
+    diags(&mut net, &[a, b]);
+    assert_ne!(new, old);
+    let labels: Vec<_> = net.sync(b).labels().into_iter().map(|(_, l)| (l.id, l.index)).collect();
+    assert_eq!(labels, vec![(new, 1)], "only the new label is synced");
+    assert!(!net.server_ids(sv, &new).is_empty());
+    net.write(b, t, "on the new label");
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("on the new label")));
+}

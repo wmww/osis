@@ -43,6 +43,21 @@ impl SyncEngine {
         Ok((l, self.handle(super::Event::Local)))
     }
 
+    /// Replaces label `old` of `g` (spec/sync.md §2; an admin): a new label one index above the
+    /// highest at the same servers (rotate the admin secret first when the loss calls for it),
+    /// the old one marked replaced; passes then upload the live blobs under the new label.
+    /// Not yet: deleting the old label's content entries at servers still controlled, and
+    /// placing the replacement `/label` commit under the old label.
+    pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
+        let servers = self.engine.group_labels(g)?.into_iter().find(|l| l.id == *old).map(|l| l.servers).ok_or(Error::Misuse("no such label"))?;
+        let new = self.engine.create_label(g, servers, &mut *self.rng)?;
+        let mut m = crate::Mutation::new();
+        let path = vec![osis_crdt::PathSeg::Key(osis_schema::Codec::to_value(old)), osis_crdt::PathSeg::Field(3)];
+        m.op(*g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(Value::Bool(true)) })?;
+        self.engine.commit(m)?;
+        Ok((new, self.handle(super::Event::Local)))
+    }
+
     /// Sends a signal about `t` under every open label holding it (spec/sync.md §9): under the
     /// write key when this node writes the label, else the deposit key; also fires this node's
     /// own listeners.
