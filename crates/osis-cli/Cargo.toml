@@ -1,0 +1,15 @@
+[package]
+name = "osis-cli"
+description = "Command-line tool osis over the API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis.workspace = true
+osis-schema.workspace = true
+osis-server.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "osis"
+description = "Public API; the only crate apps depend on"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-node.workspace = true

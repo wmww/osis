@@ -1,0 +1,13 @@
+[package]
+name = "osis-perm"
+description = "Membership validity rules as pure logic over an abstract held set"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true

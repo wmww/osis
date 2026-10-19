@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "models/*", "vectors", "sim"]  # apps-e2e adds "examples/*" (an empty glob fails)
+exclude = ["fuzz"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# Every external dependency needs its line in notes/architecture.md (Dependency policy).
+[workspace.dependencies]
+osis-core = { path = "crates/osis-core" }
+osis-crypto = { path = "crates/osis-crypto" }
+osis-crdt = { path = "crates/osis-crdt" }
+osis-perm = { path = "crates/osis-perm" }
+osis-schema = { path = "crates/osis-schema" }
+osis-store = { path = "crates/osis-store" }
+osis-commit = { path = "crates/osis-commit" }
+osis-keys = { path = "crates/osis-keys" }
+osis-label = { path = "crates/osis-label" }
+osis-proto = { path = "crates/osis-proto" }
+osis-transport = { path = "crates/osis-transport" }
+osis-server = { path = "crates/osis-server" }
+osis-node = { path = "crates/osis-node" }
+osis = { path = "crates/osis" }
+crdt-model = { path = "models/crdt" }
+membership-model = { path = "models/membership" }
+blake3 = { version = "1.8", default-features = false, features = ["std"] }
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# No panics on data (notes/architecture.md §3). Tests are exempt via clippy.toml.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Crypto and CBOR in debug are the slow part of tests.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+inherits = "dev"
+
+[profile.release]
+codegen-units = 16
+lto = "thin"

@@ -11,7 +11,7 @@
 
 ## Layout
 - `crates/`: the implementation (workspace). Unit and property tests inside each crate.
-- `models/`: `crdt` (today `crdt-model/`), `membership` (today `tools/fixpoint/`), `tla/` (plans/tla-models.md). Moved, not rewritten.
+- `models/`: `crdt` (moved from `crdt-model/`), `membership` (moved from `tools/fixpoint/`), `tla/` (plans/tla-models.md). Moved, not rewritten.
 - `vectors/`: language-neutral conformance vectors (CBOR or JSON files plus expected outputs) with a runner crate; shipped with the spec so other implementations can use them.
 - `sim/`: the deterministic simulator crate and its scenario and invariant library.
 - `fuzz/`: cargo-fuzz targets, with corpora committed.
@@ -50,7 +50,7 @@ A simulator runs real node code with: proto messages delivered engine-to-engine 
 - A review pass per subsystem by a fresh agent with the attack list in notes as a checklist, before each milestone.
 
 ## 7. Size and performance regression
-- Byte budgets as tests: commit for a small edit, removal from an N-member roster, roster snapshot of N, revoke frontier after a long tenure, text of M characters after K edits (crdt-model's `text_bench` becomes a tracked bench). Fail on regression beyond a margin.
+- Byte budgets as tests: commit for a small edit, removal from an N-member roster, roster snapshot of N, revoke frontier after a long tenure, text of M characters after K edits (models/crdt's `text_bench` becomes a tracked bench). Fail on regression beyond a margin.
 - Benches with criterion for join, read, encode, page, sync reconciliation; tracked over time, not gated.
 
 ## 8. API and app level

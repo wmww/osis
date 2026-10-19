@@ -1,0 +1,13 @@
+[package]
+name = "osis-crypto"
+description = "Suite 1 primitives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true

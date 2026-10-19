@@ -3,7 +3,7 @@
 > Tags: permissions, security, tests
 
 Crate: `osis-perm`. Depends on: osis-core (and the core-aspect value types; take them from osis-schema if merged, else define the few structs locally and reconcile). Dev-depends on: models/membership. Unblocks: node-core, membership-flows, keys (who may rotate).
-Spec: spec/permissions.md §1–§2, §4–§8; spec/commits.md §2–§4 (kinds, pending rules the node applies with these answers); spec/data-model.md §9 (`/members`, `/tenures`). Notes: notes/permissions.md (fixpoint findings, scenario outcomes, why class attribution, sticky drops), plans/testing.md §1 (model refactor). Spec trumps this plan.
+Spec: spec/permissions.md §1–§2, §4–§8; spec/commits.md §2–§4 (kinds, pending rules the node applies with these answers); spec/data-model.md §9 (`/members`, `/tenures`). Notes: notes/permissions.md (membership model findings, scenario outcomes, why class attribution, sticky drops), plans/testing.md §1 (model refactor). Spec trumps this plan.
 
 ## Deliverables
 - Input model (traits the node implements): `HeldSet` giving, per thing, the edge writes held (each: ts, author node, actor, commit ID, target, member, role, until, invite, kind = grant/change/removal/self-removal/invite grant/redemption, frontier?), roster snapshots held (roster edges with `since`, ledger entries), `/created` records (owner), and the node's receipt record for frontiers. Keep perm free of commit header parsing: node adapts.

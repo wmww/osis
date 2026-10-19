@@ -1,0 +1,7 @@
+# Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
+[env]
+PROPTEST_CASES = "32"
+
+# Optional fast linker: enable locally if installed, never required.
+# [target.x86_64-unknown-linux-gnu]
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
