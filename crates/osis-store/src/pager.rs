@@ -185,6 +185,24 @@ impl Journal {
     }
 }
 
+/// Deletes what the journal records under `prefix` say was written, and the records.
+fn rollback(backend: &mut dyn Backend, prefix: &[u8]) -> Result<(), Error> {
+    loop {
+        let journals = backend.scan_prefix(prefix, 256)?;
+        if journals.is_empty() {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::new();
+        for (k, v) in journals {
+            let j = Journal::decode(&v)?;
+            j.new_rows.into_iter().for_each(|r| batch.delete(r));
+            j.new_blobs.into_iter().for_each(|b| batch.delete_blob(b));
+            batch.delete(k);
+        }
+        backend.commit(batch)?;
+    }
+}
+
 fn pointer(epoch: u64, ver: u64) -> Vec<u8> {
     W::new().u64(epoch).u64(ver).take()
 }
@@ -238,6 +256,10 @@ pub(crate) struct Pager {
     epoch: u64,
     root_key: Secret32,
     top_ver: u64,
+    /// Next transaction version: never repeats within a session, aborted ones included.
+    next_ver: u64,
+    /// Versions of transactions that spilled and have not committed (aborted unless running).
+    open_spills: BTreeSet<u64>,
     meta: Meta,
     top: Node,
     /// Committed tree nodes below the top by (level, index); `None`: absent.
@@ -249,37 +271,37 @@ pub(crate) struct Pager {
 
 impl Pager {
     /// Creates an empty store. Refuses if the root storage already holds a root.
-    pub fn create(backend: Box<dyn Backend>, mut root: Box<dyn RootStorage>, cfg: StoreConfig, rng: &mut dyn CryptoRngCore) -> Result<Pager, Error> {
+    /// Creates a store whose catalog root (slot 0) holds `catalog`, in one batch, then stores
+    /// the root record: a crash before that leaves no root, and `create` can run again.
+    /// Refuses if the root storage already holds a root.
+    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, catalog: Vec<u8>, rng: &mut dyn CryptoRngCore) -> Result<Pager, Error> {
         cfg.capacity()?;
         if root.load().map_err(Error::Root)?.is_some() {
             return Err(Error::Exists);
         }
-        let mut backend = backend;
         let root_key = Secret32::random(rng);
         let page_max = u32::try_from(cfg.page_max).map_err(|_| Error::Misuse("config"))?;
         let meta = Meta { arity: cfg.arity, depth: cfg.depth, page_max, next_slot: 0, next_ver: 1, catalog: u64::MAX };
-        let top_row = top_row(0);
-        let mut w = W::new();
-        meta.encode(&mut w);
-        Node::default().encode(&mut w);
-        let plain = Zeroizing::new(w.0);
-        let mut batch = WriteBatch::new();
-        batch.put(top_row.clone(), seal(&root_key, &top_row, &plain, rng)?);
-        batch.put(ROW_R.to_vec(), pointer(1, 0));
-        batch.delete(ROW_P.to_vec());
-        backend.commit(batch)?;
-        root.store(&RootRecord { epoch: 1, key: root_key.clone() }).map_err(Error::Root)?;
-        Ok(Pager::new(backend, root, cfg, 1, root_key, 0, meta, Node::default()))
+        let mut p = Pager::new(backend, root, cfg, 1, root_key, 0, meta, Node::default());
+        let mut d = p.begin()?;
+        let slot = p.alloc(&mut d)?;
+        p.txn_write(&mut d, slot, catalog, false, rng)?;
+        d.meta.catalog = slot;
+        p.commit(d, rng)?;
+        let record = RootRecord { epoch: 1, key: p.root_key.clone() };
+        p.root.store(&record).map_err(Error::Root)?;
+        Ok(p)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, broken: false }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, broken: false }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
     /// over `cfg.arity` and `cfg.depth`.
-    pub fn open(mut backend: Box<dyn Backend>, root: Box<dyn RootStorage>, mut cfg: StoreConfig) -> Result<Pager, Error> {
+    pub fn open(mut backend: Box<dyn Backend>, mut root: Box<dyn RootStorage>, mut cfg: StoreConfig) -> Result<Pager, Error> {
+        root.repair().map_err(Error::Root)?;
         let rec = root.load().map_err(Error::Root)?.ok_or(Error::NoStore)?;
         if let Some(p) = backend.get(ROW_P)? {
             let (p_epoch, p_ver) = read_pointer(&p)?;
@@ -300,20 +322,7 @@ impl Pager {
             backend.commit(batch)?;
         }
         // Journals left by spills of transactions that never committed.
-        loop {
-            let journals = backend.scan_prefix(&[JOURNAL], 256)?;
-            if journals.is_empty() {
-                break;
-            }
-            let mut batch = WriteBatch::new();
-            for (k, v) in journals {
-                let j = Journal::decode(&v)?;
-                j.new_rows.into_iter().for_each(|r| batch.delete(r));
-                j.new_blobs.into_iter().for_each(|b| batch.delete_blob(b));
-                batch.delete(k);
-            }
-            backend.commit(batch)?;
-        }
+        rollback(&mut *backend, &[JOURNAL])?;
         let (epoch, ver) = read_pointer(&backend.get(ROW_R)?.ok_or(Error::NoStore)?)?;
         if epoch != rec.epoch {
             return Err(Error::Corrupt("root epoch"));
@@ -430,10 +439,16 @@ impl Pager {
         self.units.insert(slot, data);
     }
 
-    pub fn begin(&self) -> Result<Dirty, Error> {
+    /// Starts a transaction, first rolling back the spills of aborted ones.
+    pub fn begin(&mut self) -> Result<Dirty, Error> {
         self.check()?;
+        for ver in std::mem::take(&mut self.open_spills) {
+            rollback(&mut *self.backend, &W::new().u8(JOURNAL).u64(ver).take()).inspect_err(|_| self.broken = true)?;
+        }
+        let ver = self.next_ver;
+        self.next_ver += 1;
         Ok(Dirty {
-            ver: self.meta.next_ver,
+            ver,
             meta: self.meta,
             units: HashMap::new(),
             plain_bytes: 0,
@@ -536,10 +551,14 @@ impl Pager {
             }
         }
         for (id, bytes) in d.blob_puts.drain(..) {
+            // A blob already there (content-addressed re-put) survives a rollback.
+            if self.backend.blob_len(&id)?.is_none() {
+                j.new_blobs.push(id);
+            }
             batch.put_blob(id, bytes);
-            j.new_blobs.push(id);
         }
         batch.put(journal_row(d.ver, d.spills), j.encode());
+        self.open_spills.insert(d.ver);
         d.spills += 1;
         d.plain_bytes = 0;
         self.backend.commit(batch).inspect_err(|_| self.broken = true)?;
@@ -666,8 +685,10 @@ impl Pager {
         j.new_rows.push(top_row);
         j.old_rows.push(self::top_row(self.top_ver));
         for (id, bytes) in d.blob_puts.drain(..) {
+            if self.backend.blob_len(&id)?.is_none() {
+                j.new_blobs.push(id);
+            }
             batch.put_blob(id, bytes);
-            j.new_blobs.push(id);
         }
         j.old_blobs = std::mem::take(&mut d.blob_dels);
         let journals: Vec<Vec<u8>> = (0..d.spills).map(|k| journal_row(ver, k)).collect();
@@ -702,6 +723,7 @@ impl Pager {
         self.top = top;
         self.top_ver = ver;
         self.meta = meta;
+        self.open_spills.remove(&ver);
         for (k, n) in new_nodes {
             self.nodes.insert(k, n);
         }
@@ -770,7 +792,11 @@ mod tests {
     fn fresh(cfg: StoreConfig) -> (Pager, MemoryBackend, MemoryRoot, SeededRng) {
         let (b, r) = (MemoryBackend::new(), MemoryRoot::new());
         let mut rng = SeededRng::from_u64(1);
-        let p = Pager::create(Box::new(b.clone()), Box::new(r.clone()), cfg, &mut rng).unwrap();
+        let mut p = Pager::create(Box::new(b.clone()), Box::new(r.clone()), cfg, Vec::new(), &mut rng).unwrap();
+        // Free the catalog slot: these tests use units only (slots from 1).
+        let mut d = p.begin().unwrap();
+        p.txn_delete(&mut d, 0, false);
+        p.commit(d, &mut rng).unwrap();
         (p, b, r, rng)
     }
 
@@ -806,9 +832,9 @@ mod tests {
     fn rotation() {
         let (mut p, b, r, mut rng) = fresh(small());
         let mut d = p.begin().unwrap();
-        for s in 0..16 {
+        for _ in 0..16 {
             let slot = p.alloc(&mut d).unwrap();
-            p.txn_write(&mut d, slot, vec![s as u8; 10], false, &mut rng).unwrap();
+            p.txn_write(&mut d, slot, vec![slot as u8; 10], false, &mut rng).unwrap();
         }
         p.commit(d, &mut rng).unwrap();
         let key1 = r.load().unwrap().unwrap();
@@ -840,7 +866,7 @@ mod tests {
         let cfg = StoreConfig { arity: 2, depth: 3, ..StoreConfig::default() };
         let (mut p, b, _r, mut rng) = fresh(cfg);
         let mut d = p.begin().unwrap();
-        for _ in 0..8 {
+        for _ in 1..8 {
             let s = p.alloc(&mut d).unwrap();
             p.txn_write(&mut d, s, vec![1], false, &mut rng).unwrap();
         }
@@ -849,7 +875,7 @@ mod tests {
         // Levels 0 and 1 below the top: 4 + 2 nodes.
         assert_eq!(rows(&b, b'n'), 6);
         let mut d = p.begin().unwrap();
-        for s in 0..8 {
+        for s in 1..8 {
             p.txn_delete(&mut d, s, false);
         }
         p.commit(d, &mut rng).unwrap();
@@ -864,12 +890,12 @@ mod tests {
         let cfg = StoreConfig { spill_bytes: 100, ..small() };
         let (mut p, b, r, mut rng) = fresh(cfg);
         let mut d = p.begin().unwrap();
-        for i in 0..10u8 {
+        for _ in 0..10 {
             let s = p.alloc(&mut d).unwrap();
-            p.txn_write(&mut d, s, vec![i; 40], false, &mut rng).unwrap();
+            p.txn_write(&mut d, s, vec![s as u8; 40], false, &mut rng).unwrap();
         }
         assert!(rows(&b, b'j') > 0);
-        assert_eq!(p.txn_read(&d, 0).unwrap(), Some(vec![0; 40]));
+        assert_eq!(p.txn_read(&d, 1).unwrap(), Some(vec![1; 40]));
         p.txn_delete(&mut d, 1, false);
         p.commit(d, &mut rng).unwrap();
         assert_eq!(rows(&b, b'j'), 0);

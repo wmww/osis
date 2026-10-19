@@ -5,6 +5,9 @@
 //!
 //! `shred` on an operation applies to every unit it writes or deletes: the removed or replaced
 //! bytes, and every copy of a removed key in the interior path, become unrecoverable at commit.
+//! A page whose entries move to another slot (split, merge, root move or collapse) is always
+//! rewritten or deleted shredded: otherwise its old versions would keep copies that a later
+//! shred of the entry, now living in another slot, could not reach.
 
 use crate::codec::{R, W};
 use crate::{Error, KeyValue};
@@ -66,7 +69,7 @@ impl Page {
     fn count(&self) -> u64 {
         match self {
             Page::Leaf(es) => es.len() as u64,
-            Page::Inner(es) => es.iter().map(|e| e.count).sum(),
+            Page::Inner(es) => es.iter().fold(0u64, |a, e| a.saturating_add(e.count)),
         }
     }
     fn first_key(&self) -> Vec<u8> {
@@ -196,6 +199,11 @@ fn entry(p: &Page, slot: u64) -> InnerE {
     InnerE { key: p.first_key(), child: slot, count: p.count() }
 }
 
+/// An empty table's root page.
+pub(crate) fn empty_page() -> Vec<u8> {
+    Page::Leaf(Vec::new()).encode()
+}
+
 /// Creates an empty table; returns its root slot.
 pub(crate) fn create(u: &mut dyn Units) -> Result<u64, Error> {
     let slot = u.alloc()?;
@@ -243,7 +251,7 @@ pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred:
         if let Some(e) = es.first_mut() {
             e.child = moved;
         }
-        save(u, root, &Page::Inner(es), shred)?;
+        save(u, root, &Page::Inner(es), true)?;
     }
     Ok(added)
 }
@@ -280,7 +288,7 @@ fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Re
     }
     let (a, b) = split(page);
     let right = u.alloc()?;
-    save(u, slot, &a, shred)?;
+    save(u, slot, &a, true)?;
     save(u, right, &b, shred)?;
     Ok((added, vec![entry(&a, slot), entry(&b, right)]))
 }
@@ -298,8 +306,8 @@ pub(crate) fn remove(u: &mut dyn Units, root: u64, key: &[u8], shred: bool) -> R
             Page::Inner(es) if es.len() == 1 => {
                 let child = es.first().map(|e| e.child).ok_or(Error::Corrupt("empty interior page"))?;
                 let page = load(u, child)?;
-                save(u, root, &page, shred)?;
-                u.delete(child, shred);
+                save(u, root, &page, true)?;
+                u.delete(child, true);
             }
             _ => return Ok(true),
         }
@@ -359,12 +367,12 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
     };
     if merged.size() <= u.page_max() {
         save(u, ls, &merged, shred)?;
-        u.delete(rs, shred);
+        u.delete(rs, true);
         es.splice(l..=r, [entry(&merged, ls)]);
     } else {
         let (a, b) = split(merged);
-        save(u, ls, &a, shred)?;
-        save(u, rs, &b, shred)?;
+        save(u, ls, &a, true)?;
+        save(u, rs, &b, true)?;
         es.splice(l..=r, [entry(&a, ls), entry(&b, rs)]);
     }
     Ok(())
@@ -410,10 +418,10 @@ pub(crate) fn rank(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<u64, Erro
     let mut acc = 0u64;
     loop {
         match load(u, slot)? {
-            Page::Leaf(es) => return Ok(acc + es.partition_point(|e| e.key.as_slice() < key) as u64),
+            Page::Leaf(es) => return Ok(acc.saturating_add(es.partition_point(|e| e.key.as_slice() < key) as u64)),
             Page::Inner(es) => {
                 let i = child_index(&es, key);
-                acc += es.iter().take(i).map(|e| e.count).sum::<u64>();
+                acc = es.iter().take(i).fold(acc, |a, e| a.saturating_add(e.count));
                 slot = es.get(i).ok_or(Error::Corrupt("empty interior page"))?.child;
             }
         }
@@ -570,6 +578,7 @@ mod tests {
         }
         check(&mut u, root, &model);
         let before = u.units.clone();
+        u.shredded.clear();
         remove(&mut u, root, &1234u32.to_be_bytes(), true).unwrap();
         let changed = u.units.iter().filter(|(s, v)| before.get(s) != Some(v)).count();
         let mut depth = 0;

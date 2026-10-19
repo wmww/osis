@@ -100,12 +100,7 @@ pub struct Store {
 impl Store {
     /// Creates an empty store over an empty backend and an empty root storage.
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, rng: &mut dyn CryptoRngCore) -> Result<Store, Error> {
-        let mut store = Store { pager: Pager::create(backend, root, cfg, rng)? };
-        let mut t = store.transaction(rng)?;
-        let catalog = btree::create(&mut t)?;
-        t.d.meta.catalog = catalog;
-        t.commit()?;
-        Ok(store)
+        Ok(Store { pager: Pager::create(backend, root, cfg, btree::empty_page(), rng)? })
     }
 
     /// Opens a store, finishing or rolling back a commit a crash interrupted.
@@ -174,6 +169,10 @@ impl Units for Transaction<'_> {
 impl Transaction<'_> {
     /// Commits durably. With any `Shred::Yes` in it, returns only after the new root record is
     /// durable: from then on the shredded bytes are unrecoverable.
+    ///
+    /// `Err` means the outcome is unknown: a shredding commit whose root record landed is
+    /// committed even if a later cleanup write failed. The store refuses further use; reopen it
+    /// (recovery finishes or rolls back, and may be repeated after another crash) and read back.
     pub fn commit(self) -> Result<(), Error> {
         self.pager.commit(self.d, self.rng)
     }
@@ -200,19 +199,11 @@ impl Transaction<'_> {
         let end = crate::backend::prefix_end(prefix);
         btree::range(self, c, &start, end.as_deref(), limit)
     }
-    /// Removes every catalog entry under `prefix`, a page at a time.
-    fn cat_remove_prefix(&mut self, prefix: &[u8], shred: Shred) -> Result<Vec<KeyValue>, Error> {
-        let mut removed = Vec::new();
-        loop {
-            let page = self.cat_scan(prefix, b"", 256)?;
-            if page.is_empty() {
-                return Ok(removed);
-            }
-            for (k, v) in page {
-                self.cat_remove(&k, shred)?;
-                removed.push((k, v));
-            }
-        }
+    /// Removes and returns the first catalog entry under `prefix`.
+    fn cat_pop_prefix(&mut self, prefix: &[u8], shred: Shred) -> Result<Option<KeyValue>, Error> {
+        let Some((k, v)) = self.cat_scan(prefix, b"", 1)?.pop() else { return Ok(None) };
+        self.cat_remove(&k, shred)?;
+        Ok(Some((k, v)))
     }
 
     // Aspects.
@@ -228,6 +219,9 @@ impl Transaction<'_> {
     /// Writes an aspect's unit. `Shred::Yes` when the rewrite drops content that must not be
     /// recoverable (a dropped body's writes, undo entries, snapshots).
     pub fn put_aspect(&mut self, tid: &Tid, ak: &Ak, unit: &AspectUnit, shred: Shred) -> Result<(), Error> {
+        if [&unit.state, &unit.undo, &unit.snapshots].iter().any(|b| u32::try_from(b.len()).is_err()) {
+            return Err(Error::Misuse("aspect unit field above 4 GiB"));
+        }
         let v = W::new().bytes(&unit.state).bytes(&unit.undo).bytes(&unit.snapshots).take();
         self.cat_put(&aspect_key(kind::ASPECT, tid, ak), v, shred)
     }
@@ -273,8 +267,8 @@ impl Transaction<'_> {
     /// counters stay: node-form counters never repeat.
     pub fn drop_aspect(&mut self, tid: &Tid, ak: &Ak) -> Result<(), Error> {
         self.cat_remove(&aspect_key(kind::ASPECT, tid, ak), Shred::Yes)?;
-        self.cat_remove_prefix(&aspect_key(kind::DEATH, tid, ak), Shred::Yes)?;
-        for (_, v) in self.cat_remove_prefix(&aspect_key(kind::TABLE, tid, ak), Shred::Yes)? {
+        while self.cat_pop_prefix(&aspect_key(kind::DEATH, tid, ak), Shred::Yes)?.is_some() {}
+        while let Some((_, v)) = self.cat_pop_prefix(&aspect_key(kind::TABLE, tid, ak), Shred::Yes)? {
             let root = u64_value(Some(v))?.ok_or(Error::Corrupt("table"))?;
             btree::drop_all(self, root, true)?;
         }
@@ -349,7 +343,7 @@ impl Transaction<'_> {
     /// Shreds every rebuildable index (a purge of anything they cover); returns their names.
     pub fn drop_indexes(&mut self) -> Result<Vec<Vec<u8>>, Error> {
         let mut names = Vec::new();
-        for (k, v) in self.cat_remove_prefix(&[kind::INDEX], Shred::Yes)? {
+        while let Some((k, v)) = self.cat_pop_prefix(&[kind::INDEX], Shred::Yes)? {
             let root = u64_value(Some(v))?.ok_or(Error::Corrupt("index"))?;
             btree::drop_all(self, root, true)?;
             names.push(R::new(k.get(1..).unwrap_or_default()).bytes()?.to_vec());

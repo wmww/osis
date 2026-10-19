@@ -30,6 +30,11 @@ pub trait RootStorage: Send {
     /// Replaces the record durably, destroying the previous one, before returning `Ok`.
     fn store(&mut self, record: &RootRecord) -> Result<(), BackendError>;
     fn tier(&self) -> RootTier;
+    /// Completes a `store` a crash interrupted, so no copy of a replaced record remains.
+    /// Called on open before `load`.
+    fn repair(&mut self) -> Result<(), BackendError> {
+        Ok(())
+    }
 }
 
 /// In-memory root. Clones share the slot (a test reopens the store over it); obeys the device's
@@ -87,11 +92,16 @@ mod file {
     /// other slot valid; after `store` returns, both slots hold the new record.
     pub struct FileRoot {
         path: PathBuf,
+        faults: Option<Faults>,
     }
 
     impl FileRoot {
         pub fn new(path: PathBuf) -> FileRoot {
-            FileRoot { path }
+            FileRoot { path, faults: None }
+        }
+        /// Each slot write counts as one write of `faults` (crash tests).
+        pub fn with_faults(path: PathBuf, faults: Faults) -> FileRoot {
+            FileRoot { path, faults: Some(faults) }
         }
 
         fn encode(seq: u64, r: &RootRecord) -> [u8; SLOT] {
@@ -131,7 +141,10 @@ mod file {
             Ok(buf.chunks(SLOT).take(2).enumerate().filter_map(|(i, c)| Self::decode(c).map(|(s, r)| (i as u64, s, r))).collect())
         }
 
-        fn write_slot(f: &mut File, slot: u64, bytes: &[u8; SLOT]) -> Result<(), BackendError> {
+        fn write_slot(&self, f: &mut File, slot: u64, bytes: &[u8; SLOT]) -> Result<(), BackendError> {
+            if let Some(faults) = &self.faults {
+                faults.check()?;
+            }
             f.seek(SeekFrom::Start(slot * SLOT as u64)).map_err(io)?;
             f.write_all(bytes).map_err(io)?;
             f.sync_all().map_err(io)
@@ -154,8 +167,8 @@ mod file {
             let created = !self.path.exists();
             let mut f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&self.path).map_err(io)?;
             let bytes = osis_crypto::Zeroizing::new(Self::encode(seq, record));
-            Self::write_slot(&mut f, first, &bytes)?;
-            Self::write_slot(&mut f, 1 - first, &bytes)?;
+            self.write_slot(&mut f, first, &bytes)?;
+            self.write_slot(&mut f, 1 - first, &bytes)?;
             if created && let Some(dir) = self.path.parent() {
                 File::open(dir).and_then(|d| d.sync_all()).map_err(io)?;
             }
@@ -164,6 +177,19 @@ mod file {
 
         fn tier(&self) -> RootTier {
             RootTier::FileOverwrite
+        }
+
+        /// A crash between the slot writes leaves the old record in one slot: overwrite it.
+        fn repair(&mut self) -> Result<(), BackendError> {
+            let slots = self.slots()?;
+            let Some((_, seq, rec)) = slots.iter().max_by_key(|(_, s, _)| *s) else { return Ok(()) };
+            if slots.len() == 2 && slots.iter().all(|(_, s, _)| s == seq) {
+                return Ok(());
+            }
+            let bytes = osis_crypto::Zeroizing::new(Self::encode(*seq, rec));
+            let mut f = OpenOptions::new().read(true).write(true).open(&self.path).map_err(io)?;
+            self.write_slot(&mut f, 0, &bytes)?;
+            self.write_slot(&mut f, 1, &bytes)
         }
     }
 }
@@ -196,6 +222,17 @@ mod tests {
         r.store(&rec(3, 0xc3)).unwrap();
         assert_eq!(FileRoot::new(path.clone()).load().unwrap(), Some(rec(3, 0xc3)));
         assert_eq!(r.tier(), RootTier::FileOverwrite);
+        // Crash between the slot writes: the old key stays until repair.
+        let faults = Faults::new();
+        let mut r = FileRoot::with_faults(path.clone(), faults.clone());
+        faults.at(1, crate::Fault::Crash);
+        assert!(r.store(&rec(4, 0xd4)).is_err());
+        faults.revive();
+        assert_eq!(r.load().unwrap(), Some(rec(4, 0xd4)));
+        assert!(std::fs::read(&path).unwrap().windows(32).any(|w| w == [0xc3; 32]));
+        r.repair().unwrap();
+        assert!(!std::fs::read(&path).unwrap().windows(32).any(|w| w == [0xc3; 32]), "old key left after repair");
+        assert_eq!(r.load().unwrap(), Some(rec(4, 0xd4)));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

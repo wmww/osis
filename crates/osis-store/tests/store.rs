@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use osis_core::{BlobId, CommitId, LabelId, Ts};
 use osis_crypto::SeededRng;
-use osis_store::{AspectUnit, Deaths, Error, MemoryBackend, MemoryRoot, PendingKind, Shred, Store};
+use osis_store::{AspectUnit, Deaths, Error, Fault, MemoryBackend, MemoryRoot, PendingKind, Shred, Store, StoreConfig};
 
 fn ts(n: u64) -> Ts {
     Ts::from_u64(n).unwrap()
@@ -200,4 +200,88 @@ fn lifecycle_errors() {
     let mut t = s.transaction(&mut rng).unwrap();
     let big_ak = ak(&format!("/{}", "a".repeat(200)));
     assert!(matches!(t.put_aspect(&tid(1), &big_ak, &AspectUnit::default(), Shred::No), Err(Error::Misuse(_))));
+}
+
+// spec/commits.md §4: an aborted transaction that spilled leaves nothing that harms later commits.
+#[test]
+fn abort_after_spill() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(10);
+    let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
+    let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.create_table(&tid(1), &ak("/t"), 0).unwrap();
+    for i in 0..20u32 {
+        t.table_put(tb, &i.to_be_bytes(), vec![1; 30], Shred::No).unwrap();
+    }
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.create_table(&tid(1), &ak("/t"), 0).unwrap();
+    t.table_put(tb, b"k", vec![2; 5], Shred::No).unwrap();
+    t.commit().unwrap();
+    assert!(s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "aborted spill rolled back");
+    drop(s);
+    let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("/t"), 0).unwrap().unwrap();
+    assert_eq!(t.table_get(tb, b"k").unwrap(), Some(vec![2; 5]));
+    assert_eq!(t.table_len(tb).unwrap(), 1);
+}
+
+// spec/commits.md §4: rolling back a transaction never deletes a blob committed before it
+// (content-addressed re-puts are normal).
+#[test]
+fn rollback_keeps_committed_blob() {
+    for shredding in [false, true] {
+        let dev = MemDevice::new();
+        let mut rng = SeededRng::from_u64(11);
+        let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
+        let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+        let id = BlobId([7; 32]);
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.put_blob(&id, vec![9; 50]).unwrap();
+        t.put_local(b"x", b"1", Shred::No).unwrap();
+        t.commit().unwrap();
+        let mut t = s.transaction(&mut rng).unwrap();
+        if shredding {
+            // Crash after the shredding commit's first batch: rolled back on open.
+            t.put_blob(&id, vec![9; 50]).unwrap();
+            t.put_local(b"x", b"2", Shred::Yes).unwrap();
+            dev.faults.at(1, Fault::Crash);
+            assert!(t.commit().is_err());
+            dev.faults.revive();
+        } else {
+            t.put_blob(&id, vec![9; 500]).unwrap();
+            drop(t);
+        }
+        drop(s);
+        let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
+        let mut t = s.transaction(&mut rng).unwrap();
+        assert!(t.get_blob(&id).unwrap().is_some(), "committed blob lost by rollback (shredding {shredding})");
+        assert_eq!(t.get_local(b"x").unwrap(), Some(b"1".to_vec()));
+    }
+}
+
+// spec: none (store lifecycle: a crash at any write of create leaves a store that opens or can
+// be created again)
+#[test]
+fn crash_during_create() {
+    for n in 0..4 {
+        let dev = MemDevice::new();
+        let mut rng = SeededRng::from_u64(12);
+        dev.faults.at(n, Fault::Crash);
+        let crashed = Store::create(dev.backend(), dev.root(), cfg(), &mut rng).is_err();
+        dev.faults.revive();
+        let mut s = match Store::open(dev.backend(), dev.root(), cfg()) {
+            Ok(s) => s,
+            Err(Error::NoStore) => {
+                assert!(crashed);
+                Store::create(dev.backend(), dev.root(), cfg(), &mut rng).unwrap()
+            }
+            Err(e) => panic!("crash at {n}: {e:?}"),
+        };
+        let mut t = s.transaction(&mut rng).unwrap();
+        t.put_local(b"k", b"v", Shred::No).unwrap();
+        t.commit().unwrap();
+    }
 }

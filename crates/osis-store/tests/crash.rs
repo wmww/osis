@@ -134,7 +134,7 @@ fn reopen_cfg(dev: &dyn Device) -> Store {
 // spec/commits.md §4: all or nothing at every crash point.
 #[test]
 fn crash_plain_transaction() {
-    for d in devices("names") {
+    for d in devices("names-plain") {
         crash_every_write(d.name(), 0);
     }
 }
@@ -142,7 +142,7 @@ fn crash_plain_transaction() {
 // notes/local-store.md, Key tree: deletion counts only after the root replacement is durable.
 #[test]
 fn crash_shredding_transaction() {
-    for d in devices("names") {
+    for d in devices("names-shred") {
         crash_every_write(d.name(), 1);
     }
 }
@@ -150,7 +150,7 @@ fn crash_shredding_transaction() {
 // spec/crdt.md §8: a commit has no size limit; a large transaction spills and stays atomic.
 #[test]
 fn crash_spilling_transaction() {
-    for d in devices("names") {
+    for d in devices("names-spill") {
         crash_every_write(d.name(), 2);
     }
 }

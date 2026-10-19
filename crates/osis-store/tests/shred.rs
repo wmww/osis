@@ -133,6 +133,46 @@ fn dropped_aspect_is_unrecoverable() {
     assert!(!plains.iter().any(|p| contains(p, b"element 77") || contains(p, b"undo:")));
 }
 
+// spec/commits.md §5: a record written before page splits moved it to other slots is still
+// unrecoverable after its shredded removal (pages losing entries are rewritten shredded).
+#[test]
+fn shred_after_splits_and_merges() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(6);
+    let mut s = create(&dev, &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    for i in 0..200u32 {
+        t.put_local(format!("a{i:04}").as_bytes(), &[1; 40], Shred::No).unwrap();
+    }
+    t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_local(b"m-victim", b"SECRET-MARK", Shred::No).unwrap();
+    t.commit().unwrap();
+    // Inserts around the victim split its page (each transaction commits a page version);
+    // removals merge pages.
+    for i in 0..12u32 {
+        let mut t = s.transaction(&mut rng).unwrap();
+        for j in 0..5 {
+            t.put_local(format!("l{i:02}{j}").as_bytes(), &[1; 40], Shred::No).unwrap();
+            t.put_local(format!("b{i:02}{j}").as_bytes(), &[1; 40], Shred::No).unwrap();
+        }
+        t.commit().unwrap();
+    }
+    for i in 0..10u32 {
+        let mut t = s.transaction(&mut rng).unwrap();
+        for j in 0..20 {
+            t.remove_local(format!("a{:04}", i * 20 + j).as_bytes(), Shred::No).unwrap();
+        }
+        t.commit().unwrap();
+    }
+    assert!(recoverable(&mut s, &dev, b"SECRET-MARK"));
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap());
+    t.commit().unwrap();
+    assert!(!recoverable(&mut s, &dev, b"SECRET-MARK"), "recovered from a page version before a split or merge");
+}
+
 // notes/local-store.md, Key tree: without `Shred::Yes` an overwrite may stay recoverable from
 // freed storage; any later shred along the same key path makes it unrecoverable too.
 #[test]

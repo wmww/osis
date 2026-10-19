@@ -57,19 +57,18 @@ impl Device for MemDevice {
 #[cfg(feature = "file-backend")]
 pub struct FileDevice {
     pub dir: std::path::PathBuf,
-    pub root: MemoryRoot,
     pub faults: Faults,
 }
 
 #[cfg(feature = "file-backend")]
 impl FileDevice {
-    /// A redb file in a fresh temp directory (tier-1 disk rule: own temp dir only).
+    /// A redb file and a file root in a fresh temp directory (tier-1 disk rule: own temp dir only).
     pub fn new(name: &str) -> FileDevice {
         let dir = std::env::temp_dir().join(format!("osis-store-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let faults = Faults::new();
-        FileDevice { dir, root: MemoryRoot::with_faults(faults.clone()), faults }
+        FileDevice { dir, faults }
     }
 }
 
@@ -87,7 +86,7 @@ impl Device for FileDevice {
         Box::new(osis_store::FaultyBackend::new(b, self.faults.clone()))
     }
     fn root(&self) -> Box<dyn RootStorage> {
-        Box::new(self.root.clone())
+        Box::new(osis_store::FileRoot::with_faults(self.dir.join("root"), self.faults.clone()))
     }
     fn faults(&self) -> &Faults {
         &self.faults

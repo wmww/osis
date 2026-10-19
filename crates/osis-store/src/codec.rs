@@ -29,8 +29,10 @@ impl W {
         self.0.extend_from_slice(b);
         self
     }
-    /// Length-prefixed bytes; callers keep lengths below 4 GiB (`MAX_BLOB` bounds every unit).
+    /// Length-prefixed bytes; callers check lengths fit a u32 (`put_aspect` does; keys and inline
+    /// values are bounded by the page size).
     pub fn bytes(&mut self, b: &[u8]) -> &mut W {
+        debug_assert!(u32::try_from(b.len()).is_ok());
         self.u32(u32::try_from(b.len()).unwrap_or(u32::MAX));
         self.raw(b)
     }
