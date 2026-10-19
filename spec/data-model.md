@@ -51,7 +51,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | set | tag 258 around an array sorted by canonical encoded bytes of the elements |
 | tid | tag 1616 (TID) around a 15-byte byte string |
 | enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]` |
-| link | tag 1618 (LINK) around `[content hash, blob ID, key]` (§6) |
+| link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key]` (§6) |
 
 - Tag numbers TID = 1616, ENUM = 1617, LINK = 1618 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused. Each encodes as `0xd9` plus two big-endian bytes.
 - RFC 8949 §4.2.1 core deterministic rules: shortest integer and length heads, definite lengths only, sorted map keys, no duplicate keys. Deviation: floats are always 8 bytes, so a float's bytes are its bit pattern.
@@ -63,7 +63,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 6. Large atomic values
 - A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; below it MUST NOT be.
-- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8, giving a tree: leaves are chunks, interior nodes are canonical arrays of links (at most 512); the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
+- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8, giving a tree: leaves are chunks, interior nodes are `[level, [LINK+]]` (at most 512 links); the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6); the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
 - Every blob is at most `MAX_BLOB` bytes (format constant, spec/wire.md §2); a commit has no size limit (spec/commits.md §1). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.

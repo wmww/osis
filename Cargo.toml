@@ -6,6 +6,7 @@ exclude = ["fuzz"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"  # slice::as_chunks
 license = "MIT"
 
 # Every external dependency needs its line in notes/architecture.md (Dependency policy).
@@ -49,7 +50,7 @@ indexing_slicing = "deny"
 [profile.dev]
 debug = "line-tables-only"
 
-# Crypto and CBOR in debug are the slow part of tests.
+# Dependencies only (workspace crates stay at dev opt-level): crypto and hashing in debug are slow.
 [profile.dev.package."*"]
 opt-level = 2
 
