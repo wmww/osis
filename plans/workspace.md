@@ -77,8 +77,8 @@ Compile time and test time are the bottleneck of an agent-driven workflow. Rules
 ## Steps
 - [x] Workspace, profiles, lints, skeletons, `git mv` of models (their tests pass from the new paths; notes/crdt.md and notes/permissions.md paths updated).
 - [x] notes/architecture.md with §2–§4 above plus the crate map; notes/overview.md updated (code layout, plans index).
-- [ ] `osis-core` Value + CBOR: proptest round trip, canonical re-encode identity, each rejection rule as a negative test, mutation test (never panics).
-- [ ] Tid/Ak/Link/ids, `format`, chunker (boundaries depend only on content; min/max honoured; equal inputs give equal chunks; incremental equals one-shot), hashing, Clock, error macro.
+- [x] `osis-core` Value + CBOR: proptest round trip, canonical re-encode identity, each rejection rule as a negative test, mutation test (never panics).
+- [x] Tid/Ak/Link/ids, `format`, chunker (boundaries depend only on content; min/max honoured; equal inputs give equal chunks; incremental equals one-shot), hashing, Clock, error macro.
 - [ ] CI skeleton `.github/workflows/ci.yml` (build, test tier 1, clippy, deny); plans/test-infra.md extends it.
 
 ## Done when
