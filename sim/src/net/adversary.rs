@@ -10,7 +10,7 @@
 use super::library::{add_tag, tags};
 use super::rogue::LabelKeys;
 use super::scenarios::{clock, persons, purge, shared_group, sim, write_gone};
-use super::{Evil, NetSim, NetWeights, Party, WAIVE_PROMOTION};
+use super::{Evil, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
 use osis_core::{BlobId, Role};
@@ -98,7 +98,6 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
 pub fn removed_replayer(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4e);
     let mut sim = sim("removed_replayer", seed, NetWeights::default());
-    sim.waivers.insert(WAIVE_PROMOTION);
     let s = sim.add_server()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;

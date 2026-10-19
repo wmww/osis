@@ -254,8 +254,6 @@ pub fn link_redeem(seed: u64) -> Res<Report> {
 fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x11);
     let mut sim = sim(name, seed, NetWeights::default());
-    // seed 7: a promoting upload lost on a cut connection is never retried
-    sim.waivers.insert(super::WAIVE_PROMOTION);
     let s = sim.add_server()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let x = sim.add_node(&[s], clock(&mut d))?;
