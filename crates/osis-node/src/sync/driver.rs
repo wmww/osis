@@ -2,7 +2,9 @@
 //! over osis-transport `link` sessions (one dialed stream per server connection, an ephemeral
 //! transport key per connection, the server's key checked by the transport, spec/sync.md §10)
 //! and fires its timers. No sync logic lives here: every input is an `Event`, every output an
-//! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime.
+//! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine
+//! lives in a `Host`: owned by the driver (`run`), or shared with the app (`run_host`: the
+//! `osis` handle keeps it behind its own lock and hands the driver the actions of its calls).
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_core::Clock;
@@ -32,6 +34,8 @@ pub enum Control {
     /// Run timers now.
     Tick,
     Call(Call),
+    /// Actions the host's own calls produced: carry them out.
+    Apply(Vec<Action>),
     /// Close every connection and return the engine.
     Shutdown,
 }
@@ -58,8 +62,25 @@ fn blocking<R>(f: impl FnOnce() -> R) -> R {
     }
 }
 
-struct Driver<T: Transport> {
-    sync: SyncEngine,
+/// Where the sync engine lives while a driver runs.
+pub trait Host: Send + Sync + 'static {
+    /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
+    fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
+}
+
+/// A host owning the engine (`run`).
+pub struct Owned(std::sync::Mutex<SyncEngine>);
+
+impl Host for Owned {
+    fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
+        let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        Some(f(&mut g))
+    }
+}
+
+struct Driver<T: Transport, H: Host> {
+    host: H,
+    gone: bool,
     transport: Arc<T>,
     clock: Arc<dyn Clock>,
     log: Log,
@@ -68,10 +89,17 @@ struct Driver<T: Transport> {
     ev_tx: mpsc::Sender<Ev>,
 }
 
-impl<T: Transport> Driver<T> {
+impl<T: Transport, H: Host> Driver<T, H> {
+    fn call(&mut self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) {
+        let host = &self.host;
+        match blocking(|| host.with(f)) {
+            Some(acts) => self.apply(acts),
+            None => self.gone = true,
+        }
+    }
+
     fn feed(&mut self, ev: Event) {
-        let acts = blocking(|| self.sync.handle(ev));
-        self.apply(acts);
+        self.call(&mut |s| s.handle(ev.clone()));
     }
 
     fn apply(&mut self, acts: Vec<Action>) {
@@ -132,11 +160,18 @@ impl<T: Transport> Driver<T> {
 
 /// Runs the sync engine until `Control::Shutdown` (or the control sender is dropped) and
 /// returns it. Dials what it asks for over `transport`; ticks when its wake comes due.
-pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
+    let Owned(m) = run_host(Owned(std::sync::Mutex::new(sync)), transport, clock, control, log).await;
+    m.into_inner().unwrap_or_else(|p| p.into_inner())
+}
+
+/// `run` over a host; returns it at `Control::Shutdown`, when the control sender is dropped
+/// or when the host's engine is gone.
+pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, clock: Arc<dyn Clock>, mut control: mpsc::UnboundedReceiver<Control>, log: Log) -> H {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
-    let mut d = Driver { sync, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
+    let mut d = Driver { host, gone: false, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
     d.feed(Event::Tick);
-    loop {
+    while !d.gone {
         let idle = d.idle();
         tokio::select! {
             Some(ev) = ev_rx.recv() => match ev {
@@ -166,9 +201,10 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
                 Some(Control::Local) => d.feed(Event::Local),
                 Some(Control::Tick) => d.feed(Event::Tick),
                 Some(Control::Call(f)) => {
-                    let acts = blocking(|| f(&mut d.sync));
-                    d.apply(acts);
+                    let mut f = Some(f);
+                    d.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
                 }
+                Some(Control::Apply(acts)) => d.apply(acts),
                 Some(Control::Shutdown) | None => break,
             },
             _ = tokio::time::sleep(idle) => {
@@ -181,5 +217,5 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
     for id in ids {
         d.close(id);
     }
-    d.sync
+    d.host
 }

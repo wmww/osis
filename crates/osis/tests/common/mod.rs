@@ -21,7 +21,7 @@ pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> Config {
 
 /// A fresh database at `T0`.
 pub fn db(seed: u64) -> Osis {
-    Osis::create(cfg(seed, MemStore::new(), &clock())).unwrap()
+    Osis::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
 }
 
 pub fn ak(s: &str) -> Ak {
@@ -41,5 +41,25 @@ pub fn deliver(from: &Osis, to: &Osis) {
     });
     for pk in pks {
         to.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    }
+}
+
+/// Runs a future to completion on this thread (no runtime: the API's futures are resolved by
+/// the database, notes/api.md Design rules).
+pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut f = std::pin::pin!(f);
+    loop {
+        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        std::thread::park_timeout(Duration::from_millis(50));
     }
 }

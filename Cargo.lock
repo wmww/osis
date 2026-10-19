@@ -805,7 +805,10 @@ dependencies = [
  "osis-label",
  "osis-node",
  "osis-schema",
+ "osis-server",
  "osis-store",
+ "osis-transport",
+ "tokio",
 ]
 
 [[package]]

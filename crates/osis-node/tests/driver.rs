@@ -39,13 +39,13 @@ async fn applied(rx: Receiver<EngineEvent>, id: CommitId) -> Receiver<EngineEven
     .unwrap()
 }
 
-async fn call<R: Send + 'static>(ctl: &mpsc::Sender<Control>, f: impl FnOnce(&mut SyncEngine) -> R + Send + 'static) -> R {
+async fn call<R: Send + 'static>(ctl: &mpsc::UnboundedSender<Control>, f: impl FnOnce(&mut SyncEngine) -> R + Send + 'static) -> R {
     let (tx, rx) = oneshot::channel();
     let c: driver::Call = Box::new(move |s: &mut SyncEngine| {
         let _ = tx.send(f(s));
         s.handle(Event::Local)
     });
-    assert!(ctl.send(Control::Call(c)).await.is_ok());
+    assert!(ctl.send(Control::Call(c)).is_ok());
     tokio::time::timeout(GUARD, rx).await.unwrap().unwrap()
 }
 
@@ -74,8 +74,8 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     let t = net.item(a, g, g, "first");
     let brx = net.engine(b).subscribe();
     let (sa, sb) = (net.take(a), net.take(b));
-    let (actl, arx) = mpsc::channel(8);
-    let (bctl, brx2) = mpsc::channel(8);
+    let (actl, arx) = mpsc::unbounded_channel();
+    let (bctl, brx2) = mpsc::unbounded_channel();
     let da = tokio::spawn(driver::run(sa, a_ep, clock.clone(), arx, log()));
     let db = tokio::spawn(driver::run(sb, b_ep, clock.clone(), brx2, log()));
 
@@ -89,7 +89,7 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("second")));
 
     for ctl in [&actl, &bctl] {
-        assert!(ctl.send(Control::Shutdown).await.is_ok());
+        assert!(ctl.send(Control::Shutdown).is_ok());
     }
     da.await.unwrap();
     db.await.unwrap();

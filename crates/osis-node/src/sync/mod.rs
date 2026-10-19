@@ -147,6 +147,23 @@ pub(crate) struct Conn {
     pub offset: Option<i64>,
 }
 
+/// One synced label's state (`SyncEngine::label_status`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelStatus {
+    pub group: Tid,
+    pub label: LabelId,
+    pub servers: usize,
+    /// Connections up to its servers.
+    pub connected: usize,
+    /// Connections on which it is open.
+    pub open: usize,
+    /// Of those, the ones whose last pass ended with nothing outstanding.
+    pub idle: usize,
+    /// Some server refused every key this node holds (waits for a re-seal).
+    pub stranded: bool,
+    pub last_sync: Option<u64>,
+}
+
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
@@ -365,6 +382,48 @@ impl SyncEngine {
         }
         self.label_actors = out.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), l.servers.iter().map(|a| a.key).collect()))).collect();
         out
+    }
+
+    /// Where each synced label stands (the API's status): per label, its group, its servers,
+    /// how many connections are up and have it open, whether every one of those finished a pass
+    /// with nothing outstanding, whether any could not open it (stranded), and when it last
+    /// synced (raw wall ms).
+    pub fn label_status(&mut self) -> Vec<LabelStatus> {
+        let mut out = Vec::new();
+        for (g, l) in self.labels() {
+            let mut st = LabelStatus { group: g, label: l.id, servers: l.servers.len(), connected: 0, open: 0, idle: 0, stranded: false, last_sync: None };
+            for c in self.conns.values().filter(|c| l.servers.iter().any(|a| a.key == c.server)) {
+                if c.up {
+                    st.connected += 1;
+                }
+                let Some(x) = c.labels.get(&l.id) else { continue };
+                match x.phase {
+                    Phase::Failed => st.stranded = true,
+                    Phase::Open => {
+                        st.open += 1;
+                        if x.synced && !x.syncing && !x.dirty && x.registering.is_none() && c.session.outstanding() == 0 {
+                            st.idle += 1;
+                        }
+                        if x.synced {
+                            st.last_sync = st.last_sync.max(Some(x.last_sync));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push(st);
+        }
+        out
+    }
+
+    /// Servers with a connection up.
+    pub fn connected(&self) -> usize {
+        self.conns.values().filter(|c| c.up).count()
+    }
+
+    /// Replaces the servers kept connected besides those the labels name.
+    pub fn set_servers(&mut self, servers: Vec<Address>) {
+        self.cfg.servers = servers;
     }
 
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'

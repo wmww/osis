@@ -30,7 +30,7 @@ fn create_and_reopen_spec_api_handle() {
     let store = MemStore::new();
     let c = clock();
     let (node, me, home) = {
-        let db = Osis::create(cfg(1, store.clone(), &c)).unwrap();
+        let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
         assert_ne!(db.me(), db.node());
         assert_eq!(db.get(db.home(), core::GROUP).unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()), Some(Role::Admin));
@@ -218,7 +218,7 @@ fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.materialize_limit = 64 * 1024;
-    let db = Osis::create(cf).unwrap();
+    let db = Osis::create(cf).unwrap().0;
     let k = ak("/t/doc");
     let big = Value::Bytes(vec![7u8; osis::schema::osis_core::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
@@ -335,7 +335,7 @@ fn membership_class_refused_spec_permissions_1() {
 #[test]
 fn expiry_retention_purge_spec_commits_5_6() {
     let c = clock();
-    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let (k, r) = (ak("/t/msg"), ak("/t/keep"));
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
@@ -392,14 +392,22 @@ fn move_and_same_thing_spec_permissions_7() {
     assert!(db.groups_of(m).contains(&db.home()));
 }
 
-// notes/api.md Sharing, Sync: the second-half surface exists and says it is not there yet.
+// notes/api.md Sync configuration and status: without a runtime the surface works locally,
+// the stored server list survives a reopen, and waiting for another node fails `Network`.
 #[test]
-fn stubs_unsupported_spec_api_sharing() {
-    let db = db(1);
-    let me = db.me();
-    assert!(matches!(db.grant(me, me, Role::Read, Default::default()), Err(Error::Unsupported(_))));
-    assert!(matches!(db.status(), Err(Error::Unsupported(_))));
-    assert!(matches!(db.servers(), Err(Error::Unsupported(_))));
+fn local_sync_surface_spec_api_sync() {
+    let c = clock();
+    let store = MemStore::new();
+    let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
+    assert!(db.servers().unwrap().is_empty());
+    let st = db.status().unwrap();
+    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoServers));
     assert!("".parse::<osis::ServerAddr>().is_err());
-    assert_eq!("quic://h:1#k".parse::<osis::ServerAddr>().unwrap().to_string(), "quic://h:1#k");
+    let a = osis::ServerAddr::new("quic://h:1", [7; 32]);
+    assert_eq!(a.to_string().parse::<osis::ServerAddr>().unwrap(), a);
+    db.add_server(&a).unwrap();
+    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
+    drop(db);
+    let db = Osis::open(cfg(1, store, &c)).unwrap();
+    assert_eq!(db.servers().unwrap(), vec![a]);
 }

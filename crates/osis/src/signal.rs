@@ -1,12 +1,12 @@
 //! Signals (notes/api.md Signals, spec/sync.md §9): never stored; local listeners fire on the
-//! same node, including the sender's own. Delivery to other nodes comes with node-sync (plans/
-//! api.md second half): until then `send_signal` reaches local listeners only.
+//! same node, including the sender's own; connected nodes reading the thing under an open label
+//! receive them best effort.
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::keys::SignalKey;
-use crate::watch::{Delivery, Filter, Msg, SignalMsg, Subscription};
-use osis_core::{Role, Tid, WallMs};
+use crate::watch::{Delivery, Filter, Subscription};
+use osis_core::{Ak, Role, Tid, WallMs};
 
 /// Who a signal is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,15 +36,17 @@ impl Osis {
         if self.role_on(tid) < Some(Role::Write) {
             return Err(Error::Permission { tid, needs: Role::Write });
         }
-        if target == Target::All || target == Target::Node(self.node()) {
-            let (me, node, kind) = (self.me(), self.node(), key.kind().to_string());
-            self.locked(|l| {
-                l.seq += 1;
-                let ts = l.engine.now();
-                self.inner.dispatch.send(l.seq, Msg::Signal(SignalMsg { tid, kind, value: v, actor: me, node, ts }));
-            });
-        }
-        Ok(())
+        let kind = Ak::new(key.kind()).map_err(|_| Error::Invalid(format!("bad signal kind {:?}", key.kind())))?;
+        let target = match target {
+            Target::All => None,
+            Target::Node(n) => Some(n),
+        };
+        let me = self.me();
+        self.locked(|l| -> Result<()> {
+            let acts = l.sync.signal_as(&tid, me, kind, v, target)?;
+            self.inner.net.apply(acts);
+            Ok(())
+        })
     }
 
     /// Calls `f` with every signal of kind `key` about `tid`.

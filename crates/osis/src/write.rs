@@ -40,12 +40,22 @@ pub struct Write<'d> {
     m: Mutation,
     actor: Tid,
     created: Vec<Tid>,
+    /// Things placed into groups by this batch (the `NotSynced` check).
+    placed: Vec<Tid>,
 }
 
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new() }
+        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new() }
+    }
+
+    /// `write_with` returning what `f` returns.
+    pub(crate) fn write_with_tid<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
+        let mut w = self.write();
+        let r = f(&mut w)?;
+        w.commit()?;
+        Ok(r)
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds.
@@ -129,8 +139,11 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// Adds `tid` to the items of group `g`.
+    /// Adds `tid` to the items of group `g`. A thing whose groups then include no synced one
+    /// gets a `NotSynced` diagnostic after commit.
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
+        let t = self.resolve(tid);
+        self.placed.push(t);
         self.group(g, true, tid, true)
     }
     pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
@@ -175,10 +188,29 @@ impl<'d> Write<'d> {
     pub fn commit(mut self) -> Result<Option<Committed>> {
         self.m.act_as(self.actor);
         let m = std::mem::take(&mut self.m);
+        let placed = std::mem::take(&mut self.placed);
         self.db.engine(|e| match e.commit(m)? {
-            Some(id) => Ok(Some(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() })),
+            Some(id) => {
+                not_synced(e, &placed);
+                Ok(Some(Committed { commit: id, ts: e.header(&id).map(|h| h.ts).unwrap_or_default() }))
+            }
             None => Ok(None),
         })
+    }
+}
+
+/// Reports things placed only where no synced group holds them (spec/requirements.md, Offline
+/// and network).
+fn not_synced(e: &mut osis_node::Engine, placed: &[Tid]) {
+    if placed.is_empty() {
+        return;
+    }
+    let labeled = e.labeled_groups();
+    for t in placed {
+        if labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g)) {
+            continue;
+        }
+        e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
     }
 }
 

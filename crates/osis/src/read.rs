@@ -191,7 +191,7 @@ impl Osis {
     pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
         let limit = self.inner.limit;
         self.locked(|l| {
-            let v = Reader { e: &mut l.engine, limit }.value(tid, ak);
+            let v = Reader { e: l.engine(), limit }.value(tid, ak);
             also();
             v
         })
@@ -203,7 +203,7 @@ impl Osis {
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
         let limit = self.inner.limit;
         self.locked(|l| {
-            let cb = make(&mut Reader { e: &mut l.engine, limit });
+            let cb = make(&mut Reader { e: l.engine(), limit });
             let d = &self.inner.dispatch;
             let sub = d.register(l.seq + 1, filter, cb);
             if initial && let Some(id) = sub.id() {

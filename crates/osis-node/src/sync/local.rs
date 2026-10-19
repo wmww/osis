@@ -64,12 +64,21 @@ impl SyncEngine {
     /// write key when this node writes the label, else the deposit key; also fires this node's
     /// own listeners.
     pub fn signal(&mut self, t: &Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
+        let me = self.engine.tid();
+        self.signal_as(t, me, kind, value, target)
+    }
+
+    /// `signal` for `actor` (an actor this node writes for: the receivers check it).
+    pub fn signal_as(&mut self, t: &Tid, actor: Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
         if self.engine.role_on(t) < Some(Role::Write) {
             return Err(Error::Permission { tid: *t });
         }
         let me = self.engine.tid();
+        if actor != me && self.engine.role_on(&actor) < Some(Role::Write) {
+            return Err(Error::Permission { tid: actor });
+        }
         let ts = Ts::make(self.engine.now(), 0).ok_or(Error::Misuse("clock out of range"))?;
-        let body = SignalBody { node: me, actor: me, ts, tid: *t, kind: kind.clone(), target, schema: None, value: value.clone() };
+        let body = SignalBody { node: me, actor, ts, tid: *t, kind: kind.clone(), target, schema: None, value: value.clone() };
         let mut out = Vec::new();
         let mut sent = BTreeSet::new();
         for (conn, l, g) in self.labels_holding(t) {
@@ -89,7 +98,7 @@ impl SyncEngine {
             sent.insert(l);
             self.command(conn, Command::Signal { label: l, blob, wrap, auth }, &mut out)?;
         }
-        self.engine.core.events.queue(crate::Event::Signal { kind, from: me, value });
+        self.engine.core.events.queue(crate::Event::Signal { tid: *t, kind, from: me, actor, ts, target, value });
         self.engine.core.events.flush();
         self.signals.push(body);
         self.state.flush(&mut self.engine)?;

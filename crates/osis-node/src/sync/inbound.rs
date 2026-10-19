@@ -527,7 +527,10 @@ impl SyncEngine {
         if crate::engine::write::role_of(&self.engine.core, &body.node, &body.tid, ts) < Some(Role::Write) {
             return Ok(());
         }
-        self.engine.core.events.queue(crate::Event::Signal { kind: body.kind.clone(), from: body.node, value: body.value.clone() });
+        if body.actor != body.node && crate::engine::write::role_of(&self.engine.core, &body.node, &body.actor, ts) < Some(Role::Write) {
+            return Ok(());
+        }
+        self.engine.core.events.queue(crate::Event::Signal { tid: body.tid, kind: body.kind.clone(), from: body.node, actor: body.actor, ts: body.ts, target: body.target, value: body.value.clone() });
         self.engine.core.events.flush();
         self.signals.push(body);
         Ok(())

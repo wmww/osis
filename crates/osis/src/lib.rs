@@ -7,7 +7,7 @@
 //! Owner and placement of new things are always explicit; `me()` is the usual owner.
 //! ```
 //! use osis::{Config, Osis, Place};
-//! let db = Osis::create(Config::memory())?;
+//! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
 //! let note = w.create(db.me(), Place::In(db.home()))?;
 //! w.commit()?;
@@ -20,7 +20,7 @@
 //! absent aspect reads as `None`.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("/note/title").unwrap();
 //! let note = db.write_with(|w| {
 //!     let t = w.create(db.me(), Place::Unsynced)?;
@@ -37,7 +37,7 @@
 //! materialized.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, p};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let tags = Ak::new("/note/tags").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -55,7 +55,7 @@
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value};
 //! # use std::collections::BTreeMap;
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let form = Ak::new("/app/form").unwrap();
 //! let shown = Value::Map(BTreeMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
@@ -74,7 +74,7 @@
 //! dropping the `Subscription` unsubscribes. `on_change` first delivers the current value.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, Source};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/count").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -94,7 +94,7 @@
 //! Undo and redo act on this actor's own changes in a scope; `history` lists everyone's.
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, UndoScope};
-//! # let db = Osis::create(Config::memory())?;
+//! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("/app/x").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me(), Place::Unsynced)?;
@@ -112,8 +112,8 @@
 //! One `Error` with stable categories; rights are checked locally before signing.
 //! ```
 //! # use osis::{Config, Osis, Place, Error};
-//! let a = Osis::create(Config::memory())?;
-//! let b = Osis::create(Config::memory())?;
+//! let a = Osis::create(Config::memory())?.0;
+//! let b = Osis::create(Config::memory())?.0;
 //! let mut w = a.write();
 //! assert!(matches!(w.create(b.me(), Place::Unsynced), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
@@ -128,13 +128,13 @@
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
 //! db.on_diagnostic(|_, _| {});
 //! ```
 //! - A forgotten commit: `Write` is `#[must_use]`:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
 //! db.write();
 //! ```
 #![forbid(unsafe_code)]
@@ -142,6 +142,8 @@
 mod error;
 mod handle;
 mod keys;
+mod net;
+mod person;
 mod read;
 mod share;
 mod signal;
@@ -150,10 +152,12 @@ mod watch;
 mod write;
 
 pub use error::{Error, Result};
-pub use handle::{Config, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use net::{Runtime, Transport};
+pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
 pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkOpts, Lower, PairOffer, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
+pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
 pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
