@@ -43,6 +43,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops | now (`--stream` 2nd) |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
+| (none: interactive editors only) | `edit_text` (text sessions) | |
 | `write` (stdin) | one `write` batch | now |
 | `show T` | `aspects`, `get`, `knows`, `groups_of`, `role_on` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
