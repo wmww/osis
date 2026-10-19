@@ -11,5 +11,6 @@ Left, roughly in order:
 4. **`/reach` per label**: apps exclude it under open-audience labels (spec/permissions.md §4); the node card places it everywhere today.
 5. **Relay test**: two nodes through a self-hosted `iroh-relay` on localhost (iroh-relay's `server` feature, tier 2 only), and the relay setup recorded in notes/networking.md.
 6. **Complete pass over peers**: `complete_pass` counts servers only; spec/permissions.md §3 also names peers it received from and can reach.
-7. **Spec**: the LAN announcement datagram and port (notes/networking.md, LAN) are implementation choices; a compatible implementation needs them in spec/sync.md §10 (owner sign-off).
-8. **Costs**: `PeerStore::live` reads each blob for its size; `peers()` reads every `/reach` per call (called per `handle`); both want an index if peers become common.
+7. **Spec, LAN key binding** (owner decision): spec/sync.md §10 should bind the per-network LAN transport key to the node after connecting (e.g. the served side signs the session under its dialable key, or the announcement is MACed under the lan secret with the transport key), so a matching tag alone cannot divert a co-reader's route. Until then the node keeps the conservative rule: a LAN address is a candidate until a session through it opens a label; a failed one is backed off, never the peer.
+8. **Spec**: the LAN announcement datagram and port (notes/networking.md, LAN) are implementation choices; a compatible implementation needs them in spec/sync.md §10 (owner sign-off).
+9. **Costs**: `PeerStore::live` reads each blob for its size; `peers()` reads every `/reach` and `/seen` per call (called per `handle`); budget accounting scans charges and presence per served message; both want an index if peers become common.

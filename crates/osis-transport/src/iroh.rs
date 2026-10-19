@@ -188,6 +188,8 @@ impl Transport for Iroh {
     }
 
     /// `cfg.url`: `peer://` with the socket addresses to bind (none: all interfaces, any port).
+    /// The listener's `address().url` lists bound IP addresses: never publish it in `/reach`
+    /// (spec/sync.md §10); a peer learns direct addresses by LAN announcement or hole punching.
     async fn listen(&self, cfg: ListenConfig) -> Result<IrohListener, Error> {
         self.listen_inner(cfg).await
     }

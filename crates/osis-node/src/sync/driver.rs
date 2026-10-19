@@ -154,15 +154,18 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 
 /// `run`, also serving the peer sessions the `listeners` accept: one listening with the engine's
 /// `dialable_secret` (publish its `address().key` with `publish_reach`), and one per LAN join
-/// with a fresh secret whose key is announced with the LAN tag (spec/sync.md §10).
+/// with a fresh secret whose key is announced with the LAN tag (spec/sync.md §10). Never put a
+/// listener's `address().url` into `/reach`: it lists bound IP addresses, which are never
+/// published (spec/sync.md §10); only its key and the relays go there.
 pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let mut serving = Vec::new();
+    let max = sync.config().max_served;
     for l in listeners {
         let key = l.address().key;
         let (tx, mut rx) = mpsc::channel::<Link>(64);
-        serving.push(tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx)));
+        serving.push(tokio::spawn(link::serve_max(l, SERVE_IDLE, FINISH_WAIT, tx, max)));
         let out = link_tx.clone();
         serving.push(tokio::spawn(async move {
             while let Some(link) = rx.recv().await {

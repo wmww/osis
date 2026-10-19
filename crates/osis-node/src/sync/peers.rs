@@ -29,13 +29,29 @@ pub fn lan_tag(lan_secret: &[u8; 32], unix_ms: u64) -> [u8; 16] {
     t
 }
 
+/// A co-reader's dialable key and lan secret.
+pub(crate) type LanSecret = ([u8; 32], [u8; 32]);
+
 /// A co-reader node this node may dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
     pub node: Tid,
     pub reach: Reach,
-    /// Labels it serves this node (both sync them).
+    /// Labels this node syncs that the peer may read (it is dialed for these).
     pub labels: BTreeSet<LabelId>,
+}
+
+/// Where a co-reader was heard on the LAN. A new address is only a candidate until a session
+/// through it opens a label (spec/sync.md §10 does not bind the LAN transport key to the node,
+/// so an announcement alone must not divert a working route); a failed candidate is backed off,
+/// not the peer.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LanRoute {
+    /// Proven address and when last heard (raw ms).
+    pub good: Option<(Address, u64)>,
+    pub candidate: Option<(Address, u64)>,
+    /// Candidate addresses that failed, until when.
+    pub failed: BTreeMap<Address, u64>,
 }
 
 impl SyncEngine {
@@ -103,7 +119,8 @@ impl SyncEngine {
     }
 
     /// Co-reader nodes known from their `/reach`, by dialable key (spec/sync.md §5, §10): node
-    /// things other than this one that may read a label this node syncs.
+    /// things other than this one that may read a label this node syncs now. Per label at most
+    /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, newest heartbeat first.
     pub fn peers(&mut self) -> BTreeMap<[u8; 32], Peer> {
         let me = self.engine.tid();
         let mut nodes: Vec<Tid> = self.engine.core.by_aspect.keys().filter(|(t, ak)| ak.as_str() == "/reach" && *t != me).map(|(t, _)| *t).collect();
@@ -114,53 +131,115 @@ impl SyncEngine {
             if let Ok(Some(r)) = self.engine.get_typed(&n, &ct::REACH)
                 && Some(r.dialable) != own
             {
-                reaches.push((n, r));
+                let seen = self.engine.get_typed(&n, &ct::SEEN).ok().flatten().map(|s| s.ts.0);
+                reaches.push((seen, n, r));
             }
         }
         let mut out: BTreeMap<[u8; 32], Peer> = BTreeMap::new();
         if reaches.is_empty() {
             return out;
         }
+        // newest heartbeat first, unknown last
+        reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
         for (g, l) in self.labels() {
-            for (n, r) in &reaches {
-                if self.engine.may_read(n, &g) {
-                    out.entry(r.dialable).or_insert_with(|| Peer { node: *n, reach: r.clone(), labels: BTreeSet::new() }).labels.insert(l.id);
+            let mut n_label = 0;
+            for (_, n, r) in &reaches {
+                if n_label >= self.cfg.max_peers_per_label {
+                    break;
                 }
+                if !self.engine.may_read(n, &g) {
+                    continue;
+                }
+                if !out.contains_key(&r.dialable) && out.len() >= self.cfg.max_peers {
+                    continue;
+                }
+                n_label += 1;
+                out.entry(r.dialable).or_insert_with(|| Peer { node: *n, reach: r.clone(), labels: BTreeSet::new() }).labels.insert(l.id);
             }
         }
         out
     }
 
-    /// Where to dial each co-reader: a fresh LAN address, else `peer://` with its relays.
+    /// Where to dial each co-reader: a LAN candidate not backed off, else its proven LAN
+    /// address while fresh, else `peer://` with its relays.
     pub(crate) fn peer_addresses(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
         let now = self.raw_now();
-        self.lan.retain(|_, (_, at)| at.saturating_add(LAN_FRESH_MS) > now);
+        for r in self.lan.values_mut() {
+            if r.good.as_ref().is_some_and(|(_, at)| at.saturating_add(LAN_FRESH_MS) <= now) {
+                r.good = None;
+            }
+            if r.candidate.as_ref().is_some_and(|(_, at)| at.saturating_add(LAN_FRESH_MS) <= now) {
+                r.candidate = None;
+            }
+            r.failed.retain(|_, until| *until > now);
+        }
+        self.lan.retain(|_, r| r.good.is_some() || r.candidate.is_some() || !r.failed.is_empty());
         let mut out = BTreeMap::new();
         for (k, p) in self.peers() {
-            let addr = match self.lan.get(&k) {
-                Some((a, _)) => a.clone(),
-                None => Address { url: osis_transport::peer_url(&p.reach.relays), key: k },
-            };
+            let route = self.lan.get(&k);
+            let addr = route
+                .and_then(|r| r.candidate.as_ref().filter(|(a, _)| !r.failed.contains_key(a)).or(r.good.as_ref()))
+                .map(|(a, _)| a.clone())
+                .unwrap_or_else(|| Address { url: osis_transport::peer_url(&p.reach.relays), key: k });
             out.insert(k, (addr, p.labels));
         }
         out
     }
 
+    /// A session to a co-reader opened a label: a LAN candidate it went through is proven.
+    pub(crate) fn lan_proven(&mut self, peer: [u8; 32], addr: &Address) {
+        let now = self.raw_now();
+        if let Some(r) = self.lan.get_mut(&peer)
+            && r.candidate.as_ref().is_some_and(|(a, _)| a == addr)
+        {
+            r.candidate = None;
+            r.good = Some((addr.clone(), now));
+        }
+    }
+
+    /// A connection to a co-reader ended before opening anything: when it went to a LAN
+    /// candidate, that address is backed off (true), not the peer.
+    pub(crate) fn lan_failed(&mut self, peer: [u8; 32], addr: &Address) -> bool {
+        let until = self.raw_now().saturating_add(self.cfg.peer_retry_ms);
+        let Some(r) = self.lan.get_mut(&peer) else { return false };
+        if r.candidate.as_ref().is_some_and(|(a, _)| a == addr) {
+            r.candidate = None;
+            r.failed.insert(addr.clone(), until);
+            return true;
+        }
+        false
+    }
+
     /// A LAN announcement (spec/sync.md §10): `tag` and the address with the announced transport
-    /// key. When the tag is a co-reader's for the current or an adjacent window, that node is
-    /// dialed there (replacing a connection to it elsewhere at its next redial). Returns whose
-    /// dialable key matched.
+    /// key. When the tag is a co-reader's for the current or an adjacent window, the address
+    /// becomes that node's candidate (dialed when no connection to it runs; it replaces the
+    /// proven route only once a session through it opens a label). The co-readers are evaluated
+    /// once per tag window. Returns whose dialable key matched.
     pub fn lan_seen(&mut self, tag: [u8; 16], address: Address) -> (Option<[u8; 32]>, Vec<Action>) {
         let now = self.now();
-        let windows = [now.saturating_sub(LAN_WINDOW_MS), now, now.saturating_add(LAN_WINDOW_MS)];
-        let hit = self.peers().into_iter().find(|(_, p)| windows.iter().any(|w| lan_tag(&p.reach.lan_secret, *w) == tag)).map(|(k, _)| k);
+        let window = now / LAN_WINDOW_MS;
+        if self.lan_peers.as_ref().is_none_or(|(w, _)| *w != window) {
+            let v = self.peers().into_iter().map(|(k, p)| (k, p.reach.lan_secret)).collect();
+            self.lan_peers = Some((window, v));
+        }
+        let times = [now.saturating_sub(LAN_WINDOW_MS), now, now.saturating_add(LAN_WINDOW_MS)];
+        let hit = self.lan_peers.as_ref().and_then(|(_, v)| v.iter().find(|(_, s)| times.iter().any(|w| lan_tag(s, *w) == tag)).map(|(k, _)| *k));
         let Some(k) = hit else { return (None, Vec::new()) };
         let raw = self.raw_now();
-        let fresh = self.lan.get(&k).is_none_or(|(a, _)| *a != address);
-        self.lan.insert(k, (address, raw));
-        if fresh {
-            // dial there now, even inside a retry pause
-            self.retry.remove(&k);
+        let r = self.lan.entry(k).or_default();
+        if r.failed.contains_key(&address) {
+            return (Some(k), Vec::new());
+        }
+        match &mut r.good {
+            Some((a, at)) if *a == address => *at = raw,
+            _ => {
+                let fresh = r.candidate.as_ref().is_none_or(|(a, _)| *a != address);
+                r.candidate = Some((address, raw));
+                if fresh {
+                    // dial there now, even inside a retry pause
+                    self.retry.remove(&k);
+                }
+            }
         }
         (Some(k), self.handle(Event::Local))
     }

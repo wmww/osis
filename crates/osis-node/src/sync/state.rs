@@ -29,6 +29,7 @@ const TIMED: &[u8] = b"y/d";
 const INBOX_ONLY: &[u8] = b"y/n";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
+const TOMB: &[u8] = b"y/x";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +92,11 @@ pub struct State {
     pub reach_secret: Option<Secret32>,
     /// The label logs member-peer sessions see (in memory).
     pub feed: super::serve::Feed,
+    /// Entries this node dropped, by when (corrected wall ms): refused from peers for
+    /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
+    pub tombs: BTreeMap<(LabelId, BlobId), u64>,
+    /// Corrected wall ms of the running `handle` (tombstone times).
+    pub now: u64,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -206,6 +212,9 @@ impl State {
                 b"s" => {
                     s.carriers.insert(CommitId(r.arr()?), CommitId(Rd::new(&v).arr()?));
                 }
+                b"x" => {
+                    s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
+                }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"n" => {
                     s.inbox_only.insert(CommitId(r.arr()?));
@@ -270,6 +279,17 @@ impl State {
         if self.entries.remove(&(l, b)).is_some() {
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.feed.deleted(l, b);
+            self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
+            self.tombs.insert((l, b), self.now);
+        }
+    }
+
+    /// Forgets tombstones past their lifetime.
+    pub fn expire_tombs(&mut self, now: u64) {
+        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_core::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
+        for (l, b) in old {
+            self.tombs.remove(&(l, b));
+            self.del(key(TOMB, &[&l.0, &b.0]));
         }
     }
 
