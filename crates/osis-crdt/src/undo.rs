@@ -238,11 +238,24 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads })
         }
         Fragment::Seq(x) => {
+            if x.meta.reset.is_some() {
+                return undo_reset(w, o, buffer, view, path);
+            }
             let cur = match &slot {
                 Some(Fragment::Seq(c)) => Some(c),
                 _ => None,
             };
-            return Ok(seq::undo(w, x, cur, &|d: &Dot| u.made(d), view)?.map(Fragment::Seq));
+            let before = buffer.before(path).map(|f| f.chosen());
+            let before = match &before {
+                Some(Fragment::Seq(b)) => Some(b),
+                _ => None,
+            };
+            let ev = view.element();
+            let mut nested = |w: &mut Writer, f: &Fragment, c: Option<&Fragment>, pre: Option<Fragment>| match &ev {
+                Some(ev) => undo_at(w, u, f, c, &Sub(pre), ev, &mut vec![], false),
+                None => Ok(None),
+            };
+            return Ok(seq::undo(w, x, cur, before, &|d: &Dot| u.made(d), view, &mut nested)?.map(Fragment::Seq));
         }
         Fragment::Slots(_) => return Err(Error::Mismatch("slots in a writer's delta")),
     };

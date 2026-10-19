@@ -23,3 +23,7 @@ harness = false
 [[bench]]
 name = "crypto"
 harness = false
+
+[[bench]]
+name = "crdt"
+harness = false

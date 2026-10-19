@@ -2,7 +2,6 @@
 //! every §3.3 rule 7 rejection.
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
-use crate::error::Error;
 use crate::stamp::{CounterRange, Interner, Source};
 use crate::testutil::{frag, history_with, mapply, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
@@ -14,11 +13,11 @@ use osis_core::{Classified, ErrorClass, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
-fn writer_cx(w: &crdt_model::ops::Writer) -> DeltaCtx {
+pub(crate) fn writer_cx(w: &crdt_model::ops::Writer) -> DeltaCtx {
     DeltaCtx { ts: ts(w.ts), own: source(&w.source), range: CounterRange { lo: w.lo, hi: w.hi() }, kind: DeltaKind::Writer }
 }
 
-fn snap_cx() -> DeltaCtx {
+pub(crate) fn snap_cx() -> DeltaCtx {
     DeltaCtx { ts: ts(1 << 40), own: source(&MSource::node(250)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
@@ -109,17 +108,17 @@ fn tid(n: u8) -> Tid {
 }
 
 /// Writer of node 1 at ts 5·2^16 with range [3, 6).
-fn wcx() -> DeltaCtx {
+pub(crate) fn wcx() -> DeltaCtx {
     DeltaCtx { ts: ts(5 << 16), own: Source::node(tid(1)), range: CounterRange { lo: 3, hi: 6 }, kind: DeltaKind::Writer }
 }
 
-fn i(n: i64) -> Value {
+pub(crate) fn i(n: i64) -> Value {
     Value::Int(n)
 }
-fn l(v: Vec<Value>) -> Value {
+pub(crate) fn l(v: Vec<Value>) -> Value {
     Value::List(v)
 }
-fn delta(sources: Vec<Value>, commits: Vec<Value>, f: Value) -> Vec<u8> {
+pub(crate) fn delta(sources: Vec<Value>, commits: Vec<Value>, f: Value) -> Vec<u8> {
     osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(sources), l(commits), f]))
 }
 fn set_with(elems: Vec<Value>) -> Value {
@@ -129,7 +128,7 @@ fn elem(dot: Value, v: i64) -> Value {
     l(vec![dot, l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(0), i(v)])])])
 }
 
-fn rejects(bytes: &[u8], cx: &DeltaCtx, class: ErrorClass) {
+pub(crate) fn rejects(bytes: &[u8], cx: &DeltaCtx, class: ErrorClass) {
     match decode_delta(bytes, cx, &mut Interner::new(), None) {
         Ok(d) => panic!("accepted {d:?}"),
         Err(e) => assert_eq!(e.class(), class, "{e}"),
@@ -241,12 +240,6 @@ fn rejects_bad_slots_spec_3_3() {
 #[test]
 fn parks_unknown_encoding_spec_3_1() {
     rejects(&delta(vec![], vec![], l(vec![i(42), l(vec![])])), &wcx(), ErrorClass::Parked);
-}
-
-#[test]
-fn sequences_unsupported_until_crdt_seq() {
-    let r = decode_delta(&delta(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![])])), &wcx(), &mut Interner::new(), None);
-    assert!(matches!(r, Err(Error::Unsupported(_))));
 }
 
 #[test]

@@ -35,8 +35,8 @@ fuzz/README.md: running, the target table (live and planned per crate), crash ha
 
 ## Size budgets and benches (crates/osis-bench)
 - Budgets: `crates/osis-bench/tests/budgets.rs`, each `#[test] #[ignore] fn budget_<name>()` calling `assert_budget(name, actual, budget)` with the source number plus a margin (about 10%), citing its source. They use public APIs only (osis-bench is layer 9 and may depend on any crate).
-- Live: `budget_creation_record`, `budget_minimal_commit` (commit blob plaintext of a header plus one register delta: 288 B against about 300, notes/crdt.md Commit floor).
-- Pending budgets (add when the crate lands): removal from an N-member roster (no source number yet: set it from the first measurement); roster snapshot of N members, membership boxes about 1.2 KB per member and role (notes/crypto.md); revoke frontier after a long tenure (osis-perm, osis-commit); text of M chars after K edits, `text_bench` ratios of notes/crdt.md, Text size (osis-crdt).
+- Live: `budget_creation_record`, `budget_minimal_commit` (commit blob plaintext of a header plus one register delta: 288 B against about 300, notes/crdt.md Commit floor), `budget_text_snapshot_ratio` (notes/crdt.md, Text size).
+- Pending budgets (add when the crate lands): removal from an N-member roster (no source number yet: set it from the first measurement); roster snapshot of N members, membership boxes about 1.2 KB per member and role (notes/crypto.md); revoke frontier after a long tenure (osis-perm, osis-commit).
 - Benches: `crates/osis-bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (prints median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). Run `cargo bench -p osis-bench`; nightly records the output as an artifact. Not gated. No criterion: a 40-line harness keeps the dependency tree and builds small.
 
 ## Coverage

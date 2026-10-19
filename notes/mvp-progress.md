@@ -20,10 +20,12 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
 | perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
+| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq; issues/crdt-path-op-cost.md |
+| perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
-| crdt-seq | review fixes | reviewer found quadratic cycle breaking, run amplification (MAX_DELTA_BARE decided), Edit rebase data loss; agent fixing |
+| crdt-seq | merged, reviewed | crdt plans folded into notes/crdt.md; issues/crdt-seq-linearization-cost.md, issues/crdt-run-amplification.md (snapshots) |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
@@ -65,6 +67,8 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
   - R2: spec/permissions.md §4 stranded heartbeat also on a refused claim, wrapped under the newest secret held (spec/crypto.md §5); spec/sync.md §5 such a member is reached by re-seal. spec/crypto.md §3 deposit-seed refresh SHOULD → MAY (it refused stranded heartbeats).
   - R3: spec/crypto.md §4 a grant or re-seal re-writes the history boxes of the epochs it boxes. R4: spec/sync.md §5 re-registration compares (n, nonce) per role against a head epoch the admin holds; otherwise it walks first. R5: spec/crypto.md §5 wrap under the newest current epoch held; a node with no current secret places only its stranded heartbeat. R7: spec/sync.md §2 claim set is as of registration; a re-sealed member opens by sync key.
 - crdt-core: spec/crdt.md §4.2, §5.1, §7, §3.2/§3.3 rule 4: nested multi-encoding positions under a parent reset joined order-dependently in the model (members carrying the position reset and "encodings seen are grow-only"). Now: slot members are pruned like any fragment and do not copy the position reset; a member below the register's embedding is dropped; a register's reset below its write goes; a nested `R` below `E_parent` goes. Model updated to match; `model_order_independent_spec_7` checks it.
+- crdt-seq: spec/crdt.md §4.5: an element created and removed in one commit is omitted only once no other write of the commit anchors at it (repeatedly); re-anchoring its dependants to its anchor, as before, reordered them among that anchor's children, so a batch read differently from the same ops one by one (found by `text_batch_is_net_effect_spec_4_5`).
+- crdt-seq (decided in review): spec/crdt.md §3.3 rule 7, spec/wire.md §2: outside snapshots a bare-anchor run is rejected; a writer or import delta carries at most `MAX_DELTA_BARE` = 2^18 elements in runs without `Content`, pages included (longer deletes split across commits); a writer's `FlagW` stamp is the delta stamp.
 - crdt-core: spec/crdt.md §5.6, §9: a map put or diff into a key with several live entries diffs against the key's read (join of its live entries), not the lowest entry alone; otherwise `read(join(S, diff(S, v))) == v` failed for concurrent puts. Model updated.
 - label: spec/wire.md §13: a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB, so a step and its set fit one Register message.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
