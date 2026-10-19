@@ -70,7 +70,8 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `zeroize` 1.8 (crypto): secret wipe on drop.
 - `rand_core` 0.6 (crypto, re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`osis_crypto::OsRng`), for drivers.
 - `proptest` (dev, all crates; models use their own version line): property tests.
-- Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), criterion, arbitrary + libfuzzer-sys (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+- `criterion` 0.8 (dev; `default-features = false`, `cargo_bench_support`): benchmarks.
+- Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), arbitrary + libfuzzer-sys (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.

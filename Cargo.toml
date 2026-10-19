@@ -34,6 +34,7 @@ libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["ml
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 zeroize = { version = "1.8", default-features = false, features = ["std"] }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

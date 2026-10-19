@@ -24,7 +24,7 @@ Spec: spec/crypto.md (all), spec/sync.md §2 (label keys, claim keys, static ent
 - [x] Hybrid box, key derivations, box forms, history boxes.
 - [x] Blob encrypt/decrypt, padding, wraps, tokens, label and claim keys.
 - [ ] Vectors: every derivation and box with fixed randomness, written to vectors/ (plans/test-infra.md format; provisional until protocol-spec freezes layouts).
-- [ ] Benchmarks: box seal/open, blob encrypt per MB, Ed25519 verify (criterion, not gated).
+- [x] Benchmarks: box seal/open, blob encrypt per MB, Ed25519 verify (criterion, not gated).
 
 ## Tests
 Round trips, KATs, domain distinctness, non-contributory DH rejected, strict Ed25519 rejects non-canonical points, padding hides length classes (Padmé bucket property), wrap determinism, a token verifies only against its own commitment and salt, `Debug` of secrets redacted, no panic on malformed boxes/blobs (proptest over mutations).
