@@ -1,0 +1,103 @@
+subject: padme
+spec: spec/wire.md §5
+source: hand-written
+
+case: padme 1
+spec: spec/wire.md §5
+l: 1
+padme: 1
+
+case: padme 2
+spec: spec/wire.md §5
+l: 2
+padme: 2
+
+case: padme 4
+spec: spec/wire.md §5
+l: 4
+padme: 4
+
+case: padme 8
+spec: spec/wire.md §5
+l: 8
+padme: 8
+
+case: padme 9
+spec: spec/wire.md §5
+l: 9
+padme: 10
+
+case: padme 15
+spec: spec/wire.md §5
+l: 15
+padme: 16
+
+case: padme 17
+spec: spec/wire.md §5
+l: 17
+padme: 18
+
+case: padme 100
+spec: spec/wire.md §5
+l: 100
+padme: 104
+
+case: padme 255
+spec: spec/wire.md §5
+l: 255
+padme: 256
+
+case: padme 257
+spec: spec/wire.md §5
+l: 257
+padme: 272
+
+case: padme 1000
+spec: spec/wire.md §5
+l: 1000
+padme: 1024
+
+case: padme 4097
+spec: spec/wire.md §5
+l: 4097
+padme: 4352
+
+case: padme 65537
+spec: spec/wire.md §5
+l: 65537
+padme: 67584
+
+case: padme 131073
+spec: spec/wire.md §5
+l: 131073
+padme: 135168
+
+case: padme 1000000
+spec: spec/wire.md §5
+l: 1000000
+padme: 1015808
+
+case: pad abc
+spec: spec/wire.md §5
+p: 616263
+padded: 61626380
+
+case: pad 8 bytes
+spec: spec/wire.md §5
+p: 0102030405060708
+padded: 01020304050607088000
+
+case: unpad no marker
+spec: spec/wire.md §5
+padded: 00000000
+reject: padding
+
+case: unpad nonzero after marker
+spec: spec/wire.md §5
+padded: 80000001
+reject: padding
+
+case: unpad not padme length
+spec: spec/wire.md §5
+padded: 0180000000000000000000
+reject: padding
