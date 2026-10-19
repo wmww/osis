@@ -33,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
 /// A connection's handle, chosen by the sync engine.

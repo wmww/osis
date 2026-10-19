@@ -122,6 +122,13 @@ pub struct Report {
     pub parked: u64,
     pub crashes: u64,
     pub restarts: u64,
+    /// Phase B: messages duplicated, server crashes, partitions, engine and hub diagnostics.
+    pub duplicated: u64,
+    pub server_crashes: u64,
+    pub partitions: u64,
+    pub diagnostics: u64,
+    /// Must-hold bodies found at servers by the quiescent label check.
+    pub held_checked: u64,
     pub commits: usize,
     /// BLAKE3 of every node's final held commits and reads.
     pub digest: [u8; 32],

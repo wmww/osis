@@ -10,6 +10,7 @@
 pub mod check;
 pub mod dice;
 pub mod harness;
+pub mod net;
 pub mod scenarios;
 pub mod workload;
 
