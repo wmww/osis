@@ -20,7 +20,7 @@ Spec: spec/crypto.md (all), spec/sync.md §2 (label keys, claim keys, static ent
 - All secrets in zeroizing newtypes (`Secret32`, seeds, private keys); `Debug` never prints them.
 
 ## Steps
-- [ ] Primitives + kdf + domains, KATs from the primitive crates' vectors.
+- [x] Primitives + kdf + domains, KATs from the primitive crates' vectors.
 - [ ] Hybrid box, key derivations, box forms, history boxes.
 - [ ] Blob encrypt/decrypt, padding, wraps, tokens, label and claim keys.
 - [ ] Vectors: every derivation and box with fixed randomness, written to vectors/ (plans/test-infra.md format; provisional until protocol-spec freezes layouts).
