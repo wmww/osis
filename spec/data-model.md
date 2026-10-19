@@ -65,7 +65,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8 (gear table and mask TBD), giving a tree: leaves are chunks, interior nodes are canonical arrays of links (fan-out TBD; every node fits `MAX_BLOB`); the value's place in the enclosing CBOR holds the root link.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the canonical value the subtree encodes, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
-- Every blob, chunk or commit, is at most `MAX_BLOB` bytes (format constant, TBD, a few MB). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
+- Every blob is at most `MAX_BLOB` bytes (format constant, TBD, a few MB); a commit has no size limit (spec/commits.md §1). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
 
 ## 7. Hashing
 - **Keyed content hashes** (delta hashes, link content hashes) are keyed BLAKE3 under the thing's **dedup secret** (spec/crypto.md §6), so only readers can compute or confirm them.

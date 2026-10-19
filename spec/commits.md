@@ -9,21 +9,22 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, node or commit (§3).
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6), schema index or none, and the delta hashes of its deltas. A content commit has one delta per aspect; a membership commit may have several (§2), all sharing the aspect's range.
-- Chunk list: the chunk and tree-node blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
+- Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - Delete token salt (16 random bytes) and token hashes (spec/crypto.md §7; list length capped, cap TBD).
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
+- The aspect list and the chunk list are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry every token hash of the commit and belong to every projection of it (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
 - **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
 - A commit may touch things of any owners and reader sets.
-- A commit (header plus all its deltas, before projection) is at most `MAX_BLOB` bytes; a larger edit is several commits, not atomic together.
+- A commit has no size limit: a delta pages (spec/crdt.md §8), the header's lists go by link, and only blobs are bounded (`MAX_BLOB`, spec/data-model.md §6).
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.
 - **Membership**: deltas only on membership-class aspects (spec/data-model.md §9). A membership commit changes at most one `/members` edge, except: a single-use link redemption (the grant plus L's self-removal, spec/permissions.md §9); a roster snapshot (spec/permissions.md §6). A grant also carries the grantee's `/secrets` boxes; rotations, re-seals and `/keys` and `/label` writes change no edge and may cover many things. Membership commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-- A membership commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per edge or ledger entry; a rotation its boxes split): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
+- A membership commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per edge or ledger entry): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
 - `/created` is carried by the thing's first commit, of either kind, and by snapshots that cover the thing.
 - **Compaction snapshot**: content or membership kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7). Written by a node that may write the aspect. `/members` and `/tenures` are never compaction-snapshotted: a roster snapshot resets and rewrites them under its own stamps (spec/permissions.md §6).
 - **Import**: content kind with the import marker; deltas of writes re-sourced from origin commits, no own writes, empty counter ranges (spec/permissions.md §7).
@@ -36,7 +37,7 @@ Field order and encoding: TBD (plans/protocol-spec.md). Fields:
 ## 4. Verification and application
 - A commit's signature MUST verify; receivers dedup by commit ID. Each **delta** is judged on its own, by its author's authority on that delta's thing (spec/permissions.md §5); an invalid delta is un-merged alone (spec/crdt.md §4.6), the commit's other deltas stand.
 - A commit is **pending**, not applied and counted as not received, while: its author's chain certificates have not arrived; the `/created` record of a thing it touches is unknown; any part of it is parked (spec/versioning.md §2); its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2); or atomic apply waits.
-- **Atomic apply**: a node applies a commit only once it holds every delta of it that it may read and whose thing it syncs, with the pages of every snapshot delta (spec/crdt.md §8); dropped or expired deltas count as held, and chunk blobs of large atomic values (spec/data-model.md §6) are not waited for. It then joins all those deltas in one storage transaction and fires listeners after. Pending commits are re-examined when the node starts or stops syncing a thing.
+- **Atomic apply**: a node applies a commit only once it holds every delta of it that it may read and whose thing it syncs, with the pages of every paged delta (spec/crdt.md §8); dropped or expired deltas count as held, and chunk blobs of large atomic values (spec/data-model.md §6) are not waited for. It then joins all those deltas in one storage transaction and fires listeners after. Pending commits are re-examined when the node starts or stops syncing a thing.
 - Membership commits are applied before content.
 - Two commits by one node whose node-form counter ranges on one aspect overlap are both invalid.
 - A delta whose bytes do not match the header's delta hash is bad input.

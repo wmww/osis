@@ -275,15 +275,15 @@ A register with no write embeds as reset `r` only. A contribution that is not an
 
 There are no other edges.
 
-## 8. Large states (paging and chunked snapshots)
+## 8. Paging (large deltas, states and snapshots)
 
-Principle: state and snapshots are the same grammar, so a snapshot of a chunked state is a fragment whose collection arrays may be replaced by links to **pages**.
+Principle: deltas, state and snapshots are the same grammar, so any fragment's collection arrays may be replaced by links to **pages**.
 
 - Grammar extension: in `Bag`, `Set`, `Map`, `Seq`, the element array may be `[Link*]` (each a LINK-tagged value, spec/data-model.md §5) instead of `[Elem*]`; a page blob is a canonical CBOR array of elements (`[Elem*]`, `[Entry*]`, `[Run*]`), or again `[Link*]` (at most 2 levels: a root of links to pages of links to pages). A fragment is paged iff its element array as plain CBOR would exceed `PAGE_TARGET = 64 KiB`; a paged array is split into pages at content-defined boundaries over the canonical bytes of consecutive elements (gear hash, average 64 KiB, min 16 KiB, max 256 KiB; parameters shared with spec/data-model.md §6), so equal element runs give equal pages whatever the history; a page holds whole elements, so one element above the maximum is a page by itself. Canonical: paging is mandatory above the threshold and forbidden below, so two nodes snapshotting identical states produce identical bytes. Pages are blobs under random keys like chunks (spec/data-model.md §6).
-- Join of a snapshot with links: the reader fetches pages (lazily, by local policy) and joins their elements; a page's elements are all keyed by dot, so pages can be joined independently.
+- Join of a fragment with links: the reader fetches every page before its commit is applied (spec/commits.md §4) and joins their elements; a page's elements are all keyed by dot, so pages are joined independently, streaming.
 - **Snapshot deltas** are `[nonce, Sources, Commits, Fragment, Frontiers]` with `Frontiers := [[Src, ctr]*]`, sorted by `Src`, one entry per `Node` source with `ctr` ≥ 1 the largest counter such that the writer has applied all of that node's writes in this aspect up to it (parked commits are not applied, §2.2). The fragment reflects every write in those ranges; a receiver adds `[1, ctr]` to its received-dot ranges for (aspect, node) for revoke frontiers (spec/permissions.md §5.1), and learns the node's tid from `Sources` (frontier-only sources come last, §3.3 rule 1). `Commit` sources have no frontier. A snapshot commit carries no writes of its own and consumes no counters (§2.4).
 - Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less and their deltas are never covered. Live content of any other delta is carried as usual, whatever its retention.
-- Deltas (non-snapshot) are never paged, so a commit fits one blob (`MAX_BLOB`, spec/commits.md §1); a writer with a larger edit (bulk import) splits it over several commits, which are not atomic together, and other nodes may read the intermediate states. A snapshot's pages are fetched before it is applied (spec/commits.md §4).
+- Any delta may page, so a commit has no size limit (spec/commits.md §1): a bulk import or a reset of a huge map is one atomic commit.
 
 ## 9. Structural diff
 

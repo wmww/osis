@@ -14,7 +14,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order.
-- A change may atomically cover any set of things, across owners and reader sets: a node that may read and syncs any of them fetches and applies all of it or none. Each part is still authorized on its own thing, so revoking the author on one thing removes only that part. A change larger than one wire object is split into several that are not atomic together.
+- A change may atomically cover any set of things and any amount of data, across owners and reader sets: a node that may read and syncs any of them fetches and applies all of it or none. Each part is still authorized on its own thing, so revoking the author on one thing removes only that part.
 
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.

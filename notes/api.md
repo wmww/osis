@@ -62,7 +62,7 @@ let done: Committed = w.commit()?;
 - `create(owner, Place) -> Tid`: owner explicit and fixed forever; needs write on `owner` (checked locally). `Place::In(group)`, `Place::InAll(&[Tid])`, `Place::Unsynced` (device-local, or a group that will be synced itself). A thing placed into a group whose closure has no synced group gets a `NotSynced` diagnostic after commit (spec/requirements.md, Offline and network).
 - `delete(tid)`: removes every aspect the node knows and every known placement. Tids never die and a later write recreates the thing; no wire concept.
 - Rights are checked locally before signing: `Error::Permission { tid, needs: Role }` when the acting actor lacks write (admin for membership-class aspects) on a touched thing; `Error::UnknownThing` when its `/created` is not held. A write is never emitted to be un-merged elsewhere.
-- `commit()` is one atomic commit over every touched thing, any owners and reader sets. It fails with `Error::TooLarge` instead of splitting; `commit_split()` emits several commits (not atomic, others may see intermediate states) for bulk work. Returns `Committed { commits, ts }`. Own watches fire after the commit is durable.
+- `commit()` is one atomic commit over every touched thing, any owners and reader sets, of any size (deltas page, spec/crdt.md §8). Returns `Committed { commit, ts }`. Own watches fire after the commit is durable.
 - `Write` is `#[must_use]`; dropped uncommitted it discards its ops (debug log). `db.write_with(|w| ...)` commits on `Ok`. Reads inside a `Write` see committed state only; pending ops are invisible until commit.
 - The node always acts through `me()`; acting as another actor (anonymous writing, notes/permissions.md) is a later `Write::acting_as`.
 - Retention and expiry per aspect write: `.expires_at(T)` / `.expires_in(d)` / `.retention(Retention)` on `AspectWrite`, defaults from the key; validated at the op (`Error::Invalid`).
@@ -129,7 +129,6 @@ A demotion's frontier is the demoting node's own receipts (notes/permissions.md,
 ## Footguns closed (keep them closed)
 - Read-modify-write clobber (a form saved with `set` wipes a tag another device added meanwhile): `edit(base, new)` and path ops; docs steer every interactive edit there.
 - Out of memory on an unexpectedly large value: the materialization bound fails explicitly; streaming and path reads exist.
-- A commit silently split into non-atomic pieces: `commit()` fails, `commit_split()` is the explicit opt-in.
 - A thing that never syncs: owner and placement explicit at creation, `NotSynced` diagnostic.
 - A thing owned by the device (never shareable): owner is always passed; `me()` is the common answer.
 - A forgotten unsubscribe: RAII `Subscription`.

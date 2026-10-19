@@ -71,7 +71,7 @@
 - Cut/paste: the client remembers the cut dot ranges beside the clipboard text; paste emits move + undelete if the clipboard still matches, else a diff. Optional osis clipboard MIME type with (aspect, ranges); the protocol has no clipboard concept.
 - Undo stack is derived, not stored: the actor's own commits in scope (a set of aspects or a group) minus undone ones, plus undo commits for redo. Replicates for free, so undo works across devices. A node keeps its own bodies and pre-reset snapshots locally for the undo horizon.
 - A list path op resolves index paths against local state at write time; deltas never carry indices.
-- A commit is one blob, so an edit larger than `MAX_BLOB` (a bulk `replace` of a huge map) goes out as several commits and is not atomic (others see a reset plus the first puts, then more puts); a fresh thing imported in pieces is the expected case. Runs are capped at 2^16 elements so a page always fits.
+- A commit has no size limit: any delta pages like a snapshot (§8), so a bulk `replace` of a huge map or an import is one atomic commit; the writer streams pages out, readers stream them in. Runs are capped at 2^16 elements so a page always fits.
 - Commit floor: a minimal commit is about 300 bytes once nonce, framing, tag and padding count, plus a 49-byte wrap per label and a prefix of about 35 bytes. Fine for editing workloads; revisit only if huge commit volumes appear (owner).
 
 ## Reference model (`crdt-model/`)

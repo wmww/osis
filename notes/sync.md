@@ -4,7 +4,8 @@
 The requirements behind this file: spec/requirements.md, Untrusted (blind) nodes and Deletion.
 
 ## Why
-- **One blob per commit, random key per blob**: a commit has one ID whatever groups contain it, and atomicity beats partial-fetch efficiency (spec/requirements.md, Decentralization). Sharing history means adding wraps, never re-encrypting.
+- **One commit ID, one blob per projection, random key per blob**: a commit has one ID whatever groups contain it. Sharing history means adding wraps, never re-encrypting.
+- **No commit size limit**: a delta pages like a snapshot and the header's lists go by link, so atomicity never depends on size and the API never splits a write. The costs (a reader stores pages it cannot apply yet, a writer that dies mid-upload leaves orphan pages for convergence to delete, apply streams pages through one staged transaction) are the ones snapshots carry anyway. The old one-blob rule bought nothing but a second commit kind of edit (split, non-atomic) that every app had to reason about.
 - **Groups as sync unit**: groups are free and overlap; owner actors as the unit would force a copy for every separately syncable subset.
 - **Label keys derive from the group's own role secrets**, never the owner's directly, or every label of one owner would carry the same role keys and identical wraps for a shared blob, linking them at the blind node.
 - **Entitlement, not group membership**, decides labeling: a thing dropped into a shared folder without an edge is silently not shared, which is the intended failure; an "add to shared folder" helper writes both. Cache the check per (thing, label), invalidated by membership changes of the label actor, the thing's edges or its owner chain.

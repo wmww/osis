@@ -12,7 +12,7 @@
 
 ## Costs
 - Join: persona creation plus two membership commits and one content commit; two sealed boxes (C's read and write secrets to the person) plus one box (C's read secret to P_i).
-- Removal from a 200-person chat: 2 × 199 sealed boxes ≈ 480 KB, possibly split over several commits, downloaded by every participant; a month-offline device walks the missed steps and downloads each rotation. Sub-actors of about 50 (channels as actors under C) keep a removal near 120 KB.
+- Removal from a 200-person chat: 2 × 199 sealed boxes ≈ 480 KB in one paged commit, downloaded by every participant; a month-offline device walks the missed steps and downloads each rotation. Sub-actors of about 50 (channels as actors under C) keep a removal near 120 KB.
 - Vandalism: any participant can edit C's `/group` and `writer`-purgeable bodies of C's own aspects; honest clients re-add their own persona deterministically and admins remove the vandal (authenticated malicious writers are bounded, not prevented).
 
 ## Open
