@@ -17,6 +17,7 @@ aspect /s/count: counter<int>;
 aspect /s/hi: max<int>;
 aspect /s/tags: set<string>;
 aspect /s/map: map<string, int>;
+aspect /s/gone: string [by: writer];
 "#,
 );
 
@@ -25,6 +26,8 @@ pub const COUNT: Aspect<Value> = Aspect::new("/s/count", &SIM);
 pub const HI: Aspect<Value> = Aspect::new("/s/hi", &SIM);
 pub const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SIM);
 pub const MAP: Aspect<Value> = Aspect::new("/s/map", &SIM);
+/// Purgeable by any writer (scenarios only; random writes leave it alone).
+pub const GONE: Aspect<Value> = Aspect::new("/s/gone", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];
 

@@ -1,10 +1,10 @@
 # Node sync: what is approximate or not there yet
-> Summary: Open items of osis-node's sync layer after node-sync landed: replaced labels left unmaintained, no P2P member peers, inbox re-send and consumed-blob deletion, revokes about seen authors, cost of a pass, in-memory outbox and stranded times, lazy-chunk policy, certificate projections, simulator phase B.
+> Summary: Open items of osis-node's sync layer after node-sync landed: replaced labels left unmaintained, no P2P member peers, inbox re-send and consumed-blob deletion, revokes about seen authors, cost of a pass, in-memory outbox and stranded times, lazy-chunk policy, certificate projections.
 > Tags: sync, node
 
 - **Replaced labels**: `replace_label` creates the next index and marks the old one replaced; nothing places the replacement `/label` commit under the old label or deletes the old label's content entries at servers still controlled (spec/sync.md §2), since replaced labels are not opened any more. Needs a maintenance pass over replaced labels (membership-class commits only).
 - **P2P member peers** (spec/sync.md §5 last bullets, §10 LAN): only server connections; no serving side on a node, no `/reach`-authenticated peers, no LAN discovery.
-- **Inbox**: no re-send of an unconsumed inbox blob after `INBOX_LIFETIME` by the sender, no deletion of consumed inbox blobs by the inbox group's admins; the outbox of waiting deposits and `take_direct` packages are in memory only.
+- **Inbox**: no re-send of an unconsumed inbox blob after `INBOX_LIFETIME` by the sender, no deletion of consumed inbox blobs by the inbox group's admins; the outbox of waiting deposits and `take_direct` packages are in memory only (lost deposits: issues/sync-inbox-delivery.md). Simulator findings: issues/sync-stale-head.md, sync-compaction-ping-pong.md, sync-deposit-promotion.md, sync-duplicate-reupload.md.
 - **Timed deletes** always wait for a carrier snapshot (live writes are assumed: the engine does not say whether a body still has live writes).
 - **Untested review items**: a server-sent wrap that does not open to the known blob key is ignored and relayed stamps are checked against the head (code in `sync/inbound.rs`, no adversarial test yet: the in-process harness has no raw client); "outside" deletes wait for a settled view (no dedicated test).
 - **Grantee certificate copy** (spec/sync.md §3) and **revokes / roster snapshots about authors seen under a label** (spec/permissions.md §4): the hook exists (`SyncEngine::place_certificate`), the triggers belong to membership-flows.
@@ -13,4 +13,3 @@
 - **Lazy chunks**: `fetch_missing` fetches every unopened entry; a read that misses a chunk should fetch that tree only (needs the missing blob ID from osis-label's reader).
 - **Volatile state**: stranded-heartbeat times and outstanding fetches are in memory (a restart may place one more stranded heartbeat).
 - **Hints**: a label learned from an inbox blob is opened by guessing its index 0..4 (a reader cannot derive the label ID); the hint goes once `/label` of the thing names it.
-- **Simulator**: phase B (plans/sim.md) drives `SyncEngine` directly; tests/net/mod.rs is the in-process step driver to grow from (one shared clock, no faults yet).

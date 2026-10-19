@@ -1,0 +1,6 @@
+# A device recovered from the card never stamps
+> Summary: After disk loss, a fresh device that follows the home label with the card and runs `recover` (grant itself admin as the recovery key, remove the lost device with the person's rotation) reads the person's content but its own writes never reach the server: at the label's head it is not a writer (it holds the head's epoch but not established), and nobody registers the step for its rotation.
+> Tags: permissions, sync, node, tests
+
+- Seen in the simulator: `osis_sim::replay("disk_loss", 1)` (tier 1 test `disk_loss`, ignored): members 1 (the surviving device) and 2 (the recovered one) read differently at quiescence; the recovered device holds commits no server has; `verdicts` show it `writer false` at the same head as the survivor (`writer true`). Right after `recover` the recovered device's epochs of the person were: 0 `Derived`, 1 held but not established, 2 `Own` (its rotation); the survivor's: 0 not established, 1 `Chain`.
+- To find out (flows, node-sync): whether the recovered device should establish the head's epoch from what the home label holds (the rotation commit of epoch 1 and its chain), whether its rotation commit reaches the survivor (it cannot stamp; a membership write by a non-writer goes by deposit) so the survivor, an admin holding the head's epoch established, registers the next step.

@@ -17,6 +17,21 @@ use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A node's verdicts on one label at one server (`SyncEngine::verdicts`).
+#[derive(Clone, Debug, Default)]
+pub struct Verdicts {
+    /// It stamps here (uploads what it judges must-hold).
+    pub writer: bool,
+    /// Bodies it judges must-hold: (commit, delta parts).
+    pub must_hold: Vec<(CommitId, Vec<(usize, usize)>)>,
+    /// Entries it knows under the label that it judges must-not-hold and may delete now with a
+    /// delete item it can make: (blob, why).
+    pub must_not: Vec<(BlobId, String)>,
+    /// Aspects it cannot judge coverage of yet (`None`: every aspect, an entry opens but is not
+    /// applied).
+    pub unsettled: Vec<Option<(Tid, Ak)>>,
+}
+
 /// An entry to send, by priority (membership and certificates before content before
 /// heartbeats).
 struct Out {
@@ -168,6 +183,36 @@ impl SyncEngine {
         }
         let settled = unsettled.is_empty();
         self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)
+    }
+
+    /// This node's verdicts on label `l` at `server` under the keys its last pass there used
+    /// (simulator invariants, spec/sync.md §6); `None` when the label is not open there.
+    pub fn verdicts(&mut self, server: &ServerKey, l: &LabelId) -> Result<Option<Verdicts>> {
+        let Some(lc) = self.conns.values().filter(|c| c.server == *server).find_map(|c| c.labels.get(l).filter(|x| x.phase == super::Phase::Open)) else { return Ok(None) };
+        let (g, keys) = (lc.group, lc.keys.clone());
+        let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
+        let mut bodies = self.engine.label_bodies(&g)?;
+        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
+        let snaps = self.snapshots_at(l);
+        let unsettled = self.unsettled(l, &g)?;
+        v.unsettled = unsettled.iter().cloned().collect();
+        for b in &bodies {
+            if self.must_hold(b, &snaps, &unsettled)? {
+                v.must_hold.push((b.commit, b.parts.clone()));
+            }
+        }
+        let entries: Vec<(BlobId, Entry)> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
+        for (id, e) in entries {
+            let Some((Hold::MustNot(why), live, aspects)) = self.judge(server, l, &g, &id, &e, &bodies, unsettled.is_empty())? else { continue };
+            let carried = match why {
+                Why::Duplicate | Why::StrictSubset => true,
+                _ => self.carried(server, l, &e, &aspects, &snaps)?,
+            };
+            if why != Why::Expired && may_delete(why, live, carried) && self.delete_for(&keys, l, &id, &e, None)?.is_some() {
+                v.must_not.push((id, format!("{why:?}")));
+            }
+        }
+        Ok(Some(v))
     }
 
     /// Aspects this node cannot judge coverage of yet: those of pending commits; every aspect

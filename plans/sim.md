@@ -17,7 +17,7 @@ Reference: plans/testing.md §5 (the full list), scenarios named in notes/permis
 
 ## Steps
 - [x] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay (also crash/restart, mid-write crashes via the store fault plan).
-- [ ] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
+- [x] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
 - [ ] Phase C (after flows): scenario library, adversaries, version skew, sweep binary, nightly CI job (test-infra).
 
 ## Done when
@@ -25,3 +25,4 @@ Every scenario and adversary runs with its expected outcome; invariants green ov
 
 ## Progress
 - Phase A: `osis-sim` harness (notes/testing.md, Simulator): seeded scheduler, skew/drift clocks, commit packages engine-to-engine with drop/dup/delay/reorder, crash (immediate or at a durable write) and restart, invariants (convergence, counters, HLC, parking, pending drains, quiescence), replay; scenarios two_devices, three_random, crash_restart, drift_parks, revoke_while_writing. Delivery is an anti-entropy oracle (sender sends what the receiver lacks) until `SyncEngine` exists. Sweep of 300 seeds per scenario (release): green except revoke_while_writing seeds 98, 244, 271 (issues/node-revoke-divergence.md).
+- Phase B: `crate::net` (notes/testing.md, Phase B): `SyncEngine`s and osis-server `Hub`s engine to engine over ordered streams with cut/delay/reorder/duplicate faults, partitions, node and server crashes mid-write, server data loss, disk loss and card recovery, replication; quiescent label invariants over the `SyncEngine::verdicts` hook. Green in tier 1 and a release sweep of 8 seeds: two_devices_server, three_persons_two_servers, removed_writer, reader_relays, server_loses_data, offline_rotation; stranded_reseal green at seed 1 (seed 2: issues/sync-duplicate-reupload.md). Ignored with issues: compaction (sync-compaction-ping-pong), disk_loss (flows-recovered-device-writes), head_moves_during_open (sync-stale-head), grant_lost_on_crash (sync-inbox-delivery); waiver WAIVE_PROMOTION (sync-deposit-promotion). Workarounds to drop with the fixes: calm setup grants, `reconnect_all` after setup, 80 quiescence rounds in stranded_reseal.

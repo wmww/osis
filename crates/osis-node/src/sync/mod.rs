@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
 /// A connection's handle, chosen by the sync engine.
@@ -757,7 +758,7 @@ impl SyncEngine {
         for (id, c) in &self.conns {
             for (l, x) in &c.labels {
                 v.push(format!(
-                    "conn {id} {l:?}: {:?} synced {} syncing {} dirty {} registering {} writer {} reader {} outstanding {}",
+                    "conn {id} {l:?}: {:?} synced {} syncing {} dirty {} registering {} writer {} reader {} outstanding {} head {:?}",
                     x.phase,
                     x.synced,
                     x.syncing,
@@ -765,7 +766,8 @@ impl SyncEngine {
                     x.registering.is_some(),
                     x.keys.is_writer(),
                     x.keys.epochs[0].is_some(),
-                    c.session.outstanding()
+                    c.session.outstanding(),
+                    x.head.as_ref().map(|h| h.id().0[0])
                 ));
             }
         }
