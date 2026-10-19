@@ -6,18 +6,18 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 
 | layer | crate | plan(s) | contents |
 |---|---|---|---|
-| 0 | `osis-core` | (this note, §7) | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, `Clock`, `impl_error!` |
+| 0 | `osis-core` | (this note, §7) | Value, canonical CBOR, Tid, Ak, Link, ids, time, `format` constants, chunker, hashing, hex, base64url, `Clock`, `impl_error!` |
 | 1 | `osis-crypto` | crypto | suite 1 primitives, kdf, sealed boxes, wraps, delete tokens |
 | 1 | `osis-crdt` | crdt-core, crdt-seq | merge encodings, delta grammar, join/read/diff, paging; `View`, `PageSink`, `PageSource` |
 | 1 | `osis-perm` | perm | membership validity rules over an abstract held set |
-| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`) |
+| 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`); `link` sessions (channel pairs with tokio pump tasks) for the node and server drivers (`link`) |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot` (`file-backend`), `RootStorage`, `Store`, `Transaction` |
 | 3 | `osis-commit` | commit | commit header and blob, kinds, retention, tokens, signatures, builder, verification, projection, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
 | 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
-| 6 | `osis-server` | server | blind node used as a server (`bin` feature for the binary) |
+| 6 | `osis-server` | server | blind node used as a server: `BackendStore`, sans-I/O `Hub`, async `driver` (default feature `driver`: tokio and transport `link`; `quic`; `file-backend`; `bin` for the binary) |
 | 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows |
 | 8 | `osis` | api | public API; the only crate apps depend on |
 | 9 | `osis-cli` | cli | binary `osis` |
@@ -28,9 +28,9 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
 
-**Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, crdt, schema, commit: `PageSink`/`PageSource` impls, `/label` and `address` codecs); proto (core, crypto, schema, label); server (core, crypto, label, proto, store, transport); node (everything below); osis (node); cli (osis, schema, server); sim (osis, node, server, store, plus core, crypto, crdt, schema, commit for setup and checks); bench (core, crypto, crdt, commit); vectors (core, crypto, crdt, schema, commit, label, proto). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. Models are dev-dependencies of the crates they check only, and use no workspace lints.
+**Layer DAG** (each crate depends only on crates in earlier layers, not necessarily all): core; crypto, crdt, perm, transport (core only); schema (core, crdt); store (core, crypto); commit (core, crypto, crdt, schema); keys (core, crypto, schema, perm); label (core, crypto, crdt, schema, commit: re-exports commit's chunk trees, implements crdt's `PageSink`/`PageSource`); proto (core, crypto, schema, label); server (core, crypto, label, proto, store, transport); node (everything below except server: core, crypto, crdt, schema, commit, perm, keys, label, store, proto, transport); osis (node); cli (osis, schema, server); sim (osis, node, server, store, plus core, crypto, crdt, schema, commit for setup and checks); bench (core, crypto, crdt, commit); vectors (core, crypto, crdt, schema, commit, label, proto). perm consumes abstract edge-write records, not commit headers. No crate depends on `osis` or `osis-node` except cli, sim and examples. Models are dev-dependencies of the crates they check only, and use no workspace lints.
 
-**Per-crate notes** (module map, decisions): core §7, schema §8 and notes/versioning.md; crypto and keys notes/crypto.md (Implementation); crdt and commit notes/crdt.md (Implementation); perm notes/permissions.md (Implementation); store notes/local-store.md (Implementation); label notes/sync.md (Implementation); proto notes/sync.md (Protocol implementation); vectors, bench and test tooling notes/testing.md.
+**Per-crate notes** (module map, decisions): core §7, schema §8 and notes/versioning.md; crypto and keys notes/crypto.md (Implementation); crdt and commit notes/crdt.md (Implementation); perm notes/permissions.md (Implementation); store notes/local-store.md (Implementation); label notes/sync.md (Implementation (osis-label)); proto notes/sync.md (Protocol implementation); server notes/sync.md (Implementation (osis-server)); transport notes/networking.md (Implementation); node notes/node.md; sim notes/testing.md (Simulator); vectors, bench and test tooling notes/testing.md.
 
 ## 2. Fixed abstractions
 Each is a trait (or small trait family) in the named crate with an in-memory or no-op implementation in the same crate for tests. Layers above never reach around them.
@@ -56,7 +56,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 
 ## 4. Build and test performance
 Compile and test time are the bottleneck of agent-driven work.
-- **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `iroh`; `osis-store`: `file-backend`; `osis-server`: `file-backend`, `bin`). `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
+- **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `link`, `iroh`; `osis-store`: `file-backend`; `osis-server`: `quic`, `file-backend`, `bin`; its default `driver` brings tokio, so only crates above server (cli, sim) get it through server). `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
 - **Profiles** (root Cargo.toml): dev `debug = "line-tables-only"`, all dependencies at `opt-level = 2`, test inherits dev, release `codegen-units = 16`, `lto = "thin"`, incremental on. `.cargo/config.toml` has a commented fast-linker line (mold/lld are not required).
 - **Test tiers** (notes/testing.md): (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) nightly: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
 - **Targeted runs**: in crate X run `cargo test -p X` while iterating, `cargo test -p X -p <direct dependents>` before committing; `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` at integration.
@@ -79,7 +79,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `quinn` 0.11 (transport, feature `quic`; no default features, `runtime-tokio`, `rustls-ring`): QUIC for direct server connections (spec/sync.md §10). Chosen over Noise-over-TCP: native streams, flow control, keep-alive and connection migration, the same stack iroh builds on; the cost is build time, kept off default builds.
 - `rustls` 0.23 (transport, feature `quic`; no default features, `ring`, `std`): TLS 1.3 with RFC 7250 raw Ed25519 public keys (no certificates, no rcgen/webpki roots); custom verifiers pin the server key.
 - `ring` 0.17 (transport, feature `quic`; already rustls's provider): Ed25519 key pairs from the static seed, OS randomness for ephemeral client keys. Chosen over `aws-lc-rs` (needs cmake, slower build); ring compiles some C/asm with `cc` (not pure Rust; acceptable behind the feature). It brings getrandom 0.2 (already duplicated) and, on Windows, windows-sys 0.52 (deny.toml `skip`).
-- `tokio` 1.53 (no default features; transport feature `quic`: `rt`, `net`, plus `time` via quinn; server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`): the drivers' runtime, never in store or engine paths.
+- `tokio` 1.53 (no default features; transport features `quic` or `link`: `rt`, `net`, `sync`, `time` (dev: `rt`, `macros`, `time`); server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`; server dev: `rt`, `macros`): the drivers' runtime, never in store or engine paths.
 - Planned, added by their plans with a line here: tokio features for node, osis, cli, sim, arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
@@ -97,7 +97,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `format` (spec/wire.md §2, §13, all fixed): `FORMAT_VERSION`, `TAG_*` (1616..1619, 258), `MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, `CHUNK_MIN/MAX`, `CHUNK_MASK_BITS`, `TREE_FANOUT`, `TREE_MAX_LEVEL`, `BLOB_FRAMING_VERSION`, `MAX_COMMITMENTS`, `MAX_CLAIMS`, `*_MS` durations, `RESOLUTION_HOPS`, `CORE_SCHEMA_ID`/`CORE_SCHEMA_REVISION`, `MAX_VALUE_DEPTH` (64), `MAX_OBJECT_DEPTH` (512), `MAX_VALUE_BYTES`, `MAX_AK_BYTES`, `MAX_URL_BYTES`, `TID_LEN`; `MAX_MESSAGE` (protocol v1) and `TOMBSTONE_LIFETIME_MS` (policy) are not format constants.
 - `chunker` (spec/wire.md §6): `GEAR` (lazy, BLAKE3 XOF), `ChunkParams { min, max, mask_bits }` (`FORMAT`; small params for tests), `Chunker::new`, `next_boundary(&[u8]) -> Option<usize>` (incremental, resets itself after a cut), `pending`, `reset`, `chunk_lengths` (one-shot); `PageCutter` for pages: `feed(bytes)` per element piece, `end_element() -> bool` (close the page after this element; resets itself), `pending`.
 - `hash`: `hash`, `keyed_hash`, `derive_key`, incremental `Hasher` (keyed, XOF). `kdf` and every purpose string live in osis-crypto.
-- `hex`: `encode` (lower case), `decode` (whitespace ignored, `None` on bad input): schema locks, vectors, test constants. Unpadded base64url exists twice (Tid text form here, `osis_label::addr::b64_*` for links and addresses): merge into core when label is next touched.
+- `hex`: `encode` (lower case), `decode` (whitespace ignored, `None` on bad input): schema locks, vectors, test constants. `base64url`: unpadded `encode`, strict `decode` (`None` on padding, other characters or nonzero trailing bits): the Tid text form and osis-label's address, link and card text forms.
 - Errors: `ErrorClass::{BadInput, Parked, Local}`, trait `Classified { fn class(&self) -> ErrorClass }`, `impl_error!(Enum { Variant => ("fmt", args), .. })` or `impl_error!(Struct, "msg")`.
 - Integration test files start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`: clippy.toml's test exemptions cover only `#[test]` functions and `#[cfg(test)]` modules.
 

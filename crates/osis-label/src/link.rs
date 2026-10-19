@@ -1,7 +1,8 @@
 //! Links and recovery cards (spec/wire.md §10, spec/permissions.md §9): canonical layouts, caps
 //! and text forms `osis://link/` / `osis://card/` + unpadded base64url.
 
-use crate::addr::{Address, address_from_value, b64_decode, b64_encode};
+use crate::addr::{Address, address_from_value};
+use osis_core::base64url;
 use crate::auth::{get_bytes, get_uint};
 use crate::Error;
 use osis_core::cbor::{Limits, decode, encode};
@@ -87,7 +88,7 @@ fn from_text(s: &str, prefix: &str) -> Result<Value, Error> {
     if rest.len() > LIMITS.max_bytes * 2 {
         return Err(Error::Malformed("text form too long"));
     }
-    Ok(decode(&b64_decode(rest)?, &LIMITS)?)
+    Ok(decode(&base64url::decode(rest).ok_or(Error::Malformed("base64url"))?, &LIMITS)?)
 }
 
 impl ShareLink {
@@ -155,7 +156,7 @@ impl ShareLink {
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
-        Ok(format!("{LINK_PREFIX}{}", b64_encode(&self.to_bytes()?)))
+        Ok(format!("{LINK_PREFIX}{}", base64url::encode(&self.to_bytes()?)))
     }
 
     pub fn from_text(s: &str) -> Result<ShareLink, Error> {
@@ -199,7 +200,7 @@ impl RecoveryCard {
     }
 
     pub fn to_text(&self) -> Result<String, Error> {
-        Ok(format!("{CARD_PREFIX}{}", b64_encode(&self.to_bytes()?)))
+        Ok(format!("{CARD_PREFIX}{}", base64url::encode(&self.to_bytes()?)))
     }
 
     pub fn from_text(s: &str) -> Result<RecoveryCard, Error> {

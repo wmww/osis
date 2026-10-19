@@ -35,48 +35,18 @@ impl Tid {
     /// Parses the 20-character text form, with or without `osis://`.
     pub fn parse(s: &str) -> Result<Tid, TidParseError> {
         let s = s.strip_prefix("osis://").unwrap_or(s);
-        let s = s.as_bytes();
         if s.len() != TID_TEXT_LEN {
             return Err(TidParseError);
         }
-        let mut out = [0u8; TID_LEN];
-        for (quad, dst) in s.as_chunks::<4>().0.iter().zip(out.as_chunks_mut::<3>().0) {
-            let mut n: u32 = 0;
-            for &c in quad.iter() {
-                n = (n << 6) | u32::from(b64_value(c).ok_or(TidParseError)?);
-            }
-            let [_, a, b, c] = n.to_be_bytes();
-            *dst = [a, b, c];
-        }
+        let out: [u8; TID_LEN] = crate::base64url::decode(s).and_then(|b| b.try_into().ok()).ok_or(TidParseError)?;
         Ok(Tid(out))
-    }
-}
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-fn b64_value(c: u8) -> Option<u8> {
-    match c {
-        b'A'..=b'Z' => Some(c - b'A'),
-        b'a'..=b'z' => Some(c - b'a' + 26),
-        b'0'..=b'9' => Some(c - b'0' + 52),
-        b'-' => Some(62),
-        b'_' => Some(63),
-        _ => None,
     }
 }
 
 /// Unpadded base64url; 15 bytes give exactly 20 characters.
 impl fmt::Display for Tid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut s = String::with_capacity(TID_TEXT_LEN);
-        for &[a, b, c] in self.0.as_chunks::<3>().0 {
-            let n = u32::from_be_bytes([0, a, b, c]);
-            for shift in [18, 12, 6, 0] {
-                #[allow(clippy::indexing_slicing)] // 6-bit index into 64 entries
-                s.push(char::from(B64[((n >> shift) & 63) as usize]));
-            }
-        }
-        f.write_str(&s)
+        f.write_str(&crate::base64url::encode(&self.0))
     }
 }
 
