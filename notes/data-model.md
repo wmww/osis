@@ -1,5 +1,5 @@
 # Data model and serialization: rationale
-> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK namespaces, groups), the schema DSL sketch (proposal), storage layering, rejected options. Mostly owner decisions; shapes of `any`, the core aspects' types and the DSL syntax are proposals.
+> Summary: Why spec/data-model.md looks the way it does (tids, CBOR profile, large values, AK namespaces, groups), the schema DSL as implemented in osis-schema, storage layering, rejected options. Mostly owner decisions; shapes of `any` and the core aspects' types are proposals.
 
 ## Tids
 - Self-certifying tids bind a thing to its first owner so nobody can publish a competing creation. The nonce keeps a bare tid from revealing its owner and seeds the dedup secret. References stay bare tids; the record is checked only when the thing's data arrives.
@@ -38,34 +38,34 @@ No registry exists, so namespace collisions between schemas are detected (schema
 ## Groups
 Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (spec/requirements.md, Offline and network).
 
-## Schema DSL (`*.osis` files; syntax proposal)
-Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision). The same parser serves runtime loading and the `load_schema!()` proc macro. `///` doc comments attach to the next item and are kept in the parsed schema so generic tools and agents can read invariants. Errors carry file, line, column.
+## Schema DSL (`*.osis` files; implemented in osis-schema)
+Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision); grammar in `crates/osis-schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect, signal), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
 ```
 //! Notes app schema.
-schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // random, minted once, never changes
+schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // 16 bytes, random, minted once
 revision 4;                                   // bumped on every publish
 
-type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int) };
-
+type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int), reserved (4, 5) };
 type task = struct {
     1 title: string,
-    2 done: bool,
-    3 tags: set<string>,
-    4 priority: option<priority>,     // option defaults to none
-    6 due: option<timestamp>,
-    7 status: option<status> succeeds 2,   // new form for `done`; f and g live in app code
+    4 priority: option<priority>,            // option defaults to none
+    7 status: option<status> succeeds 2,     // succeeds N or (N, M)
+    8 weight: float = 1.0,                   // constant default
     reserved 5,
 };
+type tagged<T> = struct { 0 label: string, 1 value: T };
 
-/// Markdown; not guaranteed valid.
-aspect /note/body: markdown [indexed, keep_at_least: forever];
-aspect /note/title: string [indexed];
-aspect /note/tasks: list<task>;
-aspect /note/views: counter<int>;
+aspect /note/body: markdown [indexed];
 aspect /note/last_opened: timestamp [expires: 30d];
+aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
+aspect /note/title2: string succeeds /note/title;
+signal /note/typing: struct { 0 who: tid, 1 at: timestamp };
 ```
-- Items: `schema ID;`, `revision N;`, `type NAME<PARAMS?> = TYPE;`, `aspect /a/k: TYPE [flags];`, `signal` kinds (syntax TBD). Trailing commas allowed. `reserved` lists IDs never to be used again; `succeeds` names the old item(s) a new item replaces (sets on either side for splits and merges). A field default is `= value` after the type.
-- Open details: notes/versioning.md.
+- Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|writer` (default `author`); `keep_at_least:`/`keep_at_most:` a duration (relative, after replaced) and/or `abs <wall ms>`; `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.
+- Default literals: numbers, strings, `0x` bytes, `true`/`false`, case names with optional `(payload)`, `[..]` for lists and sets, `{k: v}` for maps and structs (fields by name or ID; omitted fields take their defaults). A tid default is its text form.
+- Validation: names resolve with the right arity; IDs unique, never both declared and reserved; `succeeds` names an ID of the same struct/enum; wrappers (`counter`/`max`/`min` of int or float only, `text`, `markdown`) never inside set elements or map keys (also through named and parametric types); named types must reach a structure (`type a = a;` fails); defaults typed; core AKs (one segment) only in the core schema (ID 0); a relative `keep_at_most` needs `by: writer`.
+- Schema value (spec/data-model.md §10): every field written, `none` included, docs included; the meta-schema is `crates/osis-schema/schemas/meta.osis` (local ID `ff..ff`, never written anywhere). Lock files hold the canonical bytes so the checker can compare; the codegen bin publishes them.
+- `creation` is the one struct the type system cannot express (fields 0 and 1 exclusive): typed keys read `/created` through `CreationRecord` (`Codec::CHECKS_ITSELF`).
 
 ## Storage
 Multiple backends (in-memory, sqlite, ...). Storage API kept simple; sync, conflict resolution and listeners live above it. Backends hold ciphertext only (notes/local-store.md).

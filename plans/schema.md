@@ -18,11 +18,11 @@ Spec: spec/data-model.md §2–§5, §9–§10; spec/versioning.md (all); spec/c
 - Transition conventions of notes/versioning.md (`succeeds`, tie-break by form timestamp, write-form policy) as codegen conventions: implement the data (links) and the tie-break read helper; the policy hook is a function pointer with the default rule; keep it small.
 
 ## Steps
-- [ ] Type model, encoding mapping, DSL parser with error tests, example schemas (notes app from notes/data-model.md; the core schema file).
-- [ ] Schema value form, lock file, additive checker (each §4 rule tested both ways).
-- [ ] Typed reads, defaults, View, write validation; property: `typed_read(encode(typed)) == typed`.
-- [ ] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
-- [ ] Codegen bin + a generated example compiled in tests (build.rs in examples later).
+- [x] Type model, encoding mapping, DSL parser with error tests, example schemas (notes app from notes/data-model.md; the core schema file).
+- [x] Schema value form, lock file, additive checker (each §4 rule tested both ways).
+- [x] Typed reads, defaults, View, write validation; property: `typed_read(encode(typed)) == typed`.
+- [x] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
+- [x] Codegen bin + a generated example compiled in tests (build.rs in examples later).
 
 ## Tests
 Parser fuzz target (test-infra); checker rules; typed-read errors carry paths; open-struct preservation through a write (unknown field survives `set_field`); version-skew unit tests (old schema reads data written by a newer revision; new reads old).
@@ -31,3 +31,4 @@ Parser fuzz target (test-infra); checker rules; typed-read errors carry paths; o
 The core schema and an app schema parse, check and generate; node-core consumes retention defaults and typed writes from here; notes/data-model.md and notes/versioning.md updated with what is implemented vs convention. Delete this plan.
 
 ## Progress
+- Session 1: all five steps landed (worktree branch). Open: open-struct preservation through `set_field` needs the crdt diff (test it where the diff lands); `osis` re-export is the api plan's; proc macro skipped (codegen covers it). Vectors: `vectors/schema/core.vec` (provisional, osis-vectors generator); fuzz target `schema_dsl` live.

@@ -1,7 +1,7 @@
 //! Tids, AKs, links and fixed-size ids (spec/data-model.md §1, §2, §6, §7; spec/sync.md §2).
 
 use crate::cbor::encode;
-use crate::format::{TID_LEN, TID_TEXT_LEN};
+use crate::format::{MAX_AK_BYTES, TID_LEN, TID_TEXT_LEN};
 use crate::value::Value;
 use crate::{ErrorClass, hash};
 use std::collections::BTreeMap;
@@ -19,11 +19,13 @@ impl Tid {
     pub const fn as_bytes(&self) -> &[u8; TID_LEN] {
         &self.0
     }
-    /// The tid of a creation record (spec/data-model.md §1).
+    /// The tid of a creation record (spec/wire.md §3).
     pub fn of_record(record: &CreationRecord) -> Tid {
         let h = hash::hash(&encode(&record.to_value()));
         let mut b = [0u8; TID_LEN];
-        b.copy_from_slice(h.get(..TID_LEN).unwrap_or(&[0; TID_LEN]));
+        for (d, s) in b.iter_mut().zip(h) {
+            *d = s;
+        }
         Tid(b)
     }
     /// `osis://` plus the text form.
@@ -100,23 +102,26 @@ impl crate::Classified for TidParseError {
     }
 }
 
-/// A thing's creation record (spec/data-model.md §1).
+/// A thing's creation record (spec/wire.md §3): the `creation` struct of the core schema.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreationRecord {
     /// Ordinary thing: owner actor and a 32-byte random nonce.
     Thing { owner: Tid, nonce: [u8; 32] },
-    /// Key actor (owns itself): algorithm-tagged signing public key and a 32-byte nonce.
+    /// Key actor (owns itself): `signing_key` enum case and key bytes, and a 32-byte nonce. Only
+    /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
+    /// suite) but `from_value` refuses them.
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
 }
 
-// provisional layout (plans/protocol-spec.md item 2): a struct, field 0 owner tid, 1 nonce,
-// 2 signing key as enum (alg case, key bytes); exactly one of 0 and 2.
+// spec/wire.md §3: `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob }`.
 const REC_OWNER: i64 = 0;
-const REC_NONCE: i64 = 1;
-const REC_KEY: i64 = 2;
+const REC_KEY: i64 = 1;
+const REC_NONCE: i64 = 2;
+/// `signing_key` case ed25519 (spec/wire.md §3).
+pub const SIGNING_KEY_ED25519: u64 = 1;
 
 impl CreationRecord {
-    /// Canonical value of the record (provisional layout).
+    /// The record's value; its canonical encoding is what the tid hashes.
     pub fn to_value(&self) -> Value {
         let mut m = BTreeMap::new();
         match self {
@@ -125,14 +130,16 @@ impl CreationRecord {
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
             }
             CreationRecord::KeyActor { alg, public_key, nonce } => {
-                m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
                 let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
                 m.insert(Value::Int(REC_KEY), key);
+                m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
             }
         }
         Value::Map(m)
     }
-    /// Reads a record; anything else is bad input.
+    /// Reads a record: exactly one of owner and key, a 32-byte nonce, no other field, key an
+    /// ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
+    /// callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
         let nonce: [u8; 32] = match m.get(&Value::Int(REC_NONCE)) {
@@ -141,8 +148,10 @@ impl CreationRecord {
         };
         match (m.get(&Value::Int(REC_OWNER)), m.get(&Value::Int(REC_KEY)), m.len()) {
             (Some(Value::Tid(owner)), None, 2) => Some(CreationRecord::Thing { owner: *owner, nonce }),
-            (None, Some(Value::Enum(alg, Some(p))), 2) => match p.as_ref() {
-                Value::Bytes(pk) => Some(CreationRecord::KeyActor { alg: *alg, public_key: pk.clone(), nonce }),
+            (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
+                Value::Bytes(pk) if pk.len() == 32 => {
+                    Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
+                }
                 _ => None,
             },
             _ => None,
@@ -161,9 +170,6 @@ impl CreationRecord {
 /// Aspect key: `/seg/seg...`, non-empty segments; one segment is a core aspect (spec/data-model.md §2).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Ak(String);
-
-/// Longest AK accepted. provisional (spec sets none; a decoder needs one).
-pub const MAX_AK_BYTES: usize = 1024;
 
 impl Ak {
     pub fn new(s: impl Into<String>) -> Result<Ak, AkError> {
@@ -287,21 +293,48 @@ mod tests {
         }
     }
 
-    // spec/data-model.md §1: tid = first 120 bits of BLAKE3 over the canonical creation record;
-    // the record round-trips through its value.
+    fn hex(s: &str) -> Vec<u8> {
+        let s: String = s.split_whitespace().collect();
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    // spec/wire.md §3: frozen layout of both record forms; tid = first 15 bytes of BLAKE3 of
+    // exactly these bytes.
     #[test]
-    fn tid_of_record() {
+    fn creation_record_bytes() {
+        let r = CreationRecord::Thing { owner: Tid::from_bytes([7; 15]), nonce: [1; 32] };
+        let rb = hex(&format!("a2 00 d90650 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
+        let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
+        let kb = hex(&format!("a2 01 d90651 82 01 5820{} 02 5820{}", "09".repeat(32), "01".repeat(32)));
+        for (rec, bytes) in [(r, rb), (k, kb)] {
+            assert_eq!(encode(&rec.to_value()), bytes);
+            assert_eq!(rec.tid().as_bytes()[..], blake3::hash(&bytes).as_bytes()[..15]);
+            assert_eq!(CreationRecord::from_value(&rec.to_value()), Some(rec));
+        }
+    }
+
+    // spec/wire.md §3: exactly one of owner and key, a 32-byte nonce, ed25519 keys of 32 bytes.
+    #[test]
+    fn creation_record_rejects() {
         let owner = Tid::from_bytes([7; 15]);
         let r = CreationRecord::Thing { owner, nonce: [1; 32] };
-        let h = blake3::hash(&encode(&r.to_value()));
-        assert_eq!(r.tid().as_bytes()[..], h.as_bytes()[..15]);
-        assert_eq!(CreationRecord::from_value(&r.to_value()), Some(r.clone()));
-        let k = CreationRecord::KeyActor { alg: 0, public_key: vec![9; 32], nonce: [1; 32] };
-        assert_eq!(CreationRecord::from_value(&k.to_value()), Some(k.clone()));
-        assert_ne!(k.tid(), r.tid());
-        let r2 = CreationRecord::Thing { owner, nonce: [2; 32] };
-        assert_ne!(r.tid(), r2.tid());
+        assert_ne!(r.tid(), CreationRecord::Thing { owner, nonce: [2; 32] }.tid());
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
+        let Value::Map(m) = r.to_value() else { unreachable!() };
+        let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));
+        let with = |f: &dyn Fn(&mut BTreeMap<Value, Value>)| {
+            let mut m = m.clone();
+            f(&mut m);
+            CreationRecord::from_value(&Value::Map(m))
+        };
+        assert_eq!(with(&|m| { m.insert(Value::Int(1), key(1, 32)); }), None); // both
+        assert_eq!(with(&|m| { m.remove(&Value::Int(0)); }), None); // neither
+        assert_eq!(with(&|m| { m.insert(Value::Int(2), Value::Bytes(vec![1; 31])); }), None);
+        assert_eq!(with(&|m| { m.insert(Value::Int(3), Value::Int(0)); }), None);
+        for (alg, len) in [(1, 31), (1, 33), (0, 32), (2, 32)] {
+            assert_eq!(with(&|m| { m.remove(&Value::Int(0)); m.insert(Value::Int(1), key(alg, len)); }), None, "{alg} {len}");
+        }
+        assert!(with(&|m| { m.remove(&Value::Int(0)); m.insert(Value::Int(1), key(1, 32)); }).is_some());
     }
 
     // spec/data-model.md §2: AKs are slash-prefixed, slash-separated; one segment = core.

@@ -1,0 +1,56 @@
+# cargo-fuzz targets (fuzz/README.md). Outside the workspace: needs nightly and libFuzzer.
+[package]
+name = "osis-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+osis-core = { path = "../crates/osis-core" }
+osis-schema = { path = "../crates/osis-schema" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cbor_decode"
+path = "fuzz_targets/cbor_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tid_parse"
+path = "fuzz_targets/tid_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "creation_record"
+path = "fuzz_targets/creation_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chunker"
+path = "fuzz_targets/chunker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schema_dsl"
+path = "fuzz_targets/schema_dsl.rs"
+test = false
+doc = false
+bench = false

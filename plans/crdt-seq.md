@@ -15,7 +15,7 @@ Spec: spec/crdt.md §3.2 (Run grammar), §3.3 rules 2–3, 5, 7; §4.3 (presence
 - Embedding register → text (§7) with Derived dots; anchors to Derived dots through `Sources`.
 - Diff (§9): text Myers over chars (no move detection); list: opaque elements set aside, LCS by deep view equality, in-order pairing of unmatched, recursion, leftovers delete/insert.
 - Sequence part of the API's `edit(base, new)` (notes/api.md): diff `base` against `new` (Myers/LCS as above), then rebase the resulting index edits onto the current sequence by matching `base` to the current read (LCS); an edit whose base position is unmatched lands after the nearest matched predecessor. Property: when current equals base the result equals the structural diff; with concurrent remote edits, remote content outside the edited ranges survives. The text session reuses the same rebase for remote merges.
-- Bench: port `models/crdt/src/bin/text_bench.rs` to criterion over the implementation; assert the ratios of notes/crdt.md (≤ 3.5x at 100 edits/commit, ≤ 7x at 10) as a tier-2 size-budget test.
+- Bench: port `models/crdt/src/bin/text_bench.rs` to an osis-bench bench over the implementation; assert the ratios of notes/crdt.md (≤ 3.5x at 100 edits/commit, ≤ 7x at 10) as a tier-2 size-budget test.
 
 ## Steps
 - [ ] State, join, read with whole-state linearization; differential tests vs models/crdt text and list (random ops, random delivery, duplication).

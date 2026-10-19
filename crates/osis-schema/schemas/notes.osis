@@ -1,0 +1,31 @@
+//! Notes app schema (example; notes/data-model.md).
+schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // random, minted once, never changes
+revision 4;                                   // bumped on every publish
+
+type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int) };
+type status = enum { 0 todo, 1 doing, 2 done, 3 blocked };
+
+/// A task inside a note.
+type task = struct {
+    1 title: string,
+    2 done: bool,
+    3 tags: set<string>,
+    4 priority: option<priority>,     // option defaults to none
+    6 due: option<timestamp>,
+    7 status: option<status> succeeds 2,   // new form for `done`
+    8 weight: float = 1.0,
+    reserved 5,
+};
+
+/// A labelled value; parametric.
+type tagged<T> = struct { 0 label: string, 1 value: T };
+
+/// Markdown; not guaranteed valid.
+aspect /note/body: markdown [indexed];
+aspect /note/title: string [indexed];
+aspect /note/tasks: list<task>;
+aspect /note/views: counter<int>;
+aspect /note/last_opened: timestamp [expires: 30d];
+aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
+/// Someone is typing in the note.
+signal /note/typing: struct { 0 who: tid, 1 at: timestamp };
