@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 3 (transport, large-values, node-core, server running); wave 2 integration pass running.
+Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass and the TLA rerun running.
 
 ## Plans
 | plan | state | notes |
@@ -35,7 +35,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
-| node-core | review fixes | reviewer: 3 high (un-merge loses writes, content rules on received commits, expired missing deltas) + sim divergence; agent fixing; established epochs after the keys follow-up |
+| node-core | merged at b45a699, reviewed | plan folded into notes/node.md; issues/node-core-gaps.md; remaining obligations in issues/keys-established-epochs.md |
 | transport | merged, reviewed | plan stays until server and node run over both transports |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
 | server | merged, reviewed; serves over QUIC (osis_transport::link) | plan stays until node-sync and sim run through it |
@@ -43,7 +43,11 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
-| node-sync, membership-flows, api (first half) | not started | wave 4 |
+| node-sync | running (opus, worktree) | |
+| membership-flows | running (opus, worktree) | |
+| api (first half) | running (opus, worktree) | |
+| wave 3 integration pass | running (opus, worktree) | tree-unify, base64url, tier-2 run, freeze-ready list |
+| tla rerun (round 2) | running (opus, worktree) | |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | hardening-signoff | not started | wave 6 |
