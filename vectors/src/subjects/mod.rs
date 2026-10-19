@@ -13,6 +13,7 @@ pub mod kdf;
 pub mod keys;
 pub mod link;
 pub mod padme;
+pub mod proto;
 pub mod sign;
 pub mod signal;
 pub mod step;
@@ -47,10 +48,13 @@ pub fn get(path: &str) -> Option<Subject> {
         "token/tokens.vec" => Subject { generate: Some(token::tokens), check: None },
         "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
         "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
+        "proto/messages.vec" => Subject { generate: Some(proto::messages), check: None },
+        "proto/reconcile.vec" => Subject { generate: Some(proto::reconcile), check: None },
         "commit/headers.vec" => Subject { generate: Some(commit::headers), check: None },
         "blob/prefix.vec" => Subject { generate: Some(blob::prefixes), check: None },
         "blob/blobs.vec" => Subject { generate: Some(blob::blobs), check: None },
         "chunker/tree.vec" => Subject { generate: Some(chunker::tree), check: None },
+        "chunker/pages.vec" => Subject { generate: Some(chunker::pages), check: None },
         "step/steps.vec" => Subject { generate: Some(step::steps), check: None },
         "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
         "signal/signal.vec" => Subject { generate: Some(signal::signal), check: None },

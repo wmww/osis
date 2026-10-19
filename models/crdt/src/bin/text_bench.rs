@@ -68,6 +68,8 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
     let mut del_stamp: Option<(u64, Stamp)> = None; // (commit, stamp)
     let mut cur_commit = 0u64;
     let mut lo_of: BTreeMap<u64, u64> = BTreeMap::new();
+    // created and deleted in the current commit, omitted at its end once nothing anchors at them
+    let mut pending: Vec<Dot> = Vec::new();
     for (k, line) in edits.lines().enumerate() {
         let commit = (k / batch) as u64 + 1;
         // realistic wall clock: 2 s per commit, ms resolution shifted by 16 bits of logical counter
@@ -91,23 +93,9 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
                 }
             };
             for d in vis.drain(pos..pos + del) {
+                elems.get_mut(&d).unwrap().deleted = Some((s.clone(), true));
                 if created_in[&d] == commit {
-                    // never left this device: omit it and re-anchor what was chained to it (spec §4.5)
-                    let a = elems[&d].pos[0].1.clone();
-                    if let Some(cs) = children.remove(&d) {
-                        for c in cs {
-                            if let Some(e) = elems.get_mut(&c) {
-                                e.pos[0].1 = a.clone();
-                                e.created.as_mut().unwrap().1 = a.clone();
-                                if let Anchor::Dot(p) = &a {
-                                    children.entry(p.clone()).or_default().push(c);
-                                }
-                            }
-                        }
-                    }
-                    elems.remove(&d);
-                } else {
-                    elems.get_mut(&d).unwrap().deleted = Some((s.clone(), true));
+                    pending.push(d);
                 }
             }
         }
@@ -126,11 +114,32 @@ fn replay(edits: &str, batch: usize) -> (Frag, usize) {
         }
         n += 1;
         if k % batch == batch - 1 {
+            omit(&mut pending, &mut elems, &children);
             ctr = ctr.max(lo_of[&commit] + 1);
         }
     }
+    omit(&mut pending, &mut elems, &children);
     let f = Frag::Seq { text: true, c: Composite::default(), elems };
     (f, n)
+}
+
+/// Spec §4.5: an element created and removed in the commit is omitted once nothing anchors at it,
+/// repeatedly (no moves in the trace, so creation anchors are all).
+fn omit(pending: &mut Vec<Dot>, elems: &mut BTreeMap<Dot, SeqElem>, children: &BTreeMap<Dot, Vec<Dot>>) {
+    loop {
+        let before = pending.len();
+        pending.retain(|d| {
+            let named = children.get(d).is_some_and(|cs| cs.iter().any(|c| elems.contains_key(c)));
+            if !named {
+                elems.remove(d);
+            }
+            named
+        });
+        if pending.len() == before {
+            break;
+        }
+    }
+    pending.clear();
 }
 
 fn delta_lo(_ctr: u64, commit: u64, lo_of: &mut BTreeMap<u64, u64>) -> u64 {

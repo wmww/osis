@@ -1,0 +1,420 @@
+//! The engine: one node's local state over its `Store` (notes/architecture.md §2: the node
+//! talks to `Store` only). Synchronous, no I/O of its own, time from a `Clock`, randomness
+//! injected. Every mutating call runs in one store transaction; engine events are sent after
+//! it is durable. A failed transaction drops the in-memory caches, which reload from the store.
+
+pub(crate) mod blobs;
+pub(crate) mod clock;
+mod read;
+pub(crate) mod records;
+pub(crate) mod secrets;
+pub(crate) mod state;
+pub(crate) mod write;
+
+pub use write::Mutation;
+
+use crate::apply::Reason;
+use crate::error::{Error, Result};
+use crate::events::{Event, Events, Origin};
+use crate::identity::Identity;
+use clock::Hlc;
+use osis_commit::{CommitBlob, Form, Header};
+use osis_core::{Ak, Clock, CommitId, Tid, Ts, WallMs};
+use osis_crdt::{Dot, Fragment, SourceKind};
+use osis_crypto::{CryptoRngCore, SeededRng};
+use osis_keys::ActorEpochs;
+use osis_perm::{MemoryHeldSet, Timelines};
+use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
+use records::{Rd, Wr};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+
+/// Engine configuration.
+#[derive(Clone, Debug)]
+pub struct Config {
+    /// `/node` software revision.
+    pub software: String,
+    pub store: StoreConfig,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
+    }
+}
+
+/// An applied commit as the engine indexes it.
+#[derive(Clone, Debug)]
+pub(crate) struct Meta {
+    pub header: Arc<Header>,
+    pub received: WallMs,
+    pub origin: Origin,
+    /// Validity per aspect (spec/permissions.md §5.2).
+    pub valid: Vec<bool>,
+    /// Parts dropped (purge, expiry, keep at most): they count as held.
+    pub dropped: BTreeSet<(usize, usize)>,
+}
+
+/// Owner of writes: one delta of one node (`[lo, hi)`), or a commit-form commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Owned {
+    Node { node: Tid, lo: u64, hi: u64 },
+    Commit(CommitId),
+}
+
+impl Owned {
+    pub fn of(h: &Header, id: &CommitId, ai: usize) -> Option<Owned> {
+        let a = h.aspects.get(ai)?;
+        Some(match h.form {
+            Form::Node => Owned::Node { node: h.author, lo: a.lo, hi: a.hi },
+            Form::Commit => Owned::Commit(*id),
+        })
+    }
+    /// Whether `d` (an owner dot, never `Derived`) belongs to this delta.
+    pub fn owns(&self, d: &Dot) -> bool {
+        match (self, d.src.kind()) {
+            (Owned::Node { node, lo, hi }, SourceKind::Node(t)) => t == node && *lo <= d.ctr && d.ctr < *hi,
+            (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
+            _ => false,
+        }
+    }
+}
+
+/// Node-form ranges of one node on one aspect: lo -> (hi, commit).
+pub(crate) type Ranges = BTreeMap<u64, (u64, CommitId)>;
+
+/// A scan callback: key (without prefix), value.
+type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
+
+/// A decoded commit record: received, origin, dropped parts, blob.
+pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
+
+/// In-memory state over the store: caches and indexes, rebuilt by `load`.
+pub(crate) struct Core {
+    pub id: Identity,
+    pub hlc: Hlc,
+    pub states: HashMap<(Tid, Ak), Option<Fragment>>,
+    /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
+    pub held: MemoryHeldSet,
+    pub timelines: Timelines,
+    pub commits: BTreeMap<CommitId, Meta>,
+    /// Held deltas per aspect: (`ts`, commit).
+    pub by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
+    /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
+    pub ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
+    pub pending: BTreeMap<CommitId, Reason>,
+    pub syncing: BTreeSet<Tid>,
+    pub void: BTreeSet<CommitId>,
+    /// Deltas whose value-carrying writes are held value-less (expired, purged).
+    pub valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
+    /// Actors with secrets of their own whose epochs this node holds.
+    pub secrets: BTreeMap<Tid, ActorEpochs>,
+    /// Things known to have secrets of their own (a `/keys` with keysets).
+    pub own_keys: BTreeSet<Tid>,
+    /// `/was` index: t -> things whose `/was` reads t.
+    pub was: BTreeMap<Tid, BTreeSet<Tid>>,
+    pub moved: BTreeMap<Tid, Tid>,
+    /// `/group` of each group thing: (items, subgroups).
+    pub group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
+    /// `/groups`: thing -> groups containing it, transitively.
+    pub groups: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
+    pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
+    /// Every member named by a held edge write or roster: authors with a chain here.
+    pub members_seen: BTreeSet<Tid>,
+    /// Membership commits whose removed keys are not known yet.
+    pub unresolved: BTreeSet<CommitId>,
+    /// Schemas of local writes (typed views for undo).
+    pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
+    pub events: Events,
+}
+
+impl Core {
+    fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
+        Core {
+            id,
+            hlc: Hlc::new(clock, Ts::default()),
+            states: HashMap::new(),
+            held: MemoryHeldSet::new(),
+            timelines: Timelines::new(),
+            commits: BTreeMap::new(),
+            by_aspect: BTreeMap::new(),
+            ranges: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            syncing: BTreeSet::new(),
+            void: BTreeSet::new(),
+            valueless: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            own_keys: BTreeSet::new(),
+            was: BTreeMap::new(),
+            moved: BTreeMap::new(),
+            group_defs: BTreeMap::new(),
+            groups: BTreeMap::new(),
+            member_keys: BTreeMap::new(),
+            unresolved: BTreeSet::new(),
+            members_seen: BTreeSet::new(),
+            schemas: BTreeMap::new(),
+            events: Events::default(),
+        }
+    }
+
+    pub fn now(&self) -> WallMs {
+        self.hlc.wall()
+    }
+
+    /// The commit that wrote dot `d` on `(tid, ak)`, if held.
+    pub fn commit_of(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<CommitId> {
+        let d = d.owner();
+        match d.src.kind() {
+            SourceKind::Commit(c) => Some(*c),
+            SourceKind::Node(n) => {
+                let m = self.ranges.get(&(*tid, ak.clone(), *n))?;
+                let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
+                (d.ctr < *hi).then_some(*c)
+            }
+            SourceKind::Derived(_) => None,
+        }
+    }
+}
+
+/// One transaction with the engine's in-memory state.
+pub(crate) struct Tx<'a> {
+    pub txn: Transaction<'a>,
+    pub core: &'a mut Core,
+    pub rng: &'a mut dyn CryptoRngCore,
+}
+
+impl Tx<'_> {
+    /// Loads the state of `(tid, ak)` into the cache.
+    pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+        let k = (*tid, ak.clone());
+        if self.core.states.contains_key(&k) {
+            return Ok(());
+        }
+        let f = match self.txn.get_aspect(tid, ak)? {
+            Some(u) if !u.state.is_empty() => Some(state::decode(&u.state)?),
+            _ => None,
+        };
+        self.core.states.insert(k, f);
+        Ok(())
+    }
+
+    pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
+        self.load(tid, ak)?;
+        Ok(self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref))
+    }
+
+    /// Writes a state (keeping the unit's undo buffer unless `clear_undo`).
+    pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
+        let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
+        unit.state = match &f {
+            Some(f) => state::encode(f)?,
+            None => Vec::new(),
+        };
+        if clear_undo {
+            unit.undo.clear();
+        }
+        self.txn.put_aspect(tid, ak, &unit, shred)?;
+        let ik = records::aspect_key(b"a/", tid, ak);
+        if f.is_some() {
+            self.txn.put_local(&ik, &[], Shred::No)?;
+        } else {
+            self.txn.remove_local(&ik, Shred::No)?;
+        }
+        self.core.states.insert((*tid, ak.clone()), f);
+        Ok(())
+    }
+
+    pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
+        Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
+    }
+
+    pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
+        let mut w = Wr::new().u8(1).u64(meta.received.0).u8(match meta.origin {
+            Origin::Local => 0,
+            Origin::Remote => 1,
+        });
+        w = w.u32(meta.dropped.len() as u32);
+        for (a, d) in &meta.dropped {
+            w = w.u32(*a as u32).u32(*d as u32);
+        }
+        let v = w.raw(&blob.encode()).take();
+        self.txn.put_local(&records::commit_key(id), &v, shred)?;
+        Ok(())
+    }
+
+    pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
+        let Some(v) = self.txn.get_local(&records::commit_key(id))? else { return Ok(None) };
+        Ok(Some(decode_commit_record(&v)?.3))
+    }
+
+    /// Scans local records under `prefix` (keys returned without it).
+    pub fn scan(&mut self, prefix: &[u8], mut f: impl FnMut(&[u8], Vec<u8>) -> Result<()>) -> Result<()> {
+        scan_local(&mut self.txn, prefix, &mut f)
+    }
+
+    pub fn now(&self) -> WallMs {
+        self.core.now()
+    }
+}
+
+fn scan_local(txn: &mut Transaction<'_>, prefix: &[u8], f: &mut ScanFn<'_>) -> Result<()> {
+    let mut from: Vec<u8> = Vec::new();
+    loop {
+        let page = txn.scan_local(prefix, &from, 256)?;
+        let n = page.len();
+        for (k, v) in page {
+            let tail = k.get(prefix.len()..).unwrap_or_default();
+            from = [tail, &[0]].concat();
+            f(tail, v)?;
+        }
+        if n < 256 {
+            return Ok(());
+        }
+    }
+}
+
+/// `(received, origin, dropped, blob)`.
+pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
+    let mut r = Rd::new(v);
+    if r.u8()? != 1 {
+        return Err(Error::Corrupt("commit record version"));
+    }
+    let received = WallMs(r.u64()?);
+    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
+    let n = r.u32()?;
+    let mut dropped = BTreeSet::new();
+    for _ in 0..n {
+        dropped.insert((r.u32()? as usize, r.u32()? as usize));
+    }
+    let blob = CommitBlob::decode(r.rest()).map_err(|_| Error::Corrupt("commit blob"))?;
+    Ok((received, origin, dropped, blob))
+}
+
+/// One node's engine.
+pub struct Engine {
+    store: Store,
+    store_rng: SeededRng,
+    rng: Box<dyn CryptoRngCore + Send>,
+    pub(crate) core: Core,
+    clock: Arc<dyn Clock>,
+    cfg: Config,
+}
+
+impl Engine {
+    /// A new node over an empty backend: fresh identity, its node thing with `/created`,
+    /// `/node` and `/keys` (spec/permissions.md §4 node card).
+    pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {
+        let store = Store::create(backend, root, cfg.store, &mut *rng)?;
+        let mut seed = [0u8; 32];
+        rng.fill_bytes(&mut seed);
+        let store_rng = SeededRng::from_seed(seed);
+        let id = Identity::generate(&mut *rng);
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        let seed_bytes = e.core.id.seed().expose().to_vec();
+        e.run(|tx| Ok(tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?))?;
+        e.bootstrap()?;
+        Ok(e)
+    }
+
+    /// Opens an existing node and re-examines its pending commits.
+    pub fn open(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {
+        let mut store = Store::open(backend, root, cfg.store)?;
+        let mut seed = [0u8; 32];
+        rng.fill_bytes(&mut seed);
+        let mut store_rng = SeededRng::from_seed(seed);
+        let s = {
+            let mut txn = store.transaction(&mut store_rng)?;
+            txn.get_local(records::SEED)?.ok_or(Error::Corrupt("no seed"))?
+        };
+        let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
+        let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        e.reload()?;
+        e.reexamine()?;
+        Ok(e)
+    }
+
+    /// The node thing's first commits: `/created` with `/node`, then `/keys` (its KEM key).
+    fn bootstrap(&mut self) -> Result<()> {
+        use osis_schema::core_types as ct;
+        let node = self.tid();
+        let mut m = Mutation::new();
+        m.create(self.core.id.record().clone());
+        m.set(node, &ct::NODE, &ct::NodeInfo { software: self.cfg.software.clone(), schemas: BTreeMap::new() })?;
+        self.commit(m)?;
+        let kem = self.core.id.keys().kem.public();
+        let mut k = Mutation::new();
+        k.set(node, &ct::KEYS, &ct::Keys { key: Some(ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec())), ..Default::default() })?;
+        self.commit(k)?;
+        Ok(())
+    }
+
+    /// This node's tid.
+    pub fn tid(&self) -> Tid {
+        self.core.id.tid()
+    }
+
+    pub fn identity(&self) -> &Identity {
+        &self.core.id
+    }
+
+    /// The corrected wall clock.
+    pub fn now(&self) -> WallMs {
+        self.core.now()
+    }
+
+    /// The clock correction from node-sync (spec/sync.md §6).
+    pub fn set_clock_offset(&mut self, ms: i64) {
+        self.core.hlc.set_offset(ms);
+    }
+
+    /// A channel of engine events, sent after durability.
+    pub fn subscribe(&mut self) -> Receiver<Event> {
+        self.core.events.subscribe()
+    }
+
+    /// Runs `f` in one store transaction; events go out once it is durable.
+    pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let r = match self.store.transaction(&mut self.store_rng) {
+            Ok(txn) => {
+                let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+                match f(&mut tx) {
+                    Ok(v) => {
+                        let Tx { txn, .. } = tx;
+                        txn.commit().map(|_| v).map_err(Error::from)
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e.into()),
+        };
+        match r {
+            Ok(v) => {
+                self.core.events.flush();
+                Ok(v)
+            }
+            Err(e) => {
+                self.core.events.discard();
+                // caches may hold the aborted transaction's changes
+                self.reload()?;
+                Err(e)
+            }
+        }
+    }
+
+    /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
+    /// subscribers).
+    pub(crate) fn reload(&mut self) -> Result<()> {
+        let id = Identity::from_seed(self.core.id.seed().clone());
+        let mut fresh = Core::new(id, self.clock.clone());
+        fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
+        fresh.hlc.set_offset(self.core.hlc.offset());
+        fresh.events = std::mem::take(&mut self.core.events);
+        self.core = fresh;
+        let txn = self.store.transaction(&mut self.store_rng)?;
+        let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
+        crate::apply::load(&mut tx)
+    }
+}

@@ -23,6 +23,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | tree fan-out | at most 512 links per interior node or link page (§6) |
 | `MAX_COMMITMENTS` | 16 token commitments per blob prefix |
 | `MAX_CLAIMS` | 65 536 keys per claim set |
+| `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MEMBERSHIP_KEEP` | 90 days |
 | `INBOX_LIFETIME` | 90 days |
@@ -178,15 +179,15 @@ event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id
 range  := [lower, upper, mode]
 mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
-Steps and claim sets are the canonical bytes of §8 as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `token` 32 bytes; `log_id` 16 bytes.
+Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `token` 32 bytes; `log_id` 16 bytes.
 
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
-- **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5).
+- **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5). A server MAY answer a genesis step for a new label with Error 12 when it is at its storage cap.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request.
 - **Delete**: per item, `sig` under `"osis v1 delete"`, digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(token)]`): by the head's delete key without a token; with a token, by the head's write key for a level-3 commitment and its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
-- **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events. `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
+- **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events, in ascending blob ID order. While such a replay has `more`, its cursor is `[replay_id, pos]`: `replay_id` the first 16 bytes of BLAKE3(`"osis v1 replay"` || `log_id`), `pos` the first 8 bytes of the last blob ID sent as a big-endian integer; a Sync carrying it continues with the IDs above that position, and the last page returns the log cursor taken when the replay started (a peer that no longer holds that replay answers Error 10). `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label. **Signal**: `auth` as in §9; the receiver forwards it unchanged to its other subscribers of the label and stores nothing.
@@ -212,4 +213,4 @@ Steps and claim sets are the canonical bytes of §8 as byte strings; blobs are b
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
-- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

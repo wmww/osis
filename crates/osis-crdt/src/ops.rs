@@ -85,12 +85,20 @@ pub enum Op {
     Remove(Value),
     /// Bag contribution: counter increment, max/min observation.
     Inc(Value),
-    /// Sequence insert before visible index `at` (plans/crdt-seq.md).
+    /// Sequence insert before visible index `at` (§5.7): list items, or strings whose chars a
+    /// text inserts.
     Insert { at: usize, items: Vec<Value> },
-    /// Sequence delete of `len` visible elements from `at`.
+    /// Sequence delete of `len` visible elements from `at` (§5.7).
     Delete { at: usize, len: usize },
-    /// Sequence move of `len` visible elements from `at` to before visible index `to`.
+    /// Sequence move of `len` visible elements from `at` so the range starts at index `to` of the
+    /// sequence without it (§5.7).
     Move { at: usize, len: usize, to: usize },
+    /// Text paste of cut elements `dots` (`cut_dots`) at visible index `at` of the text without
+    /// them: a move plus an undelete (§5.7 cut, paste). Fails if a dot or its char is gone.
+    Paste { dots: Vec<Dot>, at: usize },
+    /// Sequence edit from `base` to `new` (`diff_values`), rebased onto the current sequence by
+    /// matching `base` to its read (notes/api.md `edit`).
+    Edit { base: Value, new: Value },
 }
 
 /// An op with its path.
@@ -424,8 +432,11 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                 .ok_or(Error::Mismatch("inc needs a counter, max or min"))?;
             Ok(Some(contribution(w, kind, a.clone())))
         }
-        Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } => {
-            let enc = view.encoding().ok_or(Error::Mismatch("sequence op needs a list or text type"))?;
+        Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. } => {
+            let enc = match op {
+                Op::Edit { new, .. } => encoding_for(view, new),
+                _ => view.encoding().ok_or(Error::Mismatch("sequence op needs a list or text type"))?,
+            };
             let text = match enc {
                 Encoding::Text => true,
                 Encoding::List => false,

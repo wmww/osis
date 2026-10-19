@@ -20,8 +20,8 @@ Spec: spec/commits.md (all), spec/crdt.md §2.2 (HLC, drift), §4.5–§4.8, §8
 - A `LocalPeer` test harness: two engines exchanging commit bytes directly (the simulator's seed; plans/sim.md grows it).
 
 ## Steps
-- [ ] Module layout committed early (so node-sync and flows can start); identity, clock, store wiring, creation records.
-- [ ] Writing path end to end (ops → commit → local apply → events) for all encodings; paged deltas.
+- [x] Module layout committed early (so node-sync and flows can start); identity, clock, store wiring, creation records.
+- [x] Writing path end to end (ops → commit → local apply → events) for all encodings; paged deltas.
 - [ ] Receiving path: verification, pending/parking, atomic apply, events; two-engine convergence tests under random delivery (crdt differential at the node level).
 - [ ] Validity and un-merge with perm; the Bob revocation scenario and Carol variant as tests (notes/permissions.md) at the engine level with hand-fed membership commits.
 - [ ] Retention, expiry, purge, compaction snapshots, undo; tests per spec/commits.md §5–§7 sentence.
@@ -31,3 +31,4 @@ Spec: spec/commits.md (all), spec/crdt.md §2.2 (HLC, drift), §4.5–§4.8, §8
 Two engines connected by `LocalPeer` converge for every encoding, honour revocation, retention, expiry, purge and undo per the tests; node-sync and flows build on the committed module layout; notes/overview.md status updated. Delete this plan, folding engine notes into a new notes/node.md.
 
 ## Progress
+- Steps 1–2: layout (notes/node.md), identity, HLC, store wiring, creation records, writing path (all encodings but sequences, which wait for crdt-seq), paged deltas, receiving/pending skeleton, LocalPeer.

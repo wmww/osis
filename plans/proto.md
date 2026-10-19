@@ -14,13 +14,15 @@ Spec: spec/sync.md §5 (operations), §6 (protocol, cursor sync, reconciliation,
 - Bundle import adapter: a bundle reader (osis-label) presented as a peer's log events into the client engine.
 
 ## Steps
-- [ ] Frame codec, negotiation, handshake, offset estimator; fuzz target for the frame/message decoders.
-- [ ] Message types with layouts (provisional module until protocol-spec is merged); vectors.
-- [ ] RBSR with proptests; cursor sync shapes.
-- [ ] Client and server engines with an in-crate loopback test (engine ↔ engine, in-memory `LabelStore`), scripted fault cases (lost cursor → reconciliation; oversized gained list; stale sync key → one signed step).
-- [ ] Bundle adapter.
+- [x] Frame codec, negotiation, handshake, offset estimator; fuzz target for the frame/message decoders.
+- [x] Message types with layouts (spec/wire.md §11.2); vectors.
+- [x] RBSR with proptests; cursor sync shapes.
+- [x] Client and server engines with an in-crate loopback test (engine ↔ engine, in-memory `LabelStore`), scripted fault cases (lost cursor → reconciliation; oversized gained list; stale sync key → one signed step).
+- [x] Bundle adapter.
 
 ## Done when
 server and node-sync are thin drivers around these engines; a loopback sync of N random entries converges in the round counts the spec's cost goals name (constant common case, log worst case; tier-2 test); notes/sync.md "Protocol" section records the message layouts summary and RBSR parameters. Delete this plan.
 
 ## Progress
+- Steps 1-5 landed (frame, Hello, offset; messages and vectors; RBSR and reconcile vectors; engines, `LabelStore`, loopback tests; `BundleImport`). Open for "done": server and node-sync as thin drivers; one connection serving both sides for P2P.
+- Review fixes: osis-label types and reader replace proto's copies; cached paths and per-step claim-set lookups; replay cursor (spec/wire.md §11.2); reconcile replies checked against the ranges asked; vectors on a real fixture.

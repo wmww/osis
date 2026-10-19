@@ -15,8 +15,8 @@ Spec: spec/data-model.md §6–§7, spec/crdt.md §8, spec/sync.md §1 (chunk re
 - Store: chunk and tree-node plaintext cache units per aspect (droppable, rebuildable); shredding a version drops its wrap and the keys only it reached (via links) — test that an old version's chunks are unreadable after purge while shared chunks still read through the live tree.
 
 ## Steps
-- [ ] Builder/reader with in-memory `BlobFetch`; property: round trip for random sizes incl. empty and exactly-threshold; memory bound test with reduced constants.
-- [ ] Tokens on chunks and re-encryption rule; dedup test; equality-by-hash integration in crdt/schema.
+- [x] Builder/reader with in-memory `BlobFetch`; property: round trip for random sizes incl. empty and exactly-threshold; memory bound test with reduced constants.
+- [x] Tokens on chunks and re-encryption rule; dedup test; equality-by-hash integration in crdt/schema.
 - [ ] Paging adapters + node hooks (pages before apply); frontier by link in flows.
 - [ ] Node write path: large register/blob/string, large set element and map key; API streaming (plans/api.md) hooks; sim scale scenario (a value of many chunks edited by two nodes; O(change) transfer measured, tier 2).
 
@@ -24,3 +24,4 @@ Spec: spec/data-model.md §6–§7, spec/crdt.md §8, spec/sync.md §1 (chunk re
 A value larger than memory (simulated by small constants) round-trips through two nodes and a server with O(change) bytes per edit (tier-2 budget ≈1.2x); purge of a version shreds only its unique chunks; notes/data-model.md updated. Delete this plan.
 
 ## Progress
+- Session 1 (library, osis-label): steps 1–2 done; step 3 library part done (page params on `BlobWriter`/`BlobReader`, paged snapshot through blobs, `osis_crdt::page_array`, `chunker/pages.vec`). Left for node integration (wave 4): store-backed `BlobStore` adapter, pages-before-apply hook (fetch on `Missing` or prefetch the commit chunk list), frontier by link in flows, step 4 write path and sim scale scenario, purge/shredding test, chunk cache units. Value equality by link hash moved into `osis_core::Value`. issues/large-value-seek.md.

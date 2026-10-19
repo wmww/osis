@@ -31,6 +31,9 @@ pub const MAX_BLOB: usize = 8 * MIB;
 pub const CHUNK_THRESHOLD: usize = 128 * KIB;
 /// A fragment's links are grouped into link pages above this (spec/wire.md §2, §6). fixed.
 pub const PAGE_TARGET: usize = 64 * KIB;
+/// Sequence elements in runs without `Content` per writer or import delta, pages included: bounds
+/// the records a small delta can create (spec/crdt.md §3.3 rule 7, spec/wire.md §2). fixed.
+pub const MAX_DELTA_BARE: u64 = 1 << 18;
 
 // Chunker (spec/wire.md §2, §6), shared by chunk trees and pages.
 /// Smallest chunk or page, except the last. fixed.

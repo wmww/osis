@@ -54,6 +54,9 @@ pub enum DecodeError {
     MapKeyOrder,
     /// Set elements not strictly increasing by canonical bytes (unsorted or duplicate).
     SetOrder,
+    /// Two set elements or map keys of distinct bytes that are equal values: links of one content
+    /// hash (spec/data-model.md §5, §6).
+    EqualLinks,
     /// null, undefined, half or single floats, other simple values.
     BadSimple,
     NonCanonicalNan,
@@ -73,6 +76,7 @@ crate::impl_error!(DecodeError {
     InvalidUtf8 => ("cbor: invalid utf-8"),
     MapKeyOrder => ("cbor: map keys unsorted or duplicate"),
     SetOrder => ("cbor: set elements unsorted or duplicate"),
+    EqualLinks => ("cbor: two set elements or map keys equal by link content hash"),
     BadSimple => ("cbor: simple value or float width outside the profile"),
     NonCanonicalNan => ("cbor: non-canonical NaN"),
     TagContent(t) => ("cbor: bad content for tag {t}"),
@@ -198,6 +202,15 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
         }
         Value::Map(m) => {
             len_head(out, MAJOR_MAP, m.len());
+            if m.keys().any(has_link) {
+                let mut entries: Vec<(Vec<u8>, &Value)> = m.iter().map(|(k, v)| (encode(k), v)).collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                for (k, v) in entries {
+                    out.extend_from_slice(&k);
+                    encode_into(v, out);
+                }
+                return;
+            }
             for (k, v) in m {
                 encode_into(k, out);
                 encode_into(v, out);
@@ -210,6 +223,12 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
         Value::Set(s) => {
             head(out, MAJOR_TAG, TAG_SET);
             len_head(out, MAJOR_ARRAY, s.len());
+            if s.iter().any(has_link) {
+                let mut items: Vec<Vec<u8>> = s.iter().map(encode).collect();
+                items.sort();
+                items.iter().for_each(|e| out.extend_from_slice(e));
+                return;
+            }
             s.iter().for_each(|e| encode_into(e, out));
         }
         Value::Link(l) => {
@@ -225,6 +244,19 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
             head(out, MAJOR_TAG, u.tag());
             out.extend_from_slice(u.content().as_bytes());
         }
+    }
+}
+
+/// Whether a link occurs in `v`. Only then can `Ord` (links by content hash) differ from the
+/// order of canonical bytes, so sets and maps holding one sort their encodings explicitly.
+fn has_link(v: &Value) -> bool {
+    match v {
+        Value::Link(_) => true,
+        Value::Enum(_, Some(p)) => has_link(p),
+        Value::List(l) => l.iter().any(has_link),
+        Value::Set(s) => s.iter().any(has_link),
+        Value::Map(m) => m.iter().any(|(k, v)| has_link(k) || has_link(v)),
+        _ => false,
     }
 }
 
@@ -382,7 +414,10 @@ impl<'a> Decoder<'a> {
                     }
                     prev = raw;
                     let v = self.item(depth + 1)?;
-                    m.insert(k, v);
+                    // Distinct bytes, one value: links with one content hash.
+                    if m.insert(k, v).is_some() {
+                        return Err(DecodeError::EqualLinks);
+                    }
                 }
                 Ok(Value::Map(m))
             }
@@ -424,7 +459,9 @@ impl<'a> Decoder<'a> {
                         return Err(DecodeError::SetOrder);
                     }
                     prev = raw;
-                    s.insert(e);
+                    if !s.insert(e) {
+                        return Err(DecodeError::EqualLinks);
+                    }
                 }
                 Ok(Value::Set(s))
             }

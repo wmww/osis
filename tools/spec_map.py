@@ -42,7 +42,7 @@ def rust_tests():
                 continue
             rel = os.path.relpath(path, ROOT)
             lines = open(path).read().splitlines()
-            header = " ".join(l for l in lines if l.startswith("//!"))
+            header = " ".join(l[3:] for l in lines if l.startswith("//!"))
             header_cites = citations(header)
             header_file = header_cites[0][0] if header_cites else None
             for i, line in enumerate(lines):
@@ -60,7 +60,7 @@ def rust_tests():
                 while j >= 0 and lines[j].strip().startswith(("//", "#[")):
                     above.append(lines[j])
                     j -= 1
-                comment = " ".join(reversed(above))
+                comment = " ".join(l.strip().lstrip("/!") for l in reversed(above))
                 own = citations(comment + " " + name.replace("_", " "), header_file)
                 exempt = "spec: none" in comment or top == "models"
                 tests.append({"id": f"{rel}::{name}", "cites": own or header_cites, "inherited": not own, "exempt": exempt})

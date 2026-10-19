@@ -46,6 +46,11 @@ impl<'s> Batch<'s> {
         let range = self.w.range();
         self.acc.filter(|f| !f.is_empty()).map(|f| (f, range))
     }
+
+    /// The delta and the writer, whose counters continue (a nested batch inside another op).
+    pub(crate) fn into_parts(self) -> (Option<Fragment>, Writer) {
+        (self.acc.filter(|f| !f.is_empty()), self.w)
+    }
 }
 
 fn member(f: Option<&Fragment>, enc: Encoding) -> Option<&Fragment> {
@@ -64,6 +69,10 @@ fn reset_of(f: Option<&Fragment>) -> Option<Stamp> {
 #[allow(clippy::too_many_arguments)]
 fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool) -> Result<Option<Fragment>, Error> {
     let Some((seg, rest)) = path.split_first() else {
+        // nothing of the batch at this position: resolve against the state itself, no clone
+        if a.is_none() && e.is_none() {
+            return leaf(w, s, view, &op.op, root);
+        }
         let cur = joined(s, a, e.as_ref());
         return leaf(w, cur.as_ref(), view, &op.op, root);
     };

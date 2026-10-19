@@ -16,7 +16,7 @@ impl Fragment {
         self.prune(None, &mut Changes::new());
     }
 
-    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
+    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         let exp = |d: &Dot| expired(d.owner());
         match self {
             Fragment::Slots(Slots { reg, members }) => {

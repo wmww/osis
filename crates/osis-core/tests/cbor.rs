@@ -115,7 +115,8 @@ proptest! {
         prop_assert_eq!(CanonicalBytes::from_value(&v), c);
     }
 
-    // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order.
+    // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order for values
+    // without two links of one content hash (random links never share one; see links_sort_by_bytes).
     #[test]
     fn ord_is_byte_order(a in value(), b in value()) {
         check_ord(&a, &b)?;
@@ -197,7 +198,7 @@ fn known_encodings() {
     let l = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
     let lh = format!("{} 83 5820{} 5820{} 5821 01{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32));
     assert_eq!(encode(&l), hex(&lh));
-    assert_eq!(d(&hex(&lh)), Ok(l));
+    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if Value::Link(x) == l && x.blob == BlobId([2; 32]) && x.key == [3; 32]));
     // §5: unknown tags keep tag and content.
     let u = hex("c2 4101");
     let v = d(&u).unwrap();
@@ -206,6 +207,63 @@ fn known_encodings() {
     // The reserved STRUCT tag is preserved like any unknown tag.
     let s = hex(&format!("{} a0", tag_head(TAG_STRUCT_RESERVED)));
     assert!(matches!(d(&s), Ok(Value::Unknown(_))));
+}
+
+// §4, §6: a link compares by content hash alone (two writes of one large value are equal);
+// a set or map holding two links with one hash is not canonical.
+#[test]
+fn links_equal_by_hash() {
+    use std::hash::{BuildHasher, RandomState};
+    let a = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let b = Value::Link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let c = Value::Link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    assert_eq!(a, b);
+    assert_ne!(a, c);
+    let rs = RandomState::new();
+    assert_eq!(rs.hash_one(&a), rs.hash_one(&b));
+    assert_eq!(Value::Set([a.clone(), b.clone(), c.clone()].into_iter().collect()), Value::Set([a.clone(), c].into_iter().collect()));
+    let mut set = encode(&Value::List(vec![a.clone(), b.clone()]));
+    set.splice(0..0, hex(&tag_head(TAG_SET)));
+    assert_eq!(d(&set), Err(DecodeError::EqualLinks));
+    let mut map = vec![0xa2];
+    for (k, v) in [(&a, 0u8), (&b, 1)] {
+        map.extend(encode(k));
+        map.push(v);
+    }
+    assert_eq!(d(&map), Err(DecodeError::EqualLinks));
+}
+
+// §5: with links of one content hash, Ord and byte order differ ([LA, 3] < [LB, 5] by value while
+// LA's bytes sort after LB's); sets and maps still encode sorted by bytes, round trip, and a
+// byte-sorted input re-encodes to itself.
+#[test]
+fn links_sort_by_bytes() {
+    let la = Value::Link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32] });
+    let lb = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let x = Value::List(vec![la, Value::Int(3)]);
+    let y = Value::List(vec![lb, Value::Int(5)]);
+    assert_eq!(x.cmp(&y), std::cmp::Ordering::Less);
+    assert!(encode(&x) > encode(&y));
+    let s = Value::Set([x.clone(), y.clone()].into_iter().collect());
+    let b = encode(&s);
+    let mut want = hex(&tag_head(TAG_SET));
+    want.push(0x82);
+    want.extend(encode(&y));
+    want.extend(encode(&x));
+    assert_eq!(b, want);
+    assert_eq!(d(&b).map(|v| encode(&v)), Ok(b.clone()));
+    let m = Value::Map([(x.clone(), Value::Int(1)), (y.clone(), Value::Int(2))].into_iter().collect());
+    let mb = encode(&m);
+    let mut want = vec![0xa2];
+    want.extend(encode(&y));
+    want.push(0x02);
+    want.extend(encode(&x));
+    want.push(0x01);
+    assert_eq!(mb, want);
+    assert_eq!(d(&mb).map(|v| encode(&v)), Ok(mb));
+    // Nested: the set inside a list still sorts by bytes.
+    let l = Value::List(vec![s]);
+    assert_eq!(d(&encode(&l)).map(|v| encode(&v)), Ok(encode(&l)));
 }
 
 // §5: every rejection rule.

@@ -16,13 +16,13 @@ blob/prefix.vec provisional
 blob/blobs.vec provisional
 chunker/gear.vec frozen c813b35539e04d0b0bcd6957028b3efe5e17d7d113c400298f44ddf4296e14a6 FC-1
 chunker/tree.vec provisional
-chunker/pages.vec pending osis-crdt (page split, link-page grouping)
+chunker/pages.vec provisional
 commit/headers.vec provisional
 step/steps.vec provisional
 inbox/inbox.vec provisional
 signal/signal.vec provisional
 link/link.vec provisional
 schema/core.vec provisional
-proto/messages.vec pending osis-proto
-proto/reconcile.vec pending osis-proto
+proto/messages.vec provisional
+proto/reconcile.vec provisional
 bundle/bundle.vec provisional
