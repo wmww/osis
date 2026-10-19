@@ -101,7 +101,7 @@ pub fn pages() -> VecFile {
         let mut r = Record::new()
             .with("case", name)
             .with("spec", SPEC)
-            .with("input", &format!("xof(\"osis test pages\", {n}) as byte strings of 1024 bytes"))
+            .with("input", format!("xof(\"osis test pages\", {n}) as byte strings of 1024 bytes"))
             .with("dedup", hex(dedup.expose()))
             .with("pages", elems.join(","));
         if !links.is_empty() {
