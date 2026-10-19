@@ -412,9 +412,6 @@ impl SyncEngine {
         for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Some((hold, live, aspects)) = self.judge(&l, &id, &e, bodies)? else { continue };
-            if std::env::var_os("OSIS_SYNC_TRACE").is_some() && hold != Hold::May {
-                eprintln!("judge {id:?}: {hold:?} live {live} {aspects:?}");
-            }
             let Hold::MustNot(why) = hold else { continue };
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,

@@ -900,8 +900,10 @@ dependencies = [
  "osis-perm",
  "osis-proto",
  "osis-schema",
+ "osis-server",
  "osis-store",
  "osis-transport",
+ "tokio",
 ]
 
 [[package]]

@@ -96,6 +96,12 @@ impl Net {
         self.add_node(seed, cfg)
     }
 
+    /// Takes node `n`'s sync engine out (to run it under a driver).
+    pub fn take(&mut self, n: usize) -> SyncEngine {
+        self.nodes[n].online = false;
+        self.nodes[n].sync.take().unwrap()
+    }
+
     pub fn sync(&mut self, n: usize) -> &mut SyncEngine {
         self.nodes[n].sync.as_mut().unwrap()
     }
@@ -264,6 +270,12 @@ impl Net {
     /// (rotation boxing every member), a deposit seed and a label at `servers`; the setup
     /// commits delivered to the members directly.
     pub fn group(&mut self, admin: usize, members: &[(usize, Role)], servers: &[usize]) -> Tid {
+        let addrs: Vec<Address> = servers.iter().map(|s| self.servers[*s].address.clone()).collect();
+        self.group_at(admin, members, addrs)
+    }
+
+    /// `group` with server addresses.
+    pub fn group_at(&mut self, admin: usize, members: &[(usize, Role)], addrs: Vec<Address>) -> Tid {
         for (m, _) in members {
             self.pair(*m, admin);
         }
@@ -282,7 +294,6 @@ impl Net {
         }
         let e = self.engine(admin);
         rotation(e, g, &recipients, 1, true);
-        let addrs: Vec<Address> = servers.iter().map(|s| self.servers[*s].address.clone()).collect();
         self.engine(admin).create_label(&g, addrs, &mut SeededRng::from_u64(77)).unwrap();
         for (m, _) in members {
             self.pair(admin, *m);

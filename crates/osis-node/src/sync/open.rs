@@ -128,9 +128,6 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let (index, tries) = self.tries(&server, &g, &l);
-        if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
-            eprintln!("[{}] start {l:?} index {index:?} tries {}", self.engine.tid(), tries.len());
-        }
         let lc = LConn {
             group: g,
             index,

@@ -22,6 +22,15 @@ osis-label.workspace = true
 osis-store.workspace = true
 osis-proto.workspace = true
 osis-transport.workspace = true
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 
 [dev-dependencies]
 osis-server.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[features]
+default = ["driver"]
+# The tokio driver over osis-transport sessions; off, the crate is the sans-I/O engine.
+driver = ["dep:tokio", "osis-transport/link"]
+# Tier-2 tests against the real server over QUIC.
+quic = ["driver", "osis-transport/quic", "osis-server/quic"]

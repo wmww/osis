@@ -97,9 +97,6 @@ impl SyncEngine {
                 Some(tl) => tl.may_purge(&me, t, by, &h.actor, At::now(ts)),
                 None => by != PurgeBy::Nobody && self.engine.role_on(t) >= Some(Role::Admin),
             };
-            if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
-                eprintln!("compact {c:?}: may {may} keep {:?} covered {:?}", self.engine.body_keep(&c, t, ak)?.at_least, self.engine.covered(&s, &c, t, ak)?);
-            }
             if !may || self.engine.body_keep(&c, t, ak)?.at_least > now.0 || self.engine.covered(&s, &c, t, ak)? != Some(true) {
                 continue;
             }

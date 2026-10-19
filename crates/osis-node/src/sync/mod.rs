@@ -11,6 +11,8 @@
 //! must-hold bodies, relays, certificates and heartbeats, deletions of must-not-hold bodies.
 
 mod bundle;
+#[cfg(feature = "driver")]
+pub mod driver;
 mod inbound;
 mod local;
 mod open;
@@ -427,9 +429,6 @@ impl SyncEngine {
 
     fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
         use ClientEvent as E;
-        if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
-            eprintln!("[{}] conn {conn}: {}", self.engine.tid(), format!("{e:?}").chars().take(300).collect::<String>());
-        }
         match e {
             E::Ready { .. } => self.ready(conn, out)?,
             E::ClockOffset { offset_ms, .. } => {
