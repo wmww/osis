@@ -23,7 +23,7 @@ Wave 2 finishing (proto fixes, crdt-seq review); wave 3 started (transport, larg
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
-| crdt-seq | review | reviewer running; issues/crdt-seq-linearization-cost.md, issues/crdt-run-amplification.md |
+| crdt-seq | review fixes | reviewer found quadratic cycle breaking, run amplification (MAX_DELTA_BARE decided), Edit rebase data loss; agent fixing |
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | merged, reviewed | plan stays until server and node-sync are thin drivers |
