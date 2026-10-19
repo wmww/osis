@@ -27,7 +27,12 @@ Wave 2 (all of wave 1 merged).
 | commit | merged, reviewed | plan stays until vectors freeze and node-core uses it; owner-call issues/token-admin-secret.md; issues/commit-delta-content-rules.md |
 | label | merged, reviewed | issues/tree-reader-bounds.md; tree reader to be unified with osis-commit's at integration |
 | proto | review fixes | agent swapping in osis-label types, replay cursor design, perf fixes |
-| keys | review fixes | reviewer found the two-hop cascade gap (recursive covers rule decided) + raced key-actor re-seal; agent fixing |
+| keys | merged, reviewed | recursive covers rule in spec; plan stays until flows and node-sync use it |
+| crdt-seq | running (opus, worktree) | |
+| commit | running (opus, worktree) | |
+| label | running (opus, worktree) | |
+| proto | running (opus, worktree) | |
+| keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
@@ -58,6 +63,8 @@ Wave 2 (all of wave 1 merged).
 - label: spec/wire.md §13: a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB, so a step and its set fit one Register message.
 - crdt-core review: spec/crdt.md §2.2: a `Derived(d)` dot orders as `(d.source, d.ctr, i)`, right after the write it embeds (it sorted above every source, so a reset at the same `ts` above the register write kept the embedded characters in some delivery orders). §4.8 names the implied register reset. Model updated (`embedded_chars_order_right_after_their_write`).
 - commit: spec/commits.md §5: compaction snapshots of membership-class aspects and `/created` keep the fixed retention (the text read as if every snapshot delta were `writer`); `/created`'s "forever" is `abs` = forever on the wire. spec/wire.md §4: a header token no aspect lists is bad input.
+- keys: spec/crypto.md §3 a key actor's role secrets sit at the fixed epoch (0, 16 zero bytes) (derived things and symmetric boxes need an epoch); §4 a rotation's key-actor box also carries the newest secret of the roles below its key that it does not rotate (removing the old box stranded them); spec/permissions.md §3 the cascade rotates on each thing only the roles A holds there among those M could open through A (per-role KEM keys).
+- keys review: spec/crypto.md §4 the covers rule for a departure inside a member is recursive (M's box names M's newest keyset epoch and that epoch covers the departure); spec/permissions.md §3 a node rotating for a departure inside M rotates the intermediates top-down where it may, else does not encrypt under the epoch (stranded until the intermediate rotates). Scenario: device D removed from person P, P member of team T, T member of doc U: U's writers kept encrypting under U's old epoch because T's box at U still named T's newest keyset. Also spec/crypto.md §4: a rotation that removes a key actor's box and writes it no role writes it one box with every role it holds; a grant to a key actor carries each role's newest current epoch; carried secrets are encrypting under their epochs (an uncovered carried role is rotated too). §5: the rotation commit wraps under the newest superseded read epoch whose secret the rotator holds. spec/sync.md §5 "greater (n, nonce)" → "newer". spec/permissions.md §3 cascade wording ("the roles M left").
 
 ## Owner-calls pending
 - issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP).

@@ -18,13 +18,14 @@ Spec: spec/crypto.md §3–§5, §7; spec/permissions.md §3; spec/sync.md §2 (
 - A removed node drops the actor's secrets and what it can no longer read (list what to drop; store executes).
 
 ## Steps
-- [ ] Epoch model, aspects and their delta rules (fork merge test: two concurrent rotations' boxes both survive; members hold both secrets).
-- [ ] Box production/opening/history; sizes (≈1.2 KB per sealed box; symmetric 49 B + epoch).
-- [ ] Derived secrets; own-secrets switch; covers rule with the notes scenarios (lost device → owner rotation → owned thing's derived epoch stale; grant raced by rotation → re-seal trigger; a removal and the rotation it requires are one commit, so a rotation is never held without its removal).
-- [ ] Planner over an abstract graph trait; wrap epoch choice; token secrets.
-- [ ] Vectors for `/keys` and `/secrets` encodings once protocol-spec fixes them; proptest: a member departed before epoch n+1 can open nothing at ≥ n+1 given only its boxes; every current member opens the newest epoch of each of its roles after a rotation.
+- [x] Epoch model, aspects and their delta rules (fork merge test: two concurrent rotations' boxes both survive; members hold both secrets).
+- [x] Box production/opening/history; sizes (≈1.2 KB per sealed box; symmetric 49 B + epoch).
+- [x] Derived secrets; own-secrets switch; covers rule with the notes scenarios (lost device → owner rotation → owned thing's derived epoch stale; grant raced by rotation → re-seal trigger; a removal and the rotation it requires are one commit, so a rotation is never held without its removal).
+- [x] Planner over an abstract graph trait; wrap epoch choice; token secrets.
+- [x] Vectors for `/keys` and `/secrets` encodings once protocol-spec fixes them; proptest: a member departed before epoch n+1 can open nothing at ≥ n+1 given only its boxes; every current member opens the newest epoch of each of its roles after a rotation.
 
 ## Done when
 membership-flows and node-sync use this crate for every key decision; notes/crypto.md and notes/permissions.md updated with the planner's shape. Delete this plan.
 
 ## Progress
+- Steps 1–5 landed: crate surface in notes/crypto.md (osis-keys) and notes/permissions.md (Planner); `/keys` and `/secrets` value encodings are covered by `schema/core.vec` (no keys subject); props test in tests/props.rs. Open: the node wires `SecretStore`, departures persistence, and `PermGraph`.

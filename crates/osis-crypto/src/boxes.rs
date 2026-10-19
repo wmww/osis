@@ -19,6 +19,9 @@ pub struct Epoch {
 }
 
 impl Epoch {
+    /// `(0, 16 zero bytes)`: the fixed epoch of a key actor's role secrets (spec/crypto.md §3).
+    pub const ZERO: Epoch = Epoch { n: 0, nonce: [0; 16] };
+
     /// `TooLarge` above `i64::MAX`.
     pub fn new(n: u64, nonce: [u8; 16]) -> Result<Epoch, Error> {
         Ok(Epoch { n: i64::try_from(n).map_err(|_| Error::TooLarge)?, nonce })

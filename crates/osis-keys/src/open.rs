@@ -1,0 +1,180 @@
+//! Opening `/secrets` (spec/crypto.md §4): a member's boxes with any key it holds, then older
+//! epochs through history boxes; `SecretStore` persists what a node holds.
+
+use crate::aspects::{from_schema, history_key, observe_secrets};
+use crate::epoch::ActorEpochs;
+use crate::Error;
+use osis_core::{Role, Tid};
+use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
+use osis_schema::core_types::{BoxKey, HistoryKey, Sealed, SecretBox, Secrets};
+use std::collections::BTreeMap;
+
+/// Who opens: a key actor by its seed, or an actor member by the role secrets it holds.
+pub enum Opener<'a> {
+    KeyActor { member: Tid, seed: &'a Secret32 },
+    Actor { member: Tid, epochs: &'a ActorEpochs },
+}
+
+impl Opener<'_> {
+    pub fn member(&self) -> Tid {
+        match self {
+            Opener::KeyActor { member, .. } | Opener::Actor { member, .. } => *member,
+        }
+    }
+}
+
+/// One role secret recovered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opened {
+    pub role: Role,
+    pub epoch: Epoch,
+    pub secret: Secret32,
+}
+
+/// Opens every box of `actor`'s `/secrets` addressed to the opener. Boxes it cannot open (a key
+/// it does not hold, bad bytes) are returned with the reason; they are not fatal.
+pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opened>, Vec<(BoxKey, Error)>) {
+    let member = opener.member();
+    let mut kem_cache: Option<KemSecret> = None;
+    let mut out = Vec::new();
+    let mut failed = Vec::new();
+    for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.member == member) {
+        match open_one(actor, k, b, opener, &mut kem_cache) {
+            Ok(Some(items)) => out.extend(items),
+            Ok(None) => {}
+            Err(e) => failed.push((k.clone(), e)),
+        }
+    }
+    (out, failed)
+}
+
+/// `Ok(None)`: the opener holds no key for this box.
+fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: &mut Option<KemSecret>) -> Result<Option<Vec<Opened>>, Error> {
+    let epoch = from_schema(&k.epoch)?;
+    let slot = BoxSlot::Secrets { actor: *actor, member: k.member, role: k.role, epoch };
+    match b {
+        SecretBox::Sealed(sb) => {
+            let keyset = sb.keyset.as_ref().map(from_schema).transpose()?;
+            let kem = match (opener, keyset) {
+                (Opener::KeyActor { seed, .. }, None) => kem_cache.get_or_insert_with(|| KeyActorKeys::from_seed(seed).kem).clone(),
+                (Opener::Actor { epochs, .. }, Some(ks)) => match epochs.role(k.role).secret(&ks) {
+                    Some(s) => role_kem(s),
+                    None => return Ok(None),
+                },
+                _ => return Err(Error::Mismatch("sealed form does not fit the member kind")),
+            };
+            let Sealed::X25519MlKem768(bytes) = &sb.sealed;
+            let items = open_box(&kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
+            let key_actor = keyset.is_none();
+            // An actor's box carries its key's (role, epoch) only; a key actor's, one secret per
+            // role at or below its key's role, the key's role at the key's epoch.
+            let fits = items.iter().any(|i| i.role == k.role && i.epoch == epoch)
+                && items.iter().all(|i| i.role <= k.role)
+                && (key_actor || items.len() == 1);
+            if !fits {
+                return Err(Error::Mismatch("box items"));
+            }
+            Ok(Some(items.into_iter().map(|i| Opened { role: i.role, epoch: i.epoch, secret: i.secret }).collect()))
+        }
+        SecretBox::Symmetric(sym) => {
+            let epoch_s = from_schema(&sym.epoch)?;
+            let s = match opener {
+                Opener::KeyActor { seed, .. } if epoch_s == Epoch::ZERO => key_actor_role_secret(seed, k.role),
+                Opener::KeyActor { .. } => return Ok(None),
+                Opener::Actor { epochs, .. } => match epochs.role(k.role).secret(&epoch_s) {
+                    Some(s) => s.clone(),
+                    None => return Ok(None),
+                },
+            };
+            let secret = open_symmetric_box(&s, &slot, epoch_s, &sym.wrap)?;
+            Ok(Some(vec![Opened { role: k.role, epoch, secret }]))
+        }
+    }
+}
+
+/// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly, adding the
+/// earlier secrets and marking them superseded by the epoch whose history lists them.
+pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) -> Vec<(HistoryKey, Error)> {
+    let mut failed: BTreeMap<HistoryKey, Error> = BTreeMap::new();
+    let mut done: std::collections::BTreeSet<HistoryKey> = std::collections::BTreeSet::new();
+    loop {
+        let mut progress = false;
+        for (k, ct) in &secrets.history {
+            if done.contains(k) {
+                continue;
+            }
+            let Ok(e) = from_schema(&k.epoch) else {
+                failed.insert(k.clone(), Error::Mismatch("history epoch"));
+                done.insert(k.clone());
+                continue;
+            };
+            let Some(s) = epochs.role(k.role).secret(&e).cloned() else { continue };
+            done.insert(k.clone());
+            progress = true;
+            match open_history(&s, actor, k.role, &e, ct) {
+                Ok(earlier) => {
+                    let re = epochs.role_mut(k.role);
+                    re.rotation(e, earlier.iter().map(|(x, _)| *x));
+                    for (x, sx) in earlier {
+                        if re.secret(&x).is_none() {
+                            re.set_secret(x, sx);
+                        }
+                    }
+                }
+                Err(err) => {
+                    failed.insert(k.clone(), err.into());
+                }
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+    failed.into_iter().collect()
+}
+
+/// Everything a node learns from `actor`'s `/secrets`: the epochs named, its boxes' secrets,
+/// then older ones by history. Returns what could not be opened.
+pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs) -> Result<Vec<Error>, Error> {
+    observe_secrets(secrets, epochs)?;
+    let (opened, failed) = open_boxes(actor, secrets, opener);
+    for o in opened {
+        let re = epochs.role_mut(o.role);
+        if re.secret(&o.epoch).is_none() {
+            re.set_secret(o.epoch, o.secret);
+        }
+    }
+    let mut errs: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();
+    errs.extend(open_histories(actor, secrets, epochs).into_iter().map(|(_, e)| e));
+    Ok(errs)
+}
+
+/// Whether `epochs` holds the history box key for (role, epoch) in `secrets`.
+pub fn has_history(secrets: &Secrets, role: Role, epoch: &Epoch) -> bool {
+    secrets.history.contains_key(&history_key(role, epoch))
+}
+
+/// Persistence of held epochs and secrets per actor (the store implements it).
+pub trait SecretStore {
+    fn load(&self, actor: &Tid) -> Option<ActorEpochs>;
+    fn save(&mut self, actor: &Tid, epochs: &ActorEpochs);
+    fn remove(&mut self, actor: &Tid);
+}
+
+/// In-memory `SecretStore` for tests.
+#[derive(Default, Debug)]
+pub struct MemorySecretStore {
+    map: BTreeMap<Tid, ActorEpochs>,
+}
+
+impl SecretStore for MemorySecretStore {
+    fn load(&self, actor: &Tid) -> Option<ActorEpochs> {
+        self.map.get(actor).cloned()
+    }
+    fn save(&mut self, actor: &Tid, epochs: &ActorEpochs) {
+        self.map.insert(*actor, epochs.clone());
+    }
+    fn remove(&mut self, actor: &Tid) {
+        self.map.remove(actor);
+    }
+}
