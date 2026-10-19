@@ -29,6 +29,9 @@ pub(crate) enum Try {
     Sync { step: Option<Step>, index: u64, key: SigningSecret },
     /// A claim at a step.
     Claim { step: Step, key: SigningSecret },
+    /// A key actor this node holds (a recovery or link key) by its static entry; the head's
+    /// entry box gives the read secret (spec/sync.md §2, §5).
+    Static { kem: osis_crypto::KemSecret, key: SigningSecret },
 }
 
 impl Try {
@@ -36,12 +39,14 @@ impl Try {
         match self {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
+            Try::Static { key, .. } => OpenKey::Static(key.clone()),
         }
     }
     fn step(&self) -> Option<&Step> {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
+            Try::Static { .. } => None,
         }
     }
 }
@@ -96,6 +101,7 @@ impl SyncEngine {
                     v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
                 }
             }
+            v.extend(self.static_tries());
             return (None, v);
         };
         let index = gl.index;
@@ -125,7 +131,20 @@ impl SyncEngine {
                 }
             }
         }
+        v.extend(self.static_tries());
         (Some(index), v)
+    }
+
+    /// Static-entry opens for the key actors this node holds that are not nodes.
+    fn static_tries(&self) -> Vec<Try> {
+        self.engine.core.key_actors.values().map(|id| Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() }).collect()
+    }
+
+    /// Follows a label known only by ID and servers (a recovery card's home label, a link's
+    /// label): opened by guessed index or by a held key actor's static entry.
+    pub fn follow(&mut self, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
+        self.state.add_hint(label, super::state::Hint { thing, servers });
+        self.handle(super::Event::Local)
     }
 
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
@@ -181,11 +200,20 @@ impl SyncEngine {
     }
 
     /// Opened at `head`: accept it when recorded or known, else verify the server's path.
-    pub(crate) fn opened(&mut self, conn: ConnId, l: LabelId, head: Step, _entry_box: Option<SecretBox>, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn opened(&mut self, conn: ConnId, l: LabelId, head: Step, entry_box: Option<SecretBox>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
         let g = lc.group;
         let tried = lc.tries.first().cloned();
+        // a static entry: the head's entry box carries the read secret of the registered epoch
+        if let (Some(Try::Static { kem, .. }), Some(b)) = (&tried, &entry_box) {
+            match osis_label::open_entry_box(b, &head, osis_label::EntryKey::Kem(kem)) {
+                Ok((Some(e), secret)) => self.engine.learn_read_secret(&g, e, secret)?,
+                Ok((None, _)) => self.diag("entry box without its epoch".into()),
+                Err(e) => self.diag(format!("entry box: {e}")),
+            }
+            return self.accept_head(conn, l, head, out);
+        }
         if let Some(Try::Sync { step: None, index, .. }) = &tried
             && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
         {

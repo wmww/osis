@@ -85,7 +85,8 @@ fn rotation_wrap_exception_spec_crypto_5() {
     let c = rotation(e, g, &rs, 9, false);
     let after = e.epochs(&g).unwrap().read.newest_held().map(|(_, s)| s.clone()).unwrap();
     assert_ne!(before.expose(), after.expose());
-    assert_eq!(e.wrap_secret(&g, Some(&c)).unwrap().unwrap().expose(), before.expose());
+    let parts: Vec<(usize, usize)> = (0..e.header(&c).unwrap().aspects.len()).map(|i| (i, 0)).collect();
+    assert_eq!(e.wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap().expose(), before.expose());
     assert_eq!(e.wrap_secret(&g, None).unwrap().unwrap().expose(), after.expose());
 }
 

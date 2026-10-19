@@ -166,9 +166,10 @@ impl Engine {
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
     /// current secret held (only a stranded heartbeat may be placed).
-    pub fn wrap_secret(&mut self, g: &Tid, c: Option<&CommitId>) -> Result<Option<Secret32>> {
+    pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[(usize, usize)])>) -> Result<Option<Secret32>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
-        if let Some(c) = c
+        if let Some((c, parts)) = c
+            && self.carries_secrets(g, c, parts)
             && let Some(ep) = self.rotation_wrap_epoch(g, c)?
             && let Some(s) = e.read.secret(&ep)
         {
@@ -178,6 +179,14 @@ impl Engine {
             WrapEpoch::Current(ep) => e.read.secret(&ep).cloned(),
             _ => None,
         })
+    }
+
+    /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
+    /// from (only a blob carrying the boxes takes the rotation's wrap exception).
+    fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let Some(a) = self.core.secret_actor(g) else { return false };
+        let Some(h) = self.header(c) else { return false };
+        parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "/secrets" | "/keys"))
     }
 
     /// The newest established read secret held, current or not (a stranded heartbeat's wrap,

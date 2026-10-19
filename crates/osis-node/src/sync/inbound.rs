@@ -155,8 +155,26 @@ impl SyncEngine {
     }
 
     /// Held read secrets of a group, newest first.
+    /// Held read secrets of a group, newest first; then those derived from its owner's (a
+    /// thing that got secrets of its own, or one owned by a key actor this node holds: the
+    /// rotation that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     pub(crate) fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
-        self.engine.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default()
+        let mut v: Vec<Secret32> = self.engine.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
+        // the owner's epochs; a thing whose `/created` is not here yet (a recovery card's
+        // person) may be owned by any key actor held
+        let owners: Vec<osis_keys::ActorEpochs> = match self.engine.core.created(g) {
+            Some(CreationRecord::Thing { owner, .. }) => self.engine.epochs(owner).or_else(|| self.engine.core.key_actors.get(owner).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
+            Some(CreationRecord::KeyActor { .. }) => Vec::new(),
+            None => self.engine.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
+        };
+        for oe in owners {
+            for (_, s) in osis_keys::ActorEpochs::derived(&oe, g).read.held_newest_first() {
+                if !v.iter().any(|x| x.expose() == s.expose()) {
+                    v.push(s.clone());
+                }
+            }
+        }
+        v
     }
 
     /// Actors whose inbox is `l`, with their held read KEM secrets.

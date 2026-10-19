@@ -272,3 +272,28 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("for bob")));
 }
+
+// spec/sync.md §2, §5 (static entries): a recovery key held on a fresh device opens its
+// person's home label by static entry, takes the read secret from the head's entry box and
+// downloads what the label holds.
+#[test]
+fn static_entry_opens_home_label_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let c = net.node(3, &[sv]);
+    let addr = net.address(sv);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let t = net.item(a, alice.person, alice.person, "on the card's label");
+    net.run();
+    let card = alice.card.clone();
+    net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
+    let acts = net.sync(c).follow(card.person, card.home_label, card.servers.clone());
+    net.actions(c, acts);
+    net.run();
+    net.run();
+    diags(&mut net, &[c]);
+    assert_eq!(net.read(c, t), Some(s("on the card's label")));
+}

@@ -358,3 +358,18 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
     }
     Ok(())
 }
+
+impl crate::engine::Engine {
+    /// Records a read secret learned from a label's entry box (a recovery or link key opening
+    /// by static entry, spec/sync.md §2): kept for reading, unestablished.
+    pub(crate) fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<()> {
+        let g = *g;
+        self.run(|tx| {
+            tx.core.touch();
+            let ep = tx.core.secrets.entry(g).or_default();
+            ep.role_mut(Role::Read).observe(e);
+            ep.role_mut(Role::Read).set_secret(e, secret);
+            crate::flows::save_epochs(tx, &g)
+        })
+    }
+}

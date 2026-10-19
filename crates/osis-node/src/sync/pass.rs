@@ -291,7 +291,7 @@ impl SyncEngine {
     /// Places a body under `l`: an encryption of it this node holds (never a certificate
     /// copy's, never one tombstoned there), else a fresh one; wrapped for the label.
     fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
-        let Some(secret) = self.engine.wrap_secret(g, Some(&b.commit))? else { return Ok(None) };
+        let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         let reuse = if cert { None } else { self.state.blob_for(&b.commit, &b.parts, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
         let (id, key) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone()))) {
             Some(x) => x,
