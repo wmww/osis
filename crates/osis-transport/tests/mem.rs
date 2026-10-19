@@ -289,3 +289,119 @@ fn virtual_sleep() {
     });
     assert_eq!(at, Some(5));
 }
+
+// spec/sync.md §10: closing a listener resets connections it never accepted; the dialer sees Closed, no hang.
+#[test]
+fn listener_close_resets_queued() {
+    let net = Net::new(13);
+    let mut s = Sched::new(13, Some(net.clone()));
+    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let addr = l.address();
+    let cli = net.endpoint("cli");
+    let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
+    drop(l);
+    let r = s.block_on(async move { c.open_stream().await.map(|_| ()) }).unwrap();
+    assert_eq!(r, Err(Error::Closed));
+    assert_eq!(net.connections(), 0);
+}
+
+// spec/sync.md §10: a pending read on a queued connection ends when the listener closes.
+#[test]
+fn listener_close_ends_pending_read() {
+    let net = Net::new(15);
+    let mut s = Sched::new(15, Some(net.clone()));
+    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let addr = l.address();
+    let cli = net.endpoint("cli");
+    let got = Rc::new(RefCell::new(None));
+    let g = got.clone();
+    s.spawn(async move {
+        let c = cli.dial(&addr).await.unwrap();
+        let (mut tx, mut rx) = c.open_stream().await.unwrap();
+        tx.write_all(b"hello").await.unwrap();
+        let mut b = [0u8; 4];
+        let r = rx.read(&mut b).await;
+        *g.borrow_mut() = Some(r);
+    });
+    assert_eq!(s.run(), 1);
+    drop(l);
+    assert_eq!(s.run(), 0);
+    assert_eq!(*got.borrow(), Some(Err(Error::Closed)));
+}
+
+// spec/sync.md §10: a server dialing a peer server authenticates with its own static key.
+#[test]
+fn dial_as_presents_static_key() {
+    let net = Net::new(14);
+    let mut s = Sched::new(14, Some(net.clone()));
+    let mut l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let addr = l.address();
+    let me = net.endpoint("peer");
+    let k = s
+        .block_on(async move {
+            let _c = me.dial_as(&addr, &secret(9)).await.unwrap();
+            l.accept().await.unwrap().peer_key()
+        })
+        .unwrap();
+    assert_eq!(k, InProcess::public_key(&secret(9)));
+}
+
+type Log = Vec<(u64, usize, usize)>;
+
+/// Three clients echo through a partition, a heal and a kill; returns the delivery log and outcomes.
+fn faulty(seed: u64) -> (Log, Vec<(usize, bool)>) {
+    let net = Net::new(seed);
+    net.set_faults(Faults { latency: 1, jitter: 4, bandwidth: Some(0) }); // 0 is taken as 1
+    let mut s = Sched::new(seed, Some(net.clone()));
+    s.set_max_steps(200_000);
+    let l = s.block_on(mk_listener(net.clone(), "srv", 7)).unwrap();
+    let addr = l.address();
+    echo_server(&s.spawner(), l);
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let ends = Rc::new(RefCell::new(Vec::new()));
+    for i in 0..3usize {
+        let (cli, addr, log, ends, net) = (net.endpoint(&format!("c{i}")), addr.clone(), log.clone(), ends.clone(), net.clone());
+        s.spawn(async move {
+            let c = cli.dial(&addr).await.unwrap();
+            let (mut tx, mut rx) = c.open_stream().await.unwrap();
+            let data = vec![i as u8; 300];
+            let r = async {
+                tx.write_all(&data).await?;
+                tx.finish().await?;
+                let mut got = 0;
+                let mut buf = [0u8; 64];
+                loop {
+                    let n = rx.read(&mut buf).await?;
+                    if n == 0 {
+                        return Ok::<_, Error>(got);
+                    }
+                    got += n;
+                    log.borrow_mut().push((net.now(), i, got));
+                }
+            }
+            .await;
+            ends.borrow_mut().push((i, r == Ok(300)));
+        });
+    }
+    let n2 = net.clone();
+    s.spawn(async move {
+        n2.sleep(5).await;
+        n2.partition("c0", "srv");
+        n2.sleep(40).await;
+        n2.heal("c0", "srv");
+        n2.kill("c2");
+    });
+    s.run();
+    assert!(!s.capped());
+    (log.take(), ends.take())
+}
+
+// spec/sync.md §10: partitions, heals and kills replay identically under one seed; streams never corrupt.
+#[test]
+fn deterministic_with_partition_heal_kill() {
+    let a = faulty(7);
+    let mut ends = a.1.clone();
+    ends.sort();
+    assert_eq!(ends, vec![(0, true), (1, true), (2, false)]);
+    assert_eq!(a, faulty(7));
+}

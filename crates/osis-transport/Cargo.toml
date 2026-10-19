@@ -16,7 +16,7 @@ zeroize.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 ring = { version = "0.17", optional = true }
-tokio = { workspace = true, features = ["rt", "net"], optional = true }
+tokio = { workspace = true, features = ["rt", "net", "sync", "time"], optional = true }
 
 [features]
 quic = ["dep:quinn", "dep:rustls", "dep:ring", "dep:tokio"]

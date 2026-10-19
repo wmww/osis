@@ -40,6 +40,11 @@ impl Address {
     }
 }
 
+/// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §13).
+pub(crate) fn check_url(url: &str) -> Result<(), Error> {
+    if url.len() > osis_core::format::MAX_URL_BYTES { Err(Error::BadUrl(format!("{} bytes", url.len()))) } else { Ok(()) }
+}
+
 /// A listener's static secret: 32 seed bytes from which each transport derives its key pair.
 /// Wiped on drop; `Debug` is redacted.
 #[derive(Clone)]
@@ -68,11 +73,14 @@ pub struct ListenConfig {
 }
 
 /// Dials and listens. Dialing checks the peer's key against `Address::key` (spec/sync.md §10)
-/// and uses a fresh ephemeral key of its own per connection.
+/// and uses a fresh ephemeral key (and, for QUIC, UDP socket) of its own per connection.
 pub trait Transport: Send + Sync + 'static {
     type Conn: Connection;
     type Listener: Listener<Conn = Self::Conn>;
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
+    /// Dials authenticating with the static key of `secret` instead of an ephemeral one: for a
+    /// server dialing a peer server, which must see the dialer's own key (echo suppression).
+    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send;
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
 }
 

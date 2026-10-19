@@ -4,7 +4,6 @@
 //! client's a fresh key per connection. No certificates, no CA. Needs a tokio runtime.
 
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
-use crate::util::lock;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{verify_tls13_signature_with_raw_key, WebPkiSupportedAlgorithms};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime};
@@ -13,7 +12,7 @@ use rustls::sign::CertifiedKey;
 use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub const SCHEME: &str = "quic";
@@ -23,6 +22,16 @@ pub const ALPN: &[u8] = b"osis";
 const SERVER_NAME: &str = "osis";
 /// Keep-alive so idle subscriptions survive NAT and the idle timeout (provisional).
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
+/// A connection silent this long is dropped (provisional).
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A handshake not done in this time is dropped (provisional).
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Protocol v1 frame cap (spec/wire.md §11.1); flow-control windows are sized from it.
+const MAX_MESSAGE: u32 = 9_437_184;
+/// Concurrent bidirectional streams a peer may open (provisional).
+const MAX_STREAMS: u32 = 16;
+/// Handshakes in progress per listener (provisional).
+const MAX_INCOMING: usize = 1024;
 
 /// DER SubjectPublicKeyInfo prefix of an Ed25519 key (RFC 8410).
 const SPKI_PREFIX: [u8; 12] = [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00];
@@ -140,19 +149,35 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-fn transport_config() -> Arc<quinn::TransportConfig> {
+/// Bounded per-connection memory: no uni streams or datagrams, few bidi streams, windows of a
+/// few frames.
+fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(KEEP_ALIVE));
-    Arc::new(t)
+    t.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().map_err(|_| Error::Io("idle timeout".into()))?));
+    t.max_concurrent_uni_streams(0u32.into());
+    t.max_concurrent_bidi_streams(MAX_STREAMS.into());
+    t.datagram_receive_buffer_size(None);
+    t.stream_receive_window(MAX_MESSAGE.saturating_mul(2).into());
+    t.receive_window(MAX_MESSAGE.saturating_mul(4).into());
+    Ok(Arc::new(t))
 }
 
-/// `host:port` of a `quic://` URL.
+/// `host:port` of a `quic://` URL: port required, IPv6 hosts in brackets.
 fn host_port(url: &str) -> Result<&str, Error> {
-    match url.split_once("://") {
-        Some((SCHEME, hp)) if !hp.is_empty() && !hp.contains('/') => Ok(hp),
-        Some((SCHEME, _)) | None => Err(Error::BadUrl(url.to_owned())),
-        Some((s, _)) => Err(Error::UnknownScheme(s.to_owned())),
+    crate::check_url(url)?;
+    let bad = || Error::BadUrl(url.to_owned());
+    let hp = match url.split_once("://") {
+        Some((SCHEME, hp)) => hp,
+        Some((s, _)) => return Err(Error::UnknownScheme(s.to_owned())),
+        None => return Err(bad()),
+    };
+    let (host, port) = hp.rsplit_once(':').ok_or_else(bad)?;
+    let v6 = host.starts_with('[') && host.ends_with(']');
+    if host.is_empty() || hp.contains('/') || (host.contains(':') && !v6) || port.parse::<u16>().is_err() {
+        return Err(bad());
     }
+    Ok(hp)
 }
 
 async fn resolve(url: &str) -> Result<SocketAddr, Error> {
@@ -161,15 +186,44 @@ async fn resolve(url: &str) -> Result<SocketAddr, Error> {
     it.next().ok_or_else(|| Error::Unreachable(url.to_owned()))
 }
 
-/// The QUIC transport. Clones share the client endpoints (one UDP socket per address family).
-#[derive(Clone, Default)]
-pub struct Quic {
-    clients: Arc<Mutex<[Option<quinn::Endpoint>; 2]>>,
+/// A client handshake from a fresh UDP socket, under `HANDSHAKE_TIMEOUT`.
+async fn handshake(
+    sa: SocketAddr,
+    url: &str,
+    me: Arc<CertifiedKey>,
+    verifier: Arc<dyn ServerCertVerifier>,
+    alpn: &[u8],
+) -> Result<quinn::Connection, Error> {
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| Error::Io(e.to_string()))?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_client_cert_resolver(Arc::new(rustls::client::AlwaysResolvesClientRawPublicKeys::new(me)));
+    tls.alpn_protocols = vec![alpn.to_vec()];
+    tls.enable_sni = false;
+    tls.enable_early_data = false;
+    let qc = quinn::crypto::rustls::QuicClientConfig::try_from(tls).map_err(|e| Error::Io(e.to_string()))?;
+    let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
+    cfg.transport_config(transport_config()?);
+    let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
+    let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
+    let connecting = ep.connect_with(cfg, sa, SERVER_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, connecting).await {
+        Ok(Ok(c)) => Ok(c),
+        Ok(Err(e)) => Err(handshake_err(e)),
+        Err(_) => Err(Error::Unreachable(format!("{url}: handshake timed out"))),
+    }
 }
+
+/// The QUIC transport. Each dial uses its own UDP socket, so a server cannot link a client's
+/// connections by source port.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Quic;
 
 impl Quic {
     pub fn new() -> Quic {
-        Quic::default()
+        Quic
     }
 
     /// The public key a listener with `secret` presents (its Ed25519 key).
@@ -177,40 +231,21 @@ impl Quic {
         keypair(secret.as_bytes()).map(|k| k.0)
     }
 
-    fn client(&self, v6: bool) -> Result<quinn::Endpoint, Error> {
-        let mut c = lock(&self.clients);
-        let slot = c.get_mut(usize::from(v6)).ok_or(Error::Closed)?;
-        if let Some(e) = slot {
-            return Ok(e.clone());
-        }
-        let bind: SocketAddr = if v6 { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
-        let e = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
-        *slot = Some(e.clone());
-        Ok(e)
-    }
-
-    async fn dial_inner(&self, addr: &Address) -> Result<QuicConn, Error> {
+    async fn dial_inner(&self, addr: &Address, own: Option<&crate::StaticSecret>) -> Result<QuicConn, Error> {
         let sa = resolve(&addr.url).await?;
-        let mut seed = zeroize::Zeroizing::new([0u8; 32]);
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed[..]).map_err(|_| Error::Io("rng".into()))?;
-        let (_, me) = keypair(&seed)?;
+        let me = match own {
+            Some(s) => keypair(s.as_bytes())?.1,
+            None => {
+                let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+                ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut seed[..]).map_err(|_| Error::Io("rng".into()))?;
+                keypair(&seed)?.1
+            }
+        };
         let pin = Arc::new(PinnedServer { key: addr.key, mismatch: AtomicBool::new(false) });
-        let mut tls = rustls::ClientConfig::builder_with_provider(provider())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(|e| Error::Io(e.to_string()))?
-            .dangerous()
-            .with_custom_certificate_verifier(pin.clone())
-            .with_client_cert_resolver(Arc::new(rustls::client::AlwaysResolvesClientRawPublicKeys::new(me)));
-        tls.alpn_protocols = vec![ALPN.to_vec()];
-        let qc = quinn::crypto::rustls::QuicClientConfig::try_from(tls).map_err(|e| Error::Io(e.to_string()))?;
-        let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
-        cfg.transport_config(transport_config());
-        let ep = self.client(sa.is_ipv6())?;
-        let connecting = ep.connect_with(cfg, sa, SERVER_NAME).map_err(|e| Error::Unreachable(e.to_string()))?;
-        match connecting.await {
+        match handshake(sa, &addr.url, me, pin.clone(), ALPN).await {
             Ok(c) => Ok(QuicConn { c, peer: addr.key }),
             Err(_) if pin.mismatch.load(Ordering::Relaxed) => Err(Error::KeyMismatch),
-            Err(e) => Err(Error::Unreachable(e.to_string())),
+            Err(e) => Err(e),
         }
     }
 
@@ -223,12 +258,36 @@ impl Quic {
             .with_client_cert_verifier(Arc::new(AnyClientKey))
             .with_cert_resolver(Arc::new(rustls::server::AlwaysResolvesServerRawPublicKeys::new(me)));
         tls.alpn_protocols = vec![ALPN.to_vec()];
+        tls.send_tls13_tickets = 0;
+        tls.max_early_data_size = 0;
         let qs = quinn::crypto::rustls::QuicServerConfig::try_from(tls).map_err(|e| Error::Io(e.to_string()))?;
         let mut sc = quinn::ServerConfig::with_crypto(Arc::new(qs));
-        sc.transport_config(transport_config());
+        sc.transport_config(transport_config()?);
+        sc.max_incoming(MAX_INCOMING);
         let ep = quinn::Endpoint::server(sc, sa).map_err(|e| Error::Io(e.to_string()))?;
         let local = ep.local_addr().map_err(|e| Error::Io(e.to_string()))?;
-        Ok(QuicListener { ep, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
+        // handshakes run concurrently, each under a deadline, so a silent client blocks nobody
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let e2 = ep.clone();
+        tokio::spawn(async move {
+            while let Some(inc) = e2.accept().await {
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let Ok(Ok(c)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, inc).await else { return };
+                    let key = c
+                        .peer_identity()
+                        .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
+                        .and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())));
+                    match key {
+                        Some(peer) => {
+                            let _ = tx.send(QuicConn { c, peer }).await;
+                        }
+                        None => c.close(0u32.into(), b"key"),
+                    }
+                });
+            }
+        });
+        Ok(QuicListener { ep, rx, addr: Address { url: format!("{SCHEME}://{local}"), key: pk } })
     }
 }
 
@@ -237,7 +296,11 @@ impl Transport for Quic {
     type Listener = QuicListener;
 
     async fn dial(&self, addr: &Address) -> Result<QuicConn, Error> {
-        self.dial_inner(addr).await
+        self.dial_inner(addr, None).await
+    }
+
+    async fn dial_as(&self, addr: &Address, secret: &crate::StaticSecret) -> Result<QuicConn, Error> {
+        self.dial_inner(addr, Some(secret)).await
     }
 
     async fn listen(&self, cfg: ListenConfig) -> Result<QuicListener, Error> {
@@ -247,26 +310,16 @@ impl Transport for Quic {
 
 pub struct QuicListener {
     ep: quinn::Endpoint,
+    rx: tokio::sync::mpsc::Receiver<QuicConn>,
     addr: Address,
 }
 
 impl Listener for QuicListener {
     type Conn = QuicConn;
 
-    /// Skips clients whose handshake fails.
+    /// Clients whose handshake fails or stalls are skipped.
     async fn accept(&mut self) -> Result<QuicConn, Error> {
-        loop {
-            let inc = self.ep.accept().await.ok_or(Error::Closed)?;
-            let Ok(c) = inc.await else { continue };
-            let key = c
-                .peer_identity()
-                .and_then(|id| id.downcast::<Vec<CertificateDer<'static>>>().ok())
-                .and_then(|certs| certs.first().and_then(|d| key_of_spki(d.as_ref())));
-            match key {
-                Some(peer) => return Ok(QuicConn { c, peer }),
-                None => c.close(0u32.into(), b"key"),
-            }
-        }
+        self.rx.recv().await.ok_or(Error::Closed)
     }
 
     fn address(&self) -> Address {
@@ -278,20 +331,36 @@ impl Listener for QuicListener {
     }
 }
 
+impl Drop for QuicListener {
+    fn drop(&mut self) {
+        self.ep.close(0u32.into(), b"");
+    }
+}
+
 #[derive(Clone)]
 pub struct QuicConn {
     c: quinn::Connection,
     peer: PublicKey,
 }
 
-fn conn_err(e: quinn::ConnectionError) -> Error {
+/// A failed handshake: the peer's protocol or TLS failures are `Protocol` (BadInput, not
+/// retried), loss of contact `Unreachable`.
+fn handshake_err(e: quinn::ConnectionError) -> Error {
+    use quinn::ConnectionError as E;
     match e {
-        quinn::ConnectionError::LocallyClosed
-        | quinn::ConnectionError::ApplicationClosed(_)
-        | quinn::ConnectionError::ConnectionClosed(_)
-        | quinn::ConnectionError::Reset
-        | quinn::ConnectionError::TimedOut => Error::Closed,
-        e => Error::Io(e.to_string()),
+        E::VersionMismatch | E::TransportError(_) | E::ConnectionClosed(_) | E::ApplicationClosed(_) => Error::Protocol(e.to_string()),
+        E::Reset | E::TimedOut => Error::Unreachable(e.to_string()),
+        E::LocallyClosed => Error::Closed,
+        E::CidsExhausted => Error::Io(e.to_string()),
+    }
+}
+
+fn conn_err(e: quinn::ConnectionError) -> Error {
+    use quinn::ConnectionError as E;
+    match e {
+        E::LocallyClosed | E::ApplicationClosed(_) | E::ConnectionClosed(_) | E::Reset | E::TimedOut => Error::Closed,
+        E::VersionMismatch | E::TransportError(_) => Error::Protocol(e.to_string()),
+        E::CidsExhausted => Error::Io(e.to_string()),
     }
 }
 
@@ -340,5 +409,99 @@ impl RecvStream for QuicRecv {
             Ok(None) => Ok(0),
             Err(_) => Err(Error::Closed),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Handshake failure modes (tier 2: localhost sockets). spec/sync.md §10.
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+    use crate::{Listener, StaticSecret, Transport};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    }
+
+    async fn server(seed: u8) -> (QuicListener, SocketAddr) {
+        let cfg = ListenConfig { url: "quic://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([seed; 32]) };
+        let l = Quic::new().listen(cfg).await.unwrap();
+        let sa = resolve(&l.address().url).await.unwrap();
+        (l, sa)
+    }
+
+    /// Accepts any server key; optionally blocks its thread (a client that never finishes).
+    #[derive(Debug)]
+    struct Lax(bool);
+
+    impl ServerCertVerifier for Lax {
+        fn verify_server_cert(&self, _: &CertificateDer<'_>, _: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Result<ServerCertVerified, rustls::Error> {
+            if self.0 {
+                std::thread::sleep(Duration::from_secs(8));
+            }
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(&self, _: &[u8], _: &CertificateDer<'_>, _: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Err(tls_err("tls 1.3 only"))
+        }
+        fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+            verify_sig(m, c, d)
+        }
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![SignatureScheme::ED25519]
+        }
+        fn requires_raw_public_keys(&self) -> bool {
+            true
+        }
+    }
+
+    // spec/sync.md §10: a peer failing the protocol (wrong ALPN) is a protocol error, not retried.
+    #[test]
+    #[ignore]
+    fn wrong_alpn_is_protocol_error() {
+        rt().block_on(async {
+            let (_l, sa) = server(1).await;
+            let me = keypair(&[2; 32]).unwrap().1;
+            let r = handshake(sa, "x", me, Arc::new(Lax(false)), b"nope").await;
+            let e = r.err().unwrap();
+            assert!(matches!(e, Error::Protocol(_)), "{e:?}");
+            assert_eq!(osis_core::Classified::class(&e), osis_core::ErrorClass::BadInput);
+        });
+    }
+
+    // spec/sync.md §10: a stalled handshake does not block accepting others.
+    #[test]
+    #[ignore]
+    fn stalled_handshake_does_not_block_accept() {
+        let main = rt();
+        let (mut l, sa) = main.block_on(server(3));
+        // the stalled client runs on its own thread and runtime; its verifier blocks it
+        let stall = std::thread::spawn(move || {
+            rt().block_on(async move {
+                let me = keypair(&[4; 32]).unwrap().1;
+                let _ = handshake(sa, "x", me, Arc::new(Lax(true)), ALPN).await;
+            })
+        });
+        main.block_on(async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let addr = l.address();
+            let secret = StaticSecret::from_bytes([5; 32]);
+            let c = Quic::new().dial_as(&addr, &secret).await.unwrap();
+            let s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
+            assert_eq!(s.peer_key(), Quic::public_key(&secret).unwrap());
+            drop(c);
+        });
+        stall.join().unwrap();
+    }
+
+    // spec: none (URL form: port required, IPv6 in brackets, length cap)
+    #[test]
+    fn url_forms() {
+        assert!(host_port("quic://example.org:4433").is_ok());
+        assert!(host_port("quic://[::1]:4433").is_ok());
+        assert!(host_port("quic://::1:4433").is_err());
+        assert!(host_port("quic://example.org").is_err());
+        assert!(host_port("quic://example.org:4433/x").is_err());
+        assert!(host_port(&format!("quic://{}:1", "a".repeat(300))).is_err());
     }
 }

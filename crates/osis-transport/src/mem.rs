@@ -9,7 +9,7 @@
 //! (connections reset). Streams never lose or reorder bytes: that is the contract.
 
 use crate::util::{lock, Rng};
-use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, Transport};
+use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::{poll_fn, Future};
 use std::sync::{Arc, Mutex};
@@ -45,6 +45,7 @@ struct State {
 }
 
 struct Lst {
+    id: u64,
     endpoint: String,
     key: PublicKey,
     queue: VecDeque<u64>,
@@ -62,7 +63,8 @@ struct Conn {
     /// Reset: operations fail; kept until the other side's handle drops so a `finish` can
     /// still tell whether its data got through.
     closed: bool,
-    /// Sides whose last handle dropped; the entry goes when both have.
+    /// Sides whose last handle dropped (side 1 counts as dropped until accepted); the entry
+    /// goes when both have.
     dropped: [bool; 2],
 }
 
@@ -205,6 +207,18 @@ impl State {
         }
     }
 
+    /// Removes listener `name` (if `id` matches) and resets the connections queued on it.
+    fn drop_listener(&mut self, name: &str, id: Option<u64>) {
+        if self.listeners.get(name).is_some_and(|l| id.is_none_or(|i| i == l.id))
+            && let Some(mut l) = self.listeners.remove(name)
+        {
+            wake(&mut l.waker);
+            for c in l.queue {
+                self.close(c);
+            }
+        }
+    }
+
     fn live(&mut self, id: u64) -> Option<&mut Conn> {
         self.conns.get_mut(&id).filter(|c| !c.closed)
     }
@@ -234,7 +248,9 @@ impl Net {
         InProcess { net: self.clone(), name: name.to_owned() }
     }
 
-    pub fn set_faults(&self, f: Faults) {
+    /// A `bandwidth` of `Some(0)` is taken as `Some(1)` (zero would stall forever).
+    pub fn set_faults(&self, mut f: Faults) {
+        f.bandwidth = f.bandwidth.map(|b| b.max(1));
         lock(&self.0).faults = f;
     }
 
@@ -274,9 +290,7 @@ impl Net {
         }
         let names: Vec<String> = st.listeners.iter().filter(|(_, l)| l.endpoint == a).map(|(n, _)| n.clone()).collect();
         for n in names {
-            if let Some(mut l) = st.listeners.remove(&n) {
-                wake(&mut l.waker);
-            }
+            st.drop_listener(&n, None);
         }
     }
 
@@ -291,6 +305,15 @@ impl Net {
                 break;
             }
             e.remove().wake();
+        }
+    }
+
+    /// Jumps to the step before the next timer when nothing is in flight, so `step` fires it.
+    pub(crate) fn skip_idle(&self) {
+        let mut st = lock(&self.0);
+        let flight = st.conns.values().any(|c| !st.is_cut(c) && c.has_flight());
+        if let (false, Some(&(at, _))) = (flight, st.timers.keys().next()) {
+            st.step = st.step.max(at.saturating_sub(1));
         }
     }
 
@@ -352,6 +375,7 @@ impl InProcess {
 }
 
 fn mem_name(url: &str) -> Result<&str, Error> {
+    crate::check_url(url)?;
     match url.split_once("://") {
         Some((SCHEME, n)) if !n.is_empty() => Ok(n),
         Some((SCHEME, _)) | None => Err(Error::BadUrl(url.to_owned())),
@@ -364,36 +388,11 @@ impl Transport for InProcess {
     type Listener = MemListener;
 
     fn dial(&self, addr: &Address) -> impl Future<Output = Result<MemConn, Error>> + Send {
-        let r = (|| {
-            let name = mem_name(&addr.url)?;
-            let mut st = lock(&self.net.0);
-            let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
-            let (lend, lkey) = (l.endpoint.clone(), l.key);
-            if st.cut.contains(&pair(&self.name, &lend)) {
-                return Err(Error::Unreachable(addr.url.clone()));
-            }
-            if lkey != addr.key {
-                return Err(Error::KeyMismatch);
-            }
-            let eph = st.rng.bytes32();
-            let id = st.id();
-            st.conns.insert(id, Conn {
-                ends: [self.name.clone(), lend],
-                keys: [eph, lkey],
-                streams: BTreeMap::new(),
-                accept: [VecDeque::new(), VecDeque::new()],
-                accept_waker: [None, None],
-                next_stream: 0,
-                closed: false,
-                dropped: [false, false],
-            });
-            if let Some(l) = st.listeners.get_mut(name) {
-                l.queue.push_back(id);
-                wake(&mut l.waker);
-            }
-            Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0 })))
-        })();
-        std::future::ready(r)
+        std::future::ready(self.dial_with(addr, None))
+    }
+
+    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<MemConn, Error>> + Send {
+        std::future::ready(self.dial_with(addr, Some(InProcess::public_key(secret))))
     }
 
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<MemListener, Error>> + Send {
@@ -404,16 +403,55 @@ impl Transport for InProcess {
             if st.listeners.contains_key(&name) {
                 return Err(Error::Io(format!("address in use: {}", cfg.url)));
             }
-            st.listeners.insert(name.clone(), Lst { endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
-            Ok(MemListener { net: self.net.clone(), name, addr: Address { url: cfg.url, key } })
+            let id = st.id();
+            st.listeners.insert(name.clone(), Lst { id, endpoint: self.name.clone(), key, queue: VecDeque::new(), waker: None });
+            Ok(MemListener { net: self.net.clone(), name, id, addr: Address { url: cfg.url, key } })
         })();
         std::future::ready(r)
+    }
+}
+
+impl InProcess {
+    fn dial_with(&self, addr: &Address, own: Option<PublicKey>) -> Result<MemConn, Error> {
+        {
+            let name = mem_name(&addr.url)?;
+            let mut st = lock(&self.net.0);
+            let Some(l) = st.listeners.get(name) else { return Err(Error::Unreachable(addr.url.clone())) };
+            let (lend, lkey) = (l.endpoint.clone(), l.key);
+            if st.cut.contains(&pair(&self.name, &lend)) {
+                return Err(Error::Unreachable(addr.url.clone()));
+            }
+            if lkey != addr.key {
+                return Err(Error::KeyMismatch);
+            }
+            let mine = match own {
+                Some(k) => k,
+                None => st.rng.bytes32(),
+            };
+            let id = st.id();
+            st.conns.insert(id, Conn {
+                ends: [self.name.clone(), lend],
+                keys: [mine, lkey],
+                streams: BTreeMap::new(),
+                accept: [VecDeque::new(), VecDeque::new()],
+                accept_waker: [None, None],
+                next_stream: 0,
+                closed: false,
+                dropped: [false, true],
+            });
+            if let Some(l) = st.listeners.get_mut(name) {
+                l.queue.push_back(id);
+                wake(&mut l.waker);
+            }
+            Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey })))
+        }
     }
 }
 
 pub struct MemListener {
     net: Net,
     name: String,
+    id: u64,
     addr: Address,
 }
 
@@ -424,12 +462,18 @@ impl Listener for MemListener {
         poll_fn(|cx| {
             let mut st = lock(&self.net.0);
             loop {
-                let Some(l) = st.listeners.get_mut(&self.name) else { return Poll::Ready(Err(Error::Closed)) };
+                let Some(l) = st.listeners.get_mut(&self.name).filter(|l| l.id == self.id) else {
+                    return Poll::Ready(Err(Error::Closed));
+                };
                 match l.queue.pop_front() {
                     Some(id) => {
-                        if st.live(id).is_some() {
-                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1 }))));
+                        if let Some(c) = st.live(id) {
+                            let [_, d1] = &mut c.dropped;
+                            *d1 = false;
+                            let [peer, _] = c.keys;
+                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer }))));
                         }
+                        // reset before accept: side 0 dropping removes it
                     }
                     None => {
                         l.waker = Some(cx.waker().clone());
@@ -445,12 +489,7 @@ impl Listener for MemListener {
     }
 
     fn close(&self) {
-        let mut st = lock(&self.net.0);
-        if st.listeners.get(&self.name).is_some_and(|l| l.key == self.addr.key)
-            && let Some(mut l) = st.listeners.remove(&self.name)
-        {
-            wake(&mut l.waker);
-        }
+        lock(&self.net.0).drop_listener(&self.name, Some(self.id));
     }
 }
 
@@ -465,6 +504,7 @@ struct Handle {
     net: Net,
     id: u64,
     side: usize,
+    peer: PublicKey,
 }
 
 impl Drop for Handle {
@@ -491,8 +531,7 @@ impl Connection for MemConn {
     type Recv = MemRecv;
 
     fn peer_key(&self) -> PublicKey {
-        let st = lock(&self.0.net.0);
-        st.conns.get(&self.0.id).and_then(|c| c.keys.get(1 - self.0.side).copied()).unwrap_or([0; 32])
+        self.0.peer
     }
 
     fn open_stream(&self) -> impl Future<Output = Result<(MemSend, MemRecv), Error>> + Send {
@@ -646,5 +685,28 @@ impl RecvStream for MemRecv {
             p.waker = Some(cx.waker().clone());
             Poll::Pending
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::{Sched, StaticSecret};
+
+    // spec: none (no leaked entries: a dial never accepted is removed when the dialer drops)
+    #[test]
+    fn unaccepted_conn_removed_on_drop() {
+        let net = Net::new(1);
+        let mut s = Sched::new(1, Some(net.clone()));
+        let srv = net.endpoint("srv");
+        let l = s
+            .block_on(async move { srv.listen(ListenConfig { url: "mem://srv".into(), secret: StaticSecret::from_bytes([1; 32]) }).await.unwrap() })
+            .unwrap();
+        let (cli, addr) = (net.endpoint("cli"), l.address());
+        let c = s.block_on(async move { cli.dial(&addr).await.unwrap() }).unwrap();
+        drop(c);
+        assert_eq!(lock(&net.0).conns.len(), 0);
+        drop(l);
     }
 }

@@ -53,6 +53,7 @@ pub struct Sched {
     tasks: BTreeMap<u64, Task>,
     shared: Rc<Shared>,
     max_steps: u64,
+    capped: bool,
 }
 
 impl Sched {
@@ -64,6 +65,7 @@ impl Sched {
             tasks: BTreeMap::new(),
             shared: Rc::new(Shared { ready: Arc::new(Mutex::new(BTreeSet::new())), spawned: RefCell::new(Vec::new()), next: Cell::new(0) }),
             max_steps: 1_000_000,
+            capped: false,
         }
     }
 
@@ -80,9 +82,16 @@ impl Sched {
         self.spawner().spawn(f)
     }
 
-    /// Runs until no task is ready and the net has nothing pending; returns the tasks still blocked.
+    /// Whether the last `run` stopped at the step cap rather than with every task blocked.
+    pub fn capped(&self) -> bool {
+        self.capped
+    }
+
+    /// Runs until no task is ready and the net has nothing pending (or the step cap); returns
+    /// the tasks still blocked. Idle stretches with only timers pending are skipped.
     pub fn run(&mut self) -> usize {
         let mut steps = 0u64;
+        self.capped = false;
         loop {
             self.tasks.extend(self.shared.spawned.borrow_mut().drain(..));
             let pick = {
@@ -97,7 +106,12 @@ impl Sched {
             };
             let Some(id) = pick else {
                 match &self.net {
-                    Some(net) if net.pending() && steps < self.max_steps => {
+                    Some(net) if net.pending() => {
+                        if steps >= self.max_steps {
+                            self.capped = true;
+                            return self.tasks.len();
+                        }
+                        net.skip_idle();
                         net.step();
                         steps += 1;
                         continue;
