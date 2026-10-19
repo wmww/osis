@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 osis-core.workspace = true
+osis-schema.workspace = true
 
 [[bin]]
 name = "gen-vectors"

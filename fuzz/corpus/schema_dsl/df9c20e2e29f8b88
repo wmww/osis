@@ -1,0 +1,55 @@
+//! Core schema (spec/data-model.md §9). Agility enums and the creation record: spec/wire.md §3.
+schema 0x00000000000000000000000000000000;
+revision 1;
+
+type signing_key = enum { 1 ed25519(blob) };          // 32 bytes
+type kem_key = enum { 1 x25519_mlkem768(blob) };      // pk_x || pk_m, 1216 bytes
+type sealed = enum { 1 x25519_mlkem768(blob) };       // ct_x || ct_m || AEAD
+/// Exactly one of fields 0 and 1 (spec/wire.md §3); typed through `CreationRecord`.
+type creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob };
+
+type role = enum { 0 read, 1 write, 2 admin };
+type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 16 bytes
+type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte server static key
+type edge_key = struct { 0 ts: int, 1 node: tid };                // (ts, author node) of a write
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key> };
+type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int };   // suite ID of the epoch
+type inbox = struct { 0 label: blob, 1 servers: list<address> };  // label ID: 16 bytes
+type box_key = struct { 0 member: tid, 1 role: role, 2 epoch: epoch };
+type box = enum {
+    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
+    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob }),     // epoch of s; wrap: spec/wire.md §7
+};
+type history_key = struct { 0 role: role, 1 epoch: epoch };
+type frontier = struct {
+    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> counter
+    1 commits: set<blob>,                                       // commit IDs of commit-form writes
+};
+type tenure = struct { 0 member: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
+type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
+type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 servers: list<address>, 3 replaced: bool };
+
+aspect /tid: tid [synthetic, guaranteed];
+/// AKs present on the thing.
+aspect /aspects: set<string> [synthetic, guaranteed];
+aspect /created: creation [guaranteed, by: nobody];
+aspect /members: map<tid, edge> [by: admin, keep_at_least: 90d];
+aspect /keys: struct {
+    0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
+    3 key: option<kem_key>,                                                       // a key actor's one KEM key
+    4 inbox: option<inbox>, 5 deposit_seed: option<blob>,                        // deposit seed: 32 bytes
+} [by: admin, keep_at_least: 90d];
+aspect /secrets: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> } [by: admin, keep_at_least: 90d];
+aspect /tenures: set<tenure> [by: admin, keep_at_least: 90d];
+/// Label ID -> label.
+aspect /label: map<blob, label> [by: admin, keep_at_least: 90d];
+aspect /moved: tid [by: admin, keep_at_least: 90d];
+aspect /was: tid [by: admin, keep_at_least: 90d];
+/// Schema ID -> revision.
+aspect /node: struct { 0 software: string, 1 schemas: map<blob, int> };
+/// 32-byte P2P key, relay URLs, 32-byte LAN secret.
+aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
+/// ts: wall ms of the commit's ts.
+aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };
+aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect /groups: set<tid> [synthetic, guaranteed];

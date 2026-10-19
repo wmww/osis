@@ -36,7 +36,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `link_card` | link and card, text forms | osis-label | planned |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | planned |
 | `bundle` | bundle reader | osis-label | planned |
-| `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | planned |
+| `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |
 
 ## Adding a target
 In the plan step that lands the parser: add `fuzz_targets/<target>.rs` and its `[[bin]]` in `Cargo.toml` (path dependency on the crate), its seeds in osis-vectors `corpus.rs`, run `gen-vectors corpus`, flip its row here to live, and smoke-run it with `-- -runs=1000`. The nightly workflow fuzzes every target `cargo fuzz list` prints.

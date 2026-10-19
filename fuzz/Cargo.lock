@@ -111,11 +111,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-crdt"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
 name = "osis-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "osis-core",
+ "osis-schema",
+]
+
+[[package]]
+name = "osis-schema"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+ "osis-crdt",
 ]
 
 [[package]]

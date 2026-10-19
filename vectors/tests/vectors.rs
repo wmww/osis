@@ -23,6 +23,7 @@ vector_files! {
     cbor_values => "cbor/values.vec",
     tid_thing => "tid/thing.vec",
     chunker_gear => "chunker/gear.vec",
+    schema_core => "schema/core.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

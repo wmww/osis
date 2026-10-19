@@ -4,6 +4,7 @@
 
 pub mod cbor;
 pub mod chunker;
+pub mod schema;
 pub mod tid;
 
 use crate::file::VecFile;
@@ -23,6 +24,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "cbor/values.vec" => Subject { generate: None, check: Some(cbor::check) },
         "tid/thing.vec" => Subject { generate: Some(tid::thing), check: None },
         "chunker/gear.vec" => Subject { generate: Some(chunker::gear), check: None },
+        "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         _ => return None,
     })
 }
