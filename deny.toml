@@ -43,6 +43,7 @@ skip = [
     { crate = "hax-lib-macros-types@0.3.7", reason = "as hax-lib 0.3" },
     { crate = "shlex@1.3.0", reason = "bindgen, a build dep of crabgrind under libcrux-secrets; cc uses 2.0" },
     { crate = "syn@3.0.9", reason = "serde_derive in hax-lib-macros-types (libcrux build-time macros); everything else on syn 2" },
+    { crate = "windows-sys@0.52.0", reason = "ring 0.17 (osis-transport feature quic, Windows only); quinn-udp, socket2 and tokio on 0.61" },
 ]
 
 [sources]

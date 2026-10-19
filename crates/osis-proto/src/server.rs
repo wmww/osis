@@ -200,6 +200,11 @@ impl ServerConnection {
         self.closed
     }
 
+    /// The negotiated protocol version: none until the peer's Hello arrived.
+    pub fn version(&self) -> Option<u64> {
+        self.version
+    }
+
     pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServerInput) -> Vec<ServerOutput> {
         let mut out = Vec::new();
         if self.closed {
@@ -415,6 +420,10 @@ impl ServerConnection {
             None if step.prev.is_none() => {
                 if step.verify_genesis().is_err() {
                     return Ok(Message::Error { id, code: Code::REFUSED });
+                }
+                let code = store.admit_label(&label)?;
+                if code != Code::OK {
+                    return Ok(Message::Error { id, code });
                 }
             }
             None => return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }),
