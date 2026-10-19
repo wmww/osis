@@ -103,7 +103,8 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
             for i in items {
                 let ks = keysets.get(&i.role);
                 let b = match own.get(&i.role) {
-                    Some((es, s)) if ks.is_none_or(|(ek, _)| !crate::epoch::is_newer(ek, es) || ek == es) => symmetric(actor, member, i, s, *es)?,
+                    // Symmetric unless the writer holds a newer keyset than the secret.
+                    Some((es, s)) if ks.is_none_or(|(ek, _)| !crate::epoch::is_newer(ek, es)) => symmetric(actor, member, i, s, *es)?,
                     _ => {
                         let Some((ek, pk)) = ks else { return Ok(false) };
                         let slot = BoxSlot::Secrets { actor: *actor, member, role: i.role, epoch: i.epoch };
