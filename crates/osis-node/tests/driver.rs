@@ -118,3 +118,52 @@ async fn driver_quic_localhost_spec_sync_10() {
 fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }
+
+/// Two members of a group whose label names no server converge peer to peer under the tokio
+/// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
+/// in `/reach`, dials the other at `peer://` and serves the other's sessions (member peer).
+pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>) {
+    let mut net = Net::new();
+    let clock: Arc<dyn Clock> = net.clock.clone();
+    let a = net.add_node(1, Default::default());
+    let b = net.add_node(2, Default::default());
+    let mut listeners = Vec::new();
+    for (n, ep, url) in [(a, &a_ep, a_url), (b, &b_ep, b_url)] {
+        let secret = net.sync(n).dialable_secret();
+        let l = ep.listen(ListenConfig { url: url.into(), secret: StaticSecret::from_bytes(*secret.expose()) }).await.unwrap();
+        let acts = net.sync(n).publish_reach(l.address().key, relays.clone()).unwrap();
+        net.actions(n, acts);
+        listeners.push(l);
+    }
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    let t = net.item(a, g, g, "first");
+    let brx = net.engine(b).subscribe();
+    let (sa, sb) = (net.take(a), net.take(b));
+    let (actl, arx) = mpsc::channel(8);
+    let (bctl, brx2) = mpsc::channel(8);
+    let lb = listeners.pop();
+    let la = listeners.pop();
+    let da = tokio::spawn(driver::run_serving(sa, a_ep, la, clock.clone(), arx, log()));
+    let db = tokio::spawn(driver::run_serving(sb, b_ep, lb, clock.clone(), brx2, log()));
+    let c = call(&actl, move |s| {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &REG, &s_("second")).unwrap();
+        s.engine_mut().commit(m).unwrap().unwrap()
+    })
+    .await;
+    let _ = applied(brx, c).await;
+    assert_eq!(call(&bctl, move |s| read(s, t)).await, Some(s_("second")));
+    for ctl in [&actl, &bctl] {
+        assert!(ctl.send(Control::Shutdown).await.is_ok());
+    }
+    da.await.unwrap();
+    db.await.unwrap();
+}
+
+// spec/sync.md §5 (member peer), §10: two nodes sync a label with no server under the tokio
+// driver over in-process sessions, each dialing the other by its dialable key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn driver_p2p_in_process_spec_sync_5() {
+    let tnet = osis_transport::Net::new(4);
+    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![]).await;
+}

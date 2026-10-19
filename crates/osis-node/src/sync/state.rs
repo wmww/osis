@@ -28,6 +28,7 @@ const HINT: &[u8] = b"y/i";
 const TIMED: &[u8] = b"y/d";
 const INBOX_ONLY: &[u8] = b"y/n";
 const CARRIER: &[u8] = b"y/s";
+const REACH: &[u8] = b"y/r";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +87,10 @@ pub struct State {
     pub inbox_only: BTreeSet<CommitId>,
     /// The snapshot carrying a body's live writes once it was dropped (spec/sync.md §7).
     pub carriers: BTreeMap<CommitId, CommitId>,
+    /// This node's dialable transport secret (spec/sync.md §10).
+    pub reach_secret: Option<Secret32>,
+    /// The label logs member-peer sessions see (in memory).
+    pub feed: super::serve::Feed,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -201,6 +206,7 @@ impl State {
                 b"s" => {
                     s.carriers.insert(CommitId(r.arr()?), CommitId(Rd::new(&v).arr()?));
                 }
+                b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"n" => {
                     s.inbox_only.insert(CommitId(r.arr()?));
                 }
@@ -236,7 +242,7 @@ impl State {
             for (k, v) in writes {
                 match v {
                     // a replaced wrap or key leaves no copy behind
-                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) { Shred::Yes } else { Shred::No })?,
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -257,12 +263,19 @@ impl State {
     pub fn set_entry(&mut self, l: LabelId, b: BlobId, e: Entry) {
         self.put(key(ENTRY, &[&l.0, &b.0]), encode_entry(&e));
         self.entries.insert((l, b), e);
+        self.feed.added(l, b);
     }
 
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
         if self.entries.remove(&(l, b)).is_some() {
             self.del(key(ENTRY, &[&l.0, &b.0]));
+            self.feed.deleted(l, b);
         }
+    }
+
+    pub fn set_reach_secret(&mut self, s: Secret32) {
+        self.put(REACH.to_vec(), s.expose().to_vec());
+        self.reach_secret = Some(s);
     }
 
     pub fn set_present(&mut self, s: ServerKey, l: LabelId, b: BlobId, on: bool) {

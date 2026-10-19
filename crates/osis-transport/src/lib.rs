@@ -44,6 +44,22 @@ impl Address {
     }
 }
 
+/// Scheme of P2P addresses (spec/sync.md §10): a node dialed by its dialable key, through the
+/// relays the URL lists (`peer://` then relay URLs separated by single spaces; none: direct or
+/// LAN only). The transport finds the peer; the key is `Address::key`.
+pub const PEER_SCHEME: &str = "peer";
+
+/// The address URL of a peer reachable through `relays`.
+pub fn peer_url(relays: &[String]) -> String {
+    format!("{PEER_SCHEME}://{}", relays.join(" "))
+}
+
+/// The relays of a `peer://` URL; none for another scheme.
+pub fn peer_relays(url: &str) -> Option<Vec<String>> {
+    let rest = url.strip_prefix(PEER_SCHEME)?.strip_prefix("://")?;
+    Some(rest.split(' ').filter(|r| !r.is_empty()).map(str::to_owned).collect())
+}
+
 /// URLs longer than `MAX_URL_BYTES` are refused (spec/wire.md §13).
 pub(crate) fn check_url(url: &str) -> Result<(), Error> {
     if url.len() > osis_core::format::MAX_URL_BYTES { Err(Error::BadUrl(format!("{} bytes", url.len()))) } else { Ok(()) }

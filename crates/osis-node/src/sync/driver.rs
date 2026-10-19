@@ -1,18 +1,22 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
 //! over osis-transport `link` sessions (one dialed stream per server connection, an ephemeral
 //! transport key per connection, the server's key checked by the transport, spec/sync.md §10)
-//! and fires its timers. No sync logic lives here: every input is an `Event`, every output an
+//! and fires its timers. With a listener (`run_serving`), every session a peer opens on it is
+//! served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5). No sync logic lives here: every input is an `Event`, every output an
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime.
 
 use super::{Action, ConnId, Event, SyncEngine};
 use osis_core::Clock;
 use osis_transport::link::{self, Link, LinkTx};
-use osis_transport::Transport;
+use osis_transport::{Listener, Transport};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// A served connection with no session for this long is closed.
+pub const SERVE_IDLE: Duration = Duration::from_secs(120);
 
 /// Longest wait between ticks.
 pub const MAX_IDLE: Duration = Duration::from_secs(60);
@@ -44,6 +48,18 @@ enum Ev {
     Failed(ConnId, String),
     Bytes(ConnId, Vec<u8>),
     Closed(ConnId),
+}
+
+/// Pumps a served session's bytes to the driver.
+fn pump(conn: ConnId, mut rx: link::LinkRx, ev: mpsc::Sender<Ev>) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(b) = rx.recv().await {
+            if ev.send(Ev::Bytes(conn, b)).await.is_err() {
+                return;
+            }
+        }
+        let _ = ev.send(Ev::Closed(conn)).await;
+    })
 }
 
 struct Conn {
@@ -132,13 +148,30 @@ impl<T: Transport> Driver<T> {
 
 /// Runs the sync engine until `Control::Shutdown` (or the control sender is dropped) and
 /// returns it. Dials what it asks for over `transport`; ticks when its wake comes due.
-pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+    run_serving(sync, transport, None, clock, control, log).await
+}
+
+/// `run`, also serving the peer sessions `listener` accepts (listen with the engine's
+/// `dialable_secret` and publish `listener.address().key` with `publish_reach`).
+pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listener: Option<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
+    let (link_tx, mut link_rx) = mpsc::channel::<Link>(64);
+    let local = listener.as_ref().map(|l| l.address().key);
+    let serving = listener.map(|l| tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, link_tx)));
     let mut d = Driver { sync, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
     d.feed(Event::Tick);
     loop {
         let idle = d.idle();
         tokio::select! {
+            Some(l) = link_rx.recv(), if local.is_some() => {
+                let Link { peer_key, tx, rx } = l;
+                let key = local.unwrap_or_default();
+                let (conn, acts) = blocking(|| d.sync.accept(key, peer_key));
+                let task = pump(conn, rx, d.ev_tx.clone());
+                d.conns.insert(conn, Conn { tx: Some(tx), task });
+                d.apply(acts);
+            }
             Some(ev) = ev_rx.recv() => match ev {
                 Ev::Up(conn, tx) => {
                     if let Some(c) = d.conns.get_mut(&conn) {
@@ -176,6 +209,9 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
                 d.feed(Event::Tick);
             }
         }
+    }
+    if let Some(s) = serving {
+        s.abort();
     }
     let ids: Vec<ConnId> = d.conns.keys().copied().collect();
     for id in ids {
