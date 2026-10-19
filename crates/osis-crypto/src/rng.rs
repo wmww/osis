@@ -43,11 +43,17 @@ impl RngCore for SeededRng {
 
 impl CryptoRng for SeededRng {}
 
+impl Drop for SeededRng {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // notes/architecture.md §3: a failure is a seed; same seed, same stream.
+    // spec: none (notes/architecture.md §3: a failure is a seed; same seed, same stream)
     #[test]
     fn deterministic() {
         let (mut a, mut b) = (SeededRng::from_u64(7), SeededRng::from_u64(7));
