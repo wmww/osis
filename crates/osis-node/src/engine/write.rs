@@ -265,13 +265,21 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         let mut nonce = [0u8; osis_crdt::NONCE_LEN];
         tx.rng.fill_bytes(&mut nonce);
-        let cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
+        let mut cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
+        let mut fragment = d.fragment;
+        if plan.form == Form::Commit {
+            // own writes under a commit-kind placeholder, so entries order as a reader's
+            // decoding (own commit first, spec/crdt.md §3.2) orders them: canonical bytes
+            let (own, ph) = (Source::node(node), Source::commit(CommitId([0; 32])));
+            fragment.map_dots(&|x: &osis_crdt::Dot| (x.src == own).then(|| osis_crdt::Dot::new(ph.clone(), x.ctr)));
+            cx.own = ph;
+        }
         let mut blobs = TxBlobs::new(&mut tx.txn);
         let bytes = {
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             match d.frontiers {
-                Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment: d.fragment, frontiers }, &cx, Some(&mut bw))?,
-                None => encode_delta(&Delta { nonce, fragment: d.fragment }, &cx, Some(&mut bw))?,
+                Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers }, &cx, Some(&mut bw))?,
+                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             }
         };
         let mut chunks = std::mem::take(&mut blobs.written);

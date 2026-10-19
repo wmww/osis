@@ -2,10 +2,10 @@
 > Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work now, which report Unsupported until the API's second half); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from plans/cli.md.
 
 ## Design
-- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `link ls/revoke`, `group policy`, `bundle`, `status --watch`, `get --stream/--len`, `set --stream`, `op undelete`) report Unsupported from the CLI with the method's name.
+- **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `get --stream/--len`, `set --stream`, `op undelete`) report Unsupported from the CLI with the method's name.
 - **Store**: `-s DIR` / `OSIS_STORE` / `$XDG_DATA_HOME/osis/default`. Missing (`db.redb` absent) or locked: exit 8. The lock is redb's file lock; the CLI writes its pid to `<store>/pid` after opening so a second opener says `store in use by pid N`. `init` refuses a non-empty directory (exit 8). `<store>/cli.toml` holds registered schema paths (`schemas = [ "…", ]`, one quoted path per line; absolute). No other state.
 - **Entry points**: `osis_cli::main_with(args, stdin, stdout, stderr) -> i32`; `osis_cli::run(args, Option<StoreSel>, Io)` also takes a memory store (tests) and the terminal flag (`edit` opens `$EDITOR` only on a terminal).
-- **Futures** (`restore`, `pair`, `demote`, `redeem`, `remove_device`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6); no runtime in the CLI.
+- **Futures** (`restore`, `demote`, `redeem`, `import_contact`, `remove_device`, `revoke_link`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6); sync runs on the API's own runtime. Each invocation ends with `Osis::close`, which waits until the store is free.
 - **Streaming** (`watch`, `signal listen`, `roster --watch`, `diag --follow`, `daemon`, `serve`): until `--count`, `--timeout` or SIGINT (default action: the process dies; commits are already durable). Streaming commands have no default timeout; `--timeout` reached with `--count` unmet: exit 6, without `--count`: exit 0. Other waits default to 30 s. `--timeout 0` is no deadline (deadlines use checked arithmetic; the API's `Duration`-taking `wait_synced` gets a 100-year bound).
 - **Named keys**: `db.key(ak)` types an AK by a registered schema (`schema add`, `--schema FILE`) or the core schema. Reads print named forms through the typed view (reader defaults filled); `--raw` uses the untyped key: stored value, numbered forms, ms. Writes through a typed key are validated (exit 5); `--raw` writes untyped.
 - **Paths**: typed positions follow the type. `[n]` on an untyped position: `get` reads the saved value (a list: index; else map key). Writes (`set`, `replace`, `rm`, `op`, script lines) take it as a map key, and refuse it (exit 2) when the saved value there is a list (untyped lists take no index writes; register a schema) or when the same batch already wrote that aspect or created/deleted the thing (`write` scripts: the pending state is invisible to reads, so the saved state cannot decide). Never a silent map write over a list.
@@ -22,46 +22,48 @@
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
 - `-v` is accepted and ignored (no engine log sink yet); `-q` silences `serve`'s log.
 - `diag --since` dropped: there is no stored diagnostics log yet.
-- `init --server`, `restore --server`, `pair join --server` call `add_server` after opening (the API's `Config` takes no servers yet); while that is Unsupported, `init --server` fails after creating the store.
+- `init --server`, `restore --server`, `pair join --server` seed `Config.servers`. Commands that talk to other nodes (`init` with servers, `restore`, `pair`, `device rm`, `demote`, `link redeem/revoke`, `card import`, `status`, `sync`, `wait`, `daemon`, `signal`, `watch`, `roster --watch`, `diag --follow`) open the store with sync on `Runtime::Own` over QUIC; the others stay local (`Runtime::None`) and their writes go out with the next networked command.
+- Pairing is two lines carried by the user (the API is transport-agnostic): `pair offer` prints the offer, reads the request on stdin, prints the reply and the new node; `pair join OFFER` prints the request and reads the reply on stdin.
 - `roster T --watch` added for `watch_roster`.
 
 ## Command table
-Every public `Osis` method appears here (checked by tests/cli.rs). Now = works today; 2nd = returns Unsupported until plans/api.md's second half.
+Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 2nd = Unsupported (API piece not built).
 
 | command | API | state |
 |---|---|---|
-| `init [--server A]` | `create`, `add_server` | now (servers 2nd) |
-| `restore CARD` | `restore` | 2nd |
+| `init [--server A]` | `create` (prints the recovery card first) | now |
+| `restore CARD` | `restore` | now |
 | `whoami` | `me`, `node`, `home`, `servers` | now |
-| `pair offer` / `pair join OFFER` | `pair_offer` / `pair` | 2nd |
-| `device ls` / `device rm N` | `devices` / `remove_device` | 2nd |
-| `server ls/add/rm` | `servers`, `add_server`, `remove_server` | 2nd |
+| `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
+| `device ls` / `device rm N` | `devices` / `remove_device` | now |
+| `server ls/add/rm` | `servers`, `add_server`, `remove_server` | now |
 | `serve` | osis-server `serve::run` | now |
 | `create --owner A (--in G\|--in-all G,G\|--unsynced) [--group] [AK V]…` | `write`, `Write::create`, `make_group`, `set`, `commit` | now |
 | `get T AK [PATH]` | `get`, `at().path().get_value()` | now (`--stream`, `--len` 2nd) |
 | `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops | now (`--stream` 2nd) |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
+| (none: interactive editors only) | `edit_text` (text sessions) | |
 | `write` (stdin) | one `write` batch | now |
 | `show T` | `aspects`, `get`, `knows`, `groups_of`, `role_on` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
-| `signal send` / `signal listen` | `send_signal` / `on_signal` | now (local only) |
+| `signal send` / `signal listen` | `send_signal` / `on_signal` | now |
 | `history` / `undo` / `redo` / `undo-commit` | `history` / `undo` / `redo` / `undo_commit` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` | now |
 | `roster T [--watch]` / `role T` | `roster`, `watch_roster` / `role_on` | now |
-| `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | 2nd |
-| `link make/redeem` / `link ls/revoke` | `make_link` / `redeem` / links, revoke_link | 2nd |
-| `card show/import` | `contact_card` / `import_contact` | 2nd |
+| `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | now |
+| `link make/redeem` / `link ls/revoke` | `make_link` / `redeem` / `links`, `revoke_link` | now |
+| `card show/import` | `contact_card` / `import_contact` | now |
 | `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
-| `status` / `sync` / `wait` | `status` / `sync_now`, `wait_synced` | 2nd |
-| `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | 2nd |
-| `bundle export/import` | export_bundle / import_bundle | 2nd |
+| `status [--watch]` / `sync` / `wait` | `status`, `watch_status` / `sync_now`, `wait_synced` | now |
+| `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |
+| `bundle export/import` | `export_bundle` / `import_bundle` | now |
 | `inspect thing/group/actor/commit` | `engine` (escape hatch), `read`, `knows` | now |
 | `diag [--follow]` / `daemon` | `on_diagnostic`, `settle` | now (no stored log yet) |
 | `schema add/rm/ls` / `check` / `gen` | `register_schema_file` (each run) / osis-schema `check_lock` / `generate_file` | now |
-| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source` | |
+| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; hidden test hooks `sync_engine`, `sync_act`, `take_actions`, `feed`, `waiting` | |
 
 ## Value syntax
 CBOR diagnostic notation narrowed to one printed form per value (plans/cli.md §3). Printer: `crates/osis-cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.

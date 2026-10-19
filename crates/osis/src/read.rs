@@ -71,6 +71,10 @@ impl Reader<'_> {
     }
 
     /// The raw stored value: tids resolved, large values still links.
+    pub(crate) fn raw_value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
+        self.raw(tid, ak)
+    }
+
     fn raw(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
         let tid = self.resolve(tid);
         Ok(self.e.get(&tid, ak)?)
@@ -191,7 +195,7 @@ impl Osis {
     pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
         let limit = self.inner.limit;
         self.locked(|l| {
-            let v = Reader { e: &mut l.engine, limit }.value(tid, ak);
+            let v = Reader { e: l.engine(), limit }.value(tid, ak);
             also();
             v
         })
@@ -203,7 +207,7 @@ impl Osis {
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
         let limit = self.inner.limit;
         self.locked(|l| {
-            let cb = make(&mut Reader { e: &mut l.engine, limit });
+            let cb = make(&mut Reader { e: l.engine(), limit });
             let d = &self.inner.dispatch;
             let sub = d.register(l.seq + 1, filter, cb);
             if initial && let Some(id) = sub.id() {
@@ -351,7 +355,11 @@ pub struct PathRef<'a, 'd, K> {
     path: Path,
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
+    pub(crate) fn parts(&self) -> (&'d Osis, Tid, &K, &Path) {
+        (self.a.db, self.a.tid, &self.a.key, &self.path)
+    }
+
     /// The untyped value at the path (typed projection when the key has a schema).
     pub fn get_value(&self) -> Result<Option<Value>> {
         self.a.db.read(|r| r.get_path(self.a.tid, &self.a.key, &self.path))

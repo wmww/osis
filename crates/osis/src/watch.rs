@@ -70,6 +70,7 @@ pub(crate) enum Filter {
     Roster(Tid),
     Diagnostics,
     Signal(Tid, String),
+    Status,
 }
 
 /// A locally delivered signal.
@@ -93,12 +94,13 @@ pub(crate) enum Delivery {
     Roster,
     Diagnostic(Diagnostic),
     Signal(SignalMsg),
+    Status(crate::share::Status),
 }
 
 pub(crate) enum Msg {
     Event(Event),
     Initial(u64),
-    Signal(SignalMsg),
+    Status(crate::share::Status),
     Barrier(Sender<()>),
 }
 
@@ -129,7 +131,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn on_dispatcher(&self) -> bool {
+    pub(crate) fn on_dispatcher(&self) -> bool {
         self.thread.get() == Some(&std::thread::current().id())
     }
 }
@@ -237,8 +239,14 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     match m {
         Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Roster(*thing), Delivery::Roster),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
-        Msg::Signal(sig) => to(&|f| *f == Filter::Signal(sig.tid, sig.kind.clone()), Delivery::Signal(sig.clone())),
-        // remote signals and sync status arrive with node-sync (plans/api.md second half)
+        Msg::Event(Event::Signal { tid, kind, from, actor, ts, target, value }) => {
+            if target.is_some_and(|t| t != db.node()) {
+                return Vec::new();
+            }
+            let sig = SignalMsg { tid: *tid, kind: kind.as_str().to_string(), value: value.clone(), actor: *actor, node: *from, ts: ts.wall_ms() };
+            to(&|f| *f == Filter::Signal(sig.tid, sig.kind.clone()), Delivery::Signal(sig.clone()))
+        }
+        Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
         _ => Vec::new(),
     }
 }

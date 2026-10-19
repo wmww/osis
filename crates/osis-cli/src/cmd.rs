@@ -142,6 +142,27 @@ fn not_supported(what: &'static str) -> anyhow::Error {
     Error::Unsupported(what).into()
 }
 
+/// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay
+/// local (their writes go out with the next networked command, `sync` or `daemon`).
+fn needs_net(c: &Cmd) -> bool {
+    matches!(
+        c,
+        Cmd::Pair(_)
+            | Cmd::Device(DeviceCmd::Rm { .. })
+            | Cmd::Demote { .. }
+            | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
+            | Cmd::Card(CardCmd::Import { .. })
+            | Cmd::Status { .. }
+            | Cmd::Sync { .. }
+            | Cmd::Wait { .. }
+            | Cmd::Daemon
+            | Cmd::Signal(_)
+            | Cmd::Watch { .. }
+            | Cmd::Roster { watch: true, .. }
+            | Cmd::Diag { follow: true }
+    )
+}
+
 /// Runs one parsed command.
 pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, tty: bool) -> anyhow::Result<()> {
     let g = cli.g.clone();
@@ -162,11 +183,17 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         }
         _ => {}
     }
+    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::ServerAddr>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
+    let mut card = None;
     let db = match &cli.cmd {
-        Cmd::Init { .. } => crate::create(&sel, &g)?,
+        Cmd::Init { server } => {
+            let (db, c) = crate::create(&sel, &g, seed(server)?)?;
+            card = c;
+            db
+        }
         Cmd::Restore { card, server } => {
-            let cfg = crate::config(&sel, &g);
-            let _ = server; // seed servers go in Config once the API takes them
+            let mut cfg = crate::config(&sel, &g, true);
+            cfg.servers = seed(server)?;
             let card: osis::RecoveryCard = card.parse()?;
             let t = Ctx::timeout_flag(&g)?;
             match block_on(Osis::restore(cfg, &card), t) {
@@ -175,20 +202,29 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             }
         }
         Cmd::Pair(PairCmd::Join { offer, server }) => {
-            let cfg = crate::config(&sel, &g);
-            let _ = server;
+            // the app carries two messages: print the request, read the reply
+            let mut cfg = crate::config(&sel, &g, true);
+            cfg.servers = seed(server)?;
             let offer: osis::PairOffer = offer.parse()?;
-            match block_on(Osis::pair(cfg, &offer), Ctx::timeout_flag(&g)?) {
-                Some(r) => r?,
-                None => return Err(exit(6, "timed out")),
-            }
+            let join = Osis::pair(cfg, &offer)?;
+            writeln!(out, "{}", join.request())?;
+            out.flush()?;
+            let mut line = String::new();
+            stdin.read_line(&mut line)?;
+            join.finish(&line.parse()?)?
         }
-        _ => open(&sel, &g)?,
+        c => open(&sel, &g, needs_net(c))?,
     };
+    if let Some(c) = card {
+        writeln!(out, "{c}")?;
+    }
     let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
     let r = run(&mut ctx, cli.cmd);
     ctx.db.settle();
-    r
+    let db = ctx.db.clone();
+    drop(ctx);
+    let closed = db.close();
+    r.and(closed.map_err(Into::into))
 }
 
 impl Ctx<'_> {
@@ -233,8 +269,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Whoami => whoami(ctx),
         Cmd::Pair(PairCmd::Offer) => {
+            // print the offer, read the new device's request, print the reply and its node
             let o = db.pair_offer()?;
-            ctx.emit(&[o.to_string()], J::obj([("offer", J::str(o.to_string()))]))
+            ctx.emit(&[o.to_string()], J::obj([("offer", J::str(o.to_string()))]))?;
+            let mut line = String::new();
+            ctx.stdin.read_line(&mut line)?;
+            let (node, reply) = db.pair_accept(&line.parse()?)?;
+            ctx.emit(&[reply.to_string(), node.to_uri()], J::obj([("reply", J::str(reply.to_string())), ("node", J::tid(node))]))
         }
         Cmd::Device(DeviceCmd::Ls) => {
             let ds = db.devices()?;
@@ -343,15 +384,24 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let t = wait(ctx, db.redeem(&l))?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
-        Cmd::Link(LinkCmd::Ls { .. }) => Err(not_supported("links (plans/api.md second half)")),
-        Cmd::Link(LinkCmd::Revoke { .. }) => Err(not_supported("revoke_link (plans/api.md second half)")),
+        Cmd::Link(LinkCmd::Ls { t }) => {
+            let ls = db.links(ctx.tid(&t)?);
+            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" })).collect();
+            let j = J::Arr(ls.iter().map(|l| J::obj([("id", J::tid(l.id)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect());
+            ctx.emit(&lines, j)
+        }
+        Cmd::Link(LinkCmd::Revoke { id, d }) => {
+            let id = ctx.tid(&id)?;
+            let d = demotion(&d, ctx)?;
+            wait(ctx, db.revoke_link(id, d))
+        }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
             ctx.emit(&[c.to_string()], J::obj([("card", J::str(c.to_string()))]))
         }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
-            let a = db.import_contact(&c)?;
+            let a = wait(ctx, db.import_contact(&c))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
         Cmd::Move { t, owner, place } => {
@@ -364,11 +414,15 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&[s.to_string()], J::obj([("same", J::Bool(s))]))?;
             if s { Ok(()) } else { Err(exit(3, "")) }
         }
-        Cmd::Status { watch } => {
-            if watch {
-                return Err(not_supported("watch_status (plans/api.md second half)"));
-            }
-            status(ctx)
+        Cmd::Status { watch: false } => status(ctx),
+        Cmd::Status { watch: true } => {
+            let (tx, rx) = mpsc::channel::<String>();
+            let _sub = db.watch_status(move |_, st| {
+                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).collect::<Vec<_>>().join(", ");
+                let _ = tx.send(format!("connected {} {l}", st.connected));
+            });
+            let timeout = ctx.timeout_or(None)?;
+            stream_lines(ctx, &rx, None, timeout)
         }
         Cmd::Sync { group } => {
             let s = match group {
@@ -394,7 +448,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
         Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (plans/api.md second half)")),
-        Cmd::Bundle(_) => Err(not_supported("bundles (plans/api.md second half)")),
+        Cmd::Bundle(BundleCmd::Export { groups }) => {
+            let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
+            db.export_bundle(&gs, &mut *ctx.out)?;
+            Ok(())
+        }
+        Cmd::Bundle(BundleCmd::Import) => Ok(db.import_bundle(&mut *ctx.stdin)?),
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => {
             diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) })
@@ -772,12 +831,12 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let lines = s
         .groups
         .iter()
-        .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.pending_uploads, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0))))
+        .map(|(g, x)| format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0))))
         .collect::<Vec<_>>();
     let j = J::Arr(
         s.groups
             .iter()
-            .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("pending_uploads", J::int(x.pending_uploads as u64)), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]))
+            .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]))
             .collect(),
     );
     ctx.emit(&lines, j)

@@ -112,8 +112,8 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["same", &t, &t]), 0);
     // 7: invalid (membership-class aspects are written only through sharing calls)
     assert_eq!(s.code(&["set", &t, "/members", "{}"]), 7);
-    // 1: not supported yet (second half of the API)
-    let o = s.call(&["--json", "server", "ls"], "");
+    // 1: not supported yet (queries)
+    let o = s.call(&["--json", "ls", "home"], "");
     assert_eq!(o.code, 1);
     assert!(o.err.starts_with("{\"error\":{\"kind\":\"Unsupported\""), "{}", o.err);
     // 8: store missing
@@ -157,7 +157,7 @@ fn json_output_plan_cli_5() {
     let t = o.out.split("\"tid\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(s.ok(&["--json", "get", &t, "/a/b"]).line(), "1.5");
     let w = s.ok(&["--json", "whoami"]).out;
-    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"servers\":null"), "{w}");
+    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"servers\":[]"), "{w}");
     let e = s.call(&["--json", "get", &t, "/a/b", ".x"], "");
     assert_eq!(e.code, 2);
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
@@ -219,10 +219,9 @@ fn untyped_index_paths_notes_cli() {
 #[test]
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
-    for args in [vec!["--timeout", "0", "wait"], vec!["--timeout", "0", "sync"], vec!["--timeout", "0", "link", "redeem", "x"]] {
+    for args in [vec!["--timeout", "0", "wait"], vec!["--timeout", "0", "sync"]] {
         let o = s.call(&args, "");
-        assert_eq!(o.code, 1, "{args:?}: {}", o.err);
-        assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);
+        assert_ne!(o.code, 2, "{args:?}: {}", o.err);
     }
     assert_eq!(s.code(&["--timeout", "5x", "wait"]), 2);
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
@@ -271,32 +270,20 @@ fn groups_and_moves_plan_cli_4() {
     assert_eq!(s.code(&["same", &t, &n]), 0);
 }
 
-// plans/cli.md §4: commands over the API's second half parse and report Unsupported for now.
+// plans/cli.md §4: commands over API pieces not built yet (queries, backlinks, `--len`) parse and
+// report Unsupported; sharing commands without a runtime or servers fail as the API does.
 #[test]
-fn second_half_commands_report_unsupported_plan_cli_4() {
+fn unbuilt_commands_report_unsupported_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
-    for args in [
-        vec!["grant", &t, "me", "read"],
-        vec!["link", "make", &t, "read"],
-        vec!["link", "redeem", "x"],
-        vec!["card", "show"],
-        vec!["device", "ls"],
-        vec!["pair", "offer"],
-        vec!["status"],
-        vec!["sync"],
-        vec!["wait", "--group", "home"],
-        vec!["group", "sync", "home", "--server", "quic://h:1#k"],
-        vec!["bundle", "import"],
-        vec!["ls", "home"],
-        vec!["backlinks", &t],
-        vec!["get", &t, "/a/b", "--len"],
-        vec!["demote", &t, "me", "remove", "--sync", "skip"],
-    ] {
+    for args in [vec!["ls", "home"], vec!["backlinks", &t], vec!["get", &t, "/a/b", "--len"]] {
         let o = s.call(&args, "");
         assert_eq!(o.code, 1, "{args:?}: {}", o.err);
         assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);
     }
+    assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1, "this device");
+    assert_eq!(s.ok(&["server", "ls"]).out, "");
+    assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
 // plans/cli.md §4 Watching: initial value first; --count ends it.

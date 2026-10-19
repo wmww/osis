@@ -21,7 +21,7 @@ commit/headers.vec provisional
 step/steps.vec frozen c8b9ba48951ad9b774c2d891b0538eac8b28b03aada2be8719f2d119bc019ea5 FC-2
 inbox/inbox.vec provisional
 signal/signal.vec frozen bc5002b1b1bee58a7aae4363da8e79c6f072512f5c03f07764c1bf4e8c249ada FC-2
-link/link.vec frozen a98926bd491b7d0d29035fb67a6ba5963248926cb01c34269eb9e11d50f00079 FC-2
+link/link.vec frozen a9e3d706c02c6f023ca7c616a471fb0614d548a8954f544d5df55eb06c9b7ee2 FC-3
 schema/core.vec frozen ee68a959d0b673149931ca77676bedeb96c6fcab2c7aa8f8527c457ebc214433 FC-2
 proto/messages.vec frozen e082839d27d7907e6aa93097f5b1b17034bb11de858c0892f700c754a08fbbc7 FC-2
 proto/reconcile.vec frozen 8c121e7dce9a2479f91d6c0b30f3d7d38cc5cb10ddabbda7842bc117e526335b FC-2

@@ -34,8 +34,9 @@ pub enum Event {
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The membership timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
-    /// A signal received (node-sync fills it).
-    Signal { kind: Ak, from: Tid, value: osis_core::Value },
+    /// A signal about `tid`, received or sent by this node (node-sync fills it): `from` the
+    /// sending node, `actor` the actor it signed for, `target` the one node it is for.
+    Signal { tid: Tid, kind: Ak, from: Tid, actor: Tid, ts: Ts, target: Option<Tid>, value: osis_core::Value },
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_core::LabelId, detail: String },
     Diagnostic(Diagnostic),
@@ -57,6 +58,14 @@ pub enum DiagnosticKind {
     Removed,
     /// An app callback panicked (the `osis` dispatcher reports it and lives on).
     Callback,
+    /// A thing was placed only in groups whose closure no synced group holds (the `osis` API,
+    /// spec/requirements.md Offline and network).
+    NotSynced,
+    /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).
+    Unsynced,
+    /// This node cannot open a label it should read: it waits for a re-seal
+    /// (spec/permissions.md §3).
+    Stranded,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

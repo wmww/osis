@@ -30,7 +30,7 @@ fn create_and_reopen_spec_api_handle() {
     let store = MemStore::new();
     let c = clock();
     let (node, me, home) = {
-        let db = Osis::create(cfg(1, store.clone(), &c)).unwrap();
+        let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
         assert_ne!(db.me(), db.node());
         assert_eq!(db.get(db.home(), core::GROUP).unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()), Some(Role::Admin));
@@ -218,7 +218,7 @@ fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.materialize_limit = 64 * 1024;
-    let db = Osis::create(cf).unwrap();
+    let db = Osis::create(cf).unwrap().0;
     let k = ak("/t/doc");
     let big = Value::Bytes(vec![7u8; osis::schema::osis_core::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
@@ -335,7 +335,7 @@ fn membership_class_refused_spec_permissions_1() {
 #[test]
 fn expiry_retention_purge_spec_commits_5_6() {
     let c = clock();
-    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let (k, r) = (ak("/t/msg"), ak("/t/keep"));
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
@@ -392,26 +392,115 @@ fn move_and_same_thing_spec_permissions_7() {
     assert!(db.groups_of(m).contains(&db.home()));
 }
 
-// notes/api.md Sharing, Sync: the second-half surface exists and says it is not there yet.
+// notes/api.md Sync configuration and status: without a runtime the surface works locally,
+// the stored server list survives a reopen, and waiting for another node fails `Network`.
 #[test]
-fn stubs_unsupported_spec_api_sharing() {
-    let db = db(1);
-    let me = db.me();
-    assert!(matches!(db.grant(me, me, Role::Read, Default::default()), Err(Error::Unsupported(_))));
-    assert!(matches!(db.status(), Err(Error::Unsupported(_))));
-    assert!(matches!(db.servers(), Err(Error::Unsupported(_))));
+fn local_sync_surface_spec_api_sync() {
+    let c = clock();
+    let store = MemStore::new();
+    let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
+    assert!(db.servers().unwrap().is_empty());
+    let st = db.status().unwrap();
+    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoServers));
     assert!("".parse::<osis::ServerAddr>().is_err());
-    assert_eq!("quic://h:1#k".parse::<osis::ServerAddr>().unwrap().to_string(), "quic://h:1#k");
+    let a = osis::ServerAddr::new("quic://h:1", [7; 32]);
+    assert_eq!(a.to_string().parse::<osis::ServerAddr>().unwrap(), a);
+    db.add_server(&a).unwrap();
+    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
+    drop(db);
+    let db = Osis::open(cfg(1, store, &c)).unwrap();
+    assert_eq!(db.servers().unwrap(), vec![a]);
 }
 
 // spec/data-model.md §9: `/created` is typed by its exclusivity rule (owner or key), not the
 // missing-field rule, so a run-time core key (`Osis::key`, the CLI's) reads it.
 #[test]
 fn created_reads_through_run_time_key_spec_data_model_9() {
-    let db = Osis::create(osis::Config::memory()).unwrap();
+    let db = Osis::create(osis::Config::memory()).unwrap().0;
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
     w.commit().unwrap();
     let v = db.get(t, db.key("/created").unwrap()).unwrap().unwrap();
     assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Tid(db.me()))));
+}
+
+// notes/api.md Large values, spec/data-model.md §6: a blob above the bound is read by stream
+// (`Read + Seek`) and its length known without materializing it; `set_stream` writes one.
+#[test]
+fn stream_len_set_stream_spec_data_model_6() {
+    use std::io::{Read, Seek, SeekFrom};
+    let c = clock();
+    let mut cf = cfg(1, MemStore::new(), &c);
+    cf.materialize_limit = 64 * 1024;
+    let db = Osis::create(cf).unwrap().0;
+    let k = ak("/t/blob");
+    let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.at(t, k.clone()).set_stream(&data[..]).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.get(t, k.clone()), Err(Error::TooLarge { limit: 64 * 1024 }));
+    assert_eq!(db.at(t, k.clone()).len().unwrap(), Some(300_000));
+    let mut st = db.at(t, k.clone()).stream().unwrap().unwrap();
+    let mut all = Vec::new();
+    st.read_to_end(&mut all).unwrap();
+    assert!(all == data, "whole payload");
+    st.seek(SeekFrom::Start(123_457)).unwrap();
+    let mut b = [0u8; 10];
+    st.read_exact(&mut b).unwrap();
+    assert_eq!(&b[..], &data[123_457..123_467]);
+    st.seek(SeekFrom::End(-3)).unwrap();
+    let mut rest = Vec::new();
+    st.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, data[299_997..]);
+    // a small value streams too; absent reads None; a non-string fails
+    let small = ak("/t/small");
+    db.write_with(|w| w.at(t, small.clone()).set(&s("hello"))).unwrap();
+    assert_eq!(db.at(t, small.clone()).len().unwrap(), Some(5));
+    assert_eq!(db.at(t, ak("/t/none")).len().unwrap(), None);
+    db.write_with(|w| w.at(t, ak("/t/n")).set(&Value::Int(1))).unwrap();
+    assert!(matches!(db.at(t, ak("/t/n")).len(), Err(Error::Invalid(_))));
+}
+
+// spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing placed only in a
+// group no synced group holds gets `NotSynced`; one placed in the (labeled) home group does not.
+#[test]
+fn not_synced_diagnostic_spec_api_diagnostics() {
+    let db = db(1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::NotSynced {
+            let _ = tx.send(d.tids);
+        }
+    });
+    let mut w = db.write();
+    let g = w.create(db.me(), Place::Unsynced).unwrap();
+    w.make_group(g).unwrap();
+    let home_item = w.create(db.me(), Place::In(db.home())).unwrap();
+    let lost = w.create(db.me(), Place::In(g)).unwrap();
+    w.commit().unwrap();
+    db.settle();
+    let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();
+    assert!(got.contains(&lost), "{got:?}");
+    assert!(!got.contains(&home_item));
+}
+
+// notes/api.md Handle (close): close() from a callback fails at once (it would wait on the
+// dispatcher that runs it); from the app it returns once the database is closed.
+#[test]
+fn close_spec_api_handle() {
+    let db = db(1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let k = ak("/t/x");
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let sub = db.at(t, k).on_change(move |db, _| {
+        let _ = tx.send(db.clone().close());
+    }).unwrap();
+    assert!(matches!(recv(&rx), Err(Error::Invalid(_))));
+    drop(sub);
+    let weak = db.downgrade();
+    db.close().unwrap();
+    assert!(weak.upgrade().is_none(), "closed when close() returns");
 }

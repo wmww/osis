@@ -27,7 +27,7 @@ pub struct Peer {
     pub relays: Vec<String>,
 }
 
-/// `Link := [1, seed, target, k, k_label, [address*], [peer*]]`.
+/// `Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]` (spec/wire.md §10).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShareLink {
     /// L's seed.
@@ -37,7 +37,12 @@ pub struct ShareLink {
     pub k_label: LabelId,
     pub servers: Vec<Address>,
     pub peers: Vec<Peer>,
+    /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §9).
+    pub single_use: bool,
 }
+
+/// `flags` bit 0 of a link.
+pub const FLAG_SINGLE_USE: i64 = 1;
 
 /// `Card := [1, seed, person, home_label, [address+]]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,7 +109,7 @@ impl ShareLink {
             p.relays.iter().try_for_each(|r| check_url(r))?;
             peers.push(Value::List(vec![Value::Bytes(p.dialable.to_vec()), Value::List(p.relays.iter().map(|r| Value::Str(r.clone())).collect())]));
         }
-        Ok(Value::List(vec![
+        let mut v = vec![
             Value::Int(FORMAT),
             Value::Bytes(self.seed.expose().to_vec()),
             tid(&self.target),
@@ -112,13 +117,28 @@ impl ShareLink {
             Value::Bytes(self.k_label.0.to_vec()),
             servers_value(&self.servers)?,
             Value::List(peers),
-        ]))
+        ];
+        // `flags` only when a bit is set: one encoding per link
+        if self.single_use {
+            v.push(Value::Int(FLAG_SINGLE_USE));
+        }
+        Ok(Value::List(v))
     }
 
     pub fn from_value(v: &Value) -> Result<ShareLink, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("link")) };
         let (f, rest) = items.split_first().ok_or(Error::Malformed("link"))?;
         format_of(f)?;
+        let (rest, single_use) = match rest {
+            [head @ .., flags] if rest.len() == 7 => {
+                let f = get_uint(flags, "link flags")?;
+                if f == 0 || f & !(FLAG_SINGLE_USE as u64) != 0 {
+                    return Err(Error::Malformed("link flags"));
+                }
+                (head, true)
+            }
+            _ => (rest, false),
+        };
         let [seed, target, k, k_label, servers, Value::List(peers)] = rest else { return Err(Error::Malformed("link")) };
         if peers.len() > MAX_PEERS {
             return Err(Error::Malformed("more than 4 peers"));
@@ -148,6 +168,7 @@ impl ShareLink {
             k_label: LabelId(get_bytes(k_label, "link label")?),
             servers: get_servers(servers)?,
             peers,
+            single_use,
         })
     }
 
@@ -220,6 +241,26 @@ pub(crate) mod tests {
             k_label: LabelId([4; 16]),
             servers: vec![Address { url: "quic://a".into(), key: [5; 32] }],
             peers: vec![Peer { dialable: [6; 32], relays: vec!["https://relay".into()] }],
+            single_use: false,
+        }
+    }
+
+    // spec/wire.md §10 (FC-3): `flags` is present only with a bit set; a seven-item link is
+    // single use; a zero or unknown flag is refused.
+    #[test]
+    fn flags() {
+        let mut l = link();
+        assert!(matches!(l.to_value().unwrap(), Value::List(v) if v.len() == 7));
+        l.single_use = true;
+        let v = l.to_value().unwrap();
+        assert!(matches!(&v, Value::List(x) if x.len() == 8 && x[7] == Value::Int(1)));
+        assert_eq!(ShareLink::from_value(&v).unwrap(), l);
+        for bad in [0, 2, 3] {
+            let mut v = v.clone();
+            if let Value::List(x) = &mut v {
+                x[7] = Value::Int(bad);
+            }
+            assert!(ShareLink::from_value(&v).is_err(), "flags {bad}");
         }
     }
 

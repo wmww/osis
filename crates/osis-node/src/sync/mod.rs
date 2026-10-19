@@ -161,6 +161,8 @@ pub(crate) struct LConn {
     pub budget: Option<u64>,
     pub last_sync: u64,
     pub path: Vec<Step>,
+    /// A hinted open walked to an unverified step: the server's path is checked after the open.
+    pub walk: Option<Step>,
 }
 
 pub(crate) struct Conn {
@@ -175,6 +177,23 @@ pub(crate) struct Conn {
     pub labels: BTreeMap<LabelId, LConn>,
     pub timer: Option<u64>,
     pub offset: Option<i64>,
+}
+
+/// One synced label's state (`SyncEngine::label_status`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelStatus {
+    pub group: Tid,
+    pub label: LabelId,
+    pub servers: usize,
+    /// Connections up to its servers.
+    pub connected: usize,
+    /// Connections on which it is open.
+    pub open: usize,
+    /// Of those, the ones whose last pass ended with nothing outstanding.
+    pub idle: usize,
+    /// Some server refused every key this node holds (waits for a re-seal).
+    pub stranded: bool,
+    pub last_sync: Option<u64>,
 }
 
 /// The sync engine of one node.
@@ -200,6 +219,9 @@ pub struct SyncEngine {
     diagnostics: Vec<String>,
     /// Inbox blobs waiting for a connection to their server.
     pub(crate) outbox: Vec<local::Outgoing>,
+    /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
+    /// limit, sends them again after `retry_ms`).
+    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
     /// When a stranded heartbeat last went under each label.
@@ -208,6 +230,10 @@ pub struct SyncEngine {
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_core::CommitId>,
+    /// Things this node removed itself from (a self-removal not yet uploaded): its own departure
+    /// does not stop sealing under their actors (it leaks nothing to the leaver; the rotation is
+    /// the next admin's). Its lost secrets are dropped once every label is idle.
+    pub(crate) leaving: BTreeSet<Tid>,
     /// Reopens in a row per (connection, label).
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Labels synced, with the actor their keys derive from and their servers.
@@ -253,6 +279,8 @@ impl SyncEngine {
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox: Vec::new(),
+            inbox_sent: BTreeMap::new(),
+            leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
             stranded_at: BTreeMap::new(),
             direct: Vec::new(),
@@ -315,6 +343,13 @@ impl SyncEngine {
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
         }
+        // a self-removal is up: drop what was lost
+        if !self.leaving.is_empty() && self.is_idle() && self.conns.values().any(|c| c.up) {
+            self.leaving.clear();
+            if let Err(e) = self.engine.drop_lost_secrets() {
+                self.diag(format!("dropping lost secrets: {e}"));
+            }
+        }
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)
         {
@@ -368,6 +403,13 @@ impl SyncEngine {
     /// A dialed connection ended: redial after the retry pause.
     fn lost(&mut self, conn: ConnId) {
         if let Some(c) = self.conns.remove(&conn) {
+            // deposits not answered go out again on the next connection
+            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.keys().filter(|(s, _)| *s == c.server).copied().collect();
+            for k in back {
+                if let Some(o) = self.inbox_sent.remove(&k) {
+                    self.outbox.push(o);
+                }
+            }
             // a LAN candidate that never opened anything: back off that address, not the peer
             if c.peer && self.lan_failed(c.server, &c.address) {
                 return;
@@ -400,6 +442,12 @@ impl SyncEngine {
                         for a in &h.aspects {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
                             self.membership_seen.insert(actor, self.seq);
+                        }
+                        // new secrets may open a label that failed: retry at the next tick
+                        for c in self.conns.values_mut() {
+                            for l in c.labels.values_mut().filter(|l| l.phase == Phase::Failed) {
+                                l.last_sync = 0;
+                            }
                         }
                     }
                 }
@@ -447,12 +495,54 @@ impl SyncEngine {
         out
     }
 
+    /// Where each synced label stands (the API's status): per label, its group, its servers,
+    /// how many connections are up and have it open, whether every one of those finished a pass
+    /// with nothing outstanding, whether any could not open it (stranded), and when it last
+    /// synced (raw wall ms).
+    pub fn label_status(&mut self) -> Vec<LabelStatus> {
+        let mut out = Vec::new();
+        for (g, l) in self.labels() {
+            let mut st = LabelStatus { group: g, label: l.id, servers: l.servers.len(), connected: 0, open: 0, idle: 0, stranded: false, last_sync: None };
+            for c in self.conns.values().filter(|c| l.servers.iter().any(|a| a.key == c.server)) {
+                if c.up {
+                    st.connected += 1;
+                }
+                let Some(x) = c.labels.get(&l.id) else { continue };
+                match x.phase {
+                    Phase::Failed => st.stranded = true,
+                    Phase::Open => {
+                        st.open += 1;
+                        if x.synced && !x.syncing && !x.dirty && x.registering.is_none() && c.session.outstanding() == 0 {
+                            st.idle += 1;
+                        }
+                        if x.synced {
+                            st.last_sync = st.last_sync.max(Some(x.last_sync));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push(st);
+        }
+        out
+    }
+
+    /// Servers with a connection up.
+    pub fn connected(&self) -> usize {
+        self.conns.values().filter(|c| c.up).count()
+    }
+
+    /// Replaces the servers kept connected besides those the labels name.
+    pub fn set_servers(&mut self, servers: Vec<Address>) {
+        self.cfg.servers = servers;
+    }
+
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
     /// encrypt under.
     pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
-        if self.engine.core.is_key_actor(&a) {
+        if self.engine.core.is_key_actor(&a) || self.leaving.contains(&a) || self.leaving.contains(g) {
             return Ok(Default::default());
         }
         let (done, still) = self.engine.ensure_rotated(&a)?;
@@ -711,6 +801,9 @@ impl SyncEngine {
         }
         for (_, x) in self.retry.values() {
             at(*x);
+        }
+        for o in self.outbox.iter().filter(|o| o.after > 0) {
+            at(o.after);
         }
         t
     }

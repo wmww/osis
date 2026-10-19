@@ -131,11 +131,11 @@ ClaimSet := [[claim+], {entry: box}]
 
 ## 10. Links and recovery cards
 ```
-Link := [1, seed, target, k, k_label, [address*], [peer*]]
+Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
 Card := [1, seed, person, home_label, [address+]]
 ```
-- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, server addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common server dials a peer, which serves K's label as a member peer (spec/sync.md §5).
+- `Link` (spec/permissions.md §9): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, server addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`/reach`, spec/data-model.md §9). A redeemer with no common server dials a peer, which serves K's label as a member peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §9); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
 - `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, server addresses.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.

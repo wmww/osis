@@ -14,6 +14,10 @@ use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
+/// Refusals of one inbox deposit before it is dropped (label not registered, rate limit, full
+/// budget, stale head).
+pub(crate) const MAX_INBOX_TRIES: u32 = 8;
+
 /// An inbox blob waiting to be deposited at a server.
 #[derive(Clone)]
 pub(crate) struct Outgoing {
@@ -22,6 +26,10 @@ pub(crate) struct Outgoing {
     pub blob: Vec<u8>,
     /// The actor whose `/keys` named the inbox (its deposit seed signs).
     pub owner: Tid,
+    /// Not sent before this raw wall ms (a refused deposit backs off from `retry_ms`).
+    pub after: u64,
+    /// Refusals so far (`MAX_INBOX_TRIES` then dropped with a diagnostic).
+    pub tries: u32,
 }
 
 impl SyncEngine {
@@ -64,12 +72,21 @@ impl SyncEngine {
     /// write key when this node writes the label, else the deposit key; also fires this node's
     /// own listeners.
     pub fn signal(&mut self, t: &Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
+        let me = self.engine.tid();
+        self.signal_as(t, me, kind, value, target)
+    }
+
+    /// `signal` for `actor` (an actor this node writes for: the receivers check it).
+    pub fn signal_as(&mut self, t: &Tid, actor: Tid, kind: Ak, value: Value, target: Option<Tid>) -> Result<Vec<Action>> {
         if self.engine.role_on(t) < Some(Role::Write) {
             return Err(Error::Permission { tid: *t });
         }
         let me = self.engine.tid();
+        if actor != me && self.engine.role_on(&actor) < Some(Role::Write) {
+            return Err(Error::Permission { tid: actor });
+        }
         let ts = Ts::make(self.engine.now(), 0).ok_or(Error::Misuse("clock out of range"))?;
-        let body = SignalBody { node: me, actor: me, ts, tid: *t, kind: kind.clone(), target, schema: None, value: value.clone() };
+        let body = SignalBody { node: me, actor, ts, tid: *t, kind: kind.clone(), target, schema: None, value: value.clone() };
         let mut out = Vec::new();
         let mut sent = BTreeSet::new();
         for (conn, l, g) in self.labels_holding(t) {
@@ -89,7 +106,7 @@ impl SyncEngine {
             sent.insert(l);
             self.command(conn, Command::Signal { label: l, blob, wrap, auth }, &mut out)?;
         }
-        self.engine.core.events.queue(crate::Event::Signal { kind, from: me, value });
+        self.engine.core.events.queue(crate::Event::Signal { tid: *t, kind, from: me, actor, ts, target, value });
         self.engine.core.events.flush();
         self.signals.push(body);
         self.state.flush(&mut self.engine)?;
@@ -199,7 +216,7 @@ impl SyncEngine {
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         for server in inbox.servers {
-            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner });
+            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
         }
         Ok(self.handle(super::Event::Local))
     }
@@ -207,9 +224,10 @@ impl SyncEngine {
     /// Deposits waiting inbox blobs on connections to their servers (no open needed).
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
+        let now = self.raw_now();
         let mut keep = Vec::new();
         for o in std::mem::take(&mut self.outbox) {
-            let Some((conn, _)) = ready.iter().find(|(_, k)| *k == o.server.key) else {
+            let Some((conn, _)) = ready.iter().find(|(_, k)| *k == o.server.key).filter(|_| o.after <= now) else {
                 keep.push(o);
                 continue;
             };
@@ -220,7 +238,9 @@ impl SyncEngine {
             };
             let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &o.label);
             let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-            let sig = osis_label::sign_deposit(&d, &o.label, &osis_label::blob_id(&o.blob), &wrap);
+            let id = osis_label::blob_id(&o.blob);
+            let sig = osis_label::sign_deposit(&d, &o.label, &id, &wrap);
+            self.inbox_sent.insert((o.server.key, id), o.clone());
             self.command(*conn, Command::Deposit { label: o.label, blob: o.blob, wrap, sig }, out)?;
         }
         self.outbox = keep;

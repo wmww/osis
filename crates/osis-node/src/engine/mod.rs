@@ -474,6 +474,17 @@ impl Engine {
         self.run(|tx| Ok(tx.txn.put_local(&k, value, Shred::No)?))
     }
 
+    /// Reports a diagnostic of the API layer (deduped and rate-limited like the engine's).
+    pub fn report(&mut self, d: crate::events::Diagnostic) {
+        let now = self.now();
+        self.core.events.diagnostic(d, now);
+    }
+
+    /// The owner of `tid` (`None`: a key actor or an unknown thing).
+    pub fn owner(&self, tid: &Tid) -> Option<Tid> {
+        self.core.owner(tid)
+    }
+
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
