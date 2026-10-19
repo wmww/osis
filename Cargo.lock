@@ -897,6 +897,7 @@ dependencies = [
  "osis-core",
  "osis-crypto",
  "osis-label",
+ "osis-schema",
  "proptest",
 ]
 
