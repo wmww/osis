@@ -808,6 +808,12 @@ impl SyncEngine {
         t
     }
 
+    /// Inbox blobs (grants, notices) not yet answered by a server: kept in memory only, so a
+    /// closed database loses them (issues/sync-inbox-delivery.md); `wait_synced` waits for none.
+    pub fn deliveries_pending(&self) -> usize {
+        self.outbox.len() + self.inbox_sent.len()
+    }
+
     /// Asks every connection to sync every open label now.
     pub fn sync_now(&mut self) -> Vec<Action> {
         let mut out = Vec::new();

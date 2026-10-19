@@ -42,7 +42,8 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
+| sync bug-fix round 1 | running (opus, worktree) | the six phase B issues |
+| crdt/flows bug-fix round | running (opus, worktree) | crdt-expiring-diff, single-use redemption, move copy, label replacement |
 | sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
@@ -52,10 +53,10 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
-| cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
-| api (second half) | merged, reviewed | FC-3 (link flags) frozen; issues/api-deferred.md; plan step 5 (iterate with apps) with apps-e2e |
+| cli | merged, reviewed; steps 4–5 done with apps-e2e | plan deleted (notes/cli.md); delivering commands flush before exit |
+| api (second half) | merged, reviewed | FC-3 (link flags) frozen; issues/api-deferred.md; plan step 5 (iterate with apps): frictions in issues/api-app-frictions.md |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
-| apps-e2e | running (opus, worktree) | also finishes plans/cli.md steps 4–5 |
+| apps-e2e | merged at 52b4834 | plan deleted, notes/apps.md; examples pass tier 1 in osis-sim `World`, localhost CLI e2e passes (tier 2); issues sync-deposit-resend, chat-costs, api-app-frictions; fix: `wait_synced` waits for inbox deliveries |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |

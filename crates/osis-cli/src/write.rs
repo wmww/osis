@@ -149,11 +149,18 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
 }
 
 fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -> anyhow::Result<()> {
-    if a.stream {
-        return Err(Error::Unsupported("set_stream (plans/api.md second half)").into());
-    }
     let t = ctx.tid(&a.t)?;
     let key = ctx.key(&a.ak)?;
+    if a.stream {
+        let p = match a.rest.as_slice() {
+            [] => Path::root(),
+            [p] => path(ctx, t, &key, p, true)?,
+            _ => return Err(usage("--stream takes [PATH] and the value on stdin")),
+        };
+        let mut aw = with_flags(w.at(t, key.clone()), &a.w, ctx, &key)?;
+        aw.path(p).set_stream(&mut *ctx.stdin)?;
+        return Ok(());
+    }
     let (p, val) = match a.rest.as_slice() {
         [v] => (Path::root(), v),
         [p, v] => (path(ctx, t, &key, p, true)?, v),

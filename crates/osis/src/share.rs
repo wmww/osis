@@ -297,7 +297,7 @@ impl Osis {
             WaitForSync::Try(t) => t,
             _ => PRESYNC_WAIT,
         };
-        match (self.groups_synced(groups.clone(), wait).await, d.sync) {
+        match (self.groups_synced(groups.clone(), wait, false).await, d.sync) {
             (Ok(()), _) => Ok(PreSync::Synced),
             (Err(_), WaitForSync::Try(_)) => {
                 self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: groups, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
@@ -307,12 +307,16 @@ impl Osis {
         }
     }
 
-    /// Resolves once every group in `groups` is `Synced`; fails `Unsynced` when one is stranded
-    /// or has no servers, `Network` after `wait`.
-    fn groups_synced(&self, groups: Vec<Tid>, wait: Duration) -> crate::net::Pending<Result<()>> {
+    /// Resolves once every group in `groups` is `Synced` (with `deliveries`, also once no inbox
+    /// blob is unanswered); fails `Unsynced` when one is stranded or has no servers, `Network`
+    /// after `wait`.
+    fn groups_synced(&self, groups: Vec<Tid>, wait: Duration, deliveries: bool) -> crate::net::Pending<Result<()>> {
         self.wait_until(
             Some(wait),
-            Box::new(move |_, st| {
+            Box::new(move |sync, st| {
+                if deliveries && sync.deliveries_pending() > 0 {
+                    return None;
+                }
                 let bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoServers))).collect();
                 if !bad.is_empty() {
                     return Some(Err(Error::Unsynced { groups: bad }));
@@ -690,7 +694,7 @@ impl Osis {
             };
         }
         self.sync_now()?;
-        self.groups_synced(groups, timeout).await
+        self.groups_synced(groups, timeout, true).await
     }
 
     /// Asks every server to sync every open label now.

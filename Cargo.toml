@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "models/crdt", "models/membership", "vectors", "sim"]  # apps-e2e adds "examples/*" (an empty glob fails)
+members = ["crates/*", "models/crdt", "models/membership", "vectors", "sim", "examples/*"]
 exclude = ["fuzz"]
 
 [workspace.package]
@@ -25,6 +25,7 @@ osis-transport = { path = "crates/osis-transport" }
 osis-server = { path = "crates/osis-server" }
 osis-node = { path = "crates/osis-node" }
 osis = { path = "crates/osis" }
+osis-sim = { path = "sim" }
 crdt-model = { path = "models/crdt" }
 membership-model = { path = "models/membership" }
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
