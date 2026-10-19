@@ -235,6 +235,16 @@ fn join(a: Option<Edge>, b: Edge) -> Edge {
     }
 }
 
+/// Does restoring `r` give more than `new` at `ts` (role, invite or life)? If not, an explicit
+/// write of `new` demotes nobody.
+fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
+    match (r, new) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(r), Some(n)) => !n.alive_at(Some(ts)) || n.role < r.role || n.invite < r.invite || n.until.is_some(),
+    }
+}
+
 enum PassResult {
     Done(Walked),
     Restart,
@@ -306,7 +316,8 @@ impl Pass<'_> {
             (Some(a), Some(o)) => Some(join(Some(a), o)),
             (a, o) => a.or(o),
         };
-        let grew = self.audit_fall(key, base, &mine, point.ts, aud);
+        let lowered = exceeds(mine.values().fold(base, |r, e| Some(join(r, *e))), edge, point.ts);
+        let grew = lowered && self.audit_fall(key, base, &mine, point.ts, aud);
         if let Some(a) = own {
             // The author demoted itself: its own standing is kept for the next explicit write.
             if let Some(b) = base {
@@ -315,6 +326,19 @@ impl Pass<'_> {
             }
         }
         grew
+    }
+
+    /// Could an explicit write of `new` on `key` demote anyone: does the edge it restores
+    /// exceed `new` in role, invite or life?
+    fn may_lower(&self, key: (Tid, Tid), new: Option<Edge>, ts: Ts) -> bool {
+        let mut r = self.prior.get(&key).copied();
+        if let Some(o) = self.edges.get(&key.0, &key.1).filter(|_| !self.dead.contains(&key)) {
+            r = Some(join(r, *o));
+        }
+        for e in self.prior_node.get(&key).into_iter().flat_map(|m| m.values()) {
+            r = Some(join(r, *e));
+        }
+        exceeds(r, new, ts)
     }
 
     fn record(&mut self, id: WriteId, a: Applied) {
@@ -344,16 +368,23 @@ impl Pass<'_> {
         let xs: Vec<Tid> = view.reach_backward(&member).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
         let ns = view.reach_forward(&target);
         let mut grew = false;
+        let mut shared = self.edges.clone();
+        if let Some(b) = base {
+            shared.set(member, target, Some(Edge { until: None, since: None, ..b }));
+        }
         for x in xs {
-            let restored = match (base, mine.get(&x)) {
-                (b, Some(m)) => join(b, *m),
-                (Some(b), None) => b,
+            let mut own;
+            let was = match (base, mine.get(&x)) {
+                (b, Some(m)) => {
+                    own = self.edges.clone();
+                    own.set(member, target, Some(join(b, *m)));
+                    &own
+                }
+                (Some(_), None) => &shared,
                 (None, None) => continue,
             };
-            let mut was = self.edges.clone();
-            was.set(member, target, Some(Edge { until: None, since: None, ..restored }));
             let view = self.view(ts);
-            let before = View { owners: &self.input.owners, edges: &was, ts: Some(ts) };
+            let before = View { owners: &self.input.owners, edges: was, ts: Some(ts) };
             let (best, best_was) = (view.roles_from(&x), before.roles_from(&x));
             let pairs: Vec<(Tid, Standing, Standing)> = ns.iter().map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect();
             for (n, now, held) in pairs {
@@ -433,8 +464,10 @@ impl Pass<'_> {
                 continue;
             }
             if let Some(attr) = self.judge(c, k, &best) {
+                let new = op.edge.map(|e| Edge { since: None, ..e });
                 let chain = match attr {
-                    Attr::By(Class::Chain | Class::Edge) => Some(self.chain_writes(&best, &op.target, c.ts)),
+                    Attr::By(Class::Chain | Class::Edge) if self.may_lower((op.member, op.target), new, c.ts) => Some(self.chain_writes(&best, &op.target, c.ts)),
+                    Attr::By(Class::Chain | Class::Edge) => Some(BTreeSet::new()),
                     _ => None,
                 };
                 judged.push((k, id, attr, chain));

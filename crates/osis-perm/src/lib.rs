@@ -5,18 +5,28 @@
 //! Layer 1 (notes/architecture.md). Plan: plans/perm.md.
 #![forbid(unsafe_code)]
 
+pub mod cert;
 pub mod content;
 pub mod graph;
 pub mod held;
+pub mod incremental;
+pub mod moves;
+pub mod purge;
 pub mod roster;
+pub mod scope;
 pub mod timeline;
 pub mod types;
 mod walk;
 
+pub use cert::{project, verify, Certificates};
 pub use content::{overlapping, Range, Validity};
 pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
+pub use incremental::Timelines;
+pub use moves::{MoveIndex, RESOLUTION_HOPS};
+pub use purge::PurgeBy;
 pub use roster::RosterState;
+pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
 pub use types::{Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, WriteId, MEMBERS};
 pub use walk::{Applied, Attr, Demotion};
