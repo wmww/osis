@@ -1,0 +1,148 @@
+//! Tokens, commit blobs, delta verification (spec/crypto.md §7, spec/wire.md §4, spec/commits.md §4).
+
+use crate::tests::{sample_header, t, ts};
+use crate::*;
+use osis_core::{Classified, ErrorClass, Tid, Ts, Value};
+use osis_crdt::{AnyView, Delta, Interner, Source, Writer, create, encode_delta};
+use osis_crypto::{Secret32, SigningSecret, delta_hash, verify_presented_token};
+use osis_schema::{PurgeBy, Retention};
+
+pub(crate) struct TestSecrets {
+    pub admin: bool,
+}
+
+pub(crate) fn sec(tag: u8, tid: &Tid) -> Secret32 {
+    let mut b = [tag; 32];
+    b[..15].copy_from_slice(tid.as_bytes());
+    Secret32::from_bytes(b)
+}
+
+impl Secrets for TestSecrets {
+    fn dedup(&self, tid: &Tid) -> Option<Secret32> {
+        Some(sec(0xd0, tid))
+    }
+    fn admin(&self, tid: &Tid) -> Option<Secret32> {
+        self.admin.then(|| sec(0xa1, tid))
+    }
+    fn chain_write(&self) -> Option<Secret32> {
+        Some(Secret32::from_bytes([0xc2; 32]))
+    }
+    fn write(&self, tid: &Tid) -> Option<Secret32> {
+        Some(sec(0x33, tid))
+    }
+}
+
+/// A one-register delta by `author` at `ts`, counter `lo`.
+pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
+    let mut w = Writer::new(at, Source::node(author), lo);
+    let fragment = create(&mut w, &AnyView, &Value::Str(v.into())).unwrap();
+    let d = Delta { nonce: [lo as u8; 16], fragment };
+    encode_delta(&d, &writer_ctx(Kind::Content, at, author, lo, lo + 1), None).unwrap()
+}
+
+// spec/crypto.md §7: token secrets by retention level; level 2 omitted for imports; a writer
+// without the admin secret omits level 1 (provisional, issues/token-admin-secret.md).
+#[test]
+fn token_levels_by_retention() {
+    let s = TestSecrets { admin: true };
+    let lv = |by, kind| token_secrets(&s, &t(3), &Retention { by, ..Default::default() }, kind).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
+    assert_eq!(lv(PurgeBy::Nobody, Kind::Content), Vec::<u8>::new());
+    assert_eq!(lv(PurgeBy::Admin, Kind::Content), vec![1]);
+    assert_eq!(lv(PurgeBy::Author, Kind::Content), vec![1, 2]);
+    assert_eq!(lv(PurgeBy::Writer, Kind::Content), vec![1, 2, 3]);
+    assert_eq!(lv(PurgeBy::Writer, Kind::Import), vec![1, 3]);
+    let w = TestSecrets { admin: false };
+    let got = token_secrets(&w, &t(3), &Retention::default(), Kind::Content).unwrap();
+    assert_eq!(got.iter().map(|x| x.level).collect::<Vec<_>>(), vec![2]);
+}
+
+// spec/crypto.md §7, spec/wire.md §5: commitments from token hashes and the prefix salt; a
+// token verifies against its commitment.
+#[test]
+fn prefix_commitments() {
+    let ts_ = TokenSecret { level: 2, secret: Secret32::from_bytes([1; 32]) };
+    let hsalt = [7u8; 16];
+    let tok = ts_.hash(&hsalt);
+    let p = Prefix::from_tokens([9; 16], Some(5), &[tok, TokenSecret { level: 1, secret: Secret32::from_bytes([2; 32]) }.hash(&hsalt)]).unwrap();
+    assert_eq!(p.commitments.len(), 2);
+    assert!(p.commitments[0] < p.commitments[1]);
+    let token = osis_crypto::delete_token(&ts_.secret, &hsalt);
+    assert!(p.commitments.iter().any(|c| verify_presented_token(token.expose(), c, &p.salt)));
+    // a chunk's tokens use the chunk's own salt
+    let c = Prefix::for_chunk([3; 16], None, &[ts_.clone()]).unwrap();
+    let ctoken = osis_crypto::delete_token(&ts_.secret, &[3; 16]);
+    assert!(verify_presented_token(ctoken.expose(), &c.commitments[0], &[3; 16]));
+}
+
+/// A valid one-aspect content commit over a register delta, its blob and author key.
+pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
+    let key = SigningSecret::from_seed(&Secret32::from_bytes([0x41; 32]));
+    let mut h = sample_header();
+    let at = h.ts;
+    let delta = register_delta(h.author, at, 1, "hello");
+    h.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta)];
+    let signature = h.sign(&key);
+    (CommitBlob { header: h, signature, parts: vec![Part { ai: 0, di: 0, delta }] }, key)
+}
+
+// spec/wire.md §4: the commit blob plaintext round-trips; a header-only rewrite is allowed.
+#[test]
+fn commit_blob_round_trip() {
+    let (b, _) = one_commit();
+    let bytes = b.encode();
+    assert_eq!(CommitBlob::decode(&bytes).unwrap(), b);
+    assert!(b.missing().is_empty());
+    let mut empty = b.clone();
+    empty.parts.clear();
+    assert_eq!(CommitBlob::decode(&empty.encode()).unwrap(), empty);
+    assert_eq!(empty.missing(), vec![(0, 0)]);
+    assert_eq!(empty.id(), b.id());
+}
+
+// spec/wire.md §4: parts are sorted and distinct; a non-array delta is malformed.
+#[test]
+fn commit_blob_rejects() {
+    let (mut b, _) = one_commit();
+    b.parts.push(b.parts[0].clone());
+    assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
+    let (mut b, _) = one_commit();
+    b.parts[0].delta = osis_core::encode(&Value::Int(3));
+    assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
+}
+
+// spec/commits.md §4: signature, delta hash under the thing's dedup secret, range check.
+#[test]
+fn verify_deltas() {
+    let s = TestSecrets { admin: true };
+    let (b, key) = one_commit();
+    let dedup = |t: &Tid| s.dedup(t);
+    let out = verify_blob(&b, &key.verifying_key(), &dedup, None).unwrap();
+    assert!(matches!(out.as_slice(), [Decoded::Delta(_)]));
+    // wrong dedup secret: hash mismatch
+    let wrong = |_: &Tid| Some(Secret32::from_bytes([0; 32]));
+    let e = verify_blob(&b, &key.verifying_key(), &wrong, None).unwrap_err();
+    assert!(matches!(e, Error::DeltaHash { ai: 0, di: 0 }));
+    // another key
+    let other = SigningSecret::from_seed(&Secret32::from_bytes([0x42; 32]));
+    assert!(matches!(verify_blob(&b, &other.verifying_key(), &dedup, None), Err(Error::BadSignature)));
+    // range check: a delta whose own writes reach above the header range [1, 2)
+    let (mut b2, _) = one_commit();
+    let (author, at) = (b2.header.author, b2.header.ts);
+    let mut w = Writer::new(at, Source::node(author), 1);
+    let set = Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect());
+    let fragment = create(&mut w, &AnyView, &set).unwrap();
+    let r = w.range();
+    assert!(r.hi > 2);
+    let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Kind::Content, at, author, r.lo, r.hi), None).unwrap();
+    b2.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+    b2.parts[0].delta = delta;
+    let mut i = Interner::new();
+    let e = verify_part(&b2.header, &b2.id(), &b2.parts[0], &sec(0xd0, &t(3)), &mut i, None).unwrap_err();
+    assert!(matches!(e, Error::Delta(_)));
+    assert_eq!(e.class(), ErrorClass::BadInput);
+    // part index out of range
+    let mut p = b.parts[0].clone();
+    p.di = 1;
+    assert!(matches!(verify_part(&b.header, &b.id(), &p, &sec(0xd0, &t(3)), &mut i, None), Err(Error::Malformed(_))));
+    let _ = ts(0);
+}

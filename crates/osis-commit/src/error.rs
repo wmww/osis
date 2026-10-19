@@ -18,6 +18,8 @@ pub enum Error {
     DeltaHash { ai: usize, di: usize },
     /// A delta failed to decode against its header facts.
     Delta(osis_crdt::Error),
+    /// A signature or key failed to parse (an unknown agility case parks).
+    Crypto(osis_crypto::Error),
     /// A blob of a linked header list is not held locally. Local (fetch it, then retry).
     Missing,
     /// A blob of a linked header list failed its content hash. BadInput.
@@ -37,6 +39,7 @@ osis_core::impl_error!(Error {
     BadSignature => ("commit signature does not verify"),
     DeltaHash { ai, di } => ("delta {ai}/{di} does not match its hash"),
     Delta(e) => ("{e}"),
+    Crypto(e) => ("{e}"),
     Missing => ("header list blob not held"),
     Corrupt => ("header list blob failed its content hash"),
     Storage(m) => ("blob storage: {m}"),
@@ -49,6 +52,7 @@ impl Classified for Error {
             Error::Cbor(_) | Error::Malformed(_) | Error::Invalid(_) | Error::BadSignature | Error::DeltaHash { .. } | Error::Corrupt => ErrorClass::BadInput,
             Error::UnknownVersion(_) => ErrorClass::Parked,
             Error::Delta(e) => e.class(),
+            Error::Crypto(e) => e.class(),
             Error::Missing | Error::Storage(_) | Error::Build(_) => ErrorClass::Local,
         }
     }
@@ -63,5 +67,11 @@ impl From<DecodeError> for Error {
 impl From<osis_crdt::Error> for Error {
     fn from(e: osis_crdt::Error) -> Error {
         Error::Delta(e)
+    }
+}
+
+impl From<osis_crypto::Error> for Error {
+    fn from(e: osis_crypto::Error) -> Error {
+        Error::Crypto(e)
     }
 }

@@ -20,7 +20,7 @@ Spec: spec/commits.md (all), spec/crdt.md §2.3–§2.4, spec/crypto.md §2, §6
 ## Steps
 - [x] Header types + canonical encoding (spec/wire.md §4 layout); CommitId; sign/verify.
 - [x] Retention grammar, fixed tables, expiry rules; validation of kinds/markers.
-- [ ] Delta hashing and verification with crdt; token hashes/levels; chunk list.
+- [x] Delta hashing and verification with crdt; token hashes/levels; chunk list (chunk entries land with the builder).
 - [ ] Builder with list overflow; projection; purge rewrite; origins.
 - [ ] Fuzz target for the header decoder (test-infra); vectors for a minimal content commit, a membership commit, a snapshot, an import; proptest: encode/decode round trip, projection delta sets partition the commit, every projection verifies alone.
 
