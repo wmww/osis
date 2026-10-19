@@ -37,7 +37,8 @@ fn removed_writer() {
     ok("removed_writer", 1);
 }
 
-// spec/sync.md §5, §6: a reader relays stamped entries to a server the writer cannot reach.
+// spec/sync.md §5, §6: a reader relays stamped entries to a server the writer cannot reach;
+// the readers' opens race the admin's registrations.
 #[test]
 fn reader_relays() {
     ok("reader_relays", 1);
@@ -80,13 +81,6 @@ fn compaction() {
 #[ignore = "issues/flows-recovered-device-writes.md"]
 fn disk_loss() {
     ok("disk_loss", 1);
-}
-
-// spec/sync.md §5, §6: a member whose open races a re-registration follows the head.
-#[test]
-#[ignore = "issues/sync-stale-head.md"]
-fn head_moves_during_open() {
-    ok("head_moves_during_open", 1);
 }
 
 // spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting device.

@@ -121,8 +121,6 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
     sim.item(a, g)?;
     sim.item(a, g)?;
-    // issues/sync-stale-head.md: members reopen at the current head
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(200)?;
     sim.run_until_quiescent(60)?;
@@ -143,7 +141,6 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(50)?;
     sim.quiet(40)?;
@@ -182,7 +179,6 @@ pub fn compaction(seed: u64) -> Res<Report> {
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(120)?;
     sim.quiet(40)?;
@@ -219,22 +215,11 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
 
 /// A reader relays (spec/sync.md §5, §6): two servers that do not replicate; the writer reaches
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
-/// carried by the first.
+/// carried by the first. The readers open the label while the admin registers the steps of the
+/// grants' rotations (an open answered with the old head follows the new one).
 pub fn reader_relays(seed: u64) -> Res<Report> {
-    relays("reader_relays", seed, true)
-}
-
-/// `reader_relays` without the reconnect after setup: the readers opened the label while the
-/// admin registered the steps of the grants' rotations (spec/sync.md §5, §6). Fails:
-/// issues/sync-stale-head.md (a reader keeps the head it opened at; the writer's stamps do not
-/// verify under it, so it relays nothing).
-pub fn head_moves_during_open(seed: u64) -> Res<Report> {
-    relays("head_moves_during_open", seed, false)
-}
-
-fn relays(name: &str, seed: u64, reconnect: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x2e);
-    let mut sim = sim(name, seed, NetWeights::default());
+    let mut sim = sim("reader_relays", seed, NetWeights::default());
     sim.waivers.insert(WAIVE_PROMOTION);
     let s0 = sim.add_server()?;
     let s1 = sim.add_server()?;
@@ -245,9 +230,6 @@ fn relays(name: &str, seed: u64, reconnect: bool) -> Res<Report> {
     let [pa, pr, pc] = persons(&mut sim, [a, r, c], [s0, s0, s1])?;
     let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pr, Role::Read), (pc, Role::Read)])?;
     sim.item(a, g)?;
-    if reconnect {
-        sim.reconnect_all();
-    }
     sim.quiet(40)?;
     // from now on the writer reaches s0 only
     sim.sever(Party::N(a), Party::S(s1));
@@ -321,7 +303,6 @@ pub fn server_loses_data(seed: u64) -> Res<Report> {
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(120)?;
     sim.wipe_server(s)?;
@@ -345,7 +326,6 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
     let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
     let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read), (pe, Role::Write)])?;
     sim.item(a, g)?;
-    sim.reconnect_all();
     sim.quiet(40)?;
     sim.run(30)?;
     sim.quiet(40)?;

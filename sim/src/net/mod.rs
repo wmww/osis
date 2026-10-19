@@ -983,8 +983,7 @@ impl NetSim {
         }
     }
 
-    /// Cuts every node's connections (they redial and reopen at the servers' current heads):
-    /// works around issues/sync-stale-head.md after setup.
+    /// Cuts every node's connections (they redial and reopen at the servers' current heads).
     pub fn reconnect_all(&mut self) {
         let ids: Vec<u64> = self.links.iter().filter(|(_, l)| matches!(l.dialer, End::Node(..))).map(|(id, _)| *id).collect();
         for id in ids {

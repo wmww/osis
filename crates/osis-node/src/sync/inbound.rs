@@ -266,7 +266,7 @@ impl SyncEngine {
     }
 
     /// A new head in a server's log: a child of the current one moves on; anything else reopens.
-    fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
