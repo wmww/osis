@@ -24,3 +24,4 @@ Spec: spec/data-model.md §6–§7, spec/crdt.md §8, spec/sync.md §1 (chunk re
 A value larger than memory (simulated by small constants) round-trips through two nodes and a server with O(change) bytes per edit (tier-2 budget ≈1.2x); purge of a version shreds only its unique chunks; notes/data-model.md updated. Delete this plan.
 
 ## Progress
+- Session 1 (library, osis-label): steps 1–2 done; step 3 library part done (page params on `BlobWriter`/`BlobReader`, paged snapshot through blobs, `osis_crdt::page_array`, `chunker/pages.vec`). Left for node integration (wave 4): store-backed `BlobStore` adapter, pages-before-apply hook (fetch on `Missing` or prefetch the commit chunk list), frontier by link in flows, step 4 write path and sim scale scenario, purge/shredding test, chunk cache units. Value equality by link hash moved into `osis_core::Value`. issues/large-value-seek.md.
