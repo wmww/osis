@@ -210,6 +210,20 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let h = meta.header.clone();
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
+    // late edge writes reach perm like the first ones (the held set takes the whole commit)
+    let edges: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _, _)| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == "/members").map(|a| a.tid).collect();
+    // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
+    let mut with_keys = parts.clone();
+    if h.kind == osis_commit::Kind::Membership && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/secrets")) {
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if a.ak.as_str() == "/keys" && !parts.iter().any(|(x, _, _)| *x == ai) {
+                for d in super::held_parts(tx, id, ai)? {
+                    with_keys.push((ai, 0, d));
+                }
+            }
+        }
+    }
+    let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -227,8 +241,32 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
+    super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
+    }
+    if h.kind == osis_commit::Kind::Membership && !edges.is_empty() {
+        tx.core.held.remove(id);
+        let mut all = Vec::new();
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if a.ak.as_str() == "/members" {
+                for d in super::held_parts(tx, id, ai)? {
+                    all.push((ai, 0, d));
+                }
+            }
+        }
+        validity::add_membership(tx.core, &h, id, &all);
+        tx.core.timelines.update(&tx.core.held);
+        let flipped = validity::rejudge_all(tx, true)?;
+        for (tid, ak) in &flipped {
+            observe_state(tx, tid, ak)?;
+        }
+        if !flipped.is_empty() {
+            tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
+        }
+        for thing in edges {
+            tx.core.events.queue(Event::Roster { thing });
+        }
     }
     Ok(())
 }

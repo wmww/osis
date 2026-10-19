@@ -28,9 +28,30 @@ pub enum Runtime {
     Tokio(tokio::runtime::Handle),
     /// A small tokio runtime of osis's own.
     Own,
-    /// A test harness carries the actions (`Osis::take_actions`, `Osis::feed`).
+    /// A test harness carries the actions (`Osis::take_actions`, `Osis::feed`) of every
+    /// database opened with this registry.
     #[doc(hidden)]
-    Manual,
+    Manual(ManualNet),
+}
+
+/// The databases a test harness drives (`Runtime::Manual`), in the order they started.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default)]
+pub struct ManualNet(Arc<Mutex<Vec<WeakOsis>>>);
+
+impl ManualNet {
+    pub fn new() -> ManualNet {
+        ManualNet::default()
+    }
+
+    /// The databases still open, by start order (`None`: closed).
+    pub fn dbs(&self) -> Vec<Option<crate::Osis>> {
+        lock(&self.0).iter().map(|w| w.upgrade()).collect()
+    }
+
+    pub(crate) fn register(&self, db: WeakOsis) {
+        lock(&self.0).push(db);
+    }
 }
 
 /// How servers are dialed (spec/sync.md §10).
@@ -74,7 +95,7 @@ impl Net {
     pub fn new(rt: &Runtime) -> Result<(Net, Option<mpsc::UnboundedReceiver<Control>>)> {
         let (handle, own) = match rt {
             Runtime::None => return Ok((Net::Off, None)),
-            Runtime::Manual => return Ok((Net::Manual(Mutex::new(Vec::new())), None)),
+            Runtime::Manual(_) => return Ok((Net::Manual(Mutex::new(Vec::new())), None)),
             Runtime::Tokio(h) => (h.clone(), None),
             Runtime::Own => {
                 let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("osis-sync").enable_all().build().map_err(|e| Error::Network(e.to_string()))?;

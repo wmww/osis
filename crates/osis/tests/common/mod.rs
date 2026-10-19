@@ -1,6 +1,8 @@
 //! Shared test helpers: deterministic databases, waiting on channels (never on time).
 #![allow(dead_code)]
 
+pub mod world;
+
 use osis::{Ak, Config, ManualClock, MemStore, Osis, StoreAt, WallMs};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;

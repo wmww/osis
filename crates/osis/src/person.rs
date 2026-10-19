@@ -166,9 +166,6 @@ impl Osis {
     /// to `Config.servers`.
     pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
         let c = card.parse()?;
-        let Fresh { mut engine, clock } = fresh_engine(&cfg)?;
-        engine.hold_key_actor(c.seed.clone())?;
-        engine.set_app_record(PERSON, c.person.as_bytes())?;
         let mut servers = cfg.servers.clone();
         for a in &c.servers {
             let a = ServerAddr(a.clone());
@@ -176,8 +173,12 @@ impl Osis {
                 servers.push(a);
             }
         }
-        save_servers(&mut engine, &servers)?;
-        let db = Osis::start(engine, clock, &cfg, c.person, servers)?;
+        let Fresh { mut sync, clock } = fresh_engine(&cfg, &servers)?;
+        let engine = sync.engine_mut();
+        engine.hold_key_actor(c.seed.clone())?;
+        engine.set_app_record(PERSON, c.person.as_bytes())?;
+        save_servers(engine, &servers)?;
+        let db = Osis::start(sync, clock, &cfg, c.person)?;
         db.locked(|x| {
             let acts = x.sync.follow(c.person, c.home_label, c.servers.clone());
             db.inner.net.apply(acts);
@@ -255,8 +256,8 @@ impl Osis {
                 servers.push(a);
             }
         }
-        let Fresh { engine, clock } = fresh_engine(&cfg)?;
-        let db = Osis::start(engine, clock, &cfg, *person, servers)?;
+        let Fresh { sync, clock } = fresh_engine(&cfg, &servers)?;
+        let db = Osis::start(sync, clock, &cfg, *person)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {
             let ids = e.commit_ids();

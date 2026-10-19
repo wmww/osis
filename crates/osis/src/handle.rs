@@ -205,17 +205,23 @@ fn load_servers(e: &mut Engine) -> Result<Option<Vec<ServerAddr>>> {
     Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
 }
 
-/// Things made at creation: a fresh engine with the person record written by the caller.
+/// A sync engine over an engine, from the first commit on (it sees every event).
 pub(crate) struct Fresh {
-    pub engine: Engine,
+    pub sync: SyncEngine,
     pub clock: Arc<dyn Clock>,
 }
 
-pub(crate) fn fresh_engine(cfg: &Config) -> Result<Fresh> {
+fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, servers: &[ServerAddr]) -> Result<SyncEngine> {
+    let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), ..SyncConfig::default() };
+    Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
+}
+
+/// A new store's sync engine (its servers set later by `set_servers` where they change).
+pub(crate) fn fresh_engine(cfg: &Config, servers: &[ServerAddr]) -> Result<Fresh> {
     let (b, r) = parts(cfg)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, engine_cfg(), clock.clone(), rng(cfg, 0))?;
-    Ok(Fresh { engine, clock })
+    Ok(Fresh { sync: sync_over(engine, &clock, cfg, servers)?, clock })
 }
 
 impl Osis {
@@ -225,16 +231,17 @@ impl Osis {
     /// copy of the recovery key: show or store it, osis keeps none of it. Without servers there
     /// is nothing to restore from: no card (the key is discarded).
     pub fn create(cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
-        let Fresh { mut engine, clock } = fresh_engine(&cfg)?;
+        let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.servers)?;
+        let engine = sync.engine_mut();
         let servers: Vec<osis_label::Address> = cfg.servers.iter().map(|s| s.0.clone()).collect();
         let (p, done) = engine.create_person(&servers)?;
         let mut m = osis_node::Mutation::new();
         m.set(p.person, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
         engine.set_app_record(PERSON, p.person.as_bytes())?;
-        save_servers(&mut engine, &cfg.servers)?;
+        save_servers(engine, &cfg.servers)?;
         let card = if servers.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
-        let db = Osis::start(engine, clock, &cfg, p.person, cfg.servers.clone())?;
+        let db = Osis::start(sync, clock, &cfg, p.person)?;
         db.carry(done)?;
         Ok((db, card))
     }
@@ -250,15 +257,14 @@ impl Osis {
             return Err(Error::Invalid("this store's person actor is owned by the device (made before membership flows): it cannot be shared or recovered; create a new store".into()));
         }
         let servers = load_servers(&mut e)?.unwrap_or_else(|| cfg.servers.clone());
-        let db = Osis::start(e, clock, &cfg, me, servers)?;
+        let sync = sync_over(e, &clock, &cfg, &servers)?;
+        let db = Osis::start(sync, clock, &cfg, me)?;
         db.load_links()?;
         Ok(db)
     }
 
-    pub(crate) fn start(engine: Engine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid, servers: Vec<ServerAddr>) -> Result<Osis> {
-        let node = engine.tid();
-        let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), ..SyncConfig::default() };
-        let mut sync = SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?;
+    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
+        let node = sync.engine().tid();
         let events = sync.engine_mut().subscribe();
         let (dispatch, queue) = Dispatch::new();
         let (net, ctl) = Net::new(&cfg.runtime)?;
@@ -269,6 +275,9 @@ impl Osis {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
         let db = Osis { inner };
+        if let Runtime::Manual(m) = &cfg.runtime {
+            m.register(db.downgrade());
+        }
         db.locked(|_| ());
         Ok(db)
     }
@@ -319,6 +328,15 @@ impl Osis {
     #[doc(hidden)]
     pub fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R {
         self.locked(|l| f(&mut l.sync))
+    }
+
+    /// Runs `f` on the sync engine and carries out its actions (tests).
+    #[doc(hidden)]
+    pub fn sync_act(&self, f: impl FnOnce(&mut SyncEngine) -> Vec<osis_node::sync::Action>) {
+        self.locked(|l| {
+            let acts = f(&mut l.sync);
+            self.inner.net.apply(acts);
+        })
     }
 
     /// With `Runtime::Manual`: the network actions queued so far (a test harness carries them).
