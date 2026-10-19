@@ -23,7 +23,8 @@ vector_files! {
     cbor_values => "cbor/values.vec",
 }
 
-// README.md, "Manifest and freezing": every file listed, frozen bytes unchanged, change notes.
+// spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes
+// unchanged, change notes).
 #[test]
 fn manifest_policy() {
     let entries = manifest::load().unwrap();
@@ -31,6 +32,7 @@ fn manifest_policy() {
     assert!(errs.is_empty(), "{}", errs.join("\n"));
 }
 
+// spec: none (runner coverage).
 #[test]
 fn every_present_file_has_a_test_and_subject() {
     let present: Vec<String> =
@@ -45,6 +47,7 @@ fn every_present_file_has_a_test_and_subject() {
     }
 }
 
+// spec: none (vectors/README.md, Files).
 #[test]
 fn format_round_trip() {
     let text = "subject: x\nspec: s\n\ncase: a\nspec: s\nhex: 00\n\ncase: b\nspec: s\npending: later\n";

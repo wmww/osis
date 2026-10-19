@@ -1,5 +1,5 @@
 # Slow tiers (notes/testing.md): tier 2 (ignored tests, big property runs, size budgets), fuzzing,
-# simulator seed sweeps, model instances, coverage. Failing seeds and crash inputs are uploaded.
+# simulator seed sweeps, model instances, benches, coverage. Failing seeds and crash inputs are uploaded.
 name: nightly
 on:
   schedule:
@@ -100,6 +100,21 @@ jobs:
       - name: TLC smallest instances
         run: |
           if [ -x models/tla/run.sh ]; then models/tla/run.sh small; else echo "no TLA+ models yet (plans/tla-models.md)"; fi
+
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Tracked, never gated: the log and artifact are the record.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: benches
+        run: cargo bench -p osis-bench --locked | tee bench.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench
+          path: bench.txt
 
   coverage:
     runs-on: ubuntu-latest

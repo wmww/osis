@@ -21,7 +21,8 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows |
 | 8 | `osis` | api | public API; the only crate apps depend on |
 | 9 | `osis-cli` | cli | binary `osis` |
-| 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector runner |
+| 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
+| 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 9 | `osis-sim` (`sim/`) | sim | deterministic simulator |
 | 9 | `examples/*` | apps-e2e | example apps, default members so they keep compiling |
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
@@ -44,7 +45,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 
 ## 3. Errors and pervasive rules
 - Three error classes, distinct in every crate's `Error` enum: **BadInput** (peer or stored data violates the format or a rule: reject, diagnostic, never panic, never store), **Parked** (data this build cannot interpret: unknown version, encoding, tag, field, case, suite; store and relay as bytes, re-examine after upgrade; spec/versioning.md §2), **Local** (storage, I/O, bug class: surfaced to the app, never attributed to a peer). Every error reports its class (`osis_core::ErrorClass` via a `class()` method); the node maps classes to behaviour mechanically. Note: an unknown CBOR tag is not an error at all (it decodes to `Value::Unknown`); parking happens where a typed read fails.
-- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli and examples allow them crate-wide). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
+- No panics on data: workspace lints deny `unwrap_used`, `expect_used`, `panic`, `indexing_slicing` (clippy.toml allows them in tests; cli, examples, osis-vectors' library and gen-vectors allow them crate-wide). `debug_assert!` only for internal invariants. Every decoder takes limits (`format` constants) and is fuzzed. Arithmetic on peer-supplied numbers is checked or saturating.
 - Hand-written `Error` enums with `Display` and `std::error::Error` via `osis_core::impl_error!`; no proc-macro dependencies in core-layer crates; `anyhow` only in cli and examples. `osis` exposes one `Error` with stable categories (`NotFound`, `TypeMismatch{path}`, `Permission`, `Storage`, `Protocol`) wrapping the inner ones.
 - Diagnostics: informational, structured (kind, tids, peer), rate-limited per peer, deduped; correctness never depends on them.
 - Determinism: seeded randomness, injected clocks, in-process transport in tests; a failure is a seed.
@@ -55,7 +56,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 Compile and test time are the bottleneck of agent-driven work.
 - **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `iroh`; `osis-store`: `file-backend`; `osis-server`: `bin`). `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
 - **Profiles** (root Cargo.toml): dev `debug = "line-tables-only"`, all dependencies at `opt-level = 2`, test inherits dev, release `codegen-units = 16`, `lto = "thin"`, incremental on. `.cargo/config.toml` has a commented fast-linker line (mold/lld are not required).
-- **Test tiers**: (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) nightly: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
+- **Test tiers** (notes/testing.md): (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) nightly: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
 - **Targeted runs**: in crate X run `cargo test -p X` while iterating, `cargo test -p X -p <direct dependents>` before committing; `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` at integration.
 - `cargo nextest` when installed; plain `cargo test` must work. Nothing may require nextest, deny or fuzz.
 - Integration crates (sim, examples, cli) sit at the top so no library build pulls them.
@@ -65,11 +66,11 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `blake3` (core; `default-features = false, features = ["std"]`): the only hash (spec/crypto.md §1).
 - `proptest` (dev, all crates; models use their own version line): property tests.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
-- Planned, added by their plans with a line here: ed25519-dalek, x25519-dalek, ML-KEM (libcrux-ml-kem or ml-kem; crypto decides), chacha20poly1305, zeroize, rand_core + getrandom (rand_core 0.6 `CryptoRngCore` matches the dalek 2.x crates; crypto confirms), tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), criterion, arbitrary (fuzz only, with the first structured target), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+- Planned, added by their plans with a line here: ed25519-dalek, x25519-dalek, ML-KEM (libcrux-ml-kem or ml-kem; crypto decides), chacha20poly1305, zeroize, rand_core + getrandom (rand_core 0.6 `CryptoRngCore` matches the dalek 2.x crates; crypto confirms), tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), arbitrary (fuzz only, with the first structured target), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
-- Every test cites the spec section it checks (name or comment), so grep answers "what checks §X".
+- Every test cites the spec section it checks (comment above it; form in notes/testing.md, Conventions), so grep and notes/testing-map.md answer "what checks §X".
 - Provisional wire choices (tag numbers, creation record layout, constants not fixed by the spec) sit behind one constant or one function marked `provisional` (grep `provisional`); plans/protocol-spec.md fixes them, a one-line change each.
 - Prose, comments, errors and commit messages compact; no formatting tools.
 

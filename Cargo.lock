@@ -250,6 +250,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-bench"
+version = "0.1.0"
+dependencies = [
+ "osis-core",
+]
+
+[[package]]
 name = "osis-cli"
 version = "0.1.0"
 dependencies = [

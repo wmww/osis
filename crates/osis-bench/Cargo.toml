@@ -1,0 +1,17 @@
+[package]
+name = "osis-bench"
+description = "Benches (tracked, not gated) and size budgets (tier 2) over the public crate APIs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis-core.workspace = true
+
+[[bench]]
+name = "core"
+harness = false
