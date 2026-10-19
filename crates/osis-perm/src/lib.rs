@@ -2,7 +2,7 @@
 //! (spec/permissions.md): the layer-1 membership timeline with epoch starts and tenure ledgers,
 //! layer-2 content validity, roster snapshot production, certificates, purge rights and move
 //! resolution. The node implements `HeldSet` and adapts commits into the records of `types`.
-//! Layer 1 (notes/architecture.md). Plan: plans/perm.md.
+//! Layer 1 (notes/architecture.md). Design and readings: notes/permissions.md, Implementation.
 #![forbid(unsafe_code)]
 
 pub mod cert;

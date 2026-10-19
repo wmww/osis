@@ -34,6 +34,7 @@ Wave 1 (tla-models still running from wave 0).
 - None. (TLC findings S1–S10, R1–R7 decided: see Spec edits and Owner-calls pending.)
 
 ## Spec edits
+- perm review: spec/permissions.md §2 a lowering write by an admin of the member is a self-removal only when it lowers the author's own edge or admin on the member is its only authority (owner-chain or edge-admin authority on the target makes it an explicit demotion, which audits); §5.1 and spec/data-model.md §9: a frontier counter is the last counter received contiguously, inclusive.
 - crypto: spec/crypto.md §3 fixes kdf input conventions (two-argument kdf = empty input, tid input = 15 bytes, Ed25519 key from a kdf output = that RFC 8032 seed) and the `kdf("kem", ..)` XOF split (64 bytes ML-KEM `d || z`, then 32 bytes X25519).
 - Toplevel review of wire.md: `keyset` carries the epoch's suite ID (spec/data-model.md §9); spec/sync.md §5 says how a member peer authenticates another member's node (its `/reach` dialable key).
 - spec/sync.md §3: a projection class whose blob would exceed `MAX_BLOB` splits into several blobs, greedily in aspect-list order (pre-flight found no path under `MAX_BLOB` for a commit touching many aspects). spec/commits.md §1: one delta must fit a blob; the writer refuses the rare struct-of-many-large-registers shape (issues/struct-delta-size.md).

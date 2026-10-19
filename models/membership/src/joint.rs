@@ -265,7 +265,11 @@ impl JHist {
                     continue;
                 }
                 let old = edges[w.member][w.target];
-                attr[i] = if w.role <= old && self.admin_of(&r, a, w.member) {
+                // Self-removal (spec/permissions.md §2): lowering one's own edge, or a member's
+                // one is admin of when one has no owner-chain or edge-admin authority on the
+                // target; otherwise an explicit demotion by its class there.
+                let self_only = w.member == a || self.class(&r, a, w.target) == Class::None;
+                attr[i] = if w.role <= old && self.admin_of(&r, a, w.member) && self_only {
                     Attr::SelfOnly
                 } else {
                     match self.class(&r, a, w.target) {
@@ -702,5 +706,20 @@ mod tests {
             assert_eq!(o.roles[4][d], if keeps_q { Admin } else { None }, "keeps Q {keeps_q}");
             assert_order_independent(&b.0);
         }
+    }
+
+    /// A owns group G and doc T; X is admin of G, G admin of T. X grants Y admin on T, unseen
+    /// by A. A, admin of G as its owner but also owner of T, removes G from T: an explicit
+    /// demotion (not a self-removal), so X's unseen grant is dropped.
+    #[test]
+    fn group_removal_by_owner_of_both() {
+        let (g, t) = (0, 1);
+        let mut b = Jb::new(vec![Owner::Node(0), Owner::Node(0)], &[(1, g, Admin), (NODES + g, t, Admin)]);
+        let grant = b.set(1, t, 2, Admin, 3, &[]);
+        b.set(0, t, NODES + g, None, 10, &[]);
+        let o = b.0.eval(true);
+        assert_eq!(o.dropped >> grant & 1, 1);
+        assert_eq!(o.roles[2][t], None);
+        assert_order_independent(&b.0);
     }
 }

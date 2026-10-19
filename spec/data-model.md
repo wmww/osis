@@ -116,7 +116,7 @@ type box = enum {
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
 type frontier = struct {
-    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> counter
+    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> last counter received contiguously (inclusive)
     1 commits: set<blob>,                                       // commit IDs of commit-form writes
 };
 type tenure = struct { 0 member: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };

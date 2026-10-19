@@ -19,7 +19,7 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
     for t in held.things() {
         let Some(part) = inc.get(&t) else { return Some(format!("{t:?} has no component")) };
         if part.roster(&t, At::END) != full.roster(&t, At::END) {
-            return Some(format!("roster of {t:?}"));
+            return Some(format!("roster of {t:?}: part {:?} full {:?}", part.roster(&t, At::END), full.roster(&t, At::END)));
         }
         for n in nodes {
             if part.standing(n, &t, At::END) != full.standing(n, &t, At::END) {
@@ -88,4 +88,37 @@ fn incremental_equals_from_scratch() {
 #[ignore]
 fn incremental_equals_from_scratch_large() {
     run(2_000, 0x5eed_0302);
+}
+
+/// A `/created` arriving before, between or after the commits naming its thing: the cached
+/// component is re-evaluated, in every arrival order.
+#[test]
+fn created_late_every_order() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, x) = (n[0], n[1]);
+    let g = w.thing(k);
+    let d = w.thing(g);
+    let c1 = w.set(k, g, x, edge(osis_core::Role::Admin), 10, &[]);
+    let c2 = w.set(x, d, k, edge(osis_core::Role::Write), 11, &[]);
+    // Arrivals: 0 = g's /created, 1 = c1, 2 = c2.
+    let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    for order in perms {
+        let mut inc = Timelines::new();
+        let mut have: BTreeSet<usize> = BTreeSet::new();
+        for a in order {
+            have.insert(a);
+            let skip: BTreeSet<_> = [(1, c1), (2, c2)].into_iter().filter(|(i, _)| !have.contains(i)).map(|(_, c)| c).collect();
+            let mut held = w.held_without(&skip);
+            if !have.contains(&0) {
+                held.created.remove(&g);
+            }
+            inc.update(&held);
+            if let Some(dd) = check(&held, &inc, &n) {
+                panic!("order {order:?} after {a}: {dd}");
+            }
+            let full = Timeline::evaluate(&held);
+            assert_eq!(inc.get(&d).map(|t| t.role(&x, &d, At::END)), Some(full.role(&x, &d, At::END)), "order {order:?}");
+        }
+    }
 }

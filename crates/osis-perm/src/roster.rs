@@ -22,6 +22,10 @@ pub struct RosterState {
     /// Tenures ended by `until` or self-removal whose frontier is a later demotion's: the
     /// ledger places that audit at the tenure's end (diagnostic; notes/permissions.md).
     pub late_audits: usize,
+    /// Tenures of an actor ended by an explicit demotion whose author is that actor's admin:
+    /// the walk exempts the author from its own demotion, a ledger tenure exempts nobody
+    /// (diagnostic; issues/ledger-late-audit.md).
+    pub own_demotions: usize,
 }
 
 /// One write+ tenure being followed.
@@ -58,6 +62,7 @@ impl Timeline {
         members.dedup();
         let mut roster = BTreeMap::new();
         let mut late = 0;
+        let mut own = 0;
         for m in members {
             let first = start.and_then(|s| s.roster.get(&m)).copied();
             let mut edge: Option<Edge> = first.map(|e| Edge { since: None, ..e });
@@ -87,6 +92,9 @@ impl Timeline {
                 // A node lowering its own edge is never its own demoter (§5.1 step 4).
                 let demotes = c.explicit.is_some() && c.point.node != m && new_role < held;
                 let f = if demotes { c.explicit.clone().flatten() } else { None };
+                if demotes && open.is_some() && self.roles_of(&c.point.node, At::before(c.point)).contains_key(&m) {
+                    own += 1;
+                }
                 if demotes {
                     late += pending.len();
                     for &i in &pending {
@@ -114,6 +122,6 @@ impl Timeline {
                 roster.insert(m, Edge { since: if e.role >= Role::Write { since } else { None }, ..e });
             }
         }
-        RosterState { roster, ledger, late_audits: late }
+        RosterState { roster, ledger, late_audits: late, own_demotions: own }
     }
 }

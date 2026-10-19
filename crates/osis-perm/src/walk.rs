@@ -11,7 +11,8 @@
 //! - A's chain writes: the writes that set the admin edges on A's admin paths to R's target.
 //! - Epoch starts: the newest snapshot found applicable at its position in a walk becomes N's
 //!   epoch start and the walk restarts; one found inapplicable or dropped while chosen is
-//!   rejected until an epoch start of a strict ancestor of N changes. D is rebuilt whenever
+//!   rejected until an epoch start changes on a thing authority on N may come through
+//!   (owners, members of what is above, at any time). D is rebuilt whenever
 //!   the epoch starts change, so writes a start ignores leave no drops.
 //! - Before its epoch start S, N's edges follow S's roster and ledger as virtual writes placed
 //!   at their keys (before real writes with that key); a ledger tenure end with a frontier
@@ -61,9 +62,27 @@ pub(crate) struct Input {
     pub snaps: BTreeMap<CommitId, Arc<RosterSnapshot>>,
     /// Key actors and every author: who can hold a class.
     pub nodes: BTreeSet<Tid>,
+    /// Every member any held write or roster names, per target (edges at any time).
+    pub ever_members: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 impl Input {
+    /// Things authority on `t` may come through, at any time: its owners and the members of
+    /// anything on the way, transitively (`t` excluded).
+    pub fn above(&self, t: &Tid) -> BTreeSet<Tid> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![*t];
+        while let Some(e) = stack.pop() {
+            let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_members.get(&e).into_iter().flatten().copied());
+            for y in up {
+                if y != *t && seen.insert(y) {
+                    stack.push(y);
+                }
+            }
+        }
+        seen
+    }
+
     pub fn gather(held: &dyn HeldSet) -> Input {
         let things: BTreeSet<Tid> = held.things().into_iter().collect();
         let owners = Owners::from_held(held, &things);
@@ -101,7 +120,16 @@ impl Input {
             .flat_map(|c| c.ops.iter().map(|o| o.member))
             .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.member))));
         nodes.extend(members.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
-        Input { owners, commits, snaps, nodes }
+        let mut ever_members: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        for c in commits.values() {
+            for o in &c.ops {
+                ever_members.entry(o.target).or_default().insert(o.member);
+            }
+        }
+        for s in snaps.values() {
+            ever_members.entry(s.thing).or_default().extend(s.roster.keys().chain(s.ledger.iter().map(|t| &t.member)).copied());
+        }
+        Input { owners, commits, snaps, nodes, ever_members }
     }
 }
 
@@ -434,7 +462,11 @@ impl Pass<'_> {
         let old = self.edges.get(&m, &t);
         let new = op.edge.map(|e| Edge { since: None, ..e });
         let st = view.standing(&a, best, &t);
-        if lowers(new.as_ref(), old) && (m == a || best.get(&m) == Some(&Role::Admin)) {
+        // Self-removal (§2): lowering one's own edge, or an edge of a member one is admin of
+        // when that is the only authority one has (no owner-chain or edge-admin authority on
+        // the target); otherwise the write is an explicit demotion by its class there.
+        let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
+        if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
             // A single-use redemption's self-removal is attributed like its grant (§5.1).
             if let (true, Class::Invite(l)) = (m == a, st.class)
                 && c.ops.iter().any(|o| o.member != a)
@@ -459,7 +491,8 @@ impl Pass<'_> {
         let best = self.view(c.ts).roles_from(&c.author);
         let mut judged = Vec::new();
         for (k, op) in c.ops.iter().enumerate() {
-            let id = WriteId::Op(c.id, k as u32);
+            let Ok(k32) = u32::try_from(k) else { continue };
+            let id = WriteId::Op(c.id, k32);
             if self.dropped.contains_key(&id) || self.start_of(&op.target).is_some_and(|s| point < s.point()) {
                 continue;
             }
@@ -567,8 +600,8 @@ pub(crate) fn run(input: &Input) -> Outcome {
     let mut rejected: BTreeSet<CommitId> = BTreeSet::new();
     let ns = input.snaps.len();
     let writes = input.commits.values().map(|c| c.ops.len()).sum::<usize>() + ns;
-    // Safety net only: D grows between epoch changes, and epoch changes stop by induction on
-    // ownership depth (a rejection is undone only by a change at a strict ancestor).
+    // Safety net: D grows between epoch changes; epoch changes stop except where authority
+    // paths cycle through mutual membership, where this bound ends the evaluation.
     let cap = (writes + 2).saturating_mul(ns.saturating_mul(ns + 2) + 1).saturating_mul(4);
     let mut passes = 0;
     loop {
@@ -596,9 +629,15 @@ pub(crate) fn run(input: &Input) -> Outcome {
             changed.push(*thing);
         }
         if !changed.is_empty() {
-            // Starts below a changed thing get another chance; D is rebuilt, so writes a new
-            // start ignores leave no drops behind.
-            rejected.retain(|s| input.snaps.get(s).is_none_or(|sn| !changed.iter().any(|c| input.owners.chain(&sn.thing).0.contains(c))));
+            // A rejected start gets another chance when a start changes anywhere authority on
+            // its thing may come from (owners, members of what is above, at any time); D is
+            // rebuilt, so writes a new start ignores leave no drops behind.
+            rejected.retain(|s| {
+                input.snaps.get(s).is_none_or(|sn| {
+                    let above = input.above(&sn.thing);
+                    !changed.iter().any(|c| above.contains(c))
+                })
+            });
             dropped.clear();
         }
         match res {
@@ -636,6 +675,10 @@ fn pass(
             }
         }
         for v in virt {
+            // The filters real writes get: no self edge, no owner edge, invite at most the role.
+            if v.member == *thing || input.owners.owner_actor(thing) == Some(v.member) || v.edge.is_some_and(|e| !e.well_formed()) {
+                continue;
+            }
             items.push((v.point, 0, v.thing, v.member, Item::Virtual(v)));
         }
     }

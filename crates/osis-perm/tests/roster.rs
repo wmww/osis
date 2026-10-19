@@ -47,7 +47,7 @@ fn answers(held: &MemoryHeldSet, things: &[Tid], probes: &[Point], keep: &dyn Fn
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
     let state = tl.roster_state(&thing);
-    let late = state.late_audits > 0;
+    let late = state.late_audits > 0 || state.own_demotions > 0;
     let mut w2 = w.clone();
     let s = w2.snapshot_state(author, thing, state, END_T);
     // The thing's own earlier writes are replaced by the snapshot: compare everything else.
@@ -131,7 +131,7 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("run_joint: {samples} histories, {} snapshots differing by a late audit", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("run_joint: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -190,7 +190,7 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("sample {s}: {d}\n{h:?}");
         }
     }
-    eprintln!("run_edges: {samples} histories, {} snapshots differing by a late audit", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("run_edges: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -256,7 +256,7 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("run_snapshot: {samples} histories, {} snapshots differing by a late audit", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("run_snapshot: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is

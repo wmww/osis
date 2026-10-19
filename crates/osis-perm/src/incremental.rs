@@ -66,8 +66,9 @@ impl HeldSet for Part<'_> {
     }
 }
 
-/// A component's exact inputs: its things and the IDs of its commits and snapshots.
-type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>);
+/// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
+/// held `/created` records (by tid; a record's tid fixes its content).
+type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
 
 /// Timelines per component, cached across held-set changes.
 #[derive(Default)]
@@ -87,10 +88,14 @@ impl Timelines {
         let things: BTreeSet<Tid> = held.things().into_iter().collect();
         let mut dsu = Dsu::default();
         let mut ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
+        let mut created: BTreeSet<Tid> = BTreeSet::new();
         for t in &things {
             dsu.find(*t);
-            if let Some(CreationRecord::Thing { owner, .. }) = held.created(t) {
-                dsu.union(*t, owner);
+            if let Some(rec) = held.created(t) {
+                created.insert(*t);
+                if let CreationRecord::Thing { owner, .. } = rec {
+                    dsu.union(*t, owner);
+                }
             }
             for c in held.edge_commits(t) {
                 ids.entry(*t).or_default().insert(c.id);
@@ -114,6 +119,9 @@ impl Timelines {
             let g = groups.entry(root).or_default();
             g.0.insert(t);
             g.1.extend(ids.get(&t).into_iter().flatten().copied());
+            if created.contains(&t) {
+                g.2.insert(t);
+            }
         }
         let mut cache: BTreeMap<Inputs, Timeline> = std::mem::take(&mut self.comps).into_iter().collect();
         let mut evaluated = 0;

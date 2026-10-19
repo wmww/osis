@@ -401,3 +401,52 @@ fn held_order_irrelevant() {
     assert_eq!(tl.roster(&g, At::END), tr.roster(&g, At::END));
     assert_eq!(tl.dropped(), tr.dropped());
 }
+
+/// §2 self-removal / §5.1: A owns group G and doc T; X admin of G, G admin of T; X grants Y
+/// admin on T unseen by A. A removes G from T: with owner-chain authority on T this is an
+/// explicit demotion, not a self-removal, so Y's grant is dropped. When G is someone else's,
+/// the same.
+#[test]
+fn group_removal_by_owner_of_both() {
+    for a_owns_g in [true, false] {
+        let mut w = World::new();
+        let n = w.nodes(4);
+        let (a, x, y, o) = (n[0], n[1], n[2], n[3]);
+        let g_owner = if a_owns_g { a } else { o };
+        let g = w.thing(g_owner);
+        let t = w.thing(a);
+        w.set(g_owner, g, x, edge(Admin), 1, &[]);
+        w.set(a, t, g, edge(Admin), 2, &[]);
+        let grant = w.set(x, t, y, edge(Admin), 3, &[]);
+        let rm = w.set(a, t, g, None, 10, &[]);
+        let tl = eval(&w);
+        assert_eq!(role(&tl, y, t), None, "A owns G {a_owns_g}");
+        assert!(tl.dropped().contains_key(&WriteId::Op(grant, 0)));
+        assert_eq!(tl.applied()[&WriteId::Op(rm, 0)].attr, osis_perm::Attr::By(Class::Chain));
+    }
+}
+
+/// §6 epoch starts: a snapshot of N whose author's owner-chain authority comes through a
+/// member actor Q of N's owner is rejected while Q's start says the author was not in Q, and
+/// reconsidered when Q's start changes to one that lists it (Q is not N's owner ancestor).
+#[test]
+fn rejected_start_reconsidered_through_member_actor() {
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (k, k2, d, e, z) = (n[0], n[1], n[2], n[3], n[4]);
+    let p = w.thing(k);
+    let nn = w.thing(p);
+    let r = w.thing(k2);
+    let q = w.thing(r);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, q, edge(Admin), 0, &all);
+    w.set(k2, q, d, edge(Admin), 0, &all);
+    w.snapshot(k2, r, &[(e, Edge::new(Admin))], 3, &all);
+    let s = w.snapshot(d, nn, &[(z, Edge::new(Write))], 5, &all);
+    w.snapshot(k2, q, &[], 8, &all);
+    let sq2 = w.snapshot(e, q, &[(d, Edge::new(Admin))], 9, &all);
+    let tl = eval(&w);
+    assert_eq!(tl.epoch_start(&q), Some(sq2));
+    assert_eq!(tl.epoch_start(&nn), Some(s));
+    assert_eq!(edge_role(&tl, z, nn), Some(Write));
+}

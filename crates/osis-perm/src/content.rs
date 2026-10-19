@@ -25,7 +25,9 @@ impl Timeline {
     /// the newest such demotion's frontier covers its dots.
     pub fn delta_valid(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
         let x = at.node;
-        if self.role(&x, thing, At::END) >= Some(required) {
+        // A re-grant makes valid *again*: only writes from the start of X's first tenure of
+        // `required` on the thing.
+        if self.role(&x, thing, At::END) >= Some(required) && self.first_held(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= at)) {
             return Validity::Valid;
         }
         let held = self.role(&x, thing, At::before(at)) >= Some(required);
@@ -42,6 +44,28 @@ impl Timeline {
             }
             None => Validity::Invalid { by: None },
         }
+    }
+}
+
+impl Timeline {
+    /// Where `x` first held `required` on `thing`: `Some(None)` from the beginning, `Some(p)`
+    /// from the change at `p`, `None` never.
+    fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
+        let mut edges = self.walked.initial.clone();
+        let holds = |edges: &crate::graph::Edges, ts: Option<osis_core::Ts>| {
+            let view = crate::graph::View { owners: &self.owners, edges, ts };
+            view.roles_from(x).get(thing).copied() >= Some(required)
+        };
+        if holds(&edges, Some(osis_core::Ts::default())) {
+            return Some(None);
+        }
+        for c in &self.walked.history {
+            edges.set(c.member, c.target, c.edge);
+            if holds(&edges, Some(c.point.ts)) {
+                return Some(Some(c.point));
+            }
+        }
+        None
     }
 }
 

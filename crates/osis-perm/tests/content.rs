@@ -189,3 +189,39 @@ fn overlapping_membership_commits_ignored() {
     let tl = Timeline::evaluate(&held);
     assert!(!tl.roster(&d, osis_perm::At::END).contains_key(&n[3]));
 }
+
+/// §5.2 re-grant makes writes valid *again*: a write before X's first tenure stays invalid
+/// after X is granted (review finding), one inside a later gap is restored.
+#[test]
+fn pre_grant_write() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (a, x) = (n[0], n[1]);
+    let t = w.thing(a);
+    let pre = w.content(x, 3, &[]);
+    w.set(a, t, x, edge(Write), 10, &[]);
+    w.set(a, t, x, None, 12, &[]);
+    let gap = w.content(x, 13, &[]);
+    w.set(a, t, x, edge(Write), 14, &[]);
+    let tl = Timeline::evaluate(&w.held());
+    assert!(!valid(&tl, pre, t, Write));
+    assert!(valid(&tl, gap, t, Write));
+}
+
+/// §5.2 with §5.1 "as if the member still held the role" (deliberate): a write after `until`
+/// is invalid until the next explicit demotion, whose frontier then decides it.
+#[test]
+fn until_gap_write_finalized_by_frontier() {
+    for seen in [false, true] {
+        let mut w = World::new();
+        let n = w.nodes(2);
+        let (a, x) = (n[0], n[1]);
+        let t = w.thing(a);
+        w.set(a, t, x, edge_inv(Write, None, Some(5)), 1, &[]);
+        let recv: Vec<(Tid, u64)> = if seen { vec![(a, 8)] } else { vec![] };
+        let p = w.content(x, 7, &recv);
+        assert!(!valid(&Timeline::evaluate(&w.held()), p, t, Write));
+        w.set(a, t, x, None, 10, &[]);
+        assert_eq!(valid(&Timeline::evaluate(&w.held()), p, t, Write), seen);
+    }
+}
