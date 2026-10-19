@@ -37,16 +37,11 @@ impl GroupLabel {
 }
 
 impl Core {
-    /// The reader actor of `t`, the projection key of its deltas (notes/node.md, Body): `t` with
-    /// secrets of its own, else its owner (a key actor is its own).
+    /// The reader actor of `t`, the projection key of its deltas: `t` with secrets of its own,
+    /// else the nearest owner-chain actor that has them (a key actor is its own).
     pub(crate) fn reader_of(&self, t: &Tid) -> Tid {
-        if self.own_keys.contains(t) {
-            return *t;
-        }
-        match self.created(t) {
-            Some(CreationRecord::Thing { owner, .. }) => *owner,
-            _ => *t,
-        }
+        // the actor whose secrets `t`'s derive from, up the owner chain
+        self.secret_actor(t).unwrap_or(*t)
     }
 
     /// The actor whose secrets `t`'s derive from: up the owner chain to a thing with secrets of

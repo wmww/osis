@@ -682,6 +682,12 @@ impl SyncEngine {
         self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.kind.clone())).collect()
     }
 
+    /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body
+    /// leaves neither).
+    pub fn holds_blob(&mut self, b: &osis_core::BlobId) -> bool {
+        self.state.blobs.contains_key(b) || self.engine.has_blob(b)
+    }
+
     /// Signals received since the last call.
     pub fn take_signals(&mut self) -> Vec<osis_label::SignalBody> {
         std::mem::take(&mut self.signals)
