@@ -55,7 +55,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | api (second half) | running (opus, worktree) | sharing and sync surface |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | not started | after api second half |
-| p2p | not started | best effort, last |
+| p2p | done with issues/p2p-deferred.md: co-reader dialing and member-peer serving (node sync), `/reach`, LAN tags, `Iroh` transport (feature `iroh`, tier-2 localhost sync of two nodes), LAN announcement codec/socket (`lan`); plan deleted | left: one driver for servers and peers, LAN loop, member node without open, relay test (issue) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |

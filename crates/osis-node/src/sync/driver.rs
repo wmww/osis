@@ -149,24 +149,37 @@ impl<T: Transport> Driver<T> {
 /// Runs the sync engine until `Control::Shutdown` (or the control sender is dropped) and
 /// returns it. Dials what it asks for over `transport`; ticks when its wake comes due.
 pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Clock>, control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
-    run_serving(sync, transport, None, clock, control, log).await
+    run_serving(sync, transport, Vec::new(), clock, control, log).await
 }
 
-/// `run`, also serving the peer sessions `listener` accepts (listen with the engine's
-/// `dialable_secret` and publish `listener.address().key` with `publish_reach`).
-pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listener: Option<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
+/// `run`, also serving the peer sessions the `listeners` accept: one listening with the engine's
+/// `dialable_secret` (publish its `address().key` with `publish_reach`), and one per LAN join
+/// with a fresh secret whose key is announced with the LAN tag (spec/sync.md §10).
+pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> SyncEngine {
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
-    let (link_tx, mut link_rx) = mpsc::channel::<Link>(64);
-    let local = listener.as_ref().map(|l| l.address().key);
-    let serving = listener.map(|l| tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, link_tx)));
+    let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
+    let mut serving = Vec::new();
+    for l in listeners {
+        let key = l.address().key;
+        let (tx, mut rx) = mpsc::channel::<Link>(64);
+        serving.push(tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx)));
+        let out = link_tx.clone();
+        serving.push(tokio::spawn(async move {
+            while let Some(link) = rx.recv().await {
+                if out.send((key, link)).await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+    drop(link_tx);
     let mut d = Driver { sync, transport: Arc::new(transport), clock, log, conns: HashMap::new(), wake: None, ev_tx };
     d.feed(Event::Tick);
     loop {
         let idle = d.idle();
         tokio::select! {
-            Some(l) = link_rx.recv(), if local.is_some() => {
+            Some((key, l)) = link_rx.recv() => {
                 let Link { peer_key, tx, rx } = l;
-                let key = local.unwrap_or_default();
                 let (conn, acts) = blocking(|| d.sync.accept(key, peer_key));
                 let task = pump(conn, rx, d.ev_tx.clone());
                 d.conns.insert(conn, Conn { tx: Some(tx), task });
@@ -210,7 +223,7 @@ pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listener:
             }
         }
     }
-    if let Some(s) = serving {
+    for s in serving {
         s.abort();
     }
     let ids: Vec<ConnId> = d.conns.keys().copied().collect();

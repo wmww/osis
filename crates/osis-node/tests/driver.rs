@@ -122,7 +122,9 @@ fn s_(x: &str) -> Value {
 /// Two members of a group whose label names no server converge peer to peer under the tokio
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
 /// in `/reach`, dials the other at `peer://` and serves the other's sessions (member peer).
-pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>) {
+/// `direct`: publish the listener's own address hints as relays (a localhost stand-in for LAN
+/// discovery; `/reach` never carries addresses otherwise).
+pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, direct: bool) {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
     let a = net.add_node(1, Default::default());
@@ -131,7 +133,8 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     for (n, ep, url) in [(a, &a_ep, a_url), (b, &b_ep, b_url)] {
         let secret = net.sync(n).dialable_secret();
         let l = ep.listen(ListenConfig { url: url.into(), secret: StaticSecret::from_bytes(*secret.expose()) }).await.unwrap();
-        let acts = net.sync(n).publish_reach(l.address().key, relays.clone()).unwrap();
+        let relays = if direct { osis_transport::peer_relays(&l.address().url).unwrap() } else { vec![] };
+        let acts = net.sync(n).publish_reach(l.address().key, relays).unwrap();
         net.actions(n, acts);
         listeners.push(l);
     }
@@ -141,8 +144,8 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     let (sa, sb) = (net.take(a), net.take(b));
     let (actl, arx) = mpsc::channel(8);
     let (bctl, brx2) = mpsc::channel(8);
-    let lb = listeners.pop();
-    let la = listeners.pop();
+    let lb: Vec<_> = listeners.pop().into_iter().collect();
+    let la: Vec<_> = listeners.pop().into_iter().collect();
     let da = tokio::spawn(driver::run_serving(sa, a_ep, la, clock.clone(), arx, log()));
     let db = tokio::spawn(driver::run_serving(sb, b_ep, lb, clock.clone(), brx2, log()));
     let c = call(&actl, move |s| {
@@ -165,5 +168,15 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_in_process_spec_sync_5() {
     let tnet = osis_transport::Net::new(4);
-    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![]).await;
+    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", false).await;
+}
+
+// spec/sync.md §5, §10: the same over iroh on localhost, no relay (tier 2: touches the network).
+// Run: `cargo test -p osis-node --features iroh --test driver -- --ignored`.
+#[cfg(feature = "iroh")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn driver_p2p_iroh_localhost_spec_sync_10() {
+    use osis_transport::Iroh;
+    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", true).await;
 }
