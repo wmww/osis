@@ -347,8 +347,8 @@ pub struct CreateArgs {
 pub struct SetArgs {
     pub t: String,
     pub ak: String,
-    /// [PATH] VALUE
-    #[arg(num_args = 1..=2, required = true, value_name = "[PATH] VALUE", allow_hyphen_values = true)]
+    /// [PATH] VALUE ([PATH] with --stream)
+    #[arg(num_args = 0..=2, required_unless_present = "stream", value_name = "[PATH] VALUE", allow_hyphen_values = true)]
     pub rest: Vec<String>,
     /// Read stdin into a blob/string position without materializing
     #[arg(long)]

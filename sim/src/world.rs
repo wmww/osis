@@ -54,6 +54,8 @@ pub struct World {
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
     tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
     decoders: BTreeMap<(usize, ConnId), FrameDecoder>,
+    /// Messages one `pump` carries at most before it reports a storm.
+    pub max_pump: usize,
 }
 
 impl Default for World {
@@ -75,6 +77,7 @@ impl World {
             traffic: Vec::new(),
             tally: None,
             decoders: BTreeMap::new(),
+            max_pump: 200_000,
         }
     }
 
@@ -257,7 +260,7 @@ impl World {
     /// Carries every queued action and message until nothing moves. False if it did not
     /// settle within a bound (a message storm).
     pub fn pump(&mut self) -> bool {
-        for _ in 0..200_000 {
+        for _ in 0..self.max_pump {
             let mut moved = false;
             let dbs = self.dbs();
             for (d, db) in dbs.iter().enumerate() {

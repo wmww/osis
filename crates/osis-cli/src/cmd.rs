@@ -491,15 +491,26 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, len: bool) -> anyhow::Result<()> {
-    if stream {
-        return Err(not_supported("stream (plans/api.md second half)"));
-    }
-    if len {
-        return Err(not_supported("len (plans/api.md second half)"));
-    }
     let t = ctx.tid(t)?;
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
+    if stream || len {
+        let at = db.at(t, key.clone());
+        let s = match path {
+            None | Some("") => at.stream()?,
+            Some(p) => {
+                let p = write::path(ctx, t, &key, p, false)?;
+                at.path(p).stream()?
+            }
+        };
+        let Some(mut s) = s else { return Err(exit(3, "")) };
+        if len {
+            let n = s.len();
+            return ctx.emit(&[n.to_string()], J::obj([("len", J::int(n))]));
+        }
+        std::io::copy(&mut s, &mut *ctx.out)?;
+        return Ok(());
+    }
     let (v, pty) = match path {
         None | Some("") => (db.get(t, key.clone())?, key.ty().cloned()),
         Some(p) => {

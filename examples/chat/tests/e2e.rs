@@ -17,6 +17,12 @@ fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
 /// Alice's chat, joined by `n` others through one multi-use link: (alice, others, chat,
 /// personas with alice's first).
 fn chat_of(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Tid, Vec<Tid>) {
+    let (alice, others, c, ps, _) = chat_link(w, n);
+    (alice, others, c, ps)
+}
+
+/// `chat_of` with the link.
+fn chat_link(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Tid, Vec<Tid>, osis::ShareLink) {
     let sv = w.add_server().unwrap();
     let alice = person(w, 1, sv);
     let others: Vec<Osis> = (0..n).map(|i| person(w, 2 + i as u64, sv)).collect();
@@ -30,7 +36,7 @@ fn chat_of(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Tid, Vec<Tid>) {
         ps.push(p);
         w.run();
     }
-    (alice, others, c, ps)
+    (alice, others, c, ps, link)
 }
 
 // notes/chat.md Structure (personas, join by link, reactions, read marker), spec/permissions.md
@@ -162,39 +168,34 @@ fn moderator_hides() {
 }
 
 // notes/chat.md Costs, tier 2 (budgets): bytes a join, a message and a removal send to the
-// server in a chat of N (`OSIS_CHAT_N`, default 6). Join: persona plus two membership commits
+// server in a chat of N (`OSIS_CHAT_N`, default 4). Join: persona plus two membership commits
 // and one content commit; removal: about 2 sealed boxes of ~1.2 KB per remaining member
-// (2 × 199 ≈ 480 KB at 200). Run: `cargo test -p chat --release -- --ignored --nocapture`.
+// (2 × 199 ≈ 480 KB at 200). Run: `cargo test -p chat -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn costs_join_message_removal() {
-    let n: usize = std::env::var("OSIS_CHAT_N").ok().and_then(|s| s.parse().ok()).unwrap_or(6);
+    let n: usize = std::env::var("OSIS_CHAT_N").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let mut w = World::new();
-    let (alice, others, c, ps) = chat_of(&mut w, n - 1);
+    let (alice, others, c, ps, link) = chat_link(&mut w, n - 2);
     let late = person(&mut w, 99, 0);
-    let link = invite(&alice, c, false).unwrap();
-    w.run();
     w.start_tally();
-    let before = w.traffic(&late);
     w.until(join(&late, &link, "late"), 1000, 10).unwrap().unwrap();
     w.run();
-    let join_up = w.traffic(&late).up - before.up;
-    eprintln!("join sent {:?}", w.tally(&late));
-    let a0 = w.traffic(&alice);
+    let join = w.tally(&late);
+    w.start_tally();
     send(&alice, ps[0], "hello", w.now() as i64, None).unwrap();
     w.run();
-    let msg_up = w.traffic(&alice).up - a0.up;
-    let a1 = w.traffic(&alice);
+    let msg = w.tally(&alice);
     w.start_tally();
     w.until(remove(&alice, c, ps[1]), 1000, 20).unwrap().unwrap();
     w.run();
-    let rm_up = w.traffic(&alice).up - a1.up;
-    eprintln!("removal sent {:?}", w.tally(&alice));
-    let others_up: u64 = others.iter().skip(1).map(|o| w.tally(o).values().map(|v| v.1).sum::<u64>()).sum();
-    eprintln!("chat of {n} (+1 late): join up {join_up} B, message up {msg_up} B, removal up {rm_up} B (others then {others_up} B)");
-    assert!(msg_up < 3_000, "a message: about 350 B plus content, plus protocol framing: {msg_up}");
-    assert!(join_up < 40_000, "join: {join_up}");
-    let boxes = 2 * n as u64 * 1_300;
-    assert!(rm_up < boxes + 30_000, "removal: {rm_up} against {boxes} B of boxes");
+    let rm = w.tally(&alice);
+    let others_rm: u64 = others.iter().skip(1).chain([&late]).map(|o| w.tally(o).values().map(|v| v.1).sum::<u64>()).sum();
+    let sum = |t: &std::collections::BTreeMap<String, (u64, u64)>| t.values().map(|v| v.1).sum::<u64>();
+    eprintln!("chat of {n}\n join {} B {join:?}\n message {} B {msg:?}\n removal {} B {rm:?}\n others during removal {others_rm} B", sum(&join), sum(&msg), sum(&rm));
+    // notes/chat.md's estimates with a margin; over budget today (issues/chat-costs.md)
+    assert!(sum(&msg) < 1_000, "a message: about 350 B plus content");
+    assert!(sum(&join) < 20_000, "join: four commits and three boxes");
+    assert!(sum(&rm) < 2 * n as u64 * 1_300 + 10_000, "removal: two boxes per remaining member");
 }
 
