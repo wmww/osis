@@ -37,7 +37,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | keys | running (worktree) | steps 1–5 landed; plan stays until membership-flows and node-sync use it |
 | node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
 | transport | running (opus, worktree) | |
-| large-values | running (opus, worktree) | library parts in osis-label |
+| large-values | review | library parts done; reviewer running (Value/Link equality change under scrutiny); node integration in wave 4; issues/large-value-seek.md |
 | server | running (opus, worktree) | |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
