@@ -95,12 +95,18 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, sink:
 impl Engine {
     /// Reads a chunked large value of thing `tid` back whole.
     pub fn read_large(&mut self, tid: &Tid, link: &Link) -> Result<Value> {
+        self.read_large_max(tid, link, MAX_READ)
+    }
+
+    /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes
+    /// (the API's materialization bound).
+    pub fn read_large_max(&mut self, tid: &Tid, link: &Link, max_len: usize) -> Result<Value> {
         let (tid, link) = (*tid, *link);
         self.run(|tx| {
             let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut blobs = TxBlobs::new(&mut tx.txn);
             let mut r = BlobReader::new(&dedup, &mut blobs);
-            Ok(osis_label::read_value(link, &dedup, &mut r, LargeParams::FORMAT, MAX_READ)?)
+            Ok(osis_label::read_value(link, &dedup, &mut r, LargeParams::FORMAT, max_len)?)
         })
     }
 

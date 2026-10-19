@@ -131,6 +131,13 @@ impl Mutation {
         self
     }
 
+    /// Makes this an undo of `target` (spec/commits.md §7) acting as the mutation's actor; the
+    /// mutation's other ops are ignored.
+    pub fn undo(&mut self, target: CommitId) -> &mut Self {
+        self.undoes = Some(target);
+        self
+    }
+
     /// The frontier of an explicit demotion (membership flows).
     pub fn frontier(&mut self, v: Value) -> &mut Self {
         self.frontier = Some(v);

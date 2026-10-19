@@ -25,6 +25,8 @@ pub const TIMER: &[u8] = b"x/";
 pub const SYNCING: &[u8] = b"s/";
 /// Commits voided by overlapping node-form ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
+/// Records the API layer keeps (identity choices, settings): `u/` + name.
+pub const APP: &[u8] = b"u/";
 /// Deletion obligations node-sync executes (append log).
 pub const DELETIONS: &[u8] = b"deletions";
 /// Re-snapshot triggers node-sync executes (append log): aspects left without a covering

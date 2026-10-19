@@ -457,6 +457,18 @@ impl Engine {
         self.core.schemas.insert(s.id, s);
     }
 
+    /// A local record of the API layer (`osis`), never synced.
+    pub fn app_record(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
+        let k = [records::APP, name.as_bytes()].concat();
+        self.run(|tx| Ok(tx.txn.get_local(&k)?))
+    }
+
+    /// Writes a local record of the API layer.
+    pub fn set_app_record(&mut self, name: &str, value: &[u8]) -> Result<()> {
+        let k = [records::APP, name.as_bytes()].concat();
+        self.run(|tx| Ok(tx.txn.put_local(&k, value, Shred::No)?))
+    }
+
     /// This node's tid.
     pub fn tid(&self) -> Tid {
         self.core.id.tid()
