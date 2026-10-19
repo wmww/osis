@@ -14,12 +14,12 @@ Spec: spec/commits.md §4 (one storage transaction per atomic apply), §5 (bodie
 - Memory bound: paged units stream; no API materializes a whole large aspect.
 
 ## Steps
-- [ ] `Backend` + `MemoryBackend` with fault hook; file backend behind feature with the same test suite (trait-generic tests).
-- [ ] Key tree with `RootStorage`; unit encrypt/decrypt; rotation; tree tests (16M-unit shape test at reduced arity).
-- [ ] Units and `Transaction`; death records; counters; pending commits.
-- [ ] Paged large state units with indexes (works with `osis-crdt` paging via `PageSink`/`PageSource` adapters when crdt-core lands; until then over opaque pages).
-- [ ] Shredding: after `drop_*`, scan the raw backend bytes and the old key material to show the plaintext is unrecoverable (test encrypts a marker string and searches for it; and decrypting with every surviving key fails).
-- [ ] Crash tests: inject a crash at every write index of a transaction and reopen; state is either before or after, never between; the root rule holds.
+- [x] `Backend` + `MemoryBackend` with fault hook; file backend behind feature with the same test suite (trait-generic tests).
+- [x] Key tree with `RootStorage`; unit encrypt/decrypt; rotation; tree tests (16M-unit shape test at reduced arity).
+- [x] Units and `Transaction`; death records; counters; pending commits.
+- [x] Paged large state units with indexes (works with `osis-crdt` paging via `PageSink`/`PageSource` adapters when crdt-core lands; until then over opaque pages).
+- [x] Shredding: after `drop_*`, scan the raw backend bytes and the old key material to show the plaintext is unrecoverable (test encrypts a marker string and searches for it; and decrypting with every surviving key fails).
+- [x] Crash tests: inject a crash at every write index of a transaction and reopen; state is either before or after, never between; the root rule holds.
 
 ## Tests
 Property: random unit operations with crashes vs an in-memory oracle; concurrency: many handles, one writer; perf tier 2: a million small units, one edit of a million-key paged state touches O(1) pages.
@@ -28,3 +28,4 @@ Property: random unit operations with crashes vs an in-memory oracle; concurrenc
 node-core persists through `Store` only; crash and shredding tests green on both backends; notes/local-store.md gains an "Implementation" section (backend chosen, unit key formats, limits). Delete this plan.
 
 ## Progress
+- Steps 1-6 landed (osis-store: Backend, MemoryBackend/FaultyBackend, RedbBackend, RootStorage/FileRoot, key tree pager, tables, typed Store API, shredding and crash tests); notes/local-store.md has the Implementation section. Left: node-core persisting through `Store` (node-core plan), concurrent readers (issues/store-concurrent-readers.md). PageSink/PageSource adapters belong to node (layer DAG).

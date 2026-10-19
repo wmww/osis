@@ -167,3 +167,35 @@ mod file {
         }
     }
 }
+
+#[cfg(all(test, feature = "file-backend"))]
+mod tests {
+    use super::*;
+
+    // spec/commits.md §5: dropping destroys every copy; notes/local-store.md, Key tree: the file
+    // root survives a torn slot and keeps no copy of a replaced key.
+    #[test]
+    fn file_root() {
+        let dir = std::env::temp_dir().join(format!("osis-store-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("root");
+        let mut r = FileRoot::new(path.clone());
+        assert_eq!(r.load().unwrap(), None);
+        let rec = |e: u64, b: u8| RootRecord { epoch: e, key: Secret32::from_bytes([b; 32]) };
+        r.store(&rec(1, 0xa1)).unwrap();
+        r.store(&rec(2, 0xb2)).unwrap();
+        assert_eq!(r.load().unwrap(), Some(rec(2, 0xb2)));
+        let raw = std::fs::read(&path).unwrap();
+        assert!(!raw.windows(32).any(|w| w == [0xa1; 32]), "old key left in the file");
+        // Torn write of one slot: the other still loads.
+        let mut torn = raw.clone();
+        torn[10] ^= 1;
+        std::fs::write(&path, &torn).unwrap();
+        assert_eq!(r.load().unwrap(), Some(rec(2, 0xb2)));
+        r.store(&rec(3, 0xc3)).unwrap();
+        assert_eq!(FileRoot::new(path.clone()).load().unwrap(), Some(rec(3, 0xc3)));
+        assert_eq!(r.tier(), RootTier::FileOverwrite);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
