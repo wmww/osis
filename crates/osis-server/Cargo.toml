@@ -20,3 +20,7 @@ osis-transport.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[features]
+# The redb file backend (notes/architecture.md §4: off by default).
+file-backend = ["osis-store/file-backend"]
