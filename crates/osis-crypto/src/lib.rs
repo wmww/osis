@@ -5,22 +5,29 @@
 #![forbid(unsafe_code)]
 
 pub mod aead;
+mod blob;
 mod boxes;
 mod error;
 pub mod kdf;
 mod kem;
 mod keys;
+mod label;
 mod rng;
 mod secret;
 mod sign;
+mod token;
 
+pub use aead::WRAP_LEN;
+pub use blob::{blob_id, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad, padme, seal_inbox, unpad, unwrap, wrap};
 pub use boxes::{BoxForm, BoxItem, Epoch, entry_box_ad, open_box, open_history, open_symmetric_box, seal_box, seal_history, secrets_box_ad, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
 pub use keys::{KeyActorKeys, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, lan_tag, link_hash, link_tree_hash, role_kem, thing_role_secret};
+pub use label::{LabelRole, claim_key, deposit_key, label_id, label_role_key, open_digest, sign_open, static_entry, verify_open};
 pub use rng::SeededRng;
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};
+pub use token::{commitment, delete_token, token_hash, verify_presented_token};
 
 #[cfg(feature = "os-rng")]
 pub use rand_core::OsRng;
