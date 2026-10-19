@@ -2,6 +2,7 @@
 name = "crdt-model"
 version = "0.1.0"
 edition = "2021"
+publish = false
 description = "Reference model for spec/crdt.md: slow, small, obviously correct. Not the implementation."
 
 [dependencies]
@@ -14,5 +15,7 @@ name = "text-bench"
 path = "src/bin/text_bench.rs"
 
 # Reference model: style lints off; correctness is checked by its tests.
+[lints.rust]
+unsafe_code = "forbid"
 [lints.clippy]
 all = { level = "allow", priority = -1 }
