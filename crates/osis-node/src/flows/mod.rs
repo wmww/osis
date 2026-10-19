@@ -92,7 +92,8 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m` (boxes put, removed boxes reset, history boxes put).
+/// Writes a `/secrets` write into `m` (boxes put, removed boxes reset, history boxes written
+/// even when unchanged: a grant or re-seal re-writes them, spec/crypto.md §4).
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Result<()> {
     for (k, b) in &w.boxes {
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) })?;
@@ -101,6 +102,8 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Res
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
     }
     for (k, h) in &w.history {
+        // remove + put: a put of an unchanged value writes nothing
+        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(k.to_value()) })?;
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) })?;
     }
     Ok(())

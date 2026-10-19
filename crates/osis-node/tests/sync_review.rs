@@ -144,8 +144,9 @@ fn no_reupload_ping_pong_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v3")));
 }
 
-// spec/sync.md §3 (projection, entitlement): one commit touching a shared thing and a private
-// one places only the shared deltas under the group's label.
+// spec/sync.md §3 (projection, entitlement), spec/commits.md §4 (pending on `/created` only
+// for things whose deltas the node holds or syncs): one commit touching a shared thing and a
+// private one places only the shared deltas under the group's label; a member applies them.
 #[test]
 fn private_and_shared_split_spec_sync_3() {
     let mut net = Net::new();
@@ -171,8 +172,9 @@ fn private_and_shared_split_spec_sync_3() {
             assert!(parts.iter().all(|(ai, _)| h.aspects[*ai].tid == t), "only the shared deltas: {parts:?}");
         }
     }
-    // the member cannot apply the commit while it lacks the private thing's `/created`
-    // (issues/node-sync-gaps.md); it never sees the private deltas
+    // the member applies the shared delta and never sees the private one
+    assert!(net.engine(b).pending().is_empty(), "{:?}", net.engine(b).pending());
+    assert_eq!(net.read(b, t), Some(s("shared 2")));
     assert_eq!(net.read(b, p), None);
     assert!(!net.engine(b).knows(&p));
 }

@@ -76,9 +76,26 @@ BodyAt(b) == \E x \in srv : SameBody(x, b)
 \* sync §7: a covering snapshot under the label, as the node knows it.
 SnapAt(n, b) == CoveredBy(applied[n], srv \cap seen[n], b)
 \* sync §7: "another entry under it carries them: a covering snapshot, a blob
-\* of the commit holding a superset of its deltas, or an identical body".
+\* of the commit holding a superset of its deltas, or an identical body with
+\* a lower blob ID" (v stands for the blob ID order).
 Carrier(n, b) == \/ SnapAt(n, b)
-                 \/ \E x \in srv \cap seen[n] : x # b /\ x.c = b.c /\ b.ds \subseteq x.ds
+                 \/ \E x \in srv \cap seen[n] :
+                      /\ x.c = b.c
+                      /\ \/ b.ds \subseteq x.ds /\ b.ds # x.ds
+                         \/ x.ds = b.ds /\ x.v < b.v
+\* commits §5: "A node that may write the aspect and holds no snapshot
+\* covering a body with live writes writes one before dropping the body"
+\* (read as: a drop past keep-at-most; AMBIGUITIES.md S16).
+NeedsSnapToDrop(n, b) ==
+  /\ n \in Writers /\ LiveIn(applied[n], b) /\ now >= MostB(applied[n], b)
+  /\ ~CoveredBy(applied[n], held[n], b)
+\* commits §5 at most D after replaced: the replacing node (it applied its
+\* own commit killing a write of b) sends the timed delete, "after the
+\* snapshot of sync §7 when the body still has live writes".
+Replacer(n, b) == \E c \in applied[n] : Author[c] = n /\ b.ds \cap Kills[c] # {}
+TimedDue(n, b) ==
+  /\ n \in Writers /\ b \in srv \cap seen[n] /\ MostRel[b.c] # Inf /\ Replacer(n, b)
+  /\ ~\E e \in timed : e[1] = b
 DupHigherSeen(n, b) == \E x \in srv \cap seen[n] : SameBody(x, b) /\ x.v < b.v
 Fresh(b) == {[b EXCEPT !.v = w] : w \in {u \in Vs : [b EXCEPT !.v = u] \notin tomb}}
 
@@ -99,8 +116,7 @@ Tick == now < MaxT /\ now' = now + 1
         /\ UNCHANGED <<state, created, applied, held, seen, compacted, online,
                        srv, dep, stamped, tomb, timed, adv>>
 
-\* A write. A writer replacing a body under a relative keep-at-most sends the
-\* timed delete with it (commits §5, sync §5).
+\* A write. The timed delete of a body it replaces is SendTimed.
 Write(n, c) ==
   /\ online[n] /\ Author[c] = n /\ created[c] = Inf /\ Deps[c] \subseteq applied[n]
   /\ now < Exp[c] /\ now < MostAbs[c]   \* commits §6 T > ts; same for at-most
@@ -108,10 +124,17 @@ Write(n, c) ==
   /\ applied' = [applied EXCEPT ![n] = @ \cup {c}]
   /\ state' = [state EXCEPT ![n] = @ \cup CD[c] \cup Covers[c]]
   /\ held' = [held EXCEPT ![n] = @ \cup {[c |-> c, ds |-> CD[c], v |-> 0]}]
-  /\ timed' = IF n \notin Writers THEN timed ELSE timed \cup
-        {<<b, now + MostRel[b.c]>> : b \in {x \in srv \cap seen[n] :
-            x.ds \cap Kills[c] # {} /\ MostRel[x.c] # Inf}}
-  /\ UNCHANGED <<now, seen, compacted, online, srv, dep, stamped, tomb, adv>>
+  /\ UNCHANGED <<now, seen, compacted, online, srv, dep, stamped, tomb, timed, adv>>
+
+\* commits §5 / sync §5: the replacing writer sends the server a delete timed
+\* at the bound (first death plus D), with a covering snapshot already under
+\* the label when the body still has live writes.
+SendTimed(n, b) ==
+  /\ online[n] /\ TimedDue(n, b)
+  /\ LiveIn(applied[n], b) => SnapAt(n, b)
+  /\ timed' = timed \cup {<<b, Min(Deaths(applied[n], b)) + MostRel[b.c]>>}
+  /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, srv, dep,
+                 stamped, tomb, adv>>
 
 \* Cursor sync delivers each log entry once, in any order (reordering server).
 Recv(n, b) ==
@@ -123,9 +146,10 @@ Recv(n, b) ==
   /\ UNCHANGED <<now, created, compacted, online, srv, dep, stamped, tomb, timed, adv>>
 
 \* Local drop of a must-not-hold body; "a node dropping a body for a purge
-\* keeps the commit as a blob without the purged deltas" (commits §5).
+\* keeps the commit as a blob without the purged deltas" (commits §5); a
+\* writer dropping a body with live writes first holds a covering snapshot.
 Drop(n, b) ==
-  /\ b \in held[n] /\ NMustNot(n, b)
+  /\ b \in held[n] /\ NMustNot(n, b) /\ ~NeedsSnapToDrop(n, b)
   /\ LET keep == {d \in b.ds : ~Purged(applied[n], d)}
          rw == [c |-> b.c, ds |-> keep, v |-> 0]
      IN IF keep # b.ds /\ ~Expired(b)
@@ -231,19 +255,25 @@ AdvReplay(b) == /\ b \in stamped /\ b \notin srv /\ b \notin tomb /\ ~Expired(b)
 \* holder that must delete a body with live writes and finds no such entry
 \* uploads a covering snapshot first when it may write the aspect"; commits §5
 \* "A writer that, after applying [a purge], holds no covering snapshot of the
-\* aspect under a label it writes re-snapshots there".
+\* aspect under a label it writes re-snapshots there"; a writer that must drop
+\* a body with live writes and holds no covering snapshot (commits §5 keep at
+\* most); a replacer whose timed delete waits for a snapshot (commits §5).
 SnapDue(n, s) ==
   /\ n \in Writers
   /\ \/ \E b \in srv \cap seen[n] :
           /\ b.c \in applied[n] /\ NMustNot(n, b) /\ LiveIn(applied[n], b)
           /\ ~Carrier(n, b) /\ b.ds \subseteq Covers[s]
+     \/ \E b \in held[n] : NeedsSnapToDrop(n, b) /\ b.ds \subseteq Covers[s]
+     \/ \E b \in srv \cap seen[n] :
+          /\ TimedDue(n, b) /\ LiveIn(applied[n], b) /\ ~SnapAt(n, b)
+          /\ b.ds \subseteq Covers[s]
      \/ \E p \in applied[n] :
           /\ Purges[p] # {}
           /\ ~\E x \in held[n] \cap srv : x.c \in Snaps /\ CD[p] \subseteq Covers[x.c]
 
 Node(n) ==
   \/ \E c \in Commits : Write(n, c)
-  \/ \E b \in srv : Recv(n, b) \/ Promote(n, b) \/ Delete(n, b)
+  \/ \E b \in srv : Recv(n, b) \/ Promote(n, b) \/ Delete(n, b) \/ SendTimed(n, b)
   \/ \E b \in held[n] : Drop(n, b) \/ Upload(n, b) \/ Relay(n, b) \/ Deposit(n, b)
   \/ \E b \in held[n] \cup srv : Compact(n, b)
   \/ GoOn(n)
@@ -271,6 +301,7 @@ Fairness ==
             /\ WF_vars(\E b \in held[n] : b.c = c /\ Deposit(n, b))
             /\ WF_vars(\E b \in srv : b.c = c /\ Promote(n, b))
             /\ WF_vars(\E b \in srv : b.c = c /\ Delete(n, b))
+            /\ WF_vars(\E b \in srv : b.c = c /\ SendTimed(n, b))
   /\ \A c \in Commits :
        /\ WF_vars(\E b \in srv : b.c = c /\ TimedFire(b))
        /\ WF_vars(\E b \in srv : b.c = c /\ ExpireAt(b))

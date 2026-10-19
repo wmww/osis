@@ -152,7 +152,7 @@ mod watch;
 mod write;
 
 pub use error::{Error, Result};
-pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use handle::{CLOSE_WAIT, Config, DEFAULT_IDLE_COMMIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use net::{ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};

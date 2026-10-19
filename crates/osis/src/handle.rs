@@ -22,6 +22,8 @@ use std::time::Duration;
 
 /// Default materialization bound: 64 MiB (notes/api.md Reads).
 pub const DEFAULT_LIMIT: usize = 64 << 20;
+/// How long `Osis::close` waits for other holders of the database.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// Default inactivity before a text session commits.
 pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 
@@ -123,6 +125,9 @@ pub(crate) struct Inner {
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
     pub net: Net,
+    /// `close` waits on this until `closed` (the last field) is dropped.
+    pub closing: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    pub closed: std::sync::mpsc::Sender<()>,
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
@@ -269,7 +274,8 @@ impl Osis {
         let (dispatch, queue) = Dispatch::new();
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net });
+        let (closed, closing) = std::sync::mpsc::channel();
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), closed });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -292,9 +298,17 @@ impl Osis {
         WeakOsis(Arc::downgrade(&self.inner))
     }
 
-    /// Closes this handle (the database closes with the last one; every commit is already
-    /// durable).
-    pub fn close(self) {}
+    /// Closes this handle; the database closes with the last one (every commit is already
+    /// durable). Returns once it is closed, so the store can be opened again at once; while
+    /// other handles keep it open, it returns after `CLOSE_WAIT`.
+    pub fn close(self) {
+        let rx = lock(&self.inner.closing).take();
+        drop(self);
+        // the dispatcher or the sync driver may hold the database for a moment
+        if let Some(rx) = rx {
+            let _ = rx.recv_timeout(CLOSE_WAIT);
+        }
+    }
 
     /// This device's node tid.
     pub fn node(&self) -> Tid {

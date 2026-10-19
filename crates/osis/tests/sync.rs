@@ -100,7 +100,8 @@ fn group(db: &Osis) -> Tid {
 
 // spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
 // contact card and grants him write on a synced group; the grant reaches Bob's device through
-// his inbox; both read and write the group.
+// his inbox; both read and write things the group owns (entitlement: things owned elsewhere
+// stay unshared, notes/sync.md).
 #[test]
 fn grant_by_inbox_spec_sync_3() {
     let mut w = World::new();
@@ -114,20 +115,14 @@ fn grant_by_inbox_spec_sync_3() {
     w.run();
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     assert_eq!(b, bob.me());
-    assert!(matches!(alice.grant(g, alice.node(), Role::Read, Default::default()), Ok(()) | Err(osis::Error::UnknownActor { .. })));
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
-    let t = item(&alice, alice.me(), g, "for bob");
+    let t = item(&alice, g, g, "for bob");
     for _ in 0..3 {
         w.advance(70_000);
     }
-    let gl = alice.engine(|e| e.group_labels(&g).unwrap()[0].id);
-    eprintln!("G entries alice {:?}", alice.sync_engine(|s| s.entries(&gl)));
-    eprintln!("G entries bob {:?}", bob.sync_engine(|s| s.entries(&gl)));
-    eprintln!("bob knows A {} alice-person {} roster {:?}", bob.knows(alice.node()), bob.knows(alice.me()), bob.roster(alice.me()));
-    eprintln!("bob knows g {} t {} pending {:?} diag {:?} desc {:?} alice diag {:?}", bob.knows(g), bob.knows(t), bob.engine(|e| e.pending()), bob.sync_engine(|s| s.take_diagnostics()), bob.sync_engine(|s| s.describe()), alice.sync_engine(|s| s.take_diagnostics()));
     assert_eq!(x(&bob, t), Some(s("for bob")));
     assert_eq!(bob.role_on(g), Some(Role::Write));
-    let u = item(&bob, bob.me(), g, "from bob");
+    let u = item(&bob, g, g, "from bob");
     w.run();
     assert_eq!(x(&alice, u), Some(s("from bob")));
 }

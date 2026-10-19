@@ -36,6 +36,11 @@ impl AspectKey for Key {
         self.schema.as_deref()
     }
     fn decode(&self, v: &Value) -> Result<Value, PathError> {
+        // `/created` is typed by its exclusivity rule, not the missing-field rule
+        // (spec/data-model.md §9).
+        if self.schema.as_deref().is_some_and(Schema::is_core) && self.ak.as_str() == "/created" {
+            return <osis_core::CreationRecord as Codec>::from_value(v).map(|_| v.clone());
+        }
         match (self.schema.as_deref(), AspectKey::ty(self)) {
             (Some(s), Some(t)) => typed_read(s, v, t),
             _ => Ok(v.clone()),
