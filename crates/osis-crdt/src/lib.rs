@@ -5,6 +5,7 @@
 // Skeleton (crdt-core step 1): hooks and helpers are wired by later steps.
 #![allow(dead_code)]
 
+mod batch;
 mod changes;
 mod codec;
 mod error;
@@ -14,6 +15,7 @@ mod page;
 mod seq;
 mod stamp;
 mod state;
+mod undo;
 mod view;
 mod wire;
 
@@ -23,12 +25,16 @@ mod testutil;
 mod tests_join;
 #[cfg(test)]
 mod tests_wire;
+#[cfg(test)]
+mod tests_ops;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
-pub use ops::Writer;
+pub use batch::Batch;
+pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace};
+pub use undo::{UndoBuffer, Undone, undo};
 pub use page::{MemoryPages, PageError, PageSink, PageSource};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};

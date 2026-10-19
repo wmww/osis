@@ -205,3 +205,48 @@ pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::S
     }
     commits
 }
+
+/// The model's schema type as a writer's view (identity projection, no defaults).
+#[derive(Clone, Debug)]
+pub struct TyView(pub Ty);
+
+impl crate::view::View for TyView {
+    fn encoding(&self) -> Option<Encoding> {
+        Encoding::from_id(u64::from(self.0.enc()))
+    }
+    fn project<'a>(&self, v: &'a Value) -> Option<std::borrow::Cow<'a, Value>> {
+        Some(std::borrow::Cow::Borrowed(v))
+    }
+    fn field(&self, id: u64) -> Option<TyView> {
+        match &self.0 {
+            Ty::Struct(f) => f.get(&id).cloned().map(TyView),
+            _ => None,
+        }
+    }
+    fn field_default(&self, _: u64) -> Option<Value> {
+        None
+    }
+    fn case(&self, id: u64) -> Option<TyView> {
+        match &self.0 {
+            Ty::Enum(c) => c.get(&id).cloned().flatten().map(TyView),
+            _ => None,
+        }
+    }
+    fn element(&self) -> Option<TyView> {
+        match &self.0 {
+            Ty::Set(e) | Ty::List(e) | Ty::Map(_, e) => Some(TyView((**e).clone())),
+            Ty::Counter | Ty::Max | Ty::Min => Some(TyView(Ty::Register)),
+            _ => None,
+        }
+    }
+    fn key(&self) -> Option<TyView> {
+        match &self.0 {
+            Ty::Map(k, _) => Some(TyView((**k).clone())),
+            _ => None,
+        }
+    }
+}
+
+pub fn writer(w: &MWriter) -> crate::ops::Writer {
+    crate::ops::Writer::new(ts(w.ts), source(&w.source), w.lo)
+}

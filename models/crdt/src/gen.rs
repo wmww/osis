@@ -197,7 +197,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                     }
                     let k = keys[r.below(keys.len())].clone();
                     let d = live[&k][0].clone();
-                    let delta = random_op(r, w, vt, entries[&d].frag.as_deref())?;
+                    let delta = random_op(r, w, vt, ops::key_state(entries, &live[&k]).as_ref())?;
                     let f = Frag::Map { c: Default::default(), entries: [(d, crate::state::Entry { reset: None, key: Some(k), frag: Some(Box::new(delta)) })].into_iter().collect() };
                     Some(f)
                 }
