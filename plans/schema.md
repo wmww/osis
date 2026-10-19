@@ -18,7 +18,7 @@ Spec: spec/data-model.md §2–§5, §9–§10; spec/versioning.md (all); spec/c
 - Transition conventions of notes/versioning.md (`succeeds`, tie-break by form timestamp, write-form policy) as codegen conventions: implement the data (links) and the tie-break read helper; the policy hook is a function pointer with the default rule; keep it small.
 
 ## Steps
-- [ ] Type model, encoding mapping, DSL parser with error tests, example schemas (notes app from notes/data-model.md; the core schema file).
+- [x] Type model, encoding mapping, DSL parser with error tests, example schemas (notes app from notes/data-model.md; the core schema file).
 - [ ] Schema value form, lock file, additive checker (each §4 rule tested both ways).
 - [ ] Typed reads, defaults, View, write validation; property: `typed_read(encode(typed)) == typed`.
 - [ ] Core schema types and Rust structs; vectors for their canonical encodings once protocol-spec fixes them.
