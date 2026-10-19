@@ -204,10 +204,6 @@ pub struct NetSim {
     watch: bool,
 }
 
-/// Waivers: an invariant a known engine bug breaks, named by its issue. A scenario waives it to
-/// keep checking everything else; fixing the issue removes the waiver.
-pub const WAIVE_PROMOTION: &str = "issues/sync-deposit-promotion.md";
-
 /// The proto messages in a run of bytes, shortened (trace only).
 fn frames(b: &[u8]) -> String {
     let mut d = osis_proto::FrameDecoder::default();

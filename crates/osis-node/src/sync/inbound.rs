@@ -67,6 +67,7 @@ impl SyncEngine {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
+                        self.state.set_deposited(s, l, blob_id, stamp.is_none());
                     }
                     // a stamp counts only if it verifies under the head's write key (it is relayed)
                     let head = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.clone());

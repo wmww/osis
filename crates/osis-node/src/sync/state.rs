@@ -74,6 +74,9 @@ pub struct Hint {
 pub struct State {
     pub entries: BTreeMap<(LabelId, BlobId), Entry>,
     pub present: BTreeSet<(ServerKey, LabelId, BlobId)>,
+    /// Present entries the server holds deposited (no stamp there; spec/sync.md §5): a writer
+    /// promotes them at that server, whatever stamp this node knows.
+    pub deposited: BTreeSet<(ServerKey, LabelId, BlobId)>,
     pub cursors: BTreeMap<(ServerKey, LabelId), Cursor>,
     pub heads: BTreeMap<(ServerKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
@@ -179,7 +182,11 @@ impl State {
                     s.entries.insert((l, BlobId(r.arr()?)), decode_entry(&v)?);
                 }
                 b"p" => {
-                    s.present.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
+                    let k = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
+                    if v.first() == Some(&1) {
+                        s.deposited.insert(k);
+                    }
+                    s.present.insert(k);
                 }
                 b"c" => {
                     let k = (r.arr()?, LabelId(r.arr()?));
@@ -305,7 +312,19 @@ impl State {
                 self.put(k, Vec::new());
             }
         } else if self.present.remove(&(s, l, b)) {
+            self.deposited.remove(&(s, l, b));
             self.del(k);
+        }
+    }
+
+    /// Marks a present entry deposited at a server, or not (stamped there).
+    pub fn set_deposited(&mut self, s: ServerKey, l: LabelId, b: BlobId, on: bool) {
+        if !self.present.contains(&(s, l, b)) {
+            return;
+        }
+        let changed = if on { self.deposited.insert((s, l, b)) } else { self.deposited.remove(&(s, l, b)) };
+        if changed {
+            self.put(key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
     }
 

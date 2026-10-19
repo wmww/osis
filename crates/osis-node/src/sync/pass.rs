@@ -238,14 +238,14 @@ impl SyncEngine {
     }
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
-    /// commits, never a heartbeat.
+    /// commits, never a heartbeat; per server (a blob may be deposited at several).
     fn promote(&mut self, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         let ids: Vec<(BlobId, Entry)> = self
             .state
             .entries
             .range((l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| *x == l)
-            .filter(|((_, b), e)| e.stamp.is_none() && self.state.is_present(&server, &l, b))
+            .filter(|((_, b), _)| self.state.deposited.contains(&(server, l, *b)))
             .map(|((_, b), e)| (*b, e.clone()))
             .collect();
         for (id, mut e) in ids {
@@ -259,6 +259,7 @@ impl SyncEngine {
             uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
             e.stamp = Some(stamp);
             self.state.set_entry(l, id, e);
+            self.state.set_deposited(server, l, id, false);
         }
         Ok(())
     }

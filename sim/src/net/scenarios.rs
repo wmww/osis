@@ -3,7 +3,7 @@
 //! calm (no faults) and settles with `quiet`; `run` is the faulty random schedule; every
 //! scenario ends with `run_until_quiescent` (the invariants of `check`).
 
-use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party, WAIVE_PROMOTION};
+use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
@@ -220,7 +220,6 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
 pub fn reader_relays(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x2e);
     let mut sim = sim("reader_relays", seed, NetWeights::default());
-    sim.waivers.insert(WAIVE_PROMOTION);
     let s0 = sim.add_server()?;
     let s1 = sim.add_server()?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
