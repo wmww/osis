@@ -281,9 +281,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     // re-paired: a re-seal over the direct connection
     sim.pair(d0, d1, p)?;
     sim.run(60)?;
-    // issues/sync-duplicate-reupload.md: the devices trade fresh encryptions of duplicate bodies
-    // for a few dozen resync rounds before they settle
-    sim.run_until_quiescent(80)?;
+    sim.run_until_quiescent(40)?;
     if newest_read(&mut sim, d1, &p)? != newest_read(&mut sim, d0, &p)? {
         return Err(sim.fail("the re-sealed device does not hold the person's newest epoch"));
     }

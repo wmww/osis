@@ -355,13 +355,14 @@ impl SyncEngine {
             .any(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && self.state.is_present(server, l, id))
     }
 
-    /// The entry under `l` holding exactly this body, not tombstoned at `server`.
+    /// The entry under `l` holding exactly this body, not tombstoned at `server`, whoever
+    /// placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
     fn entry_for(&self, server: &ServerKey, l: &LabelId, b: &Body) -> Option<BlobId> {
         self.state
             .entries
             .range((*l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| x == l)
-            .filter(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && !self.state.gone.contains(&(*server, *l, *id)))
+            .filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && !self.state.gone.contains(&(*server, *l, *id)))
             .map(|((_, id), _)| *id)
             .min()
     }

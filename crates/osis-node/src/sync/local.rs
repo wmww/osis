@@ -155,8 +155,10 @@ impl SyncEngine {
             if self.state.certs.contains(&(l, *c)) {
                 continue;
             }
-            let Some(secret) = self.engine.wrap_secret(g, None)? else { continue };
             for b in self.engine.partial_bodies(c, aspects)? {
+                // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
+                // members take it as the body's entry
+                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
                 let s = seal_body(&b, &mut *self.rng)?;
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
