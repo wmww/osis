@@ -262,6 +262,8 @@ impl SyncEngine {
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
         let mut state = State::load(&mut engine)?;
+        // inbox blobs not answered before a restart go again
+        let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), owner: o.owner, after: 0, tries: 0 }).collect();
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
         Ok(SyncEngine {
@@ -280,7 +282,7 @@ impl SyncEngine {
             wake: None,
             signals: Vec::new(),
             diagnostics: Vec::new(),
-            outbox: Vec::new(),
+            outbox,
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),

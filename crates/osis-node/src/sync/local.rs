@@ -227,9 +227,15 @@ impl SyncEngine {
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         for server in inbox.servers {
-            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
+            self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
         }
         Ok(self.handle(super::Event::Local))
+    }
+
+    /// Queues an inbox blob, durably until its server answers (a crash or restart re-sends it).
+    pub(crate) fn queue_inbox(&mut self, o: Outgoing) {
+        self.state.add_out(super::state::OutRec { label: o.label, server: o.server.clone(), owner: o.owner, blob: o.blob.clone() });
+        self.outbox.push(o);
     }
 
     /// Deposits waiting inbox blobs on connections to their servers (no open needed).
@@ -245,6 +251,7 @@ impl SyncEngine {
             let seed = self.engine.get_typed(&o.owner, &ct::KEYS)?.and_then(|k| k.deposit_seed);
             let Some(seed) = seed else {
                 self.diag(format!("inbox blob for {}: no deposit seed held for the inbox", o.owner));
+                self.state.remove_out(&o.server.key, &osis_label::blob_id(&o.blob));
                 continue;
             };
             let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &o.label);

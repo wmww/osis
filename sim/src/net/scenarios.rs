@@ -397,8 +397,7 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
 
 
 /// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
-/// after granting, before the deposit reached the server; after restart nothing re-sends it.
-/// Fails: issues/sync-inbox-delivery.md (the grantee never learns of the grant).
+/// after granting, before the deposit reached the server; the grant reaches the grantee once the restarted device re-sends it.
 pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x9c);
     let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());

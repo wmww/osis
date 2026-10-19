@@ -83,7 +83,6 @@ fn disk_loss() {
 
 // spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting device.
 #[test]
-#[ignore = "issues/sync-inbox-delivery.md"]
 fn grant_lost_on_crash() {
     ok("grant_lost_on_crash", 1);
 }

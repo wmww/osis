@@ -494,12 +494,14 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.budget = Some(entries_left);
         }
-        if let Some(mut o) = self.inbox_sent.remove(&(server, b))
-            && matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD)
-        {
+        if let Some(mut o) = self.inbox_sent.remove(&(server, b)) {
+            let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD);
             o.tries += 1;
-            if o.tries > super::local::MAX_INBOX_TRIES {
+            if !retry {
+                self.state.remove_out(&server, &b);
+            } else if o.tries > super::local::MAX_INBOX_TRIES {
                 self.diag(format!("inbox blob for {l:?} dropped after {} refusals (code {})", o.tries - 1, code.0));
+                self.state.remove_out(&server, &b);
             } else {
                 // retry_ms, doubling per refusal, at most an hour
                 let back = self.cfg.retry_ms.saturating_mul(1u64 << (o.tries - 1).min(20)).min(3_600_000);

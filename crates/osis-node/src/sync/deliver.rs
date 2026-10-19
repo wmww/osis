@@ -46,7 +46,7 @@ impl SyncEngine {
                 Delivery::Inbox { to, inbox, blob } => {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
                     for server in inbox.servers {
-                        self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
+                        self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
                     }
                 }
                 Delivery::Direct { to, commits } => {
