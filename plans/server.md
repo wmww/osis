@@ -16,7 +16,7 @@ Spec: spec/sync.md §4 (state), §5 (operations and authorization, re-registrati
 
 ## Steps
 - [x] LabelStore over `MemoryBackend`; operations with unit tests per rule (each cites §5); log replay property (state == replay of log).
-- [ ] Engine wiring over osis-proto; loopback tests with a scripted client; subscriptions and signals; budget and tombstone behaviour; timed deletes and expiry with a `Clock`.
+- [x] Engine wiring over osis-proto; loopback tests with a scripted client; subscriptions and signals; budget and tombstone behaviour; timed deletes and expiry with a `Clock`.
 - [ ] Persistence over the file backend; restart test; replication push.
 - [ ] Binary + transport; localhost end-to-end with a scripted client; limits.
 - [ ] Negative tests from notes/sync.md Limits (an ex-member's stale sync key gets exactly one step; a reader cannot upload; a token deletes only its own body; deposits over budget refused; tombstoned ID refused).
@@ -26,3 +26,4 @@ node-sync syncs through it in the simulator and over localhost; every §5 senten
 
 ## Progress
 - Step 1: `BackendStore` (LabelStore over `Backend`: rows, sweep indexes, log horizon, `Policy` caps/budget/rate limits), differential proptest against `MemoryLabelStore` with log replay.
+- Step 2: sans-I/O `Hub` (server engines per connection, Changed/Signal fan-out, sweeps on `tick`, `Replicator` per dialed peer: push-only, acknowledged positions stored, replay past the horizon); tests over scripted `ClientSession`s (tests/hub.rs), metadata hygiene (tests/hygiene.rs).
