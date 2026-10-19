@@ -373,7 +373,8 @@ mod tests {
     use proptest::prelude::*;
     use std::io::Read;
 
-    const SMALL: LargeParams = LargeParams { chunk: ChunkParams { min: 16, max: 64, mask_bits: 4 }, threshold: 128 };
+    // min above the 64-byte gear window, so cuts are content-defined as with the format.
+    const SMALL: LargeParams = LargeParams { chunk: ChunkParams { min: 64, max: 512, mask_bits: 5 }, threshold: 128 };
 
     fn data(n: usize, seed: u8) -> Vec<u8> {
         let mut out = vec![0u8; n];
@@ -589,6 +590,85 @@ mod tests {
         }
         assert_eq!(total, n);
         assert!(rmax <= SMALL.chunk.max + path, "{rmax}");
+    }
+
+    /// Writes `d` as a blob value with `f`, reusing from the tree under `old` if given; returns
+    /// the root, blobs written and blobs reused.
+    fn rewrite(store: &mut MemoryBlobs, f: &Framing, seed: u64, d: &[u8], old: Option<Link>) -> (Link, usize, usize) {
+        let reuse = old.map(|o| crate::tree::Reuse::index(&o, f, store, SMALL.chunk, usize::MAX).unwrap());
+        let mut rng = SeededRng::from_u64(seed);
+        let mut bw = BlobWriter::new(f, store, &mut rng);
+        if let Some(r) = reuse {
+            bw = bw.reusing(r);
+        }
+        let mut w = ValueWriter::bytes(SMALL, d.len() as u64);
+        w.write(&mut bw, d).unwrap();
+        let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let (written, reused) = (bw.written().len(), bw.reused());
+        let mut r = BlobReader::new(&f.dedup, store);
+        assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.to_vec()));
+        (root, written, reused)
+    }
+
+    // spec/sync.md §1, notes/local-store.md: a new version reuses the current tree's blobs by
+    // content hash; an insert in the middle writes O(change) new blobs.
+    #[test]
+    fn dedup_by_reuse() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let d = data(20_000, 8);
+        let (root, n, _) = rewrite(&mut store, &f, 1, &d, None);
+        let mut d2 = d.clone();
+        d2.splice(10_000..10_000, *b"inserted");
+        let (root2, written, reused) = rewrite(&mut store, &f, 2, &d2, Some(root));
+        assert_ne!(root2.hash, root.hash);
+        assert!(written <= 12, "written {written} of {n}");
+        assert!(reused * 10 >= n * 9, "reused {reused} of {n}");
+        // Same content again: the root itself is reused, nothing written.
+        let (root3, written, _) = rewrite(&mut store, &f, 3, &d2, Some(root2));
+        assert_eq!((root3, written), (root2, 0));
+        // Old blobs not held (lazily fetched): written afresh.
+        store.0.retain(|id, _| *id == root2.blob);
+        let (_, written, reused) = rewrite(&mut store, &f, 4, &d2, Some(root2));
+        assert!(reused == 0 && written > n / 2);
+    }
+
+    // spec/sync.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
+    // expiry is earlier than the new delta's or its thing-secret tokens are not exactly the new
+    // delta's; author-chain tokens need not match.
+    #[test]
+    fn reencryption_rule() {
+        let s = |b: u8| Secret32::from_bytes([b; 32]);
+        let fr = |expiry: Option<u64>, tokens: Vec<(u8, u8)>| Framing { dedup: s(7), expiry: expiry.map(WallMs), tokens: tokens.into_iter().map(|(l, b)| (l, s(b))).collect() };
+        let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
+        let d = data(5_000, 9);
+        let cases = [
+            (fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]), true),
+            (fr(Some(50), vec![(1, 1), (2, 2), (3, 3)]), true),
+            (fr(Some(100), vec![(1, 1), (2, 9), (3, 3)]), true),
+            (fr(Some(100), vec![(1, 1), (3, 3)]), true),
+            (fr(Some(101), vec![(1, 1), (2, 2), (3, 3)]), false),
+            (fr(None, vec![(1, 1), (2, 2), (3, 3)]), false),
+            (fr(Some(100), vec![(1, 1), (2, 2), (3, 4)]), false),
+            (fr(Some(100), vec![(2, 2), (3, 3)]), false),
+            (fr(Some(100), vec![(1, 1), (2, 2)]), false),
+        ];
+        for (i, (f2, keep)) in cases.into_iter().enumerate() {
+            let mut store = MemoryBlobs::default();
+            let (root, n, _) = rewrite(&mut store, &base, 1, &d, None);
+            let (root2, written, reused) = rewrite(&mut store, &f2, 2, &d, Some(root));
+            if keep {
+                assert_eq!((root2, written), (root, 0), "case {i}");
+            } else {
+                assert_eq!((written, reused), (n, 0), "case {i}");
+                let p = crate::blob::Prefix::parse(&store.0[&root2.blob]).unwrap();
+                assert_eq!(p.expiry(), f2.expiry, "case {i}");
+            }
+        }
+        let mut store = MemoryBlobs::default();
+        let (root, n, _) = rewrite(&mut store, &fr(None, vec![(3, 3)]), 1, &d, None);
+        let (_, written, _) = rewrite(&mut store, &fr(Some(5), vec![(3, 3)]), 2, &d, Some(root));
+        assert_eq!((written, n > 0), (0, true));
     }
 
     proptest! {

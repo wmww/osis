@@ -197,7 +197,7 @@ fn known_encodings() {
     let l = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
     let lh = format!("{} 83 5820{} 5820{} 5821 01{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32));
     assert_eq!(encode(&l), hex(&lh));
-    assert_eq!(d(&hex(&lh)), Ok(l));
+    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if Value::Link(x) == l && x.blob == BlobId([2; 32]) && x.key == [3; 32]));
     // §5: unknown tags keep tag and content.
     let u = hex("c2 4101");
     let v = d(&u).unwrap();
@@ -206,6 +206,30 @@ fn known_encodings() {
     // The reserved STRUCT tag is preserved like any unknown tag.
     let s = hex(&format!("{} a0", tag_head(TAG_STRUCT_RESERVED)));
     assert!(matches!(d(&s), Ok(Value::Unknown(_))));
+}
+
+// §4, §6: a link compares by content hash alone (two writes of one large value are equal);
+// a set or map holding two links with one hash is not canonical.
+#[test]
+fn links_equal_by_hash() {
+    use std::hash::{BuildHasher, RandomState};
+    let a = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let b = Value::Link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let c = Value::Link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    assert_eq!(a, b);
+    assert_ne!(a, c);
+    let rs = RandomState::new();
+    assert_eq!(rs.hash_one(&a), rs.hash_one(&b));
+    assert_eq!(Value::Set([a.clone(), b.clone(), c.clone()].into_iter().collect()), Value::Set([a.clone(), c].into_iter().collect()));
+    let mut set = encode(&Value::List(vec![a.clone(), b.clone()]));
+    set.splice(0..0, hex(&tag_head(TAG_SET)));
+    assert_eq!(d(&set), Err(DecodeError::SetOrder));
+    let mut map = vec![0xa2];
+    for (k, v) in [(&a, 0u8), (&b, 1)] {
+        map.extend(encode(k));
+        map.push(v);
+    }
+    assert_eq!(d(&map), Err(DecodeError::MapKeyOrder));
 }
 
 // §5: every rejection rule.

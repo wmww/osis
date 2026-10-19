@@ -30,4 +30,4 @@ pub use labels::{Label, Labels, StepRecord, label_path, label_steps, parse_recor
 pub use link::{Peer, RecoveryCard, ShareLink};
 pub use signal::{MAX_SIGNAL, SignalBody, open_signal, seal_signal};
 pub use step::{ClaimSet, EntryKey, EntryTo, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};
-pub use tree::{BlobFetch, BlobReader, BlobSink, BlobWriter, Framing, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, read_tree, write_tree};
+pub use tree::{BlobFetch, BlobReader, BlobSink, BlobStore, BlobWriter, Framing, Reuse, HashSink, LinkSource, MemoryBlobs, TreeReader, TreeSink, TreeWriter, Written, read_tree, write_tree};

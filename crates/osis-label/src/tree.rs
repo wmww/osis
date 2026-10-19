@@ -9,9 +9,9 @@ use crate::Error;
 use osis_core::cbor::{Limits, decode, encode};
 use osis_core::format::{MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
 use osis_core::{BlobId, ChunkParams, Chunker, Link, Value, WallMs};
-use osis_crdt::{PageError, PageSink, PageSource};
-use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, link_hash, link_tree_hash};
-use std::collections::HashMap;
+use osis_crdt::{PageError, PageParams, PageSink, PageSource};
+use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, commitment, delete_token, link_hash, link_tree_hash, token_hash};
+use std::collections::{BTreeSet, HashMap};
 
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
 /// thing's dedup secret keys the content hashes; expiry and token secrets go into each prefix
@@ -23,11 +23,38 @@ pub struct Framing {
     pub tokens: Vec<(Level, Secret32)>,
 }
 
-/// One blob written: its ID and chunk token hashes in `Framing::tokens` order (the header's
-/// chunk list, spec/wire.md §4).
+/// Token level of the author-chain write secret (spec/crypto.md §7); the others are thing secrets.
+const AUTHOR_CHAIN: Level = 2;
+
+impl Framing {
+    /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
+    /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its thing-secret token
+    /// commitments (admin and thing write secret) are exactly this framing's under its salt.
+    /// Author-chain tokens need not match.
+    pub fn keeps(&self, prefix: &Prefix) -> bool {
+        let expiry_ok = match (prefix.expiry(), self.expiry) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(old), Some(new)) => old >= new,
+        };
+        let salt = prefix.salt();
+        let mine: Result<BTreeSet<[u8; 17]>, _> = self
+            .tokens
+            .iter()
+            .filter(|(l, _)| *l != AUTHOR_CHAIN)
+            .map(|(l, s)| commitment(*l, &token_hash(delete_token(s, salt).expose()), salt))
+            .collect();
+        let theirs: BTreeSet<[u8; 17]> = prefix.commitments().iter().filter(|c| c[0] != AUTHOR_CHAIN).copied().collect();
+        expiry_ok && mine.is_ok_and(|m| m == theirs)
+    }
+}
+
+/// One blob written: its ID, prefix salt and chunk token hashes in `Framing::tokens` order (the
+/// header's chunk list, spec/wire.md §4; osis-commit's `AspectWrite::chunks` takes ID and salt).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
     pub id: BlobId,
+    pub salt: [u8; 16],
     pub token_hashes: Vec<[u8; 16]>,
 }
 
@@ -40,6 +67,10 @@ pub trait BlobSink {
 pub trait BlobFetch {
     fn fetch(&mut self, id: &BlobId) -> Result<Vec<u8>, Error>;
 }
+
+/// A blob store both ways (the node's backs it with osis-store's blob area).
+pub trait BlobStore: BlobSink + BlobFetch {}
+impl<T: BlobSink + BlobFetch + ?Sized> BlobStore for T {}
 
 /// In-memory blob store for tests.
 #[derive(Default, Debug)]
@@ -324,17 +355,56 @@ impl TreeSink for HashSink {
 }
 
 /// Writes chunk, tree-node, page and link-page blobs under one framing, each with a fresh salt
-/// and key, and records what it wrote.
+/// and key, and records what it wrote. With a [`Reuse`] index of the value's current tree, a
+/// chunk or node of equal content hash keeps its blob when the re-encryption rule allows
+/// (spec/sync.md §1); reused blobs are not in `written` (the delta does not introduce them).
 pub struct BlobWriter<'a> {
     framing: &'a Framing,
-    sink: &'a mut dyn BlobSink,
+    store: &'a mut dyn BlobStore,
     rng: &'a mut dyn CryptoRngCore,
     written: Vec<Written>,
+    reuse: Option<Reuse>,
+    reused: usize,
+    page_params: PageParams,
 }
 
 impl<'a> BlobWriter<'a> {
-    pub fn new(framing: &'a Framing, sink: &'a mut dyn BlobSink, rng: &'a mut dyn CryptoRngCore) -> BlobWriter<'a> {
-        BlobWriter { framing, sink, rng, written: Vec::new() }
+    pub fn new(framing: &'a Framing, store: &'a mut dyn BlobStore, rng: &'a mut dyn CryptoRngCore) -> BlobWriter<'a> {
+        BlobWriter { framing, store, rng, written: Vec::new(), reuse: None, reused: 0, page_params: PageParams::FORMAT }
+    }
+
+    /// Dedup by reuse against an index of the current tree.
+    pub fn reusing(mut self, reuse: Reuse) -> BlobWriter<'a> {
+        self.reuse = Some(reuse);
+        self
+    }
+
+    /// Page parameters reported to osis-crdt (`FORMAT` on the wire; tests shrink them).
+    pub fn with_page_params(mut self, p: PageParams) -> BlobWriter<'a> {
+        self.page_params = p;
+        self
+    }
+
+    /// Blobs reused instead of written.
+    pub fn reused(&self) -> usize {
+        self.reused
+    }
+
+    /// A reusable old chunk: held, intact, equal bytes, and kept by the re-encryption rule.
+    fn reuse_chunk(&mut self, hash: &[u8; 32], bytes: &[u8]) -> Result<Option<Link>, Error> {
+        let Some(old) = self.reuse.as_ref().and_then(|r| r.chunks.get(hash)).copied() else { return Ok(None) };
+        let blob = match self.store.fetch(&old.blob) {
+            Ok(b) => b,
+            Err(Error::Storage) => return Err(Error::Storage),
+            Err(_) => return Ok(None),
+        };
+        if old.suite != SUITE_1 || crate::blob::blob_id(&blob) != old.blob {
+            return Ok(None);
+        }
+        Ok(match open(&blob, &Secret32::from_bytes(old.key)) {
+            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix) => Some(old),
+            _ => None,
+        })
     }
 
     pub fn written(&self) -> &[Written] {
@@ -352,19 +422,31 @@ impl<'a> BlobWriter<'a> {
         let (prefix, token_hashes) = Prefix::for_chunk(salt, self.framing.expiry, &secrets)?;
         let (key, blob) = frame(&prefix, plaintext, self.rng)?;
         let id = crate::blob::blob_id(&blob);
-        self.sink.put(id, blob)?;
-        self.written.push(Written { id, token_hashes });
+        self.store.put(id, blob)?;
+        self.written.push(Written { id, salt, token_hashes });
         Ok(Link { hash, blob: id, suite: SUITE_1, key: *key.expose() })
     }
 }
 
 impl TreeSink for BlobWriter<'_> {
     fn chunk(&mut self, bytes: &[u8]) -> Result<Link, Error> {
-        self.put_blob(link_hash(&self.framing.dedup, bytes), bytes)
+        let hash = link_hash(&self.framing.dedup, bytes);
+        if let Some(old) = self.reuse_chunk(&hash, bytes)? {
+            self.reused += 1;
+            return Ok(old);
+        }
+        self.put_blob(hash, bytes)
     }
     fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error> {
         let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
         let hash = link_tree_hash(&self.framing.dedup, level, &hashes);
+        if let Some((old, children)) = self.reuse.as_ref().and_then(|r| r.nodes.get(&hash))
+            && *children == links_digest(links)
+        {
+            let old = *old;
+            self.reused += 1;
+            return Ok(old);
+        }
         self.put_blob(hash, &node_plaintext(level, links)?)
     }
 }
@@ -374,17 +456,102 @@ impl PageSink for BlobWriter<'_> {
     fn put(&mut self, plaintext: &[u8]) -> Result<Link, PageError> {
         Ok(self.put_blob(link_hash(&self.framing.dedup, plaintext), plaintext)?)
     }
+    fn params(&self) -> PageParams {
+        self.page_params
+    }
+}
+
+/// Digest of a node's exact links (a node is reused only over the very blobs it links).
+fn links_digest(links: &[Link]) -> [u8; 32] {
+    let mut h = osis_core::hash::Hasher::new();
+    for l in links {
+        h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key);
+    }
+    h.finalize()
+}
+
+/// What a new version of a large value may reuse from the current tree (spec/sync.md §1,
+/// notes/local-store.md): chunk links by content hash, and node links whose blob the
+/// re-encryption rule keeps, with the digest of their children. Memory: one link per chunk and
+/// node of the current tree.
+#[derive(Default, Debug)]
+pub struct Reuse {
+    chunks: HashMap<[u8; 32], Link>,
+    nodes: HashMap<[u8; 32], (Link, [u8; 32])>,
+}
+
+impl Reuse {
+    /// Walks the tree under `root` through the held node blobs (each verified; a missing,
+    /// corrupt or foreign node just indexes nothing below it), visiting at most
+    /// `max_len / CHUNK_MIN + 1` chunk links. Only `Storage` fails.
+    pub fn index(root: &Link, framing: &Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
+        let mut r = Reuse::default();
+        let mut budget = (max_len / params.min.max(1)).saturating_add(1);
+        let mut stack = vec![(*root, None)];
+        let mut seen = std::collections::HashSet::new();
+        while let Some((link, expect)) = stack.pop() {
+            if !seen.insert(link.hash) {
+                continue;
+            }
+            let Some((prefix, level, links)) = Self::node(framing, fetch, &link, expect)? else { continue };
+            if framing.keeps(&prefix) {
+                r.nodes.insert(link.hash, (link, links_digest(&links)));
+            }
+            for l in links.into_iter().rev() {
+                if level > 1 {
+                    stack.push((l, Some(level - 1)));
+                    continue;
+                }
+                if budget == 0 {
+                    return Ok(r);
+                }
+                budget -= 1;
+                r.chunks.entry(l.hash).or_insert(l);
+            }
+        }
+        Ok(r)
+    }
+
+    fn node(framing: &Framing, fetch: &mut dyn BlobFetch, link: &Link, expect: Option<u64>) -> Result<Option<(Prefix, u64, Vec<Link>)>, Error> {
+        let blob = match fetch.fetch(&link.blob) {
+            Ok(b) => b,
+            Err(Error::Storage) => return Err(Error::Storage),
+            Err(_) => return Ok(None),
+        };
+        if link.suite != SUITE_1 || crate::blob::blob_id(&blob) != link.blob {
+            return Ok(None);
+        }
+        let Ok((prefix, pt)) = open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
+        let Ok((level, links)) = parse_node(&pt) else { return Ok(None) };
+        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
+        if expect.is_some_and(|e| e != level) || link_tree_hash(&framing.dedup, level, &hashes) != link.hash {
+            return Ok(None);
+        }
+        Ok(Some((prefix, level, links)))
+    }
+
+    /// Chunk links indexed.
+    pub fn chunks(&self) -> usize {
+        self.chunks.len()
+    }
 }
 
 /// Fetches and decrypts linked blobs, checking the blob ID and suite.
 pub struct BlobReader<'a> {
     pub dedup: &'a Secret32,
     fetch: &'a mut dyn BlobFetch,
+    page_params: PageParams,
 }
 
 impl<'a> BlobReader<'a> {
     pub fn new(dedup: &'a Secret32, fetch: &'a mut dyn BlobFetch) -> BlobReader<'a> {
-        BlobReader { dedup, fetch }
+        BlobReader { dedup, fetch, page_params: PageParams::FORMAT }
+    }
+
+    /// Page parameters reported to osis-crdt (`FORMAT` on the wire; tests shrink them).
+    pub fn with_page_params(mut self, p: PageParams) -> BlobReader<'a> {
+        self.page_params = p;
+        self
     }
 }
 
@@ -408,6 +575,9 @@ impl PageSource for BlobReader<'_> {
             return Err(PageError::Corrupt);
         }
         Ok(pt)
+    }
+    fn params(&self) -> PageParams {
+        self.page_params
     }
 }
 

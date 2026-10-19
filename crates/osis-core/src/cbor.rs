@@ -382,7 +382,10 @@ impl<'a> Decoder<'a> {
                     }
                     prev = raw;
                     let v = self.item(depth + 1)?;
-                    m.insert(k, v);
+                    // Distinct bytes, one value: links with one content hash.
+                    if m.insert(k, v).is_some() {
+                        return Err(DecodeError::MapKeyOrder);
+                    }
                 }
                 Ok(Value::Map(m))
             }
@@ -424,7 +427,9 @@ impl<'a> Decoder<'a> {
                         return Err(DecodeError::SetOrder);
                     }
                     prev = raw;
-                    s.insert(e);
+                    if !s.insert(e) {
+                        return Err(DecodeError::SetOrder);
+                    }
                 }
                 Ok(Value::Set(s))
             }
