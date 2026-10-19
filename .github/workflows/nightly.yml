@@ -96,10 +96,12 @@ jobs:
         run: |
           cargo run -p membership-model --release --locked
           for mode in snapshot joint; do cargo run -p membership-model --release --locked -- 2000000 "$mode"; done
-      # plans/tla-models.md adds models/tla with a runner script for the smallest instances.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
       - name: TLC smallest instances
-        run: |
-          if [ -x models/tla/run.sh ]; then models/tla/run.sh small; else echo "no TLA+ models yet (plans/tla-models.md)"; fi
+        run: models/tla/run.sh small
 
   bench:
     runs-on: ubuntu-latest
