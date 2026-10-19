@@ -78,6 +78,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 - Sync runs over any ordered, bidirectional byte stream with confidentiality and an authenticated peer key.
 - A server address is a transport URL plus the server's static public key; a client MUST check the server's key against it.
 - Clients connect to servers with an ephemeral transport key per connection. A node's dialable P2P key is separate from its signing key and published only in `/reach`, together with its preferred relays. Direct addresses are never published; they are exchanged with the peer at connection time (hole punching) or found by LAN discovery.
+- **`quic://host:port`** server addresses: QUIC v1 (RFC 9000, RFC 9001) with TLS 1.3 only, ALPN `osis`, both sides authenticated by RFC 7250 raw Ed25519 public keys (no certificates): the server's is the address key, the client's fresh per connection. Each sync session (spec/wire.md §11.1) runs on a bidirectional stream the client opens.
 - **LAN discovery** announces nothing stable across networks or meaningful to strangers: a tag `kdf("lan tag", lan secret, le64(floor(unix ms / 600000)))` (first 16 bytes) and a transport key fresh per network join, never the dialable key. The 32-byte random lan secret is in `/reach`; a co-reader matches tags of the nodes it knows for the current and adjacent windows and dials the announced transport key.
 
 ## 11. File bundles

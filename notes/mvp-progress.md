@@ -43,6 +43,7 @@ Wave 2 (all of wave 1 merged).
 - None. (TLC findings S1–S10, R1–R7 decided: see Spec edits and Owner-calls pending.)
 
 ## Spec edits
+- transport: spec/sync.md §10 defines `quic://host:port` (QUIC v1, TLS 1.3, ALPN `osis`, RFC 7250 raw Ed25519 keys both sides: server = address key, client fresh per connection; each sync session on a client-opened bidirectional stream). Filled an unspecified interop gap; no frozen bytes touched.
 - perm review: spec/permissions.md §2 a lowering write by an admin of the member is a self-removal only when it lowers the author's own edge or admin on the member is its only authority (owner-chain or edge-admin authority on the target makes it an explicit demotion, which audits); §5.1 and spec/data-model.md §9: a frontier counter is the last counter received contiguously, inclusive.
 - crypto: spec/crypto.md §3 fixes kdf input conventions (two-argument kdf = empty input, tid input = 15 bytes, Ed25519 key from a kdf output = that RFC 8032 seed) and the `kdf("kem", ..)` XOF split (64 bytes ML-KEM `d || z`, then 32 bytes X25519).
 - Toplevel review of wire.md: `keyset` carries the epoch's suite ID (spec/data-model.md §9); spec/sync.md §5 says how a member peer authenticates another member's node (its `/reach` dialable key).

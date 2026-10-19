@@ -7,12 +7,16 @@
 
 mod error;
 pub mod mem;
+#[cfg(feature = "quic")]
+pub mod quic;
 pub mod sched;
 mod util;
 
 pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
+#[cfg(feature = "quic")]
+pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 
 use std::future::Future;
 

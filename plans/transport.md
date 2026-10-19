@@ -13,7 +13,7 @@ Spec: spec/sync.md §10 (ordered bidirectional stream, confidentiality, authenti
 
 ## Steps
 - [x] Traits + InProcess + fault layer; tests: a byte stream round trip, partition heals, deterministic under a fixed seed.
-- [ ] Direct server transport behind the feature; test: pinned-key mismatch refused; ephemeral client keys differ per connection; large stream transfer.
+- [x] Direct server transport behind the feature; test: pinned-key mismatch refused; ephemeral client keys differ per connection; large stream transfer.
 - [ ] Manager helpers; a loopback test driving osis-proto engines over InProcess and over the real transport on localhost.
 
 ## Done when
@@ -21,3 +21,4 @@ server and node run over both implementations through the traits only; `cargo te
 
 ## Progress
 - Step 1: traits (own `SendStream`/`RecvStream`, `impl Future + Send`, no runtime types), `InProcess` on a `Net` with virtual steps (latency, jitter, bandwidth, partition, disconnect, kill), `Sched` seeded executor; deterministic, no tokio.
+- Step 2: `Quic` (feature `quic`): quinn + rustls (ring), TLS 1.3 with RFC 7250 raw Ed25519 keys both ways, server key pinned by a custom verifier, fresh client key per dial; `quic://host:port` written into spec/sync.md §10; localhost tests `#[ignore]` (tier 2).

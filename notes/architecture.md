@@ -74,7 +74,11 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `proptest` (dev, all crates; models use their own version line): property tests.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
 - `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
-- Planned, added by their plans with a line here: tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+- `quinn` 0.11 (transport, feature `quic`; no default features, `runtime-tokio`, `rustls-ring`): QUIC for direct server connections (spec/sync.md §10). Chosen over Noise-over-TCP: native streams, flow control, keep-alive and connection migration, the same stack iroh builds on; the cost is build time, kept off default builds.
+- `rustls` 0.23 (transport, feature `quic`; no default features, `ring`, `std`): TLS 1.3 with RFC 7250 raw Ed25519 public keys (no certificates, no rcgen/webpki roots); custom verifiers pin the server key.
+- `ring` 0.17 (transport, feature `quic`; already rustls's provider): Ed25519 key pairs from the static seed, OS randomness for ephemeral client keys. Chosen over `aws-lc-rs` (needs cmake, slower build); ring compiles some C/asm with `cc` (not pure Rust; acceptable behind the feature).
+- `tokio` 1 (transport, feature `quic`; `rt`, plus `net`/`time` via quinn): quinn's runtime. Default `osis-transport` builds have no tokio: `InProcess` runs on its own `Sched`.
+- Planned, added by their plans with a line here: tokio (node, server, osis, cli, sim), arbitrary (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
