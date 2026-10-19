@@ -77,12 +77,35 @@ impl Core {
         for (m, e) in &openers {
             let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs);
         }
+        self.adopt_derived(actor, &mut epochs);
         let held_any = ROLES.iter().any(|r| epochs.role(*r).held().next().is_some());
         if held_any && Some(&epochs) != before.as_ref() {
             self.secrets.insert(*actor, epochs);
             return true;
         }
         false
+    }
+
+    /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
+    /// those derived from an established epoch of the owner are established (spec/crypto.md §4,
+    /// "derived from an established epoch of the owner"), so the rotation from them establishes
+    /// and labels registered under them can be stepped.
+    pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
+        let Some(CreationRecord::Thing { owner, .. }) = self.created(actor) else { return };
+        let Some(o) = self.epochs(owner) else { return };
+        let d = ActorEpochs::derived(&o, actor);
+        let mut any = false;
+        for r in ROLES {
+            for (ep, info) in d.role(r).epochs() {
+                if info.established.is_some() && epochs.role(r).get(ep).is_some() && !epochs.role(r).is_established(ep) {
+                    epochs.role_mut(r).set_established(*ep, Provenance::Derived);
+                    any = true;
+                }
+            }
+        }
+        if any {
+            epochs.establish();
+        }
     }
 
     /// Notes `/keys` of `actor`: keysets mean secrets of its own (spec/permissions.md §3).

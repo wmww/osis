@@ -8,4 +8,5 @@
 - **Large values**: no chunk reuse from the current tree (`Reuse`), no streaming read API, `Insert` items of lists are not chunked; page and chunk blobs of a dropped delta are not deleted from the local blob area.
 - **Linked frontiers** inside `/tenures` entries are treated as empty (audits drop everything they would have covered) until the node resolves them.
 - **Cost**: open replays every commit record; every changing transaction copies the in-memory indexes for rollback; each membership change re-judges every held delta (issues/perm-eval-cost.md); aspect states load and store whole (no paged local state, notes/local-store.md Units); `Timelines::update` walks the whole held set.
-- **Re-snapshot and deletion queues** are recorded (`deletions`, `resnapshot` logs) for node-sync; nothing truncates them yet.
+- **Re-snapshot and deletion queues** are recorded (`deletions`, `resnapshot` logs); node-sync judges dropped parts from the commit index instead and does not read them, so nothing truncates them yet.
+- **`/groups`** is recomputed whole on every `/group` change (also on late deltas since node-sync found them missed): O(groups) per change, O(groups²) at open.

@@ -77,7 +77,7 @@ pub(crate) fn secrets_write(core: &Core, actor: &Tid, delta: &Fragment) -> (Secr
 }
 
 /// The keysets a `/keys` delta writes (whole keysets: a rotation replaces the field).
-fn keys_write(delta: &Fragment) -> KeysWrite {
+pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     let mut w = KeysWrite::default();
     for (id, r) in [(0, Role::Read), (1, Role::Write), (2, Role::Admin)] {
         if let Some(v) = field(delta, id).and_then(Fragment::read)
@@ -326,4 +326,50 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.secrets_unresolved.insert((c, ai), u);
     }
     Ok(())
+}
+
+/// Opens, read-only, the boxes of a pending membership commit addressed to this node or an actor
+/// it holds (issues/pending-boxes.md, decided; spec/crypto.md §4: such secrets are "kept for
+/// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
+/// target's `/created` and chain can open the target's label and download them. Parts are
+/// decoded unverified (a forged box only yields an unestablished epoch nothing encrypts under).
+pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
+    let h = &blob.header;
+    if !h.kind.is_membership() || !h.is_resolved() {
+        return Ok(());
+    }
+    let mut interner = osis_crdt::Interner::new();
+    for p in &blob.parts {
+        let Some(a) = h.aspects.get(p.ai) else { continue };
+        if a.ak.as_str() != "/secrets" {
+            continue;
+        }
+        let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
+        let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
+        let (w, _) = secrets_write(tx.core, &a.tid, &d.fragment);
+        if w.boxes.is_empty() && w.history.is_empty() {
+            continue;
+        }
+        let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
+        tx.core.touch();
+        if tx.core.ingest_secrets(&a.tid, &s) {
+            crate::flows::save_epochs(tx, &a.tid)?;
+        }
+    }
+    Ok(())
+}
+
+impl crate::engine::Engine {
+    /// Records a read secret learned from a label's entry box (a recovery or link key opening
+    /// by static entry, spec/sync.md §2): kept for reading, unestablished.
+    pub(crate) fn learn_read_secret(&mut self, g: &Tid, e: osis_crypto::Epoch, secret: osis_crypto::Secret32) -> Result<()> {
+        let g = *g;
+        self.run(|tx| {
+            tx.core.touch();
+            let ep = tx.core.secrets.entry(g).or_default();
+            ep.role_mut(Role::Read).observe(e);
+            ep.role_mut(Role::Read).set_secret(e, secret);
+            crate::flows::save_epochs(tx, &g)
+        })
+    }
 }

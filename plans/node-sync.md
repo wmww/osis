@@ -21,13 +21,14 @@ Spec: spec/sync.md §2–§3, §5 (client obligations: re-registration, deletion
 - A removed node drops secrets and units it can no longer read (keys lists, store executes).
 
 ## Steps
-- [ ] Tagging, entitlement, projection, wraps/stamps/deposits; unit tests with hand-built groups (shared folder, chat shapes from notes/permissions.md Patterns).
-- [ ] Certificates, node cards, heartbeats; convergence computation with a table-driven test over must/may/must-not cases of §6.
-- [ ] Sync client over InProcess transport against osis-server in a two-node + one-server test; subscriptions; reconciliation fallback; pages and chunks fetch.
-- [ ] Steps: registration, claim walk, stranded; label replacement; inbox send/receive; bundles.
-- [ ] Compaction/deletion order and timed deletes; signals; the "two briefly-online devices through one blind server" scenario as the headline test.
+- [x] Tagging, entitlement, projection, wraps/stamps/deposits; unit tests with hand-built groups (shared folder; chat shape not separately).
+- [x] Certificates, node cards, heartbeats; convergence computation with a table-driven test over must/may/must-not cases of §6.
+- [x] Sync client over InProcess transport against osis-server in a two-node + one-server test; subscriptions; reconciliation fallback; pages and chunks fetch.
+- [x] Steps: registration, claim walk, stranded; label replacement (partial: issues/node-sync-gaps.md); inbox send/receive (grants by inbox: issues/pending-boxes.md); bundles.
+- [x] Compaction/deletion order and timed deletes; signals; the "two briefly-online devices through one blind server" scenario as the headline test.
 
 ## Done when
 Two nodes converge through a blind server in the simulator with no direct connection, including rotation, compaction, purge, expiry, deposits and certificates; every §3, §5 client obligation and §6–§7 sentence has a test; notes/sync.md "Node" section written. Delete this plan.
 
 ## Progress
+- Session 1: labeling and sync modules, SyncEngine with tests through an in-process Hub (tests/net/mod.rs), tokio driver (InProcess tier 1, QUIC tier 2); notes/sync.md Implementation (osis-node sync). Left: issues/node-sync-gaps.md, issues/pending-boxes.md; "Done when" waits for sim phase B (two nodes in the simulator).

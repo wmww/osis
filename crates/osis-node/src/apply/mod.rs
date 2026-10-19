@@ -225,6 +225,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
             tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
             tx.core.pending.insert(id, r.clone());
+            keys::read_pending_boxes(tx, &blob, &id)?;
             Ok(Ingested::Pending(id, r))
         }
         Exam::Parked => {

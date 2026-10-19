@@ -185,9 +185,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         observe_state(tx, tid, ak)?;
     }
     super::keys::after_join(tx, &h, &parts, &valid, pend)?;
-    if changed.iter().any(|(_, ak)| ak.as_str() == "/group") {
-        recompute_groups(tx.core);
-    }
     let mut flipped = Vec::new();
     if held_changed {
         flipped = validity::rejudge_all(tx, true)?;
@@ -283,6 +280,8 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                     tx.core.group_defs.remove(tid);
                 }
             }
+            // every path that changes a `/group` (late deltas, re-judging) updates `/groups`
+            recompute_groups(tx.core);
         }
         _ => {}
     }
