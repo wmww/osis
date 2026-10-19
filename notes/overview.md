@@ -16,7 +16,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.
 
 ## Notes
-- notes/api.md: fixed API directions, sketch, queries apps need, move resolution, diagnostics.
+- notes/api.md: the designed API shape (sync data API, typed keys, watches, `Write` with `set`/`edit`, sharing and sync surface), fixed directions, footguns closed, rejected shapes.
 - notes/data-model.md: tids, CBOR, large values, namespaces, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.

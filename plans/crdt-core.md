@@ -17,6 +17,7 @@ Spec: spec/crdt.md §1–§5.6, §7–§9; spec/commits.md §4 (atomic apply exp
 - Value-less writes and expiry (§4.7): `strip(delta_or_state, range)`; join of valued and value-less copies; snapshots carry expiring deltas value-less.
 - Slots and embeddings (§7): pointwise join, register embedding into bag/struct/enum/set/map (text embedding is seq's), chosen-member read, one reset per position.
 - Structural diff (§9) for these encodings with the `View` trait (identity view for untyped writes); opaque elements never touched; defaults never materialized (the `View` reports a field's declared default).
+- Value-to-value diff for the API's `edit(base, new)` (notes/api.md Writes): `diff_values(base, new, view) -> Vec<PathOp>` over struct fields, enum cases, map keys, set elements and bag values (exact by id/key/value, no state needed), with sequence positions delegated to crdt-seq; the ops then resolve against the current state like any path op.
 - Snapshots (§8): `Frontiers`, received-range bookkeeping input, paging: an element array above `PAGE_TARGET` is split at content-defined boundaries (osis-core chunker, 16/64/256 KiB) into pages written through `PageSink` (returns `Link`s) and read through `PageSource`; canonical (mandatory above, forbidden below); two-level link pages.
 - Performance posture: state structures sized for maps with many entries (BTreeMap by dot; local `key -> live dots` index); no O(state) work for a small delta beyond the touched elements; paged states live in the store (plans/store.md), so expose join over a page at a time.
 

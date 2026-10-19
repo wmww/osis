@@ -1,31 +1,34 @@
 # Public API crate
-> Summary: Build the `osis` crate per notes/api.md on the node engine: the `Osis` handle, reads (untyped `Value`, typed per path with path errors), listeners (fire for local changes too), `Mutator` with structural-diff `set_aspect`, replace, path ops, placement at creation, atomic multi-thing commit, signals, diagnostics channel, undo views, large values materialized and streamed, a text editing session, minimal queries, move resolution inside every call, identity/sharing/sync configuration surface, and the shape iterated with the example apps.
+> Summary: Build the `osis` crate to the shape in notes/api.md on the node engine: typed aspect and signal keys, synchronous reads with `at()` paths and a materialization bound, atomic `Watch`/RAII `Subscription` on one dispatcher thread, the `Write` batch (`set`/`edit`/`replace`/`remove`, path ops, explicit owner and placement, local rights check, no silent split), signals, undo and history, large-value streaming, text sessions, minimal live queries, the sharing/device/link/card surface, sync configuration and status with async only where another node is waited on, diagnostics, one `Error`; iterated with the example apps.
 > Tags: api, tests
 
-Crate: `osis`. Depends on: osis-node (and re-exports from core/schema). Unblocks: apps-e2e, cli.
-Spec: spec/requirements.md (API section), spec/versioning.md §5 (typed reads), spec/permissions.md §7 (resolution), spec/data-model.md §6 (large values usable materialized and streamed). Notes: notes/api.md (fixed directions, sketch, queries, diagnostics), notes/ephemeral.md (signals API), notes/crdt.md (editing-session rule, undo). Spec trumps this plan. The API shape is not decided (owner): shape it with the examples and refactor freely; keep the fixed directions.
+Crate: `osis`. Depends on: osis-node (re-exports from core/schema). Unblocks: apps-e2e, cli.
+Spec: spec/requirements.md (API section, Offline), spec/versioning.md §5 (typed reads), spec/permissions.md §2 (roster read), §5.3 (pre-sync), §7 (resolution), spec/data-model.md §6 (large values materialized and streamed), spec/crdt.md §9 (what `set` means), spec/sync.md §9 (signals). Notes: notes/api.md (the shape, footguns, rejected shapes), notes/ephemeral.md, notes/crdt.md (editing-session rule, undo hints). Spec trumps this plan. The shape is the target; refactor freely with the examples but keep the fixed directions and keep every closed footgun closed (notes/api.md lists them; each has a test).
 
 ## Deliverables
-- `Osis` handle (cloneable, thread-safe; many per database; database drops with the last), `open(config)` with store path/backend choice, identity (new node, restore from card, pair), servers list; `Error` with stable categories.
-- Reads: `get_aspect(tid, ak) -> Value`, `get_typed::<T>(tid, ak)`, per-path typed reads, `list_aspects(tid)`, groups and `/groups`; every tid input and output resolved through moves; `Tid` equality is plain bits with an explicit `same_thing(a, b)`.
-- Listeners: `listen_aspect`, `listen_aspect_mut`, `listen_signals`, `listen_diagnostics`, invoked once before returning (not signals), `ListenerId` cancellation; fire for local writes too.
-- `Mutator`: `create_thing(Placement)` (group or explicit `Local`; unplaced-after-commit diagnostic), `set_aspect` (diff), `replace_aspect`, `remove_aspect`, path ops (set field, set case, insert/remove/move index, add/remove key, splice text, increment, undelete), retention/expiry overrides per aspect, `commit()` atomic across things; `delete_thing` defined as remove known aspects + placements.
-- Signals: `send_signal(tid, kind, value, target?)`.
-- Undo: per-actor derived stack (`undo()`, `redo()`, `history(scope)`), admin view listing others' changes with undo; "silent no-op where compacted" reported.
-- Large values: `get_bytes_stream`, `get_text_range`, streaming writes building chunk trees (plans/large-values.md), listeners on a large value without materializing.
-- Text editing session: buffer that commits on pause/blur, cut/paste with remembered ranges.
-- Queries (minimal, local, rebuildable indexes): things in a group (transitive) with an aspect, ordered by a field or by commit time (display time = min(ts, receipt)), paged, with a range listener; backlinks by tid. Enough for the example apps; a design pass is a later plan.
-- Sharing surface: grant/change/remove, make link, redeem link, recovery card, contact card, move thing, label management (which groups sync to which servers), diagnostics for removed-device and stranded.
-- Schema integration: load `.osis` at runtime or via generated types; typed writes validated against the writer's schema.
-- Docs: rustdoc examples on every public item; a `docs`-free README in the crate.
+- Handle: `Osis` (clone, send, sync; database closes with the last handle), `create` (returns the recovery card), `open`, `restore`, `pair`, `Config` (store, optional runtime handle, servers, `materialize_limit`, `idle_commit`), `node()`, `me()`, `close()`. Background work on the handle's tokio runtime; app-facing futures resolved by channels (runtime-agnostic, tested from a non-tokio executor).
+- Keys: `AspectKey` trait and `Aspect<T>` / `Signal<T>` (from osis-schema), `Ak` as the untyped key, `osis::core` typed constants for the core aspects; `Path` and `p!`.
+- Reads: `get`, `at(tid, key)` with `get`, per-path typed and untyped reads, `len`, `stream` (`Read + Seek`, lazy chunks), `read(|r|)` consistent view, `aspects`, `groups_of`, `roster`, `role_on`; the materialization bound (`TooLarge`); every tid in and out resolved through moves; `same_thing`.
+- Watching: `Watch<T>` (atomic with the current value; `current`, `changed`, `changed_timeout`, `on_change`), `on_change` with the initial call through the dispatcher, `watch_thing`, `watch_roster`, `watch_status`; RAII `Subscription` with `detach`; one dispatcher thread per database, commit order, after durability, never under a lock, API usable from callbacks, coalescing; `Change` with origin, actor, node, `ts`, `received`.
+- `Write`: `create(owner, Place)`, `at(tid, key)` with `set` (diff vs current), `edit(base, new)` (diff base→new as path ops, sequences rebased; crdt provides the diff and rebase), `replace`, `remove`, `expires_at/in`, `retention`, path ops (`set`, `replace`, `remove`, `set_case`, `insert`, `delete`, `move`, `splice`, `undelete`, `add`, `remove_elem`, `put`, `remove_key`, `inc`, `observe`, `set_stream`), `place`, `unplace`, `add_subgroup`, `remove_subgroup`, `delete(tid)`; `commit` (atomic, `TooLarge` instead of splitting) and `commit_split`; `#[must_use]`, `write_with`; rights checked locally (`Permission`, `UnknownThing`); `NotSynced` diagnostic after commit; own watches fire after durability.
+- Signals: `send_signal(tid, key, value, Target)`, `on_signal`.
+- Undo: `UndoScope`, `undo`, `redo`, `history` with `Undoable | Undone | Dropped(reason)`, `undo_commit`.
+- Text session: `edit_text` buffer with remote merge callbacks, cut/paste with remembered ranges, commit on `commit()`, idle and drop.
+- Queries (minimal): `query(in_group, with(key), order by time or field, page) -> Live<Vec<Hit>>` with a watch on the visible range; `backlinks`. Local rebuildable indexes sharded per aspect.
+- Sharing: `grant`, `change_edge`, `demote` (`Demotion { sync: Required | Try | Skip, backdate }`, the pre-sync via flows), `leave`, `pair_offer`, `devices`, `remove_device`, `make_link`, `redeem`, `links`, `revoke_link`, `contact_card`, `import_contact`, `move_thing`; bearer `open_link` if time allows.
+- Sync: `ServerAddr`, `servers`/`add_server`/`remove_server`, `sync(group, servers)`, `unsync`, `sync_policy`, `status`, `wait_synced`, `sync_now`, `export_bundle`, `import_bundle`.
+- Diagnostics: `on_diagnostic`, structured, deduped and rate-limited by the engine; the required kinds (removed-device, stranded, not-synced, demotion proceeded unsynced).
+- `Error` with the categories of notes/api.md; peer problems never become errors.
+- Docs: rustdoc example on every public item; a README in the crate with the notes-app walk-through; a "Footguns" section pointing at `edit` vs `set`, the bound, `commit_split`, `Place`.
 
 ## Steps
-- [ ] Handle, errors, reads/listeners/mutator over the engine events; tests with an in-memory node.
-- [ ] Signals, undo, diagnostics; typed reads with generated types from osis-schema codegen.
-- [ ] Large values, text sessions; queries; sharing surface wrapping flows.
-- [ ] Iterate with examples/notes and examples/chat (plans/apps-e2e.md) and refactor; write notes/api.md "Decided shape" section.
+- [ ] Keys, `Error`, handle over the engine with the memory store and no network: reads, `at()` paths, `Write` with every op, create/place, commit with local rights check and `TooLarge`; tests per op and per closed footgun (`edit` keeps a concurrent remote field write that `set` would clobber; bound; must-use; no split).
+- [ ] Dispatcher, `Watch`, `Subscription`, `on_change` initial call, `watch_thing`; signals; undo and history; diagnostics; typed reads and writes through generated types from osis-schema codegen (the notes schema).
+- [ ] Large values (bound, `stream`, `set_stream`, path reads O(entry)); text sessions; queries and backlinks.
+- [ ] Sharing, devices, links, cards, move; sync configuration, status, `wait_synced`, bundles; async surface tested from a plain executor; `Demotion` policies end to end in the simulator.
+- [ ] Iterate with examples/notes and examples/chat (plans/apps-e2e.md); refactor; write the "Implementation" section of notes/api.md (what differs from the shape and why).
 
 ## Done when
-The example apps need nothing the API does not provide; every fixed direction in notes/api.md is honoured and tested; notes/api.md updated to the decided shape. Delete this plan.
+The example apps need nothing the API does not provide; every fixed direction and every closed footgun in notes/api.md has a test; the async surface runs from a non-tokio executor; notes/api.md updated to what was built. Delete this plan.
 
 ## Progress

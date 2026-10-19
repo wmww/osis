@@ -43,7 +43,7 @@ Each is a trait (or small trait family) in the crate named, with an in-memory or
 - **`Clock`** (core): `now_wall_ms()`; node builds the HLC and the corrected clock on it. **Rng**: `rand_core::CryptoRngCore` passed in, never a global.
 - **`View`** (crdt defines, schema implements): projection of read values onto what the writer's schema can type, used by the structural diff (spec/crdt.md §9).
 - **`PageSink` / `PageSource` and `BlobFetch`** (crdt defines the first two, label implements with node): writes pages of a paged snapshot as blobs and returns links; fetches pages, chunks and tree nodes lazily by link.
-- **Engine events** (node): the engine emits typed change events (aspect changed at path, commit applied, diagnostic, signal) on a channel; the `osis` API builds listeners on it. The API never reaches into engine internals.
+- **Engine events** (node): the engine emits typed events (commit applied with its changed `(tid, ak)` set, origin, author, `ts`, receipt time; roster change; signal; sync status; diagnostic) on a channel after durability and outside its locks; the `osis` API builds watches on it (plans/node-core.md). The API never reaches into engine internals. The data API above is synchronous (notes/api.md, Design rules): node exposes blocking reads and writes, and async only where another node is waited on.
 - **Held-set queries for perm** (node implements perm's traits): perm asks "edge writes held for thing N", "roster snapshots held", "/created of N", rather than holding state itself.
 
 ## 3. notes/architecture.md: error handling and pervasive rules
