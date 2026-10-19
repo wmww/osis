@@ -47,7 +47,7 @@ Each operation names a label. Writes are signed with the role keys of the server
 - **Download**, specific-blob fetch, reconciliation (§6) and subscription (§8): only for labels opened on the connection; a blob is fetched by ID only as an entry of an opened label.
 - **Signals** (§9) are accepted under the write key or the deposit key.
 - Servers cap storage per label and may rate-limit deletes, wrap replacements, deposits and signals per label.
-- A member peer serving a label applies the same rule, and may also serve a node it has authenticated (§10) as a node of a current member.
+- A member peer serving a label applies the same rule, and may also serve a node it has authenticated (§10) as a node of a current member: the connection's peer key is the `dialable` key of a `/reach` it holds on a node thing whose actor currently reads the label.
 - **Re-registration**: an admin node that holds a verified epoch newer than the one a server's head registers (its own rotation or another member's) issues a child of that head when it next syncs that label at that server, before any upload there (a remover does so in the removal's sync, spec/permissions.md §3), and records the steps in `/label`.
 - **Deletion by token**: a node holding a token for a body the label must not hold (§6) deletes it under every label it syncs as soon as it sees the condition; a node replacing a body under a relative keep-at-most sends the timed delete with the replacing upload (spec/commits.md §5). Whichever token holder sees a valid purge executes it.
 

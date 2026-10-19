@@ -13,8 +13,8 @@ Wave 0.
 | plan | state | notes |
 |---|---|---|
 | pre-flight plan diff | merged at cb6f1b0 | |
-| workspace | running (opus, worktree) | wave 0, serial |
-| protocol-spec | running (opus, worktree) | wave 0, ∥; toplevel reviews every layout |
+| workspace | merged at 4b6ec14 | plan folded into notes/architecture.md |
+| protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | running (opus, worktree) | wave 0, ∥, low priority |
 | crypto, crdt-core, schema, perm, test-infra | not started | wave 1 |
 | store | not started | wave 1, after crypto AEAD+kdf |
@@ -29,6 +29,7 @@ Wave 0.
 None.
 
 ## Spec edits
+- Toplevel review of wire.md: `keyset` carries the epoch's suite ID (spec/data-model.md §9); spec/sync.md §5 says how a member peer authenticates another member's node (its `/reach` dialable key).
 - spec/sync.md §3: a projection class whose blob would exceed `MAX_BLOB` splits into several blobs, greedily in aspect-list order (pre-flight found no path under `MAX_BLOB` for a commit touching many aspects). spec/commits.md §1: one delta must fit a blob; the writer refuses the rare struct-of-many-large-registers shape (issues/struct-delta-size.md).
 
 - protocol-spec (filling TBDs into spec/wire.md) also changed: tree-node link content hashes cover child hashes, not the subtree's bytes (spec/data-model.md §6, spec/crypto.md §6; O(change) edits); a recovery key's nonce derives from its seed like a link key's (spec/crypto.md §3); blob AEAD AD is the clear prefix and the inbox AD adds it (spec/crypto.md §5); the token, purge and origin lists go inline-or-link like the aspect list instead of a token cap (spec/commits.md §1); header-list chunk commitments capped (spec/crypto.md §7, owner-call); entry boxes live inside the claim set the step hashes (spec/sync.md §2); a link may carry the sharer node's dialable key and relays for first contact (spec/permissions.md §9).
