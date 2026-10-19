@@ -70,7 +70,7 @@ pub fn default_policy(p: &PolicyInput) -> WriteForm {
 mod tests {
     use super::*;
 
-    // notes/versioning.md, Transitions: tie-break by form timestamp, equal prefers new.
+    // spec: none (codegen convention, notes/versioning.md Transitions: tie-break by form timestamp).
     #[test]
     fn tie_break() {
         let t = |n| Ts::from_u64(n);
@@ -82,7 +82,7 @@ mod tests {
         assert_eq!(pick_form(None, None), Form::New);
     }
 
-    // notes/versioning.md, Which form is written.
+    // spec: none (codegen convention, notes/versioning.md Which form is written).
     #[test]
     fn default_rule() {
         let p = |conversion, approximation_ok, moved_on| default_policy(&PolicyInput { conversion, approximation_ok, moved_on });
