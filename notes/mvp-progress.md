@@ -110,8 +110,14 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 - membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
 
 ## Owner-calls pending
-- Licence exceptions for the iroh feature (CDLA-Permissive-2.0 for webpki roots, Unlicense for three wasm-only crates; RUSTSEC-2024-0436 ignore for `paste`): permissive, in deny.toml, need owner sign-off (notes/architecture.md §5).
-- LAN discovery: spec/sync.md §10 does not bind the announced transport key to the node; conservative behaviour implemented (issues/p2p-deferred.md); LAN datagram format and port are provisional in notes/networking.md.
-- issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP). membership-flows extended the omission to membership deltas (invite grants, self-removals, writers' rotations and re-seals are written by non-admins), receivers accept it.
-- issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
-- issues/reseal-triggers.md: members no automatic re-seal trigger reaches when their deposits are refused (R2; the wrongful-re-seal residues were closed in TLC round 2); recommended: accept for the MVP, mechanisms listed.
+
+### Decided by the owner
+- Policy: until a stable official release, spec edits need no owner sign-off (CLAUDE.md). Escalate only significant changes to or conflicts with spec/requirements.md.
+- issues/token-admin-secret.md: owner accepted option 1 (omit the level-1 token when the writer lacks the admin secret) for the MVP; revisit post-MVP. Issue stays, retagged post-mvp.
+- issues/header-list-commitments.md: owner accepted (a) for the MVP under the same post-MVP note as token-admin-secret; the 16 cutoff is arbitrary and the owner wants a better design later.
+- issues/reseal-triggers.md: accepted (a), within spec/requirements.md "triggered, never guaranteed"; not an owner call under the policy above.
+- LAN discovery: not an owner call. Keep the conservative rule, write the datagram format and port into spec/sync.md §10 as provisional, bind the key when the LAN loop is built (issues/p2p-deferred.md).
+- Licence exceptions for the iroh feature (deny.toml): approved as-is. Permissive licences and a compile-time-only advisory need no further sign-off.
+
+### Open
+- None.
