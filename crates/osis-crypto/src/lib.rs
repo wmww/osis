@@ -1,7 +1,7 @@
 //! osis-crypto: suite 1 primitives and every derivation, box, wrap and token of spec/crypto.md
 //! (layouts: spec/wire.md §3, §5, §7, §8). Pure functions; randomness is injected
 //! (`&mut dyn CryptoRngCore`), secrets are zeroized on drop and never printed.
-//! Layer 1 (notes/architecture.md). Plan: plans/crypto.md.
+//! Layer 1 (notes/architecture.md). Plan: plans/crypto.md, done and folded into notes/crypto.md.
 #![forbid(unsafe_code)]
 
 pub mod aead;

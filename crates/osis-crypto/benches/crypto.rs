@@ -1,4 +1,4 @@
-//! Benchmarks (plans/crypto.md): sealed box seal/open, blob encryption per MB, Ed25519 verify.
+//! Benchmarks (notes/crypto.md, Implementation): sealed box seal/open, blob encryption per MB, Ed25519 verify.
 //! Not gated. Run: `cargo bench -p osis-crypto`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
