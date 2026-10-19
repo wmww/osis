@@ -95,7 +95,41 @@ fn pending(sim: &mut NetSim) -> Res<()> {
         // spec/versioning.md §2: a commit of a newer format stays parked
         let p: Vec<_> = s.engine().pending().into_iter().filter(|(c, r)| !(sim.parked_ok.contains(c) && matches!(r, osis_node::Reason::Parked | osis_node::Reason::Unexamined))).collect();
         if !p.is_empty() {
-            return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}", p.len())));
+            // the first one's header, from any node holding it, and who holds which parts
+            let detail = p.first().map(|(c, _)| {
+                let h = sim.nodes.iter().find_map(|x| x.sync.as_ref().and_then(|s| s.engine().header(c)));
+                let h = h.map(|h| format!("author {} kind {:?} aspects {:?}", h.author, h.kind, h.aspects.iter().map(|a| format!("{} {}", a.tid, a.ak.as_str())).collect::<Vec<_>>()));
+                let blobs: Vec<String> = sim.known.iter().filter(|(_, (kc, _))| kc == c).map(|((l, b), (_, parts))| format!("{l:?} {b:?} {parts:?}")).collect();
+                format!("{h:?}; blobs {blobs:?}")
+            });
+            let c0 = p.first().map(|x| x.0);
+            let keys: Vec<[u8; 32]> = sim.servers.iter().map(|x| x.key).collect();
+            let mut bodies = Vec::new();
+            for m in 0..sim.nodes.len() {
+                let Some((c, s)) = c0.zip(sim.nodes.get_mut(m).and_then(|x| x.sync.as_mut())) else { continue };
+                let b: Vec<String> = s.engine_mut().bodies(&c).unwrap_or_default().iter().map(|b| format!("{:?} reader {}", b.parts, b.reader)).collect();
+                let ls: Vec<LabelId> = s.labels().into_iter().map(|x| x.1.id).collect();
+                let mut v = Vec::new();
+                for (i, k) in keys.iter().enumerate() {
+                    for l in &ls {
+                        if let Ok(Some(x)) = s.verdicts(k, l) {
+                            v.push(format!("s{i} {l:?}: must-hold {:?} unsettled {:?}", x.must_hold.iter().filter(|m| m.0 == c).map(|m| m.1.clone()).collect::<Vec<_>>(), x.unsettled.len()));
+                        }
+                    }
+                }
+                let mut unknown = Vec::new();
+                for l in &ls {
+                    for (id, k) in s.entries(l) {
+                        if k == osis_node::sync::EntryKind::Unknown {
+                            let bytes = s.engine_mut().blob(&id).ok().flatten().is_some();
+                            unknown.push(format!("{id:?} bytes {bytes}"));
+                        }
+                    }
+                }
+                bodies.push(format!("node {m}: {b:?} verdicts {v:?} unknown entries {unknown:?}"));
+            }
+            let detail = format!("{detail:?}; bodies {bodies:?}");
+            return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}; first: {detail:?}", p.len())));
         }
     }
     Ok(())
@@ -271,7 +305,11 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         let held = live.iter().any(|b| sim.known.get(&(l, *b)).is_some_and(|(kc, kp)| kc == c && parts.iter().all(|p| kp.contains(p))));
                         sim.report.held_checked = sim.report.held_checked.saturating_add(1);
                         if !held {
-                            return Err(sim.fail(format!("server {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold")));
+                            // the node's entries of that commit, and what the server says of them
+                            let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
+                            let st = sim.hub(s).map(|h| h.store());
+                            let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
+                            return Err(sim.fail(format!("server {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
                         }
                     }
                 }
