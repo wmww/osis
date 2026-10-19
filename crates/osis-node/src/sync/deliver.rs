@@ -16,7 +16,23 @@ use std::collections::BTreeSet;
 impl SyncEngine {
     /// Carries out a flow's result (call it with every `Done` a flow returns).
     pub fn carry_out(&mut self, done: Done) -> Result<Vec<Action>> {
+        if done.drop_lost {
+            for d in &done.deliveries {
+                if let Delivery::First { under, .. } = d {
+                    self.leaving.extend(under.iter().copied());
+                }
+            }
+            if self.leaving.is_empty() {
+                self.engine.drop_lost_secrets()?;
+            }
+        }
         self.take_done(done)?;
+        // placements wait for a pass
+        for c in self.conns.values_mut() {
+            for l in c.labels.values_mut() {
+                l.dirty = true;
+            }
+        }
         Ok(self.handle(super::Event::Local))
     }
 
@@ -30,7 +46,7 @@ impl SyncEngine {
                 Delivery::Inbox { to, inbox, blob } => {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
                     for server in inbox.servers {
-                        self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0 });
+                        self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
                     }
                 }
                 Delivery::Direct { to, commits } => {

@@ -389,6 +389,15 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             }
         }
     }
+    // a change is remove + put of one entry: the put is the member's new edge
+    let mut net: BTreeMap<(Tid, Tid), Option<Edge>> = BTreeMap::new();
+    for (t, m, e) in changed {
+        let slot = net.entry((t, m)).or_insert(None);
+        if e.is_some() {
+            *slot = e;
+        }
+    }
+    let changed: Vec<(Tid, Tid, Option<Edge>)> = net.into_iter().map(|((t, m), e)| (t, m, e)).collect();
     let mut members: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
     members.sort();
     members.dedup();

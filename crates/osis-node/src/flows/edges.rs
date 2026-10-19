@@ -261,9 +261,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         under.dedup();
         done.deliveries.push(Delivery::First { commits: vec![c], under });
     }
-    if selfr {
-        rotation::drop_lost(tx)?;
-    }
+    // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
+    // still seal the removal under the labels it leaves
+    done.drop_lost |= selfr;
     Ok(done)
 }
 

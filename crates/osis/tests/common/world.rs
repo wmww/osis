@@ -217,10 +217,13 @@ impl World {
     fn tick_all(&mut self) {
         let dbs = self.dbs();
         for (d, db) in dbs.iter().enumerate() {
-            if let Some(db) = db
-                && !self.offline[d]
-            {
-                db.feed(Event::Tick);
+            match db {
+                Some(db) if !self.offline[d] => db.feed(Event::Tick),
+                // an offline database's clock still runs: its waits time out
+                Some(db) => {
+                    db.waiting();
+                }
+                None => {}
             }
         }
     }

@@ -256,13 +256,11 @@ impl Osis {
             return Err(Error::UnknownThing { tid: target });
         }
         let done = self.engine(|e| -> Result<_> {
-            if e.get_typed(&member, &ct::KEYS)?.is_none() && !e.knows(&member) {
+            // unknown, or a key actor (a node, a recovery or link key) whose `/keys` is not held
+            if !e.knows(&member) || (e.owner(&member).is_none() && e.get_typed(&member, &ct::KEYS)?.is_none()) {
                 return Err(Error::UnknownActor { tid: member });
             }
-            e.grant(&target, &member, &edge(role, opts)).map_err(|err| match err {
-                osis_node::Error::Misuse(m) if m.contains("/keys") || m.contains("secrets of its own") => Error::UnknownActor { tid: member },
-                other => needs_admin(other),
-            })
+            e.grant(&target, &member, &edge(role, opts)).map_err(needs_admin)
         })?;
         self.carry(done)
     }
@@ -495,6 +493,10 @@ impl Osis {
             Ok(p)
         })?;
         self.locked(|x| -> Result<()> {
+            // secrets of its own before the label, as `sync()` does
+            let done = x.engine().give_own_secrets(&p)?;
+            let acts = x.sync.carry_out(done)?;
+            self.inner.net.apply(acts);
             let (_, acts) = x.sync.create_label(&p, servers.clone())?;
             self.inner.net.apply(acts);
             // the person's creation and `/keys` commits, as certificates under P's label

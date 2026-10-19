@@ -434,6 +434,12 @@ impl Osis {
             self.drain(l, &mut roster);
         }
         if !(any || handled) {
+            // nothing changed, but deadlines may have passed
+            if !l.waiters.is_empty() {
+                let now = self.inner.clock.now_wall_ms().0;
+                let Locked { waiters, sync, status, .. } = l;
+                waiters.retain_mut(|w| !w.poll(sync, status, now));
+            }
             return;
         }
         self.upkeep_links(l, &roster, false);

@@ -224,6 +224,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         validity::note_required(tx.core, &h, id, &parts);
     }
     // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
+    // (held parts). The keysets "before" are the current `/keys` state, which already holds this
+    // commit's `/keys` when that part joined earlier: an approximation like `revalidated`'s (a
+    // keyset the commit replaced is no longer known; its removed keys come from the index of
+    // held keyed entries, and a write whose removed keys are unknown waits as usual).
     let mut with_keys = parts.clone();
     if h.kind == osis_commit::Kind::Membership && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/secrets")) {
         for (ai, a) in h.aspects.iter().enumerate() {

@@ -401,6 +401,24 @@ fn link_spec(target: Tid, role: Role, until: Option<osis_core::WallMs>) -> osis_
     osis_node::flows::LinkSpec { target, role, until, servers: servers(), peers: Vec::new(), single_use: false }
 }
 
+// spec/crdt.md §3.2 (commit form: own writes first among commits), spec/commits.md §4: a
+// redemption signed as L rewrites K's history boxes (remove + put next to the sharer node's
+// entries); its deltas must encode canonically whichever way L's and the sharer's tids sort (the
+// writer once encoded own writes under the signer's node source, out of the reader's order).
+#[test]
+fn commit_form_redemption_canonical_spec_crdt_3_2() {
+    for seed in 600..606 {
+        let (mut lp, ps) = people(2, seed);
+        let (pa, ps1) = (ps[0], ps[1]);
+        let d = thing_of(&mut lp, 0, pa);
+        let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+        sync(&mut lp, 0, 1);
+        lp.peers[1].engine.redeem(&link, &ps1, true).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        sync(&mut lp, 1, 0);
+        assert_eq!(lp.peers[0].engine.roster(&link.k).get(&ps1).map(|e| e.role), Some(Role::Write), "seed {seed}");
+    }
+}
+
 // spec/permissions.md §9: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
@@ -700,6 +718,9 @@ fn writer_leaves_spec_perm_3() {
     let done = lp.peers[1].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
     assert_eq!(aks_of(&lp, 1, &done.commits[0]), BTreeSet::from(["/members".to_string()]));
     assert!(lp.peers[1].engine.header(&done.commits[0]).unwrap().frontier.is_none());
+    // the leaver drops what it lost once its removal is placed (node-sync's carry_out)
+    assert!(done.drop_lost);
+    lp.peers[1].engine.drop_lost_secrets().unwrap();
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()), "dropped on leaving");
     spread(&mut lp);
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&d).unwrap();

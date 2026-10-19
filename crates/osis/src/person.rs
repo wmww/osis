@@ -199,7 +199,9 @@ impl Osis {
     }
 
     /// An offer to pair a new device (valid `OFFER_LIFETIME_MS`, once): the new device runs
-    /// `Osis::pair` with it and the app carries the request back to `pair_accept`.
+    /// `Osis::pair` with it and the app carries the request back to `pair_accept`. Whoever holds
+    /// the offer can make their device a full admin device of this person until it is used or
+    /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         let (me, node) = (self.me(), self.node());
         let servers: Vec<Value> = self.servers()?.iter().map(|s| Value::Str(s.to_string())).collect();
