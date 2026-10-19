@@ -93,7 +93,8 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
 /// the label's old keys, entries and step. After its removal (and a purge it saw) it opens with
 /// its old sync key, registers its old step, re-uploads the old entries, the purged one included,
 /// and deposits a commit it wrote offline after the removal. Expected: the stale step and the
-/// purged blob are refused, no honest node reads the post-removal write, honest nodes converge.
+/// purged blob are refused, no honest node reads the post-removal write, honest nodes converge;
+/// colluding with the server, M's secrets open no body made after its removal.
 pub fn removed_replayer(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4e);
     let mut sim = sim("removed_replayer", seed, NetWeights::default());
@@ -129,6 +130,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     purge(&mut sim, a, gone, t)?;
     sim.quiet(40)?;
     sim.sever(Party::N(m), Party::S(s));
+    let removed_at = sim.engine(a)?.now();
     sim.remove(a, g, pm)?;
     sim.excused.insert(m);
     sim.run(40)?;
@@ -176,6 +178,28 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         if ts.contains("m-after") || !ts.contains("m-before") {
             return Err(sim.fail(format!("node {n} reads {ts:?}: the removed member's write after removal is read, or its earlier one lost")));
         }
+    }
+    // colluding with the server (spec/requirements.md, Out of scope): every secret M holds opens
+    // no body of a commit made after its removal
+    let secrets: Vec<osis_crypto::Secret32> = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| x.1.clone()).collect()).unwrap_or_default();
+    let mt = sim.tid(m)?;
+    let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+    let mut checked = 0;
+    for id in hub.store().live_ids(&old.label).unwrap_or_default() {
+        let Some((c, _)) = sim.known.get(&(old.label, id)) else { continue };
+        // honest commits made after the removal (M's own are M's)
+        let late = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).is_some_and(|h| h.ts.wall_ms().0 > removed_at.0 + 1_000 && h.author != mt);
+        let Some(e) = hub.store().entry(&old.label, &id).ok().flatten() else { continue };
+        if late {
+            checked += 1;
+            if osis_label::unwrap_any(secrets.iter(), &id, &e.wrap).is_some() {
+                let h = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).map(|h| format!("author {} kind {:?} ts {} (removal {}) aspects {:?}", h.author, h.kind, h.ts.wall_ms().0, removed_at.0, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()));
+                return Err(sim.fail(format!("the removed member's secrets open {id:?} of {c:?}, made after its removal: {h:?}")));
+            }
+        }
+    }
+    if checked == 0 {
+        return Err(sim.fail("no body made after the removal to check"));
     }
     sim.finish()
 }

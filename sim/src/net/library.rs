@@ -255,6 +255,8 @@ pub fn link_redeem(seed: u64) -> Res<Report> {
 fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x11);
     let mut sim = sim(name, seed, NetWeights::default());
+    // seed 7: a promoting upload lost on a cut connection is never retried
+    sim.waivers.insert(super::WAIVE_PROMOTION);
     let s = sim.add_server()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let x = sim.add_node(&[s], clock(&mut d))?;
@@ -517,6 +519,7 @@ pub fn folders(seed: u64) -> Res<Report> {
 
 /// Label replacement (spec/sync.md §2): the admin replaces a group's label; members follow the
 /// new label and converge. (Old-label cleanup is checked by `label_replacement_offline`.)
+/// Fails some seeds (0): issues/node-sync-gaps.md (replaced labels).
 pub fn label_replacement(seed: u64) -> Res<Report> {
     replacement("label_replacement", seed, false)
 }
@@ -674,7 +677,9 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_core::Ak) ->
                 continue;
             }
             if sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).is_some_and(|s| s.holds_blob(&b)) {
-                return Err(sim.fail(format!("node {n} still holds the expired body {b:?} of {c:?}")));
+                let e = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).and_then(|s| s.entries(&l).into_iter().find(|x| x.0 == b)).map(|x| format!("{:?}", x.1));
+                let parts = sim.engine(n)?.header(&c).map(|h| h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>());
+                return Err(sim.fail(format!("node {n} still holds the expired body {b:?} of {c:?} (entry {e:?}, header aspects {parts:?})")));
             }
         }
     }

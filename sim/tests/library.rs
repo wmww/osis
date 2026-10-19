@@ -82,7 +82,7 @@ fn folders() {
 
 // spec/sync.md §2: label replacement.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "issues/node-sync-gaps.md"]
 fn label_replacement() {
     ok("label_replacement", 1);
 }
@@ -112,6 +112,13 @@ fn disappearing() {
 #[test]
 fn keep_at_most() {
     ok("keep_at_most", 1);
+}
+
+// spec/commits.md §5: sweep seed 6, a dropped body's blob kept at the node.
+#[test]
+#[ignore = "issues/sync-keep-at-most-blob-kept.md"]
+fn keep_at_most_seed_6() {
+    ok("keep_at_most", 6);
 }
 
 // spec/sync.md §6: a dishonest server; honest nodes converge through the honest one.

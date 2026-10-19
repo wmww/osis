@@ -292,7 +292,8 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || !sync.entries(&l).iter().any(|(x, _)| x == db) {
                             continue;
                         }
-                        return Err(sim.fail(format!("server {s}: deposited {db:?} (commit {c:?}) under {l:?} not promoted by writer node {n}")));
+                        let what = format!("author {} actor {} kind {:?} aspects {:?} valid {:?}", h.author, h.actor, h.kind, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), sync.engine().pending().iter().find(|p| p.0 == c));
+                        return Err(sim.fail(format!("server {s}: deposited {db:?} (commit {c:?}: {what}) under {l:?} not promoted by writer node {n}")));
                     }
                 }
             }
