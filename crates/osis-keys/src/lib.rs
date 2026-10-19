@@ -5,11 +5,13 @@
 #![forbid(unsafe_code)]
 
 pub mod aspects;
+pub mod covers;
 pub mod epoch;
 pub mod error;
 pub mod open;
 pub mod produce;
 
+pub use covers::{Departure, Member, covers, expired, may_encrypt_under, reseal_needed, rotate_first, uncovered};
 pub use aspects::{KeysWrite, SecretsWrite, keyset, observe_keys, observe_secrets};
 pub use epoch::{ActorEpochs, EpochInfo, ROLES, RoleEpochs, SUITE, is_newer, newest_of};
 pub use error::Error;
