@@ -15,4 +15,4 @@ pub mod scenarios;
 pub mod workload;
 
 pub use harness::{ClockSpec, Config, Failure, NetFaults, Node, Report, Res, Sim, Weights};
-pub use scenarios::{SCENARIOS, replay, run};
+pub use scenarios::{BLOCKED, SCENARIOS, blocked, replay, run};
