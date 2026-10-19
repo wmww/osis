@@ -22,7 +22,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
-| store | review | reviewer running |
+| store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
 | crdt-seq | running (opus, worktree) | |
 | commit | running (opus, worktree) | |
 | label | running (opus, worktree) | |
