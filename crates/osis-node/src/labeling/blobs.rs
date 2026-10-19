@@ -64,6 +64,8 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
 pub struct HeadKeys {
     /// Opens (any held secret, spec/crypto.md §4: opening is not encrypting under).
     pub sync: Option<SigningSecret>,
+    /// The sync key's epoch is established: it may sign token deletes.
+    pub sync_established: bool,
     /// Stamps and level-3 token deletes (an established epoch).
     pub write: Option<SigningSecret>,
     /// Label-wide deletes and child steps (an established epoch).
@@ -192,6 +194,7 @@ impl Engine {
         if let Some(e) = self.epochs(g) {
             if let Some((ep, s)) = matching(&e, Role::Read, index, &head.keys.sync) {
                 k.sync = Some(label_role_key(LabelRole::Sync, &s, index));
+                k.sync_established = e.read.is_established(&ep);
                 k.epochs[0] = Some(ep);
             }
             if let Some((ep, s)) = matching(&e, Role::Write, index, &head.keys.write) {
@@ -238,7 +241,7 @@ impl Engine {
 }
 
 /// A delete item for an entry: by the delete key when held, else by a token and the key its
-/// level needs (spec/sync.md §5).
+/// level needs (spec/sync.md §5), under established epochs only (spec/crypto.md §4).
 pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, tokens: &[(u8, Secret32)]) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
         return osis_label::DeleteItem::sign(d, label, blob, at, None).ok();
@@ -246,7 +249,7 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
     for (level, tok) in tokens {
         let key = match osis_label::key_for_level(*level).ok()? {
             LabelRole::Write => keys.write.as_ref(),
-            _ => keys.sync.as_ref(),
+            _ => keys.sync.as_ref().filter(|_| keys.sync_established),
         };
         if let Some(k) = key {
             return osis_label::DeleteItem::sign(k, label, blob, at, Some(tok)).ok();

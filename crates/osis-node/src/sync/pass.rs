@@ -45,6 +45,10 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.keys = keys.clone();
         }
+        // a complete pass and still no secret of the head's read epoch: stranded
+        if keys.epochs[0].is_none() {
+            return self.stranded(conn, g, l, out);
+        }
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
@@ -108,6 +112,9 @@ impl SyncEngine {
                 deposits.push((blob, e.wrap, sig));
             }
         }
+        if let Some(w) = &keys.write {
+            self.promote(server, l, w, &mut uploads)?;
+        }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
@@ -115,6 +122,32 @@ impl SyncEngine {
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
         self.deletions(conn, server, l, &keys, &bodies, &snaps, out)
+    }
+
+    /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
+    /// commits, never a heartbeat.
+    fn promote(&mut self, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+        let ids: Vec<(BlobId, Entry)> = self
+            .state
+            .entries
+            .range((l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| *x == l)
+            .filter(|((_, b), e)| e.stamp.is_none() && self.state.is_present(&server, &l, b))
+            .map(|((_, b), e)| (*b, e.clone()))
+            .collect();
+        for (id, mut e) in ids {
+            let Kind::Commit { commit, .. } = &e.kind else { continue };
+            let Some(h) = self.engine.header(commit) else { continue };
+            if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) {
+                continue;
+            }
+            let Some(blob) = self.engine.blob(&id)? else { continue };
+            let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
+            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
+            e.stamp = Some(stamp);
+            self.state.set_entry(l, id, e);
+        }
+        Ok(())
     }
 
     /// Whether this node placed the entry (its certificates, heartbeats, membership writes).
@@ -281,6 +314,9 @@ impl SyncEngine {
     /// A stranded heartbeat (spec/permissions.md §4; spec/sync.md §5): the label cannot be read
     /// here; deposited, wrapped under the newest established read secret held, no open needed.
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        if self.stranded_at.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
+            return Ok(());
+        }
         let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
         let Some(seed) = self.engine.deposit_seed(&g)? else { return Ok(()) };
         let Some(c) = self.heartbeat_commit(true)? else { return Ok(()) };
@@ -291,7 +327,8 @@ impl SyncEngine {
             let sig = osis_label::sign_deposit(&d, &l, &s.id, &wrap);
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;
         }
-        self.state.set_beat(l, self.now());
+        let now = self.now();
+        self.stranded_at.insert(l, now);
         Ok(())
     }
 
@@ -413,6 +450,15 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Some((hold, live, aspects)) = self.judge(&l, &id, &e, bodies)? else { continue };
             let Hold::MustNot(why) = hold else { continue };
+            if why == Why::Expired {
+                // the server drops it unattended (spec/sync.md §5)
+                self.state.set_present(server, l, id, false);
+                if !self.state.present_anywhere(&l, &id) {
+                    self.state.remove_entry(l, id);
+                    self.forget_blob(&id)?;
+                }
+                continue;
+            }
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,
                 _ => self.carried(&server, &l, &e, &aspects, snaps)?,

@@ -127,3 +127,24 @@ fn bundle_round_trip_spec_sync_11() {
     trace(&mut net, &[b]);
     assert_eq!(net.read(b, t), Some(s("bundled")));
 }
+
+// spec/sync.md §6: the cursor, entries and heads survive a restart: the node resumes where it
+// was and re-uploads nothing it placed before.
+#[test]
+fn restart_resumes_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "one");
+    net.run();
+    let l = net.label(a);
+    let n = net.server_ids(sv, &l).len();
+    net.restart(b, 22);
+    net.run();
+    assert_eq!(net.server_ids(sv, &l).len(), n, "nothing placed twice");
+    net.write(a, t, "two");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("two")));
+}

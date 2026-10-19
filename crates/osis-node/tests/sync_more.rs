@@ -54,6 +54,25 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     assert!(by_r.iter().any(|a| a.contains("/seen")), "the reader's heartbeat");
     let seen = net.engine(a).get_typed(&rt, &ct::SEEN).unwrap().unwrap();
     assert!(!seen.stranded);
+    // the writer promoted the reader's deposited card (re-uploaded stamped); never a heartbeat
+    let entries = net.sync(a).entries(&l);
+    let store = net.servers[sv].hub.store();
+    let mut card = 0;
+    for (id, k) in entries {
+        let EntryKind::Commit { commit, .. } = k else { continue };
+        let Some((_, au, aks)) = under.iter().find(|(c, _, _)| *c == commit) else { continue };
+        if *au != rt {
+            continue;
+        }
+        let stamped = osis_proto::LabelStore::entry(store, &l, &id).unwrap().unwrap().stamp.is_some();
+        if aks.contains("/seen") {
+            assert!(!stamped, "heartbeats are never promoted");
+        } else if aks.contains("/node") {
+            assert!(stamped, "the card was promoted");
+            card += 1;
+        }
+    }
+    assert!(card > 0);
     // a heartbeat at most once per interval
     let n = net.server_ids(sv, &l).len();
     net.advance(60_000);

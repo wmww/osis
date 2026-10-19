@@ -171,6 +171,8 @@ pub struct SyncEngine {
     pub(crate) outbox: Vec<local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeSet<osis_core::BlobId>,
+    /// When a stranded heartbeat last went under each label.
+    pub(crate) stranded_at: BTreeMap<LabelId, u64>,
 }
 
 impl SyncEngine {
@@ -197,6 +199,7 @@ impl SyncEngine {
             diagnostics: Vec::new(),
             outbox: Vec::new(),
             fetching: BTreeSet::new(),
+            stranded_at: BTreeMap::new(),
         })
     }
 
