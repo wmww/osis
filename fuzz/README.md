@@ -25,17 +25,17 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `tid_parse` | tid text form | osis-core | live |
 | `creation_record` | creation record read | osis-core | live |
 | `chunker` | chunker bounds, incremental = one-shot | osis-core | live |
-| `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | planned |
+| `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | live |
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
 | `delta` | delta and snapshot decoders per encoding | osis-crdt | planned |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-label | planned |
 | `box` | sealed box, `/secrets` box, history box, wrap | osis-crypto, osis-keys | planned |
-| `step` | step, claim set | osis-label | planned |
-| `inbox`, `signal` | inbox payload, signal envelope | osis-label | planned |
-| `link_card` | link and card, text forms | osis-label | planned |
+| `step` | step, claim set | osis-label | live |
+| `inbox`, `signal` | inbox payload, signal envelope | osis-label | live |
+| `link_card` | link and card, text forms | osis-label | live |
 | `proto_frame` | frame codec, Hello, each message | osis-proto | planned |
-| `bundle` | bundle reader | osis-label | planned |
+| `bundle` | bundle reader, importer | osis-label | live |
 | `schema_dsl` | schema DSL parser, schema-as-data | osis-schema | live |
 
 ## Adding a target

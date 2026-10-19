@@ -17,6 +17,8 @@ libfuzzer-sys = "0.4"
 osis-core = { path = "../crates/osis-core" }
 osis-schema = { path = "../crates/osis-schema" }
 osis-commit = { path = "../crates/osis-commit" }
+osis-crypto = { path = "../crates/osis-crypto" }
+osis-label = { path = "../crates/osis-label" }
 
 [profile.release]
 debug = 1
@@ -59,6 +61,48 @@ bench = false
 [[bin]]
 name = "commit_header"
 path = "fuzz_targets/commit_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blob_prefix"
+path = "fuzz_targets/blob_prefix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "step"
+path = "fuzz_targets/step.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "inbox"
+path = "fuzz_targets/inbox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signal"
+path = "fuzz_targets/signal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "link_card"
+path = "fuzz_targets/link_card.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle"
+path = "fuzz_targets/bundle.rs"
 test = false
 doc = false
 bench = false

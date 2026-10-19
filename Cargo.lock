@@ -859,7 +859,10 @@ version = "0.1.0"
 dependencies = [
  "osis-commit",
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
+ "osis-schema",
+ "proptest",
 ]
 
 [[package]]
@@ -951,6 +954,7 @@ dependencies = [
  "osis-core",
  "osis-crdt",
  "osis-crypto",
+ "osis-label",
  "osis-schema",
 ]
 
