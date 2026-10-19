@@ -413,7 +413,7 @@ impl SyncEngine {
             && let Some(c) = self.engine.core.by_aspect.get(&(me, Ak::new("/seen").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
             && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
-            && self.engine.get_typed(&me, &ct::SEEN)?.is_some_and(|s| !s.stranded)
+            && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
         {
             return Ok(Some(c));
         }
@@ -421,7 +421,8 @@ impl SyncEngine {
         let ts = now.max(self.engine.core.hlc.last().wall_ms().0);
         let life = self.cfg.heartbeat_lifetime_ms.clamp(osis_core::format::HEARTBEAT_MIN_LIFETIME_MS, osis_core::format::HEARTBEAT_MAX_LIFETIME_MS);
         let mut m = crate::Mutation::new();
-        m.set(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded })?;
+        // whole: a field left to an earlier heartbeat would go when that one expires (spec/crdt.md §9)
+        m.replace(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded })?;
         m.expires(me, &ct::SEEN, WallMs(ts.saturating_add(life)))?;
         self.engine.commit(m)
     }

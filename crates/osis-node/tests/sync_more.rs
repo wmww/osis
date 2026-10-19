@@ -339,3 +339,23 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     assert!(net.engine(b).pending().is_empty(), "the grant applied: {:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("before bob")));
 }
+
+// spec/crdt.md §9, §4.7; spec/permissions.md §4: a heartbeat writes `/seen` whole, so the
+// expiry of an earlier heartbeat takes no field of a later one.
+#[test]
+fn heartbeat_outlives_earlier_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let _g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.run();
+    let at = net.tid(a);
+    // a second heartbeat shortly before the first one's expiry (two days), which then passes
+    // within the interval (no third heartbeat yet)
+    net.advance(44 * 3_600_000);
+    net.advance(5 * 3_600_000);
+    let seen = net.engine(a).get_typed(&at, &ct::SEEN).unwrap().unwrap();
+    assert!(!seen.stranded);
+    assert!(net.sync(a).take_diagnostics().iter().all(|d| !d.contains("missing field")));
+}

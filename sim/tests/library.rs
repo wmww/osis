@@ -159,9 +159,8 @@ fn keep_at_most_seed_62() {
     ok("keep_at_most", 62);
 }
 
-// spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff loses a heartbeat field; the pass aborts.
+// spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff lost a heartbeat field; the pass aborted.
 #[test]
-#[ignore = "issues/crdt-expiring-diff.md"]
 fn revocation_bob_seed_28() {
     ok("revocation_bob", 28);
 }
