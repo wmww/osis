@@ -26,6 +26,14 @@ fn revocation_carol() {
     ok("revocation_carol", 1);
 }
 
+// spec/sync.md §6 (clock offset), spec/crdt.md §2.2: sweep seed 12, pings straddling a one-day
+// gap set a 12 h offset; once corrected, the node's own commits are refused as drift.
+#[test]
+#[ignore = "issues/sync-clock-offset-rtt.md"]
+fn revocation_carol_seed_12() {
+    ok("revocation_carol", 12);
+}
+
 // spec/permissions.md §5.1, §5.3: a stolen device's backdated edit falls to a backdated revoke.
 #[test]
 fn stolen_device() {

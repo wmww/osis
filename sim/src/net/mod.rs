@@ -1223,10 +1223,20 @@ impl NetSim {
         self.carry(n, done)
     }
 
-    /// Node `n` commits `m` (setup; errors fail the run).
+    /// Node `n` commits `m` (errors fail the run; a crash at a planned durable write takes the
+    /// node down and commits nothing).
     pub fn commit(&mut self, n: usize, m: Mutation) -> Res<Option<CommitId>> {
         let r = self.engine(n)?.commit(m);
-        let id = r.map_err(|e| self.fail(format!("node {n} commit: {e}")))?;
+        let id = match r {
+            Ok(id) => id,
+            Err(_) if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) => {
+                self.report.crashes = self.report.crashes.saturating_add(1);
+                self.note(format!("node {n} crashed during a scenario write"));
+                self.node_down(n)?;
+                return Ok(None);
+            }
+            Err(e) => return Err(self.fail(format!("node {n} commit: {e}"))),
+        };
         self.feed(n, Event::Local)?;
         Ok(id)
     }
