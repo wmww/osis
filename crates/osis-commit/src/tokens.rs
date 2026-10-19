@@ -38,12 +38,13 @@ impl TokenSecret {
 /// Token secrets of a delta on `tid` with retention `r` in a commit of `kind`.
 ///
 /// Provisional (issues/token-admin-secret.md): a writer that does not hold the thing's admin
-/// secret omits the level-1 token on a content delta; any other missing secret is an error.
+/// secret omits the level-1 token, on a content delta and on a membership delta alike (an
+/// invite grant, a self-removal, a writer's rotation or re-seal); any other missing secret is
+/// an error.
 pub fn token_secrets(s: &dyn Secrets, tid: &Tid, r: &Retention, kind: Kind) -> Result<Vec<TokenSecret>, Error> {
     let mut out = Vec::new();
     for level in token_levels(r, kind) {
         let secret = match level {
-            1 if kind.is_membership() => Some(s.admin(tid).ok_or(Error::Build("admin secret not supplied for a membership delta"))?),
             1 => s.admin(tid),
             2 => Some(s.chain_write().ok_or(Error::Build("author-chain write secret not supplied"))?),
             _ => Some(s.write(tid).ok_or(Error::Build("thing write secret not supplied"))?),

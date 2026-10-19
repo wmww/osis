@@ -87,7 +87,8 @@ fn prefix_inputs_mixed_class_bad_input() {
 }
 
 // spec/crypto.md §7: token levels are exactly those the retention calls for; only level 1 may
-// be missing (provisional), never on a membership commit; level 2 only drops for imports.
+// be missing (provisional: a writer without the admin secret, on content and membership
+// commits alike, issues/token-admin-secret.md); level 2 only drops for imports.
 #[test]
 fn token_levels_strict() {
     let mut h = sample_header();
@@ -101,12 +102,13 @@ fn token_levels_strict() {
     let mut m = membership_header("/members");
     m.tokens.clear();
     m.aspects[0].tokens.clear();
-    assert!(m.validate().unwrap_err().to_string().contains("token levels"));
+    m.validate().unwrap();
     let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Node);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::MEMBERSHIP_RETENTION;
     b.aspects.push(a);
-    assert!(matches!(b.build(&key(), &TestSecrets { admin: false }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
+    let c = b.build(&key(), &TestSecrets { admin: false }, &mut MemoryBlobs::default(), &mut rng()).unwrap();
+    assert!(c.commit.header.tokens.is_empty());
 }
 
 // spec/wire.md §4: every aspect lists at least one delta hash; the builder refuses an aspect

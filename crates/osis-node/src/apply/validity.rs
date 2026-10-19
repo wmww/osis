@@ -401,7 +401,10 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             (Some(o), Some(n)) => n.role < o.role,
             _ => false,
         };
-        if demotes && core.own_keys.contains(target) {
+        // an author that may not rotate the target (a self-removal through admin on the
+        // member alone) leaves the rotation to whoever may make it (spec/permissions.md §3)
+        let may_rotate = core.timelines.get(target).is_some_and(|tl| !tl.may_rotate(&h.author, target, At::now(h.ts)).is_empty());
+        if demotes && may_rotate && core.own_keys.contains(target) {
             let has = |ak: &str| h.aspects.iter().any(|a| a.tid == *target && a.ak.as_str() == ak);
             if !has("/secrets") || !has("/keys") {
                 return Err(Error::BadInput("a removal without the rotation it requires"));
