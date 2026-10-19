@@ -170,7 +170,14 @@ pub struct MCommit {
 /// `n` writers make `rounds` rounds of random ops, writer `i` with type `types[i % len]`, seeing
 /// a random part of the others' commits. Returns the commits in creation order.
 pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommit> {
-    let mut ws: Vec<MWriter> = (0..n).map(|i| MWriter::new(crdt_model::stamp::Source::node(i as u8 + 1), 1 << 16, 0)).collect();
+    let sources = (0..n).map(|i| crdt_model::stamp::Source::node(i as u8 + 1)).collect();
+    history_with(r, types, sources, rounds)
+}
+
+/// `history` with the given writer sources (commit form: a `Commit` source per writer).
+pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
+    let n = sources.len();
+    let mut ws: Vec<MWriter> = sources.into_iter().map(|s| MWriter::new(s, 1 << 16, 0)).collect();
     let mut states: Vec<Option<m::Frag>> = vec![None; n];
     let mut seen: Vec<usize> = vec![0; n];
     let mut commits: Vec<MCommit> = Vec::new();

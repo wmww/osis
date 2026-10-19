@@ -11,7 +11,7 @@ use crate::page::{PageSink, PageSource};
 use crate::stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 use osis_core::{CommitId, Tid, Ts, Value, WallMs};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Nonce length of a delta (§3).
 pub const NONCE_LEN: usize = 16;
@@ -260,6 +260,15 @@ impl<'p> Enc<'p> {
         self.src_order(&a.src, &b.src).then(a.ctr.cmp(&b.ctr))
     }
 
+    /// The entries of `m` in wire order (§3.3 rule 2).
+    pub fn sorted<'m, T>(&self, m: &'m BTreeMap<Dot, T>) -> Vec<(&'m Dot, &'m T)> {
+        let mut v: Vec<(&Dot, &T)> = m.iter().collect();
+        if matches!(self.own.kind(), SourceKind::Commit(_)) {
+            v.sort_by(|a, b| self.dot_order(a.0, b.0));
+        }
+        v
+    }
+
     fn src_order(&self, a: &Source, b: &Source) -> Ordering {
         if !matches!(self.own.kind(), SourceKind::Commit(_)) || a == b {
             return a.cmp(b);
@@ -287,13 +296,15 @@ pub struct Dec<'a> {
     sources: Vec<Source>,
     commits: Vec<CommitEntry>,
     interner: &'a mut Interner,
+    /// Own counters taken by creations and position writes in a writer's delta (§2.3).
+    used: BTreeSet<u64>,
     pub(crate) pages: Option<&'a mut dyn PageSource>,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, pages }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages }
     }
 
     pub fn kind(&self) -> DeltaKind {
@@ -304,6 +315,15 @@ impl<'a> Dec<'a> {
     }
     pub fn own(&self) -> &Source {
         &self.own
+    }
+
+    /// In a writer's delta, records that an own creation or position write takes counter `ctr`;
+    /// two taking one counter is bad input (§2.3, §3.3 rule 6).
+    pub fn claim(&mut self, d: &Dot) -> Result<(), Error> {
+        if self.kind == DeltaKind::Writer && d.src == self.own && !self.used.insert(d.ctr) {
+            return Err(Error::Malformed("own counter used twice"));
+        }
+        Ok(())
     }
 
     /// Source of `Src` index `i`.
@@ -479,9 +499,9 @@ impl<'a> Dec<'a> {
         Ok(())
     }
 
-    /// Decodes a nested fragment.
+    /// Decodes a nested fragment (no own reset on a register, §3.3 rule 7).
     pub fn fragment(&mut self, v: &Value) -> Result<Fragment, Error> {
-        crate::codec::decode_fragment(self, v)
+        crate::codec::decode_fragment(self, v, false)
     }
 }
 

@@ -78,10 +78,11 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
     let state = state.and_then(|s| s.slot(ty.enc())).filter(|s| s.present());
     if state.is_none() || r.chance(1, 12) {
         let v = random_value(r, ty, 0);
-        return if r.chance(1, 3) { Some(ops::replace(w, ty, &v)) } else { crate::diff::diff(w, state, ty, &v) };
+        return if r.chance(1, 3) && ty.enc() != 0 { Some(ops::replace(w, ty, &v)) } else { crate::diff::diff(w, state, ty, &v) };
     }
     let st = state.unwrap();
-    if r.chance(1, 40) {
+    // not for registers: a nested register carries no reset (spec §3.3 rule 7), and this may be nested
+    if r.chance(1, 40) && ty.enc() != 0 {
         return Some(ops::remove(w, ty.enc()));
     }
     match (ty, st) {

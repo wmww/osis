@@ -21,8 +21,11 @@ mod wire;
 mod testutil;
 #[cfg(test)]
 mod tests_join;
+#[cfg(test)]
+mod tests_wire;
 
 pub use changes::{Changes, Death};
+pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 pub use ops::Writer;

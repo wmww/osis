@@ -26,6 +26,31 @@ pub struct Ctx {
     pub commits: Vec<(Ts, Source, u64)>,
 }
 
+/// Wire order of sources (§3.3 rule 2): §2.2 order, except that a commit-form delta's own source sorts below every
+/// other commit ID (its writer encodes before the commit ID exists).
+pub fn wire_src_cmp(a: &Source, b: &Source, own: &Source) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    if !matches!(own, Source::Commit(_)) || a == b {
+        return a.cmp(b);
+    }
+    match (a, b) {
+        (Source::Commit(_), Source::Commit(_)) if a == own => Ordering::Less,
+        (Source::Commit(_), Source::Commit(_)) if b == own => Ordering::Greater,
+        (Source::Derived(x), Source::Derived(y)) => wire_cmp(x, y, own),
+        _ => a.cmp(b),
+    }
+}
+/// Wire order of dots: source in wire order, then counter.
+pub fn wire_cmp(a: &Dot, b: &Dot, own: &Source) -> std::cmp::Ordering {
+    wire_src_cmp(&a.source, &b.source, own).then(a.ctr.cmp(&b.ctr))
+}
+/// Map entries in wire order.
+pub fn wire_sorted<'a, T>(m: &'a BTreeMap<Dot, T>, own: &Source) -> Vec<(&'a Dot, &'a T)> {
+    let mut v: Vec<(&Dot, &T)> = m.iter().collect();
+    v.sort_by(|a, b| wire_cmp(a.0, b.0, own));
+    v
+}
+
 /// A reference to a stamp or dot as it appears in the encoding.
 #[derive(Clone, Copy, Debug)]
 pub enum Ref<'a> {
@@ -74,7 +99,7 @@ impl Ctx {
         self.sources.clear();
         self.commits.clear();
         let mut commits: Vec<(Ts, Source, u64)> = Vec::new();
-        f.walk(&mut |r| match r {
+        f.walk_own(&self.own.clone(), &mut |r| match r {
             Ref::Dot(d) => {
                 self.index(&d.source);
             }
@@ -304,17 +329,22 @@ fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
 impl Frag {
     /// Every stamp and dot reference of the fragment, in canonical encoding order.
     pub fn walk(&self, f: &mut dyn FnMut(Ref)) {
+        self.walk_own(&Source::node(0), f)
+    }
+
+    /// `walk` with collections in the wire order of a delta whose own source is `own`.
+    pub fn walk_own(&self, own: &Source, f: &mut dyn FnMut(Ref)) {
         fn opt(s: &Option<Stamp>, f: &mut dyn FnMut(Ref)) {
             if let Some(s) = s {
                 f(Ref::Stamp(s));
             }
         }
-        fn elems(e: &BTreeMap<Dot, Elem>, f: &mut dyn FnMut(Ref)) {
-            for (d, el) in e {
+        fn elems(e: &BTreeMap<Dot, Elem>, own: &Source, f: &mut dyn FnMut(Ref)) {
+            for (d, el) in wire_sorted(e, own) {
                 f(Ref::Dot(d));
                 opt(&el.reset, f);
                 if let Some(fr) = &el.frag {
-                    fr.walk(f);
+                    fr.walk_own(own, f);
                 }
             }
         }
@@ -325,8 +355,8 @@ impl Frag {
         }
         match self {
             Frag::Slots { reg, slots } => {
-                reg.iter().for_each(|r| r.walk(f));
-                slots.values().for_each(|s| s.walk(f));
+                reg.iter().for_each(|r| r.walk_own(own, f));
+                slots.values().for_each(|s| s.walk_own(own, f));
             }
             Frag::Register { reset, write } => {
                 opt(reset, f);
@@ -337,12 +367,12 @@ impl Frag {
             Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => {
                 opt(&c.reset, f);
                 opt(&c.w, f);
-                elems(e, f);
+                elems(e, own, f);
             }
             Frag::Struct { c, fields } => {
                 opt(&c.reset, f);
                 opt(&c.w, f);
-                fields.values().for_each(|x| x.walk(f));
+                fields.values().for_each(|x| x.walk_own(own, f));
             }
             Frag::Enum { c, case, payloads } => {
                 opt(&c.reset, f);
@@ -350,23 +380,23 @@ impl Frag {
                 if let Some(k) = case {
                     f(Ref::Stamp(&k.0));
                 }
-                payloads.values().for_each(|x| x.walk(f));
+                payloads.values().for_each(|x| x.walk_own(own, f));
             }
             Frag::Map { c, entries } => {
                 opt(&c.reset, f);
                 opt(&c.w, f);
-                for (d, en) in entries {
+                for (d, en) in wire_sorted(entries, own) {
                     f(Ref::Dot(d));
                     opt(&en.reset, f);
                     if let Some(fr) = &en.frag {
-                        fr.walk(f);
+                        fr.walk_own(own, f);
                     }
                 }
             }
             Frag::Seq { text, c, elems: e } => {
                 opt(&c.reset, f);
                 opt(&c.w, f);
-                let v: Vec<(&Dot, &SeqElem)> = e.iter().collect();
+                let v: Vec<(&Dot, &SeqElem)> = wire_sorted(e, own);
                 for (start, n) in runs(*text, &v) {
                     let run = &v[start..start + n];
                     f(Ref::Dot(run[0].0));
@@ -378,7 +408,7 @@ impl Frag {
                     }
                     for (_, el) in run {
                         if let (Content::Frag(fr), true) = (&el.content, has_content(el)) {
-                            fr.walk(f);
+                            fr.walk_own(own, f);
                         }
                     }
                     for (d, el) in run {
@@ -510,8 +540,8 @@ fn enc_anchor(a: &Anchor, cx: &Ctx) -> Item {
 }
 fn enc_elems(elems: &BTreeMap<Dot, Elem>, cx: &Ctx) -> Item {
     Item::Array(
-        elems
-            .iter()
+        wire_sorted(elems, &cx.own)
+            .into_iter()
             .map(|(d, e)| Item::Array(vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx), Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect())]))
             .collect(),
     )
@@ -540,8 +570,8 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
             Item::Array(vec![enc, enc_opt_stamp(&c.reset, cx), enc_w(c, cx), case_i, cbor::sorted_map(m)])
         }
         Frag::Map { c, entries } => {
-            let es = entries
-                .iter()
+            let es = wire_sorted(entries, &cx.own)
+                .into_iter()
                 .map(|(d, e)| {
                     let mut a = vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx)];
                     a.extend(e.key.iter().map(|k| k.to_item()));
@@ -557,7 +587,7 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
 }
 
 fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
-    let v: Vec<(&Dot, &SeqElem)> = elems.iter().collect();
+    let v: Vec<(&Dot, &SeqElem)> = wire_sorted(elems, &cx.own);
     let mut out = Vec::new();
     for (start, n) in runs(text, &v) {
         let run = &v[start..start + n];
@@ -680,7 +710,7 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
             return Err(Error::Bad("elem"));
         }
         let d = dec_dot(&a[0], cx)?;
-        if last.as_ref().map_or(false, |l| *l >= d) {
+        if last.as_ref().map_or(false, |l| wire_cmp(l, &d, &cx.own).is_ge()) {
             return Err(Error::Bad("elem order"));
         }
         last = Some(d.clone());
@@ -742,7 +772,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
                     return Err(Error::Bad("tombstone with key"));
                 }
                 let d = dec_dot(&x[0], cx)?;
-                if last.as_ref().map_or(false, |l| *l >= d) {
+                if last.as_ref().map_or(false, |l| wire_cmp(l, &d, &cx.own).is_ge()) {
                     return Err(Error::Bad("entry order"));
                 }
                 last = Some(d.clone());
@@ -794,7 +824,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         if n > MAX_RUN {
             return Err(Error::Bad("run length"));
         }
-        if last.as_ref().map_or(false, |l| *l >= first) {
+        if last.as_ref().map_or(false, |l| wire_cmp(l, &first, &cx.own).is_ge()) {
             return Err(Error::Bad("run order"));
         }
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
