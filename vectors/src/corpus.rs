@@ -49,6 +49,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
         ("creation_record", records),
         ("tid_parse", tids),
         ("chunker", vec![vec![0], vec![1; 300], chunk]),
+        ("commit_header", [field_bytes("commit", "header"), field_bytes("commit", "blob")].concat()),
     ]
 }
 

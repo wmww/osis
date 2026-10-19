@@ -235,3 +235,28 @@ fn build_import() {
     assert_eq!(c.header.origins.len(), 1);
     verify_blob(&c, &key().verifying_key(), &dedup, None).unwrap();
 }
+
+// spec/wire.md §4, spec/crypto.md §7: the chunk list holds, per introduced blob, one chunk
+// token hash per token secret of its delta under the chunk's own prefix salt, indexed into the
+// header tokens; the chunk's prefix commitments verify those tokens.
+#[test]
+fn chunk_list() {
+    let mut b = content(1);
+    b.aspects[0].retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    b.aspects[0].chunks = vec![(osis_core::BlobId([9; 32]), [1; 16]), (osis_core::BlobId([3; 32]), [2; 16])];
+    let built = build(b, &mut MemoryBlobs::default()).unwrap();
+    let h = &built.commit.header;
+    assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 9]);
+    let secs = &built.aspect_tokens[0];
+    assert_eq!(secs.len(), 3);
+    for (c, salt) in h.chunks.iter().zip([[2u8; 16], [1; 16]]) {
+        assert_eq!(c.tokens.len(), 3);
+        let prefix = Prefix::for_chunk(salt, None, secs).unwrap();
+        for ((ti, th), s) in c.tokens.iter().zip(secs) {
+            assert_eq!(h.tokens[*ti].level, s.level);
+            assert_eq!(*th, s.hash(&salt).hash);
+            let token = osis_crypto::delete_token(&s.secret, &salt);
+            assert!(prefix.commitments.iter().any(|x| osis_crypto::verify_presented_token(token.expose(), x, &salt)));
+        }
+    }
+}

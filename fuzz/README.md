@@ -26,7 +26,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `creation_record` | creation record read | osis-core | live |
 | `chunker` | chunker bounds, incremental = one-shot | osis-core | live |
 | `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | planned |
-| `commit_header` | commit header, commit blob plaintext | osis-commit | planned |
+| `commit_header` | commit header, commit blob plaintext | osis-commit | live |
 | `delta` | delta and snapshot decoders per encoding | osis-crdt | planned |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-label | planned |

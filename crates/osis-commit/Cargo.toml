@@ -15,3 +15,6 @@ osis-core.workspace = true
 osis-crypto.workspace = true
 osis-crdt.workspace = true
 osis-schema.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

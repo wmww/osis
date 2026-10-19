@@ -24,6 +24,8 @@ mod tests_validate;
 mod tests_verify;
 #[cfg(test)]
 mod tests_build;
+#[cfg(test)]
+mod tests_prop;
 
 pub use blob::{CommitBlob, Part};
 pub use builder::{AspectWrite, Built, CommitBuilder};

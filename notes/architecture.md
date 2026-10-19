@@ -13,7 +13,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC (`quic`), iroh (`iroh`) |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, file backend (`file-backend`), `Store` |
-| 3 | `osis-commit` | commit | commit header, kinds, retention, signatures |
+| 3 | `osis-commit` | commit | commit header and blob, kinds, retention, tokens, signatures, builder, verification, projection, chunk trees of header lists (notes/crdt.md) |
 | 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, chunk trees |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
@@ -39,7 +39,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 - **Node sync layer is sans-I/O** (plans/node-sync.md): everything in `osis-node` reacting to messages, timers or engine events is `SyncEngine::handle(Event) -> Vec<Action>` over proto sessions, labeling and flows, with exactly two drivers: the tokio driver in `osis-node` and the simulator's step driver (seeded scheduler, virtual clocks, engine-to-engine delivery; never tokio, never the async transport). `InProcess` tests the drivers and the stream layer. Determinism rests on this split.
 - **`Clock`** (core): `now_wall_ms()`; node builds the HLC and the corrected clock on it. **Rng**: `rand_core::CryptoRngCore` passed in, never a global.
 - **`View`** (crdt defines, schema implements): projection of read values onto what the writer's schema can type, for the structural diff (spec/crdt.md §9).
-- **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, label implements with node): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link.
+- **`PageSink` / `PageSource`, `BlobFetch`** (crdt defines the first two, label implements with node): write pages of a paged fragment (any delta or snapshot) as blobs and return links; fetch pages (all before the commit applies), chunks and tree nodes (lazily) by link. osis-commit's `BlobSink` / `BlobSource` (prefix inputs in, plaintext out; content hashes checked by commit) carry chunk trees of header lists.
 - **Engine events** (node): typed events (commit applied with its changed `(tid, ak)` set, origin, author, `ts`, receipt time; roster change; signal; sync status; diagnostic) on a channel after durability and outside locks; the `osis` API builds watches on them and never reaches into engine internals. The data API is synchronous (notes/api.md): blocking reads and writes, async only where another node is waited on.
 - **Held-set queries for perm** (node implements perm's traits): "edge writes held for thing N", "roster snapshots held", "/created of N"; perm holds no state.
 

@@ -22,9 +22,10 @@ Spec: spec/commits.md (all), spec/crdt.md §2.3–§2.4, spec/crypto.md §2, §6
 - [x] Retention grammar, fixed tables, expiry rules; validation of kinds/markers.
 - [x] Delta hashing and verification with crdt; token hashes/levels; chunk list (chunk entries land with the builder).
 - [x] Builder with list overflow; projection; purge rewrite; origins.
-- [ ] Fuzz target for the header decoder (test-infra); vectors for a minimal content commit, a membership commit, a snapshot, an import; proptest: encode/decode round trip, projection delta sets partition the commit, every projection verifies alone.
+- [x] Fuzz target for the header decoder (test-infra); vectors for a minimal content commit, a membership commit, a snapshot, an import; proptest: encode/decode round trip, projection delta sets partition the commit, every projection verifies alone.
 
 ## Done when
 node-core builds and verifies commits only through this crate; vectors frozen; size test: a minimal content commit header + one register delta ≤ the floor notes/crdt.md states (≈300 B before encryption, tier-2 budget). Delete this plan, folding layout notes into notes/crdt.md or notes/sync.md.
 
 ## Progress
+- Steps 1–5 landed: header, validation, retention, tokens, blob, verify, builder with linked lists, projection, rewrite, fuzz target `commit_header`, `commit/headers.vec` (provisional), `budget_minimal_commit` (288 B). Open: vectors freeze (toplevel); node-core adoption; issues/token-admin-secret.md (owner-call).

@@ -5,6 +5,7 @@
 pub mod boxes;
 pub mod cbor;
 pub mod chunker;
+pub mod commit;
 pub mod kdf;
 pub mod keys;
 pub mod padme;
@@ -40,6 +41,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "token/tokens.vec" => Subject { generate: Some(token::tokens), check: None },
         "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
         "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
+        "commit/headers.vec" => Subject { generate: Some(commit::headers), check: None },
         _ => return None,
     })
 }
