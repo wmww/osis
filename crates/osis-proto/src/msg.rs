@@ -526,13 +526,13 @@ fn ranges(vs: Vec<Value>) -> Result<Vec<Range>, Error> {
         if !rbsr::lower_below_upper(&lower, &upper) {
             return Err(Error::Malformed("range bounds"));
         }
-        if let Some(prev) = out.last() {
-            if prev.upper.is_end() || rbsr::cmp_bounds(&prev.upper, &lower) == std::cmp::Ordering::Greater {
-                return Err(Error::Malformed("ranges unsorted or overlapping"));
-            }
+        if let Some(prev) = out.last()
+            && (prev.upper.is_end() || rbsr::cmp_bounds(&prev.upper, &lower) == std::cmp::Ordering::Greater)
+        {
+            return Err(Error::Malformed("ranges unsorted or overlapping"));
         }
         let mut m = Fields::range(f.next()?, 2, 3, "mode")?;
-        let in_range = |ids: &[BlobId]| ids.windows(2).all(|w| w[0] < w[1]) && ids.iter().all(|i| rbsr::contains(&lower, &upper, i));
+        let in_range = |ids: &[BlobId]| ids.is_sorted_by(|a, b| a < b) && ids.iter().all(|i| rbsr::contains(&lower, &upper, i));
         let mode = match (m.uint()?, m.remaining()) {
             (0, 1) => Mode::Fingerprint(m.fixed()?),
             (1, 1) => Mode::Ids(ids(m.list(0, rbsr::LIST_MAX, "mode 1 ids")?)?),

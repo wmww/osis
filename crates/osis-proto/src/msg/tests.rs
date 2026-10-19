@@ -16,11 +16,11 @@ fn with_list(m: Message, n: usize) -> Value {
     // Replaces the first list field of `m`'s encoding by `n` copies of its first element.
     let Value::List(mut items) = m.to_value() else { unreachable!() };
     for it in items.iter_mut() {
-        if let Value::List(l) = it {
-            if let Some(first) = l.first().cloned() {
-                *l = vec![first; n];
-                break;
-            }
+        if let Value::List(l) = it
+            && let Some(first) = l.first().cloned()
+        {
+            *l = vec![first; n];
+            break;
         }
     }
     Value::List(items)

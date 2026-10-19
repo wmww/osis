@@ -17,7 +17,7 @@ Spec: spec/sync.md §5 (operations), §6 (protocol, cursor sync, reconciliation,
 - [x] Frame codec, negotiation, handshake, offset estimator; fuzz target for the frame/message decoders.
 - [x] Message types with layouts (spec/wire.md §11.2); vectors.
 - [x] RBSR with proptests; cursor sync shapes.
-- [ ] Client and server engines with an in-crate loopback test (engine ↔ engine, in-memory `LabelStore`), scripted fault cases (lost cursor → reconciliation; oversized gained list; stale sync key → one signed step).
+- [x] Client and server engines with an in-crate loopback test (engine ↔ engine, in-memory `LabelStore`), scripted fault cases (lost cursor → reconciliation; oversized gained list; stale sync key → one signed step).
 - [ ] Bundle adapter.
 
 ## Done when

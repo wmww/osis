@@ -78,10 +78,8 @@ pub fn fingerprint(ids: &[BlobId]) -> [u8; 16] {
     let mut sum = [0u64; 4];
     for id in ids {
         let mut carry = 0u64;
-        for (limb, chunk) in sum.iter_mut().zip(id.0.chunks_exact(8)) {
-            let mut w = [0u8; 8];
-            w.copy_from_slice(chunk);
-            let (s1, c1) = limb.overflowing_add(u64::from_le_bytes(w));
+        for (limb, chunk) in sum.iter_mut().zip(id.0.as_chunks::<8>().0) {
+            let (s1, c1) = limb.overflowing_add(u64::from_le_bytes(*chunk));
             let (s2, c2) = s1.overflowing_add(carry);
             *limb = s2;
             carry = (c1 as u64) + (c2 as u64);
