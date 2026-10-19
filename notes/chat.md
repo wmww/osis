@@ -26,4 +26,4 @@
 ## Open
 - Whether participants writing C's `/group` is acceptable, or C's `/group` should list personas by an admin-only flow.
 - Wake priority per chat is undecided (notes/networking.md, Priority); timeline query shape (notes/api.md).
-- A second link made after joins plus a removal never settles: the later link's joiner rotates C without end (issues/rotation-uncoverable-loop.md).
+- A second link made after joins plus a removal settles (`second_link_then_removal`); the later link's joiner used to rotate C without end (notes/node.md).

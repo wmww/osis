@@ -46,7 +46,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | sync bug-fix round 2 | running (opus, worktree) | phase C sync issues, deposit re-send, LAN datagram spec text |
 | chat-costs analysis | merged | two thirds engine waste: issues sync-upload-resend, labeling-cert-copies (→ sync round 2), rotation-uncoverable-loop (→ flows round 2); design costs recorded in notes/chat.md and issues/chat-costs.md |
 | crdt/flows bug-fix round | merged | expiring diff, single-use redemption, move copies, label replacement fixed; new issues/flows-race-winner-stranded.md, issues/flows-move-derived-owner.md |
-| flows round 2 | running (opus, worktree) | race-winner stranded, move with derived owner |
+| flows round 2 | merged at 6258e9a | race winner, derived-owner move, rotation loop fixed; three sync follow-ups routed to sync round 2; issues/link-race-deposit-not-promoted.md |
 | sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
@@ -72,6 +72,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 
 ## Spec edits
 - sync bug-fix round 2: spec/sync.md §6 the clock offset ignores samples whose round trip exceeds a few seconds, and a node SHOULD close and redial a connection with a request unanswered for minutes; §10 the LAN announcement datagram (60 bytes, UDP broadcast to port 47380) written as provisional, with the conservative candidate-route rule until the transport key is bound to the node (owner decision: bind it when the LAN loop is built).
+- wave 5 flows fixes: spec/permissions.md §3 a rotation boxing a member without a box at the current read epoch also goes to it by inbox (spec/sync.md §3 inbox blob list); no rotation of A for a departure inside a member that a fresh epoch would not cover; spec/crypto.md §4 a node holding no secret of M judges the inside-M covers rule by M's newest `/keys` keyset.
 - sync bug-fix round: spec/sync.md §6 a must-hold body is held by any blob of its commit holding its deltas that no snapshot under the label covers (a right holder that dropped covered deltas uploads a smaller projection; without this a co-writer that may not drop them re-uploads the whole body forever).
 - api second half (coordinator decision): spec/wire.md §10 `Link` takes an optional eighth item `flags` (bit 0 single use, present only when nonzero, other bits reserved); spec/permissions.md §9 names it; vector link/link.vec refrozen as FC-3.
 - Toplevel after the TLA rerun: re-registration needs the head's epochs established (R10, spec/sync.md §5); a complete pass covers the servers and the reachable peers it received from (R11, spec/permissions.md §3); snapshot-first binds keep-at-most drops only (S16, spec/sync.md §7).

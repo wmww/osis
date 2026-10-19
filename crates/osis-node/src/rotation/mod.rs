@@ -112,7 +112,9 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Dep
     Ok(())
 }
 
-/// What the covers rule needs of every actor this node holds secrets of.
+/// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
+/// of its own whose secrets it does not hold is judged by its newest `/keys` keysets alone
+/// (spec/crypto.md §4): those epochs, established in this view only, with no boxes.
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.secrets.keys().copied().collect();
@@ -121,6 +123,17 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
         if let Some(e) = tx.core.secrets.get(&a) {
             h.map.insert(a, (s, e.clone()));
         }
+    }
+    let unheld: Vec<Tid> = tx.core.own_keys.iter().filter(|a| !h.map.contains_key(a)).copied().collect();
+    for a in unheld {
+        let Some(keys) = Core::keys_in(tx, &a)? else { continue };
+        let mut e = ActorEpochs::default();
+        for (r, ks) in [(Role::Read, &keys.read), (Role::Write, &keys.write), (Role::Admin, &keys.admin)] {
+            if let Some(ep) = ks.as_ref().and_then(|k| osis_keys::aspects::from_schema(&k.epoch).ok()) {
+                e.role_mut(r).set_established(ep, osis_keys::Provenance::Fixed);
+            }
+        }
+        h.map.insert(a, (Default::default(), e));
     }
     Ok(h)
 }
@@ -173,6 +186,45 @@ pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>
     Ok(out)
 }
 
+/// The roles of `uncovered` that a fresh rotation of `a` would cover: one uncovered departure
+/// at least is a member's own (the rotation omits it), or lies inside a member M that is no
+/// longer current or whose newest epoch (the one its fresh box names) covers the rest. A role
+/// whose departures a rotation cannot help is not rotated: the node may not encrypt under it
+/// until the intermediate rotates (spec/permissions.md §3).
+fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
+    if uncovered_roles.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let deps = departures(tx, a)?;
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
+    let secrets = secrets_in(tx, a)?;
+    let held = held_actors(tx)?;
+    let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
+    let mut out = BTreeSet::new();
+    for &r in uncovered_roles {
+        let Some((e, _)) = epochs.role(r).newest_held() else {
+            out.insert(r);
+            continue;
+        };
+        let helps = deps.iter().filter(|d| !osis_keys::covers(&secrets, &epochs, r, &e, d, &held)).any(|d| {
+            let Some((m, rest)) = d.via.split_first() else { return true };
+            if !current.contains(m) {
+                return true;
+            }
+            let inner = Departure { via: rest.to_vec(), member: d.member, from: d.from };
+            match (osis_keys::HeldActors::epochs(&held, m), osis_keys::HeldActors::secrets(&held, m)) {
+                (Some(me), Some(ms)) => me.role(r).newest().is_some_and(|k| osis_keys::covers(ms, me, r, &k, &inner, &held)),
+                _ => false,
+            }
+        });
+        // an epoch introduced by the departed party is replaced by any rotation
+        if helps || uncovered(&secrets, &epochs, r, &e, &deps, &held).is_empty() {
+            out.insert(r);
+        }
+    }
+    Ok(out)
+}
+
 /// Current members of `a` as box recipients; `skip` is left out (a departing member). Members
 /// whose keys are unknown are left out (re-sealed later).
 pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: Option<(Tid, Option<Role>)>) -> Result<Vec<Recipient>> {
@@ -210,6 +262,38 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     Ok(rot)
 }
 
+/// Members a rotation `rot` of `a` boxes that hold no box at a current read epoch before it (a
+/// key actor: at any current epoch, its boxes are keyed at its top role): its commit is wrapped
+/// under that epoch, so they cannot open it from the label (a grant this node learned of after
+/// an epoch that left it out, the single-use link race's winner). They get it by inbox
+/// (spec/permissions.md §3). Called before the rotation is committed.
+pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
+    let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
+    let secrets = secrets_in(tx, a)?;
+    let me = tx.core.id.tid();
+    let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.member).filter(|m| *m != me).collect();
+    out.sort();
+    out.dedup();
+    out.retain(|m| {
+        let key_actor = tx.core.is_key_actor(m);
+        !secrets.boxes.keys().any(|k| {
+            k.member == *m && (key_actor || k.role == Role::Read) && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e))
+        })
+    });
+    Ok(out)
+}
+
+/// The inbox (a node: direct) deliveries of rotation commit `c` of `a` to `members`.
+pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_core::CommitId>, members: &[Tid]) -> Result<Vec<Delivery>> {
+    let mut out = Vec::new();
+    if let Some(c) = c {
+        for m in members {
+            out.extend(flows::edges::deliver_to(tx, *m, c, &[a])?);
+        }
+    }
+    Ok(out)
+}
+
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
@@ -234,6 +318,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     let members = recipients(tx, &a, None)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, a, roles, &held, &members)?;
+    let unreached = unreached(tx, &a, &rot)?;
     if let Some(s) = signer_of(tx, who) {
         m.sign_as(s);
     }
@@ -241,6 +326,7 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     record(tx, a, &rot)?;
     let mut done = Done::default();
     done.add(c);
+    done.deliveries.extend(deliver_rotation(tx, a, c, &unreached)?);
     // the rotated actor's new /keys travels under the labels above it (spec/permissions.md §3)
     if let Some(c) = c {
         done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &a) });
@@ -290,6 +376,7 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, visiting: &mut V
     let due = uncovered_roles(tx, &a)?;
     let may = may_rotate(tx.core, &who, &a);
     let mine: BTreeSet<Role> = due.intersection(&may).copied().collect();
+    let mine = rotation_helps(tx, &a, &mine)?;
     if !mine.is_empty() {
         done.extend(rotate_now(tx, who, a, &mine)?);
     }

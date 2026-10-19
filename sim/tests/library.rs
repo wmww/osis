@@ -76,9 +76,9 @@ fn link_race() {
     ok("link_race", 1);
 }
 
-// spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K.
+// spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K;
+// the sharer's next rotation reaches it by inbox.
 #[test]
-#[ignore = "issues/flows-race-winner-stranded.md"]
 fn link_race_seed_6() {
     ok("link_race", 6);
 }

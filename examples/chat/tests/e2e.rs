@@ -202,3 +202,24 @@ fn costs_join_message_removal() {
     assert!(others_rm < 6_000 * (n as u64 - 1), "others during a removal: heartbeats and certificates");
 }
 
+
+// spec/crypto.md §4 (covers rule; a node holding no secret of M judges by M's newest `/keys`
+// keyset), spec/permissions.md §3 (no rotation that cannot cover): a late joiner by a second
+// link, a writer of C that never read the first link's K1, settles after a joiner of K1 is
+// removed instead of rotating C without end.
+#[test]
+fn second_link_then_removal() {
+    let mut w = World::new();
+    let (alice, _others, c, ps, _) = chat_link(&mut w, 1);
+    let late = person(&mut w, 99, 0);
+    let k2 = invite(&alice, c, false).unwrap();
+    w.run();
+    w.until(join(&late, &k2, "late"), 1000, 10).expect("joined").unwrap();
+    w.run();
+    w.until(remove(&alice, c, ps[1]), 1000, 20).expect("removed").unwrap();
+    w.run();
+    let t = w.now() as i64;
+    send(&alice, ps[0], "after", t, None).unwrap();
+    w.run();
+    assert_eq!(texts(&late, c).unwrap(), ["after"]);
+}

@@ -25,7 +25,7 @@ Inside the commits: a rotation's `/keys` is 2.6 KB (2 hybrid KEM keys of 1216 B)
   - It duplicates the closure blob under K's own label: 21 KB.
   - Members upload chain projections that the admin's fuller copy makes must-not-hold, and the admin deletes them: ≈ 19 KB per member per removal.
   - Joiners re-place chain commits already under the label: ≈ 20 KB per join.
-- Endless rotation by a writer that cannot judge coverage: issues/rotation-uncoverable-loop.md. It also makes spurious C rotations in smaller doses.
+- Endless rotation by a writer that cannot judge coverage: fixed (notes/node.md, rotation loop).
 
 ## (b) Design costs (the spec as written) and the knobs that would change them
 - **Projections repeat the header**: one blob per (readable subset, retention class), and the token set differs per thing. A message is 3 blobs: its `/created` (fixed retention), its text + sent time, and the placement on the persona's `/group`. Each repeats the header (467 B: 4 aspects with a 32 B delta hash each, 3 tokens) and the signature. Knobs: the header and signature travel once (projections carry the commit ID and parts; costs a second fetch), ≈ −1.1 KB; or the app drops the placement and finds messages by owner (needs a query), ≈ −0.7 KB.

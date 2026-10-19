@@ -101,10 +101,12 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m` (boxes put, removed boxes reset, history boxes written
-/// even when unchanged: a grant or re-seal re-writes them, spec/crypto.md §4).
+/// Writes a `/secrets` write into `m` (removed boxes reset; boxes and history boxes as remove +
+/// put, so a re-seal or grant re-writing an entry the member does not hold is a new entry there,
+/// not a write into one it never got, spec/crypto.md §4).
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Result<()> {
     for (k, b) in &w.boxes {
+        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) })?;
     }
     for k in &w.removed {
@@ -279,7 +281,7 @@ pub(crate) fn deposit_of(tx: &mut Tx<'_>, actor: &Tid) -> Result<[u8; 32]> {
 }
 
 pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
-    Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| ct::SECRETS.decode(&v).ok()).unwrap_or_default())
+    Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
