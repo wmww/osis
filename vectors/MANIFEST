@@ -1,0 +1,26 @@
+# Every vector file and its status (vectors/README.md, "Manifest and freezing").
+#   <path> provisional
+#   <path> frozen <blake3 of the file> <FORMAT_CHANGES.md entry>
+#   <path> pending <who or what produces it>
+cbor/values.vec provisional
+padme/padme.vec pending osis-crypto (spec/wire.md §5 padding)
+tid/thing.vec pending osis-core alignment to spec/wire.md §3 (creation record layout)
+tid/key-actor.vec pending osis-crypto (Ed25519 key from seed 03; link-key nonce)
+kdf/purposes.vec pending osis-crypto
+keys/seed.vec pending osis-crypto
+box/boxes.vec pending osis-crypto, osis-keys
+wrap/wrap.vec pending osis-crypto
+blob/prefix.vec pending osis-label
+blob/blobs.vec pending osis-label
+chunker/gear.vec pending osis-core alignment to spec/wire.md §6 (gear table, boundary rule)
+chunker/tree.vec pending osis-label (chunk tree of a 64 MiB XOF value)
+chunker/pages.vec pending osis-crdt (page split, link-page grouping)
+commit/headers.vec pending osis-commit
+step/steps.vec pending osis-label
+inbox/inbox.vec pending osis-label
+signal/signal.vec pending osis-label
+link/link.vec pending osis-label (link and card formats)
+schema/core.vec pending osis-schema
+proto/messages.vec pending osis-proto
+proto/reconcile.vec pending osis-proto
+bundle/bundle.vec pending osis-label

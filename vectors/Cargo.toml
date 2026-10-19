@@ -1,6 +1,6 @@
 [package]
 name = "osis-vectors"
-description = "Conformance vector runner"
+description = "Conformance vector format, runner, generator and freeze check"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,7 @@ workspace = true
 
 [dependencies]
 osis-core.workspace = true
+
+[[bin]]
+name = "gen-vectors"
+path = "src/bin/gen-vectors.rs"
