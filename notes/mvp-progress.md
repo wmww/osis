@@ -38,7 +38,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | node-core | running (opus, worktree) | interim report after layout + writing path for sim phase A |
 | transport | running (opus, worktree) | |
 | large-values | review | library parts done; reviewer running (Value/Link equality change under scrutiny); node integration in wave 4; issues/large-value-seek.md |
-| server | running (opus, worktree) | |
+| server | review | done except transport wiring; reviewer running |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
