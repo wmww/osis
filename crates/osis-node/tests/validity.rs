@@ -204,3 +204,32 @@ fn membership_content_rules_spec_commits_2() {
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
     assert_eq!(lp.peers[1].engine.roster(&d).len(), 1);
 }
+
+// spec/crdt.md §3.3 rule 2: a commit-form delta's own dots sort above node dots (and below
+// every other commit), so a commit-form removal of entries another node wrote encodes
+// canonically whichever node tid sorts first.
+#[test]
+fn commit_form_order_spec_crdt_3_3() {
+    for seed in 0..8 {
+        let mut lp = net(2, seed);
+        lp.sync_all().unwrap();
+        let d = new_thing(&mut lp, 0);
+        let b = lp.peers[1].engine.tid();
+        set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+        sync(&mut lp, 0, 1);
+        let map = ak("/t/map");
+        let mut m = Mutation::new();
+        for k in ["a", "b", "c"] {
+            m.op(d, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(Value::Int(1)) }).unwrap();
+        }
+        lp.peers[1].commit(m).unwrap().unwrap();
+        sync(&mut lp, 1, 0);
+        let mut m = Mutation::new();
+        m.commit_form();
+        for k in ["a", "b", "c"] {
+            m.op(d, &map, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s(k)) }).unwrap();
+            m.op(d, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(Value::Int(2)) }).unwrap();
+        }
+        lp.peers[0].commit(m).unwrap_or_else(|e| panic!("seed {seed}: {e}")).unwrap();
+    }
+}

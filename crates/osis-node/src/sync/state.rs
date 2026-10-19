@@ -30,6 +30,7 @@ const INBOX_ONLY: &[u8] = b"y/n";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
 const TOMB: &[u8] = b"y/x";
+const OUTBOX: &[u8] = b"y/o";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +64,15 @@ pub struct BlobRec {
     pub cert: bool,
 }
 
+/// An inbox blob to deposit at a server, kept until the server answers (spec/sync.md §3).
+#[derive(Clone, Debug)]
+pub struct OutRec {
+    pub label: LabelId,
+    pub server: Address,
+    pub owner: Tid,
+    pub blob: Vec<u8>,
+}
+
 /// A label learned from an inbox blob before its `/label` is held.
 #[derive(Clone, Debug)]
 pub struct Hint {
@@ -74,6 +84,9 @@ pub struct Hint {
 pub struct State {
     pub entries: BTreeMap<(LabelId, BlobId), Entry>,
     pub present: BTreeSet<(ServerKey, LabelId, BlobId)>,
+    /// Present entries the server holds deposited (no stamp there; spec/sync.md §5): a writer
+    /// promotes them at that server, whatever stamp this node knows.
+    pub deposited: BTreeSet<(ServerKey, LabelId, BlobId)>,
     pub cursors: BTreeMap<(ServerKey, LabelId), Cursor>,
     pub heads: BTreeMap<(ServerKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
@@ -95,6 +108,8 @@ pub struct State {
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
+    /// Inbox blobs not yet answered by their server, by (server, blob).
+    pub outbox: BTreeMap<(ServerKey, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
     pub now: u64,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
@@ -179,7 +194,11 @@ impl State {
                     s.entries.insert((l, BlobId(r.arr()?)), decode_entry(&v)?);
                 }
                 b"p" => {
-                    s.present.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
+                    let k = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
+                    if v.first() == Some(&1) {
+                        s.deposited.insert(k);
+                    }
+                    s.present.insert(k);
                 }
                 b"c" => {
                     let k = (r.arr()?, LabelId(r.arr()?));
@@ -216,6 +235,16 @@ impl State {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
+                b"o" => {
+                    let k = (r.arr()?, BlobId(r.arr()?));
+                    let mut x = Rd::new(&v);
+                    let label = LabelId(x.arr()?);
+                    let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
+                    let server = Address { url, key: x.arr()? };
+                    let owner = x.tid()?;
+                    let blob = x.bytes()?.to_vec();
+                    s.outbox.insert(k, OutRec { label, server, owner, blob });
+                }
                 b"n" => {
                     s.inbox_only.insert(CommitId(r.arr()?));
                 }
@@ -305,7 +334,19 @@ impl State {
                 self.put(k, Vec::new());
             }
         } else if self.present.remove(&(s, l, b)) {
+            self.deposited.remove(&(s, l, b));
             self.del(k);
+        }
+    }
+
+    /// Marks a present entry deposited at a server, or not (stamped there).
+    pub fn set_deposited(&mut self, s: ServerKey, l: LabelId, b: BlobId, on: bool) {
+        if !self.present.contains(&(s, l, b)) {
+            return;
+        }
+        let changed = if on { self.deposited.insert((s, l, b)) } else { self.deposited.remove(&(s, l, b)) };
+        if changed {
+            self.put(key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
     }
 
@@ -396,6 +437,19 @@ impl State {
     pub fn set_timed(&mut self, s: ServerKey, l: LabelId, b: BlobId) {
         if self.timed.insert((s, l, b)) {
             self.put(key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
+        }
+    }
+
+    pub fn add_out(&mut self, o: OutRec) {
+        let id = osis_label::blob_id(&o.blob);
+        let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(o.owner.as_bytes()).bytes(&o.blob).take();
+        self.put(key(OUTBOX, &[&o.server.key, &id.0]), v);
+        self.outbox.insert((o.server.key, id), o);
+    }
+
+    pub fn remove_out(&mut self, s: &ServerKey, b: &BlobId) {
+        if self.outbox.remove(&(*s, *b)).is_some() {
+            self.del(key(OUTBOX, &[s, &b.0]));
         }
     }
 

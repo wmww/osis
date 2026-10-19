@@ -119,6 +119,15 @@ impl SyncEngine {
     /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
+        self.drop_covered(t, ak, &s)?;
+        Ok(self.handle(super::Event::Local))
+    }
+
+    /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
+    /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
+    /// right holder as it sees the snapshot); `s` carries them.
+    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
+        let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
         let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
@@ -140,7 +149,7 @@ impl SyncEngine {
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
         }
-        Ok(self.handle(super::Event::Local))
+        Ok(())
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
@@ -163,8 +172,10 @@ impl SyncEngine {
             if self.state.certs.contains(&(l, *c)) {
                 continue;
             }
-            let Some(secret) = self.engine.wrap_secret(g, None)? else { continue };
             for b in self.engine.partial_bodies(c, aspects)? {
+                // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
+                // members take it as the body's entry
+                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
                 let s = seal_body(&b, &mut *self.rng)?;
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
@@ -216,9 +227,15 @@ impl SyncEngine {
         let payload = InboxPayload { commit, things };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         for server in inbox.servers {
-            self.outbox.push(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
+            self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
         }
         Ok(self.handle(super::Event::Local))
+    }
+
+    /// Queues an inbox blob, durably until its server answers (a crash or restart re-sends it).
+    pub(crate) fn queue_inbox(&mut self, o: Outgoing) {
+        self.state.add_out(super::state::OutRec { label: o.label, server: o.server.clone(), owner: o.owner, blob: o.blob.clone() });
+        self.outbox.push(o);
     }
 
     /// Deposits waiting inbox blobs on connections to their servers (no open needed).
@@ -234,6 +251,7 @@ impl SyncEngine {
             let seed = self.engine.get_typed(&o.owner, &ct::KEYS)?.and_then(|k| k.deposit_seed);
             let Some(seed) = seed else {
                 self.diag(format!("inbox blob for {}: no deposit seed held for the inbox", o.owner));
+                self.state.remove_out(&o.server.key, &osis_label::blob_id(&o.blob));
                 continue;
             };
             let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &o.label);

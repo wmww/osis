@@ -67,6 +67,7 @@ impl SyncEngine {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
+                        self.state.set_deposited(s, l, blob_id, stamp.is_none());
                     }
                     // a stamp counts only if it verifies under the head's write key (it is relayed)
                     let head = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.clone());
@@ -266,7 +267,7 @@ impl SyncEngine {
     }
 
     /// A new head in a server's log: a child of the current one moves on; anything else reopens.
-    fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
         let cur = lc.head.clone();
         if cur.as_ref().is_some_and(|h| h.id() == step.id()) {
@@ -493,12 +494,14 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.budget = Some(entries_left);
         }
-        if let Some(mut o) = self.inbox_sent.remove(&(server, b))
-            && matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD)
-        {
+        if let Some(mut o) = self.inbox_sent.remove(&(server, b)) {
+            let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD);
             o.tries += 1;
-            if o.tries > super::local::MAX_INBOX_TRIES {
+            if !retry {
+                self.state.remove_out(&server, &b);
+            } else if o.tries > super::local::MAX_INBOX_TRIES {
                 self.diag(format!("inbox blob for {l:?} dropped after {} refusals (code {})", o.tries - 1, code.0));
+                self.state.remove_out(&server, &b);
             } else {
                 // retry_ms, doubling per refusal, at most an hour
                 let back = self.cfg.retry_ms.saturating_mul(1u64 << (o.tries - 1).min(20)).min(3_600_000);

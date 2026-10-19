@@ -238,6 +238,8 @@ pub struct SyncEngine {
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
+    /// Snapshots under a label whose covered bodies this node has dropped (spec/sync.md §7).
+    pub(crate) snapshots_seen: BTreeSet<osis_core::CommitId>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
@@ -260,6 +262,8 @@ impl SyncEngine {
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
         let mut state = State::load(&mut engine)?;
+        // inbox blobs not answered before a restart go again
+        let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), owner: o.owner, after: 0, tries: 0 }).collect();
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
         Ok(SyncEngine {
@@ -278,7 +282,7 @@ impl SyncEngine {
             wake: None,
             signals: Vec::new(),
             diagnostics: Vec::new(),
-            outbox: Vec::new(),
+            outbox,
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
@@ -288,6 +292,7 @@ impl SyncEngine {
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
             served: BTreeMap::new(),
+            snapshots_seen: BTreeSet::new(),
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,

@@ -236,10 +236,6 @@ pub struct NetSim {
     held: BTreeMap<(usize, u64), Vec<u8>>,
 }
 
-/// Waivers: an invariant a known engine bug breaks, named by its issue. A scenario waives it to
-/// keep checking everything else; fixing the issue removes the waiver.
-pub const WAIVE_PROMOTION: &str = "issues/sync-deposit-promotion.md";
-
 /// The proto messages in a run of bytes, shortened (trace only).
 fn frames(b: &[u8]) -> String {
     let mut d = osis_proto::FrameDecoder::default();
@@ -1065,8 +1061,7 @@ impl NetSim {
         }
     }
 
-    /// Cuts every node's connections (they redial and reopen at the servers' current heads):
-    /// works around issues/sync-stale-head.md after setup.
+    /// Cuts every node's connections (they redial and reopen at the servers' current heads).
     pub fn reconnect_all(&mut self) {
         let ids: Vec<u64> = self.links.iter().filter(|(_, l)| matches!(l.dialer, End::Node(..))).map(|(id, _)| *id).collect();
         for id in ids {
