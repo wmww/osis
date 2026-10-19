@@ -24,7 +24,7 @@
 - Reads: `get`, `get_full`, `read_large`, `get_typed`, `aspects`, `groups_of`, `roster`, `role_on`, `resolve`, `state`, `knows`, `all_aspects`.
 - Retention: `snapshot(tid, ak)`, `covered(snapshot, body, tid, ak)`, `drop_body`, `body_keep`, `deaths`, `holds_body`, `deletions(from, limit)`.
 - Undo: `undo(id)`, `undo_stack(actor, scope)`, `changes(scope)`.
-- Membership inputs: `receipt(tid, ak)`, `frontier(scope, as_of)`.
+- Membership inputs: `receipt(tid, ak)`, `frontier(scope, as_of)`, `epochs(actor)`, `register_schema`.
 - Move: `move_thing(t, owner) -> (copy, imports)`; `/moved` is an ordinary write by T's admins; reads resolve tids (except in `/tid`, `/created`, `/was`, `/moved`) through `/was` standing then `/moved`.
 
 ## Store records
@@ -43,6 +43,7 @@ In memory (`Core`, rebuilt by `apply::load` at open and after any failed transac
 - **Rollback**: a failed transaction restores the indexes from a copy taken at the transaction's first change (`Core::touch`) and evicts the states it wrote; no reload from the store (cost: one copy of the indexes per changing transaction).
 - **Snapshots**: frontiers cover node-form counters contiguously applied and valid on the aspect; retention takes the schema's default bounds from a registered schema (`Engine::register_schema`; local typed writes register theirs).
 - **Moves** run in one store transaction (spec/permissions.md §7 edit).
+- **Established epochs** (`apply/keys.rs`, spec/crypto.md §4): an applied valid commit's `/secrets` write calls `SecretsWrite::applied` with its `/keys` write (whole keysets: flows replace the field) and the keysets held before; a removal is a keyless reset, so box keys come from an index of held keyed entries, and a write whose removed keys are unknown waits (persisted under `w/`) until they arrive, so a rotation received before the one it supersedes is not established. A held `/secrets` compaction snapshot calls `snapshot_keyed`; a delta found invalid `unset_applied` + `establish`, valid again re-applies (keysets before taken as the current `/keys`). Epochs persist `established`, `applied`, `snapshot` (`k/`), never re-inferred. `/secrets` compaction is gated on `may_compact_secrets`. `Engine::epochs(actor)` exposes the view.
 - **`/secrets` and `/keys`** deltas need the highest role they rotate or box (at least write): admin for an admin box, history key or keyset.
 - **Edge writes from `/members` deltas**: a keyed entry sets the edge it reads; a reset of a known entry dot removes it (keys learned from held keyed entries; a commit whose removed key is unknown waits in `unresolved` and is re-derived when keys arrive); nested field writes overlay the entry's created value. Flows should write a change as remove + put.
 - **Purge**: judged by perm `may_purge` at the request's point; kept per aspect so deltas arriving later are purged on arrival.

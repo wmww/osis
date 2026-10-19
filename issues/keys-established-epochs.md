@@ -3,7 +3,7 @@
 > Tags: keys, crypto, permissions, sync
 
 ## node-core
-- On applying a valid commit with a `/secrets` write: `SecretsWrite::applied(epochs, (keys_write, keys_before))` (keys_write empty when it writes no `/keys`); on a held `/secrets` compaction snapshot (pages joined): `snapshot_keyed`; on a commit found invalid later: `unset_applied` + `establish`. Persist `established`, `applied`, `snapshot` per epoch (the store's epochs encoding; never re-infer from state on load). A plain thing's view is `derived` from the owner's. Keep headers of applied commits (spec/commits.md §5).
+- Done (notes/node.md, Established epochs): `applied`, `snapshot_keyed`, `unset_applied`, persistence, compaction gate, headers kept.
 - Retention: before dropping a body with live writes (keep-at-most bound, at most 0, timed) a writer writes a covering snapshot when it holds none (spec/commits.md §5); the deletion queue entry for a timed delete carries "snapshot first".
 - Carrier tiebreaks of spec/sync.md §7 (identical body: higher blob ID goes; covered-equal snapshots: higher commit ID goes).
 

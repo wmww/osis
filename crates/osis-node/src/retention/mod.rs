@@ -408,6 +408,9 @@ impl Engine {
             crate::engine::write::check_authority(tx.core, &[], &tid, ak.as_str(), ts)?;
             tx.load(&tid, &ak)?;
             let Some(mut st) = tx.core.states.get(&(tid, ak.clone())).cloned().flatten() else { return Ok(None) };
+            if ak.as_str() == "/secrets" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+                return Err(Error::Misuse("/secrets keys an epoch not established here (spec/crypto.md §4)"));
+            }
             let expiring: Vec<Owned> = tx
                 .core
                 .by_aspect

@@ -124,6 +124,10 @@ pub(crate) struct Core {
     pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: BTreeSet<CommitId>,
+    /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
+    pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
+    pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
     pub rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     /// Schemas of local writes (typed views for undo).
@@ -157,6 +161,8 @@ pub(crate) struct Backup {
     member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     unresolved: BTreeSet<CommitId>,
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }
 
 impl Core {
@@ -183,6 +189,8 @@ impl Core {
             member_keys: self.member_keys.clone(),
             unresolved: self.unresolved.clone(),
             rotation_role: self.rotation_role.clone(),
+            box_keys: self.box_keys.clone(),
+            secrets_unresolved: self.secrets_unresolved.clone(),
         }));
     }
 
@@ -210,6 +218,8 @@ impl Core {
             self.member_keys = b.member_keys;
             self.unresolved = b.unresolved;
             self.rotation_role = b.rotation_role;
+            self.box_keys = b.box_keys;
+            self.secrets_unresolved = b.secrets_unresolved;
             self.timelines.update(&self.held);
         }
     }
@@ -237,6 +247,8 @@ impl Core {
             member_keys: BTreeMap::new(),
             unresolved: BTreeSet::new(),
             rotation_role: BTreeMap::new(),
+            box_keys: BTreeMap::new(),
+            secrets_unresolved: BTreeMap::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),
             backup: None,

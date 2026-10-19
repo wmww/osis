@@ -150,6 +150,12 @@ impl Engine {
         self.run(|tx| Ok(tx.state(&tid, &ak)?.cloned()))
     }
 
+    /// The epochs this node holds for actor `tid` (its own, opened ones with their
+    /// establishment, or derived from the owner's).
+    pub fn epochs(&self, tid: &Tid) -> Option<osis_keys::ActorEpochs> {
+        self.core.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
+    }
+
     /// Whether `/created` of `tid` is held.
     pub fn knows(&self, tid: &Tid) -> bool {
         self.core.created(tid).is_some()

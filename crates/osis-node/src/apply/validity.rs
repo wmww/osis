@@ -312,6 +312,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         tx.core.timelines.update(&tx.core.held);
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
@@ -325,6 +326,9 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                     && let Some(x) = h.aspects.get(ai)
                 {
                     flipped.insert((x.tid, x.ak.clone()));
+                    if x.ak.as_str() == "/secrets" {
+                        secrets_flips.push((id, ai, *b));
+                    }
                 }
             }
             m.valid = now;
@@ -333,6 +337,13 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     if rebuild {
         for (tid, ak) in &flipped {
             super::rebuild(tx, tid, ak)?;
+        }
+    }
+    for (c, ai, now_valid) in secrets_flips {
+        if now_valid {
+            super::keys::revalidated(tx, &c, ai)?;
+        } else {
+            super::keys::invalidated(tx, &c, ai)?;
         }
     }
     Ok(flipped.into_iter().collect())

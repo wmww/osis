@@ -158,8 +158,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             crate::undo::remember(tx, &id, &a.tid, &a.ak)?;
         }
     }
+    let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    for (ai, _, d) in parts {
+    for (ai, _, d) in &parts {
+        let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
         if !valid.get(ai).copied().unwrap_or(false) {
             // others' writes already joined may sit under its creations
@@ -182,6 +184,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
     }
+    super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     if changed.iter().any(|(_, ak)| ak.as_str() == "/group") {
         recompute_groups(tx.core);
     }

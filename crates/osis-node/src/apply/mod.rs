@@ -4,6 +4,7 @@
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 mod atomic;
+pub(crate) mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
 
@@ -503,10 +504,18 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let mut b = blob.clone();
         if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
             validity::note_required(tx.core, &b.header, &id, &parts);
+            for (ai, _, d) in &parts {
+                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d)
+                    && a.ak.as_str() == "/secrets"
+                {
+                    keys::note_box_keys(tx.core, &a.tid, &d.fragment);
+                }
+            }
             validity::add_membership(tx.core, &b.header, &id, &parts);
         }
     }
     tx.core.timelines.update(&tx.core.held);
+    keys::load_unresolved(tx)?;
     let mut pend = Vec::new();
     let mut after: Option<CommitId> = None;
     loop {
