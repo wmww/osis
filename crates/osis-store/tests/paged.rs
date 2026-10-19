@@ -31,7 +31,7 @@ fn fill(s: &mut Store, rng: &mut SeededRng, n: u32, batch: u32) {
     }
 }
 
-// spec/requirements.md, Scale: one edit of a large paged state rewrites one page per table plus
+// spec/crdt.md §8: large states page; spec/requirements.md, Scale: one edit of a large paged state rewrites one page per table plus
 // the index path, not the state.
 #[test]
 fn edit_is_o_change() {
@@ -53,7 +53,7 @@ fn edit_is_o_change() {
     assert!(changed <= 8, "{changed} unit rows rewritten");
 }
 
-// spec/requirements.md, Scale: large values stream; no API materializes a whole state.
+// spec/crdt.md §8: large states page; spec/requirements.md, Scale: large values stream; no API materializes a whole state.
 #[test]
 fn stream_and_positions() {
     let dev = MemDevice::new();
@@ -90,7 +90,7 @@ fn stream_and_positions() {
     assert!(units <= 3, "{units} unit rows left (catalog)");
 }
 
-// spec/requirements.md, Scale: maps with millions of keys; a million small units; one edit
+// spec/crdt.md §8: large states page; spec/requirements.md, Scale: maps with millions of keys; a million small units; one edit
 // touches O(1) pages.
 #[test]
 #[ignore]

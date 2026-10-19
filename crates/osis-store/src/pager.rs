@@ -778,7 +778,7 @@ mod tests {
         b.dump().iter().filter(|(k, _)| k.first() == Some(&prefix)).count()
     }
 
-    // notes/local-store.md, Key tree: units round-trip and survive reopen; rows hold ciphertext.
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: units round-trip and survive reopen; rows hold ciphertext.
     #[test]
     fn units_roundtrip_and_reopen() {
         let (mut p, b, r, mut rng) = fresh(small());
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(p.read(99).unwrap(), None);
     }
 
-    // notes/local-store.md, Key tree: a shredded rewrite or delete rotates the path and the root
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: a shredded rewrite or delete rotates the path and the root
     // (one root write per transaction); others keep the root; old rows are deleted.
     #[test]
     fn rotation() {
@@ -833,7 +833,7 @@ mod tests {
         assert_eq!(p.read(10).unwrap(), Some(vec![10; 10]));
     }
 
-    // notes/local-store.md, Key tree: capacity is arity^depth; slots are never reused; empty
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: capacity is arity^depth; slots are never reused; empty
     // nodes disappear.
     #[test]
     fn full_tree() {
@@ -857,7 +857,7 @@ mod tests {
         assert_eq!(rows(&b, b'u'), 0);
     }
 
-    // notes/local-store.md, Key tree: spilled rows are invisible until commit, readable inside
+    // spec/commits.md §4: one storage transaction per atomic apply; spilled rows are invisible until commit, readable inside
     // the transaction, and gone after abort and reopen.
     #[test]
     fn spill() {
@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(p.read(2).unwrap(), Some(vec![2; 40]));
     }
 
-    // notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
+    // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
     // a rotation rewrites exactly one node per level, whatever the store size.
     #[test]
     #[ignore]

@@ -108,7 +108,7 @@ fn pending_commits() {
     assert_eq!(t.pending(None, 100).unwrap().len(), 9);
 }
 
-// notes/local-store.md, Units: wraps live in label pages; dropping one shreds its page.
+// spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Units: wraps live in label pages; dropping one shreds its page.
 #[test]
 fn wraps_and_secrets() {
     let dev = MemDevice::new();
@@ -136,7 +136,7 @@ fn wraps_and_secrets() {
     assert_eq!(t.get_secrets(&tid(7)).unwrap(), None);
 }
 
-// notes/local-store.md, Units: cursor logs and the IDs-gained list.
+// spec: none (node-local bookkeeping); notes/local-store.md, Units: cursor logs and the IDs-gained list.
 #[test]
 fn cursors_logs_local() {
     let dev = MemDevice::new();
@@ -163,7 +163,7 @@ fn cursors_logs_local() {
     assert!(t.remove_local(b"zzz", Shred::No).unwrap());
 }
 
-// notes/local-store.md, Units: blob ciphertexts sit beside the units, inside transactions.
+// spec/commits.md §4: one storage transaction per atomic apply; notes/local-store.md, Units: blob ciphertexts sit beside the units, inside transactions.
 #[test]
 fn blobs() {
     for dev in devices("blobs") {

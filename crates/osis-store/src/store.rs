@@ -8,7 +8,7 @@ use crate::btree::{self, Units};
 use crate::codec::{R, W};
 use crate::pager::{Dirty, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
-use crate::Error;
+use crate::{Error, KeyValue};
 use osis_core::{Ak, BlobId, CommitId, LabelId, Tid, Ts};
 use osis_crypto::CryptoRngCore;
 
@@ -194,14 +194,14 @@ impl Transaction<'_> {
         btree::remove(self, c, key, shred.on())
     }
     /// Catalog entries under `prefix`, from `prefix || from` on.
-    fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    fn cat_scan(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         let c = self.catalog();
         let start = [prefix, from].concat();
         let end = crate::backend::prefix_end(prefix);
         btree::range(self, c, &start, end.as_deref(), limit)
     }
     /// Removes every catalog entry under `prefix`, a page at a time.
-    fn cat_remove_prefix(&mut self, prefix: &[u8], shred: Shred) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    fn cat_remove_prefix(&mut self, prefix: &[u8], shred: Shred) -> Result<Vec<KeyValue>, Error> {
         let mut removed = Vec::new();
         loop {
             let page = self.cat_scan(prefix, b"", 256)?;
@@ -320,7 +320,7 @@ impl Transaction<'_> {
     }
     /// Up to `limit` entries with `start <= key < end` in key order: a page of a stream (continue
     /// from the last key with a 0 byte appended).
-    pub fn table_range(&mut self, t: Table, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    pub fn table_range(&mut self, t: Table, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
         btree::range(self, t.0, start, end, limit)
     }
     pub fn table_len(&mut self, t: Table) -> Result<u64, Error> {
@@ -331,7 +331,7 @@ impl Transaction<'_> {
         btree::rank(self, t.0, key)
     }
     /// The entry at position `i`.
-    pub fn table_nth(&mut self, t: Table, i: u64) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+    pub fn table_nth(&mut self, t: Table, i: u64) -> Result<Option<KeyValue>, Error> {
         btree::nth(self, t.0, i)
     }
 
@@ -494,7 +494,7 @@ impl Transaction<'_> {
         self.cat_remove(&[&[kind::LOCAL], key].concat(), shred)
     }
     /// Local records with keys starting with `prefix`, from `prefix || from` on.
-    pub fn scan_local(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+    pub fn scan_local(&mut self, prefix: &[u8], from: &[u8], limit: usize) -> Result<Vec<KeyValue>, Error> {
         let p = [&[kind::LOCAL], prefix].concat();
         Ok(self.cat_scan(&p, from, limit)?.into_iter().map(|(k, v)| (k.get(1..).unwrap_or_default().to_vec(), v)).collect())
     }

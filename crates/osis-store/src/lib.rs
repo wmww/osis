@@ -14,7 +14,7 @@ mod pager;
 mod root;
 mod store;
 
-pub use backend::{Backend, BackendError, Op, WriteBatch, prefix_end};
+pub use backend::{Backend, BackendError, KeyValue, Op, WriteBatch, prefix_end};
 #[cfg(feature = "file-backend")]
 pub use file::RedbBackend;
 pub use error::Error;

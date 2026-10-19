@@ -26,6 +26,9 @@ impl Classified for BackendError {
     }
 }
 
+/// A key and its value.
+pub type KeyValue = (Vec<u8>, Vec<u8>);
+
 /// One write of a batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
@@ -79,7 +82,7 @@ impl WriteBatch {
 pub trait Backend: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
     /// Up to `limit` pairs with `start <= key < end` (`None`: unbounded), ascending.
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError>;
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError>;
     /// Applies `batch` atomically; durable when it returns `Ok`.
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError>;
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError>;
@@ -88,7 +91,7 @@ pub trait Backend: Send {
     fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError>;
 
     /// Up to `limit` pairs whose key starts with `prefix`.
-    fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+    fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         let end = prefix_end(prefix);
         self.scan(prefix, end.as_deref(), limit)
     }

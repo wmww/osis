@@ -156,10 +156,8 @@ mod file {
             let bytes = osis_crypto::Zeroizing::new(Self::encode(seq, record));
             Self::write_slot(&mut f, first, &bytes)?;
             Self::write_slot(&mut f, 1 - first, &bytes)?;
-            if created {
-                if let Some(dir) = self.path.parent() {
-                    File::open(dir).and_then(|d| d.sync_all()).map_err(io)?;
-                }
+            if created && let Some(dir) = self.path.parent() {
+                File::open(dir).and_then(|d| d.sync_all()).map_err(io)?;
             }
             Ok(())
         }

@@ -1,6 +1,6 @@
 //! `MemoryBackend` (tests, simulator) and the shared fault plan that also drives `MemoryRoot`.
 
-use crate::backend::{Backend, BackendError, Op, WriteBatch, blob_slice};
+use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
 use osis_core::BlobId;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Bound;
@@ -77,7 +77,7 @@ struct Data {
     kv: BTreeMap<Vec<u8>, Vec<u8>>,
     blobs: HashMap<BlobId, Vec<u8>>,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
-    history: Option<Vec<(Vec<u8>, Vec<u8>)>>,
+    history: Option<Vec<KeyValue>>,
 }
 
 /// In-memory backend. Clones share the data, so a test keeps a handle, "crashes" the store and
@@ -103,11 +103,11 @@ impl MemoryBackend {
         }
     }
     /// Every (key, value) ever put while recording, overwritten and deleted ones included.
-    pub fn history(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub fn history(&self) -> Vec<KeyValue> {
         self.lock().history.clone().unwrap_or_default()
     }
     /// The live key-value pairs.
-    pub fn dump(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+    pub fn dump(&self) -> Vec<KeyValue> {
         self.lock().kv.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
     pub fn faults(&self) -> &Faults {
@@ -123,7 +123,7 @@ impl Backend for MemoryBackend {
         Ok(self.lock().kv.get(key).cloned())
     }
 
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         let d = self.lock();
         let hi = match end {
             Some(e) => Bound::Excluded(e),
@@ -193,7 +193,7 @@ impl<B: Backend> Backend for FaultyBackend<B> {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.get(key)
     }
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         self.inner.scan(start, end, limit)
     }
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {

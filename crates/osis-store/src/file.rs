@@ -1,6 +1,6 @@
 //! File backend over redb (feature `file-backend`; choice recorded in notes/local-store.md).
 
-use crate::backend::{Backend, BackendError, Op, WriteBatch, blob_slice};
+use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
 use osis_core::BlobId;
 use redb::{Database, TableDefinition};
 use std::path::Path;
@@ -40,7 +40,7 @@ impl Backend for RedbBackend {
         self.read(KV, |t| Ok(t.get(key)?.map(|v| v.value().to_vec())))
     }
 
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         if end.is_some_and(|e| e <= start) {
             return Ok(Vec::new());
         }

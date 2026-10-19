@@ -7,7 +7,7 @@
 //! bytes, and every copy of a removed key in the interior path, become unrecoverable at commit.
 
 use crate::codec::{R, W};
-use crate::Error;
+use crate::{Error, KeyValue};
 
 pub(crate) trait Units {
     fn read(&mut self, slot: u64) -> Result<Option<Vec<u8>>, Error>;
@@ -371,13 +371,13 @@ fn rebalance(u: &mut dyn Units, es: &mut Vec<InnerE>, l: usize, r: usize, shred:
 }
 
 /// Up to `limit` entries with `start <= key` and `key < end` (`None`: unbounded), ascending.
-pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+pub(crate) fn range(u: &mut dyn Units, root: u64, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, Error> {
     let mut out = Vec::new();
     collect(u, root, start, end, limit, &mut out)?;
     Ok(out)
 }
 
-fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Result<(), Error> {
+fn collect(u: &mut dyn Units, slot: u64, start: &[u8], end: Option<&[u8]>, limit: usize, out: &mut Vec<KeyValue>) -> Result<(), Error> {
     match load(u, slot)? {
         Page::Leaf(es) => {
             for e in es.iter().skip(es.partition_point(|e| e.key.as_slice() < start)) {
@@ -421,7 +421,7 @@ pub(crate) fn rank(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<u64, Erro
 }
 
 /// The entry at position `i` (0-based) in key order.
-pub(crate) fn nth(u: &mut dyn Units, root: u64, mut i: u64) -> Result<Option<(Vec<u8>, Vec<u8>)>, Error> {
+pub(crate) fn nth(u: &mut dyn Units, root: u64, mut i: u64) -> Result<Option<KeyValue>, Error> {
     let mut slot = root;
     loop {
         match load(u, slot)? {
@@ -526,8 +526,9 @@ mod tests {
         assert_eq!(reachable, u.units.len(), "orphan units");
     }
 
-    // notes/local-store.md, Units: a large state is pages plus an index; ops match a map model.
     proptest! {
+        // spec/crdt.md §8: large states page; notes/local-store.md, Units: pages plus an index
+        // match a map model.
         #[test]
         fn matches_model(ops in proptest::collection::vec((any::<bool>(), 0u16..300, 0usize..80), 1..400)) {
             let mut u = Mem { max: 256, ..Mem::default() };
@@ -557,7 +558,7 @@ mod tests {
         }
     }
 
-    // notes/local-store.md, Units: a million-key map write rewrites one page plus its index path.
+    // spec/crdt.md §8: large states page; notes/local-store.md, Units: a million-key map write rewrites one page plus its index path.
     #[test]
     fn edit_touches_path_only() {
         let mut u = Mem { max: 1024, ..Mem::default() };
@@ -596,7 +597,7 @@ mod tests {
         }
     }
 
-    // notes/local-store.md, Units: a table emptied and refilled stays consistent.
+    // spec/crdt.md §8: large states page; notes/local-store.md, Units: a table emptied and refilled stays consistent.
     #[test]
     fn empty_and_refill() {
         let mut u = Mem { max: 256, ..Mem::default() };
@@ -615,7 +616,7 @@ mod tests {
         }
     }
 
-    // notes/local-store.md, Units: values above a quarter page live in their own unit.
+    // spec/crdt.md §8: large states page; notes/local-store.md, Units: values above a quarter page live in their own unit.
     #[test]
     fn overflow_values() {
         let mut u = Mem { max: 256, ..Mem::default() };
