@@ -1,7 +1,7 @@
 //! Departures and the covers rule (spec/crypto.md §4), re-seal triggers (spec/permissions.md §3).
 
 use crate::aspects::{box_key, from_schema};
-use crate::epoch::{ActorEpochs, ROLES};
+use crate::epoch::{ActorEpochs, Provenance, ROLES};
 use osis_core::format::MAX_DRIFT_MS;
 use osis_core::{Role, Tid, WallMs};
 use osis_crypto::Epoch;
@@ -132,8 +132,9 @@ pub fn uncovered<'a>(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch
     departures.iter().filter(|d| !covers(secrets, epochs, r, e, d, held)).collect()
 }
 
-/// Whether a node that may rotate `r` may encrypt under `e`: current and usable (an epoch whose
-/// rotation commit is pending or invalid never is), and covering every known departure.
+/// Whether a node that may rotate `r` may encrypt under `e`: established and current (an epoch
+/// whose rotation commit is not applied, pending or invalid never is), and covering every known
+/// departure. Opening a label and reading are not encrypting under (any held secret).
 pub fn may_encrypt_under(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &[Departure], held: &dyn HeldActors) -> bool {
     epochs.role(r).is_current(e) && uncovered(secrets, epochs, r, e, departures, held).is_empty()
 }
@@ -168,7 +169,8 @@ pub struct Member {
 }
 
 /// Re-seal trigger (spec/permissions.md §3): members lacking a box at a current epoch of a role
-/// they hold, with the roles to re-seal. Never a member whose `until` is within `MAX_DRIFT`.
+/// they hold, established through its rotation commit (`Chain`, `Own`; not a snapshot alone, see
+/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_member`). Never a member whose `until` is within `MAX_DRIFT`.
 /// `carries(key, r, e)`: whether the commit that wrote a key actor's box keyed at a higher role
 /// knew epoch e of r (its `/secrets` write names e, or it is ordered after e's rotation); only
 /// then does that box count for (r, e). The caller decides after a sync pass of the actor's
@@ -188,7 +190,13 @@ pub fn reseal_needed(
         let roles: BTreeSet<Role> = ROLES
             .into_iter()
             .filter(|r| *r <= m.role)
-            .filter(|r| epochs.role(*r).current().iter().any(|e| !boxes_for(secrets, epochs, &m.member, *r, e, Some(carries))))
+            .filter(|r| {
+                let re = epochs.role(*r);
+                re.current()
+                    .iter()
+                    .filter(|e| re.provenance(e).is_some_and(Provenance::reseals))
+                    .any(|e| !boxes_for(secrets, epochs, &m.member, *r, e, Some(carries)))
+            })
             .collect();
         if !roles.is_empty() {
             out.push((m.member, roles));

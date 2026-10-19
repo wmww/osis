@@ -76,6 +76,8 @@ fn grant_to_key_actor() {
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
+    // Establishment from the state as a snapshot (the grantee's commits elided).
+    osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
     assert_eq!(kv.read.newest_held().map(|x| x.0), f.view.read.newest());
     assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
     // Its seed holder writes symmetric boxes instead, one per (role, epoch).
@@ -98,7 +100,7 @@ fn reseal_to_newest_keyset() {
     let mut me = person(0x30);
     for (i, r) in ROLES.into_iter().enumerate() {
         me.role_mut(r).rotation(ep(2, 0x31), [ep(1, 0x30)]);
-        me.role_mut(r).set_usable(ep(2, 0x31), true);
+        me.role_mut(r).set_established(ep(2, 0x31), osis_keys::Provenance::Own);
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();

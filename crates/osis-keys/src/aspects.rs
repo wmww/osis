@@ -98,8 +98,7 @@ impl SecretsWrite {
     }
 
     /// Records the write's epochs and rotations in `epochs` (a received commit's delta; `keys` as
-    /// for `rotations`). Epochs it introduces stay unusable until the caller marks the commit
-    /// applied and valid (`RoleEpochs::set_usable`).
+    /// for `rotations`). Establishes nothing: see `applied`.
     pub fn observe(&self, epochs: &mut ActorEpochs, keys: Option<(&KeysWrite, &Keys)>) -> Result<(), Error> {
         for (r, e, sup) in self.rotations(keys)? {
             epochs.role_mut(r).rotation(e, sup);
@@ -109,24 +108,62 @@ impl SecretsWrite {
         }
         Ok(())
     }
+
+    /// The rotations this write makes as part of a rotation commit: its history boxes at the
+    /// epochs whose keyset the commit's `/keys` write sets (`keys`: that write and the keysets
+    /// held before it). A grant or re-seal re-writes history boxes but writes no keyset, so it
+    /// makes none (spec/crypto.md §4).
+    pub fn rotation_commit(&self, keys: (&KeysWrite, &Keys)) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
+        let w = keys.0;
+        Ok(self.rotations(Some(keys))?.into_iter().filter(|(r, e, _)| w.keysets.get(r).is_some_and(|ks| ks.epoch == to_schema(e))).collect())
+    }
+
+    /// The commit carrying this write (and `keys`) is applied and valid: records its epochs, marks
+    /// its rotations applied and recomputes establishment (spec/crypto.md §4). Returns whether
+    /// establishment changed (persist then).
+    pub fn applied(&self, epochs: &mut ActorEpochs, keys: (&KeysWrite, &Keys)) -> Result<bool, Error> {
+        self.observe(epochs, Some(keys))?;
+        for (r, e, sup) in self.rotation_commit(keys)? {
+            epochs.role_mut(r).set_applied(e, sup);
+        }
+        Ok(epochs.establish())
+    }
 }
 
-/// Records every epoch the applied `/secrets` state names (box and history keys) as usable:
-/// the state holds only applied, valid deltas.
+/// Every (role, epoch) the `/secrets` state keys (box and history keys).
+fn keyed(s: &Secrets) -> Result<Vec<(Role, Epoch)>, Error> {
+    s.boxes.keys().map(|k| (k.role, &k.epoch)).chain(s.history.keys().map(|k| (k.role, &k.epoch))).map(|(r, e)| Ok((r, from_schema(e)?))).collect()
+}
+
+/// Records every epoch the applied `/secrets` state names (box and history keys). Establishes
+/// nothing (spec/crypto.md §4: a box or history box names an epoch without establishing it).
 pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Error> {
-    for (r, e) in s.boxes.keys().map(|k| (k.role, &k.epoch)).chain(s.history.keys().map(|k| (k.role, &k.epoch))) {
-        epochs.role_mut(r).set_usable(from_schema(e)?, true);
+    for (r, e) in keyed(s)? {
+        epochs.role_mut(r).observe(e);
     }
     Ok(())
 }
 
-/// Records the suite each keyset of `/keys` names for its epoch.
+/// A held compaction snapshot of `/secrets` (`s`, its pages joined) keys these epochs: they are
+/// established (`Snapshot`, spec/crypto.md §4). Returns whether establishment changed.
+pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Error> {
+    for (r, e) in keyed(s)? {
+        epochs.role_mut(r).set_snapshot(e);
+    }
+    Ok(epochs.establish())
+}
+
+/// The `/secrets` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
+/// established, so the snapshot vouches for nothing this node did not verify.
+pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Error> {
+    Ok(keyed(s)?.iter().all(|(r, e)| epochs.role(*r).is_established(e)))
+}
+
+/// Records the suite each keyset of `/keys` names for its epoch. Establishes nothing.
 pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
     for (r, ks) in [(Role::Read, &k.read), (Role::Write, &k.write), (Role::Admin, &k.admin)] {
         if let Some(ks) = ks {
-            let e = from_schema(&ks.epoch)?;
-            epochs.role_mut(r).set_suite(e, ks.suite);
-            epochs.role_mut(r).set_usable(e, true);
+            epochs.role_mut(r).set_suite(from_schema(&ks.epoch)?, ks.suite);
         }
     }
     Ok(())
