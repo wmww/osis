@@ -418,6 +418,45 @@ fn budget_big_text_spec_6() {
     let _ = v;
 }
 
+/// notes/api.md `edit`: a base element changed concurrently (and a remote insert beside it) is
+/// never deleted or edited through a guessed pairing.
+#[test]
+fn list_edit_never_deletes_through_a_pair_spec_9() {
+    let view = TyView(list_ty());
+    let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+    let base = Value::List(vec![item(1, 1)]);
+    for new in [Value::List(vec![]), Value::List(vec![item(2, 1)])] {
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(base.clone()))], &view);
+        let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+        let (z, _, _) = b.commit(2, &[op(Op::Insert { at: 0, items: vec![item(7, 7)] })], &view).unwrap();
+        let (ch, _, _) = b.commit(3, &[PathOp { path: vec![PathSeg::Index(1), PathSeg::Field(2)], op: Op::Set(Value::Int(5)) }], &view).unwrap();
+        a.state.join(z);
+        a.state.join(ch);
+        let ops = diff_values(Some(&base), &new, &view).unwrap();
+        a.commit(4, &ops, &view);
+        assert_eq!(a.state.read(), Some(Value::List(vec![item(7, 7), item(1, 5)])), "edit to {new:?}");
+    }
+}
+
+/// §5.7 paste: the clipboard no longer matches when visible text lies inside its range.
+#[test]
+fn paste_refuses_a_range_with_visible_text_spec_5_7() {
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("abcdef")))], &text_view());
+    let dots = crate::cut_dots(&a.state, 1, 3).unwrap(); // "bcd"
+    a.commit(2, &[op(Op::Delete { at: 1, len: 3 })], &text_view());
+    // someone types inside the cut range (anchored at the hidden "c")
+    let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    let mut d = crate::seq::Seq::empty(true);
+    let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
+    d.elems.insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None });
+    b.state.join(Fragment::Seq(d));
+    assert_eq!(read_str(&b.state), "aXef");
+    let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
+    assert!(bt.apply(&op(Op::Paste { dots, at: 3 }), &text_view()).is_err());
+}
+
 /// §9 identity rule: a list diff keeps the dot of an element it edits (paired in order), so a
 /// concurrent nested write into that element survives.
 #[test]

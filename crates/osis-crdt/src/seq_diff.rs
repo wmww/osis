@@ -258,8 +258,10 @@ pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &
 }
 
 /// `edit(base, new)` against current state `s`: the script `base → new`, rebased onto the
-/// current read by matching `base` to it (LCS). A deleted or changed base element that is no
-/// longer current is left alone; an insert lands after the nearest matched base predecessor.
+/// current read by matching `base` to it exactly (LCS). Deletes and insert anchors use exact
+/// matches only, so a base element changed or removed concurrently is never deleted and anchors
+/// nothing; a list element changed on both sides is edited in place when it is the one unmatched
+/// element of its gap on each side.
 pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
     let mut out = Seq { text: s.text, meta: Meta::default(), elems: BTreeMap::new() };
     if s.text {
@@ -281,20 +283,25 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;
         let (b, n) = (items(base)?, items(new)?);
         let cur = list_view(s, &ev);
-        // base elements changed concurrently pair with current ones in order, like the diff
+        // base to current by exact match; a base element changed concurrently is paired, for
+        // nested edits only, when it is the one unmatched element of its gap on both sides
         let keep = lcs(b, &cur, |x, y| y.2.as_ref() == Some(x));
-        let to_cur: HashMap<usize, usize> = script(b.len(), cur.len(), &keep, true)
-            .into_iter()
-            .filter_map(|s| match s {
-                Step::Keep(i, c) | Step::Pair(i, c) => Some((i, c)),
-                _ => None,
-            })
-            .collect();
+        let to_cur: HashMap<usize, usize> = keep.iter().copied().collect();
+        let mut changed: HashMap<usize, usize> = HashMap::new();
+        let mut prev: Option<(usize, usize)> = None;
+        for &(ki, kc) in keep.iter().chain(std::iter::once(&(b.len(), cur.len()))) {
+            let (i0, c0) = prev.map_or((0, 0), |(i, c)| (i + 1, c + 1));
+            if ki == i0 + 1 && kc == c0 + 1 {
+                changed.insert(i0, c0);
+            }
+            prev = Some((ki, kc));
+        }
         let steps = script(b.len(), n.len(), &lcs(b, n, |x, y| x == y), true);
         for st in &steps {
             match st {
                 Step::Pair(i, j) => {
-                    let (Some((d, f, _)), Some(bv), Some(nv)) = (to_cur.get(i).and_then(|c| cur.get(*c)), b.get(*i), n.get(*j)) else { continue };
+                    let at = to_cur.get(i).or_else(|| changed.get(i));
+                    let (Some((d, f, _)), Some(bv), Some(nv)) = (at.and_then(|c| cur.get(*c)), b.get(*i), n.get(*j)) else { continue };
                     if let Some(c) = nested_edit(w, f.as_ref(), &ev, bv, nv)? {
                         out.elems.insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
                     }

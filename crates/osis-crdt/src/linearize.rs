@@ -130,84 +130,64 @@ pub(crate) fn place(elems: &BTreeMap<Dot, SeqElem>) -> Placement {
     }
 }
 
-/// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint; after the
-/// first whole scan only a demoted element's new edge can close a cycle, so later rounds walk from
-/// the victims only.
+/// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each
+/// demotion is forced, so any walk may demote the cycle it finds. A node whose parent path ends at
+/// HEAD, END or a hidden anchor is on no cycle and only cycle members change edges, so that mark
+/// persists; within a round every node is walked once. Later rounds start from the victims, the
+/// only nodes whose new edge can close a cycle.
 fn break_cycles(g: &mut Graph) {
     let n = g.dots.len();
-    // whole scan: colour 0 unvisited, 1 on the current walk, 2 done
-    let mut colour = vec![0u8; n];
+    let mut term = vec![false; n];
+    let mut mark = vec![0usize; n];
     let mut at = vec![0usize; n];
-    let mut victims = Vec::new();
-    let mut path = Vec::new();
-    for start in 0..n {
-        if colour.get(start) != Some(&0) {
-            continue;
-        }
-        path.clear();
-        let mut cur = start;
-        loop {
-            match colour.get(cur) {
-                Some(1) => {
-                    let from = at.get(cur).copied().unwrap_or(0);
-                    let cyc: Vec<usize> = path.get(from..).map(<[usize]>::to_vec).unwrap_or_default();
-                    if let Some(v) = g.demote(&cyc) {
-                        victims.push(v);
-                    }
-                    break;
-                }
-                Some(0) => {}
-                _ => break,
-            }
-            if let Some(c) = colour.get_mut(cur) {
-                *c = 1;
-            }
-            if let Some(a) = at.get_mut(cur) {
-                *a = path.len();
-            }
-            path.push(cur);
-            match g.parent(cur) {
-                Some(p) => cur = p,
-                None => break,
-            }
-        }
-        for i in &path {
-            if let Some(c) = colour.get_mut(*i) {
-                *c = 2;
-            }
-        }
-    }
-    // later rounds: a new cycle passes through a victim of the previous round
-    let mut seen = vec![0usize; n];
-    let mut walk = 0usize;
-    while !victims.is_empty() {
-        let mut next = Vec::new();
-        for v in std::mem::take(&mut victims) {
-            walk += 1;
+    let mut path: Vec<usize> = Vec::new();
+    let mut starts: Vec<usize> = (0..n).collect();
+    let mut round = 0usize;
+    while !starts.is_empty() {
+        round += 1;
+        let mut victims = Vec::new();
+        for s in std::mem::take(&mut starts) {
             path.clear();
-            let mut cur = v;
-            loop {
-                if seen.get(cur) == Some(&walk) {
-                    if cur == v
-                        && let Some(x) = g.demote(&path)
-                    {
-                        next.push(x);
-                    }
-                    break;
+            let mut cur = s;
+            let reached = loop {
+                if term.get(cur) != Some(&false) {
+                    break true;
                 }
-                if let Some(s) = seen.get_mut(cur) {
-                    *s = walk;
+                if mark.get(cur) == Some(&round) {
+                    // seen this round: on this walk it closes a cycle, else an earlier walk settled it
+                    let k = at.get(cur).copied().unwrap_or(usize::MAX);
+                    if path.get(k) == Some(&cur) {
+                        let cyc: Vec<usize> = path.get(k..).map(<[usize]>::to_vec).unwrap_or_default();
+                        if let Some(v) = g.demote(&cyc) {
+                            victims.push(v);
+                        }
+                    }
+                    break false;
+                }
+                if let Some(m) = mark.get_mut(cur) {
+                    *m = round;
+                }
+                if let Some(a) = at.get_mut(cur) {
+                    *a = path.len();
                 }
                 path.push(cur);
                 match g.parent(cur) {
                     Some(p) => cur = p,
-                    None => break,
+                    None => break true,
+                }
+            };
+            if reached {
+                for i in &path {
+                    if let Some(t) = term.get_mut(*i) {
+                        *t = true;
+                    }
                 }
             }
         }
-        victims = next;
+        starts = victims;
     }
 }
+
 
 /// Depth-first from HEAD (children greatest stamp first), then the `END` elements by dot with
 /// their subtrees (§6.1, §6.2 step 3). Returns the placed real nodes and every node's parent.

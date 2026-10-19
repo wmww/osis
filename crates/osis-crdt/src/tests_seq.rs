@@ -142,6 +142,40 @@ proptest! {
     }
 }
 
+/// §6.2: cycle breaking is linear. Adversarial graph: a chain of 20,000 plus 20,000 mutual-`cur`
+/// pairs whose `prev` is the chain's tail (each victim's new edge walks into the chain).
+#[test]
+fn cycle_breaking_is_linear_spec_6_2() {
+    use crate::seq::{Anchor, SeqElem};
+    use crate::stamp::{Dot, Source, Stamp};
+    let (len, k) = (20_000u64, 20_000u64);
+    let a = Source::node(osis_core::Tid::from_bytes([1; 15]));
+    let st = |t: u64, c: u64| Stamp::new(ts(t << 16), a.clone(), c);
+    let mut elems = std::collections::BTreeMap::new();
+    let mut prev = Anchor::Head;
+    for c in 1..=len {
+        let s = st(1, c);
+        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone())], deleted: None });
+        prev = Anchor::Dot(Dot::new(a.clone(), c));
+    }
+    let tail = prev;
+    let (mut c, mut m) = (len + 1, 10_000_000u64);
+    for _ in 0..k {
+        let (x, y) = (Dot::new(a.clone(), c), Dot::new(a.clone(), c + 1));
+        let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
+        c += 2;
+        m += 2;
+        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone())), (cx, tail.clone())], deleted: None });
+        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone())), (cy, tail.clone())], deleted: None });
+    }
+    let t = std::time::Instant::now();
+    let p = crate::linearize::place_idx(&elems);
+    let took = t.elapsed();
+    assert_eq!(p.order.len(), (len + 2 * k) as usize);
+    // linear: well under a second in release; a generous bound for a loaded debug build
+    assert!(took.as_secs() < 10, "cycle breaking took {took:?}");
+}
+
 /// Tier 2: the differential suite at size (more writers, rounds and seeds).
 #[test]
 #[ignore]
@@ -277,6 +311,38 @@ fn rejects_bad_runs_spec_3_3() {
     // content for a deleted element, an empty list element fragment
     bad(text_with(vec![run(i(1), 1, l(vec![]), s("a"), vec![], vec![l(vec![i(0), i(0), i(0), Value::Bool(true)])])]));
     bad(list_with(vec![run(i(3), 1, created(1), l(vec![l(vec![i(0), l(vec![])])]), vec![], vec![])]));
+}
+
+/// §3.3 rule 7: bare-anchor runs only in snapshots; at most `MAX_DELTA_BARE` content-less
+/// elements per writer or import delta; a writer's flag writes carry the delta stamp.
+#[test]
+fn rejects_bare_and_oversized_runs_spec_3_3() {
+    let other = osis_core::Tid::from_bytes([9; 15]);
+    let srcs = || vec![Value::Bytes(other.as_bytes().to_vec())];
+    let flag = || vec![l(vec![i(0), i(65535), i(0), Value::Bool(true)])];
+    let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * 65536)]), 65536, l(vec![]), l(vec![]), vec![], f())).collect());
+    let import = DeltaCtx { kind: DeltaKind::Import, ..wcx() };
+    // bare anchors: rejected in writer and import deltas
+    rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &import, ErrorClass::BadInput);
+    // 4 · 2^16 = MAX_DELTA_BARE flagged elements pass, 5 · 2^16 do not
+    decode_delta(&delta(srcs(), vec![], runs(4, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
+    rejects(&delta(srcs(), vec![], runs(5, &flag)), &wcx(), ErrorClass::BadInput);
+    // a flag write off the delta stamp
+    let off = text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), l(vec![i(0), i(4)]), Value::Bool(true)])])]);
+    rejects(&delta(vec![], vec![], off), &wcx(), ErrorClass::BadInput);
+}
+
+/// §3.3 rule 7, §8: a snapshot carries bare anchors (a reset text).
+#[test]
+fn snapshot_carries_bare_anchors_spec_3_3() {
+    let (m, base) = typed("abc");
+    let rm = mops::remove(&mut mw(1, 5), 9);
+    let st = joined(&base, &[&rm]);
+    let s = Snapshot { nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+    assert_eq!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment, st);
+    let _ = m;
 }
 
 /// §3.3 rule 7: a segment's commit has the run's source.

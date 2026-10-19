@@ -160,7 +160,12 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             let vis = visible(s);
             let p = place(&s.elems);
             let d = w.delta_stamp();
-            for dot in range_of(&p, &vis, *at, *len)? {
+            let range = range_of(&p, &vis, *at, *len)?;
+            if range.len() as u64 > osis_core::format::MAX_DELTA_BARE {
+                // §3.3 rule 7: the caller splits a delete this long across commits
+                return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
+            }
+            for dot in range {
                 out.elems.insert(dot, SeqElem { deleted: Some((d.clone(), true)), ..SeqElem::bare() });
             }
         }
@@ -193,6 +198,11 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
             let range: Vec<Dot> = p.order.get(*i0..=*i1).map(<[Dot]>::to_vec).unwrap_or_default();
+            // visible text inside the remembered range: the clipboard no longer matches
+            let clip: HashSet<&Dot> = dots.iter().collect();
+            if range.iter().any(|d| !clip.contains(d) && s.elems.get(d).is_some_and(|e| is_visible(e, text))) {
+                return Err(Error::Mismatch("the clipboard no longer matches"));
+            }
             let inr: HashSet<&Dot> = range.iter().collect();
             let rest: Vec<Dot> = visible(s).into_iter().filter(|d| !inr.contains(d)).collect();
             let dest = anchor_after(&rest, *at)?;

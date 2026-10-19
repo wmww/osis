@@ -5,6 +5,7 @@ use crate::seq::{Anchor, Seq, SeqContent, SeqElem, top2};
 use crate::stamp::{Dot, Stamp};
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
 use osis_core::Value;
+use osis_core::format::MAX_DELTA_BARE;
 
 /// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
 /// fragment exists.
@@ -148,6 +149,20 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             return Err(Error::Malformed("run length"));
         }
         let last = first.ctr.checked_add(n - 1).ok_or(Error::Malformed("run counter overflow"))?;
+        // before allocating: bare anchors only in snapshots, content-less elements bounded
+        // elsewhere (rule 7)
+        let empty = |v: &Value| matches!(v, Value::List(x) if x.is_empty());
+        if cx.kind() != DeltaKind::Snapshot {
+            if empty(creation) && empty(content) && empty(posw) && empty(flagw) {
+                return Err(Error::Malformed("bare anchors outside a snapshot"));
+            }
+            if empty(content) {
+                cx.bare = cx.bare.saturating_add(n);
+                if cx.bare > MAX_DELTA_BARE {
+                    return Err(Error::Malformed("more than MAX_DELTA_BARE elements without content"));
+                }
+            }
+        }
         let own = first.src == *cx.own();
         if writer && own && last >= cx.range().hi {
             return Err(Error::Malformed("own dot above the counter range"));
@@ -211,6 +226,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             let [i, j, st, b] = as_array(f)? else { return Err(Error::Malformed("flag write")) };
             let (i, j) = (index(i, n)?, index(j, n)?);
             let st = cx.stamp(st)?;
+            if writer && st.dot.ctr != cx.range().lo {
+                // a commit-level write: the delta stamp (§2.3)
+                return Err(Error::Malformed("flag write off the delta stamp"));
+            }
             let Value::Bool(b) = b else { return Err(Error::Malformed("flag")) };
             if i > j {
                 return Err(Error::Malformed("flag range"));
