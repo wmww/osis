@@ -138,3 +138,78 @@ Card := [1, seed, person, home_label, [address+]]
 - `Card` (spec/permissions.md §9): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, server addresses.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes.
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
+
+## 11. Node-to-node protocol (version 1)
+### 11.1 Framing and handshake
+- Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE` (9 MiB, 9 437 184 bytes), then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
+- Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions ascending (at most 16), its corrected wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
+- Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it; `id = 0` marks a message that has no reply (Push, Signal). Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
+- **Static key** of a side: the 32-byte key the transport authenticated for it (a server: its address key; a peer: its dialable key). An open signature binds the opened side's static key and Hello challenge.
+- Clock offset (spec/sync.md §6) is estimated from Ping/Pong round trips and Hello.
+
+### 11.2 Messages
+```
+Error     [0, id, code]
+Ok        [1, id]
+Ping      [2, id, wall_ms]                     -> Pong [3, id, wall_ms]
+Open      [4, id, label_id, proof]             -> Opened | Step | Error
+Opened    [5, id, head, Opt(entry_box)]
+Step      [6, id, step]
+Register  [7, id, label_id, step, Opt(claim_set)]   -> Ok | Step | Error
+Path      [8, id, label_id, Opt(after)]        -> PathReply [9, id, [step*], more]
+Upload    [10, id, label_id, [entry+]]         -> Status
+Status    [11, id, [code+], Opt(head)]
+Deposit   [12, id, label_id, blob, wrap, sig]  -> Budget [13, id, code, entries_left, bytes_left, Opt(head)]
+Delete    [14, id, label_id, [item+]]          -> Status
+Sync      [15, id, label_id, Opt(cursor), inline_limit, [entry*], [gained*]]
+                                               -> SyncReply [16, id, [event*], [want*], [code*], cursor, more] | Error
+Reconcile [17, id, label_id, [range+]]         -> ReconcileReply [18, id, [range*]]
+Fetch     [19, id, label_id, [blob_id+]]       -> FetchReply [20, id, [[blob_id, Opt([blob, wrap, Opt(stamp)])]*]]
+Subscribe [21, id, [label_id+]]                -> Status
+Unsubscribe [22, id, [label_id+]]              -> Ok
+Push      [23, 0, label_id, [event+], cursor]
+Signal    [24, 0, label_id, blob, wrap, auth]
+
+proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
+entry  := [blob, wrap, stamp]
+item   := [blob_id, Opt(at), Opt(token), sig]
+cursor := [log_id, seq]
+event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]
+range  := [lower, upper, mode]
+mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
+```
+Steps and claim sets are the canonical bytes of §8 as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `token` 32 bytes; `log_id` 16 bytes.
+
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5).
+- **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
+- **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head.
+- **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request.
+- **Delete**: per item, `sig` under `"osis v1 delete"`, digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(token)]`): by the head's delete key without a token; with a token, by the head's write key for a level-3 commitment and its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
+- **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events. `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
+- **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
+- **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
+- **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label. **Signal**: `auth` as in §9; the receiver forwards it unchanged to its other subscribers of the label and stores nothing.
+- Status codes: 0 ok, 1 refused, 2 malformed, 3 too large, 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
+- Per-message caps: Upload and Delete 1024 items; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
+
+### 11.3 Range reconciliation
+- The set reconciled is the blob IDs of the label's live entries at each side. Bounds are byte strings of at most 32 bytes compared as if right-padded with zero bytes; a range holds the IDs with `lower <= id < upper`, `upper = []` meaning the end of the ID space. Ranges in a message are sorted and disjoint.
+- **Fingerprint** of a set S: the first 16 bytes of BLAKE3(`le256(sum of S mod 2^256) || le64(|S|)`), each ID read as a little-endian 256-bit integer.
+- The requester opens with one range over the whole space: mode 1 with its IDs if it holds at most 32, else mode 0. A side receiving a range:
+  - mode 0: equal to its own fingerprint over the range: nothing; else, holding at most 32 IDs there: mode 1 with them; else it splits the range into 16 subranges of near-equal own counts (bounds of its choice) and sends each with mode 0, or mode 1 where it holds at most 32.
+  - mode 1 at the responder: holding at most 1024 IDs there, mode 2 with the IDs it holds that the list lacks, then the listed IDs it lacks; else it splits as above. Mode 1 at the requester, and mode 2: nothing; the requester now knows both differences for the range.
+- The requester sends the ranges it must answer in further Reconcile messages (at most 256 per message) until none remain, then fetches what it lacks and uploads or relays what the responder lacks (spec/sync.md §6).
+
+## 12. Bundles
+- A bundle file (spec/sync.md §11) is the 8 ASCII bytes `osisbndl` followed by frames as in §11.1, each one record. The first record is `[0, 1]` (bundle format 1). Records:
+  - `[1, label_id, [[step, Opt(claim_set)]+]]`: the registration path from the genesis step to the head;
+  - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
+  - `[3, label_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
+  - `[4, label_id, blob_id]`: a deletion; `[5, label_id, blob_id, at]`: a pending timed deletion.
+- An importer verifies paths and stamps as a server does and applies the records as a peer's log events received without a cursor; it skips records of unknown kind.
+
+## 13. Decoder limits
+- Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
+- Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys. Tree node and link page: 512 links; tree level 48. Sequence run: `2^16` elements (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
