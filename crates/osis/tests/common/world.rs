@@ -1,7 +1,7 @@
 //! Databases and blind servers in process, no tokio: `Osis` handles on `Runtime::Manual` exchange
 //! bytes with osis-server `Hub`s over in-memory queues under one manual clock (the pattern of
 //! osis-node's tests/net). Futures of the API are polled by hand while the world runs.
-#![allow(dead_code)]
+#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::node::sync::{Action, ConnId, Event};
 use osis::{Config, ManualClock, ManualNet, MemStore, Osis, Runtime, ServerAddr, StoreAt, WallMs};

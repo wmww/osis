@@ -1,5 +1,6 @@
 //! Sharing and sync through blind servers in process (notes/api.md Sharing and membership,
 //! Sync configuration and status; plans/api.md step 4), no tokio: see common/world.rs.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
 use common::world::World;
@@ -65,6 +66,13 @@ fn pairing_spec_permissions_1() {
     assert_eq!(x(&da, u), Some(s("from the new device")));
     let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
+    // a lost device, removed without waiting (spec/permissions.md §5.3 `Skip`)
+    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
+    assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
+    let after = item(&da, da.me(), da.home(), "after the removal");
+    w.run();
+    assert_eq!(x(&db, after), None, "the removed device reads nothing new");
 }
 
 // spec/permissions.md §9 (recovery card), notes/api.md Handle (restore): a fresh device with

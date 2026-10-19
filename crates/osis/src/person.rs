@@ -88,7 +88,10 @@ fn packages_value(pks: &[Package]) -> Value {
     Value::List(pks.iter().map(|p| Value::List(vec![Value::Bytes(p.bytes.clone()), Value::List(p.blobs.iter().map(|(id, b)| Value::List(vec![Value::Bytes(id.0.to_vec()), Value::Bytes(b.clone())])).collect())])).collect())
 }
 
-fn packages_of(v: &Value) -> Result<Vec<(Vec<u8>, Vec<(BlobId, Vec<u8>)>)>> {
+/// Commit bytes with their blobs.
+type Packages = Vec<(Vec<u8>, Vec<(BlobId, Vec<u8>)>)>;
+
+fn packages_of(v: &Value) -> Result<Packages> {
     let bad = || Error::Invalid("malformed pairing packages".into());
     let Value::List(items) = v else { return Err(bad()) };
     let mut out = Vec::new();

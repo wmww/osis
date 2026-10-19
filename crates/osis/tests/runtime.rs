@@ -2,6 +2,7 @@
 //! on; sync runs on the handle's tokio runtime): two databases on `Runtime::Tokio` reach an
 //! osis-server driver over in-process sessions (tier 1, a guard timeout against a hang) and over
 //! localhost QUIC (tier 2, ignored).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
 use common::ak;

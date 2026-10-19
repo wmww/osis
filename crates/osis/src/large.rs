@@ -25,7 +25,7 @@ pub struct ValueStream {
 
 enum Src {
     Inline(Vec<u8>),
-    Tree { link: Link, reader: osis_label::TreeReader, buf: Vec<u8>, at: usize, head: usize },
+    Tree { link: Link, reader: Box<osis_label::TreeReader>, buf: Vec<u8>, at: usize, head: usize },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -67,7 +67,7 @@ impl ValueStream {
             Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
             Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
             Value::Link(link) => {
-                let mut s = ValueStream { db: db.clone(), tid, len: 0, src: Src::Tree { link, reader: tree_reader(link), buf: Vec::new(), at: 0, head: 0 }, pos: 0 };
+                let mut s = ValueStream { db: db.clone(), tid, len: 0, src: Src::Tree { link, reader: Box::new(tree_reader(link)), buf: Vec::new(), at: 0, head: 0 }, pos: 0 };
                 s.start()?;
                 Ok(s)
             }
@@ -79,7 +79,7 @@ impl ValueStream {
     fn start(&mut self) -> Result<()> {
         let tid = self.tid;
         let Src::Tree { link, reader, buf, at, head } = &mut self.src else { return Ok(()) };
-        *reader = tree_reader(*link);
+        **reader = tree_reader(*link);
         let mut first = Vec::new();
         let parsed = loop {
             if let Some(h) = string_head(&first) {
