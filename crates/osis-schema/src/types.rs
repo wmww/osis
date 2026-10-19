@@ -61,14 +61,13 @@ pub struct Case {
 /// Standard named types (spec/data-model.md §3) with their parameter count.
 pub const STANDARD: &[(&str, usize)] = &[("option", 1), ("markdown", 0), ("timestamp", 0), ("duration", 0)];
 
-/// Names a schema type may not take: builtins, standard named types, DSL keywords.
+/// Names a schema type may not take: builtins and standard named types.
 pub fn is_reserved_name(n: &str) -> bool {
     STANDARD.iter().any(|(s, _)| *s == n)
         || matches!(
             n,
             "string" | "blob" | "bool" | "int" | "float" | "tid" | "any" | "text" | "list" | "set" | "map" | "struct"
-                | "enum" | "counter" | "max" | "min" | "type" | "aspect" | "signal" | "schema" | "revision"
-                | "reserved" | "succeeds" | "true" | "false"
+                | "enum" | "counter" | "max" | "min"
         )
 }
 

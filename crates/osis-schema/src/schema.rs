@@ -164,14 +164,13 @@ impl Schema {
         }
     }
 
-    /// Expands named types at the head until a structure. Fails on an unknown name, a wrong
-    /// argument count, an unbound parameter or non-productive recursion.
+    /// Expands named types at the head until a structure (or a parameter of an enclosing
+    /// definition). Fails on an unknown name, a wrong argument count or non-productive recursion.
     pub fn expand<'a>(&self, ty: &'a Type) -> Result<Cow<'a, Type>, String> {
         let mut cur = Cow::Borrowed(ty);
         for _ in 0..MAX_EXPAND {
             let next = match cur.as_ref() {
                 Type::Named(n, args) => self.instantiate(n, args)?,
-                Type::Param(p) => return Err(format!("unbound type parameter {p}")),
                 _ => return Ok(cur),
             };
             cur = Cow::Owned(next);
@@ -226,6 +225,10 @@ impl Schema {
     pub fn validate(&self) -> Vec<Invalid> {
         let mut out = Vec::new();
         let mut bad = |item: &str, msg: String| out.push(Invalid { item: item.to_string(), msg });
+        let big = |n: Option<u64>| n.is_some_and(|n| i64::try_from(n).is_err());
+        if big(Some(self.revision)) {
+            bad("schema", "revision out of range".into());
+        }
         for (name, def) in &self.types {
             let item = format!("type {name}");
             if is_reserved_name(name) || !is_ident(name) {
@@ -255,6 +258,10 @@ impl Schema {
             self.check_semantics(&def.ty, false, &mut BTreeSet::new(), &mut |m| bad(&item, m));
             if def.retention.at_most.rel.is_some() && def.retention.by != PurgeBy::Writer {
                 bad(&item, "a relative keep_at_most needs by: writer (spec/commits.md §5)".into());
+            }
+            let r = &def.retention;
+            if [def.expires, r.at_least.abs, r.at_least.rel, r.at_most.abs, r.at_most.rel].into_iter().any(big) {
+                bad(&item, "time out of range".into());
             }
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());

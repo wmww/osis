@@ -5,8 +5,11 @@
 //! Layer 2 (notes/architecture.md). Plan: plans/schema.md.
 #![forbid(unsafe_code)]
 
+mod check;
 mod error;
+mod form;
 mod lex;
+mod lock;
 mod parse;
 mod path;
 mod schema;
@@ -14,7 +17,10 @@ mod statics;
 mod typed;
 mod types;
 
+pub use check::{Rule, Violation, check};
 pub use error::{Error, ParseError};
+pub use form::{META_SRC, meta_schema, read_type, type_value};
+pub use lock::{Lock, LockStatus, check_lock};
 pub use parse::parse;
 pub use path::{CaseId, FieldId, Path, PathError, PathErrorKind, Step};
 pub use schema::{AspectDef, AspectDefaults, Bound, Flag, Invalid, PurgeBy, Retention, Schema, SignalDef, TypeDef};

@@ -534,6 +534,7 @@ fn lit_value(s: &Schema, lit: &Lit, ty: &Type) -> Result<Value, String> {
     let t = s.expand(ty).map_err(|e| format!("cannot type a default here ({e})"))?;
     let int = |n: &i128| i64::try_from(*n).map_err(|_| "integer out of range".to_string());
     Ok(match (t.as_ref(), lit) {
+        (Type::Param(p), _) => return Err(format!("cannot type a default of parameter type {p}")),
         (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => return lit_value(s, lit, i),
         (Type::Any, _) => any_value(lit)?,
         (Type::Int, Lit::Int(n)) => Value::Int(int(n)?),
