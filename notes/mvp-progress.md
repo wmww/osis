@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
+Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA rerun running.
 
 ## Plans
 | plan | state | notes |
@@ -42,8 +42,8 @@ Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
-| node-sync | review fixes | reviewer: rotate-first missing, purged ciphertext kept, complete_pass never true when subscribed, coverage/carrier rules; merging flows; agent fixing |
+| sim | phase B running (opus, worktree) | C after flows/api |
+| node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md, issues/grant-history-boxes.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
 | node-sync | running (opus, worktree) | |
@@ -52,7 +52,10 @@ Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
 | cli | review | done; sharing/sync commands return Unsupported until the api's second half; reviewer running |
-| apps-e2e, p2p, api (second half) | not started | wave 5, after node-sync merges |
+| api (second half) | running (opus, worktree) | sharing and sync surface |
+| flows/node-core follow-up | running (opus, worktree) | grant history boxes; /created rule for mixed commits |
+| apps-e2e | not started | after api second half |
+| p2p | not started | best effort, last |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
