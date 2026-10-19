@@ -53,7 +53,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | tla rerun (round 2) | running (opus, worktree) | |
 | cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
 | api (second half) | running (opus, worktree) | sharing and sync surface |
-| flows/node-core follow-up | running (opus, worktree) | grant history boxes; /created rule for mixed commits |
+| flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | not started | after api second half |
 | p2p | not started | best effort, last |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
