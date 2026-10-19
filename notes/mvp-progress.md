@@ -17,7 +17,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
 | tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 resolved (spec edits below, issues/reseal-triggers.md) | follow-up agent: write models/tla/run.sh, update both models to the edited text, rerun (list in plans/tla-models.md Progress); target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
-| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
+| crypto | merged, reviewed, follow-ups merged at 80b8ad3 | |
 | crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
 | perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
 | crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq; issues/crdt-path-op-cost.md |
@@ -45,7 +45,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
-| wave 2 integration pass | done at 18784cb (branch worktree-agent-a0eb9f424d0548874), merge pending | workspace, clippy, policy, spec map, deny green; core `hex`; tree move deferred to wave 3 pass (issues/tree-unify.md); vectors unchanged |
+| wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
