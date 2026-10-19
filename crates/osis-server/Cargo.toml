@@ -17,3 +17,6 @@ osis-label.workspace = true
 osis-proto.workspace = true
 osis-store.workspace = true
 osis-transport.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

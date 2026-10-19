@@ -15,7 +15,7 @@ Spec: spec/sync.md §4 (state), §5 (operations and authorization, re-registrati
 - Binary: config file (listen address, static key path, data dir, limits), logging, graceful shutdown.
 
 ## Steps
-- [ ] LabelStore over `MemoryBackend`; operations with unit tests per rule (each cites §5); log replay property (state == replay of log).
+- [x] LabelStore over `MemoryBackend`; operations with unit tests per rule (each cites §5); log replay property (state == replay of log).
 - [ ] Engine wiring over osis-proto; loopback tests with a scripted client; subscriptions and signals; budget and tombstone behaviour; timed deletes and expiry with a `Clock`.
 - [ ] Persistence over the file backend; restart test; replication push.
 - [ ] Binary + transport; localhost end-to-end with a scripted client; limits.
@@ -25,3 +25,4 @@ Spec: spec/sync.md §4 (state), §5 (operations and authorization, re-registrati
 node-sync syncs through it in the simulator and over localhost; every §5 sentence has a test; notes/sync.md "Server" section records defaults and knobs. Delete this plan.
 
 ## Progress
+- Step 1: `BackendStore` (LabelStore over `Backend`: rows, sweep indexes, log horizon, `Policy` caps/budget/rate limits), differential proptest against `MemoryLabelStore` with log replay.

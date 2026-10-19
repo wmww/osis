@@ -921,6 +921,7 @@ dependencies = [
  "osis-proto",
  "osis-store",
  "osis-transport",
+ "proptest",
 ]
 
 [[package]]
