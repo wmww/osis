@@ -286,7 +286,7 @@ fn carries_fn<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> 
             core.box_keys
                 .iter()
                 .filter(|((t, _), _)| *t == a)
-                .filter(|(_, v)| osis_schema::Codec::from_value(*v).ok().is_some_and(|bk: BoxKey| want(&bk)))
+                .filter(|(_, v)| osis_schema::Codec::from_value(v).ok().is_some_and(|bk: BoxKey| want(&bk)))
                 .filter_map(|((t, d), _)| core.commit_of(t, &secrets_ak, d))
                 .filter_map(|c| core.commits.get(&c).map(|m| m.header.ts))
                 .min()

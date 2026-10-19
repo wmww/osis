@@ -14,6 +14,10 @@ pub(crate) mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
 pub(crate) mod person;
+pub(crate) mod roster;
+mod moving;
+
+pub use roster::ROSTER_SNAPSHOT_AFTER;
 
 pub use edges::{Demotion, PreSync};
 pub use links::{LINK_SEED, LinkSpec};

@@ -43,6 +43,8 @@ pub struct Mutation {
     pub(crate) unchecked: bool,
     /// A held key actor that signs instead of the node (commit form).
     pub(crate) signer: Option<Tid>,
+    /// A roster snapshot (spec/permissions.md §6): membership kind with the marker.
+    pub(crate) roster: bool,
 }
 
 impl Default for Mutation {
@@ -57,7 +59,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -330,7 +332,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if membership && content {
         return Err(Error::Misuse("a commit is either content or membership"));
     }
-    let kind = if membership { Kind::Membership } else { Kind::Content };
+    let kind = match m.roster {
+        true if membership => Kind::RosterSnapshot,
+        true => return Err(Error::Misuse("a roster snapshot writes /members and /tenures only")),
+        false if membership => Kind::Membership,
+        false => Kind::Content,
+    };
     if let Some(u) = m.undoes {
         return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node)).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),

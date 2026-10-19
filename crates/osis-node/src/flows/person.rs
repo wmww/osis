@@ -133,7 +133,7 @@ impl Engine {
         }
         let me = self.tid();
         let mut done = Done::default();
-        if self.roster(&p).get(&me).is_none() {
+        if !self.roster(&p).contains_key(&me) {
             done.extend(self.run(|tx| grant_in(tx, Some(r), p, me, &admin_edge(), false))?);
         }
         for d in lost {

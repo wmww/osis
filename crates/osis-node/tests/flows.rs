@@ -22,6 +22,7 @@ fn spread(lp: &mut LocalPeer) {
     let n = lp.peers.len();
     let mut sent: Vec<BTreeSet<CommitId>> = vec![BTreeSet::new(); n];
     for _ in 0..2 {
+        #[allow(clippy::needless_range_loop)]
         for a in 0..n {
             let ids: Vec<CommitId> = lp.peers[a].engine.commit_ids().into_iter().filter(|c| !sent[a].contains(c)).collect();
             let pks: Vec<_> = ids.iter().filter_map(|id| lp.peers[a].engine.package(id).unwrap()).collect();
@@ -63,10 +64,6 @@ fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
             _ => {}
         }
     }
-}
-
-fn admin() -> ct::Edge {
-    ct::Edge { role: Role::Admin, until: None, invite: None, since: None }
 }
 
 fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> BTreeSet<String> {
@@ -534,4 +531,62 @@ fn registration_step_after_rotation_spec_sync_5() {
     assert!(set.entry_box(&card.home_label, &rk.signing.verifying_key()).is_some(), "the recovery key keeps its entry");
     let now = lp.peers[1].engine.get_typed(&p, &ct::LABEL).unwrap().unwrap();
     assert_eq!(now.get(&card.home_label).unwrap().steps.len(), 2);
+}
+
+// spec/permissions.md §6: an owner-chain node's roster snapshot carries the timeline's roster
+// with `since` and the tenure ledger (the removed writer's ended tenure with its frontier);
+// rosters and content validity are unchanged by it; an edge admin may not write one.
+#[test]
+fn roster_snapshot_spec_perm_6() {
+    let (mut lp, ps) = people(3, 515);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    add_tag(&mut lp, 2, t, "carol");
+    spread(&mut lp);
+    lp.peers[0].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(!lp.peers[0].engine.roster_snapshot_due(&t, None), "few deltas: not due");
+    assert!(lp.peers[1].engine.roster_snapshot(&t, None).is_err(), "edge admin");
+    let before = lp.peers[0].engine.roster(&t);
+    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    assert_eq!(h.kind, osis_commit::Kind::RosterSnapshot);
+    spread(&mut lp);
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.roster(&t), before, "peer {i}");
+        assert_eq!(tags(&mut lp, i, t), BTreeSet::from(["carol".to_string()]), "peer {i}");
+    }
+    let ledger = lp.peers[1].engine.get_typed(&t, &ct::TENURES).unwrap().unwrap();
+    assert!(ledger.0.iter().any(|x| x.member == pc && x.role == Role::Write && x.frontier.is_some()), "{ledger:?}");
+    let raw = lp.peers[1].engine.state(&t, &ak("/members")).unwrap().unwrap().read().unwrap();
+    let roster = osis_schema::AspectKey::decode(&ct::MEMBERS, &raw).unwrap();
+    assert!(roster.get(&pb).unwrap().since.is_some(), "{roster:?}");
+    add_tag(&mut lp, 1, t, "bob");
+    spread(&mut lp);
+    assert!(tags(&mut lp, 0, t).contains("bob"));
+}
+
+// spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
+// its members on the copy and points the old thing at it; a second move is refused.
+#[test]
+fn move_regrants_spec_perm_7() {
+    let (mut lp, ps) = people(2, 516);
+    let (pa, pb) = (ps[0], ps[1]);
+    let team = thing_of(&mut lp, 0, pa);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    add_tag(&mut lp, 1, d, "bob");
+    spread(&mut lp);
+    let (copy, done) = lp.peers[0].engine.move_to(&d, &team).unwrap();
+    assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Inbox { to, .. } if *to == pb)));
+    assert!(lp.peers[0].engine.move_to(&d, &team).is_err());
+    spread(&mut lp);
+    for i in [0, 1] {
+        assert_eq!(tags(&mut lp, i, copy), BTreeSet::from(["bob".to_string()]), "peer {i}");
+        assert_eq!(lp.peers[i].engine.get_typed(&d, &ct::MOVED).unwrap(), Some(copy));
+    }
+    assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
 }
