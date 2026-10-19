@@ -45,7 +45,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
-| wave 2 integration pass | running (opus, worktree) | workspace green, deny, tree-reader unification, notes, spec map |
+| wave 2 integration pass | done at 18784cb (branch worktree-agent-a0eb9f424d0548874), merge pending | workspace, clippy, policy, spec map, deny green; core `hex`; tree move deferred to wave 3 pass (issues/tree-unify.md); vectors unchanged |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
