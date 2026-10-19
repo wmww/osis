@@ -118,6 +118,25 @@
 //! assert!(matches!(w.create(b.me(), Place::Unsynced), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
+//!
+//! # Footguns closed
+//! - Read-modify-write clobber: use `edit(base, new)` or path ops for what users edit; `set`
+//!   is for "must be exactly this".
+//! - Out of memory on a huge value: reads fail `TooLarge` past `Config::materialize_limit`;
+//!   read by path instead.
+//! - A thing that never syncs, or owned by the device: owner and `Place` are always explicit.
+//! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
+//! ```compile_fail
+//! #![deny(unused_must_use)]
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! db.on_diagnostic(|_| {});
+//! ```
+//! - A forgotten commit: `Write` is `#[must_use]`:
+//! ```compile_fail
+//! #![deny(unused_must_use)]
+//! let db = osis::Osis::create(osis::Config::memory()).unwrap();
+//! db.write();
+//! ```
 #![forbid(unsafe_code)]
 
 mod error;

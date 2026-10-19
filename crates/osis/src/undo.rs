@@ -109,10 +109,17 @@ impl Osis {
         out
     }
 
-    fn undo_target(&self, scope: &UndoScope, redo: bool) -> Result<Option<CommitId>> {
+    /// Undoes the newest of this actor's changes in effect (`redo`: undos in effect) whose undo
+    /// writes something (spec/crdt.md §4.6 writes nothing for a register no longer its winner).
+    fn undo_newest(&self, scope: &UndoScope, redo: bool) -> Result<Option<Committed>> {
         let me = self.me();
         let aks = self.scope_aspects(scope)?;
-        Ok(self.scope_changes(&aks).into_iter().find(|c| c.actor == me && c.active && (c.depth % 2 == 1) == redo).map(|c| c.id))
+        for c in self.scope_changes(&aks).into_iter().filter(|c| c.actor == me && c.active && (c.depth % 2 == 1) == redo) {
+            if let Some(done) = self.undo_one(c.id)? {
+                return Ok(Some(done));
+            }
+        }
+        Ok(None)
     }
 
     fn undo_one(&self, target: CommitId) -> Result<Option<Committed>> {
@@ -126,18 +133,12 @@ impl Osis {
 
     /// Undoes this actor's newest change in effect in scope; `None` when there is none.
     pub fn undo(&self, scope: &UndoScope) -> Result<Option<Committed>> {
-        match self.undo_target(scope, false)? {
-            Some(c) => self.undo_one(c),
-            None => Ok(None),
-        }
+        self.undo_newest(scope, false)
     }
 
     /// Redoes this actor's newest undo in effect in scope; `None` when there is none.
     pub fn redo(&self, scope: &UndoScope) -> Result<Option<Committed>> {
-        match self.undo_target(scope, true)? {
-            Some(c) => self.undo_one(c),
-            None => Ok(None),
-        }
+        self.undo_newest(scope, true)
     }
 
     /// Undoes any held change this node may write (an admin reverting someone else's).

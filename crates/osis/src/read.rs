@@ -7,7 +7,7 @@ use crate::handle::Osis;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_core::{Ak, Role, Tid, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
-use osis_schema::{AspectKey, Codec, Path, type_at, typed_read, value_at};
+use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -97,16 +97,23 @@ impl Reader<'_> {
     /// has one); `None` when the path leads nowhere. Only that position is materialized.
     pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
         let Some(raw) = self.raw(tid, &ak_of(key)?)? else { return Ok(None) };
-        let ty = match (key.schema(), key.ty()) {
-            (Some(s), Some(t)) => Some((s, type_at(s, t, path)?.0)),
-            _ => None,
+        let tid = self.resolve(tid);
+        let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
+            let Some(sub) = value_at(&raw, path) else { return Ok(None) };
+            return Ok(Some(materialize(self.e, &tid, sub.clone(), self.limit)?));
         };
-        let Some(sub) = value_at(&raw, path) else { return Ok(None) };
-        let sub = materialize(self.e, &self.resolve(tid), sub.clone(), self.limit)?;
-        match ty {
-            Some((s, t)) => Ok(Some(typed_read(s, &sub, &t)?)),
-            None => Ok(Some(sub)),
+        let t = type_at(s, ty, path)?.0;
+        if let Some(sub) = value_at(&raw, path) {
+            let sub = materialize(self.e, &tid, sub.clone(), self.limit)?;
+            return Ok(Some(typed_read(s, &sub, &t)?));
         }
+        // an absent struct field reads as its default (spec/versioning.md §5): project the parent
+        let Some((Step::Field(id), parent)) = path.0.split_last() else { return Ok(None) };
+        let parent = Path(parent.to_vec());
+        let Some(sub) = value_at(&raw, &parent) else { return Ok(None) };
+        let sub = materialize(self.e, &tid, sub.clone(), self.limit)?;
+        let projected = typed_read(s, &sub, &type_at(s, ty, &parent)?.0)?;
+        Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
 
     /// AKs present on the thing.
