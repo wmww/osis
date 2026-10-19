@@ -36,7 +36,15 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let server = c.server;
         let Some(lc) = c.labels.get(&l) else { return Ok(()) };
-        let (g, keys) = (lc.group, lc.keys.clone());
+        let (g, head, index) = (lc.group, lc.head.clone(), lc.index.unwrap_or(0));
+        // secrets may have arrived since the head was accepted
+        let keys = match &head {
+            Some(h) => self.engine.head_keys(&g, index, h)?,
+            None => return Ok(()),
+        };
+        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+            lc.keys = keys.clone();
+        }
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
@@ -404,6 +412,9 @@ impl SyncEngine {
         for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Some((hold, live, aspects)) = self.judge(&l, &id, &e, bodies)? else { continue };
+            if std::env::var_os("OSIS_SYNC_TRACE").is_some() && hold != Hold::May {
+                eprintln!("judge {id:?}: {hold:?} live {live} {aspects:?}");
+            }
             let Hold::MustNot(why) = hold else { continue };
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,

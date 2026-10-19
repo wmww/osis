@@ -100,6 +100,12 @@ impl SyncEngine {
         if let (Some(s), Some(c)) = (server, cursor) {
             self.state.set_cursor(s, l, Some(c));
         }
+        // the label changed under us: a pass decides again (carriers, retags)
+        if !touched.is_empty()
+            && let Some(lc) = conn.and_then(|c| self.conns.get_mut(&c)).and_then(|c| c.labels.get_mut(&l))
+        {
+            lc.dirty = true;
+        }
         self.engine.put_blobs(blobs)?;
         self.open_entries(l, &touched)?;
         // commit blobs announced without bytes are fetched now; the rest (chunks) lazily

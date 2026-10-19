@@ -315,6 +315,16 @@ impl Net {
         self.engine(n).get(&t, &ak).unwrap()
     }
 
+    /// The registration path a server holds for a label.
+    pub fn server_path(&self, s: usize, l: &osis_core::LabelId) -> Vec<osis_label::Step> {
+        self.servers[s].hub.store().path(l).unwrap()
+    }
+
+    /// The first label node `n` syncs.
+    pub fn label(&mut self, n: usize) -> osis_core::LabelId {
+        self.sync(n).labels().into_iter().next().unwrap().1.id
+    }
+
     /// Live entry IDs the server holds under a label.
     pub fn server_ids(&self, s: usize, l: &osis_core::LabelId) -> Vec<osis_core::BlobId> {
         self.servers[s].hub.store().live_ids(l).unwrap()
@@ -364,11 +374,25 @@ pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, role: Role) -> CommitId
 
 /// A rotation of every role of `a` boxing `recipients`, with a deposit seed when `seed`.
 pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed: bool) -> CommitId {
+    let mut m = Mutation::new();
+    rotation_ops(e, &mut m, a, recipients, rng, seed);
+    e.commit(m).unwrap().unwrap()
+}
+
+/// Removes `member` from `a` with the rotation boxing `recipients`, in one membership commit
+/// (spec/permissions.md §3).
+pub fn remove_member(e: &mut Engine, a: Tid, member: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
+    let mut m = Mutation::new();
+    m.op(a, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    rotation_ops(e, &mut m, a, recipients, rng, false);
+    e.commit(m).unwrap().unwrap()
+}
+
+fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipient], rng: u64, seed: bool) {
     let roles = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
     let r = rotate(&a, &roles, &view, &state, recipients, &|_, _| true, &mut SeededRng::from_u64(rng)).unwrap();
-    let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
     }
@@ -389,7 +413,6 @@ pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed
     if seed {
         m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Replace(Some([0x5e; 32]).to_value()) }).unwrap();
     }
-    e.commit(m).unwrap().unwrap()
 }
 
 pub fn recipients_of(e: &mut Engine, members: &[(Tid, Role)]) -> Vec<Recipient> {
