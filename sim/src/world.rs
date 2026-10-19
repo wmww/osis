@@ -7,7 +7,7 @@
 use osis::node::sync::{Action, ConnId, Event};
 use osis::{Config, ManualClock, ManualNet, MemStore, Osis, RecoveryCard, Runtime, ServerAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
-use osis_proto::StoreError;
+use osis_proto::{FrameDecoder, Message, StoreError};
 use osis_server::{BackendStore, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;
 use std::collections::{BTreeMap, VecDeque};
@@ -51,6 +51,9 @@ pub struct World {
     offline: Vec<bool>,
     /// Per database, by start order.
     traffic: Vec<Traffic>,
+    /// With `tally`: upstream frames per (database, message kind): count and bytes.
+    tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
+    decoders: BTreeMap<(usize, ConnId), FrameDecoder>,
 }
 
 impl Default for World {
@@ -70,6 +73,8 @@ impl World {
             next_hub: 1,
             offline: Vec::new(),
             traffic: Vec::new(),
+            tally: None,
+            decoders: BTreeMap::new(),
         }
     }
 
@@ -121,6 +126,33 @@ impl World {
     /// The index of a database in this world.
     pub fn index(&mut self, db: &Osis) -> Option<usize> {
         self.dbs().iter().position(|d| d.as_ref().is_some_and(|d| d.node() == db.node()))
+    }
+
+    /// Starts counting the messages databases send, by kind (cost analysis; slows the run).
+    pub fn start_tally(&mut self) {
+        self.tally = Some(BTreeMap::new());
+    }
+
+    /// What `db` sent since `start_tally`: message kind -> (count, frame bytes).
+    pub fn tally(&mut self, db: &Osis) -> BTreeMap<String, (u64, u64)> {
+        let Some(i) = self.index(db) else { return BTreeMap::new() };
+        let Some(t) = &self.tally else { return BTreeMap::new() };
+        t.iter().filter(|((d, _), _)| *d == i).map(|((_, k), v)| (k.clone(), *v)).collect()
+    }
+
+    fn count(&mut self, d: usize, conn: ConnId, bytes: &[u8]) {
+        let Some(t) = &mut self.tally else { return };
+        let dec = self.decoders.entry((d, conn)).or_default();
+        dec.push(bytes);
+        while let Ok(Some(f)) = dec.next_frame() {
+            let kind = match Message::decode(&f) {
+                Ok(m) => format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("?").to_string(),
+                Err(_) => "Hello".to_string(),
+            };
+            let e = t.entry((d, kind)).or_default();
+            e.0 += 1;
+            e.1 += f.len() as u64 + 4;
+        }
     }
 
     /// Bytes `db` exchanged with servers so far.
@@ -183,6 +215,7 @@ impl World {
                         if let Some(t) = self.traffic.get_mut(d) {
                             t.up += bytes.len() as u64;
                         }
+                        self.count(d, conn, &bytes);
                         self.queue.push_back(Msg::ToHub(s, hc, bytes));
                     }
                 }
@@ -232,9 +265,8 @@ impl World {
                 let acts = db.take_actions();
                 if !acts.is_empty() {
                     moved = true;
-                    if !self.is_offline(d) {
-                        self.actions(d, acts);
-                    }
+                    // offline: dials fail, nothing is sent
+                    self.actions(d, acts);
                 }
             }
             let Some(m) = self.queue.pop_front() else {
@@ -282,15 +314,9 @@ impl World {
 
     fn tick_all(&mut self) {
         let dbs = self.dbs();
-        for (d, db) in dbs.iter().enumerate() {
-            match db {
-                Some(db) if !self.is_offline(d) => db.feed(Event::Tick),
-                // an offline database's clock still runs: its waits time out
-                Some(db) => {
-                    db.waiting();
-                }
-                None => {}
-            }
+        // an offline database's clock runs too: expiry, retention and timeouts
+        for db in dbs.iter().flatten() {
+            db.feed(Event::Tick);
         }
     }
 

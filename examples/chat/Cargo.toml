@@ -1,0 +1,20 @@
+[package]
+name = "chat"
+description = "Example: group chat over the osis API (notes/chat.md: personas, links, removal, disappearing messages, typing)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis.workspace = true
+
+[build-dependencies]
+osis-schema.workspace = true
+
+[dev-dependencies]
+osis-sim.workspace = true
