@@ -19,7 +19,12 @@ enum Mode {
 /// Typed read of `v` as `ty`: the projection (unknown field IDs dropped, absent defaulted fields
 /// filled). Large atomic values may be links (spec/data-model.md §6) and pass as they are.
 pub fn typed_read(schema: &Schema, v: &Value, ty: &Type) -> Result<Value, PathError> {
-    Walk { schema, mode: Mode::Read, path: Vec::new() }.walk(v, ty, false)
+    typed_read_at(schema, v, ty, false)
+}
+
+/// `typed_read` at a position that is atomic (inside a set element or map key) or not.
+pub(crate) fn typed_read_at(schema: &Schema, v: &Value, ty: &Type, atomic: bool) -> Result<Value, PathError> {
+    Walk { schema, mode: Mode::Read, path: Vec::new() }.walk(v, ty, atomic)
 }
 
 /// Validates a write of `v` as `ty` against the writer's schema.

@@ -347,6 +347,7 @@ version = "0.1.0"
 dependencies = [
  "osis-core",
  "osis-crdt",
+ "proptest",
 ]
 
 [[package]]
