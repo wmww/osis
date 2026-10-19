@@ -77,7 +77,7 @@ pub(crate) fn secrets_write(core: &Core, actor: &Tid, delta: &Fragment) -> (Secr
 }
 
 /// The keysets a `/keys` delta writes (whole keysets: a rotation replaces the field).
-fn keys_write(delta: &Fragment) -> KeysWrite {
+pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     let mut w = KeysWrite::default();
     for (id, r) in [(0, Role::Read), (1, Role::Write), (2, Role::Admin)] {
         if let Some(v) = field(delta, id).and_then(Fragment::read)

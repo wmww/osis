@@ -344,9 +344,13 @@ impl SyncEngine {
     pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let mut stale = false;
+        let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
             match code {
-                Code::OK => self.state.set_present(server, l, b, true),
+                Code::OK => {
+                    grew |= !self.state.is_present(&server, &l, &b);
+                    self.state.set_present(server, l, b, true);
+                }
                 Code::TOMBSTONED => {
                     self.state.set_gone(server, l, b);
                     if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
@@ -356,6 +360,10 @@ impl SyncEngine {
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("upload refused: code {}", c.0)),
             }
+        }
+        // carriers just went up: deletions waiting for them may go now
+        if grew && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+            lc.dirty = true;
         }
         if stale && let Some(h) = head {
             self.new_head(conn, l, h, out)?;

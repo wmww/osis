@@ -51,6 +51,8 @@ pub struct Net {
     queue: VecDeque<Msg>,
     next_hub_conn: u64,
     pub steps: usize,
+    /// (node, server) pairs that cannot connect.
+    pub blocked: BTreeSet<(usize, usize)>,
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -59,7 +61,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0 }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -151,7 +153,7 @@ impl Net {
             }
             match a {
                 Action::Dial { conn, address } => {
-                    let Some(s) = self.servers.iter().position(|x| x.address.key == address.key) else {
+                    let Some(s) = self.servers.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
                         self.queue.push_back(Msg::Close(n, conn));
                         continue;
                     };

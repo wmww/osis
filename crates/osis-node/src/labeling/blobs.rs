@@ -149,13 +149,13 @@ impl Engine {
         }
     }
 
-    /// For a rotation commit of the read role of `g`'s secret actor: the newest held epoch it
-    /// supersedes.
+    /// For a rotation commit of the read role of `g`'s secret actor (its `/keys` delta writes a
+    /// read keyset): the newest held epoch the new read epoch supersedes.
     fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
         let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
         let Some(h) = self.header(c) else { return Ok(None) };
-        let Some(ai) = h.aspects.iter().position(|x| x.tid == a && x.ak.as_str() == "/secrets") else { return Ok(None) };
-        if !h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/keys") {
+        let Some(ai) = h.aspects.iter().position(|x| x.tid == a && x.ak.as_str() == "/keys") else { return Ok(None) };
+        if !h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/secrets") {
             return Ok(None);
         }
         let id = *c;
@@ -167,14 +167,12 @@ impl Engine {
                 osis_commit::Decoded::Delta(x) => x.fragment,
                 osis_commit::Decoded::Snapshot(x) => x.fragment,
             };
-            let (w, _) = crate::apply::keys::secrets_write(&self.core, &a, &f);
-            for k in w.boxes.keys().filter(|k| k.role == Role::Read) {
-                let Ok(e) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
-                let Some(info) = epochs.read.get(&e) else { continue };
-                for s in &info.supersedes {
-                    if epochs.read.secret(s).is_some() && best.is_none_or(|b| osis_keys::is_newer(s, &b)) {
-                        best = Some(*s);
-                    }
+            let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { continue };
+            let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { continue };
+            let Some(info) = epochs.read.get(&e) else { continue };
+            for s in &info.supersedes {
+                if epochs.read.secret(s).is_some() && best.is_none_or(|b| osis_keys::is_newer(s, &b)) {
+                    best = Some(*s);
                 }
             }
         }

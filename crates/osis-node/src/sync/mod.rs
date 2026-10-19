@@ -12,6 +12,7 @@
 
 mod bundle;
 mod inbound;
+mod local;
 mod open;
 mod pass;
 pub(crate) mod state;
@@ -164,6 +165,8 @@ pub struct SyncEngine {
     pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
+    /// Inbox blobs waiting for a connection to their server.
+    pub(crate) outbox: Vec<local::Outgoing>,
 }
 
 impl SyncEngine {
@@ -188,6 +191,7 @@ impl SyncEngine {
             wake: None,
             signals: Vec::new(),
             diagnostics: Vec::new(),
+            outbox: Vec::new(),
         })
     }
 
@@ -276,6 +280,7 @@ impl SyncEngine {
         }
         self.engine_events()?;
         self.connect(out);
+        self.send_outbox(out)?;
         self.run_dirty(out)?;
         Ok(())
     }
