@@ -785,6 +785,7 @@ name = "osis-bench"
 version = "0.1.0"
 dependencies = [
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
 ]
 
