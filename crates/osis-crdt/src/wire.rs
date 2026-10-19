@@ -44,6 +44,52 @@ pub struct DeltaCtx {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Frontiers(pub BTreeMap<Tid, u64>);
 
+/// Received counter ranges per `Node` source for one aspect: what a snapshot's frontiers say
+/// and what revoke frontiers are built from (§8; spec/permissions.md §5.1). Parked commits are
+/// not added until joined.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Received(BTreeMap<Tid, Vec<(u64, u64)>>);
+
+impl Received {
+    pub fn new() -> Received {
+        Received::default()
+    }
+    /// Records counters `range` of node `tid` as applied.
+    pub fn add(&mut self, tid: Tid, range: CounterRange) {
+        if range.is_empty() {
+            return;
+        }
+        let v = self.0.entry(tid).or_default();
+        v.push((range.lo, range.hi));
+        v.sort_unstable();
+        let mut out: Vec<(u64, u64)> = Vec::with_capacity(v.len());
+        for (a, b) in v.drain(..) {
+            match out.last_mut() {
+                Some(l) if a <= l.1 => l.1 = l.1.max(b),
+                _ => out.push((a, b)),
+            }
+        }
+        *v = out;
+    }
+    /// The largest `ctr` with `[1, ctr]` applied; 0 if none.
+    pub fn frontier(&self, tid: &Tid) -> u64 {
+        match self.0.get(tid).and_then(|v| v.first()) {
+            Some((1, hi)) => hi.saturating_sub(1),
+            _ => 0,
+        }
+    }
+    /// The frontiers a snapshot of this state carries (nodes with counter 1 applied).
+    pub fn frontiers(&self) -> Frontiers {
+        Frontiers(self.0.keys().map(|t| (*t, self.frontier(t))).filter(|x| x.1 > 0).collect())
+    }
+    /// A received snapshot closes `[1, ctr]` per frontier.
+    pub fn add_frontiers(&mut self, fr: &Frontiers) {
+        for (t, c) in &fr.0 {
+            self.add(*t, CounterRange { lo: 1, hi: c.saturating_add(1) });
+        }
+    }
+}
+
 /// `[nonce, Sources, Commits, Fragment]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delta {
@@ -299,12 +345,14 @@ pub struct Dec<'a> {
     /// Own counters taken by creations and position writes in a writer's delta (§2.3).
     used: BTreeSet<u64>,
     pub(crate) pages: Option<&'a mut dyn PageSource>,
+    /// Pages fetched, with their links, for the canonical re-encode.
+    pub(crate) fetched: Vec<(Vec<u8>, osis_core::Link)>,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new() }
     }
 
     pub fn kind(&self) -> DeltaKind {

@@ -6,13 +6,13 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
-use crate::page::{PageSink, PageSource};
+use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_core::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
-use osis_core::{Limits, Value};
-use std::collections::BTreeMap;
+use osis_core::{Limits, PageCutter, Value};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
 
@@ -25,9 +25,65 @@ fn opt_frag(cx: &mut Enc, f: Option<&Fragment>) -> Result<Value, Error> {
     }))
 }
 
-/// An element array (paged above `PAGE_TARGET`, §8).
-pub(crate) fn elems_value(_cx: &mut Enc, items: Vec<Value>) -> Result<Value, Error> {
-    Ok(Value::List(items))
+/// Length of a CBOR array head for `n` items.
+fn array_head(n: usize) -> usize {
+    match n {
+        0..24 => 1,
+        24..256 => 2,
+        256..65536 => 3,
+        _ if u32::try_from(n).is_ok() => 5,
+        _ => 9,
+    }
+}
+
+/// An element array, paged when its plain encoding exceeds the target (§8, spec/wire.md §6).
+pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Error> {
+    if cx.collecting() {
+        return Ok(Value::List(items));
+    }
+    let params = cx.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+    let encoded: Vec<Vec<u8>> = items.iter().map(osis_core::encode).collect();
+    let size = encoded.iter().fold(array_head(items.len()), |n, e| n.saturating_add(e.len()));
+    if size <= params.target {
+        return Ok(Value::List(items));
+    }
+    let sink = cx.pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+    let mut cutter = PageCutter::new(params.cut);
+    let mut links = Vec::new();
+    let mut page = Vec::new();
+    for (item, bytes) in items.into_iter().zip(&encoded) {
+        page.push(item);
+        cutter.feed(bytes);
+        if cutter.end_element() {
+            links.push(Value::Link(sink.put(&osis_core::encode(&Value::List(std::mem::take(&mut page))))?));
+        }
+    }
+    if !page.is_empty() {
+        links.push(Value::Link(sink.put(&osis_core::encode(&Value::List(page)))?));
+    }
+    let list = Value::List(links);
+    if osis_core::encode(&list).len() <= params.target {
+        return Ok(list);
+    }
+    // link pages: the tree-node grouping rule, level 1 only
+    let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
+    let mut groups = Vec::new();
+    let mut group = Vec::new();
+    for l in links {
+        let zero = matches!(&l, Value::Link(x) if x.hash.first() == Some(&0));
+        group.push(l);
+        if (group.len() >= 2 && zero) || group.len() >= params.fanout {
+            groups.push(Value::Link(sink.put(&osis_core::encode(&Value::List(std::mem::take(&mut group))))?));
+        }
+    }
+    if !group.is_empty() {
+        groups.push(Value::Link(sink.put(&osis_core::encode(&Value::List(group)))?));
+    }
+    let top = Value::List(groups);
+    if osis_core::encode(&top).len() > params.target {
+        return Err(Error::Mismatch("fragment needs a third page level"));
+    }
+    Ok(top)
 }
 
 fn encode_elems(cx: &mut Enc, elems: &BTreeMap<Dot, Elem>) -> Result<Value, Error> {
@@ -126,9 +182,8 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
 }
 
 /// Runs the collecting pass and the real pass (§3.3 rule 1).
-fn encode_top(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&mut dyn PageSink>) -> Result<(Enc<'static>, Value, Option<Value>), Error> {
-    let _ = pages;
-    let mut enc = Enc::new(cx, None);
+fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
+    let mut enc = Enc::new(cx, pages);
     encode_fragment(&mut enc, f)?;
     let extra: Vec<Source> = frontiers.map(|fr| fr.0.keys().map(|t| Source::node(*t)).collect()).unwrap_or_default();
     enc.finish_collecting(&extra);
@@ -179,13 +234,92 @@ fn check_value(v: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-/// The items of an element array (pages resolved, §8).
-pub(crate) fn elem_items<'v>(_cx: &mut Dec, v: &'v Value) -> Result<Vec<&'v Value>, Error> {
-    let items = as_array(v)?;
-    if items.iter().any(|i| matches!(i, Value::Link(_))) {
-        return Err(Error::Unsupported("paged arrays (crdt-core step 5)"));
+fn links(items: &[Value]) -> Result<Option<Vec<osis_core::Link>>, Error> {
+    let n = items.iter().filter(|i| matches!(i, Value::Link(_))).count();
+    if n == 0 {
+        return Ok(None);
     }
-    Ok(items.iter().collect())
+    if n != items.len() {
+        return Err(Error::Malformed("links mixed with elements"));
+    }
+    Ok(Some(items.iter().filter_map(|i| if let Value::Link(l) = i { Some(*l) } else { None }).collect()))
+}
+
+/// Fetches a page and returns its items.
+fn page_items(cx: &mut Dec, link: &osis_core::Link) -> Result<Vec<Value>, Error> {
+    let src = cx.pages.as_mut().ok_or(Error::Page(PageError::Missing))?;
+    let bytes = src.get(link)?;
+    let v = osis_core::decode(&bytes, &LIMITS)?;
+    cx.fetched.push((bytes, *link));
+    match v {
+        Value::List(items) if !items.is_empty() => Ok(items),
+        _ => Err(Error::Malformed("page is not a non-empty array")),
+    }
+}
+
+/// The items of an element array, pages and link pages resolved (§8, at most two levels).
+pub(crate) fn elem_items(cx: &mut Dec, v: &Value) -> Result<Vec<Value>, Error> {
+    let items = as_array(v)?;
+    let Some(top) = links(items)? else { return Ok(items.to_vec()) };
+    let mut out = Vec::new();
+    for l in &top {
+        let page = page_items(cx, l)?;
+        match links(&page)? {
+            None => out.extend(page),
+            Some(inner) => {
+                for l in &inner {
+                    let page = page_items(cx, l)?;
+                    if links(&page)?.is_some() {
+                        return Err(Error::Malformed("a third page level"));
+                    }
+                    out.extend(page);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Replays the pages a decode fetched, so the canonical re-encode reproduces their links.
+struct Replay {
+    pages: HashMap<Vec<u8>, VecDeque<osis_core::Link>>,
+    params: PageParams,
+}
+
+impl Dec<'_> {
+    /// The replay sink of the pages fetched so far.
+    fn replay(&mut self) -> Replay {
+        let params = self.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+        Replay::new(std::mem::take(&mut self.fetched), params)
+    }
+}
+
+impl Replay {
+    fn new(fetched: Vec<(Vec<u8>, osis_core::Link)>, params: PageParams) -> Replay {
+        let mut pages: HashMap<Vec<u8>, VecDeque<osis_core::Link>> = HashMap::new();
+        for (b, l) in fetched {
+            pages.entry(b).or_default().push_back(l);
+        }
+        Replay { pages, params }
+    }
+}
+
+impl PageSink for Replay {
+    fn put(&mut self, plaintext: &[u8]) -> Result<osis_core::Link, PageError> {
+        self.pages.get_mut(plaintext).and_then(VecDeque::pop_front).ok_or(PageError::Corrupt)
+    }
+    fn params(&self) -> PageParams {
+        self.params
+    }
+}
+
+/// Requires `bytes` to be what encoding `again` produces with the fetched pages replayed.
+fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(), Error> {
+    match again {
+        Ok(b) if b == bytes => Ok(()),
+        Ok(_) | Err(Error::Page(_)) => Err(Error::Malformed("not canonical")),
+        Err(e) => Err(e),
+    }
 }
 
 fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
@@ -194,7 +328,7 @@ fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
 
 fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
     let mut out = BTreeMap::new();
-    for e in elem_items(cx, v)? {
+    for e in &elem_items(cx, v)? {
         let [d, r, f] = as_array(e)? else { return Err(Error::Malformed("element")) };
         let dot = cx.dot(d)?;
         let reset = cx.opt_stamp(r)?;
@@ -269,7 +403,7 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Resul
         (Encoding::Map, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;
             let mut entries = BTreeMap::new();
-            for e in elem_items(cx, es)? {
+            for e in &elem_items(cx, es)? {
                 let x = as_array(e)?;
                 let (d, r, key, f) = match x {
                     [d, r, f] => (d, r, None, f),
@@ -295,7 +429,7 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Resul
         (Encoding::List | Encoding::Text, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;
             let mut s = Seq { text: enc == Encoding::Text, meta, elems: BTreeMap::new() };
-            let runs: Vec<Value> = elem_items(cx, es)?.into_iter().cloned().collect();
+            let runs = elem_items(cx, es)?;
             seq::decode_elems(&mut s, &runs, cx)?;
             Fragment::Seq(s)
         }
@@ -342,10 +476,9 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
     dec.load_sources(sources)?;
     dec.load_commits(commits)?;
     let fragment = decode_fragment(&mut dec, frag, true)?;
+    let mut replay = dec.replay();
     let d = Delta { nonce: nonce(n)?, fragment };
-    if encode_delta(&d, cx, None)? != bytes {
-        return Err(Error::Malformed("not canonical"));
-    }
+    canonical(bytes, encode_delta(&d, cx, Some(&mut replay)))?;
     Ok(d)
 }
 
@@ -366,9 +499,8 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
             return Err(Error::Malformed("frontier counter 0 or repeated"));
         }
     }
+    let mut replay = dec.replay();
     let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers) };
-    if encode_snapshot(&s, cx, None)? != bytes {
-        return Err(Error::Malformed("not canonical"));
-    }
+    canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
     Ok(s)
 }

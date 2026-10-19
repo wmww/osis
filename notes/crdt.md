@@ -74,6 +74,18 @@
 - A commit has no size limit: any delta pages like a snapshot (§8), so a bulk `replace` of a huge map or an import is one atomic commit; the writer streams pages out, readers stream them in. Runs are capped at 2^16 elements so a page always fits.
 - Commit floor: a minimal commit is about 300 bytes once nonce, framing, tag and padding count, plus a 49-byte wrap per label and a prefix of about 35 bytes. Fine for editing workloads; revisit only if huge commit volumes appear (owner).
 
+## Implementation (`osis-crdt`)
+- **Structures**: `Fragment` enum, one struct per encoding (`fragment.rs`), crate-private fields; collections are `BTreeMap<Dot, _>`, struct fields and enum payloads `BTreeMap<u64, _>`. Sequences (`seq.rs`) are plans/crdt-seq.md's: the generic code calls only the hooks listed there and owns a sequence's reset and `W`.
+- **Interning**: `Source` is an `Arc<SourceKind>`; a stamp is `ts` + pointer + counter. Equality and order never depend on sharing; `Interner` dedupes per decode (a node may keep one per aspect).
+- **Join** (`state.rs`) is delta-driven: `join_into(other, e_parent, changes)` walks only what `other` carries; existing children are pruned only when an own reset rises. Equals union-then-prune (lockstep tests against the model after every join). An empty state takes the other side pruned.
+- **Change summary** (`Changes`): `is_changed` plus `Death { stamp, at }` for every write superseded (beaten register/case/reset, pruned write, late write dying on arrival). Writes sharing a delta stamp are reported per instance.
+- **Wire** (`wire.rs`, `codec.rs`): values are built as `osis_core::Value` trees; encoding runs the fragment encoder twice (collecting pass for `Sources`/`Commits`). Decoding checks the grammar, ranges and rule 7, then re-encodes and requires the input bytes, with fetched pages replayed through a sink so the links match: every canonical rule, paging included, is that one comparison.
+- **Paging**: `PageParams` (format: 64 KiB target, 16/256 KiB cuts, 512 fanout) come from the `PageSink`/`PageSource`; tests shrink them. `osis_core::PageCutter` cuts; link pages use the tree-node rule; a third level is refused.
+- **Ops** (`ops.rs`, `batch.rs`): `diff`/`create`/`replace` match the model write for write under a `View`. `Batch` makes a commit's net effect: ops resolve against state ⊔ batch-so-far; `overlay` lets a later op override, drops a reset's earlier content, omits created-and-removed elements and then sets `W` if the collection would be left with no write (one-by-one ops would have left it present).
+- **Undo** (`undo.rs`): per §4.6 over the original delta; `UndoBuffer::before(path)` gives pre-commit fragments (a pre-commit state implements it). Restores values, not absence: a collection emptied by undo stays present, a register that did not exist is not written.
+- **Un-merge** (`lifecycle.rs`): `unmerge(held, author)` joins bodies with `remove_author` applied; `unmerge_in_place` only when the author holds no register, case or reset write (`author_supersedes`; sequences conservatively always need bodies).
+- Not yet: a map `key -> live dots` index (ops scan entries and clone the joined map per path op); join over one page at a time (pages are fetched and joined whole).
+
 ## Reference model (`models/crdt/`)
 A small, slow, obviously-correct implementation of spec/crdt.md: `State` (fully resolved stamps), join, prune, read, the ops, un-merge, the wire encoder/decoder (own canonical CBOR subset), embeddings, diff. Not the implementation; the implementation will be tested against it. Property tests (`tests/props.rs`):
 - convergence under random delivery orders, duplication and omitted prefixes: equal reads and equal encoded states;

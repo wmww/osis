@@ -10,6 +10,7 @@ mod changes;
 mod codec;
 mod error;
 mod fragment;
+mod lifecycle;
 mod ops;
 mod page;
 mod seq;
@@ -27,6 +28,8 @@ mod tests_join;
 mod tests_wire;
 #[cfg(test)]
 mod tests_ops;
+#[cfg(test)]
+mod tests_life;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
@@ -35,9 +38,10 @@ pub use fragment::{BagKind, Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragmen
 pub use batch::Batch;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace};
 pub use undo::{UndoBuffer, Undone, undo};
-pub use page::{MemoryPages, PageError, PageSink, PageSource};
+pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
-pub use wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, MAX_RUN, NONCE_LEN, Snapshot};
+pub use lifecycle::{unmerge, unmerge_in_place};
+pub use wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, Received, MAX_RUN, NONCE_LEN, Snapshot};

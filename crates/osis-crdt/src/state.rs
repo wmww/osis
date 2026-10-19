@@ -531,16 +531,18 @@ impl Fragment {
 
     /// No surviving write and no record at any depth (§4.2 Emptiness).
     pub fn is_empty(&self) -> bool {
-        self.all_max().is_none()
-            && match self {
-                Fragment::Register(_) => true,
-                Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.is_empty(),
-                Fragment::Struct(s) => s.fields.is_empty(),
-                Fragment::Enum(s) => s.payloads.is_empty(),
-                Fragment::Map(m) => m.entries.is_empty(),
-                Fragment::Seq(s) => !seq::has_records(s),
-                Fragment::Slots(_) => self.members().iter().all(|m| m.with(|f| f.is_empty())),
-            }
+        // records are grow-only and children are kept only while non-empty, so any child or
+        // record means non-empty; only then do the own stamps decide (cheap at any size)
+        let no_children = match self {
+            Fragment::Register(r) => return r.reset.is_none() && r.write.is_none(),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.is_empty(),
+            Fragment::Struct(s) => s.fields.values().all(Fragment::is_empty),
+            Fragment::Enum(s) => s.case.is_none() && s.payloads.values().all(Fragment::is_empty),
+            Fragment::Map(m) => m.entries.is_empty(),
+            Fragment::Seq(s) => !seq::has_records(s) && seq::inner_max(s, false).is_none(),
+            Fragment::Slots(_) => return self.members().iter().all(|m| m.with(|f| f.is_empty())),
+        };
+        no_children && self.meta().is_none_or(|m| m.reset.is_none() && m.w.is_none())
     }
 
     /// The member a `Slots` position reads as: greatest stamp inside, ties by greater encoding
