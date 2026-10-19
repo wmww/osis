@@ -52,7 +52,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
 | cli | merged, reviewed | sharing/sync commands light up with the api's second half; plan steps 4–5 open until then |
-| api (second half) | running (opus, worktree) | sharing and sync surface |
+| api (second half) | review | done; reviewer running; issues/api-deferred.md; single-use links: decided (link flags item, FC-3) |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | not started | after api second half |
 | p2p | review fixes | reviewer: tombstones for peer replays, peer budgets/caps, LAN address takeover; agent fixing |
