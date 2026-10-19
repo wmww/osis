@@ -283,10 +283,15 @@ pub(crate) fn has_records(s: &Seq) -> bool {
     !s.elems.is_empty()
 }
 
+/// Placed records in order (§6).
+fn placed(s: &Seq) -> Vec<(&Dot, &SeqElem)> {
+    let p = crate::linearize::place_idx(&s.elems);
+    p.order.iter().filter_map(|i| Some((*p.dots.get(*i)?, *p.elems.get(*i)?))).collect()
+}
+
 /// Visible elements in order: not deleted, with content that reads (§5.7 Read).
 pub(crate) fn visible(s: &Seq) -> Vec<Dot> {
-    let order = crate::linearize::place(&s.elems).order;
-    order.into_iter().filter(|d| s.elems.get(d).is_some_and(|e| is_visible(e, s.text))).collect()
+    placed(s).into_iter().filter(|(_, e)| is_visible(e, s.text)).map(|(d, _)| d.clone()).collect()
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
@@ -299,14 +304,14 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
 pub(crate) fn read(s: &Seq) -> Option<Value> {
-    let order = crate::linearize::place(&s.elems).order;
-    let items = order.iter().filter_map(|d| s.elems.get(d));
+    let items = placed(s).into_iter().map(|(_, e)| e);
     Some(if s.text {
         Value::Str(items.filter(|e| !e.flag()).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
     } else {
         Value::List(items.filter_map(|e| if let SeqContent::Frag(f) = &e.content { f.read() } else { None }).collect())
     })
 }
+
 
 /// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {

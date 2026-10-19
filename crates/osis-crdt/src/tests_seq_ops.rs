@@ -369,6 +369,70 @@ proptest! {
     }
 }
 
+/// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
+/// through `Batch`, snapshot encode/decode.
+#[test]
+#[ignore]
+fn budget_big_text_spec_6() {
+    use std::time::Instant;
+    let mut r = Rng(5);
+    let mut a = Replica::new(1);
+    let mut len = 0usize;
+    let t = Instant::now();
+    let run: String = "abcdefghij".repeat(10);
+    for k in 0..1000u64 {
+        let at = r.below(len + 1);
+        len += 100;
+        a.commit(k + 1, &[op(Op::Insert { at, items: vec![s(&run)] })], &text_view());
+    }
+    let build = t.elapsed();
+    let t = Instant::now();
+    let v = a.state.read();
+    let read = t.elapsed();
+    assert_eq!(read_str(&a.state).len(), 100_000);
+    let t = Instant::now();
+    let Fragment::Seq(sq) = &a.state else { panic!() };
+    let p = crate::linearize::place(&sq.elems);
+    let place = t.elapsed();
+    let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    let t = Instant::now();
+    let (d, _, _) = b.commit(1000, &[op(Op::Insert { at: 5000, items: vec![s("x")] })], &text_view()).unwrap();
+    let one_op = t.elapsed();
+    let t = Instant::now();
+    a.state.join(d);
+    let small_join = t.elapsed();
+    let t = Instant::now();
+    let two = [op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 50_000, len: 3 })];
+    b.commit(1001, &two, &text_view()).unwrap();
+    let two_ops = t.elapsed();
+    let snap = crate::wire::Snapshot { nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
+    let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let mut pages = crate::MemoryPages::new();
+    let t = Instant::now();
+    let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
+    let encode = t.elapsed();
+    let t = Instant::now();
+    crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
+    let decode = t.elapsed();
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, encode {encode:?}, decode {decode:?}", p.order.len());
+    let _ = v;
+}
+
+/// §9 identity rule: a list diff keeps the dot of an element it edits (paired in order), so a
+/// concurrent nested write into that element survives.
+#[test]
+fn list_diff_keeps_dots_spec_9() {
+    let view = TyView(list_ty());
+    let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(Value::List(vec![item(1, 1), item(2, 2)])))], &view);
+    let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    let (bd, _, _) = b.commit(2, &[PathOp { path: vec![PathSeg::Index(1), PathSeg::Field(2)], op: Op::Set(Value::Int(7)) }], &view).unwrap();
+    a.commit(3, &[op(Op::Set(Value::List(vec![item(1, 1), item(9, 2), item(3, 3)])))], &view);
+    a.state.join(bd);
+    assert_eq!(a.state.read(), Some(Value::List(vec![item(1, 1), item(9, 7), item(3, 3)])));
+}
+
 /// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md worked example).
 #[test]
 fn move_undo_spec_5_7() {

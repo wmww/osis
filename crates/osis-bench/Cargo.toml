@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 osis-core.workspace = true
 osis-crypto.workspace = true
+osis-crdt.workspace = true
 
 [[bench]]
 name = "core"
@@ -20,4 +21,8 @@ harness = false
 
 [[bench]]
 name = "crypto"
+harness = false
+
+[[bench]]
+name = "crdt"
 harness = false

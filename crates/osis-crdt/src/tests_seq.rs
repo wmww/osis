@@ -87,6 +87,42 @@ proptest! {
         crate::tests_life::bootstrap_check(seed, &Ty::List(Box::new(inner())));
     }
 
+    /// §5.7 undelete: random deleted chars undeleted with their content reach a node that only
+    /// holds the snapshot (deleted chars not carried) and read the same there.
+    #[test]
+    fn random_undelete_spec_5_7(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let commits = history_with(&mut r, &[Ty::Text], vec![MSource::node(1), MSource::node(2)], 6);
+        let mut full = Fragment::default();
+        for c in &commits {
+            full.join(frag(&c.delta));
+        }
+        let snap = Snapshot { nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default() };
+        let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
+        let mut boot = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+        let Fragment::Seq(sq) = &full else { return Ok(()) };
+        let dead: Vec<crate::stamp::Dot> = sq.elems.iter().filter(|(_, e)| e.flag() && matches!(e.content, SeqContent::Char(_))).map(|(d, _)| d.clone()).filter(|_| r.chance(1, 2)).collect();
+        if dead.is_empty() {
+            return Ok(());
+        }
+        let src = crate::stamp::Source::node(osis_core::Tid::from_bytes([7; 15]));
+        let st = crate::stamp::Stamp::new(ts(1 << 30), src.clone(), 1);
+        let mut d = crate::seq::Seq::empty(true);
+        for x in &dead {
+            let mut e = crate::seq::SeqElem::bare();
+            e.deleted = Some((st.clone(), false));
+            e.content = sq.elems[x].content.clone();
+            d.elems.insert(x.clone(), e);
+        }
+        let cx = DeltaCtx { ts: ts(1 << 30), own: src, range: CounterRange { lo: 1, hi: 2 }, kind: DeltaKind::Writer };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: Fragment::Seq(d) }, &cx, None).unwrap();
+        let u = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        full.join(u.clone());
+        boot.join(u);
+        prop_assert_eq!(full.read(), boot.read());
+        prop_assert_eq!(as_carried(&full), boot);
+    }
+
     /// §3.3 rule 7: mutated sequence deltas are rejected or decode, never panic.
     #[test]
     fn mutated_seq_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
@@ -103,6 +139,18 @@ proptest! {
                 let _ = state.read();
             }
         }
+    }
+}
+
+/// Tier 2: the differential suite at size (more writers, rounds and seeds).
+#[test]
+#[ignore]
+fn seq_differential_large_spec_5_7() {
+    for seed in 0..200 {
+        lockstep(seed, &[Ty::Text], 4, 16);
+        lockstep(seed, &[Ty::List(Box::new(inner()))], 4, 12);
+        lockstep(seed, &[Ty::Register, Ty::Text], 4, 10);
+        wire_matches(seed, &[Ty::Text, Ty::List(Box::new(inner())), kitchen_sink()], (1..=4).map(MSource::node).collect());
     }
 }
 

@@ -4,6 +4,8 @@
 //! Layer 9 (notes/architecture.md). Plan: plans/test-infra.md.
 #![forbid(unsafe_code)]
 
+pub mod text;
+
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
