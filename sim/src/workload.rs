@@ -18,6 +18,9 @@ aspect /s/hi: max<int>;
 aspect /s/tags: set<string>;
 aspect /s/map: map<string, int>;
 aspect /s/gone: string [by: writer];
+aspect /s/note: string;
+aspect /s/story: set<string>;
+aspect /s/short: string [by: writer, keep_at_most: 10m];
 "#,
 );
 
@@ -28,6 +31,12 @@ pub const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SIM);
 pub const MAP: Aspect<Value> = Aspect::new("/s/map", &SIM);
 /// Purgeable by any writer (scenarios only; random writes leave it alone).
 pub const GONE: Aspect<Value> = Aspect::new("/s/gone", &SIM);
+/// A scenario's story marks (random writes leave it alone).
+pub const STORY: Aspect<Value> = Aspect::new("/s/story", &SIM);
+/// Written with an expiry (scenarios only).
+pub const NOTE: Aspect<Value> = Aspect::new("/s/note", &SIM);
+/// Kept at most 10 minutes after replaced (scenarios only).
+pub const SHORT: Aspect<Value> = Aspect::new("/s/short", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];
 

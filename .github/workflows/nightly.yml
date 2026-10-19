@@ -70,14 +70,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      # plans/sim.md adds the sweep binary; until then this job only reports that.
+      # notes/testing.md (Simulator): every unblocked scenario, seed-major, until the seeds or the
+      # budget run out; prints the seeds run per scenario and each failing seed's replay call.
       - name: simulator seed sweep
-        run: |
-          if [ -f sim/src/bin/sim-sweep.rs ]; then
-            cargo run -p osis-sim --release --locked --bin sim-sweep -- --seeds 10000 --out "$RUNNER_TEMP/failing-seeds"
-          else
-            echo "no sim-sweep binary yet (plans/sim.md)"
-          fi
+        run: cargo run -p osis-sim --release --locked --bin sim-sweep -- --seeds 10000 --budget-secs 6000 --out "$RUNNER_TEMP/failing-seeds"
       - name: upload failing seeds
         if: failure()
         uses: actions/upload-artifact@v4

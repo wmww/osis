@@ -129,6 +129,11 @@ pub struct Report {
     pub diagnostics: u64,
     /// Must-hold bodies found at servers by the quiescent label check.
     pub held_checked: u64,
+    /// Phase C: messages an evil server dropped, held back or replayed; requests an adversary's
+    /// hand-driven session sent and those the server refused.
+    pub evil: u64,
+    pub rogue_sent: u64,
+    pub rogue_refused: u64,
     pub commits: usize,
     /// BLAKE3 of every node's final held commits and reads.
     pub digest: [u8; 32],

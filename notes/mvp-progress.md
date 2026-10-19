@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA rerun running.
+Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 
 ## Plans
 | plan | state | notes |
@@ -42,8 +42,9 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
-| sim | phase B merged | six sync issues filed (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
+| sync bug-fix round 1 | running (opus, worktree) | the six phase B issues |
+| crdt/flows bug-fix round | running (opus, worktree) | crdt-expiring-diff, single-use redemption, move copy, label replacement |
+| sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
 | api (first half) | merged, reviewed | second half with the apps (wave 5); issues/undo-chain-register.md (owner-call), issues/api-person-owner.md |
@@ -53,7 +54,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | merged | all instances pass except the accepted residue (MC_drop_refresh); target 3 not started |
 | cli | merged, reviewed; steps 4–5 done with apps-e2e | plan deleted (notes/cli.md); delivering commands flush before exit |
-| api (second half) | review fixes | reviewer: no blockers; single-use link flag (FC-3), future timeouts, pairing reply size; agent fixing |
+| api (second half) | merged, reviewed | FC-3 (link flags) frozen; issues/api-deferred.md; plan step 5 (iterate with apps): frictions in issues/api-app-frictions.md |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | done on branch (review) | plan deleted, notes/apps.md; examples pass tier 1 in osis-sim `World`, localhost CLI e2e passes (tier 2); issues sync-deposit-resend, chat-costs, api-app-frictions; fix: `wait_synced` waits for inbox deliveries |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
@@ -63,6 +64,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
+- Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits

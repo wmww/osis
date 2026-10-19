@@ -1,0 +1,7 @@
+# A single-use redemption never reaches the sharer
+> Summary: Redeeming a single-use read link removes L's own edge in the redemption commit, so at the redeemer K's read role is uncovered (L departed, no rotation yet); `place_certificate_in` skips placement while the read role is uncovered, so the `Deposit { under: K }` delivery is dropped silently. The redeemer reads the target; the sharer never sees the joiner and never finalizes. Multi-use links work.
+> Tags: flows, sync, node, tests
+
+- Seen in the simulator: `osis_sim::replay("link_race", 1)` (ignored with this issue): after two concurrent single-use redemptions, K's roster at the sharer lists only L; at each redeemer it lists its own person. The redeemers deposit their inbox blobs but nothing under K's label. The same flow with `single_use: false` (`link_redeem`) converges.
+- Cause: `sync/local.rs` `place_certificate_in` returns early when `uncovered(g)` contains `Read`; the redemption's self-removal of L is a departure the redeemer cannot rotate away (it is no admin of K). `SyncEngine::leaving` exempts the leaver's own departure for self-removals, but here the leaver is the key actor L, not the node's actor.
+- Fix: treat L (the key actor signing the redemption) as the leaver for its single-use self-removal in the cover check, as for a node's own self-removal (notes/node.md, Self-removal); the sharer rotates K when it finalizes.

@@ -92,9 +92,47 @@ fn pending(sim: &mut NetSim) -> Res<()> {
             continue;
         }
         let Some(s) = sim.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
-        let p = s.engine().pending();
+        // spec/versioning.md §2: a commit of a newer format stays parked
+        let p: Vec<_> = s.engine().pending().into_iter().filter(|(c, r)| !(sim.parked_ok.contains(c) && matches!(r, osis_node::Reason::Parked | osis_node::Reason::Unexamined))).collect();
         if !p.is_empty() {
-            return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}", p.len())));
+            // the first one's header, from any node holding it, and who holds which parts
+            let detail = p.first().map(|(c, _)| {
+                let h = sim.nodes.iter().find_map(|x| x.sync.as_ref().and_then(|s| s.engine().header(c)));
+                let h = h.map(|h| format!("author {} kind {:?} aspects {:?}", h.author, h.kind, h.aspects.iter().map(|a| format!("{} {}", a.tid, a.ak.as_str())).collect::<Vec<_>>()));
+                let blobs: Vec<String> = sim.known.iter().filter(|(_, (kc, _))| kc == c).map(|((l, b), (_, parts))| format!("{l:?} {b:?} {parts:?}")).collect();
+                format!("{h:?}; blobs {blobs:?}")
+            });
+            let c0 = p.first().map(|x| x.0);
+            let keys: Vec<[u8; 32]> = sim.servers.iter().map(|x| x.key).collect();
+            let ks: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, _))| Some(*kc) == c0).map(|(k, _)| *k).collect();
+            let mut bodies = Vec::new();
+            for m in 0..sim.nodes.len() {
+                let Some((c, s)) = c0.zip(sim.nodes.get_mut(m).and_then(|x| x.sync.as_mut())) else { continue };
+                let b: Vec<String> = s.engine_mut().bodies(&c).unwrap_or_default().iter().map(|b| format!("{:?} reader {}", b.parts, b.reader)).collect();
+                let ls: Vec<LabelId> = s.labels().into_iter().map(|x| x.1.id).collect();
+                let mut v = Vec::new();
+                for (i, k) in keys.iter().enumerate() {
+                    for l in &ls {
+                        if let Ok(Some(x)) = s.verdicts(k, l) {
+                            v.push(format!("s{i} {l:?}: must-hold {:?} unsettled {:?}", x.must_hold.iter().filter(|m| m.0 == c).map(|m| m.1.clone()).collect::<Vec<_>>(), x.unsettled.len()));
+                        }
+                    }
+                }
+                let mut unknown = Vec::new();
+                for l in &ls {
+                    for (id, k) in s.entries(l) {
+                        if k == osis_node::sync::EntryKind::Unknown {
+                            let bytes = s.engine_mut().blob(&id).ok().flatten().is_some();
+                            unknown.push(format!("{id:?} bytes {bytes}"));
+                        }
+                    }
+                }
+                let mine: Vec<String> = ks.iter().map(|(l, id)| format!("{id:?}: {:?}", s.entries(l).into_iter().find(|e| e.0 == *id).map(|e| e.1))).collect();
+                let pend = s.engine().pending();
+                bodies.push(format!("node {m}: {b:?} verdicts {v:?} unknown entries {unknown:?}, its entries of the commit's blobs {mine:?}, pending {pend:?}"));
+            }
+            let detail = format!("{detail:?}; bodies {bodies:?}");
+            return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}; first: {detail:?}", p.len())));
         }
     }
     Ok(())
@@ -214,6 +252,9 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
 /// spec/sync.md §4-§6 at every up server and every label it holds.
 fn labels(sim: &mut NetSim) -> Res<()> {
     for s in 0..sim.servers.len() {
+        if sim.dishonest.contains(&s) {
+            continue;
+        }
         let Some(hub) = sim.hub(s) else { continue };
         let st = hub.store();
         let ls = st.labels_after(None, 4096).map_err(|e| sim.fail(e.to_string()))?;
@@ -267,7 +308,11 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         let held = live.iter().any(|b| sim.known.get(&(l, *b)).is_some_and(|(kc, kp)| kc == c && parts.iter().all(|p| kp.contains(p))));
                         sim.report.held_checked = sim.report.held_checked.saturating_add(1);
                         if !held {
-                            return Err(sim.fail(format!("server {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold")));
+                            // the node's entries of that commit, and what the server says of them
+                            let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
+                            let st = sim.hub(s).map(|h| h.store());
+                            let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
+                            return Err(sim.fail(format!("server {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
                         }
                     }
                 }
@@ -288,7 +333,8 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                         if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || !sync.entries(&l).iter().any(|(x, _)| x == db) {
                             continue;
                         }
-                        return Err(sim.fail(format!("server {s}: deposited {db:?} (commit {c:?}) under {l:?} not promoted by writer node {n}")));
+                        let what = format!("author {} actor {} kind {:?} aspects {:?} valid {:?}", h.author, h.actor, h.kind, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), sync.engine().pending().iter().find(|p| p.0 == c));
+                        return Err(sim.fail(format!("server {s}: deposited {db:?} (commit {c:?}: {what}) under {l:?} not promoted by writer node {n}")));
                     }
                 }
             }
@@ -311,6 +357,9 @@ fn purged(sim: &mut NetSim) -> Res<()> {
         let Some(ai) = ai else { continue };
         let blobs: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, kp))| *kc == c && kp.iter().any(|p| p.0 == ai)).map(|(k, _)| *k).collect();
         for s in 0..sim.servers.len() {
+            if sim.dishonest.contains(&s) {
+                continue;
+            }
             let Some(hub) = sim.hub(s) else { continue };
             for (l, b) in &blobs {
                 if hub.store().live_ids(l).unwrap_or_default().contains(b) {
@@ -354,6 +403,9 @@ pub type Heads = BTreeMap<(usize, LabelId), ([u8; 16], u64)>;
 pub fn log_heads(sim: &NetSim) -> Heads {
     let mut m = BTreeMap::new();
     for s in 0..sim.servers.len() {
+        if sim.dishonest.contains(&s) {
+            continue;
+        }
         let Some(hub) = sim.hub(s) else { continue };
         for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
             if let Ok(h) = hub.store().log_head(&l) {

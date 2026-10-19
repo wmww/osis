@@ -4,3 +4,4 @@
 
 - Seen in the simulator: `osis_sim::replay("reader_relays", 1)` without its waiver (`sim.waivers` in `relays`): "server 1: deposited ... not promoted by writer node 0" (a reader's certificate deposited at both servers; the writer promoted it at s0 only).
 - Fix (node-sync): promote per server: an entry present at a server unstamped there (the server's add carried no stamp) is promoted at that server, whatever the local stamp; or track the stamp state per (server, label, blob). The simulator waiver `WAIVE_PROMOTION` goes when this is fixed.
+- Also with one server: `osis_sim::replay("link_redeem", 7)` without its waiver: the promoting Upload was lost on a cut connection, but `promote` had already recorded the stamp locally, so the redeemer's node card stays deposited at the server for good. Per-server stamp state fixes both.
