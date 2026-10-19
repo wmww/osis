@@ -172,3 +172,35 @@ fn bundle_round_trip_spec_sync_11() {
     db.settle();
     assert_eq!(x(&db, t), Some(s("by bundle")));
 }
+
+// notes/api.md Handle (restore), Sharing (redeem): waits time out with `Network`; a failed
+// restore leaves no person record; a dropped redemption leaves no waiter and no held key.
+#[test]
+fn waits_time_out_and_roll_back_spec_api_handle() {
+    let mut a = World::new();
+    let sv = a.add_server();
+    let (alice, card) = a.person(1, &[sv]);
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    a.run();
+    // a world without that server: nothing answers
+    let mut w = World::new();
+    let store = osis::MemStore::new();
+    let mut c = w.cfg(4, &[]);
+    c.store = osis::StoreAt::Memory(store);
+    c.wait_timeout = Duration::from_secs(5);
+    let r = w.until(Osis::restore(c.clone(), &card), 1000, 10);
+    assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
+    assert!(Osis::open(c).is_err(), "no person record after a failed restore");
+    let (bob, _) = a.person(2, &[sv]);
+    {
+        let f = bob.redeem(&link);
+        let mut f = std::pin::pin!(f);
+        assert!(std::future::Future::poll(f.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+        assert_eq!(bob.waiting(), 1);
+        assert_eq!(bob.engine(|e| e.held_key_actors()), 1);
+    }
+    a.run();
+    assert_eq!(bob.waiting(), 0, "a dropped future leaves no waiter");
+    assert_eq!(bob.engine(|e| e.held_key_actors()), 0, "nor the link key");
+}

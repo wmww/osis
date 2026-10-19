@@ -22,7 +22,7 @@
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
 - `-v` is accepted and ignored (no engine log sink yet); `-q` silences `serve`'s log.
 - `diag --since` dropped: there is no stored diagnostics log yet.
-- `init --server`, `restore --server`, `pair join --server` seed `Config.servers`. The CLI runs sync on `Runtime::Own` over QUIC.
+- `init --server`, `restore --server`, `pair join --server` seed `Config.servers`. Commands that talk to other nodes (`init` with servers, `restore`, `pair`, `device rm`, `demote`, `link redeem/revoke`, `card import`, `status`, `sync`, `wait`, `daemon`, `signal`, `watch`, `roster --watch`, `diag --follow`) open the store with sync on `Runtime::Own` over QUIC; the others stay local (`Runtime::None`) and their writes go out with the next networked command.
 - Pairing is two lines carried by the user (the API is transport-agnostic): `pair offer` prints the offer, reads the request on stdin, prints the reply and the new node; `pair join OFFER` prints the request and reads the reply on stdin.
 - `roster T --watch` added for `watch_roster`.
 

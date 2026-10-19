@@ -1,6 +1,6 @@
 //! The background runtime (notes/api.md Design rules: async only where another node is waited
 //! on; sync runs on the handle's tokio runtime): two databases on `Runtime::Tokio` reach an
-//! osis-server driver over in-process sessions (tier 1, a guard timeout against a hang) and over
+//! osis-server driver (one on the app's runtime, one on `Runtime::Own`) over in-process sessions (tier 1, a guard timeout against a hang) and over
 //! localhost QUIC (tier 2, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -46,10 +46,17 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     w.commit().unwrap();
     tokio::time::timeout(GUARD, da.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
 
-    let db = tokio::time::timeout(GUARD, Osis::restore(cfg(2, vec![], b), &card.unwrap())).await.unwrap().unwrap();
+    // the fresh device syncs on a runtime of osis's own (`Runtime::Own`)
+    let mut own = cfg(2, vec![], b);
+    own.runtime = Runtime::Own;
+    let db = tokio::time::timeout(GUARD, Osis::restore(own, &card.unwrap())).await.unwrap().unwrap();
     assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Str("over the wire".into())));
     assert_eq!(db.status().unwrap().connected, 1);
-    drop((da, db));
+    // close() returns once the database is closed (the driver held only a weak reference)
+    let weak = da.downgrade();
+    da.close().unwrap();
+    assert!(weak.upgrade().is_none());
+    drop(db);
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }

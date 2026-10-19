@@ -461,3 +461,46 @@ fn stream_len_set_stream_spec_data_model_6() {
     db.write_with(|w| w.at(t, ak("/t/n")).set(&Value::Int(1))).unwrap();
     assert!(matches!(db.at(t, ak("/t/n")).len(), Err(Error::Invalid(_))));
 }
+
+// spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing placed only in a
+// group no synced group holds gets `NotSynced`; one placed in the (labeled) home group does not.
+#[test]
+fn not_synced_diagnostic_spec_api_diagnostics() {
+    let db = db(1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::NotSynced {
+            let _ = tx.send(d.tids);
+        }
+    });
+    let mut w = db.write();
+    let g = w.create(db.me(), Place::Unsynced).unwrap();
+    w.make_group(g).unwrap();
+    let home_item = w.create(db.me(), Place::In(db.home())).unwrap();
+    let lost = w.create(db.me(), Place::In(g)).unwrap();
+    w.commit().unwrap();
+    db.settle();
+    let got: Vec<osis::Tid> = rx.try_iter().flatten().collect();
+    assert!(got.contains(&lost), "{got:?}");
+    assert!(!got.contains(&home_item));
+}
+
+// notes/api.md Handle (close): close() from a callback fails at once (it would wait on the
+// dispatcher that runs it); from the app it returns once the database is closed.
+#[test]
+fn close_spec_api_handle() {
+    let db = db(1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let k = ak("/t/x");
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let sub = db.at(t, k).on_change(move |db, _| {
+        let _ = tx.send(db.clone().close());
+    }).unwrap();
+    assert!(matches!(recv(&rx), Err(Error::Invalid(_))));
+    drop(sub);
+    let weak = db.downgrade();
+    db.close().unwrap();
+    assert!(weak.upgrade().is_none(), "closed when close() returns");
+}
