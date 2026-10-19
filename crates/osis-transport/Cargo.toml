@@ -20,3 +20,8 @@ tokio = { workspace = true, features = ["rt", "net", "sync", "time"], optional =
 
 [features]
 quic = ["dep:quinn", "dep:rustls", "dep:ring", "dep:tokio"]
+# Sessions as channel pairs with tokio pump tasks, for node and server drivers.
+link = ["dep:tokio"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time"] }
