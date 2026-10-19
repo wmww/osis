@@ -46,6 +46,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
 | apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
+| wave 3 integration pass | done at 4037e9e, merge pending | tree unified into osis-commit, base64url in osis-core; issues/store-shape-reduced-arity.md (tier 2); 3 uncited osis-node tests (cite notes, not spec) for wave 4 to fix; FC-2 candidates in notes/testing.md |
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
