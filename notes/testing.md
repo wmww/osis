@@ -51,6 +51,7 @@ Nightly `coverage` job: `cargo llvm-cov --workspace`, lcov and summary as artifa
 
 ## Conventions for every crate
 - **Spec citations**: put `// spec/<file>.md §N[.M]: <what>` right above each `#[test]` (inside `proptest!` too); a bare `§N` refers to the last file named in that comment. A test without its own citation inherits the file's `//!` header citations. Infrastructure tests with no spec section say `// spec: none (<why>)`.
+- **Network in tests**: tier 1 uses `osis_transport::{Net, Sched}` (in-process, virtual steps, seeded faults and scheduling; no tokio); real-socket tests (QUIC on localhost) are tier 2.
 - **Tiers**: tier-2 tests are `#[ignore]` (optionally also gated on `OSIS_SLOW=1`); a crate's tier 1 stays under about 10 s.
 - **Vectors**: in the plan step that lands an encoding: write a generator `fn() -> VecFile` in `vectors/src/subjects/<subject>.rs` from the fixed inputs of plans/test-infra.md, register it in `subjects::get`, add the crate as an osis-vectors dependency, flip the MANIFEST line to `provisional`, run `gen-vectors`, and add the file to `vector_files!` in vectors/tests/vectors.rs. Hand-written vectors get a checker instead. Rejections use rule IDs documented in vectors/README.md. Toplevel review freezes them (FC entry).
 - **Fuzz**: a target per parser of peer or disk bytes (fuzz/README.md, "Adding a target"), seeds in `corpus.rs`; a crash becomes a regression test in the owning crate citing the spec section and `fuzz: <target>`.

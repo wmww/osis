@@ -326,7 +326,8 @@ impl SendStream for QuicSend {
     }
 
     async fn finish(&mut self) -> Result<(), Error> {
-        self.0.finish().map_err(|_| Error::Closed)
+        let _ = self.0.finish(); // Err only when already finished
+        self.0.stopped().await.map(|_| ()).map_err(|_| Error::Closed)
     }
 }
 

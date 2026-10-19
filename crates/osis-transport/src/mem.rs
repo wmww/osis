@@ -59,6 +59,11 @@ struct Conn {
     accept: [VecDeque<u64>; 2],
     accept_waker: [Option<Waker>; 2],
     next_stream: u64,
+    /// Reset: operations fail; kept until the other side's handle drops so a `finish` can
+    /// still tell whether its data got through.
+    closed: bool,
+    /// Sides whose last handle dropped; the entry goes when both have.
+    dropped: [bool; 2],
 }
 
 struct Strm {
@@ -78,6 +83,8 @@ struct Pipe {
     /// (step, bytes delivered in that step) for the bandwidth cap.
     used: (u64, usize),
     waker: Option<Waker>,
+    /// A `finish` waiting for the flight to drain.
+    send_waker: Option<Waker>,
 }
 
 struct Chunk {
@@ -101,6 +108,7 @@ impl Conn {
         for s in self.streams.values_mut() {
             for p in &mut s.pipes {
                 wake(&mut p.waker);
+                wake(&mut p.send_waker);
             }
         }
         for w in &mut self.accept_waker {
@@ -139,6 +147,9 @@ impl Conn {
                 }
                 if moved {
                     wake(&mut p.waker);
+                    if p.flight.is_empty() {
+                        wake(&mut p.send_waker);
+                    }
                     if side == s.opener && !p.announced {
                         p.announced = true;
                         let peer = 1 - side;
@@ -182,9 +193,20 @@ impl State {
     }
 
     fn close(&mut self, id: u64) {
-        if let Some(mut c) = self.conns.remove(&id) {
+        if let Some(c) = self.conns.get_mut(&id).filter(|c| !c.closed) {
+            c.closed = true;
+            for st in c.streams.values_mut() {
+                for p in &mut st.pipes {
+                    p.flight.clear();
+                    p.ready.clear();
+                }
+            }
             c.wake_all();
         }
+    }
+
+    fn live(&mut self, id: u64) -> Option<&mut Conn> {
+        self.conns.get_mut(&id).filter(|c| !c.closed)
     }
 
     fn id(&mut self) -> u64 {
@@ -237,7 +259,7 @@ impl Net {
     pub fn disconnect(&self, a: &str, b: &str) {
         let mut st = lock(&self.0);
         let p = pair(a, b);
-        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| pair(&c.ends[0], &c.ends[1]) == p).map(|(i, _)| *i).collect();
+        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| !c.closed && pair(&c.ends[0], &c.ends[1]) == p).map(|(i, _)| *i).collect();
         for id in ids {
             st.close(id);
         }
@@ -246,7 +268,7 @@ impl Net {
     /// Resets every connection of endpoint `a` and closes its listeners.
     pub fn kill(&self, a: &str) {
         let mut st = lock(&self.0);
-        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| c.ends.iter().any(|e| e == a)).map(|(i, _)| *i).collect();
+        let ids: Vec<u64> = st.conns.iter().filter(|(_, c)| !c.closed && c.ends.iter().any(|e| e == a)).map(|(i, _)| *i).collect();
         for id in ids {
             st.close(id);
         }
@@ -284,7 +306,7 @@ impl Net {
 
     /// Open connections.
     pub fn connections(&self) -> usize {
-        lock(&self.0).conns.len()
+        lock(&self.0).conns.values().filter(|c| !c.closed).count()
     }
 
     /// Completes after `steps` virtual steps.
@@ -362,6 +384,8 @@ impl Transport for InProcess {
                 accept: [VecDeque::new(), VecDeque::new()],
                 accept_waker: [None, None],
                 next_stream: 0,
+                closed: false,
+                dropped: [false, false],
             });
             if let Some(l) = st.listeners.get_mut(name) {
                 l.queue.push_back(id);
@@ -403,7 +427,7 @@ impl Listener for MemListener {
                 let Some(l) = st.listeners.get_mut(&self.name) else { return Poll::Ready(Err(Error::Closed)) };
                 match l.queue.pop_front() {
                     Some(id) => {
-                        if st.conns.contains_key(&id) {
+                        if st.live(id).is_some() {
                             return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1 }))));
                         }
                     }
@@ -445,7 +469,17 @@ struct Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        lock(&self.net.0).close(self.id);
+        let mut st = lock(&self.net.0);
+        st.close(self.id);
+        let gone = st.conns.get_mut(&self.id).is_some_and(|c| {
+            if let Some(d) = c.dropped.get_mut(self.side) {
+                *d = true;
+            }
+            c.dropped == [true, true]
+        });
+        if gone {
+            st.conns.remove(&self.id);
+        }
     }
 }
 
@@ -464,7 +498,7 @@ impl Connection for MemConn {
     fn open_stream(&self) -> impl Future<Output = Result<(MemSend, MemRecv), Error>> + Send {
         let r = (|| {
             let mut st = lock(&self.0.net.0);
-            let c = st.conns.get_mut(&self.0.id).ok_or(Error::Closed)?;
+            let c = st.live(self.0.id).ok_or(Error::Closed)?;
             let s = c.next_stream;
             c.next_stream = s.wrapping_add(1);
             c.streams.insert(s, Strm { opener: self.0.side, pipes: [Pipe::default(), Pipe::default()] });
@@ -477,7 +511,7 @@ impl Connection for MemConn {
         poll_fn(|cx| {
             let mut st = lock(&self.0.net.0);
             let side = self.0.side;
-            let Some(c) = st.conns.get_mut(&self.0.id) else { return Poll::Ready(Err(Error::Closed)) };
+            let Some(c) = st.live(self.0.id) else { return Poll::Ready(Err(Error::Closed)) };
             match c.accept.get_mut(side).and_then(|q| q.pop_front()) {
                 Some(s) => Poll::Ready(Ok(self.halves(s))),
                 None => {
@@ -507,14 +541,22 @@ pub struct MemSend {
 }
 
 impl MemSend {
+    /// Runs `f` on our pipe with the connection's closed flag.
+    fn pipe<R>(&self, f: impl FnOnce(&mut Pipe, bool) -> R) -> Option<R> {
+        let mut st = lock(&self.h.net.0);
+        let side = self.h.side;
+        let c = st.conns.get_mut(&self.h.id)?;
+        let closed = c.closed;
+        c.streams.get_mut(&self.s).and_then(|s| s.pipes.get_mut(side)).map(|p| f(p, closed))
+    }
+
     fn push(&mut self, data: &[u8], fin: bool) -> Result<(), Error> {
         let mut st = lock(&self.h.net.0);
         let (step, f) = (st.step, st.faults);
         let delay = f.latency.saturating_add(st.rng.below(f.jitter.saturating_add(1)));
         let side = self.h.side;
         let p = st
-            .conns
-            .get_mut(&self.h.id)
+            .live(self.h.id)
             .and_then(|c| c.streams.get_mut(&self.s))
             .and_then(|s| s.pipes.get_mut(side))
             .ok_or(Error::Closed)?;
@@ -537,13 +579,40 @@ impl SendStream for MemSend {
     }
 
     fn finish(&mut self) -> impl Future<Output = Result<(), Error>> + Send {
-        std::future::ready(self.push(&[], true))
+        let mut pushed = None;
+        poll_fn(move |cx| {
+            if pushed.is_none() {
+                let sent = self.pipe(|p, closed| (p.fin_sent, closed));
+                pushed = Some(match sent {
+                    Some((false, false)) => self.push(&[], true),
+                    Some((true, _)) => Ok(()),
+                    _ => Err(Error::Closed),
+                });
+            }
+            if let Some(Err(e)) = &pushed {
+                return Poll::Ready(Err(e.clone()));
+            }
+            let w = cx.waker().clone();
+            // done once the fin (so all data) reached the peer, even if it closed since
+            match self.pipe(move |p, closed| {
+                if !p.fin && !closed {
+                    p.send_waker = Some(w);
+                }
+                (p.fin, closed)
+            }) {
+                Some((true, _)) => Poll::Ready(Ok(())),
+                Some((false, false)) => Poll::Pending,
+                _ => Poll::Ready(Err(Error::Closed)),
+            }
+        })
     }
 }
 
 impl Drop for MemSend {
     fn drop(&mut self) {
-        let _ = self.push(&[], true);
+        if self.pipe(|p, closed| p.fin_sent || closed) == Some(false) {
+            let _ = self.push(&[], true);
+        }
     }
 }
 
@@ -561,7 +630,7 @@ impl RecvStream for MemRecv {
             }
             let mut st = lock(&self.h.net.0);
             let peer = 1 - self.h.side;
-            let Some(p) = st.conns.get_mut(&self.h.id).and_then(|c| c.streams.get_mut(&self.s)).and_then(|s| s.pipes.get_mut(peer)) else {
+            let Some(p) = st.live(self.h.id).and_then(|c| c.streams.get_mut(&self.s)).and_then(|s| s.pipes.get_mut(peer)) else {
                 return Poll::Ready(Err(Error::Closed));
             };
             if !p.ready.is_empty() {

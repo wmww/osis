@@ -11,10 +11,12 @@ pub mod mem;
 pub mod quic;
 pub mod sched;
 mod util;
+pub mod manage;
 
 pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
+pub use manage::{close_gracefully, connect, Backoff};
 #[cfg(feature = "quic")]
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 
@@ -103,7 +105,9 @@ pub trait Connection: Clone + Send + Sync + 'static {
 /// The sending half of a stream. Dropping it finishes the stream.
 pub trait SendStream: Send + 'static {
     fn write_all(&mut self, buf: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
-    /// End of stream: the peer reads `Ok(0)` after the data.
+    /// End of stream: the peer reads `Ok(0)` after the data. Completes once the peer's transport
+    /// has received everything (or stopped reading), so a `close` after it loses nothing of ours.
+    /// Finishing twice is a no-op.
     fn finish(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
