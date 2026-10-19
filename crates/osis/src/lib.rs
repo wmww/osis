@@ -157,7 +157,7 @@ pub use net::{ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
 pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
+pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, FINALIZE_DELAY_MS, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
 pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};

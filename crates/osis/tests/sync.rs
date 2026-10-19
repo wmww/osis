@@ -117,12 +117,121 @@ fn grant_by_inbox_spec_sync_3() {
     assert_eq!(b, bob.me());
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     let t = item(&alice, g, g, "for bob");
-    for _ in 0..3 {
-        w.advance(70_000);
-    }
+    w.run();
     assert_eq!(x(&bob, t), Some(s("for bob")));
     assert_eq!(bob.role_on(g), Some(Role::Write));
     let u = item(&bob, g, g, "from bob");
     w.run();
     assert_eq!(x(&alice, u), Some(s("from bob")));
+}
+
+/// Alice and `n` other people on one server; each other person's card imported by Alice.
+fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let others: Vec<Osis> = (0..n).map(|i| w.person(2 + i as u64, &[sv]).0).collect();
+    w.run();
+    let mut ids = Vec::new();
+    for o in &others {
+        let card = o.contact_card().unwrap();
+        w.run();
+        ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
+    }
+    (alice, others, ids)
+}
+
+// spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
+// reads what was there before; Alice's device ends the link a while after it sees the joiner
+// (K rotates), and Bob stays a member.
+#[test]
+fn link_redeem_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, others, _) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    let before = item(&alice, g, g, "before the link");
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true }).unwrap();
+    assert_eq!(alice.links(g).len(), 1);
+    w.run();
+    let link: osis::ShareLink = link.to_string().parse().unwrap();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
+    w.run();
+    assert_eq!(x(bob, before), Some(s("before the link")));
+    let u = item(bob, g, g, "from the joiner");
+    w.run();
+    assert_eq!(x(&alice, u), Some(s("from the joiner")));
+    assert_eq!(alice.links(g).len(), 1, "ended a while after the first joiner");
+    w.advance(osis::FINALIZE_DELAY_MS);
+    w.run();
+    assert!(alice.links(g).is_empty(), "single use: finalized");
+    let v = item(&alice, g, g, "after the link ended");
+    w.run();
+    assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
+}
+
+// spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing
+// (demote): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
+// not; Bob's write made before the removal stays.
+#[test]
+fn removal_rotates_spec_permissions_3() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let g = group(&alice);
+    for id in &ids {
+        alice.grant(g, *id, Role::Write, Default::default()).unwrap();
+    }
+    w.run();
+    let by_bob = item(bob, g, g, "bob was here");
+    w.run();
+    w.until(alice.demote(g, ids[0], osis::Lower::Remove, osis::Demotion::default()), 1000, 10).unwrap();
+    assert!(!alice.roster(g).contains_key(&ids[0]));
+    let after = item(&alice, g, g, "after bob left");
+    w.run();
+    assert_eq!(x(carol, after), Some(s("after bob left")));
+    assert_eq!(x(bob, after), None);
+    assert_eq!(x(&alice, by_bob), Some(s("bob was here")));
+    assert_eq!(x(carol, by_bob), Some(s("bob was here")));
+}
+
+// spec/sync.md §9, notes/api.md Signals: a signal about a shared thing reaches another person's
+// device through the server; local listeners fire too.
+#[test]
+fn remote_signal_spec_sync_9() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
+    w.run();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let tx2 = tx.clone();
+    let _a = alice.on_signal(g, ak("/t/typing"), move |_, e| tx.send(("alice", e.value.unwrap(), e.actor)).unwrap());
+    let _b = bob.on_signal(g, ak("/t/typing"), move |_, e| tx2.send(("bob", e.value.unwrap(), e.actor)).unwrap());
+    bob.send_signal(g, &ak("/t/typing"), &Value::Int(1), osis::Target::All).unwrap();
+    w.run();
+    let mut got = vec![recv(&rx), recv(&rx)];
+    got.sort_by_key(|g| g.0);
+    assert_eq!(got, vec![("alice", Value::Int(1), bob.me()), ("bob", Value::Int(1), bob.me())]);
+}
+
+// spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an
+// expiry reaches the other member and is gone everywhere once it expires.
+#[test]
+fn disappearing_message_spec_commits_6() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
+    w.run();
+    let mut wr = alice.write();
+    let m = wr.create(g, Place::In(g)).unwrap();
+    wr.at(m, ak("/t/x")).expires_in(Duration::from_secs(10)).set(&s("gone soon")).unwrap();
+    wr.commit().unwrap();
+    w.run();
+    assert_eq!(x(bob, m), Some(s("gone soon")));
+    w.advance(11_000);
+    assert_eq!(x(&alice, m), None);
+    assert_eq!(x(bob, m), None);
 }

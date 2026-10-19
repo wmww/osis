@@ -91,6 +91,9 @@ pub(crate) struct MadeLink {
     pub l: Tid,
     pub target: Tid,
     pub single_use: bool,
+    /// When this node first saw a joiner of a single-use link (memory only: a restart waits
+    /// again).
+    pub joined: Option<u64>,
 }
 
 /// The sync engine with its event channel, the dispatcher sequence number and the handle's

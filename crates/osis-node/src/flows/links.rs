@@ -111,7 +111,8 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     m.create(key_actor_record(&lkeys, seed));
     m.sign_as(l);
     key_actor_keys(&mut m, l, &lkeys)?;
-    done.add(Engine::commit_tx(tx, m)?);
+    let lc = Engine::commit_tx(tx, m)?;
+    done.add(lc);
     // K, with secrets of its own
     let mut m = Mutation::new();
     let k = m.create(crate::identity::thing_record(sharer, &mut *tx.rng));
@@ -134,6 +135,11 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let label = new_label(tx, &mut m, k, &epochs, &readers, &deposit, &spec.servers)?;
     m.op(k, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, servers: spec.servers.clone() }).to_value()) })?;
     done.add(Engine::commit_tx(tx, m)?);
+    // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
+    // need L's `/created`
+    if let Some(c) = lc {
+        done.deliveries.push(Delivery::Certificate { commits: vec![c], under: k });
+    }
     // K on the target
     let target_edge = Edge { role: spec.role, until: None, invite: None, since: None };
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false)?);

@@ -290,3 +290,29 @@ fn large_values_equal_by_hash_spec_5_5() {
     assert_eq!(diff(&mut Writer::new(ts(2 << 16), a, 2), Some(&reg), &view, &link(2)).unwrap(), None);
 }
 
+/// spec/crdt.md §5.6, §3.3: a remove and a put of one live map key in one batch (flows rewrite a
+/// history box as remove + put) encodes canonically.
+#[test]
+fn remove_then_put_same_key_round_trips_spec_5_6() {
+    use crate::codec::{decode_delta, encode_delta};
+    use crate::stamp::Interner;
+    use crate::wire::{Delta, DeltaCtx, DeltaKind};
+    let view = AnyView;
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let key = Value::Int(0);
+    let mk = |v: u8| Value::Map([(key.clone(), Value::Bytes(vec![v; 4]))].into_iter().collect());
+    let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
+    let st = create(&mut w, &view, &mk(1)).unwrap();
+    for (src, lo) in [(a.clone(), 2), (Source::node(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_core::CommitId([9; 32])), 1)] {
+        let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), src.clone(), lo));
+        batch.apply(&PathOp { path: vec![], op: Op::Remove(key.clone()) }, &view).unwrap();
+        batch.apply(&PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(Value::Bytes(vec![1; 4])) }, &view).unwrap();
+        let (d, range) = batch.finish().unwrap();
+        let cx = DeltaCtx { ts: ts(5 << 16), own: src.clone(), range, kind: DeltaKind::Writer };
+        let delta = Delta { nonce: [7; 16], fragment: d };
+        let bytes = encode_delta(&delta, &cx, None).unwrap();
+        let back = decode_delta(&bytes, &cx, &mut Interner::new(), None);
+        assert_eq!(back.as_ref().ok(), Some(&delta), "{back:?}");
+    }
+}
+

@@ -15,6 +15,8 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+/// How long after the first joiner a single-use link is ended (`LinkOpts::single_use`).
+pub const FINALIZE_DELAY_MS: u64 = 10 * 60_000;
 /// How long a `WaitForSync::Required` demotion waits for its pre-sync.
 pub const PRESYNC_WAIT: Duration = Duration::from_secs(30);
 
@@ -54,8 +56,9 @@ pub enum Lower {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     pub until: Option<WallMs>,
-    /// The first redemption ends the link: this node removes the link key once it sees a joiner
-    /// (the link format carries no flag, so redeemers cannot do it themselves).
+    /// The first redemption ends the link: this node removes the link key `FINALIZE_DELAY_MS`
+    /// after it sees a joiner (the link format carries no flag, so redeemers cannot remove it
+    /// themselves; issues/api-single-use-links.md).
     pub single_use: bool,
 }
 
@@ -359,7 +362,7 @@ impl Osis {
         let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new() }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
-            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use });
+            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, joined: None });
         });
         self.save_links()?;
         self.carry(done)?;
@@ -415,16 +418,28 @@ impl Osis {
         self.demote(id, l, Lower::Remove, d).await
     }
 
-    /// Ends single-use links whose K gained a joiner (after a roster change of K).
+    /// Ends single-use links `FINALIZE_DELAY` after this node first saw a joiner (the joiner
+    /// reaches the target first: K rotates at the end, issues/api-single-use-links.md).
     pub(crate) fn upkeep_links(&self, l: &mut crate::handle::Locked, changed: &BTreeSet<Tid>) {
-        let due: Vec<(Tid, Tid)> = l.links.iter().filter(|(k, m)| m.single_use && changed.contains(k)).map(|(k, m)| (*k, m.l)).collect();
         let me = self.me();
-        for (k, lk) in due {
+        let now = self.inner.clock.now_wall_ms().0;
+        let watch: Vec<Tid> = l.links.iter().filter(|(k, m)| m.single_use && (changed.contains(k) || m.joined.is_some())).map(|(k, _)| *k).collect();
+        for k in watch {
+            let Some(m) = l.links.get(&k).copied() else { continue };
             let r = l.engine().roster(&k);
-            if !r.contains_key(&lk) || !r.keys().any(|m| *m != lk && *m != me) {
+            if !r.contains_key(&m.l) || !r.keys().any(|x| *x != m.l && *x != me) {
                 continue;
             }
-            let done = l.engine().finalize_link(&k, &lk);
+            let Some(at) = m.joined else {
+                if let Some(x) = l.links.get_mut(&k) {
+                    x.joined = Some(now);
+                }
+                continue;
+            };
+            if now < at.saturating_add(FINALIZE_DELAY_MS) {
+                continue;
+            }
+            let done = l.engine().finalize_link(&k, &m.l);
             match done.and_then(|d| l.sync.carry_out(d)) {
                 Ok(acts) => self.inner.net.apply(acts),
                 Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![k], commit: None, peer: None, detail: format!("finalizing a single-use link: {e}") }),
@@ -447,7 +462,7 @@ impl Osis {
             if let Value::List(f) = i
                 && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s)] = f.as_slice()
             {
-                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s });
+                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, joined: None });
             }
         }
         self.locked(|x| x.links = links);
@@ -587,6 +602,11 @@ impl Osis {
             if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
                 return Ok(());
             }
+            // the label's keys derive from the group's own secrets from the start, so members
+            // granted later verify its whole path (notes/api.md Implementation)
+            let done = x.engine().give_own_secrets(&g)?;
+            let acts = x.sync.carry_out(done)?;
+            self.inner.net.apply(acts);
             let (_, acts) = x.sync.create_label(&g, servers)?;
             self.inner.net.apply(acts);
             Ok(())
