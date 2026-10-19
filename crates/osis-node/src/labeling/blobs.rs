@@ -107,20 +107,59 @@ impl Engine {
     }
 
     /// The bodies a group's label must hold from its closure (spec/sync.md §3): projections of
-    /// held commits touching the closure whose deltas the group's actor may read.
+    /// held commits touching the closure whose deltas the group's actor may read. A home label
+    /// (an actor synced as a group of itself) also carries the `/label` and `/created` writes of
+    /// the labeled groups it is the nearest labeled owner-chain actor of (spec/sync.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let closure = self.closure(g);
         let x = self.group_actor(g);
-        let ids: Vec<CommitId> = self.core.commits.iter().filter(|(_, m)| m.header.aspects.iter().any(|a| closure.contains(&a.tid))).map(|(id, _)| *id).collect();
+        let published = self.published_under(g);
+        let ids: Vec<CommitId> = self
+            .core
+            .commits
+            .iter()
+            .filter(|(_, m)| m.header.aspects.iter().any(|a| closure.contains(&a.tid) || published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created")))
+            .map(|(id, _)| *id)
+            .collect();
         let mut out = Vec::new();
         for id in ids {
+            let Some(h) = self.header(&id) else { continue };
+            let touches = h.aspects.iter().any(|a| closure.contains(&a.tid));
             for b in self.bodies(&id)? {
-                if self.core.may_read(&x, &b.reader) {
+                let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
+                if inside && self.core.may_read(&x, &b.reader) {
                     out.push(b);
                 }
             }
         }
         Ok(out)
+    }
+
+    /// Labeled groups whose nearest labeled owner-chain actor is `g` (its home label publishes
+    /// their `/label`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
+    fn published_under(&self, g: &Tid) -> std::collections::BTreeSet<Tid> {
+        let mut out = std::collections::BTreeSet::new();
+        if !self.core.own_keys.contains(g) {
+            return out;
+        }
+        let labeled: std::collections::BTreeSet<Tid> = self.labeled_groups().into_iter().collect();
+        for h in &labeled {
+            if h == g {
+                continue;
+            }
+            let mut cur = *h;
+            for _ in 0..64 {
+                let Some(osis_core::CreationRecord::Thing { owner, .. }) = self.core.created(&cur) else { break };
+                cur = *owner;
+                if labeled.contains(&cur) && self.core.own_keys.contains(&cur) {
+                    if cur == *g {
+                        out.insert(*h);
+                    }
+                    break;
+                }
+            }
+        }
+        out
     }
 
     /// The read secret a commit is wrapped under at a label of `g` (spec/crypto.md §5): the

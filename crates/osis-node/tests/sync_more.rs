@@ -168,3 +168,37 @@ fn inbox_delivery_spec_sync_3() {
 }
 
 use osis_schema::Codec;
+
+// spec/sync.md §2: a group's `/label` (with its `/created`) is also published under the home
+// label of the nearest owner-chain actor that has one, so that actor's other devices find it.
+#[test]
+fn label_published_under_home_label_spec_sync_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let p = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    // a group owned by P, labeled, never delivered to B
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g2 = e.new_thing(&mut m, p);
+    m.set(g2, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let at = net.tid(a);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (p, Role::Admin)]);
+    rotation(e, g2, &rs, 71, true);
+    let addr = net.address(sv);
+    let acts = net.sync(a).create_label(&g2, vec![addr]).unwrap().1;
+    net.actions(a, acts);
+    let t = net.item(a, g2, g2, "inside");
+    net.run();
+    net.run();
+    diags(&mut net, &[a, b]);
+    let labels = net.engine(b).get_typed(&g2, &ct::LABEL).unwrap();
+    assert!(labels.is_some_and(|l| l.len() == 1), "B found the group's label through P's home label");
+    // B is listed by P's claim key (P owns the group): it claims, downloads the rotation under
+    // the epoch it superseded (derived from P's), opens its boxes and reads
+    assert_eq!(net.read(b, t), Some(s("inside")));
+}

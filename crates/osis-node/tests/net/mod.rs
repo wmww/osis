@@ -374,14 +374,15 @@ pub fn s(x: &str) -> Value {
 }
 
 fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
-    let kem = if t == e.tid() {
-        e.identity().keys().kem.public().clone()
-    } else {
-        let k = e.get_typed(&t, &ct::KEYS).unwrap().unwrap();
-        let ct::KemKey::X25519MlKem768(b) = k.key.unwrap();
-        osis_crypto::KemPublicKey::from_slice(&b).unwrap()
-    };
-    Recipient { member: t, role, keys: MemberKeys::KeyActor { kem, seed: None } }
+    if t == e.tid() {
+        return Recipient { member: t, role, keys: MemberKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } };
+    }
+    let k = e.get_typed(&t, &ct::KEYS).unwrap().unwrap();
+    let mut keys = MemberKeys::from_keys(&k).unwrap();
+    if let Some(own) = e.epochs(&t).filter(|_| matches!(keys, MemberKeys::Actor { .. })) {
+        keys = keys.with_own(&own);
+    }
+    Recipient { member: t, role, keys }
 }
 
 pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, role: Role) -> CommitId {
