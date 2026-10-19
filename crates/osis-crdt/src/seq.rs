@@ -15,7 +15,6 @@ use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::ops::{Op, PathOp, PathSeg, Writer};
 use crate::stamp::{Dot, Source, Stamp, max_opt};
 use crate::view::View;
-use crate::wire::{Dec, Enc};
 use osis_core::Value;
 use std::collections::BTreeMap;
 
@@ -374,15 +373,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
 
 // ---- wire hooks (§3.2 Run, §3.3)
 
-/// The `[Run*]` array of `s` (before paging). Sort runs with `Enc::dot_order`.
-pub(crate) fn encode_elems(_s: &Seq, _cx: &mut Enc) -> Result<Vec<Value>, Error> {
-    Err(UNSUPPORTED)
-}
-
-/// Reads runs (one page or the whole array) into `s`.
-pub(crate) fn decode_elems(_s: &mut Seq, _runs: &[Value], _cx: &mut Dec) -> Result<(), Error> {
-    Err(UNSUPPORTED)
-}
+pub(crate) use crate::seq_wire::{decode_elems, encode_elems};
 
 // ---- op hooks (§5.7 Ops, §9)
 

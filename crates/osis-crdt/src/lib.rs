@@ -13,6 +13,7 @@ mod linearize;
 mod ops;
 mod page;
 mod seq;
+mod seq_wire;
 mod stamp;
 mod state;
 mod undo;
