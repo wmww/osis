@@ -3,7 +3,7 @@
 
 use crate::blob::{CommitBlob, Part, encode_parts};
 use crate::cbor::array_head;
-use crate::header::{Header, Token, retention_value};
+use crate::header::{AspectEntry, Header, Token, retention_value};
 use crate::Error;
 use osis_core::format::{MAX_BLOB, MAX_COMMITMENTS};
 use osis_crypto::padme;
@@ -58,27 +58,27 @@ fn fixed_len(c: &CommitBlob) -> usize {
     1usize.saturating_add(c.header.encode().len()).saturating_add(osis_core::encode(&c.signature.to_value()).len())
 }
 
-/// The prefix inputs any blob of `h` holding `parts` must carry: the parts' common expiry and
-/// the union of the tokens their aspects list (spec/wire.md §4). Zero parts: none.
+/// The prefix inputs any blob of `h` holding `parts` must carry: the expiry and the tokens of
+/// their one retention class (spec/wire.md §4, spec/sync.md §3). Parts of different classes
+/// (retention, expiry or token set) in one blob are bad input. Zero parts: none.
 pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64>, Vec<Token>), Error> {
-    let mut expires = None;
-    let mut idx = Vec::new();
-    for (i, (ai, _)) in parts.iter().enumerate() {
+    let mut class: Option<&AspectEntry> = None;
+    for (ai, _) in parts {
         let a = h.aspects.get(*ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-        if i == 0 {
-            expires = a.expires;
-        } else if a.expires != expires {
-            return Err(Error::Build("parts of one blob with different expiry"));
+        match class {
+            None => class = Some(a),
+            Some(c) if (c.retention, c.expires, &c.tokens) != (a.retention, a.expires, &a.tokens) => {
+                return Err(Error::Invalid("one blob holding deltas of several retention classes"));
+            }
+            Some(_) => {}
         }
-        idx.extend(a.tokens.iter().copied());
     }
-    idx.sort_unstable();
-    idx.dedup();
-    let tokens = idx.iter().map(|i| h.tokens.get(*i).copied().ok_or(Error::Malformed("token index out of range"))).collect::<Result<Vec<_>, _>>()?;
+    let Some(c) = class else { return Ok((None, Vec::new())) };
+    let tokens = c.tokens.iter().map(|i| h.tokens.get(*i).copied().ok_or(Error::Malformed("token index out of range"))).collect::<Result<Vec<_>, _>>()?;
     if tokens.len() > MAX_COMMITMENTS {
-        return Err(Error::Build("more than MAX_COMMITMENTS tokens in one blob"));
+        return Err(Error::Invalid("more than MAX_COMMITMENTS tokens in one blob"));
     }
-    Ok((expires, tokens))
+    Ok((c.expires, tokens))
 }
 
 /// Every delta must fit a blob alone (spec/commits.md §1).

@@ -101,9 +101,9 @@ fn list_overflow_links() {
     let mut back = CommitBlob::decode(&bytes).unwrap();
     assert!(!back.header.is_resolved());
     assert!(matches!(back.header.validate(), Err(Error::Missing)));
-    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(2))), Err(Error::Missing)));
-    assert!(matches!(back.header.resolve(&mut sink, &sec(0xd0, &t(9))), Err(Error::Corrupt)));
-    back.header.resolve(&mut sink, &sec(0xd0, &t(2))).unwrap();
+    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(2)), MAX_LIST_BYTES), Err(Error::Missing)));
+    assert!(matches!(back.header.resolve(&mut sink, &sec(0xd0, &t(9)), MAX_LIST_BYTES), Err(Error::Corrupt)));
+    back.header.resolve(&mut sink, &sec(0xd0, &t(2)), MAX_LIST_BYTES).unwrap();
     assert_eq!(&back, &built.commit);
     assert_eq!(back.id(), built.commit.id());
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
@@ -123,11 +123,11 @@ fn small_linked_list_rejected() {
         Ok(Prefix { salt: [salt; 16], expiry: None, commitments: vec![] })
     })
     .unwrap();
-    assert_eq!(read_tree(&link, &d, &mut sink).unwrap(), bytes);
+    assert_eq!(read_tree(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);
     h.links.aspects = Some(link);
     let mut back = Header::decode(&h.encode()).unwrap();
     assert!(back.aspects.is_empty());
-    assert!(matches!(back.resolve(&mut sink, &d), Err(Error::Malformed(_))));
+    assert!(matches!(back.resolve(&mut sink, &d, MAX_LIST_BYTES), Err(Error::Malformed(_))));
 }
 
 fn mixed() -> CommitBlob {
@@ -211,7 +211,7 @@ fn purge_rewrite() {
     let back = CommitBlob::decode(&all.encode()).unwrap();
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
     assert_eq!(prefix_inputs(&c.header, &[]).unwrap(), (None, vec![]));
-    assert!(matches!(prefix_inputs(&c.header, &[(4, 0), (5, 0)]), Err(Error::Build(_))));
+    assert!(matches!(prefix_inputs(&c.header, &[(4, 0), (5, 0)]), Err(Error::Invalid(_))));
 }
 
 // spec/permissions.md §7, spec/wire.md §4: an import carries its origins table, empty ranges,

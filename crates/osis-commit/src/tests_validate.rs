@@ -21,7 +21,7 @@ fn validate_layout() {
     x.aspects[0].schema = Some(1);
     assert!(matches!(invalid(&x), Error::Malformed(_)));
     let mut x = h.clone();
-    x.aspects[0].tokens = vec![0];
+    x.tokens.push(Token { level: 3, hash: [3; 16] });
     assert!(matches!(invalid(&x), Error::Malformed(_)), "unused token");
     let mut x = h.clone();
     let mut a2 = x.aspects[0].clone();
@@ -53,6 +53,8 @@ fn validate_kinds() {
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("writer"));
     x.aspects[0].retention.by = PurgeBy::Writer;
+    x.tokens.push(Token { level: 3, hash: [3; 16] });
+    x.aspects[0].tokens = vec![0, 1, 2];
     x.validate().unwrap();
     let mut x = h.clone();
     x.kind = Kind::Import;
@@ -159,15 +161,15 @@ fn retention_rules() {
     assert_eq!(fixed_retention("/app/x"), None);
     assert_eq!(write_retention("/app/x", None, None).unwrap(), Retention::default());
     assert_eq!(Retention::default().by, PurgeBy::Author);
-    assert_eq!(write_expires("/app/x", ts(10), None, None), None);
+    assert_eq!(write_expires("/app/x", ts(10), None, None).unwrap(), None);
     let d = AspectDefaults {
         retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: Some(7), rel: None }, at_most: Bound::default() },
         expires: Some(100),
     };
     assert_eq!(write_retention("/app/x", Some(&d), None).unwrap(), d.retention);
-    assert_eq!(write_expires("/app/x", ts(10), Some(&d), None), Some(110));
-    assert_eq!(write_expires("/app/x", ts(10), Some(&d), Some(50)), Some(50));
-    assert_eq!(write_expires("/members", ts(10), Some(&d), Some(50)), None);
+    assert_eq!(write_expires("/app/x", ts(10), Some(&d), None).unwrap(), Some(110));
+    assert_eq!(write_expires("/app/x", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
+    assert_eq!(write_expires("/members", ts(10), Some(&d), Some(50)).unwrap(), None);
     assert!(write_retention("/members", None, Some(Retention::default())).is_err());
     let bad = Retention { by: PurgeBy::Author, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
     assert!(write_retention("/app/x", None, Some(bad)).is_err());

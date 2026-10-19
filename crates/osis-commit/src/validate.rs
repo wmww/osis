@@ -1,7 +1,7 @@
 //! Structural validation of a resolved header (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
 use crate::cbor::strictly_ascending;
-use crate::header::{Header, Kind, aspect_key, purge_value, token_value};
+use crate::header::{FOREVER, Header, Kind, aspect_key, purge_value, token_value};
 use crate::retention::{CREATED, check_retention, fixed_retention, token_levels};
 use crate::Error;
 use osis_core::format::FORMAT_VERSION;
@@ -23,6 +23,7 @@ impl Header {
         }
         let ord = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(Error::Malformed(what)) };
         ord(strictly_ascending(&self.schemas, |s| s.0), "schemas not sorted and distinct")?;
+        ord(self.schemas.iter().all(|s| s.1 <= FOREVER), "integer above 2^63 - 1")?;
         ord(!self.aspects.is_empty(), "no aspects")?;
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
@@ -36,6 +37,9 @@ impl Header {
         for a in &self.aspects {
             let ak = a.ak.as_str();
             // indices and ranges
+            ord(!a.hashes.is_empty(), "aspect without delta hashes")?;
+            let nums = [Some(a.lo), Some(a.hi), a.expires, a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
+            ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
             if a.schema.is_some_and(|i| i >= self.schemas.len()) {
                 return Err(Error::Malformed("schema index out of range"));
             }
@@ -74,15 +78,19 @@ impl Header {
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
             }
-            let allowed = token_levels(&a.retention, kind);
-            let mut sorted = levels.clone();
-            sorted.sort_unstable();
-            sorted.dedup();
-            if sorted.len() != levels.len() || !levels.iter().all(|l| allowed.contains(l)) {
+            // levels as listed (ascending, since tokens sort by level first): exactly those the
+            // retention calls for; only level 1 may be missing, and not on membership commits
+            // (provisional, issues/token-admin-secret.md)
+            let required = token_levels(&a.retention, kind);
+            let without_admin: Vec<u8> = required.iter().copied().filter(|l| *l != 1).collect();
+            if levels != required && (kind.is_membership() || levels != without_admin) {
                 return Err(Error::Invalid("token levels do not match the retention"));
             }
             // expiry
             if let Some(t) = a.expires {
+                if fixed_retention(ak).is_some() {
+                    return Err(Error::Invalid("expires on a fixed-retention aspect"));
+                }
                 if kind.is_membership() {
                     return Err(Error::Invalid("expires on a membership commit"));
                 }

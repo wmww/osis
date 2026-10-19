@@ -63,12 +63,19 @@ pub fn snapshot_retention(ak: &str, defaults: Option<&AspectDefaults>) -> Retent
 }
 
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
-/// Membership-class aspects never expire.
-pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Option<u64> {
+/// Aspects with fixed retention never expire. A T above 2^63 - 1 is refused.
+pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Result<Option<u64>, Error> {
     if fixed_retention(ak).is_some() {
-        return None;
+        return Ok(None);
     }
-    set.or_else(|| defaults.and_then(|d| d.expires).map(|dur| ts.wall_ms().0.saturating_add(dur)))
+    let t = match set {
+        Some(t) => Some(t),
+        None => defaults.and_then(|d| d.expires).map(|dur| ts.wall_ms().0.checked_add(dur).ok_or(Error::Build("expiry out of range"))).transpose()?,
+    };
+    if t.is_some_and(|t| t > FOREVER) {
+        return Err(Error::Build("expiry out of range"));
+    }
+    Ok(t)
 }
 
 /// Keep-at-least bound of a body (wall ms; 0 = none): the later of `abs` and last death plus

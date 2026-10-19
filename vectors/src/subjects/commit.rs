@@ -154,5 +154,152 @@ pub fn headers() -> VecFile {
     let mut x = h.clone();
     x.tokens.reverse();
     cases.push(reject("tokens out of order", "spec/wire.md §4", &x, "order"));
+    cases.extend(more_accepted());
+    cases.extend(more_rejected(&c.header));
     VecFile { header: generated_header("commit", SPEC), cases }
+}
+
+/// Records every byte drawn from a seeded rng, so the vector can list them.
+struct Recording(osis_crypto::SeededRng, Vec<u8>);
+
+impl osis_crypto::RngCore for Recording {
+    fn next_u32(&mut self) -> u32 {
+        unimplemented!("vectors draw bytes only")
+    }
+    fn next_u64(&mut self) -> u64 {
+        unimplemented!("vectors draw bytes only")
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.0.fill_bytes(dest);
+        self.1.extend_from_slice(dest);
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), osis_crypto::RngError> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl osis_crypto::CryptoRng for Recording {}
+
+fn more_accepted() -> Vec<Record> {
+    use osis_core::BlobId;
+    use osis_schema::Bound;
+    let mut out = Vec::new();
+    // commit form, typed, expiring, absolute bounds, chunks, undoes
+    let at = ts(1_700_000_004_000);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
+    let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("typed".into()), 6));
+    a.schema = Some((osis_core::SchemaId([0x27; 16]), 2));
+    a.expires = Some(at.wall_ms().0 + 86_400_000);
+    a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
+    a.chunks = vec![(BlobId([0x28; 32]), [0x29; 16]), (BlobId([0x2a; 32]), [0x2b; 16])];
+    b.aspects.push(a);
+    b.undoes = Some(CommitId([0x2c; 32]));
+    let c = built(b);
+    out.push(record("commit form, schema index, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c).with("chunk-salts", format!("{}:{} {}:{}", hex(&[0x28; 32]), hex(&[0x29; 16]), hex(&[0x2a; 32]), hex(&[0x2b; 16]))));
+    // purge request, /created kept forever
+    let at = ts(1_700_000_005_000);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
+    let mut cr = AspectWrite::new(THING, Ak::new("/created").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("record".into()), 7));
+    cr.retention = retention::CREATED_RETENTION;
+    b.aspects.push(cr);
+    b.aspects.push(AspectWrite::new(THING, Ak::new("/app/body").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("".into()), 8)));
+    b.purge = vec![
+        PurgeItem::Aspect { tid: THING, ak: Ak::new("/app/body").unwrap() },
+        PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("/app/title").unwrap() },
+    ];
+    out.push(record("purge request; /created kept forever", "spec/wire.md §4; spec/commits.md §5", &built(b)));
+    // membership commit with a frontier
+    let at = ts(1_700_000_006_000);
+    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Node);
+    let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Membership, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
+    a.retention = retention::MEMBERSHIP_RETENTION;
+    b.aspects.push(a);
+    b.frontier = Some(Value::Map([(Value::Int(0), Value::Map(Default::default())), (Value::Int(1), Value::Set(Default::default()))].into_iter().collect()));
+    out.push(record("membership demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
+    // a linked aspect list (above CHUNK_THRESHOLD)
+    let at = ts(1_700_000_007_000);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
+    let long = "x".repeat(990);
+    for i in 0..140u32 {
+        b.aspects.push(AspectWrite::new(THING, Ak::new(format!("/app/{long}{i:03}")).unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Int(i64::from(i)), 10)));
+    }
+    let key = SigningSecret::from_seed(&s32(0x35));
+    let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x36; 32]), Vec::new());
+    let first = b.clone().build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut rec).unwrap();
+    let mut sink = MemoryBlobs::default();
+    let bl = b.build(&key, &VSecrets, &mut sink, &mut FixedRng::new(&[&rec.1])).unwrap();
+    assert_eq!(first.commit, bl.commit);
+    let c = bl.commit;
+    assert!(c.header.links.aspects.is_some());
+    let mut back = CommitBlob::decode(&c.encode()).unwrap();
+    back.header.resolve(&mut sink, &s32(0x30), MAX_LIST_BYTES).unwrap();
+    assert_eq!(back, c);
+    let mut r = case("linked aspect list", "spec/wire.md §4, §6")
+        .with("signing-seed", hex(s32(0x35).expose()))
+        .with("dedup", hex(s32(0x30).expose()))
+        .with("token-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
+        .with("randomness", hex(&rec.1))
+        .with("aspect-list-blake3", hex(&osis_core::hash::hash(&osis_core::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
+    for (i, id) in bl.list_blobs.iter().enumerate() {
+        let (p, plain) = &sink.blobs[id];
+        r = r.with(&format!("list-blob-{i}"), format!("{} {} {}", hex(&id.0), hex(&p.salt), hex(plain)));
+    }
+    out.push(r.with("header", hex(&c.header.encode())).with("commit-id", hex(&c.id().0)).with("signature", hex(&c.signature.0)).with("blob", hex(&c.encode())));
+    out
+}
+
+fn more_rejected(content: &Header) -> Vec<Record> {
+    use osis_core::SchemaId;
+    let mut out = Vec::new();
+    let m = membership().header;
+    let mut x = m.clone();
+    x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("/app/title").unwrap() });
+    out.push(reject("purge request on a membership commit", "spec/commits.md §2, §5", &x, "purge-membership"));
+    let mut x = content.clone();
+    x.origins.push(Origin { commit: CommitId([1; 32]), author: AUTHOR, actor: ACTOR, ts: ts(5) });
+    out.push(reject("origins on a non-import", "spec/wire.md §4", &x, "origins"));
+    let frontier = Some(Value::Map(Default::default()));
+    let mut x = m.clone();
+    x.kind = Kind::MembershipSnapshot;
+    x.aspects[0].ak = Ak::new("/secrets").unwrap();
+    x.aspects[0].lo = 0;
+    x.aspects[0].hi = 0;
+    x.aspects[0].hashes.truncate(1);
+    x.validate().unwrap();
+    x.frontier = frontier.clone();
+    out.push(reject("frontier on a membership compaction snapshot", "spec/wire.md §4", &x, "frontier"));
+    let mut x = m.clone();
+    x.kind = Kind::RosterSnapshot;
+    x.validate().unwrap();
+    x.frontier = frontier;
+    out.push(reject("frontier on a roster snapshot", "spec/wire.md §4", &x, "frontier"));
+    let mut x = content.clone();
+    x.schemas = vec![(SchemaId([9; 16]), 1), (SchemaId([1; 16]), 1)];
+    out.push(reject("schemas out of order", "spec/wire.md §4", &x, "order"));
+    let mut x = content.clone();
+    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), tokens: vec![(1, [0; 16]), (0, [0; 16])] });
+    out.push(reject("chunk tokens out of order", "spec/wire.md §4", &x, "chunk-tokens"));
+    let mut x = content.clone();
+    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), tokens: vec![(9, [0; 16])] });
+    out.push(reject("chunk token index out of range", "spec/wire.md §4", &x, "chunk-tokens"));
+    let mut x = content.clone();
+    x.aspects[0].ak = Ak::new("/created").unwrap();
+    out.push(reject("/created with other than its fixed retention", "spec/commits.md §5", &x, "fixed-retention"));
+    let mut x = content.clone();
+    x.aspects[0].ak = Ak::new("/created").unwrap();
+    x.aspects[0].retention = retention::CREATED_RETENTION;
+    x.aspects[0].tokens.clear();
+    x.tokens.clear();
+    x.validate().unwrap();
+    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    out.push(reject("/created with expires", "spec/commits.md §5, §6", &x, "fixed-expires"));
+    let mut x = content.clone();
+    x.tokens.push(Token { level: 3, hash: [0xff; 16] });
+    out.push(reject("token no aspect lists", "spec/wire.md §4", &x, "unused-token"));
+    let mut x = content.clone();
+    x.tokens.remove(1);
+    x.aspects[0].tokens = vec![0];
+    out.push(reject("author retention without its level-2 token", "spec/crypto.md §7", &x, "token-levels"));
+    out
 }

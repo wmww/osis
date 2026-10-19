@@ -26,11 +26,13 @@ mod tests_verify;
 mod tests_build;
 #[cfg(test)]
 mod tests_prop;
+#[cfg(test)]
+mod tests_review;
 
 pub use blob::{CommitBlob, Part};
 pub use builder::{AspectWrite, Built, CommitBuilder};
 pub use project::{Projection, prefix_inputs, project, rewrite, strict_subset};
-pub use tree::{BlobSink, BlobSource, MemoryBlobs, read_tree, write_tree};
+pub use tree::{BlobSink, BlobSource, MAX_LIST_BYTES, MemoryBlobs, read_tree, write_tree};
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, Token, verify_signature};
 pub use tokens::{Prefix, Secrets, TokenSecret, token_secrets};

@@ -5,7 +5,7 @@ use crate::cbor::{as_idx, as_list, uint};
 use crate::header::{Header, ListField};
 use crate::tokens::Prefix;
 use crate::Error;
-use osis_core::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH, TREE_FANOUT, TREE_MAX_LEVEL};
+use osis_core::format::{CHUNK_MIN, CHUNK_THRESHOLD, MAX_OBJECT_DEPTH, TREE_FANOUT, TREE_MAX_LEVEL};
 use osis_core::{BlobId, ChunkParams, Limits, Link, Value, chunker};
 use osis_crypto::{Secret32, link_hash, link_tree_hash};
 use std::collections::HashMap;
@@ -86,8 +86,26 @@ pub fn write_tree(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefi
     }
 }
 
-fn read_node(link: &Link, level: Option<u64>, dedup: &Secret32, src: &mut dyn BlobSource, out: &mut Vec<u8>) -> Result<(), Error> {
-    let plain = src.get(link)?;
+/// Default local bound on a resolved header list (`Header::resolve`): a node policy, not a
+/// format limit (spec/requirements.md: a change has no size limit).
+pub const MAX_LIST_BYTES: usize = 64 * CHUNK_THRESHOLD;
+
+/// Tree reader state. Links may repeat (identical chunks share a blob), so the reader is
+/// bounded by chunk count instead: every chunk but the last is at least `CHUNK_MIN` bytes, so
+/// at most `max / CHUNK_MIN + 1` chunks are visited.
+struct Reader<'a> {
+    dedup: &'a Secret32,
+    src: &'a mut dyn BlobSource,
+    out: Vec<u8>,
+    max: usize,
+    chunks: usize,
+    /// Length of the last chunk read.
+    last: Option<usize>,
+}
+
+fn read_node(r: &mut Reader<'_>, link: &Link, level: Option<u64>) -> Result<(), Error> {
+    let dedup = r.dedup;
+    let plain = r.src.get(link)?;
     let v = osis_core::decode(&plain, &Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: plain.len() }).map_err(|_| Error::Corrupt)?;
     let [lv, children] = as_list(&v)? else { return Err(Error::Corrupt) };
     let lv = as_idx(lv)? as u64;
@@ -109,36 +127,54 @@ fn read_node(link: &Link, level: Option<u64>, dedup: &Secret32, src: &mut dyn Bl
         return Err(Error::Corrupt);
     }
     for c in &children {
-        if lv == 1 {
-            let chunk = src.get(c)?;
-            if link_hash(dedup, &chunk) != c.hash {
-                return Err(Error::Corrupt);
-            }
-            out.extend_from_slice(&chunk);
-        } else {
-            read_node(c, Some(lv - 1), dedup, src, out)?;
+        if lv > 1 {
+            read_node(r, c, Some(lv - 1))?;
+            continue;
         }
+        if r.last.is_some_and(|l| l < CHUNK_MIN) {
+            return Err(Error::Malformed("chunk tree: a non-final chunk below CHUNK_MIN"));
+        }
+        r.chunks += 1;
+        if r.chunks > r.max / CHUNK_MIN + 1 {
+            return Err(Error::Storage("chunk tree above the local size bound"));
+        }
+        let chunk = r.src.get(c)?;
+        if link_hash(dedup, &chunk) != c.hash {
+            return Err(Error::Corrupt);
+        }
+        if chunk.is_empty() {
+            return Err(Error::Malformed("chunk tree: empty chunk"));
+        }
+        if r.out.len().saturating_add(chunk.len()) > r.max {
+            return Err(Error::Storage("chunk tree above the local size bound"));
+        }
+        r.last = Some(chunk.len());
+        r.out.extend_from_slice(&chunk);
     }
     Ok(())
 }
 
-/// Reads the bytes of the chunk tree under `root`, checking every content hash.
-pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource) -> Result<Vec<u8>, Error> {
-    let mut out = Vec::new();
-    read_node(root, None, dedup, src, &mut out)?;
-    Ok(out)
+/// Reads the bytes of the chunk tree under `root`, checking every content hash. A non-final
+/// chunk below `CHUNK_MIN` or an empty chunk is bad input; output above `max` bytes is refused
+/// (a local bound), which also bounds the chunks visited.
+pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
+    let mut r = Reader { dedup, src, out: Vec::new(), max, chunks: 0, last: None };
+    read_node(&mut r, root, None)?;
+    Ok(r.out)
 }
+
 
 impl Header {
     /// Fetches and fills every linked list, keyed by the dedup secret of the header's `actor`.
-    /// A linked list at or below `CHUNK_THRESHOLD` is bad input.
-    pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32) -> Result<(), Error> {
+    /// A linked list at or below `CHUNK_THRESHOLD` is bad input; one above `max` bytes (a local
+    /// bound such as [`MAX_LIST_BYTES`]) is not resolved (`Storage`, Local).
+    pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32, max: usize) -> Result<(), Error> {
         for f in ListField::ALL {
             let Some(link) = self.links.get(f).copied() else { continue };
             if !self.list_is_empty(f) {
                 continue;
             }
-            let bytes = read_tree(&link, actor_dedup, src)?;
+            let bytes = read_tree(&link, actor_dedup, src, max)?;
             if bytes.len() <= CHUNK_THRESHOLD {
                 return Err(Error::Malformed("linked list at or below CHUNK_THRESHOLD"));
             }
