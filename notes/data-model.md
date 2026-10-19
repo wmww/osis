@@ -21,14 +21,14 @@
 
 ## Large values
 - Two mechanisms, one chunker: large composites page their merge state (spec/crdt.md §8); large atomic values chunk into link trees (spec/data-model.md §6).
-- Random chunk keys are required by the no-fingerprint rule (a content-derived key makes a retained blob ID a fingerprint), so equality of large values is by keyed content hash (tension 19). Dedup is by reuse from the current tree (notes/local-store.md).
+- Random chunk keys are required by the no-fingerprint rule (a content-derived key makes a retained blob ID a fingerprint), so equality of large values is by keyed content hash (spec/requirements.md, Data model). Dedup is by reuse from the current tree (notes/local-store.md).
 - Whole-value access is always allowed, streaming also; whether the API exposes links or a separate abstraction is an implementation question.
 
 ## AK namespaces
-No registry exists, so namespace collisions between schemas are detected (schema ID in headers), never prevented; until detected their writes merge like concurrent writes (tension 20). Pick namespaces unlikely to collide (app or org name).
+No registry exists, so namespace collisions between schemas are detected (schema ID in headers), never prevented; until detected their writes merge like concurrent writes (spec/requirements.md, Versioning). Pick namespaces unlikely to collide (app or org name).
 
 ## Groups
-Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (tension 16).
+Example: spreadsheet thing = group of two axis things, each a group of row/column things, each a group of cells (each cell in two groups). Nothing is in a group by being owned (owner): apps place things explicitly (spec/requirements.md, Offline and network).
 
 ## Schema DSL (`*.osis` files; syntax proposal)
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision). The same parser serves runtime loading and the `load_schema!()` proc macro. `///` doc comments attach to the next item and are kept in the parsed schema so generic tools and agents can read invariants. Errors carry file, line, column.

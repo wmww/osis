@@ -852,7 +852,7 @@ proptest! {
 
 #[test]
 fn list_delete_is_an_element_reset() {
-    // §5.7, tension 24: B deletes element 0 at t=5 while C writes a field into it at t=6; the element comes back
+    // §5.7, container resurrection: B deletes element 0 at t=5 while C writes a field into it at t=6; the element comes back
     // holding only C's field, on every node and after a snapshot bootstrap; an older nested write (t=4) is dropped.
     let et = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
     let ty = Ty::List(Box::new(et.clone()));

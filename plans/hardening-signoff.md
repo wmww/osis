@@ -12,7 +12,7 @@ Reference: plans/testing.md §6–§7, notes/sync.md (Limits; What a blind node 
 - Scale checks at reduced constants (tier 2): million-key map edit is O(change); multi-GB value streamed within a memory bound; million-blob label reconciliation rounds; roster of thousands removal cost matches notes; text budget table.
 - Panic audit: every fuzz target run for a budget with no crash; `clippy::unwrap_used` deny holds; dependency allowlist matches `cargo tree`; `cargo deny` clean; build time and tier-1 test time recorded in notes/testing.md.
 - Notes current: notes/testing.md (what runs where, how to replay, what it does not cover), notes/node.md, each subsystem's "Implementation" section, notes/overview.md status and code map; spec TBDs all resolved or listed; every completed plan deleted.
-- Final report (in notes/mvp-progress.md and to the owner): what works to spec, deviations with the tension or issue that justifies each, open issues by tag, spec edits made during the run, suggested next plans (query design pass, push wake-ups, BLE, browser build).
+- Final report (in notes/mvp-progress.md and to the owner): what works to spec, deviations with the requirement limit or issue that justifies each, open issues by tag, spec edits made during the run, suggested next plans (query design pass, push wake-ups, BLE, browser build).
 
 ## Steps
 - [ ] Map + gaps; negative and metadata tests.

@@ -758,7 +758,7 @@ impl Frag {
                 for (d, el) in elems.iter_mut() {
                     match &mut el.content {
                         // a list element loses only the content writes of the expiring delta; others' nested
-                        // writes survive and show (§4.7, tension 24)
+                        // writes survive and show (§4.7; spec/requirements.md, Data model)
                         Content::Frag(f) => f.strip_values(expired),
                         _ if exp(d) => {
                             el.content = Content::None;

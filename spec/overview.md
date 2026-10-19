@@ -4,7 +4,7 @@
 osis (Open Structured Information System) is a decentralized, reactive data layer: typed data on things, merged by CRDTs, synced as encrypted blobs between devices, users and untrusted servers.
 
 ## Documents
-- spec/requirements.md: hard requirements, goals, out of scope, and the tensions where requirements yield.
+- spec/requirements.md: hard requirements, goals, the limits the design accepts, and what is out of scope.
 - spec/data-model.md: things, tids, aspects, types, values and their canonical CBOR encoding, large values, groups, core aspects.
 - spec/versioning.md: format version, extension points, the parking rule, schema identity and evolution rules.
 - spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
