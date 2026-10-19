@@ -46,6 +46,11 @@ impl<'s> Batch<'s> {
         let range = self.w.range();
         self.acc.filter(|f| !f.is_empty()).map(|f| (f, range))
     }
+
+    /// The delta and the writer, whose counters continue (a nested batch inside another op).
+    pub(crate) fn into_parts(self) -> (Option<Fragment>, Writer) {
+        (self.acc.filter(|f| !f.is_empty()), self.w)
+    }
 }
 
 fn member(f: Option<&Fragment>, enc: Encoding) -> Option<&Fragment> {

@@ -66,6 +66,27 @@ proptest! {
         wire_matches(seed, &[Ty::Register, Ty::Text], (1..=3).map(MSource::node).collect());
     }
 
+    /// §4.7: strip of text and list states equals the model's and commutes with join.
+    #[test]
+    fn seq_expiry_laws_spec_4_7(seed in any::<u64>()) {
+        crate::tests_life::expiry_laws(seed, &Ty::Text);
+        crate::tests_life::expiry_laws(seed, &Ty::List(Box::new(inner())));
+    }
+
+    /// §4.6: un-merge of text and list (created elements stay as hidden anchors).
+    #[test]
+    fn seq_unmerge_spec_4_6(seed in any::<u64>()) {
+        crate::tests_life::unmerge_check(seed, &Ty::Text);
+        crate::tests_life::unmerge_check(seed, &Ty::List(Box::new(inner())));
+    }
+
+    /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
+    #[test]
+    fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {
+        crate::tests_life::bootstrap_check(seed, &Ty::Text);
+        crate::tests_life::bootstrap_check(seed, &Ty::List(Box::new(inner())));
+    }
+
     /// §3.3 rule 7: mutated sequence deltas are rejected or decode, never panic.
     #[test]
     fn mutated_seq_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {

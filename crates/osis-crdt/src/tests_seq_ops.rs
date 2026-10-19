@@ -1,0 +1,549 @@
+//! Sequence ops, net effect, undo, cut/paste, diff and `edit` (spec/crdt.md §4.5, §4.6, §5.7, §9).
+
+use crate::batch::Batch;
+use crate::codec::{decode_delta, encode_delta};
+use crate::fragment::Fragment;
+use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
+use crate::seq::visible;
+use crate::stamp::{CounterRange, Interner, Source};
+use crate::testutil::{TyView, frag, mapply, ostate, ts, value, writer};
+use crate::undo::{Undone, undo};
+use crate::wire::{Delta, DeltaCtx, DeltaKind};
+use crdt_model::r#gen::{Rng, random_value};
+use crdt_model::ops::{self as mops, Ty, Writer as MWriter};
+use crdt_model::state::Content;
+use osis_core::{Tid, Value};
+use proptest::prelude::*;
+
+fn node(n: u8) -> Source {
+    Source::node(Tid::from_bytes([n; 15]))
+}
+fn s(x: &str) -> Value {
+    Value::Str(x.into())
+}
+fn read_str(f: &Fragment) -> String {
+    match f.read() {
+        Some(Value::Str(x)) => x,
+        _ => String::new(),
+    }
+}
+fn list_ty() -> Ty {
+    Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())))
+}
+fn text_view() -> TyView {
+    TyView(Ty::Text)
+}
+
+/// One replica: state, writer source, next counter, clock.
+struct Replica {
+    state: Fragment,
+    src: Source,
+    lo: u64,
+}
+
+impl Replica {
+    fn new(n: u8) -> Replica {
+        Replica { state: Fragment::default(), src: node(n), lo: 1 }
+    }
+    /// Applies `ops` as one commit at time `t`; the delta goes through the wire as a writer's.
+    fn commit(&mut self, t: u64, ops: &[PathOp], view: &TyView) -> Option<(Fragment, Source, CounterRange)> {
+        let mut b = Batch::new(&self.state, Writer::new(ts(t << 16), self.src.clone(), self.lo));
+        for op in ops {
+            b.apply(op, view).unwrap();
+        }
+        let (d, range) = b.finish()?;
+        self.lo = range.hi;
+        let cx = DeltaCtx { ts: ts(t << 16), own: self.src.clone(), range, kind: DeltaKind::Writer };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, None).unwrap();
+        let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        assert_eq!(back, d, "a writer's delta round-trips");
+        self.state.join(d.clone());
+        Some((d, self.src.clone(), range))
+    }
+}
+
+fn op(o: Op) -> PathOp {
+    PathOp { path: vec![], op: o }
+}
+
+/// A random text op against the current read of length `n`.
+fn random_text_op(r: &mut Rng, n: usize, st: &Fragment) -> Op {
+    match r.below(7) {
+        0 | 1 => Op::Insert { at: r.below(n + 1), items: vec![s(&(crdt_model::r#gen::random_text(r, 3) + "z"))] },
+        2 if n > 0 => {
+            let at = r.below(n);
+            Op::Delete { at, len: (1 + r.below(3)).min(n - at) }
+        }
+        3 | 4 if n > 1 => {
+            let at = r.below(n);
+            let len = (1 + r.below(3)).min(n - at);
+            Op::Move { at, len, to: r.below(n - len + 1) }
+        }
+        5 => Op::Set(s(&crdt_model::r#gen::random_text(r, 6))),
+        6 => {
+            // paste a run of cut (deleted) text, adjacent in placement order
+            let Fragment::Seq(sq) = st else { return Op::Insert { at: 0, items: vec![s("a")] } };
+            let mut runs: Vec<Vec<crate::Dot>> = vec![vec![]];
+            for d in crate::linearize::place(&sq.elems).order {
+                let e = &sq.elems[&d];
+                match (e.flag(), &e.content) {
+                    (true, crate::seq::SeqContent::Char(_)) => runs.last_mut().unwrap().push(d),
+                    (true, _) => {}
+                    _ => runs.push(vec![]),
+                }
+            }
+            runs.retain(|x| !x.is_empty());
+            if runs.is_empty() {
+                return Op::Insert { at: 0, items: vec![s("b")] };
+            }
+            let dots = runs.swap_remove(r.below(runs.len()));
+            Op::Paste { dots, at: r.below(n + 1) }
+        }
+        _ => Op::Insert { at: 0, items: vec![s("a")] },
+    }
+}
+
+/// What `o` does to a plain string (the sequential model); `st` is the state it applies to.
+fn apply_text(model: &mut Vec<char>, o: &Op, st: &Fragment) {
+    match o {
+        Op::Insert { at, items } => {
+            let cs: Vec<char> = items.iter().flat_map(|i| if let Value::Str(x) = i { x.chars().collect::<Vec<_>>() } else { vec![] }).collect();
+            model.splice(*at..*at, cs);
+        }
+        Op::Delete { at, len } => {
+            model.drain(*at..*at + *len);
+        }
+        Op::Move { at, len, to } => {
+            let m: Vec<char> = model.drain(*at..*at + *len).collect();
+            model.splice(*to..*to, m);
+        }
+        Op::Paste { dots, at } => {
+            let Fragment::Seq(sq) = st else { return };
+            let cs: Vec<char> = dots.iter().filter_map(|d| if let crate::seq::SeqContent::Char(c) = sq.elems[d].content { Some(c) } else { None }).collect();
+            model.splice(*at..*at, cs);
+        }
+        Op::Set(Value::Str(x)) => *model = x.chars().collect(),
+        _ => {}
+    }
+}
+
+proptest! {
+    /// §5.7 Ops: a single writer's text ops (insert, delete, move, set by diff), committed one
+    /// by one through the wire, read like the same ops on a plain string.
+    #[test]
+    fn single_writer_text_spec_5_7(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        let mut model: Vec<char> = Vec::new();
+        for k in 0..30u64 {
+            let o = random_text_op(&mut r, model.len(), &a.state);
+            apply_text(&mut model, &o, &a.state);
+            a.commit(k + 1, &[op(o.clone())], &text_view());
+            prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>(), "after {:?}", o);
+        }
+    }
+
+    /// §4.5: several ops in one commit read like the same ops committed one by one.
+    #[test]
+    fn text_batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(s("hello world")))], &text_view());
+        let base = a.state.clone();
+        let mut model: Vec<char> = read_str(&base).chars().collect();
+        let mut ops = Vec::new();
+        for _ in 0..6 {
+            let o = random_text_op(&mut r, model.len(), &base);
+            if matches!(o, Op::Paste { .. }) {
+                continue;
+            }
+            apply_text(&mut model, &o, &base);
+            ops.push(op(o));
+        }
+        a.commit(2, &ops, &text_view());
+        prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
+    }
+
+    /// §5.7, §6: replicas applying random text ops (paste included) and exchanging deltas in
+    /// random order converge to equal states.
+    #[test]
+    fn text_ops_converge_spec_5_7(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut reps: Vec<Replica> = (1..=3).map(Replica::new).collect();
+        let mut log: Vec<Fragment> = Vec::new();
+        for round in 0..6u64 {
+            for (i, rep) in reps.iter_mut().enumerate() {
+                // catch up on a random part of the log
+                for d in &log {
+                    if r.chance(1, 2) {
+                        rep.state.join(d.clone());
+                    }
+                }
+                let n = read_str(&rep.state).chars().count();
+                let o = random_text_op(&mut r, n, &rep.state);
+                if let Some((d, _, _)) = rep.commit(round * 10 + i as u64 + 1, &[op(o)], &text_view()) {
+                    log.push(d);
+                }
+            }
+        }
+        let mut finals = Vec::new();
+        for rep in &mut reps {
+            let mut order: Vec<usize> = (0..log.len()).collect();
+            for k in (1..order.len()).rev() {
+                order.swap(k, r.below(k + 1));
+            }
+            for k in order {
+                rep.state.join(log[k].clone());
+            }
+            finals.push(rep.state.clone());
+        }
+        prop_assert_eq!(&finals[0], &finals[1]);
+        prop_assert_eq!(&finals[1], &finals[2]);
+    }
+
+    /// §4.6, §5.7 Undo: undoing a single writer's last text commit restores the previous read.
+    #[test]
+    fn text_undo_restores_spec_4_6(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(s("the quick brown fox")))], &text_view());
+        for k in 0..4 {
+            let n = read_str(&a.state).chars().count();
+            let o = random_text_op(&mut r, n, &a.state);
+            a.commit(2 + k, &[op(o)], &text_view());
+        }
+        let before = a.state.clone();
+        let n = read_str(&a.state).chars().count();
+        let o = random_text_op(&mut r, n, &a.state);
+        // a move undoes with fresh stamps: newer siblings of the old anchor may then follow it (notes/crdt.md)
+        if matches!(o, Op::Move { .. } | Op::Paste { .. }) {
+            return Ok(());
+        }
+        let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
+        let u = Undone { delta: &d, source: &src, range };
+        let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
+        if let Some(ud) = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap() {
+            a.state.join(ud);
+        }
+        prop_assert_eq!(read_str(&a.state), read_str(&before));
+    }
+
+    /// §4.6, §5.7 Undo: list insert, delete (re-insert), move and nested edits undo.
+    #[test]
+    fn list_undo_restores_spec_4_6(seed in any::<u64>()) {
+        let ty = list_ty();
+        let view = TyView(ty.clone());
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        let v = value(&random_value(&mut r, &ty, 0));
+        a.commit(1, &[op(Op::Set(v))], &view);
+        for k in 0..3 {
+            let o = random_list_op(&mut r, &a.state, &ty);
+            a.commit(2 + k, &[o], &view);
+        }
+        let before = a.state.clone();
+        let o = random_list_op(&mut r, &a.state, &ty);
+        if matches!(o.op, Op::Move { .. }) {
+            return Ok(());
+        }
+        let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
+        let u = Undone { delta: &d, source: &src, range };
+        let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
+        if let Some(ud) = undo(&mut w, &u, &a.state, &before, &view).unwrap() {
+            a.state.join(ud);
+        }
+        prop_assert_eq!(a.state.read(), before.read());
+    }
+
+    /// §9: the structural diff reaches the value, text and list, from random states.
+    #[test]
+    fn seq_diff_reaches_value_spec_9(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        for ty in [Ty::Text, list_ty()] {
+            let commits = crate::testutil::history(&mut r, std::slice::from_ref(&ty), 2, 4);
+            let mut m = None;
+            for c in &commits {
+                mapply(&mut m, c.delta.clone());
+            }
+            let st = ostate(&m);
+            for k in 0..3u64 {
+                let v = value(&random_value(&mut r, &ty, 0));
+                let mut w = Writer::new(ts((100 + k) << 16), node(9), 1);
+                let d = diff(&mut w, Some(&st), &TyView(ty.clone()), &v).unwrap();
+                let mut s2 = st.clone();
+                if let Some(d) = d {
+                    s2.join(d);
+                }
+                prop_assert_eq!(s2.read(), Some(v));
+            }
+        }
+    }
+
+    /// notes/api.md `edit`: with no concurrent change the edit reaches the new value; with a
+    /// concurrent remote edit outside the edited ranges, the remote content survives.
+    #[test]
+    fn text_edit_rebases_spec_9(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        let base = "alpha beta gamma delta";
+        a.commit(1, &[op(Op::Set(s(base)))], &text_view());
+        // the user edits inside "beta", a remote appends after "delta"
+        let new = base.replacen("beta", if r.chance(1, 2) { "BETA!" } else { "bet" }, 1);
+        let ops = diff_values(Some(&s(base)), &s(&new), &text_view()).unwrap();
+        let mut plain = a.state.clone();
+        let mut b = Batch::new(&plain, Writer::new(ts(3 << 16), node(1), a.lo));
+        for o in &ops {
+            b.apply(o, &text_view()).unwrap();
+        }
+        plain.join(b.finish().unwrap().0);
+        prop_assert_eq!(read_str(&plain), new.clone());
+        let mut remote = Replica::new(2);
+        remote.state = a.state.clone();
+        let (rd, _, _) = remote.commit(2, &[op(Op::Insert { at: base.len(), items: vec![s(" epsilon")] })], &text_view()).unwrap();
+        a.state.join(rd);
+        a.commit(3, &ops, &text_view());
+        prop_assert_eq!(read_str(&a.state), format!("{new} epsilon"));
+    }
+
+    /// §4.5: list ops (nested ones through `PathSeg::Index` included) in one commit read like
+    /// the same ops committed one by one; replicas exchanging them converge.
+    #[test]
+    fn list_batch_and_convergence_spec_4_5(seed in any::<u64>()) {
+        let ty = list_ty();
+        let view = TyView(ty.clone());
+        let mut r = Rng(seed | 1);
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(value(&random_value(&mut r, &ty, 0))))], &view);
+        let mut one = Replica { state: a.state.clone(), src: node(1), lo: a.lo };
+        let mut ops = Vec::new();
+        for k in 0..5u64 {
+            let o = random_list_op(&mut r, &one.state, &ty);
+            one.commit(2 + k, std::slice::from_ref(&o), &view);
+            ops.push(o);
+        }
+        a.commit(20, &ops, &view);
+        prop_assert_eq!(a.state.read(), one.state.read());
+        // two replicas editing concurrently converge
+        let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+        let mut log = Vec::new();
+        for k in 0..4u64 {
+            for rep in [&mut a, &mut b] {
+                let o = random_list_op(&mut r, &rep.state, &ty);
+                if let Some((d, _, _)) = rep.commit(30 + k, &[o], &view) {
+                    log.push(d);
+                }
+            }
+        }
+        for d in &log {
+            a.state.join(d.clone());
+        }
+        for d in log.iter().rev() {
+            b.state.join(d.clone());
+        }
+        prop_assert_eq!(&a.state, &b.state);
+    }
+
+    /// notes/api.md `edit` on a list: changed elements are edited in place (nested), so a
+    /// concurrent edit to another field of the same element survives.
+    #[test]
+    fn list_edit_rebases_spec_9(seed in any::<u64>()) {
+        let ty = list_ty();
+        let view = TyView(ty.clone());
+        let mut r = Rng(seed | 1);
+        let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+        let base = Value::List((0..4).map(|k| item(k, 10 + k)).collect());
+        let mut a = Replica::new(1);
+        a.commit(1, &[op(Op::Set(base.clone()))], &view);
+        let k = r.below(4);
+        let Value::List(mut items) = base.clone() else { panic!() };
+        items[k] = item(100, 10 + k as i64);
+        let new = Value::List(items.clone());
+        let ops = diff_values(Some(&base), &new, &view).unwrap();
+        // remote: field 2 of element k
+        let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+        let (rd, _, _) = b.commit(2, &[PathOp { path: vec![PathSeg::Index(k), PathSeg::Field(2)], op: Op::Set(Value::Int(-1)) }], &view).unwrap();
+        a.state.join(rd);
+        a.commit(3, &ops, &view);
+        items[k] = item(100, -1);
+        prop_assert_eq!(a.state.read(), Some(Value::List(items)));
+    }
+}
+
+/// §5.7 Undo: a move undoes by writing the old anchors back (notes/crdt.md worked example).
+#[test]
+fn move_undo_spec_5_7() {
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("FOOBAR")))], &text_view());
+    let before = a.state.clone();
+    let (d, src, range) = a.commit(2, &[op(Op::Move { at: 0, len: 3, to: 3 })], &text_view()).unwrap();
+    assert_eq!(read_str(&a.state), "BARFOO");
+    let u = Undone { delta: &d, source: &src, range };
+    let mut w = Writer::new(ts(3 << 16), node(1), a.lo);
+    a.state.join(undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap());
+    assert_eq!(read_str(&a.state), "FOOBAR");
+    // a later move of the same element makes the undo a no-op for it
+    let mut b = Replica::new(2);
+    b.state = before.clone();
+    b.state.join(d.clone());
+    b.commit(4, &[op(Op::Move { at: 3, len: 1, to: 0 })], &text_view());
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
+    let x = undo(&mut w, &u, &b.state, &before, &text_view()).unwrap();
+    assert!(x.is_some_and(|x| match x {
+        Fragment::Seq(sq) => sq.elems.len() == 1,
+        _ => false,
+    }));
+}
+
+/// A random list op: insert, delete, move, or a nested field set through `PathSeg::Index`.
+fn random_list_op(r: &mut Rng, st: &Fragment, ty: &Ty) -> PathOp {
+    let Ty::List(et) = ty else { panic!() };
+    let n = match st.read() {
+        Some(Value::List(l)) => l.len(),
+        _ => 0,
+    };
+    let o = match r.below(4) {
+        0 => Op::Insert { at: r.below(n + 1), items: vec![value(&random_value(r, et, 1))] },
+        1 if n > 0 => Op::Delete { at: r.below(n), len: 1 },
+        2 if n > 1 => {
+            let at = r.below(n);
+            Op::Move { at, len: 1, to: r.below(n) }
+        }
+        3 if n > 0 => {
+            let i = r.below(n);
+            return PathOp { path: vec![PathSeg::Index(i), PathSeg::Field(1 + r.below(2) as u64)], op: Op::Set(Value::Int(r.below(5) as i64)) };
+        }
+        _ => Op::Insert { at: 0, items: vec![value(&random_value(r, et, 1))] },
+    };
+    op(o)
+}
+
+/// §5.7 Ops: create equals the model's write for write; move and insert likewise.
+#[test]
+fn ops_match_model_spec_5_7() {
+    let mut r = Rng(7);
+    for _ in 0..20 {
+        let mut mw = MWriter::new(crdt_model::stamp::Source::node(1), 1 << 16, 1);
+        let text = crdt_model::r#gen::random_text(&mut r, 8) + "xyz";
+        let mv = crdt_model::value::Value::Str(text.clone());
+        let mut w = writer(&mw);
+        let m = mops::create(&mut mw, &Ty::Text, &mv);
+        assert_eq!(create(&mut w, &text_view(), &s(&text)).unwrap(), frag(&m));
+        let mut ms = m.clone();
+        ms.prune(None);
+        let st = frag(&ms);
+        let n = text.chars().count();
+        // move
+        let (at, len) = (r.below(n - 1), 2);
+        let to = r.below(n - len + 1);
+        mw.next_commit(2 << 16);
+        let mut w = writer(&mw);
+        let md = mops::seq_move(&mut mw, &ms, at, len, to).unwrap();
+        let d = crate::ops::leaf(&mut w, Some(&st), &text_view(), &Op::Move { at, len, to }, true).unwrap().unwrap();
+        assert_eq!(d, frag(&md));
+        // insert
+        mw.next_commit(3 << 16);
+        let mut w = writer(&mw);
+        let at = r.below(n + 1);
+        let md = mops::seq_insert(&mut mw, Some(&ms), true, at, vec![Content::Char('q')]);
+        let d = crate::ops::leaf(&mut w, Some(&st), &text_view(), &Op::Insert { at, items: vec![s("q")] }, true).unwrap().unwrap();
+        assert_eq!(d, frag(&md));
+    }
+}
+
+/// §5.7 cut, paste: a paste of cut text moves the original elements back and undeletes them, so
+/// concurrent edits anchored inside the cut text follow it.
+#[test]
+fn cut_and_paste_keeps_identity_spec_5_7() {
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("one two three")))], &text_view());
+    let dots = crate::cut_dots(&a.state, 4, 4).unwrap(); // "two "
+    a.commit(2, &[op(Op::Delete { at: 4, len: 4 })], &text_view());
+    assert_eq!(read_str(&a.state), "one three");
+    // a remote inserts inside "two" before seeing the cut
+    let mut b = Replica::new(2);
+    b.state = a.state.clone();
+    let mut pre = Fragment::default();
+    pre.join(a.state.clone());
+    a.commit(3, &[op(Op::Paste { dots: dots.clone(), at: 9 })], &text_view());
+    assert_eq!(read_str(&a.state), "one threetwo ");
+    // the pasted elements are the cut ones
+    let Fragment::Seq(sq) = &a.state else { panic!() };
+    let vis = visible(sq);
+    assert_eq!(&vis[9..13], dots.as_slice());
+    // a paste whose clipboard no longer matches fails (the caller inserts instead)
+    let mut c = Replica::new(3);
+    c.commit(1, &[op(Op::Set(s("x")))], &text_view());
+    let mut bt = Batch::new(&c.state, Writer::new(ts(5 << 16), node(3), c.lo));
+    assert!(bt.apply(&op(Op::Paste { dots, at: 0 }), &text_view()).is_err());
+
+}
+
+/// §5.7: a list delete against a concurrent newer nested write resurrects the element holding
+/// only the newer write, on every node; an older nested write is dropped.
+#[test]
+fn list_delete_vs_concurrent_nested_write_spec_5_7() {
+    let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
+    let view = TyView(ty);
+    let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(Value::List(vec![item(1, 2)])))], &view);
+    let base = a.state.clone();
+    let mut b = Replica::new(2);
+    b.state = base.clone();
+    let (del, _, _) = b.commit(5, &[op(Op::Delete { at: 0, len: 1 })], &view).unwrap();
+    let mut c = Replica::new(3);
+    c.state = base.clone();
+    let field = |v: i64| PathOp { path: vec![PathSeg::Index(0), PathSeg::Field(2)], op: Op::Set(Value::Int(v)) };
+    let (newer, _, _) = c.commit(6, &[field(9)], &view).unwrap();
+    let mut d = Replica::new(4);
+    d.state = base.clone();
+    let (older, _, _) = d.commit(4, &[field(7)], &view).unwrap();
+    let only = Value::List(vec![Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect())]);
+    let mut s1 = base.clone();
+    s1.join(del.clone());
+    s1.join(older.clone());
+    assert_eq!(s1.read(), Some(Value::List(vec![])), "an older nested write loses to the reset");
+    s1.join(newer.clone());
+    assert_eq!(s1.read(), Some(only.clone()));
+    let mut s2 = base.clone();
+    for x in [&newer, &older, &del] {
+        s2.join(x.clone());
+    }
+    assert_eq!(s1, s2);
+}
+
+/// §7, §4.7, §6.1: an insert anchored at an embedded character keeps its place after the
+/// register write expires, whether a node saw the value or only the value-less register.
+#[test]
+fn derived_anchor_outlives_its_register_spec_7() {
+    let reg_w = |v: Option<Value>| {
+        let mut w = Writer::new(ts(1 << 16), node(1), 1);
+        let mut f = create(&mut w, &crate::AnyView, &s("ab")).unwrap();
+        if let Fragment::Register(r) = &mut f {
+            r.write.as_mut().unwrap().value = v;
+        }
+        f
+    };
+    let embedded = |f: Fragment| match f {
+        Fragment::Register(r) => crate::state::embed(&r, crate::Encoding::Text).unwrap(),
+        _ => panic!(),
+    };
+    // a text slot alone: the register's embedding
+    let mut p = Fragment::default();
+    p.join(embedded(reg_w(Some(s("ab")))));
+    assert_eq!(read_str(&p), "ab");
+    let mut b = Replica::new(2);
+    b.state = p.clone();
+    let (q, _, _) = b.commit(2, &[op(Op::Insert { at: 1, items: vec![s("q")] })], &text_view()).unwrap();
+    p.join(q.clone());
+    assert_eq!(read_str(&p), "aqb");
+    let expired = |d: &crate::Dot| d.src == node(1) && d.ctr == 1;
+    p.strip(&expired);
+    assert_eq!(read_str(&p), "q");
+    // a node that only saw the value-less register
+    let mut n2 = Fragment::default();
+    n2.join(embedded(reg_w(None)));
+    n2.join(q);
+    n2.strip(&expired);
+    assert_eq!(n2, p);
+}
