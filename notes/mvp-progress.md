@@ -3,7 +3,7 @@
 
 ## Environment
 - 4 cores, 30 GB RAM: run at most ~3 compiling agents at once; stagger compile-heavy spawns.
-- Rust stable 1.98; nightly, cargo-deny, cargo-fuzz, cargo-nextest install started at pre-flight (see "Tooling" once confirmed). Java 21 present (TLC runs; tla2tools.jar must be fetched).
+- Tooling confirmed: Rust stable 1.98, nightly (for cargo-fuzz), cargo-deny 0.20, cargo-fuzz 0.13, cargo-nextest 0.9, Java 21 (TLC).
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
