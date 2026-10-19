@@ -704,7 +704,7 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
     }
 }
 
-fn random_hist(rng: &mut crate::Rng) -> SHist {
+pub fn random_hist(rng: &mut crate::Rng) -> SHist {
     let devices = 1 + rng.below(2);
     let gnodes = 1 + rng.below(3);
     let n = 1 + devices + gnodes;

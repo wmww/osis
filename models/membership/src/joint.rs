@@ -68,6 +68,8 @@ pub enum Attr {
 pub struct JOut {
     pub edges: Vec<Vec<Role>>,
     pub roles: Vec<Vec<Role>>,
+    /// Writes applied in the final walk (bit per write index).
+    pub applied: u64,
     pub dropped: u64,
     pub passes: usize,
 }
@@ -138,6 +140,9 @@ impl JHist {
         m == a || m >= self.nodes && r[a][m - self.nodes] == Role::Admin
     }
 
+    /// §5.1: step 1 orders the writes; each pass is step 2 (apply iff the author has the
+    /// authority), step 3 (attribute by class) and step 4 (a class fall audits with the
+    /// demoter's frontier and restarts); step 5 returns the first pass adding nothing to D.
     pub fn eval(&self, audit: bool) -> JOut {
         let (nn, na) = (self.nodes, self.actors());
         let order = self.order();
@@ -205,7 +210,8 @@ impl JHist {
                     continue 'walk;
                 }
             }
-            return JOut { edges, roles: r, dropped, passes };
+            let applied = (0..self.writes.len()).filter(|&j| attr[j] != Attr::Skipped).fold(0u64, |m, j| m | 1 << j);
+            return JOut { edges, roles: r, applied, dropped, passes };
         }
     }
 
@@ -225,6 +231,11 @@ impl JHist {
         ids.sort();
         (o.edges.clone(), o.roles.clone(), ids)
     }
+}
+
+/// The timeline of §5.1 with audits on.
+pub fn walk(h: &JHist) -> JOut {
+    h.eval(true)
 }
 
 // ---------- search ----------
@@ -270,7 +281,7 @@ impl Stats {
     }
 }
 
-fn random_hist(rng: &mut Rng) -> JHist {
+pub fn random_hist(rng: &mut Rng) -> JHist {
     let nodes = 2 + rng.below(3);
     let na = 2 + rng.below(2);
     // Actor 0 owned by node 0; others by a node or a lower actor (no owner cycles).

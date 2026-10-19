@@ -16,7 +16,7 @@ Spec: spec/permissions.md §1–§2, §4–§8; spec/commits.md §2–§4 (kinds
 - Incrementality: the spec rebuilds D from scratch when the held set changes; implement that, scoped per connected component of things (mutual membership links components), with caching of per-thing results and invalidation; correctness first, a benchmark for a 10^4-edge history second.
 
 ## Steps
-- [ ] Refactor models/membership into a library whose rule code mirrors spec sections (plans/testing.md §1) exposing `walk(history) -> outcome`, random history generator, scenario list; keep its binary and tests green.
+- [x] Refactor models/membership into a library whose rule code mirrors spec sections (plans/testing.md §1) exposing `walk(history) -> outcome`, random history generator, scenario list; keep its binary and tests green.
 - [ ] Timeline over the abstract held set; differential tests: random histories from the model → equal rosters, equal applied/dropped sets, equal projection agreement, equal effect of roster snapshots; every scenario in notes/permissions.md as a named test (stolen device backdating, mutual removal, two admin paths, chain-and-edge, link finalization, invite power, single-use redemption, sticky drops); add to the model and test the transitive ownership audit (X demoted on N audits its writes on a thing two ownership levels below N, but not where X keeps the class there by another path).
 - [ ] Layer 2 validity; frontier coverage; node-form overlap rule; re-grant restores.
 - [ ] Roster snapshot production; epoch start selection; ledger carry-forward; compaction-neutrality test (re-snapshot changes nothing, from the model).
