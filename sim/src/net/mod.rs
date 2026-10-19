@@ -7,8 +7,12 @@
 //! durable state; a server may lose its data; a node may lose its disk (recovery from the card).
 //! Servers replicate to their peers (push). Everything is driven from one `Dice`.
 
+pub mod adversary;
 pub mod check;
+pub mod library;
+pub mod rogue;
 pub mod scenarios;
+pub mod skew;
 
 use crate::check::Checker;
 use crate::dice::Dice;
@@ -105,6 +109,21 @@ pub struct NetServer {
     /// Servers it replicates to.
     pub peers: Vec<usize>,
     pub up: bool,
+    /// A dishonest server: what it does to its outgoing messages.
+    pub evil: Option<Evil>,
+    /// Messages it sent per connection (an evil server replays them).
+    sent: BTreeMap<u64, Vec<Vec<u8>>>,
+}
+
+/// A dishonest server's behavior on what it sends (adversary scenarios): per message, silently
+/// drop it (the stream stays up), hold it back and send it after the next one or at the next
+/// quiet period (reorder within the stream), or also replay an older message of the same
+/// connection.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Evil {
+    pub drop_pct: u32,
+    pub hold_pct: u32,
+    pub replay_pct: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -202,6 +221,12 @@ pub struct NetSim {
     pub waivers: BTreeSet<&'static str>,
     /// Record entry kinds after every node call (failure detail).
     watch: bool,
+    /// Servers whose stores the label invariants do not judge (adversaries).
+    pub dishonest: BTreeSet<usize>,
+    /// Commits expected to stay parked at quiescence (version skew: a newer format).
+    pub parked_ok: BTreeSet<CommitId>,
+    /// Held-back messages of evil servers per connection.
+    held: BTreeMap<(usize, u64), Vec<u8>>,
 }
 
 /// Waivers: an invariant a known engine bug breaks, named by its issue. A scenario waives it to
@@ -270,6 +295,9 @@ impl NetSim {
             verbose: std::env::var_os("OSIS_SIM_TRACE").is_some(),
             waivers: BTreeSet::new(),
             watch: false,
+            dishonest: BTreeSet::new(),
+            parked_ok: BTreeSet::new(),
+            held: BTreeMap::new(),
         }
     }
 
@@ -303,7 +331,7 @@ impl NetSim {
         let key = server_key(i);
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
-        self.servers.push(NetServer { hub: None, backend, faults, key, address: Address { url: format!("quic://server{i}:1"), key }, peers: Vec::new(), up: false });
+        self.servers.push(NetServer { hub: None, backend, faults, key, address: Address { url: format!("quic://server{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new() });
         self.start_server(i)?;
         Ok(i)
     }
@@ -579,8 +607,15 @@ impl NetSim {
         for o in out {
             match o {
                 HubOutput::Send(hc, bytes) => {
+                    let evil = self.servers.get(s).and_then(|x| x.evil);
+                    let msgs = match evil {
+                        Some(e) => self.evil_send(s, hc, e, bytes),
+                        None => vec![bytes],
+                    };
                     if let Some((id, to)) = self.peer_end(End::Hub(s, hc)) {
-                        self.send(id, to, Payload::Bytes(bytes));
+                        for b in msgs {
+                            self.send(id, to, Payload::Bytes(b));
+                        }
                     }
                 }
                 HubOutput::Close(hc) => {
@@ -601,6 +636,46 @@ impl NetSim {
             self.server_down(s)?;
         }
         Ok(())
+    }
+
+    /// What an evil server sends instead of `bytes` on connection `hc`.
+    fn evil_send(&mut self, s: usize, hc: u64, e: Evil, bytes: Vec<u8>) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        if self.dice.pct(e.drop_pct) {
+            self.report.evil = self.report.evil.saturating_add(1);
+            self.note(format!("server {s} drops a message on conn {hc}"));
+        } else if !self.held.contains_key(&(s, hc)) && self.dice.pct(e.hold_pct) {
+            self.report.evil = self.report.evil.saturating_add(1);
+            self.held.insert((s, hc), bytes.clone());
+        } else {
+            out.push(bytes.clone());
+            if let Some(h) = self.held.remove(&(s, hc)) {
+                out.push(h);
+            }
+        }
+        if self.dice.pct(e.replay_pct) {
+            let old = self.servers.get(s).and_then(|x| x.sent.get(&hc)).and_then(|v| self.dice.pick(v).cloned());
+            if let Some(o) = old {
+                self.report.evil = self.report.evil.saturating_add(1);
+                out.push(o);
+            }
+        }
+        if let Some(sv) = self.servers.get_mut(s) {
+            let v = sv.sent.entry(hc).or_default();
+            if v.len() < 64 {
+                v.push(bytes);
+            }
+        }
+        out
+    }
+
+    /// Evil servers send what they held back (a delay, not a drop).
+    fn flush_held(&mut self) {
+        for ((s, hc), b) in std::mem::take(&mut self.held) {
+            if let Some((id, to)) = self.peer_end(End::Hub(s, hc)) {
+                self.send(id, to, Payload::Bytes(b));
+            }
+        }
     }
 
     fn links_of(&self, p: Party) -> Vec<u64> {
@@ -992,6 +1067,21 @@ impl NetSim {
         }
     }
 
+    /// `a` and `b` may connect again after `sever`.
+    pub fn unsever(&mut self, a: Party, b: Party) {
+        self.unreachable.remove(&(a, b));
+        self.unreachable.remove(&(b, a));
+    }
+
+    /// Node `n`'s clock is set `skew_ms` off true time from now on (a thief winding it back).
+    pub fn set_skew(&mut self, n: usize, skew_ms: i64) -> Res<()> {
+        let elapsed = self.elapsed;
+        let node = self.node(n)?;
+        node.spec.skew_ms = skew_ms;
+        node.clock.set(WallMs(wall_of(node.spec, elapsed)));
+        Ok(())
+    }
+
     pub fn heal(&mut self, a: Party, b: Party) {
         self.blocked.remove(&(a, b));
         self.blocked.remove(&(b, a));
@@ -1176,6 +1266,7 @@ impl NetSim {
     pub fn quiet(&mut self, max_rounds: u64) -> Res<()> {
         self.calm = true;
         self.blocked.clear();
+        self.flush_held();
         for s in 0..self.servers.len() {
             if !self.servers.get(s).is_some_and(|x| x.up) {
                 self.restart_server(s)?;

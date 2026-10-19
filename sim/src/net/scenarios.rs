@@ -15,32 +15,32 @@ use osis_node::flows::PreSync;
 use osis_node::sync::Event;
 use osis_schema::AspectKey;
 
-const DAY_MS: u64 = 86_400_000;
+pub const DAY_MS: u64 = 86_400_000;
 
-fn lossy() -> LinkFaults {
+pub fn lossy() -> LinkFaults {
     LinkFaults { cut_pct: 2, dup_pct: 1, max_delay_ms: 3_000, reorder: true }
 }
 
-fn clock(d: &mut Dice) -> ClockSpec {
+pub fn clock(d: &mut Dice) -> ClockSpec {
     ClockSpec { skew_ms: d.range_i64(-20_000, 20_000), drift_ppm: d.range_i64(-100, 100) }
 }
 
-fn sim(name: &str, seed: u64, weights: NetWeights) -> NetSim {
+pub fn sim(name: &str, seed: u64, weights: NetWeights) -> NetSim {
     NetSim::new(name, seed, NetConfig { faults: lossy(), weights, ..NetConfig::default() })
 }
 
-fn ak(sim: &NetSim, a: &osis_schema::Aspect<Value>) -> Res<Ak> {
+pub fn ak(sim: &NetSim, a: &osis_schema::Aspect<Value>) -> Res<Ak> {
     Ak::new(a.ak()).map_err(|e| sim.fail(e.to_string()))
 }
 
 /// Newest current read epoch of `g` whose secret node `n` holds.
-fn newest_read(sim: &mut NetSim, n: usize, g: &Tid) -> Res<Option<u64>> {
+pub fn newest_read(sim: &mut NetSim, n: usize, g: &Tid) -> Res<Option<u64>> {
     Ok(sim.engine(n)?.epochs(g).and_then(|e| e.read.newest_held().map(|x| x.0.n())))
 }
 
 /// Persons on nodes `ns` (homes at `homes[i]`), each introduced to the first: the first node's
 /// person and the others'.
-fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) -> Res<[Tid; N]> {
+pub fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) -> Res<[Tid; N]> {
     let mut ps = Vec::new();
     for (n, h) in ns.iter().zip(homes) {
         ps.push(sim.person(*n, &[h])?.person);
@@ -55,7 +55,7 @@ fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) 
 }
 
 /// A group of node `a`'s person at `servers`, granted to each (person, role) in turn.
-fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
+pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
     let g = sim.group(a, pa, servers)?;
     for (p, r) in grants {
         sim.grant(a, g, *p, *r)?;
@@ -66,7 +66,7 @@ fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], grants: 
 
 /// A purge of `c`'s `/s/gone` delta on `t` by node `n` (spec/commits.md §5), recorded for the
 /// purge invariant.
-fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<()> {
+pub fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<()> {
     sim.observe()?;
     let gone = ak(sim, &workload::GONE)?;
     let mut m = Mutation::new();
@@ -78,7 +78,7 @@ fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<()> 
 }
 
 /// Node `n` writes `/s/gone` on `t`.
-fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_core::CommitId> {
+pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_core::CommitId> {
     let mut m = Mutation::new();
     m.set(t, &workload::GONE, &Value::Str(v.into())).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))

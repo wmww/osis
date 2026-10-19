@@ -92,7 +92,8 @@ fn pending(sim: &mut NetSim) -> Res<()> {
             continue;
         }
         let Some(s) = sim.nodes.get(n).and_then(|x| x.sync.as_ref()) else { continue };
-        let p = s.engine().pending();
+        // spec/versioning.md §2: a commit of a newer format stays parked
+        let p: Vec<_> = s.engine().pending().into_iter().filter(|(c, r)| !(sim.parked_ok.contains(c) && matches!(r, osis_node::Reason::Parked | osis_node::Reason::Unexamined))).collect();
         if !p.is_empty() {
             return Err(sim.fail(format!("node {n}: {} commits pending at quiescence: {p:?}", p.len())));
         }
@@ -214,6 +215,9 @@ fn gap(sim: &NetSim, m: usize, n: usize, items: &[Tid]) -> String {
 /// spec/sync.md §4-§6 at every up server and every label it holds.
 fn labels(sim: &mut NetSim) -> Res<()> {
     for s in 0..sim.servers.len() {
+        if sim.dishonest.contains(&s) {
+            continue;
+        }
         let Some(hub) = sim.hub(s) else { continue };
         let st = hub.store();
         let ls = st.labels_after(None, 4096).map_err(|e| sim.fail(e.to_string()))?;
@@ -311,6 +315,9 @@ fn purged(sim: &mut NetSim) -> Res<()> {
         let Some(ai) = ai else { continue };
         let blobs: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, kp))| *kc == c && kp.iter().any(|p| p.0 == ai)).map(|(k, _)| *k).collect();
         for s in 0..sim.servers.len() {
+            if sim.dishonest.contains(&s) {
+                continue;
+            }
             let Some(hub) = sim.hub(s) else { continue };
             for (l, b) in &blobs {
                 if hub.store().live_ids(l).unwrap_or_default().contains(b) {
@@ -354,6 +361,9 @@ pub type Heads = BTreeMap<(usize, LabelId), ([u8; 16], u64)>;
 pub fn log_heads(sim: &NetSim) -> Heads {
     let mut m = BTreeMap::new();
     for s in 0..sim.servers.len() {
+        if sim.dishonest.contains(&s) {
+            continue;
+        }
         let Some(hub) = sim.hub(s) else { continue };
         for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
             if let Ok(h) = hub.store().log_head(&l) {

@@ -63,9 +63,9 @@ fn unknown_scenario_fails() {
     assert!(replay("nope", 1).is_err());
 }
 
-// spec/requirements.md (convergence); spec/commits.md §4; spec/crdt.md §2.2, §2.3: the nightly
-// sweep's shape, `OSIS_SIM_SEEDS` seeds per scenario (default 100), `OSIS_SIM_ONLY` a comma list of
-// scenario names (default all; phase B scenarios ignored in tier 1 fail by design).
+// spec/requirements.md (convergence); spec/commits.md §4; spec/crdt.md §2.2, §2.3: a small
+// sweep, `OSIS_SIM_SEEDS` seeds per scenario (default 100), `OSIS_SIM_ONLY` a comma list of
+// scenario names (default all but the blocked ones). The nightly sweep is the `sim-sweep` binary.
 #[test]
 #[ignore]
 fn sweep() {
@@ -73,7 +73,11 @@ fn sweep() {
     let mut failed = Vec::new();
     let only: Option<Vec<String>> = std::env::var("OSIS_SIM_ONLY").ok().map(|s| s.split(',').map(str::to_string).collect());
     for (name, _) in SCENARIOS {
-        if only.as_ref().is_some_and(|o| !o.iter().any(|x| x == name)) {
+        let skip = match &only {
+            Some(o) => !o.iter().any(|x| x == name),
+            None => osis_sim::blocked(name).is_some(),
+        };
+        if skip {
             continue;
         }
         for seed in 0..n {

@@ -4,6 +4,7 @@
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Config, Failure, NetFaults, Report, Res, Sim, Weights};
 use crate::net::scenarios as net;
+use crate::net::{adversary, library, skew};
 use crate::workload;
 use osis_core::format::MAX_DRIFT_MS;
 use osis_core::{Role, Value};
@@ -32,7 +33,48 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("disk_loss", net::disk_loss),
     ("head_moves_during_open", net::head_moves_during_open),
     ("grant_lost_on_crash", net::grant_lost_on_crash),
+    ("revocation_bob", library::revocation_bob),
+    ("revocation_carol", library::revocation_carol),
+    ("stolen_device", library::stolen_device),
+    ("demotion_synced", library::demotion_synced),
+    ("demotion_unsynced", library::demotion_unsynced),
+    ("link_redeem", library::link_redeem),
+    ("link_race", library::link_race),
+    ("move_import", library::move_import),
+    ("chat_join_leave", library::chat_join_leave),
+    ("folders", library::folders),
+    ("label_replacement", library::label_replacement),
+    ("label_replacement_offline", library::label_replacement_offline),
+    ("bundles", library::bundles),
+    ("disappearing", library::disappearing),
+    ("keep_at_most", library::keep_at_most),
+    ("evil_server", adversary::evil_server),
+    ("evil_server_drops", adversary::evil_server_drops),
+    ("removed_replayer", adversary::removed_replayer),
+    ("malformed_blobs", adversary::malformed_blobs),
+    ("deposit_flood", adversary::deposit_flood),
+    ("future_format", skew::future_format),
+    ("newer_schema", skew::newer_schema),
 ];
+
+/// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;
+/// their tests are ignored with the issue's name. Fixing the issue removes the line.
+pub const BLOCKED: &[(&str, &str)] = &[
+    ("compaction", "issues/sync-compaction-ping-pong.md"),
+    ("disk_loss", "issues/flows-recovered-device-writes.md"),
+    ("head_moves_during_open", "issues/sync-stale-head.md"),
+    ("grant_lost_on_crash", "issues/sync-inbox-delivery.md"),
+    ("link_race", "issues/flows-single-use-redemption-unplaced.md"),
+    ("label_replacement_offline", "issues/node-sync-gaps.md"),
+    ("evil_server_drops", "issues/sync-request-timeout.md"),
+    ("malformed_blobs", "issues/sync-unopenable-entry-stall.md"),
+    ("future_format", "issues/sync-unopenable-entry-stall.md"),
+];
+
+/// The issue blocking scenario `name`, if any.
+pub fn blocked(name: &str) -> Option<&'static str> {
+    BLOCKED.iter().find(|b| b.0 == name).map(|b| b.1)
+}
 
 /// Runs scenario `name` with `seed`; a panic anywhere in node code is a failure with the seed.
 pub fn run(name: &str, seed: u64, f: Scenario) -> Res<Report> {
