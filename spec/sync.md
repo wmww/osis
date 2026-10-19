@@ -3,7 +3,7 @@
 
 ## 1. Blobs
 - A **blob** is an encrypted commit (header plus unpurged deltas; spec/commits.md), an encrypted chunk, tree node or page (spec/data-model.md §6, spec/crdt.md §8, a header list spec/commits.md §1), or an inbox blob (§3). Blind nodes cannot tell them apart except as §4 states.
-- Layout: **clear prefix** || ciphertext (framing TBD). Prefix: a random 16-byte salt (fresh per encryption), optional expiry `T`, the token commitments with their levels (spec/crypto.md §7; list length capped). Ciphertext: spec/crypto.md §5, plaintext padded with Padmé (Nikitin et al., PURBs).
+- Layout: **clear prefix** || ciphertext (spec/wire.md §5). Prefix: a random 16-byte salt (fresh per encryption), optional expiry `T`, the token commitments with their levels (spec/crypto.md §7; at most `MAX_COMMITMENTS`). Ciphertext: spec/crypto.md §5, plaintext padded with Padmé (Nikitin et al., PURBs).
 - **Blob ID** = BLAKE3 of prefix and ciphertext. A blob is at most `MAX_BLOB` bytes.
 - One commit may travel as several blobs (projections, purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID. Every encryption of a commit computes its prefix from the header: expiry = the `expires` of the deltas it holds (§3: one class per blob); commitments from the token hashes its deltas call for (spec/crypto.md §7) and the new salt. A chunk reused by a later delta keeps its blob and prefix, unless its expiry is earlier than the new delta's or its thing-secret tokens (spec/crypto.md §7) are not exactly those the reusing delta calls for; then it is re-encrypted. Author-chain tokens need not match.
 

@@ -34,19 +34,19 @@
 - Each epoch names its suite ID.
 
 ## 5. Blobs, wraps, inbox blobs
-- **Blob encryption**: a fresh random 32-byte key per encryption, nonce all zero; nothing encrypts a blob under a caller-chosen key. Plaintext is Padmé-padded first. Blob = clear prefix || ciphertext (spec/sync.md §1). Blob ID = BLAKE3 of the whole blob.
+- **Blob encryption**: a fresh random 32-byte key per encryption, nonce all zero, AD the clear prefix; nothing encrypts a blob under a caller-chosen key. Plaintext is Padmé-padded first (spec/wire.md §5). Blob = clear prefix || ciphertext (spec/sync.md §1). Blob ID = BLAKE3 of the whole blob.
 - **Wrap** (per label, per blob): AEAD under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, plaintext = suite byte || blob key: 49 bytes. Deterministic. A wrap names no epoch: a reader tries the read secrets it holds, newest first. An uploader wraps under the newest read epoch it holds (§4), except that a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the newest read epoch e supersedes, so the members it seals to can open it. Label role keys for a server are those of the epochs its current step registers (spec/sync.md §5).
 - **Inbox blob** (spec/sync.md §3) = clear prefix || Padmé-padded sealed box to the recipient actor's read-role KEM key, AD = (recipient tid, `"inbox"`); payload = a membership commit (header and deltas) about the recipient, plus the label IDs and server addresses of the things it names. Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`, TBD), not a commit expiry; it has no blob key and its entry's wrap is filler.
 - **Signal envelope**: encrypted and wrapped like a blob, signed under `"osis v1 signal"` (layout TBD).
 
 ## 6. Hashes and links
-- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, canonical value)`.
+- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, chunk or page bytes)`, for a tree node `kdf("link tree", dedup secret, ...)` over its children's hashes (spec/wire.md §6).
 - Unkeyed BLAKE3: tids, commit IDs, blob IDs.
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
 
 ## 7. Delete tokens
 - **Token secrets** of a delta, by its retention (spec/commits.md §5), each at a **level**: `admin` and above, the admin secret of its thing (level 1); `author` and above, also the write secret of the actor directly above the author node in its chain (level 2; omitted for an imported delta, whose importer cannot derive it: its origin author purges at honest nodes by request and admins delete at blind nodes, spec/permissions.md §7); `writer`, also the write secret of its thing (level 3); `nobody`, none. A commit's token secrets are the union over its deltas; a blob carries the commitments of the deltas it holds (spec/sync.md §1, §3).
-- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the delta that created the chunk or page; for a chunk of a header list, one per token secret of the commit. Tokens are 32 bytes.
+- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the delta that created the chunk or page; for a chunk of a header list, one per token secret of the commit up to the cap of spec/wire.md §5. Tokens are 32 bytes.
 - **Token hash** = first 16 bytes of BLAKE3(token); the header lists them with their levels.
 - **Commitment** in a blob prefix = level byte || first 16 bytes of BLAKE3(token hash || prefix salt). A server verifies a presented token by hashing twice and requires the signature its level calls for (spec/sync.md §5).
 - A token holder tries its epochs of the secret.

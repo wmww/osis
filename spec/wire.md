@@ -72,3 +72,29 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
 - **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the tokens its parts' aspects list (§5); its expiry is their common `expires`.
 - A header violating a rule of spec/commits.md §2 (an aspect of the wrong class for its kind, `expires` or a purge item on a membership commit, a frontier outside a demotion, more than one hash for a kind with one delta per aspect) is bad input.
+
+## 5. Blob framing
+A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixed byte layout:
+
+| offset | size | field |
+|---|---|---|
+| 0 | 1 | framing version: 1 |
+| 1 | 16 | salt, random per encryption |
+| 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
+| 25 | 1 | n: number of commitments, 0..`MAX_COMMITMENTS` |
+| 26 | 17·n | commitments: level byte (1..3) `||` 16 bytes (spec/crypto.md §7), strictly ascending as 17-byte strings |
+
+- The ciphertext runs from offset `26 + 17n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
+- **Padding** (Padmé): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
+- Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above); signal envelope: §9.
+- Commitments: a commit blob, chunk, tree node or page carries one commitment per token of the deltas it serves (spec/crypto.md §7): at most one per level. A header-list chunk (§4) carries the commitments of every token of the commit when the commit has at most 16, else of its level-2 tokens only (provisional, issues/header-list-commitments.md). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
+- **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32)`: 49 bytes. A filler is 49 random bytes.
+- A node that does not know a blob's framing version stores and relays it as a blob with no expiry and no commitments.
+
+## 6. Chunker, chunk trees, pages
+- **Gear table**: `G[i]` (i = 0..255) is the little-endian u64 at bytes `8i..8i+8` of the 2048-byte BLAKE3 XOF output of the ASCII string `"osis v1 gear table"` (unkeyed).
+- **Chunker** over a byte sequence: at each chunk start `h = 0`; for each byte b, `h = (h << 1) + G[b]` (mod 2^64), and the chunk ends after that byte if its length is at least `CHUNK_MIN` and `h >> 48 = 0`, or its length is `CHUNK_MAX`. The last chunk ends at the end of the sequence.
+- **Chunk tree** of a large atomic value (spec/data-model.md §6) or a linked header list or frontier (§4): the leaves are the chunks of its canonical bytes. Level 1 groups the leaf links in order into nodes; a node closes after a link when it holds at least 2 links and the link's content hash begins with byte `0x00`, or when it holds 512 links; the last node closes at the end. If a level yields one node, that node is the root; else the links to its nodes are grouped the same way into level + 1. The root is always an interior node, even over one chunk.
+- A tree node's plaintext is `[level, [LINK+]]`: level 1 nodes link chunks, level k nodes link level k−1 nodes. Levels are at most 48.
+- **Link content hash** (spec/crypto.md §6), keyed by the dedup secret: of a chunk, `kdf("link", d, chunk bytes)`; of a page or link page, `kdf("link", d, plaintext)`; of a tree node, `kdf("link tree", d, le64(level) || the content hashes of its links in order)`. The root's content hash identifies the value. A reader verifies the content hash of every link it resolves; a mismatch is bad input.
+- **Pages** (spec/crdt.md §8): the gear hash runs over the concatenated canonical encodings of the array's elements, `h = 0` at each page start and never reset inside a page; a page closes after the first element at one of whose bytes the page length is at least `CHUNK_MIN` with `h >> 48 = 0`, or at whose end the page holds `CHUNK_MAX` bytes or more; the last page closes at the end of the array. A page's plaintext is the canonical array of its elements. If the resulting `[LINK+]` would exceed `PAGE_TARGET` bytes, its links are grouped into link pages by the tree-node rule (level 1 only), each a blob with plaintext `[LINK+]`, and the fragment holds the links to the link pages. A fragment needing a third level cannot be written.
