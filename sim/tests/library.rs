@@ -124,6 +124,14 @@ fn disappearing() {
     ok("disappearing", 1);
 }
 
+// spec/commits.md §5 (expiry): sweep seed 104, the node is never ticked again, an expired note
+// stays readable.
+#[test]
+#[ignore = "issues/sync-wake-lost.md"]
+fn disappearing_seed_104() {
+    ok("disappearing", 104);
+}
+
 // spec/commits.md §5 (keep at most): replaced bodies dropped everywhere.
 #[test]
 fn keep_at_most() {

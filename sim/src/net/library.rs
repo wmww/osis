@@ -647,7 +647,8 @@ pub fn disappearing(seed: u64) -> Res<Report> {
         for (t, _) in &notes {
             let v = sim.engine(n)?.get(t, &nk).map_err(|e| sim.fail(e.to_string()))?;
             if v.is_some() {
-                return Err(sim.fail(format!("node {n} still reads the expired note on {t}: {v:?}")));
+                let wake = sim.nodes.get(n).and_then(|x| x.wake_at());
+                return Err(sim.fail(format!("node {n} still reads the expired note on {t}: {v:?} (wake {wake:?})")));
             }
         }
     }
