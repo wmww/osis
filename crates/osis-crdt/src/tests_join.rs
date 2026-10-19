@@ -9,7 +9,7 @@ use proptest::prelude::*;
 
 /// Delivers the history in a random order with duplicates to the model and to the
 /// implementation in lockstep; states and reads must agree after every join.
-fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
+pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
     let mut r = Rng(seed | 1);
     let commits = history(&mut r, types, n, rounds);
     let mut reference = None;

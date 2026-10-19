@@ -9,6 +9,7 @@ mod codec;
 mod error;
 mod fragment;
 mod lifecycle;
+mod linearize;
 mod ops;
 mod page;
 mod seq;
@@ -32,6 +33,8 @@ mod tests_life;
 mod tests_laws;
 #[cfg(test)]
 mod tests_review;
+#[cfg(test)]
+mod tests_seq;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};

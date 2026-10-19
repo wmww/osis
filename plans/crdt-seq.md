@@ -18,7 +18,7 @@ Spec: spec/crdt.md §3.2 (Run grammar), §3.3 rules 2–3, 5, 7; §4.3 (presence
 - Bench: port `models/crdt/src/bin/text_bench.rs` to an osis-bench bench over the implementation; assert the ratios of notes/crdt.md (≤ 3.5x at 100 edits/commit, ≤ 7x at 10) as a tier-2 size-budget test.
 
 ## Steps
-- [ ] State, join, read with whole-state linearization; differential tests vs models/crdt text and list (random ops, random delivery, duplication).
+- [x] State, join, read with whole-state linearization; differential tests vs models/crdt text and list (random ops, random delivery, duplication).
 - [ ] Wire runs + rule 7; worked examples of notes/crdt.md as named tests.
 - [ ] Ops incl. move and cut/paste; undo; embedding; list nested ops (test: list delete vs concurrent nested write resurrects the element, spec/crdt.md §5.7).
 - [ ] Diff; random undelete test; incremental linearization cache with equivalence test; bench and budget.
