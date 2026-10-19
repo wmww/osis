@@ -64,7 +64,8 @@ Compile and test time are the bottleneck of agent-driven work.
 One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.
 - `blake3` (core; `default-features = false, features = ["std"]`): the only hash (spec/crypto.md §1).
 - `proptest` (dev, all crates; models use their own version line): property tests.
-- Planned, added by their plans with a line here: ed25519-dalek, x25519-dalek, ML-KEM (libcrux-ml-kem or ml-kem; crypto decides), chacha20poly1305, zeroize, rand_core + getrandom (rand_core 0.6 `CryptoRngCore` matches the dalek 2.x crates; crypto confirms), tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), criterion, arbitrary + libfuzzer-sys (fuzz only), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
+- `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
+- Planned, added by their plans with a line here: ed25519-dalek, x25519-dalek, ML-KEM (libcrux-ml-kem or ml-kem; crypto decides), chacha20poly1305, zeroize, rand_core + getrandom (rand_core 0.6 `CryptoRngCore` matches the dalek 2.x crates; crypto confirms), tokio (node layer only), quinn + rustls (feature-gated; transport may choose lighter and record why), redb or rusqlite (feature-gated), criterion, arbitrary (fuzz only, with the first structured target), iroh (feature-gated), clap (cli only), anyhow (cli, examples).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.

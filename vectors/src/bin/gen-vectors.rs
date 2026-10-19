@@ -1,6 +1,7 @@
 //! gen-vectors: writes every provisional generated vector file from the implementation; never
 //! touches frozen or pending ones. `gen-vectors freeze <path> <FC-n>` freezes a file at its
-//! current bytes. `gen-vectors list` prints the manifest with case counts.
+//! current bytes. `gen-vectors list` prints the manifest with case counts. `gen-vectors corpus`
+//! writes the fuzz seed corpora (fuzz/README.md).
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -14,7 +15,8 @@ fn main() -> ExitCode {
         [] => generate(),
         ["freeze", path, change] => manifest::freeze(path, change),
         ["list"] => list(),
-        _ => Err("usage: gen-vectors [list | freeze <path> <FC-n>]".into()),
+        ["corpus"] => osis_vectors::corpus::write().map(|n| println!("wrote {n} seeds")),
+        _ => Err("usage: gen-vectors [list | corpus | freeze <path> <FC-n>]".into()),
     };
     match r {
         Ok(()) => ExitCode::SUCCESS,

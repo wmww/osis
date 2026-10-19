@@ -5,6 +5,7 @@
 // Test tooling: a panic is a test failure, not a peer-triggered crash.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+pub mod corpus;
 pub mod diag;
 pub mod file;
 pub mod manifest;
