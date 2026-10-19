@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass and the TLA rerun running.
+Wave 4 finishing (node-sync in review); wave 5 started (cli); TLA rerun running.
 
 ## Plans
 | plan | state | notes |
@@ -51,7 +51,8 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | api (first half) | review | reviewer running; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | tla rerun (round 2) | running (opus, worktree) | |
-| apps-e2e, cli, p2p, api (second half) | not started | wave 5 |
+| cli | running (opus, worktree) | on the api's first half |
+| apps-e2e, p2p, api (second half) | not started | wave 5, after node-sync merges |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
