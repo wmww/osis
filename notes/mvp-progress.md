@@ -13,9 +13,9 @@ Wave 0.
 | plan | state | notes |
 |---|---|---|
 | pre-flight plan diff | merged at cb6f1b0 | |
-| workspace | not started | wave 0, serial |
-| protocol-spec | not started | wave 0, ∥; toplevel reviews every layout |
-| tla-models | not started | wave 0, ∥, low priority |
+| workspace | running (opus, worktree) | wave 0, serial |
+| protocol-spec | running (opus, worktree) | wave 0, ∥; toplevel reviews every layout |
+| tla-models | running (opus, worktree) | wave 0, ∥, low priority |
 | crypto, crdt-core, schema, perm, test-infra | not started | wave 1 |
 | store | not started | wave 1, after crypto AEAD+kdf |
 | crdt-seq, commit, label, keys, proto | not started | wave 2 |
