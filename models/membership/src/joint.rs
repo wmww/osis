@@ -8,9 +8,10 @@
 //!
 //! A write applies iff its author has admin on the target (attributed to its class there) or
 //! it is a self-removal (lowers the edge of a member the author has admin on; never audited,
-//! audits nothing). After each applied write by A, every other node X concerned by it (X
-//! reaches the write's member, the actor N is reachable from its target) whose class on N
-//! fell below `held[X][N]` (its highest class there since its last audit) has its
+//! audits nothing). After each applied write by A on edge (M, T), every other node X reaching
+//! M whose class on an actor N reachable from T fell below its class with the edge restored
+//! as if the member still held its role (the highest role the edge had since the last
+//! explicit write on it, self-removals and A's own writes auditing nothing) has its
 //! earlier applied writes on N attributed to a class in (new, held] audited by A's frontier
 //! (A's receipts before t; A's chain writes, those setting the admin edges on A's admin paths
 //! to the target, and the write itself count), and the walk restarts on
@@ -243,7 +244,11 @@ impl JHist {
             passes += 1;
             let mut edges = self.genesis.clone();
             let mut r = self.roles(&edges);
-            let mut held: Vec<Vec<Class>> = (0..nn).map(|n| (0..na).map(|x| self.class(&r, n, x)).collect()).collect();
+            // prior[m][x]: the highest role m's edge on x had since the last explicit write on
+            // it (self-removals audit nothing); prior_self[(m, x, a)]: the same for a node a
+            // that lowered it by its own write (an author is never audited).
+            let mut prior: Vec<Vec<Role>> = vec![vec![Role::None; na]; nn + na];
+            let mut prior_self: std::collections::HashMap<(usize, usize, usize), Role> = Default::default();
             let mut attr = vec![Attr::Skipped; self.writes.len()];
             // set_by[m][x]: the applied write that set m's current edge on x.
             let mut set_by: Vec<Vec<Option<usize>>> = vec![vec![None; na]; nn + na];
@@ -269,26 +274,38 @@ impl JHist {
                     }
                 };
                 let chain_a = self.chain_writes(&edges, &r, &set_by, a, w.target);
+                let own = self.reaching(&edges, w.member)[a];
                 edges[w.member][w.target] = w.role;
                 set_by[w.member][w.target] = Some(i);
                 r = self.roles(&edges);
                 let mut grew = false;
-                let (up, down) = (self.reaching(&edges, w.member), self.reachable(&edges, nn + w.target));
+                let (m, t) = (w.member, w.target);
+                if attr[i] == Attr::SelfOnly {
+                    prior[m][t] = prior[m][t].max(old);
+                    continue;
+                }
+                // An explicit write demotes x on n when x's class is lower than with the edge
+                // restored as if the member still held its role (spec/permissions.md §5.1).
+                let base = prior[m][t].max(old);
+                prior[m][t] = Role::None;
+                let (up, down) = (self.reaching(&edges, m), self.reachable(&edges, nn + t));
                 for x in 0..nn {
-                    for n in 0..na {
-                        let now = self.class(&r, x, n);
-                        // Only a write concerning x on n demotes it ("the next explicit demotion
-                        // of that member", spec/permissions.md §5.1): x reaches the write's
-                        // member and n is reachable from its target. After a self-removal, an
-                        // unrelated write does not audit x.
-                        let concerns = up[x] && down[nn + n];
-                        if x == a || attr[i] == Attr::SelfOnly || now >= held[x][n] || !concerns {
-                            held[x][n] = held[x][n].max(now);
-                            continue;
+                    let restored = base.max(prior_self.remove(&(m, t, x)).unwrap_or(Role::None));
+                    if x == a {
+                        if own {
+                            prior_self.insert((m, t, a), restored);
                         }
-                        let before = held[x][n];
-                        held[x][n] = now;
-                        if !audit {
+                        continue;
+                    }
+                    if !up[x] || !audit {
+                        continue;
+                    }
+                    let mut was = edges.clone();
+                    was[m][t] = restored;
+                    let rw = self.roles(&was);
+                    for n in 0..na {
+                        let (now, before) = (self.class(&r, x, n), self.class(&rw, x, n));
+                        if !down[nn + n] || now >= before {
                             continue;
                         }
                         for j in 0..self.writes.len() {

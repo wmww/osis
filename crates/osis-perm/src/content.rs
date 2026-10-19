@@ -59,7 +59,8 @@ pub struct Range {
 /// spec/commits.md §4, §5.2: commits by one node whose node-form ranges on one aspect overlap
 /// are all invalid. Returns the voided commit IDs. A commit listed twice with one range is one.
 pub fn overlapping(ranges: impl IntoIterator<Item = Range>) -> BTreeSet<CommitId> {
-    let mut groups: BTreeMap<(Tid, Tid, String), BTreeSet<(u64, u64, CommitId)>> = BTreeMap::new();
+    type Key = (Tid, Tid, String);
+    let mut groups: BTreeMap<Key, BTreeSet<(u64, u64, CommitId)>> = BTreeMap::new();
     for r in ranges {
         if r.lo < r.hi {
             groups.entry((r.node, r.tid, r.ak)).or_default().insert((r.lo, r.hi, r.commit));

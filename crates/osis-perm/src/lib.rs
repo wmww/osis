@@ -8,6 +8,7 @@
 pub mod content;
 pub mod graph;
 pub mod held;
+pub mod roster;
 pub mod timeline;
 pub mod types;
 mod walk;
@@ -15,6 +16,7 @@ mod walk;
 pub use content::{overlapping, Range, Validity};
 pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
+pub use roster::RosterState;
 pub use timeline::{At, Timeline};
 pub use types::{Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, WriteId, MEMBERS};
 pub use walk::{Applied, Attr, Demotion};

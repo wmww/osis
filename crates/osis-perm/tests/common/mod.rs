@@ -80,6 +80,8 @@ pub struct World {
     pub created: BTreeMap<Tid, CreationRecord>,
     pub commits: Vec<CSpec>,
     pub snaps: Vec<SSpec>,
+    /// Roster snapshots added verbatim (produced by perm).
+    pub raw: Vec<RosterSnapshot>,
     next: u32,
 }
 
@@ -146,6 +148,22 @@ impl World {
         id
     }
 
+    /// A roster snapshot carrying a produced state, received by everyone at once.
+    pub fn snapshot_state(&mut self, author: Tid, thing: Tid, state: osis_perm::RosterState, t: u64) -> CommitId {
+        let id = self.fresh_id();
+        self.raw.push(RosterSnapshot { id, ts: ts(t), author, actor: author, thing, dots: Dots::Commit, roster: state.roster, ledger: state.ledger });
+        id
+    }
+
+    /// Without `thing`'s edge writes and roster snapshots other than `keep` (a node that
+    /// compacted `thing` at `keep`).
+    pub fn compacted(&self, thing: Tid, keep: CommitId) -> MemoryHeldSet {
+        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().any(|o| o.0 == thing)).map(|c| c.id).collect();
+        skip.extend(self.snaps.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
+        skip.extend(self.raw.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
+        self.held_without(&skip)
+    }
+
     fn recv_of(&self, id: &CommitId) -> Option<&BTreeMap<Tid, u64>> {
         self.commits.iter().find(|c| c.id == *id).map(|c| &c.recv).or_else(|| self.snaps.iter().find(|s| s.id == *id).map(|s| &s.recv))
     }
@@ -180,6 +198,9 @@ impl World {
                 frontier: Some(Arc::new(self.frontier(c.author, c.t))),
                 ops: c.ops.iter().map(|&(target, member, edge)| EdgeOp { target, member, edge, dots: Dots::Commit }).collect(),
             });
+        }
+        for s in self.raw.iter().filter(|s| !skip.contains(&s.id)) {
+            h.add_snapshot(s.clone());
         }
         for s in self.snaps.iter().filter(|s| !skip.contains(&s.id)) {
             let ledger = s
