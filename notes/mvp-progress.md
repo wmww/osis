@@ -43,7 +43,7 @@ Wave 4 (node-sync, membership-flows, api first half); wave 3 integration pass an
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | phase A merged | found issues/node-revoke-divergence.md; B after node-sync; C wave 5 |
-| node-sync | running (opus, worktree) | |
+| node-sync | review | done; reviewer running; issues/node-sync-gaps.md, issues/pending-boxes.md |
 | membership-flows | review fixes | reviewer: leaver self-rotation and departures lost after roster snapshot (both decided as clarifications); link finalization decided (reset write); agent fixing |
 | api (first half) | review fixes | reviewer: undo skips silently, watch source attribution, dispatcher robustness; agent fixing; issues/undo-chain-register.md (owner-call) |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
