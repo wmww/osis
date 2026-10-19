@@ -76,7 +76,7 @@ fn owner_further_backdated_revoke_cancels() {
 #[test]
 fn self_witnessed_grant_falls() {
     let (mut w, n, g) = group();
-    let z = w.nodes(6)[5];
+    let z = w.nodes_salted(1, 99)[0];
     w.set(n[1], g, z, edge(Admin), 2, &[(z, 2)]);
     w.set(n[0], g, n[1], None, 5, &[]);
     w.set(z, g, n[1], edge(Admin), 6, &[]);
@@ -157,7 +157,7 @@ fn transitive_ownership_audit() {
 #[test]
 fn self_removal_finalized_by_explicit_removal() {
     let (mut w, n, g) = group();
-    let z = w.nodes(6)[5];
+    let z = w.nodes_salted(1, 99)[0];
     w.set(n[1], g, n[1], None, 5, &[(n[0], 5)]);
     let forged = w.set(n[1], g, z, edge(Admin), 4, &[]);
     assert_eq!(edge_role(&eval(&w), z, g), Some(Admin));
