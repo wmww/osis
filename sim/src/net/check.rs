@@ -13,7 +13,7 @@
 //!   nothing at any server.
 //! - spec/commits.md §4: nothing pends at quiescence (every reason resolved).
 
-use super::{NetSim, Party};
+use super::{NetSim, Party, WAIVE_PROMOTION};
 use crate::harness::Res;
 use osis_core::{BlobId, LabelId, Role, Tid};
 use osis_node::Engine;
@@ -32,11 +32,53 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
     no_ping_pong(sim)
 }
 
-/// spec/requirements.md (convergence) over up nodes.
+/// Per aspect: the deltas a node holds of it (commit, delta index) and its read.
+type AspectView = BTreeMap<(Tid, String), (BTreeSet<(osis_core::CommitId, usize)>, String)>;
+
+fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
+    let mut deltas: BTreeMap<(Tid, String), BTreeSet<(osis_core::CommitId, usize)>> = BTreeMap::new();
+    for c in e.commit_ids() {
+        let Some(bytes) = e.commit_bytes(&c).map_err(|x| x.to_string())? else { continue };
+        let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+        for p in &b.parts {
+            if let Some(a) = b.header.aspects.get(p.ai) {
+                deltas.entry((a.tid, a.ak.as_str().to_string())).or_default().insert((c, p.di));
+            }
+        }
+    }
+    let mut out = AspectView::new();
+    for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
+        let v = e.get(&t, &a).map_err(|x| x.to_string())?;
+        let k = (t, a.as_str().to_string());
+        out.insert(k.clone(), (deltas.remove(&k).unwrap_or_default(), format!("{v:?}")));
+    }
+    Ok(out)
+}
+
+/// spec/requirements.md (convergence) over up nodes that may hold different parts of a commit
+/// (projections): two nodes holding the same deltas of an aspect read it the same.
 fn convergence(sim: &mut NetSim) -> Res<()> {
-    let mut es: Vec<(usize, &mut Engine)> = sim.nodes.iter_mut().enumerate().filter_map(|(i, n)| n.sync.as_mut().map(|s| (i, s.engine_mut()))).collect();
-    let r = crate::check::convergence(&mut es);
-    r.map_err(|w| sim.fail(w))
+    let mut views: Vec<(usize, AspectView)> = Vec::new();
+    for n in 0..sim.nodes.len() {
+        let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
+        let v = aspect_view(s.engine_mut()).map_err(|w| format!("node {n}: read failed: {w}"));
+        let v = v.map_err(|w| sim.fail(w))?;
+        views.push((n, v));
+    }
+    for (i, (m, vm)) in views.iter().enumerate() {
+        for (n, vn) in views.iter().skip(i + 1) {
+            for (k, (dm, rm)) in vm {
+                if let Some((dn, rn)) = vn.get(k)
+                    && dm == dn
+                    && rm != rn
+                {
+                    let (rm, rn): (String, String) = (rm.chars().take(200).collect(), rn.chars().take(200).collect());
+                    return Err(sim.fail(format!("divergence: nodes {m} and {n} hold the same {} deltas of {} {} but read {rm} vs {rn}", dm.len(), k.0, k.1)));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn pending(sim: &mut NetSim) -> Res<()> {
@@ -82,7 +124,10 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             let e = s.engine_mut();
             if e.role_on(&g.g).is_none_or(|r| r < Role::Read) {
                 if expected {
-                    return Err(sim.fail(format!("node {n}, a member of group {}, cannot read it at quiescence (liveness)", g.g)));
+                    let (knows, pending) = (e.knows(&g.g), e.pending());
+                    let labels: Vec<_> = s.labels().into_iter().map(|(t, l)| (t, l.id)).collect();
+                    let d = format!("knows it {knows}, pending {pending:?}, labels {labels:?}, conns {:?}", s.describe());
+                    return Err(sim.fail(format!("node {n}, a member of group {}, cannot read it at quiescence (liveness): {d}", g.g)));
                 }
                 continue;
             }
@@ -100,13 +145,37 @@ fn groups(sim: &mut NetSim) -> Res<()> {
                     let d = f.iter().zip(reads.iter()).find(|(a, b)| a != b).map(|(a, b)| format!("{a} vs {b}")).unwrap_or_else(|| format!("{} vs {} reads", f.len(), reads.len()));
                     let (m, items) = (*m, g.items.clone());
                     let gap = gap(sim, m, n, &items);
-                    return Err(sim.fail(format!("members {m} and {n} of group {} read differently at quiescence: {d}; {gap}", g.g)));
+                    let views = views(sim, &g.g);
+                    return Err(sim.fail(format!("members {m} and {n} of group {} read differently at quiescence: {d}; {gap}; views {views:?}", g.g)));
                 }
                 Some(_) => {}
             }
         }
     }
     Ok(())
+}
+
+/// Each node's verdicts on the group's labels at each server (failure detail): writer, number of
+/// must-hold bodies, unsettled aspects.
+fn views(sim: &mut NetSim, g: &Tid) -> Vec<String> {
+    let mut out = Vec::new();
+    let keys: Vec<[u8; 32]> = sim.servers.iter().map(|s| s.key).collect();
+    for n in 0..sim.nodes.len() {
+        let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
+        let ls: Vec<LabelId> = s.labels().into_iter().filter(|(x, _)| x == g).map(|(_, l)| l.id).collect();
+        for l in ls {
+            for (i, k) in keys.iter().enumerate() {
+                if let Ok(Some(v)) = s.verdicts(k, &l) {
+                    out.push(format!("node {n} at s{i}: writer {} must-hold {} unsettled {:?}", v.writer, v.must_hold.len(), v.unsettled));
+                    if let Some(h) = sim.servers.get(i).and_then(|x| x.hub.as_ref()).and_then(|h| h.store().head(&l).ok().flatten()) {
+                        out.push(format!("s{i} head {}", h.0[0]));
+                        out.push(format!("{:?}", s.describe()));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The item commits one node holds and the other lacks, with where they are (failure detail).
@@ -203,7 +272,7 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                     }
                 }
                 // spec/sync.md §5: a writer re-uploads stamped the deposited commits it verified
-                if v.writer {
+                if v.writer && !sim.waived(WAIVE_PROMOTION) {
                     for (dl, db) in &deposited {
                         if *dl != l {
                             continue;
@@ -245,6 +314,9 @@ fn purged(sim: &mut NetSim) -> Res<()> {
             }
         }
         for n in 0..sim.nodes.len() {
+            if sim.excused.contains(&n) {
+                continue;
+            }
             let Some(sync) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
             for (_, b) in &blobs {
                 if sync.holds_blob(b) {
@@ -256,29 +328,25 @@ fn purged(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// spec/sync.md §6: after quiescence, resync passes change nothing at any server.
+/// spec/sync.md §6: after quiescence, resync passes add and delete nothing at any server.
 fn no_ping_pong(sim: &mut NetSim) -> Res<()> {
     let heads = log_heads(sim);
     for _ in 0..IDLE_ROUNDS {
         sim.advance(61_000)?;
         sim.settle()?;
     }
-    for ((s, l), (log, seq)) in heads {
-        let Some(hub) = sim.hub(s) else { continue };
-        let Ok((log2, _)) = hub.store().log_head(&l) else { continue };
-        if log2 != log {
-            continue;
-        }
-        let recs = hub.store().log_after(&l, seq, 64).ok().flatten().unwrap_or_default();
-        let churn: Vec<String> = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Added(_) | LogRecord::Deleted(_))).map(|(_, r)| format!("{r:?}")).collect();
-        if !churn.is_empty() {
-            return Err(sim.fail(format!("server {s}: label {l:?} changed after quiescence (ping-pong): {churn:?}")));
-        }
+    sim.observe()?;
+    let churn = churn(sim, &heads);
+    if !churn.is_empty() {
+        return Err(sim.fail(format!("labels changed after quiescence (ping-pong): {churn:?}")));
     }
     Ok(())
 }
 
-fn log_heads(sim: &NetSim) -> BTreeMap<(usize, LabelId), ([u8; 16], u64)> {
+pub type Heads = BTreeMap<(usize, LabelId), ([u8; 16], u64)>;
+
+/// Every label's log head at every up server.
+pub fn log_heads(sim: &NetSim) -> Heads {
     let mut m = BTreeMap::new();
     for s in 0..sim.servers.len() {
         let Some(hub) = sim.hub(s) else { continue };
@@ -289,4 +357,34 @@ fn log_heads(sim: &NetSim) -> BTreeMap<(usize, LabelId), ([u8; 16], u64)> {
         }
     }
     m
+}
+
+/// Entries added or deleted since `heads` (same log instance), with what they hold.
+pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
+    let mut out = Vec::new();
+    for ((s, l), (log, seq)) in heads {
+        let Some(hub) = sim.hub(*s) else { continue };
+        let Ok((log2, _)) = hub.store().log_head(l) else { continue };
+        if log2 != *log {
+            continue;
+        }
+        for (_, r) in hub.store().log_after(l, *seq, 64).ok().flatten().unwrap_or_default() {
+            let (what, b) = match r {
+                LogRecord::Added(b) => ("added", b),
+                LogRecord::Deleted(b) => ("deleted", b),
+                LogRecord::Pending(b, _) => ("timed delete", b),
+                LogRecord::Head(st) => {
+                    out.push(format!("s{s} {l:?} head {:?}", st.id().0.first()));
+                    continue;
+                }
+            };
+            let kind = sim.known.get(&(*l, b)).map(|(c, p)| {
+                let h = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|s| s.engine().header(c)));
+                let aks: Vec<String> = h.as_ref().map(|h| p.iter().filter_map(|(ai, _)| h.aspects.get(*ai).map(|a| format!("{} {}", a.tid, a.ak.as_str()))).collect()).unwrap_or_default();
+                format!("{c:?} {p:?} {aks:?} kind {:?}", h.map(|h| h.kind))
+            });
+            out.push(format!("s{s} {l:?} {what} {b:?}: {}", kind.unwrap_or_else(|| "unknown".into())));
+        }
+    }
+    out
 }

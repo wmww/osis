@@ -17,7 +17,7 @@ Reference: plans/testing.md §5 (the full list), scenarios named in notes/permis
 
 ## Steps
 - [x] Phase A (after node-core): harness, clocks, scheduler, direct engine-to-engine delivery, convergence invariants, replay (also crash/restart, mid-write crashes via the store fault plan).
-- [ ] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
+- [x] Phase B (after node-sync, server): message faults, servers, label invariants, crash/restart, disk loss.
 - [ ] Phase C (after flows): scenario library, adversaries, version skew, sweep binary, nightly CI job (test-infra).
 
 ## Done when

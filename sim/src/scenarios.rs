@@ -13,7 +13,26 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub type Scenario = fn(u64) -> Res<Report>;
 
-pub const SCENARIOS: &[(&str, Scenario)] = &[("two_devices", two_devices), ("three_random", three_random), ("crash_restart", crash_restart), ("drift_parks", drift_parks), ("revoke_while_writing", revoke_while_writing), ("two_devices_server", net::two_devices_server), ("three_persons_two_servers", net::three_persons_two_servers), ("removed_writer", net::removed_writer), ("compaction", net::compaction), ("reader_relays", net::reader_relays), ("stranded_reseal", net::stranded_reseal), ("server_loses_data", net::server_loses_data), ("offline_rotation", net::offline_rotation), ("disk_loss", net::disk_loss)];
+/// Every scenario by name: phase A (commits engine to engine), then phase B (sync engines and
+/// blind servers, `crate::net`).
+pub const SCENARIOS: &[(&str, Scenario)] = &[
+    ("two_devices", two_devices),
+    ("three_random", three_random),
+    ("crash_restart", crash_restart),
+    ("drift_parks", drift_parks),
+    ("revoke_while_writing", revoke_while_writing),
+    ("two_devices_server", net::two_devices_server),
+    ("three_persons_two_servers", net::three_persons_two_servers),
+    ("removed_writer", net::removed_writer),
+    ("compaction", net::compaction),
+    ("reader_relays", net::reader_relays),
+    ("stranded_reseal", net::stranded_reseal),
+    ("server_loses_data", net::server_loses_data),
+    ("offline_rotation", net::offline_rotation),
+    ("disk_loss", net::disk_loss),
+    ("head_moves_during_open", net::head_moves_during_open),
+    ("grant_lost_on_crash", net::grant_lost_on_crash),
+];
 
 /// Runs scenario `name` with `seed`; a panic anywhere in node code is a failure with the seed.
 pub fn run(name: &str, seed: u64, f: Scenario) -> Res<Report> {

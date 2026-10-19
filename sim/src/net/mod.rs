@@ -29,7 +29,7 @@ use std::sync::mpsc::Receiver;
 
 const TRACE: usize = 60;
 /// Messages one settle may deliver before it calls the run a storm.
-const STORM: u64 = 400_000;
+const STORM: u64 = 5_000;
 
 /// Faults on connections, per message sent (off during quiescence).
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,6 +149,9 @@ struct Msg {
     what: Payload,
 }
 
+/// (label, blob) -> (commit, delta parts) of every commit blob a node opened.
+pub type Known = BTreeMap<(LabelId, osis_core::BlobId), (CommitId, Vec<(usize, usize)>)>;
+
 /// A labeled group the scenario writes to, and the things written.
 #[derive(Clone, Debug)]
 pub struct Group {
@@ -170,8 +173,9 @@ pub struct NetSim {
     pub groups: Vec<Group>,
     pub cfg: NetConfig,
     pub report: Report,
-    /// No new writes, crashes, partitions or message faults (quiescence).
-    calm: bool,
+    /// No new writes, crashes, partitions or message faults: setup and quiescence (`run` turns
+    /// them on, `run_until_quiescent` off again).
+    pub calm: bool,
     links: BTreeMap<u64, Link>,
     next_link: u64,
     next_hub_conn: u64,
@@ -183,7 +187,7 @@ pub struct NetSim {
     trace: VecDeque<String>,
     check: Checker,
     /// Every commit blob any node opened under a label: (label, blob) -> (commit, parts).
-    pub known: BTreeMap<(LabelId, osis_core::BlobId), (CommitId, Vec<(usize, usize)>)>,
+    pub known: Known,
     /// Purges issued: (commit, thing, aspect).
     pub purged: Vec<(CommitId, Tid, osis_core::Ak)>,
     /// Tombstones seen per server (cleared when the server loses its data).
@@ -194,6 +198,29 @@ pub struct NetSim {
     pub person_of: BTreeMap<usize, Tid>,
     /// Print every trace line (`OSIS_SIM_TRACE`).
     pub verbose: bool,
+    /// Invariants switched off for a scenario, each naming the issue that breaks it.
+    pub waivers: BTreeSet<&'static str>,
+    /// Record entry kinds after every node call (failure detail).
+    watch: bool,
+}
+
+/// Waivers: an invariant a known engine bug breaks, named by its issue. A scenario waives it to
+/// keep checking everything else; fixing the issue removes the waiver.
+pub const WAIVE_PROMOTION: &str = "issues/sync-deposit-promotion.md";
+
+/// The proto messages in a run of bytes, shortened (trace only).
+fn frames(b: &[u8]) -> String {
+    let mut d = osis_proto::FrameDecoder::default();
+    d.push(b);
+    let mut v = Vec::new();
+    while let Ok(Some(f)) = d.next_frame() {
+        let s = match osis_proto::Message::decode(&f) {
+            Ok(m) => format!("{m:?}"),
+            Err(_) => format!("<{} bytes>", f.len()),
+        };
+        v.push(s.chars().take(110).collect::<String>());
+    }
+    if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -225,7 +252,7 @@ impl NetSim {
             groups: Vec::new(),
             cfg,
             report: Report::default(),
-            calm: false,
+            calm: true,
             links: BTreeMap::new(),
             next_link: 1,
             next_hub_conn: 1,
@@ -241,6 +268,8 @@ impl NetSim {
             excused: BTreeSet::new(),
             person_of: BTreeMap::new(),
             verbose: std::env::var_os("OSIS_SIM_TRACE").is_some(),
+            waivers: BTreeSet::new(),
+            watch: false,
         }
     }
 
@@ -261,6 +290,10 @@ impl NetSim {
 
     pub fn now(&self) -> u64 {
         T0.saturating_add(self.elapsed)
+    }
+
+    pub fn waived(&self, issue: &str) -> bool {
+        self.waivers.contains(issue)
     }
 
     // ---- servers
@@ -386,6 +419,9 @@ impl NetSim {
     /// After any call into node `n`: checker events, diagnostics, a crash, then its actions.
     fn after_node(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         self.drain(n)?;
+        if self.watch {
+            self.observe_node(n);
+        }
         if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) {
             self.report.crashes = self.report.crashes.saturating_add(1);
             self.note(format!("node {n} crashed mid-write"));
@@ -484,6 +520,11 @@ impl NetSim {
     /// Queues a message on a stream, through the faults.
     fn send(&mut self, id: u64, to: End, what: Payload) {
         self.report.sent = self.report.sent.saturating_add(1);
+        if self.verbose
+            && let Payload::Bytes(b) = &what
+        {
+            self.note(format!("link {id} -> {to:?}: {}", frames(b)));
+        }
         let f = self.cfg.faults;
         let faulty = !self.calm && matches!(what, Payload::Bytes(_));
         if faulty && self.dice.pct(f.cut_pct) {
@@ -701,38 +742,6 @@ impl NetSim {
         Ok(())
     }
 
-    /// Elapsed time at which node `n`'s clock reads `wall` (at or after).
-    fn elapsed_at(&self, n: usize, wall: u64) -> u64 {
-        let Some(x) = self.nodes.get(n) else { return self.elapsed };
-        let w = i128::from(wall) - i128::from(T0) - i128::from(x.spec.skew_ms);
-        let e = w * 1_000_000 / (1_000_000 + i128::from(x.spec.drift_ppm));
-        let mut e = u64::try_from(e.max(0)).unwrap_or(0);
-        while wall_of(x.spec, e) < wall {
-            e += 1;
-        }
-        e
-    }
-
-    /// The next time anything is due (messages, wakes, server timers).
-    fn next_due(&self) -> Option<u64> {
-        let mut t: Option<u64> = None;
-        let mut at = |x: u64| t = Some(t.map_or(x, |y| y.min(x)));
-        for m in &self.queue {
-            at(m.at);
-        }
-        for (i, n) in self.nodes.iter().enumerate() {
-            if let (true, Some(w)) = (n.up, n.wake) {
-                at(self.elapsed_at(i, w));
-            }
-        }
-        for s in &self.servers {
-            if let Some(d) = s.hub.as_ref().and_then(|h| h.next_due(self.now())) {
-                at(d.saturating_sub(T0));
-            }
-        }
-        t
-    }
-
     // ---- delivery
 
     /// Delivers one due message (the earliest, or under reorder any due stream head); waits for
@@ -777,7 +786,15 @@ impl NetSim {
         while self.deliver_next()? {
             k += 1;
             if k > STORM {
-                return Err(self.fail(format!("message storm: {STORM} deliveries without the queue emptying")));
+                // what the storm keeps changing at the servers
+                self.observe()?;
+                let heads = check::log_heads(self);
+                self.watch = true;
+                for _ in 0..400 {
+                    self.deliver_next()?;
+                }
+                let churn = check::churn(self, &heads);
+                return Err(self.fail(format!("message storm: {STORM} deliveries without the queue emptying; meanwhile {churn:?}")));
             }
         }
         Ok(())
@@ -857,6 +874,7 @@ impl NetSim {
     }
 
     pub fn run(&mut self, n: u64) -> Res<()> {
+        self.calm = false;
         for _ in 0..n {
             self.step()?;
         }
@@ -965,6 +983,15 @@ impl NetSim {
         }
     }
 
+    /// Cuts every node's connections (they redial and reopen at the servers' current heads):
+    /// works around issues/sync-stale-head.md after setup.
+    pub fn reconnect_all(&mut self) {
+        let ids: Vec<u64> = self.links.iter().filter(|(_, l)| matches!(l.dialer, End::Node(..))).map(|(id, _)| *id).collect();
+        for id in ids {
+            self.cut(id);
+        }
+    }
+
     pub fn heal(&mut self, a: Party, b: Party) {
         self.blocked.remove(&(a, b));
         self.blocked.remove(&(b, a));
@@ -1002,12 +1029,10 @@ impl NetSim {
         self.feed(to, Event::Local)
     }
 
-    /// Two persons' devices exchange everything they hold over a direct connection (a contact
-    /// exchange). Both ways, so the grantee holds the granter's person whole: certificate copies
-    /// arriving in parts hit issues/node-late-membership-deltas.md.
+    /// Node `x` hands what it holds (its device and person cards) to node `y` over a direct
+    /// connection: a contact exchange, so `y` can grant `x`'s person.
     pub fn introduce(&mut self, x: usize, y: usize) -> Res<()> {
-        self.direct(x, y)?;
-        self.direct(y, x)
+        self.direct(x, y)
     }
 
     /// Node `n` creates a person with its home label at `servers`.
@@ -1119,16 +1144,20 @@ impl NetSim {
     /// Records what every up node knows of commit blobs under its labels.
     pub fn observe(&mut self) -> Res<()> {
         for n in 0..self.nodes.len() {
-            let Some(s) = self.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
-            for (_, gl) in s.labels() {
-                for (b, k) in s.entries(&gl.id) {
-                    if let osis_node::sync::EntryKind::Commit { commit, parts } = k {
-                        self.known.insert((gl.id, b), (commit, parts));
-                    }
+            self.observe_node(n);
+        }
+        Ok(())
+    }
+
+    fn observe_node(&mut self, n: usize) {
+        let Some(s) = self.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { return };
+        for (_, gl) in s.labels() {
+            for (b, k) in s.entries(&gl.id) {
+                if let osis_node::sync::EntryKind::Commit { commit, parts } = k {
+                    self.known.insert((gl.id, b), (commit, parts));
                 }
             }
         }
-        Ok(())
     }
 
     // ---- quiescence
@@ -1138,6 +1167,13 @@ impl NetSim {
     /// and nothing changes for two rounds; then the quiescent invariants. Fails past
     /// `max_rounds`.
     pub fn run_until_quiescent(&mut self, max_rounds: u64) -> Res<()> {
+        self.quiet(max_rounds)?;
+        self.observe()?;
+        check::quiescent(self)
+    }
+
+    /// `run_until_quiescent` without the invariants (setup steps).
+    pub fn quiet(&mut self, max_rounds: u64) -> Res<()> {
         self.calm = true;
         self.blocked.clear();
         for s in 0..self.servers.len() {
@@ -1153,18 +1189,20 @@ impl NetSim {
             self.node(n)?.faults.revive();
         }
         let mut last = None;
+        let heads0 = check::log_heads(self);
         let mut stable = 0;
         for round in 0..max_rounds {
             self.settle()?;
             let fp = self.fingerprint();
             let idle = self.nodes.iter().all(|n| !n.up || n.sync.as_ref().is_some_and(|s| s.is_idle()));
+            if self.verbose {
+                let busy: Vec<usize> = (0..self.nodes.len()).filter(|n| self.nodes.get(*n).is_some_and(|x| x.up && !x.sync.as_ref().is_some_and(|s| s.is_idle()))).collect();
+                self.note(format!("round {round}: idle {idle} busy {busy:?} fp {fp:?}"));
+            }
             if idle && last.as_ref() == Some(&fp) {
                 stable += 1;
                 if stable >= 2 {
                     self.note(format!("quiescent after {round} rounds"));
-                    self.observe()?;
-                    check::quiescent(self)?;
-                    self.calm = false;
                     return Ok(());
                 }
             } else {
@@ -1174,7 +1212,16 @@ impl NetSim {
             self.advance(61_000)?;
         }
         let busy: Vec<String> = (0..self.nodes.len()).filter_map(|n| self.nodes.get(n).and_then(|x| x.sync.as_ref()).filter(|s| !s.is_idle()).map(|s| format!("node {n}: {:?}", s.describe()))).collect();
-        Err(self.fail(format!("not quiescent after {max_rounds} rounds; busy: {busy:?}")))
+        // what the rounds changed at the servers
+        self.watch = true;
+        self.observe()?;
+        let heads = heads0;
+        self.advance(61_000)?;
+        self.settle()?;
+        self.observe()?;
+        let churn = check::churn(self, &heads);
+        let fp = self.fingerprint();
+        Err(self.fail(format!("not quiescent after {max_rounds} rounds; one more round changes {churn:?}; busy: {busy:?}; fingerprint {last:?} -> {fp:?}")))
     }
 
     /// What changes while the system is still moving: nodes' commits and pending, servers' logs.

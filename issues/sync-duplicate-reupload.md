@@ -1,0 +1,6 @@
+# Duplicate bodies trade fresh encryptions for many rounds
+> Summary: When two devices hold the same body and each uploaded its own encryption, the one with the higher blob ID is deleted as a duplicate (spec/sync.md §7); its uploader then sees its entry tombstoned and uploads a fresh encryption on its next pass instead of taking the lower-ID entry as the body's, which is deleted again unless its new ID happens to be lower. One body per resync round, for dozens of rounds (spec/sync.md §6: no ping-pong).
+> Tags: sync, node, tests
+
+- Seen in the simulator: `osis_sim::replay("stranded_reseal", 1)` after the re-pair: device d0 uploads one content body per round, d1 deletes it at once (`Upload`, `Push Added`, `Delete`, `Push Deleted`), for about 35 rounds before the label settles; the scenario allows 80 quiescence rounds for it (with 40 it reports "not quiescent" and the churn).
+- Probably `entry_for` at the uploader does not see the other device's entry as the same body (not opened or not recorded as `Kind::Commit` with the same parts), so the body looks absent. Fix (node-sync): treat a live entry of the same (commit, parts) as the body's carrier whoever placed it; never re-upload a body whose own blob was deleted as a duplicate while the lower one is live.

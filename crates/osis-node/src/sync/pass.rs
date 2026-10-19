@@ -27,6 +27,9 @@ pub struct Verdicts {
     /// Entries it knows under the label that it judges must-not-hold and may delete now with a
     /// delete item it can make: (blob, why).
     pub must_not: Vec<(BlobId, String)>,
+    /// Aspects it cannot judge coverage of yet (`None`: every aspect, an entry opens but is not
+    /// applied).
+    pub unsettled: Vec<Option<(Tid, Ak)>>,
 }
 
 /// An entry to send, by priority (membership and certificates before content before
@@ -192,6 +195,7 @@ impl SyncEngine {
         bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
         let snaps = self.snapshots_at(l);
         let unsettled = self.unsettled(l, &g)?;
+        v.unsettled = unsettled.iter().cloned().collect();
         for b in &bodies {
             if self.must_hold(b, &snaps, &unsettled)? {
                 v.must_hold.push((b.commit, b.parts.clone()));

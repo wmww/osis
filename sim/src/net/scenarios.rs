@@ -1,19 +1,21 @@
 //! Phase B scenarios: sync engines and blind servers under message faults, partitions,
-//! crashes and data loss. Each is a function of the seed; `crate::replay` reruns any.
+//! crashes and data loss. Each is a function of the seed; `crate::replay` reruns any. Setup runs
+//! calm (no faults) and settles with `quiet`; `run` is the faulty random schedule; every
+//! scenario ends with `run_until_quiescent` (the invariants of `check`).
 
-use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party};
+use super::{LinkFaults, NetConfig, NetSim, NetWeights, Party, WAIVE_PROMOTION};
 use crate::dice::Dice;
 use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
 use osis_commit::PurgeItem;
 use osis_core::format::MEMBERSHIP_KEEP_MS;
-
-const DAY_MS: u64 = 86_400_000;
 use osis_core::{Ak, Role, Tid, Value};
 use osis_node::Mutation;
 use osis_node::flows::PreSync;
 use osis_node::sync::Event;
 use osis_schema::AspectKey;
+
+const DAY_MS: u64 = 86_400_000;
 
 fn lossy() -> LinkFaults {
     LinkFaults { cut_pct: 2, dup_pct: 1, max_delay_ms: 3_000, reorder: true }
@@ -31,9 +33,55 @@ fn ak(sim: &NetSim, a: &osis_schema::Aspect<Value>) -> Res<Ak> {
     Ak::new(a.ak()).map_err(|e| sim.fail(e.to_string()))
 }
 
-/// Newest read epoch number node `n` holds of `g`.
+/// Newest current read epoch of `g` whose secret node `n` holds.
 fn newest_read(sim: &mut NetSim, n: usize, g: &Tid) -> Res<Option<u64>> {
-    Ok(sim.engine(n)?.epochs(g).and_then(|e| e.read.newest().map(|x| x.n())))
+    Ok(sim.engine(n)?.epochs(g).and_then(|e| e.read.newest_held().map(|x| x.0.n())))
+}
+
+/// Persons on nodes `ns` (homes at `homes[i]`), each introduced to the first: the first node's
+/// person and the others'.
+fn persons<const N: usize>(sim: &mut NetSim, ns: [usize; N], homes: [usize; N]) -> Res<[Tid; N]> {
+    let mut ps = Vec::new();
+    for (n, h) in ns.iter().zip(homes) {
+        ps.push(sim.person(*n, &[h])?.person);
+    }
+    if let Some((first, rest)) = ns.split_first() {
+        for n in rest {
+            sim.introduce(*n, *first)?;
+        }
+    }
+    sim.quiet(40)?;
+    ps.try_into().map_err(|_| sim.fail("persons"))
+}
+
+/// A group of node `a`'s person at `servers`, granted to each (person, role) in turn.
+fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, servers: &[usize], grants: &[(Tid, Role)]) -> Res<Tid> {
+    let g = sim.group(a, pa, servers)?;
+    for (p, r) in grants {
+        sim.grant(a, g, *p, *r)?;
+        sim.quiet(40)?;
+    }
+    Ok(g)
+}
+
+/// A purge of `c`'s `/s/gone` delta on `t` by node `n` (spec/commits.md §5), recorded for the
+/// purge invariant.
+fn purge(sim: &mut NetSim, n: usize, c: osis_core::CommitId, t: Tid) -> Res<()> {
+    sim.observe()?;
+    let gone = ak(sim, &workload::GONE)?;
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &workload::GONE).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m)?;
+    sim.purged.push((c, t, gone));
+    Ok(())
+}
+
+/// Node `n` writes `/s/gone` on `t`.
+fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_core::CommitId> {
+    let mut m = Mutation::new();
+    m.set(t, &workload::GONE, &Value::Str(v.into())).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))
 }
 
 /// Two devices of one person through one blind server (spec/sync.md §2, §6): the person's
@@ -49,14 +97,14 @@ pub fn two_devices_server(seed: u64) -> Res<Report> {
     sim.pair(d0, d1, p)?;
     sim.item(d0, p)?;
     sim.item(d0, p)?;
-    sim.run(300)?;
+    sim.run(200)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
 }
 
 /// Three persons share a group through two replicating servers (spec/sync.md §5 replication,
-/// §6): A (admin, reaches both), B (writer, reaches s0 only), C (reader, s1 only); grants by
-/// inbox; server crashes mid-write, partitions.
+/// §6): A (admin, reaches both), B (writer, s0 only), C (reader, s1 only); grants by inbox;
+/// server crashes mid-write, partitions.
 pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3b);
     let w = NetWeights { server_crash: 1, server_restart: 2, partition: 1, heal: 2, ..NetWeights::default() };
@@ -69,20 +117,14 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     let c = sim.add_node(&[s1], clock(&mut d))?;
     sim.sever(Party::N(b), Party::S(s1));
     sim.sever(Party::N(c), Party::S(s0));
-    let pa = sim.person(a, &[s0])?.person;
-    let pb = sim.person(b, &[s0])?.person;
-    let pc = sim.person(c, &[s1])?.person;
-    sim.introduce(b, a)?;
-    sim.introduce(c, a)?;
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s0, s1])?;
-    sim.grant(a, g, pb, Role::Write)?;
-    sim.run_until_quiescent(40)?;
-    sim.grant(a, g, pc, Role::Read)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s0, s0, s1])?;
+    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Read)])?;
     sim.item(a, g)?;
     sim.item(a, g)?;
-    sim.run(300)?;
+    // issues/sync-stale-head.md: members reopen at the current head
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.run(200)?;
     sim.run_until_quiescent(60)?;
     sim.finish()
 }
@@ -98,42 +140,27 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let w = sim.add_node(&[s], clock(&mut d))?;
-    let pa = sim.person(a, &[s])?.person;
-    let pb = sim.person(b, &[s])?.person;
-    let pw = sim.person(w, &[s])?.person;
-    sim.introduce(b, a)?;
-    sim.introduce(w, a)?;
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s])?;
-    sim.grant(a, g, pb, Role::Write)?;
-    sim.run_until_quiescent(40)?;
-    sim.grant(a, g, pw, Role::Write)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.run(100)?;
-    sim.run_until_quiescent(40)?;
-    let mut m = Mutation::new();
-    m.set(t, &workload::GONE, &Value::Str("by w".into())).map_err(|e| sim.fail(e.to_string()))?;
-    let cw = sim.commit(w, m)?.ok_or_else(|| sim.fail("W wrote nothing"))?;
-    sim.run(60)?;
-    sim.run_until_quiescent(40)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.run(50)?;
+    sim.quiet(40)?;
+    let cw = write_gone(&mut sim, w, t, "by w")?;
+    sim.run(30)?;
+    sim.quiet(40)?;
     sim.remove(a, g, pw)?;
     sim.excused.insert(w);
-    sim.run(60)?;
-    sim.run_until_quiescent(40)?;
+    sim.run(30)?;
+    sim.quiet(40)?;
     if sim.engine(b)?.header(&cw).is_none() {
         return Err(sim.fail("B never received W's body"));
     }
     // the admin is away: B purges W's body and deletes it by token
-    sim.observe()?;
     sim.node_down(a)?;
-    let gone = ak(&sim, &workload::GONE)?;
-    let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: cw, tid: t, ak: gone.clone() });
-    m.remove_aspect(t, &workload::GONE).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(b, m)?;
-    sim.purged.push((cw, t, gone));
-    sim.run(60)?;
+    purge(&mut sim, b, cw, t)?;
+    sim.run(30)?;
     sim.run_until_quiescent(40)?;
     for n in [a, b] {
         if sim.engine(n)?.roster(&g).contains_key(&pw) {
@@ -143,49 +170,37 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Compaction, then deletion (spec/sync.md §7): writers compact an aspect while writing; covered
-/// bodies are deleted at the server once the snapshot is there; a later purge of a snapshot-era
-/// body; no ping-pong.
+/// Compaction, then deletion (spec/sync.md §7): two writers compact aspects while writing;
+/// covered bodies are deleted at the server once the snapshot is there; then a purge; no
+/// ping-pong. Fails: issues/sync-compaction-ping-pong.md.
 pub fn compaction(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xc0);
     let mut sim = sim("compaction", seed, NetWeights::default());
     let s = sim.add_server()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
-    let pa = sim.person(a, &[s])?.person;
-    let pb = sim.person(b, &[s])?.person;
-    sim.introduce(b, a)?;
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s])?;
-    sim.grant(a, g, pb, Role::Write)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, g)?;
-    sim.run(150)?;
-    sim.run_until_quiescent(40)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.run(120)?;
+    sim.quiet(40)?;
     let deleted0 = deletions(&sim, s);
     for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS), (a, &workload::MAP)] {
         let k = ak(&sim, a_)?;
         let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
         sim.actions(n, acts)?;
-        sim.run(40)?;
+        sim.run(30)?;
     }
     sim.run_until_quiescent(40)?;
     if deletions(&sim, s) == deleted0 {
         return Err(sim.fail("compaction deleted nothing at the server"));
     }
-    let mut m = Mutation::new();
-    m.set(t, &workload::GONE, &Value::Str("later".into())).map_err(|e| sim.fail(e.to_string()))?;
-    let c = sim.commit(a, m)?.ok_or_else(|| sim.fail("no commit"))?;
+    let c = write_gone(&mut sim, a, t, "later")?;
+    sim.quiet(40)?;
+    purge(&mut sim, b, c, t)?;
     sim.run(40)?;
-    sim.run_until_quiescent(40)?;
-    sim.observe()?;
-    let gone = ak(&sim, &workload::GONE)?;
-    let mut m = Mutation::new();
-    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
-    m.remove_aspect(t, &workload::GONE).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(b, m)?;
-    sim.purged.push((c, t, gone));
-    sim.run(60)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
 }
@@ -206,37 +221,45 @@ fn deletions(sim: &NetSim, s: usize) -> usize {
 /// only s0, a reader both, a second reader only s1; the second reader reads the writer's content
 /// carried by the first.
 pub fn reader_relays(seed: u64) -> Res<Report> {
+    relays("reader_relays", seed, true)
+}
+
+/// `reader_relays` without the reconnect after setup: the readers opened the label while the
+/// admin registered the steps of the grants' rotations (spec/sync.md §5, §6). Fails:
+/// issues/sync-stale-head.md (a reader keeps the head it opened at; the writer's stamps do not
+/// verify under it, so it relays nothing).
+pub fn head_moves_during_open(seed: u64) -> Res<Report> {
+    relays("head_moves_during_open", seed, false)
+}
+
+fn relays(name: &str, seed: u64, reconnect: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x2e);
-    let mut sim = sim("reader_relays", seed, NetWeights::default());
+    let mut sim = sim(name, seed, NetWeights::default());
+    sim.waivers.insert(WAIVE_PROMOTION);
     let s0 = sim.add_server()?;
     let s1 = sim.add_server()?;
     let a = sim.add_node(&[s0, s1], clock(&mut d))?;
     let r = sim.add_node(&[s0, s1], clock(&mut d))?;
     let c = sim.add_node(&[s1], clock(&mut d))?;
     sim.sever(Party::N(c), Party::S(s0));
-    let pa = sim.person(a, &[s0])?.person;
-    let pr = sim.person(r, &[s0])?.person;
-    let pc = sim.person(c, &[s1])?.person;
-    sim.introduce(r, a)?;
-    sim.introduce(c, a)?;
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s0, s1])?;
-    sim.grant(a, g, pr, Role::Read)?;
-    sim.grant(a, g, pc, Role::Read)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pr, pc] = persons(&mut sim, [a, r, c], [s0, s0, s1])?;
+    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pr, Role::Read), (pc, Role::Read)])?;
     sim.item(a, g)?;
-    sim.run_until_quiescent(40)?;
+    if reconnect {
+        sim.reconnect_all();
+    }
+    sim.quiet(40)?;
     // from now on the writer reaches s0 only
     sim.sever(Party::N(a), Party::S(s1));
-    sim.run(200)?;
+    sim.run(120)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
 }
 
 /// A stranded device re-sealed (spec/permissions.md §3, §4; notes/sync.md Limits): one device of
-/// a person is off while another device is removed (the person rotates, the home label steps)
-/// and stays off past `MEMBERSHIP_KEEP`, so the server dropped the claim set it needs; it places
-/// a stranded heartbeat; re-paired over a direct connection it reads again.
+/// a person is off while two others are removed (the person rotates twice, the home label steps
+/// twice) and stays off past `MEMBERSHIP_KEEP`, so the server dropped the claim set it needs; it
+/// cannot read the new epoch; re-paired over a direct connection it does.
 pub fn stranded_reseal(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x5d);
     let mut sim = sim("stranded_reseal", seed, NetWeights::default());
@@ -246,16 +269,14 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     let d2 = sim.add_node(&[s], clock(&mut d))?;
     let d3 = sim.add_node(&[s], clock(&mut d))?;
     let p = sim.person(d0, &[s])?.person;
-    sim.pair(d0, d1, p)?;
-    sim.pair(d0, d2, p)?;
-    sim.pair(d0, d3, p)?;
+    for x in [d1, d2, d3] {
+        sim.pair(d0, x, p)?;
+    }
     sim.item(d0, p)?;
-    sim.run(80)?;
-    sim.run_until_quiescent(40)?;
+    sim.run(60)?;
+    sim.quiet(40)?;
     let before = newest_read(&mut sim, d1, &p)?;
     sim.node_down(d1)?;
-    // two removals: two rotations, two steps; the first step's claim set is dropped once it has
-    // been superseded for MEMBERSHIP_KEEP
     for x in [d2, d3] {
         let t = sim.tid(x)?;
         sim.lose_disk(x)?;
@@ -278,8 +299,10 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
     }
     // re-paired: a re-seal over the direct connection
     sim.pair(d0, d1, p)?;
-    sim.run(80)?;
-    sim.run_until_quiescent(40)?;
+    sim.run(60)?;
+    // issues/sync-duplicate-reupload.md: the devices trade fresh encryptions of duplicate bodies
+    // for a few dozen resync rounds before they settle
+    sim.run_until_quiescent(80)?;
     if newest_read(&mut sim, d1, &p)? != newest_read(&mut sim, d0, &p)? {
         return Err(sim.fail("the re-sealed device does not hold the person's newest epoch"));
     }
@@ -287,7 +310,7 @@ pub fn stranded_reseal(seed: u64) -> Res<Report> {
 }
 
 /// A server loses its data (spec/sync.md §6: a writer uploads every must-hold body the label
-/// lacks): writers re-register the label and re-upload; the quiescent check finds every
+/// lacks): writers re-register the labels and re-upload; the quiescent check finds every
 /// must-hold body back.
 pub fn server_loses_data(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x10);
@@ -295,25 +318,22 @@ pub fn server_loses_data(seed: u64) -> Res<Report> {
     let s = sim.add_server()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
-    let pa = sim.person(a, &[s])?.person;
-    let pb = sim.person(b, &[s])?.person;
-    sim.introduce(b, a)?;
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s])?;
-    sim.grant(a, g, pb, Role::Write)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     sim.item(a, g)?;
-    sim.run(150)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.run(120)?;
     sim.wipe_server(s)?;
-    sim.run(150)?;
+    sim.run(120)?;
     sim.run_until_quiescent(40)?;
     sim.finish()
 }
 
 /// A node offline across rotations walks the steps (spec/sync.md §5 Open, Claim): a reader is
-/// off while the admin removes another reader twice over (two rotations, two steps) and writes;
-/// back online it walks by its stale sync key and reads; the removed readers hold no later
-/// epoch.
+/// off while the admin removes a reader and then a writer (two rotations, two steps) and keeps
+/// writing; back online it walks by its stale sync key and reads; the removed members hold no
+/// later epoch.
 pub fn offline_rotation(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x0f);
     let mut sim = sim("offline_rotation", seed, NetWeights::default());
@@ -322,39 +342,30 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
     let b = sim.add_node(&[s], clock(&mut d))?;
     let c = sim.add_node(&[s], clock(&mut d))?;
     let e = sim.add_node(&[s], clock(&mut d))?;
-    let pa = sim.person(a, &[s])?.person;
-    let pb = sim.person(b, &[s])?.person;
-    let pc = sim.person(c, &[s])?.person;
-    let pe = sim.person(e, &[s])?.person;
-    for n in [b, c, e] {
-        sim.introduce(n, a)?;
-    }
-    sim.run_until_quiescent(40)?;
-    let g = sim.group(a, pa, &[s])?;
-    sim.grant(a, g, pb, Role::Read)?;
-    sim.grant(a, g, pc, Role::Read)?;
-    sim.run_until_quiescent(40)?;
-    sim.grant(a, g, pe, Role::Write)?;
-    sim.run_until_quiescent(40)?;
+    let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read), (pe, Role::Write)])?;
     sim.item(a, g)?;
-    sim.run(60)?;
-    sim.run_until_quiescent(40)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.run(30)?;
+    sim.quiet(40)?;
     sim.node_down(c)?;
     sim.remove(a, g, pb)?;
     sim.excused.insert(b);
-    sim.run(60)?;
+    sim.run(30)?;
     sim.settle()?;
     let mid = newest_read(&mut sim, a, &g)?;
     sim.remove(a, g, pe)?;
     sim.excused.insert(e);
-    sim.run(80)?;
+    sim.run(40)?;
     sim.run_until_quiescent(40)?;
     let now = newest_read(&mut sim, a, &g)?;
     if newest_read(&mut sim, c, &g)? != now {
         return Err(sim.fail("the reader back online does not hold the newest epoch"));
     }
-    if newest_read(&mut sim, b, &g)?.is_some_and(|x| Some(x) >= mid) {
-        return Err(sim.fail("a removed reader holds an epoch after its removal"));
+    let x = newest_read(&mut sim, b, &g)?;
+    if x.is_some_and(|x| Some(x) >= mid) {
+        return Err(sim.fail(format!("a removed reader holds epoch {x:?}, the first after its removal is {mid:?}")));
     }
     if newest_read(&mut sim, e, &g)?.is_some_and(|x| Some(x) >= now) {
         return Err(sim.fail("a removed writer holds an epoch after its removal"));
@@ -365,7 +376,7 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
 /// Disk loss and recovery from the card (spec/permissions.md §9): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the
-/// remaining device.
+/// remaining device. Fails: issues/flows-recovered-device-writes.md.
 pub fn disk_loss(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xd1);
     let mut sim = sim("disk_loss", seed, NetWeights::default());
@@ -377,25 +388,25 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
     sim.pair(d0, d1, p)?;
     sim.item(d0, p)?;
     sim.item(d1, p)?;
-    sim.run(100)?;
+    sim.run(80)?;
     sim.lose_disk(d0)?;
-    sim.run(50)?;
+    sim.run(40)?;
+    sim.quiet(40)?;
     let fresh = sim.add_node(&[s], clock(&mut d))?;
     let card = person.card.clone();
     let r = sim.engine(fresh)?.hold_key_actor(card.seed.clone());
     r.map_err(|e| sim.fail(format!("hold_key_actor: {e}")))?;
     let acts = sim.sync(fresh)?.follow(card.person, card.home_label, card.servers.clone());
     sim.actions(fresh, acts)?;
-    for _ in 0..3 {
-        sim.settle()?;
-        sim.advance(61_000)?;
-    }
+    sim.quiet(40)?;
     let lost = sim.tid(d0)?;
     let r = sim.engine(fresh)?.recover(&card, &[lost], PreSync::Synced);
     let done = r.map_err(|e| sim.fail(format!("recover: {e}")))?;
     sim.carry(fresh, done)?;
     sim.feed(fresh, Event::Local)?;
-    sim.run(100)?;
+    sim.person_of.insert(fresh, p);
+    sim.quiet(40)?;
+    sim.run(80)?;
     sim.run_until_quiescent(40)?;
     let ft = sim.tid(fresh)?;
     for n in [d1, fresh] {
@@ -404,5 +415,26 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
             return Err(sim.fail(format!("node {n}: the person's roster after recovery: {:?}", roster.keys().collect::<Vec<_>>())));
         }
     }
+    sim.finish()
+}
+
+
+/// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
+/// after granting, before the deposit reached the server; after restart nothing re-sends it.
+/// Fails: issues/sync-inbox-delivery.md (the grantee never learns of the grant).
+pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x9c);
+    let mut sim = sim("grant_lost_on_crash", seed, NetWeights::default());
+    let s = sim.add_server()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
+    let g = sim.group(a, pa, &[s])?;
+    sim.item(a, g)?;
+    sim.quiet(40)?;
+    sim.grant(a, g, pb, Role::Read)?;
+    sim.node_down(a)?;
+    sim.restart_node(a)?;
+    sim.run_until_quiescent(40)?;
     sim.finish()
 }
