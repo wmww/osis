@@ -10,7 +10,8 @@ use super::{ConnId, Phase, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::labeling::open_commit;
-use osis_core::{BlobId, CreationRecord, LabelId, Role, Tid};
+use crate::Ingested;
+use osis_core::{BlobId, Classified, CreationRecord, ErrorClass, LabelId, Role, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::{PublishAuth, Step};
 use osis_proto::{Code, Command, Cursor, Event as LogEvent};
@@ -240,7 +241,20 @@ impl SyncEngine {
                     self.state.set_entry(l, b, e);
                     commits.push((pt, c));
                 }
-                Err(err) => self.diag(format!("blob {b:?}: {err}")),
+                Err(err) => {
+                    // a commit this build cannot interpret is parked, anything else is bad
+                    // input; neither is opened again (spec/versioning.md §2)
+                    let pt = (err.class() == ErrorClass::Parked).then(|| osis_label::open(&bytes, &key).ok()).flatten();
+                    e.kind = match pt.map(|(_, pt)| self.engine.ingest(&pt, Vec::new())) {
+                        Some(Ok(Ingested::Parked(c))) => Kind::Parked(c),
+                        Some(Err(x)) if x.class() == ErrorClass::Local => return Err(x),
+                        _ => {
+                            self.diag(format!("blob {b:?}: {err}"));
+                            Kind::Bad
+                        }
+                    };
+                    self.state.set_entry(l, b, e);
+                }
             }
             return Ok(());
         }
@@ -438,6 +452,7 @@ impl SyncEngine {
         let mut stale = false;
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
+            self.sent.remove(&(conn, l, b));
             match code {
                 Code::OK => {
                     grew |= !self.state.is_present(&server, &l, &b);
@@ -467,8 +482,15 @@ impl SyncEngine {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
         let mut stale = false;
         for (b, code) in ids.into_iter().zip(codes) {
+            // a timed delete is done once the server took it (spec/commits.md §5)
+            let timed = self.timed_sent.remove(&(conn, l, b));
+            self.deleting.remove(&(conn, l, b));
             match code {
                 Code::OK => {
+                    if timed {
+                        self.state.set_timed(server, l, b);
+                        continue;
+                    }
                     if self.state.timed.contains(&(server, l, b)) {
                         continue;
                     }
@@ -491,6 +513,7 @@ impl SyncEngine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
+        self.sent.remove(&(conn, l, b));
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.budget = Some(entries_left);
         }

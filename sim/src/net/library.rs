@@ -669,7 +669,17 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_core::Ak) ->
         }
         for s in 0..sim.servers.len() {
             if sim.hub(s).is_some_and(|x| x.store().live_ids(&l).unwrap_or_default().contains(&b)) {
-                return Err(sim.fail(format!("server {s} still holds the expired body {b:?} of {c:?}")));
+                let meta = sim.hub(s).and_then(|x| x.store().entry(&l, &b).ok().flatten()).map(|m| (m.stamp.is_some(), m.pending_delete));
+                let key = sim.servers.get(s).map(|x| x.key).unwrap_or_default();
+                let mut views = Vec::new();
+                for n in 0..sim.nodes.len() {
+                    let Some(sy) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
+                    let e = sy.entries(&l).into_iter().find(|x| x.0 == b).map(|x| format!("{:?}", x.1));
+                    let v = sy.verdicts(&key, &l).ok().flatten().map(|v| (v.writer, v.must_not.iter().find(|x| x.0 == b).map(|x| x.1.clone()), v.must_hold.iter().any(|x| x.0 == c)));
+                    let held = h.aspects.first().is_some_and(|x| sy.engine().holds_body(&c, &x.tid, ak));
+                    views.push(format!("node {n}: entry {e:?} (writer, must-not, must-hold) {v:?} holds body {held}"));
+                }
+                return Err(sim.fail(format!("server {s} still holds the expired body {b:?} of {c:?} (stamped, pending delete) {meta:?}; {views:?}")));
             }
         }
         for n in 0..sim.nodes.len() {

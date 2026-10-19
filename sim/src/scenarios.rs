@@ -66,9 +66,6 @@ pub const BLOCKED: &[(&str, &str)] = &[
     ("link_race", "issues/flows-single-use-redemption-unplaced.md"),
     ("label_replacement", "issues/node-sync-gaps.md"),
     ("label_replacement_offline", "issues/node-sync-gaps.md"),
-    ("evil_server_drops", "issues/sync-request-timeout.md"),
-    ("malformed_blobs", "issues/sync-unopenable-entry-stall.md"),
-    ("future_format", "issues/sync-unopenable-entry-stall.md"),
 ];
 
 /// The issue blocking scenario `name`, if any.

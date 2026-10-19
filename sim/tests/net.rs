@@ -90,14 +90,12 @@ fn grant_lost_on_crash() {
 // spec/sync.md §6; spec/commits.md §4: sweep seed 23, entries whose bytes were never fetched
 // freeze the writer's must-hold set; the other device waits for deltas for good.
 #[test]
-#[ignore = "issues/sync-unopenable-entry-stall.md"]
 fn two_devices_server_seed_23() {
     ok("two_devices_server", 23);
 }
 
 // spec/sync.md §6: sweep seed 41, a must-hold body never re-uploaded after the wipe and crashes.
 #[test]
-#[ignore = "issues/sync-lost-upload-after-crash.md"]
 fn server_loses_data_seed_41() {
     ok("server_loses_data", 41);
 }

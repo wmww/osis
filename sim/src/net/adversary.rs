@@ -56,9 +56,8 @@ pub fn evil_server(seed: u64) -> Res<Report> {
     evil("evil_server", seed, Evil { drop_pct: 0, hold_pct: 10, replay_pct: 5 })
 }
 
-/// `evil_server` also silently dropping messages on open streams. Fails:
-/// issues/sync-request-timeout.md (a request whose reply never comes keeps its label waiting
-/// on that connection for good; nodes converge through the honest server but never go idle).
+/// `evil_server` also silently dropping messages on open streams. Expected: a request whose
+/// reply never comes times out, the node redials, everything converges and goes idle.
 pub fn evil_server_drops(seed: u64) -> Res<Report> {
     evil("evil_server_drops", seed, Evil { drop_pct: 10, hold_pct: 10, replay_pct: 5 })
 }
@@ -207,7 +206,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
 /// malformed data is rejected, never parked): garbage bytes, a well-framed blob of garbage, a
 /// real commit under a prefix that disagrees with its header, a wrap for another blob. Expected:
 /// the server keeps them (it cannot judge them), honest nodes reject them without failing, keep
-/// syncing and converge. Fails: issues/sync-unopenable-entry-stall.md.
+/// syncing and converge.
 pub fn malformed_blobs(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x6a);
     let mut sim = sim("malformed_blobs", seed, NetWeights::default());

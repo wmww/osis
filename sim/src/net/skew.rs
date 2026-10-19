@@ -72,9 +72,7 @@ fn future_commit(sim: &mut NetSim, n: usize, c: &CommitId) -> Res<(Vec<u8>, Comm
 /// format version `FORMAT_VERSION + 1` (stamped and wrapped like any). Expected: every old node
 /// stores it parked (pending, not read, no failure); a reader relays it to a server the writer
 /// does not reach; an old writer compacting the aspect and deleting what its snapshot covers
-/// leaves it at the servers (an old writer never destroys what it cannot read). Fails:
-/// issues/sync-unopenable-entry-stall.md (the blob is never ingested, so never parked, and the
-/// label stops uploading).
+/// leaves it at the servers (an old writer never destroys what it cannot read).
 pub fn future_format(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xf5);
     let mut sim = sim("future_format", seed, NetWeights::default());
@@ -83,14 +81,16 @@ pub fn future_format(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s0], clock(&mut d))?;
     let w = sim.add_node(&[s0], clock(&mut d))?;
     let r = sim.add_node(&[s0, s1], clock(&mut d))?;
-    let c = sim.add_node(&[s1], clock(&mut d))?;
+    let c = sim.add_node(&[s0, s1], clock(&mut d))?;
+    let [pa, pw, pr, pc] = persons(&mut sim, [a, w, r, c], [s0, s0, s0, s1])?;
+    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pw, Role::Write), (pr, Role::Read), (pc, Role::Read)])?;
+    let t = sim.item(a, g)?;
+    sim.quiet(40)?;
+    // from here the writers reach s0 only and c reaches s1 only (the grants went through first)
     for n in [a, w] {
         sim.sever(Party::N(n), Party::S(s1));
     }
     sim.sever(Party::N(c), Party::S(s0));
-    let [pa, pw, pr, pc] = persons(&mut sim, [a, w, r, c], [s0, s0, s0, s1])?;
-    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pw, Role::Write), (pr, Role::Read), (pc, Role::Read)])?;
-    let t = sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
     add_tag(&mut sim, a, t, "old")?;

@@ -115,7 +115,9 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let vk = VerifyingKey::from_slice(public_key)?;
     osis_commit::verify_signature(id, &blob.signature, &vk)?;
     h.validate()?;
-    if h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
+    // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
+    // as its HLC, which a clock correction moving back must not turn against them
+    if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift));
     }
     // only things whose deltas it holds or syncs gate the commit: a thing it neither holds a

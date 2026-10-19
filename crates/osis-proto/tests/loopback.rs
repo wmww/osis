@@ -608,7 +608,8 @@ fn client_stops_on_a_stuck_sync() {
     let l = Label::new();
     let cursor = Cursor { log_id: [1; 16], seq: 5 };
     let out = net.clients[0].handle(T0, ClientInput::Command(sync(l.id, Some(cursor), vec![], vec![])));
-    let [ClientOutput::Send(f)] = &out[..] else { panic!("{out:?}") };
+    let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
+    let [f] = &sends[..] else { panic!("{out:?}") };
     let Message::Sync { id, .. } = Message::decode(&f[4..]).unwrap() else { panic!() };
     let reply = Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor, more: true };
     let out = net.clients[0].handle(T0, ClientInput::Bytes(encode_frame(&reply.encode())));
@@ -654,4 +655,21 @@ fn loopback_converges_at_size() {
     let [ClientEvent::Reconciled { need, have, .. }] = &ev[..] else { panic!("{ev:?}") };
     assert_eq!((need.len(), have.len()), (20, 20));
     assert!(net.flights <= 8, "{} flights", net.flights);
+}
+
+// spec/sync.md §6: a request left unanswered on an open stream closes the session at its
+// deadline (the node redials); answered ones never do
+#[test]
+fn unanswered_request_times_out() {
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    let hello = encode_frame(&Hello::new(T0, [3; 32]).encode());
+    let out = c.handle(T0, ClientInput::Bytes(hello));
+    assert!(out.iter().any(|o| matches!(o, ClientOutput::SetTimer(t) if *t == T0 + client::REQUEST_TIMEOUT_MS)), "{out:?}");
+    // the initial pings stay unanswered
+    let early = c.handle(T0 + client::REQUEST_TIMEOUT_MS - 1, ClientInput::Timer);
+    assert!(!early.iter().any(|o| matches!(o, ClientOutput::Close)));
+    let late = c.handle(T0 + client::REQUEST_TIMEOUT_MS, ClientInput::Timer);
+    assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
+    assert!(c.is_closed());
 }

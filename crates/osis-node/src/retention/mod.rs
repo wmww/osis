@@ -327,7 +327,12 @@ impl Engine {
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
     /// parked for drift.
     pub fn tick(&mut self) -> Result<()> {
-        self.run(|tx| {
+        self.tick_drops().map(|_| ())
+    }
+
+    /// `tick`, returning how many timers fired (node-sync forgets the dropped bodies' blobs).
+    pub(crate) fn tick_drops(&mut self) -> Result<usize> {
+        let n = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
             tx.scan(records::TIMER, |k, v| {
@@ -338,6 +343,7 @@ impl Engine {
                 Ok(())
             })?;
             let mut changed = BTreeSet::new();
+            let n = due.len();
             for (k, c, ai, kind) in due {
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
@@ -348,9 +354,18 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            Ok(())
+            Ok(n)
         })?;
-        self.reexamine()
+        self.reexamine()?;
+        Ok(n)
+    }
+
+    /// When the next expiry or keep-at-most timer is due (corrected wall ms).
+    pub(crate) fn next_timer(&mut self) -> Result<Option<u64>> {
+        self.run(|tx| {
+            let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
+            Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
+        })
     }
 
     /// Drops a body (compaction between the bounds, executed by node-sync): aspect `ak` of

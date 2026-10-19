@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Phase C: the scenario library, adversaries and version skew (sim/src/net/{library, adversary,
 //! skew}.rs), one seed each. Every run ends with the quiescent invariants. Scenarios an engine bug
-//! breaks are ignored with the issue's name; the slower ones (over about 5 s in a debug build)
-//! are tier 2 (`--release -- --ignored`) and swept nightly by `sim-sweep`.
+//! breaks are ignored with the issue's name; the slower ones (over about 5 s in a debug build,
+//! so the tier-1 run stays near 10 s) are tier 2 (`--release -- --ignored`) and swept nightly by `sim-sweep`.
 
 use osis_sim::{Report, replay};
 
@@ -15,6 +15,7 @@ fn ok(name: &str, seed: u64) -> Report {
 // spec/permissions.md §5.1, §5.2: Bob's edits offline around his removal are invalid; re-grant
 // restores them.
 #[test]
+#[ignore = "tier 2"]
 fn revocation_bob() {
     ok("revocation_bob", 1);
 }
@@ -29,7 +30,7 @@ fn revocation_carol() {
 // spec/sync.md §6 (clock offset), spec/crdt.md §2.2: sweep seed 12, pings straddling a one-day
 // gap set a 12 h offset; once corrected, the node's own commits are refused as drift.
 #[test]
-#[ignore = "issues/sync-clock-offset-rtt.md"]
+#[ignore = "tier 2"]
 fn revocation_carol_seed_12() {
     ok("revocation_carol", 12);
 }
@@ -48,6 +49,7 @@ fn demotion_synced() {
 
 // spec/permissions.md §5.3: demotion without the pre-sync loses the unseen edit.
 #[test]
+#[ignore = "tier 2"]
 fn demotion_unsynced() {
     ok("demotion_unsynced", 1);
 }
@@ -55,7 +57,7 @@ fn demotion_unsynced() {
 // spec/sync.md §6, spec/commits.md §4: sweep seed 72, two writers' pending commits stop each
 // other's uploads.
 #[test]
-#[ignore = "issues/sync-unsettled-deadlock.md"]
+#[ignore = "tier 2"]
 fn move_import_seed_72() {
     ok("move_import", 72);
 }
@@ -127,7 +129,6 @@ fn disappearing() {
 // spec/commits.md §5 (expiry): sweep seed 104, the node is never ticked again, an expired note
 // stays readable.
 #[test]
-#[ignore = "issues/sync-wake-lost.md"]
 fn disappearing_seed_104() {
     ok("disappearing", 104);
 }
@@ -140,21 +141,18 @@ fn keep_at_most() {
 
 // spec/commits.md §5: sweep seed 6, a dropped body's blob kept at the node.
 #[test]
-#[ignore = "issues/sync-keep-at-most-blob-kept.md"]
 fn keep_at_most_seed_6() {
     ok("keep_at_most", 6);
 }
 
 // spec/commits.md §5, spec/sync.md §5: sweep seed 42, a timed delete lost on a cut connection.
 #[test]
-#[ignore = "issues/sync-timed-delete-lost.md"]
 fn keep_at_most_seed_42() {
     ok("keep_at_most", 42);
 }
 
 // spec/commits.md §5: sweep seed 62, the node is never ticked again, nothing is dropped.
 #[test]
-#[ignore = "issues/sync-wake-lost.md"]
 fn keep_at_most_seed_62() {
     ok("keep_at_most", 62);
 }
@@ -175,20 +173,20 @@ fn evil_server() {
 
 // spec/sync.md §6: a dishonest server that also drops replies on open streams.
 #[test]
-#[ignore = "issues/sync-request-timeout.md"]
+#[ignore = "tier 2"]
 fn evil_server_drops() {
     ok("evil_server_drops", 1);
 }
 
 // spec/sync.md §2, §5; spec/permissions.md §5: a removed member's replays and deposits.
 #[test]
+#[ignore = "tier 2"]
 fn removed_replayer() {
     ok("removed_replayer", 1);
 }
 
 // spec/sync.md §5; spec/commits.md §4; spec/versioning.md §2: malformed blobs are rejected.
 #[test]
-#[ignore = "issues/sync-unopenable-entry-stall.md"]
 fn malformed_blobs() {
     ok("malformed_blobs", 1);
 }
@@ -202,13 +200,14 @@ fn deposit_flood() {
 
 // spec/versioning.md §1, §2: a newer format version is parked, relayed, never destroyed.
 #[test]
-#[ignore = "issues/sync-unopenable-entry-stall.md"]
+#[ignore = "tier 2"]
 fn future_format() {
     ok("future_format", 1);
 }
 
 // spec/versioning.md §4, §5: a newer schema revision survives an old writer.
 #[test]
+#[ignore = "tier 2"]
 fn newer_schema() {
     ok("newer_schema", 1);
 }

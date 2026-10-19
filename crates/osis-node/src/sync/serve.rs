@@ -400,10 +400,11 @@ impl SyncEngine {
     }
 
     /// Bytes peers have charged that still count, per peer key and in total: entries accepted
-    /// from peers that are still held, not opened and not present at any server.
+    /// from peers that are still held, not opened (or not interpretable) and not present at any
+    /// server.
     fn charged(&mut self) -> (BTreeMap<[u8; 32], u64>, u64) {
         let st = &self.state;
-        self.charges.retain(|(l, b), _| st.entries.get(&(*l, *b)).is_some_and(|e| e.kind == super::state::Kind::Unknown) && !st.present_anywhere(l, b));
+        self.charges.retain(|(l, b), _| st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b));
         let mut per: BTreeMap<[u8; 32], u64> = BTreeMap::new();
         let mut total = 0u64;
         for (p, n) in self.charges.values() {

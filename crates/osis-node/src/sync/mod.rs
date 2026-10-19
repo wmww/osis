@@ -38,6 +38,9 @@ use std::sync::mpsc::Receiver;
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
+/// The earliest Tick asked for after any event (ms).
+const MIN_WAKE_MS: u64 = 1_000;
+
 /// A connection's handle, chosen by the sync engine.
 pub type ConnId = u64;
 
@@ -213,6 +216,8 @@ pub struct SyncEngine {
     pub(crate) passes: BTreeMap<(ServerKey, LabelId), u64>,
     pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
+    /// When the last Tick was handled (raw wall ms).
+    last_tick: u64,
     /// Signals received (also sent as engine events).
     pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
@@ -224,6 +229,15 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    /// Entries uploaded or deposited on a connection and not answered yet: later passes skip
+    /// them (a burst of passes sent them all again each time).
+    pub(crate) sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
+    /// Blobs a connection's server did not deliver when fetched.
+    pub(crate) missing: BTreeSet<(ConnId, osis_core::BlobId)>,
+    /// Deletes sent and not answered yet: later passes skip them.
+    pub(crate) deleting: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
+    /// Timed deletes sent and not answered yet: recorded once the server says OK.
+    pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (`take_direct`).
@@ -280,12 +294,17 @@ impl SyncEngine {
             passes: BTreeMap::new(),
             membership_seen: BTreeMap::new(),
             wake: None,
+            last_tick: 0,
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox,
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
+            sent: BTreeSet::new(),
+            timed_sent: BTreeSet::new(),
+            deleting: BTreeSet::new(),
+            missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
@@ -342,6 +361,11 @@ impl SyncEngine {
     pub fn handle(&mut self, ev: Event) -> Vec<Action> {
         let mut out = Vec::new();
         self.state.now = self.now();
+        // a Tick consumed the driver's wake: the next one is always asked for again
+        if matches!(ev, Event::Tick) {
+            self.wake = None;
+            self.last_tick = self.raw_now();
+        }
         if let Err(e) = self.step(ev, &mut out) {
             self.diag(format!("sync: {e}"));
         }
@@ -367,7 +391,12 @@ impl SyncEngine {
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
         match ev {
             Event::Tick => {
-                self.engine.tick()?;
+                // keep-at-most drops change no read, so no engine event says so: forget the
+                // dropped bodies' blobs and let every label judge again (spec/commits.md §5)
+                if self.engine.tick_drops()? > 0 {
+                    self.mark_dirty();
+                    self.forget_dropped()?;
+                }
                 self.timers(out)?;
                 self.serve_timers(out);
             }
@@ -407,6 +436,11 @@ impl SyncEngine {
 
     /// A dialed connection ended: redial after the retry pause.
     fn lost(&mut self, conn: ConnId) {
+        // requests not answered go again on the next connection
+        self.sent.retain(|(c, _, _)| *c != conn);
+        self.timed_sent.retain(|(c, _, _)| *c != conn);
+        self.deleting.retain(|(c, _, _)| *c != conn);
+        self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered go out again on the next connection
             let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.keys().filter(|(s, _)| *s == c.server).copied().collect();
@@ -465,14 +499,19 @@ impl SyncEngine {
             }
         }
         if changed {
-            for c in self.conns.values_mut() {
-                for l in c.labels.values_mut() {
-                    l.dirty = true;
-                }
-            }
+            self.mark_dirty();
             self.forget_dropped()?;
         }
         Ok(())
+    }
+
+    /// Every label on every connection wants a pass.
+    fn mark_dirty(&mut self) {
+        for c in self.conns.values_mut() {
+            for l in c.labels.values_mut() {
+                l.dirty = true;
+            }
+        }
     }
 
     /// Whether every server this node syncs `actor`'s labels with has had a complete pass since
@@ -581,6 +620,8 @@ impl SyncEngine {
     fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let wanted = self.wanted_servers();
+        // a server no longer wanted keeps no retry time (it would hold the wake in the past)
+        self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
             if self.conns.values().any(|c| c.server == key) {
                 continue;
@@ -669,6 +710,15 @@ impl SyncEngine {
             }
             E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
             E::Fetched { label, items } => {
+                // asked for and not there: not asked again on this connection
+                let mut gone = false;
+                for f in items.iter().filter(|f| f.entry.is_none()) {
+                    self.fetching.remove(&f.blob_id);
+                    gone |= self.missing.insert((conn, f.blob_id));
+                }
+                if gone && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&label)) {
+                    lc.dirty = true;
+                }
                 let evs = items.into_iter().filter_map(|f| f.entry.map(|(blob, wrap, stamp)| osis_proto::Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp })).collect();
                 self.log_events(Some(conn), label, evs, None, out)?;
             }
@@ -788,7 +838,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn next_wake(&self) -> Option<u64> {
+    /// When the next Tick is wanted (raw wall ms): session timers, re-syncs, served sessions'
+    /// idle ends, redials, inbox retries and the engine's expiry and keep-at-most timers. Never
+    /// before `MIN_WAKE_MS` after the last Tick, so an item due but not serviceable yet cannot
+    /// spin (and later events do not push a due wake back).
+    fn next_wake(&mut self) -> Option<u64> {
+        let now = self.raw_now();
         let mut t: Option<u64> = None;
         let mut at = |x: u64| t = Some(t.map_or(x, |y: u64| y.min(x)));
         for c in self.conns.values() {
@@ -796,7 +851,8 @@ impl SyncEngine {
                 at(x);
             }
             for l in c.labels.values() {
-                if l.phase == Phase::Open || l.phase == Phase::Failed {
+                // a label waiting for a reply re-syncs after it
+                if (l.phase == Phase::Open && !l.syncing) || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(self.cfg.resync_ms));
                 }
             }
@@ -807,10 +863,15 @@ impl SyncEngine {
         for (_, x) in self.retry.values() {
             at(*x);
         }
-        for o in self.outbox.iter().filter(|o| o.after > 0) {
+        // a due inbox blob goes once its server's connection is ready (an event of its own)
+        for o in self.outbox.iter().filter(|o| o.after > now) {
             at(o.after);
         }
-        t
+        let skew = self.now() as i64 - now as i64;
+        if let Ok(Some(x)) = self.engine.next_timer() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
+        t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
     /// Inbox blobs (grants, notices) not yet answered by a server: kept in memory only, so a

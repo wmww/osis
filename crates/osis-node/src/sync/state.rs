@@ -42,6 +42,12 @@ pub enum Kind {
     Commit { commit: CommitId, parts: Vec<(usize, usize)> },
     /// An inbox blob this node opened.
     Inbox,
+    /// Unwraps under a held secret but is no valid commit blob (spec/versioning.md §2: bad
+    /// input): never retried, never judged.
+    Bad,
+    /// A commit this build cannot interpret, held parked (spec/versioning.md §2): relayed,
+    /// never judged.
+    Parked(CommitId),
 }
 
 /// A label entry as this node knows it (spec/sync.md §4).
@@ -150,6 +156,8 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Unknown => w.u8(0),
         Kind::Commit { commit, parts } => encode_parts(w.u8(1).raw(&commit.0), parts),
         Kind::Inbox => w.u8(2),
+        Kind::Bad => w.u8(3),
+        Kind::Parked(c) => w.u8(4).raw(&c.0),
     }
     .take()
 }
@@ -168,6 +176,8 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
             Kind::Commit { commit, parts: decode_parts(&mut r)? }
         }
         2 => Kind::Inbox,
+        3 => Kind::Bad,
+        4 => Kind::Parked(CommitId(r.arr()?)),
         _ => Kind::Unknown,
     };
     Ok(Entry { wrap, stamp, cert, kind })
@@ -276,8 +286,8 @@ impl State {
             return Ok(());
         }
         let writes = std::mem::take(&mut self.writes);
-        engine.run(|tx| {
-            for (k, v) in writes {
+        let r = engine.run(|tx| {
+            for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
                     Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) { Shred::Yes } else { Shred::No })?,
@@ -287,7 +297,15 @@ impl State {
                 }
             }
             Ok(())
-        })
+        });
+        // the in-memory state already holds them: kept for the next flush, so what is durable
+        // never lags behind what this node acted on
+        if r.is_err() {
+            for (k, v) in writes {
+                self.writes.entry(k).or_insert(v);
+            }
+        }
+        r
     }
 
     fn put(&mut self, k: Vec<u8>, v: Vec<u8>) {
@@ -466,6 +484,11 @@ impl State {
         if self.hints.remove(l).is_some() {
             self.del(key(HINT, &[&l.0]));
         }
+    }
+
+    /// Whether an entry under `l` holds at least these parts of commit `c`.
+    pub fn held_under(&self, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        self.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|(_, e)| matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))))
     }
 
     /// The blob this node holds for exactly these parts of a commit (not a certificate
