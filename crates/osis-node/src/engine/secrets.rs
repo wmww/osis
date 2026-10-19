@@ -29,8 +29,8 @@ impl Core {
         let mut chain = Vec::new();
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
-            if cur == self.id.tid() {
-                let mut e = self.id.epochs();
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs()));
+            if let Some(mut e) = held {
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
                 }
@@ -71,6 +71,9 @@ impl Core {
         let mut openers: Vec<(Tid, ActorEpochs)> = self.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
         openers.sort_by_key(|x| x.0);
         let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs);
+        for (t, k) in &self.key_actors {
+            let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs);
+        }
         for (m, e) in &openers {
             let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs);
         }

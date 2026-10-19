@@ -21,13 +21,14 @@ Spec: spec/permissions.md (all), spec/crypto.md §3–§4, spec/sync.md §2 (hom
 - Erasure on removal: drop secrets and unreadable units; diagnostic "removed from X by N at T"; recovery card as the remedy noted.
 
 ## Steps
-- [ ] Person/recovery/home label/pairing; new device bootstrap in the simulator (two devices, one server).
-- [ ] Edge operations + inbox delivery + grantee certificate copy; `until`; invite grants and self-removal via a reader (deposit path).
-- [ ] Demotion with pre-sync and receipt-record frontier; the Bob/Carol scenario end to end through a blind server; stolen-device backdating scenario; proceed-anyway path.
-- [ ] Rotation cascade, registration steps, re-seal triggers; scenarios: lost device while others offline, stranded member re-sealed, grant raced by rotation, fork from concurrent rotations converges.
-- [ ] Own secrets switch; roster snapshots; links (all modes incl. races from notes/permissions.md); cards; moving; label replacement; erasure.
+- [ ] Person/recovery/home label/pairing; new device bootstrap in the simulator (two devices, one server). Flows and LocalPeer tests landed; the simulator run waits for node-sync.
+- [x] Edge operations + inbox delivery + grantee certificate copy; `until`; invite grants and self-removal via a reader (deposit path).
+- [ ] Demotion with pre-sync and receipt-record frontier; the Bob/Carol scenario end to end through a blind server; stolen-device backdating scenario; proceed-anyway path. Landed over LocalPeer (frontier, proceed/fail, card recovery); the blind-server run waits for node-sync.
+- [ ] Rotation cascade, registration steps, re-seal triggers; scenarios: lost device while others offline, stranded member re-sealed, grant raced by rotation, fork from concurrent rotations converges. Landed (fork scenario included) except the server-side registration order (node-sync).
+- [ ] Own secrets switch; roster snapshots; links (all modes incl. races from notes/permissions.md); cards; moving; label replacement; erasure. Landed: own secrets, roster snapshots (issues/roster-snapshot-deltas.md), links (single-use finalization by a removal of the absent edge), recovery cards, moving, secrets erasure; open: label replacement, contact cards, unit erasure (issues/flows-gaps.md).
 
 ## Done when
 Every scenario in notes/permissions.md and notes/sync.md Limits that names an expected outcome runs in the simulator with that outcome; the chat pattern of notes/chat.md can be built with these flows (apps-e2e proves it); notes/permissions.md "Implementation" section written. Delete this plan.
 
 ## Progress
+- Session 1: `flows/` and `rotation/` with engine hooks (held key actors, `sign_as`, roster-snapshot kind, reopen dependents); every flow above over `LocalPeer` with 16 scenario tests (crates/osis-node/tests/flows.rs); node-sync interface: `Delivery`, `SyncState`, `ensure_rotated`, `reseal_due`, `issue_step`, `accept_inbox` (notes/node.md).
