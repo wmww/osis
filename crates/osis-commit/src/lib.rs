@@ -5,11 +5,14 @@
 #![forbid(unsafe_code)]
 
 mod blob;
+mod builder;
 mod cbor;
 mod error;
 mod header;
+mod project;
 pub mod retention;
 mod tokens;
+mod tree;
 mod validate;
 mod verify;
 
@@ -19,8 +22,13 @@ mod tests;
 mod tests_validate;
 #[cfg(test)]
 mod tests_verify;
+#[cfg(test)]
+mod tests_build;
 
 pub use blob::{CommitBlob, Part};
+pub use builder::{AspectWrite, Built, CommitBuilder};
+pub use project::{Projection, prefix_inputs, project, rewrite, strict_subset};
+pub use tree::{BlobSink, BlobSource, MemoryBlobs, read_tree, write_tree};
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, Token, verify_signature};
 pub use tokens::{Prefix, Secrets, TokenSecret, token_secrets};

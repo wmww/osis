@@ -69,7 +69,7 @@ fn prefix_commitments() {
     let token = osis_crypto::delete_token(&ts_.secret, &hsalt);
     assert!(p.commitments.iter().any(|c| verify_presented_token(token.expose(), c, &p.salt)));
     // a chunk's tokens use the chunk's own salt
-    let c = Prefix::for_chunk([3; 16], None, &[ts_.clone()]).unwrap();
+    let c = Prefix::for_chunk([3; 16], None, std::slice::from_ref(&ts_)).unwrap();
     let ctoken = osis_crypto::delete_token(&ts_.secret, &[3; 16]);
     assert!(verify_presented_token(ctoken.expose(), &c.commitments[0], &[3; 16]));
 }
