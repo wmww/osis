@@ -1,0 +1,7 @@
+# A moved copy owned by an actor without secrets of its own is unwritable for its members
+> Summary: `move_to` into an owner X that has no secrets of its own (its epochs derive from its owner): the copy's own-secrets rotation supersedes epochs derived through X, and a re-granted member that does not read X never applies the grant's `/secrets` write (its state of the copy's `/secrets` stays empty), so its epochs of the copy stay unestablished: it reads the copy's label but never writes it.
+> Tags: flows, keys, tests
+
+- Seen in the simulator: `move_import` with the team made by `sim.group` (no secrets of its own) and not shared with the writer: at the writer, the copy's epoch 2 is held (from the pending grant's boxes) but `applied: None`, no history boxes, the copy's own-secrets commit an unopened entry; head keys give no write key, so its writes on the copy pend `WaitDeltas` at the admin. With a team that has secrets of its own (the scenario now) or one the writer reads, it converges.
+- Likely spot: the grant's `/secrets` write waits on keys it removes (`apply/keys.rs` unresolved writes: history boxes re-written as remove + put of entries of the own-secrets commit the member cannot open, wrapped under the derived epoch), or the derivation through a derived owner (`Core::epochs`, `labeling::established`). The same flow into a doc owned directly by a person works.
+- Fix options: `move_to` gives the new owner secrets of its own first when the copy will have members, or the grant carries what the member needs to establish the copy's epochs.

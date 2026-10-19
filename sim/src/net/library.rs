@@ -346,8 +346,9 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
 }
 
 /// Move with import (spec/permissions.md §7): a shared doc moves to a team the sharer owns and
-/// the writer also writes; the copy carries its history, its writer is re-granted on it, the old thing
-/// points at it; writes continue on the copy under a lossy network.
+/// the writer does not read; the copy carries its history and a label of its own, its writer is
+/// re-granted on it, the old thing points at it; writes continue on the copy under a lossy
+/// network.
 pub fn move_import(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x30);
     let mut sim = sim("move_import", seed, NetWeights::default());
@@ -355,9 +356,9 @@ pub fn move_import(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    // the team is shared with B (write): the copy is in a label B syncs and stamps (a copy in
-    // no label B writes is unreachable for B, issues/flows-move-unlabeled-copy.md)
-    let team = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
+    // the team has secrets of its own (a copy owned by an actor without them stays unwritable for
+    // a member that does not read that actor, issues/flows-move-derived-owner.md)
+    let team = sim.group_with(a, pa, &[s], true)?;
     let doc = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, doc)?;
     sim.reconnect_all();
