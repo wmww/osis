@@ -354,9 +354,8 @@ pub fn move_import(seed: u64) -> Res<Report> {
     let a = sim.add_node(&[s], clock(&mut d))?;
     let b = sim.add_node(&[s], clock(&mut d))?;
     let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    // the team has secrets of its own (a copy owned by an actor without them stays unwritable for
-    // a member that does not read that actor, issues/flows-move-derived-owner.md)
-    let team = sim.group_with(a, pa, &[s], true)?;
+    // the team has no secrets of its own (derived from the sharer's person)
+    let team = sim.group(a, pa, &[s])?;
     let doc = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
     let t = sim.item(a, doc)?;
     sim.reconnect_all();
