@@ -15,7 +15,7 @@ Wave 1 (tla-models still running from wave 0).
 | pre-flight plan diff | merged at cb6f1b0 | |
 | workspace | merged at 4b6ec14 | plan folded into notes/architecture.md |
 | protocol-spec | merged (spec/wire.md), toplevel-reviewed | plan deleted; owner-call issues/header-list-commitments.md |
-| tla-models | running (opus, worktree) | wave 0, ∥, low priority |
+| tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 with a fable agent | models to be updated to the fixed text and rerun afterwards; target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | running (opus, worktree) | skeleton merged at 1acf47d; continuing steps 2–6 |
@@ -31,7 +31,7 @@ Wave 1 (tla-models still running from wave 0).
 | hardening-signoff | not started | wave 6 |
 
 ## Open escalations
-None.
+- TLC counterexamples S1, S2 (models/tla/sync/AMBIGUITIES.md) and R1, R2 (models/tla/rotation/AMBIGUITIES.md): fable agent deciding (clarifications or owner-calls).
 
 ## Spec edits
 - crypto: spec/crypto.md §3 fixes kdf input conventions (two-argument kdf = empty input, tid input = 15 bytes, Ed25519 key from a kdf output = that RFC 8032 seed) and the `kdf("kem", ..)` XOF split (64 bytes ML-KEM `d || z`, then 32 bytes X25519).
