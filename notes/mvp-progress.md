@@ -55,7 +55,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | api (second half) | running (opus, worktree) | sharing and sync surface |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
 | apps-e2e | not started | after api second half |
-| p2p | running (opus, worktree) | best effort; co-reader dialing first |
+| p2p | review fixes | reviewer: tombstones for peer replays, peer budgets/caps, LAN address takeover; agent fixing |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
 | hardening-signoff | not started | wave 6 |
@@ -105,6 +105,8 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 - membership-flows review (decided by the coordinator): spec/permissions.md §3 the one-commit rule binds removals by another node; a self-removal carries no rotation (the next node that may rotate does). spec/crypto.md §4: an epoch whose rotation commit a departed party (or a node acting through it) wrote does not cover its departure. spec/permissions.md §2: a removal of an absent edge is an edge write (a reset of the entry; finalizes a used single-use link).
 
 ## Owner-calls pending
+- Licence exceptions for the iroh feature (CDLA-Permissive-2.0 for webpki roots, Unlicense for three wasm-only crates; RUSTSEC-2024-0436 ignore for `paste`): permissive, in deny.toml, need owner sign-off (notes/architecture.md §5).
+- LAN discovery: spec/sync.md §10 does not bind the announced transport key to the node; conservative behaviour implemented (issues/p2p-deferred.md); LAN datagram format and port are provisional in notes/networking.md.
 - issues/token-admin-secret.md (a non-admin writer cannot derive the level-1 delete token; provisional: omit it; recommended accept for MVP). membership-flows extended the omission to membership deltas (invite grants, self-removals, writers' rotations and re-seals are written by non-admins), receivers accept it.
 - issues/header-list-commitments.md: header-list chunks of commits with more than 16 token secrets carry only author-chain commitments (provisional).
 - issues/reseal-triggers.md: members no automatic re-seal trigger reaches when their deposits are refused (R2; the wrongful-re-seal residues were closed in TLC round 2); recommended: accept for the MVP, mechanisms listed.
