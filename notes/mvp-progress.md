@@ -42,7 +42,8 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
-| sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
+| sync bug-fix round 1 | running (opus, worktree) | the six phase B issues |
+| crdt/flows bug-fix round | running (opus, worktree) | crdt-expiring-diff, single-use redemption, move copy, label replacement |
 | sim | phase C merged | plan stays: 8 scenarios blocked on engine issues, sweep failures listed in plans/sim.md Progress; issues/sync-unopenable-entry-stall.md is security (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
