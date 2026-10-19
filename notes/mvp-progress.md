@@ -42,6 +42,7 @@ Wave 5 (api second half, sim phase B, cli in review; apps-e2e and p2p next); TLA
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
+| sync bug-fix round | running (opus, worktree) | the five non-inbox sim issues; inbox delivery after the api merge |
 | sim | phase B merged | six sync issues filed (stale head, inbox delivery, compaction ping-pong, deposit promotion, duplicate re-upload, recovered-device writes); C after the api merge |
 | node-sync | merged, reviewed | plan stays until sim phase B; issues/node-sync-gaps.md |
 | membership-flows | merged, reviewed | over LocalPeer; sim/server runs after node-sync; issues/roster-snapshot-deltas.md, issues/flows-gaps.md |
