@@ -941,7 +941,12 @@ name = "osis-sim"
 version = "0.1.0"
 dependencies = [
  "osis",
+ "osis-commit",
+ "osis-core",
+ "osis-crdt",
+ "osis-crypto",
  "osis-node",
+ "osis-schema",
  "osis-server",
  "osis-store",
 ]
