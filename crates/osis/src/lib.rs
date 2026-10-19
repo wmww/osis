@@ -108,6 +108,102 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! # Sync, servers and the recovery card
+//! `create` makes a person (owned by a recovery key) whose home group is synced on
+//! `Config.servers`; it returns the recovery card, the only copy of that key. Sync runs on a
+//! runtime (`Runtime::Own`, or the app's tokio handle); without one everything works locally.
+//! Status, waiting until synced and restoring from the card are the network-facing calls.
+//! ```no_run
+//! # use osis::{Config, Osis, Runtime, ServerAddr, SyncScope};
+//! # async fn demo() -> osis::Result<()> {
+//! let mut cfg = Config::memory();
+//! cfg.runtime = Runtime::Own;
+//! cfg.servers = vec!["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
+//! let (db, card) = Osis::create(cfg.clone())?;
+//! db.wait_synced(SyncScope::All, std::time::Duration::from_secs(10)).await?;
+//! // on a fresh device: the same person from the card
+//! let again = Osis::restore(Config { store: osis::StoreAt::Memory(osis::MemStore::new()), ..cfg }, &card.unwrap()).await?;
+//! assert_eq!(again.me(), db.me());
+//! # Ok(()) }
+//! ```
+//! ```
+//! # use osis::{Config, Osis, SyncState};
+//! let (db, card) = Osis::create(Config::memory())?;
+//! assert!(card.is_none(), "no servers: nothing to restore from");
+//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NoServers);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Pairing a device
+//! Transport-agnostic: the app carries the offer to the new device, its request back, and the
+//! reply to it (QR, clipboard, a local socket).
+//! ```
+//! # use osis::{Config, Osis};
+//! let phone = Osis::create(Config::memory())?.0;
+//! let offer = phone.pair_offer()?;
+//! let joining = Osis::pair(Config::memory(), &offer)?;
+//! let (node, reply) = phone.pair_accept(joining.request())?;
+//! let laptop = joining.finish(&reply)?;
+//! assert_eq!(laptop.me(), phone.me());
+//! assert!(phone.devices()?.iter().any(|d| d.node == node));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Sharing
+//! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
+//! group owns are what its members read: create shared things with the group as owner.
+//! ```
+//! # use osis::{Config, Osis, Place, Role, LinkOpts};
+//! let db = Osis::create(Config::memory())?.0;
+//! let mut w = db.write();
+//! let g = w.create(db.me(), Place::In(db.home()))?;
+//! w.make_group(g)?;
+//! w.commit()?;
+//! db.sync(g, &[])?;
+//! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true })?;
+//! assert!(link.to_string().starts_with("osis://link/"));
+//! assert_eq!(db.links(g).len(), 1);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Signals
+//! Never stored; local listeners fire too; connected readers of the thing receive them.
+//! ```
+//! # use osis::{Config, Osis, Place, Ak, Value, Target};
+//! let db = Osis::create(Config::memory())?.0;
+//! let t = db.write_with(|w| w.create(db.me(), Place::Unsynced).map(|_| ()))?;
+//! # let t = db.engine(|e| e.header(&t.unwrap().commit)).unwrap().aspects[0].tid;
+//! let (tx, rx) = std::sync::mpsc::channel();
+//! let _sub = db.on_signal(t, Ak::new("/app/typing").unwrap(), move |_, e| { let _ = tx.send(e.value); });
+//! db.send_signal(t, &Ak::new("/app/typing").unwrap(), &Value::Bool(true), Target::All)?;
+//! assert_eq!(rx.recv().unwrap(), Ok(Value::Bool(true)));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Large values and text sessions
+//! A string or blob above the bound streams; text edited by a user goes through a session that
+//! commits once per pause.
+//! ```
+//! # use osis::{Config, Osis, Place, Ak, Path};
+//! # use std::io::Read;
+//! let db = Osis::create(Config::memory())?.0;
+//! let k = Ak::new("/app/body").unwrap();
+//! let mut w = db.write();
+//! let t = w.create(db.me(), Place::Unsynced)?;
+//! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
+//! w.commit()?;
+//! let mut s = String::new();
+//! db.at(t, k.clone()).stream()?.unwrap().read_to_string(&mut s).unwrap();
+//! assert_eq!(s, "some bytes");
+//! let title = Ak::new("/app/title").unwrap();
+//! let ed = db.edit_text(t, title.clone(), Path::root())?;
+//! ed.insert(0, "Hello")?;
+//! ed.insert(5, " world")?;
+//! ed.commit()?; // one commit for the whole pause
+//! assert_eq!(db.get(t, title)?, Some(osis::Value::Str("Hello world".into())));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Errors
 //! One `Error` with stable categories; rights are checked locally before signing.
 //! ```

@@ -24,8 +24,8 @@ Spec: spec/requirements.md (API section, Offline), spec/versioning.md §5 (typed
 ## Steps
 - [x] Keys, `Error`, handle over the engine with the memory store and no network: reads, `at()` paths, `Write` with every op, create/place, commit with local rights check; tests per op and per closed footgun (`edit` keeps a concurrent remote field write that `set` would clobber; bound; must-use).
 - [x] Dispatcher, `Watch`, `Subscription`, `on_change` initial call, `watch_thing`; signals (local delivery; remote with node-sync in step 4); undo and history; diagnostics; typed reads and writes through generated types from osis-schema codegen (the notes schema).
-- [ ] Large values (bound, `stream`, `set_stream`, path reads O(entry)); text sessions; queries and backlinks.
-- [ ] Sharing, devices, links, cards, move; sync configuration, status, `wait_synced`, bundles; async surface tested from a plain executor; `Demotion` policies end to end in the simulator.
+- [x] Large values (bound, `stream`, `set_stream`, path reads O(entry)); text sessions; queries and backlinks (deferred: issues/api-deferred.md).
+- [x] Sharing, devices, links, cards, move; sync configuration, status, `wait_synced`, bundles; async surface tested from a plain executor; `Demotion` policies end to end in the simulator (tier-1 world: `Required` with removal and rotation; `Try`/`Skip` not yet end to end).
 - [ ] Iterate with examples/notes and examples/chat (plans/apps-e2e.md); refactor; write the "Implementation" section of notes/api.md (what differs from the shape and why).
 
 ## Done when
@@ -33,4 +33,5 @@ The example apps need nothing the API does not provide; every fixed direction an
 
 ## Progress
 - First half (steps 1–2): crates/osis over the local engine; sharing/sync surface stubbed (`Unsupported`); text sessions, queries, `stream`/`len`/`set_stream` open (step 3); notes/api.md Implementation written; issues/undo-chain-register.md.
-- Review fixes: undo never skips (NotUndoable), new change clears redo, coalesced calls carry the newest source, errors never coalesced, callback panics caught, drop waits for in-flight calls, callbacks get &Osis, watches follow moves; issues/api-person-owner.md.
+- Review fixes: undo never skips (NotUndoable), new change clears redo, coalesced calls carry the newest source, errors never coalesced, callback panics caught, drop waits for in-flight calls, callbacks get &Osis, watches follow moves; issues/api-person-owner.md (resolved: pre-flows stores refused at open).
+- Second half (steps 3–4): handle owns the `SyncEngine`, tokio driver over a `Host`, manual runtime for tests; person with recovery card, restore, three-text pairing, grants, demotion with pre-sync, links, contact cards, servers, group sync, status, remote signals, `NotSynced`; stream/len/set_stream; text sessions; CLI wired; osis-node fixes (late `/secrets` parts, commit-form canonical order, inbox deposit retry, link key card); issues/api-deferred.md, issues/api-single-use-links.md (owner-call).

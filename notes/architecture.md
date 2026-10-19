@@ -19,7 +19,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/*`, `vectors`, `sim` (a
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
 | 6 | `osis-server` | server | blind node used as a server: `BackendStore`, sans-I/O `Hub`, async `driver` (default feature `driver`: tokio and transport `link`; `quic`; `file-backend`; `bin` for the binary) |
 | 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows |
-| 8 | `osis` | api | public API; the only crate apps depend on |
+| 8 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`quic` feature for `Transport::Quic`) |
 | 9 | `osis-cli` | cli | binary `osis` |
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
@@ -79,10 +79,10 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `quinn` 0.11 (transport, feature `quic`; no default features, `runtime-tokio`, `rustls-ring`): QUIC for direct server connections (spec/sync.md §10). Chosen over Noise-over-TCP: native streams, flow control, keep-alive and connection migration, the same stack iroh builds on; the cost is build time, kept off default builds.
 - `rustls` 0.23 (transport, feature `quic`; no default features, `ring`, `std`): TLS 1.3 with RFC 7250 raw Ed25519 public keys (no certificates, no rcgen/webpki roots); custom verifiers pin the server key.
 - `ring` 0.17 (transport, feature `quic`; already rustls's provider): Ed25519 key pairs from the static seed, OS randomness for ephemeral client keys. Chosen over `aws-lc-rs` (needs cmake, slower build); ring compiles some C/asm with `cc` (not pure Rust; acceptable behind the feature). It brings getrandom 0.2 (already duplicated) and, on Windows, windows-sys 0.52 (deny.toml `skip`).
-- `tokio` 1.53 (no default features; transport features `quic` or `link`: `rt`, `net`, `sync`, `time` (dev: `rt`, `macros`, `time`); server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`; server dev: `rt`, `macros`; node feature `driver` (default): `rt`, `rt-multi-thread`, `sync`, `time`, `macros`): the drivers' runtime, never in store or engine paths.
+- `tokio` 1.53 (no default features; transport features `quic` or `link`: `rt`, `net`, `sync`, `time` (dev: `rt`, `macros`, `time`); server feature `driver`: `rt`, `rt-multi-thread` (for `block_in_place`), `sync`, `time`, `macros` for `select!`; `bin` adds `signal`; server dev: `rt`, `macros`; node feature `driver` (default): `rt`, `rt-multi-thread`, `sync`, `time`, `macros`; osis: `rt`, `rt-multi-thread`, `sync`, `time` (dev: `macros`)): the drivers' runtime, never in store or engine paths.
 - `clap` 4.5 (cli only; no default features: `std`, `derive`, `help`, `usage`, `error-context`, `suggestions`, `env`; no colour): the command tree and help of `osis`. Derive pulls proc-macro crates (syn, quote) into the cli build only.
 - `anyhow` 1.0 (cli, examples): command errors; the API's `Error` and the CLI's `Exit` are downcast for exit codes.
-- Planned, added by their plans with a line here: tokio features for node, osis, sim, arbitrary (fuzz only), iroh (feature-gated). The cli needs no tokio of its own (it polls the API's futures on its thread; `serve` runs osis-server's runtime through its `bin` feature).
+- Planned, added by their plans with a line here: tokio features for sim, arbitrary (fuzz only), iroh (feature-gated). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime through its `bin` feature).
 
 ## 6. Conventions
 - Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
