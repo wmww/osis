@@ -115,7 +115,8 @@ proptest! {
         prop_assert_eq!(CanonicalBytes::from_value(&v), c);
     }
 
-    // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order.
+    // §5: map keys and set elements sort by canonical bytes; Value's Ord is that order for values
+    // without two links of one content hash (random links never share one; see links_sort_by_bytes).
     #[test]
     fn ord_is_byte_order(a in value(), b in value()) {
         check_ord(&a, &b)?;
@@ -223,13 +224,46 @@ fn links_equal_by_hash() {
     assert_eq!(Value::Set([a.clone(), b.clone(), c.clone()].into_iter().collect()), Value::Set([a.clone(), c].into_iter().collect()));
     let mut set = encode(&Value::List(vec![a.clone(), b.clone()]));
     set.splice(0..0, hex(&tag_head(TAG_SET)));
-    assert_eq!(d(&set), Err(DecodeError::SetOrder));
+    assert_eq!(d(&set), Err(DecodeError::EqualLinks));
     let mut map = vec![0xa2];
     for (k, v) in [(&a, 0u8), (&b, 1)] {
         map.extend(encode(k));
         map.push(v);
     }
-    assert_eq!(d(&map), Err(DecodeError::MapKeyOrder));
+    assert_eq!(d(&map), Err(DecodeError::EqualLinks));
+}
+
+// §5: with links of one content hash, Ord and byte order differ ([LA, 3] < [LB, 5] by value while
+// LA's bytes sort after LB's); sets and maps still encode sorted by bytes, round trip, and a
+// byte-sorted input re-encodes to itself.
+#[test]
+fn links_sort_by_bytes() {
+    let la = Value::Link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32] });
+    let lb = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let x = Value::List(vec![la, Value::Int(3)]);
+    let y = Value::List(vec![lb, Value::Int(5)]);
+    assert_eq!(x.cmp(&y), std::cmp::Ordering::Less);
+    assert!(encode(&x) > encode(&y));
+    let s = Value::Set([x.clone(), y.clone()].into_iter().collect());
+    let b = encode(&s);
+    let mut want = hex(&tag_head(TAG_SET));
+    want.push(0x82);
+    want.extend(encode(&y));
+    want.extend(encode(&x));
+    assert_eq!(b, want);
+    assert_eq!(d(&b).map(|v| encode(&v)), Ok(b.clone()));
+    let m = Value::Map([(x.clone(), Value::Int(1)), (y.clone(), Value::Int(2))].into_iter().collect());
+    let mb = encode(&m);
+    let mut want = vec![0xa2];
+    want.extend(encode(&y));
+    want.push(0x02);
+    want.extend(encode(&x));
+    want.push(0x01);
+    assert_eq!(mb, want);
+    assert_eq!(d(&mb).map(|v| encode(&v)), Ok(mb));
+    // Nested: the set inside a list still sorts by bytes.
+    let l = Value::List(vec![s]);
+    assert_eq!(d(&encode(&l)).map(|v| encode(&v)), Ok(encode(&l)));
 }
 
 // §5: every rejection rule.

@@ -1,8 +1,9 @@
-//! Values (spec/data-model.md §4, §5). `Eq` and `Ord` are those of the canonical encoding: `Ord`
-//! is computed structurally and equals bytewise comparison of `cbor::encode` (tested), so maps and
-//! sets (`BTreeMap`, `BTreeSet`) iterate in canonical order with unique keys by construction.
-//! Exception: a link compares by its keyed content hash alone (spec/data-model.md §4, §6), so two
-//! writes of one large value are equal; canonical order is unchanged (the hash leads the link).
+//! Values (spec/data-model.md §4, §5). `Eq`, `Ord` and `Hash` compare a link by its keyed content
+//! hash alone (spec/data-model.md §4, §6: two writes of one large value are equal); otherwise they
+//! are those of the canonical encoding. For values without links `Ord` equals bytewise comparison
+//! of `cbor::encode` (tested), so maps and sets (`BTreeMap`, `BTreeSet`) iterate in canonical order
+//! with unique keys by construction. With links the orders can differ (`[LA, 3]` < `[LB, 5]` while
+//! LA's bytes sort after LB's), so the encoder sorts the encodings of a set or map holding a link.
 
 use crate::cbor::CanonicalBytes;
 use crate::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID};
@@ -122,7 +123,7 @@ fn kind_key(v: &Value) -> (u8, u64) {
 }
 
 impl Ord for Value {
-    /// Bytewise order of canonical encodings. Canonical heads compare like their arguments,
+    /// Bytewise order of canonical encodings, links by content hash only. Canonical heads compare like their arguments,
     /// and no canonical item is a prefix of another, so arrays compare element by element.
     fn cmp(&self, other: &Value) -> Ordering {
         use Value::*;

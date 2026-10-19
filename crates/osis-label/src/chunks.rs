@@ -279,25 +279,38 @@ pub fn read_value(root: Link, dedup: &Secret32, src: &mut dyn LinkSource, params
 /// lengths). Text is checked as UTF-8 as it streams.
 pub struct StringReader<'a> {
     inner: LargeReader<'a>,
+    /// UTF-8 check of text read from the start; a skip turns it off (a range may start inside
+    /// a character).
     text: Option<Utf8>,
+    is_text: bool,
     len: u64,
     left: u64,
+    /// Bytes a `skip` has still to pass (kept across a `Missing`).
+    skipping: u64,
 }
 
 impl<'a> StringReader<'a> {
     pub fn open(root: Link, dedup: &'a Secret32, src: &'a mut dyn LinkSource, params: LargeParams, max_len: usize) -> Result<StringReader<'a>, Error> {
         let mut inner = LargeReader::new(root, dedup, src, params, max_len);
         let mut head = Vec::new();
-        let (major, len) = loop {
-            if let Some((major, len, _)) = parse_string_head(&head)? {
-                break (major, len);
+        let (major, len, n) = loop {
+            if let Some(h) = parse_string_head(&head)? {
+                break h;
             }
             let b = inner.fill()?;
             let Some(&x) = b.first() else { return Err(Error::Malformed("truncated string head")) };
             head.push(x);
             inner.consume(1);
         };
-        Ok(StringReader { inner, text: (major == MAJOR_TEXT).then(Utf8::default), len, left: len })
+        let total = u64::try_from(n).unwrap_or(u64::MAX).saturating_add(len);
+        if total <= u64::try_from(params.threshold).unwrap_or(u64::MAX) {
+            return Err(Error::Malformed("chunked value at or below CHUNK_THRESHOLD"));
+        }
+        if total > u64::try_from(max_len).unwrap_or(u64::MAX) {
+            return Err(Error::TooLarge("value"));
+        }
+        let is_text = major == MAJOR_TEXT;
+        Ok(StringReader { inner, text: is_text.then(Utf8::default), is_text, len, left: len, skipping: 0 })
     }
 
     /// Payload length in bytes.
@@ -310,7 +323,7 @@ impl<'a> StringReader<'a> {
     }
 
     pub fn is_text(&self) -> bool {
-        self.text.is_some()
+        self.is_text
     }
 
     pub fn buffered(&self) -> usize {
@@ -319,6 +332,7 @@ impl<'a> StringReader<'a> {
 
     /// Reads up to `out.len()` payload bytes; 0 at the end, after checking nothing follows.
     pub fn read_some(&mut self, out: &mut [u8]) -> Result<usize, Error> {
+        self.pass_skip()?;
         if self.left == 0 {
             if !self.inner.fill()?.is_empty() {
                 return Err(Error::Malformed("bytes after the string"));
@@ -343,16 +357,27 @@ impl<'a> StringReader<'a> {
         Ok(n)
     }
 
-    /// Skips `n` payload bytes (range reads).
-    pub fn skip(&mut self, mut n: u64) -> Result<(), Error> {
-        let mut buf = vec![0u8; 64 * 1024];
-        while n > 0 {
-            let want = usize::try_from(n).unwrap_or(usize::MAX).min(buf.len());
-            let got = self.read_some(buf.get_mut(..want).unwrap_or_default())?;
-            if got == 0 {
-                return Err(Error::Malformed("skip past the end"));
+    /// Skips `n` payload bytes (range reads), without the UTF-8 check from here on. After an
+    /// error (a `Missing` chunk) the rest of the skip is kept: call `skip(0)` or read to go on.
+    pub fn skip(&mut self, n: u64) -> Result<(), Error> {
+        if n > self.left.saturating_sub(self.skipping) {
+            return Err(Error::Malformed("skip past the end"));
+        }
+        self.skipping += n;
+        self.text = None;
+        self.pass_skip()
+    }
+
+    fn pass_skip(&mut self) -> Result<(), Error> {
+        while self.skipping > 0 {
+            let b = self.inner.fill()?;
+            if b.is_empty() {
+                return Err(Error::Malformed("string shorter than its head"));
             }
-            n -= got as u64;
+            let n = b.len().min(usize::try_from(self.skipping).unwrap_or(usize::MAX));
+            self.inner.consume(n);
+            self.skipping -= n as u64;
+            self.left -= n as u64;
         }
         Ok(())
     }
@@ -556,6 +581,45 @@ mod tests {
         assert_eq!(out, encode(&Value::Bytes(d)));
     }
 
+    // spec/sync.md §6: a skip interrupted by a Missing chunk resumes where it stopped; open
+    // rejects a declared length at or below the threshold or above the caller's bound.
+    #[test]
+    fn skip_resumes() {
+        let f = framing();
+        let mut store = MemoryBlobs::default();
+        let mut rng = SeededRng::from_u64(8);
+        let d = data(4000, 7);
+        let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 4000) else { panic!() };
+        // A blob in the middle of the reading order goes missing once.
+        let mut order = Vec::new();
+        {
+            struct Log<'a>(&'a mut MemoryBlobs, &'a mut Vec<osis_core::BlobId>);
+            impl crate::tree::BlobFetch for Log<'_> {
+                fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+                    self.1.push(*id);
+                    crate::tree::BlobFetch::fetch(self.0, id)
+                }
+            }
+            let mut log = Log(&mut store, &mut order);
+            let mut r = BlobReader::new(&f.dedup, &mut log);
+            LargeReader::new(root, &f.dedup, &mut r, SMALL, usize::MAX).read_all().unwrap();
+        }
+        let victim = order[order.len() / 2];
+        let mut gate = Gate { store: &mut store, fetches: 0, missing_once: Some(victim) };
+        let mut r = BlobReader::new(&f.dedup, &mut gate);
+        let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
+        assert_eq!(sr.skip(3990), Err(Error::Missing));
+        sr.skip(0).unwrap();
+        let mut out = Vec::new();
+        sr.read_to_end(&mut out).unwrap();
+        assert_eq!(out, d[3990..]);
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        assert!(matches!(StringReader::open(root, &f.dedup, &mut r, SMALL, 3000), Err(Error::TooLarge(_))));
+        let small = LargeParams { threshold: 5000, ..SMALL };
+        let mut r = BlobReader::new(&f.dedup, &mut store);
+        assert!(matches!(StringReader::open(root, &f.dedup, &mut r, small, usize::MAX), Err(Error::Malformed(_))));
+    }
+
     // spec/requirements.md (Scale: no whole value in memory), reduced constants: the writer
     // holds one chunk and the open nodes, the reader one chunk and the tree path.
     #[test]
@@ -595,12 +659,12 @@ mod tests {
     /// Writes `d` as a blob value with `f`, reusing from the tree under `old` if given; returns
     /// the root, blobs written and blobs reused.
     fn rewrite(store: &mut MemoryBlobs, f: &Framing, seed: u64, d: &[u8], old: Option<Link>) -> (Link, usize, usize) {
-        let reuse = old.map(|o| crate::tree::Reuse::index(&o, f, store, SMALL.chunk, usize::MAX).unwrap());
+        let reuse = old.map(|o| crate::tree::Reuse::index(&o, f.clone(), store, SMALL.chunk, usize::MAX).unwrap());
         let mut rng = SeededRng::from_u64(seed);
-        let mut bw = BlobWriter::new(f, store, &mut rng);
-        if let Some(r) = reuse {
-            bw = bw.reusing(r);
-        }
+        let mut bw = match &reuse {
+            Some(r) => BlobWriter::reusing(r, store, &mut rng),
+            None => BlobWriter::new(f, store, &mut rng),
+        };
         let mut w = ValueWriter::bytes(SMALL, d.len() as u64);
         w.write(&mut bw, d).unwrap();
         let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };

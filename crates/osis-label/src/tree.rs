@@ -16,6 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
 /// thing's dedup secret keys the content hashes; expiry and token secrets go into each prefix
 /// (spec/wire.md §5, spec/crypto.md §7).
+#[derive(Clone)]
 pub struct Framing {
     pub dedup: Secret32,
     pub expiry: Option<WallMs>,
@@ -355,7 +356,8 @@ impl TreeSink for HashSink {
 }
 
 /// Writes chunk, tree-node, page and link-page blobs under one framing, each with a fresh salt
-/// and key, and records what it wrote. With a [`Reuse`] index of the value's current tree, a
+/// and key, and records what it wrote. Built from a [`Reuse`] index of the value's current tree
+/// (`BlobWriter::reusing`, which takes the index's framing), a
 /// chunk or node of equal content hash keeps its blob when the re-encryption rule allows
 /// (spec/sync.md §1); reused blobs are not in `written` (the delta does not introduce them).
 pub struct BlobWriter<'a> {
@@ -363,7 +365,7 @@ pub struct BlobWriter<'a> {
     store: &'a mut dyn BlobStore,
     rng: &'a mut dyn CryptoRngCore,
     written: Vec<Written>,
-    reuse: Option<Reuse>,
+    reuse: Option<&'a Reuse>,
     reused: usize,
     page_params: PageParams,
 }
@@ -373,10 +375,12 @@ impl<'a> BlobWriter<'a> {
         BlobWriter { framing, store, rng, written: Vec::new(), reuse: None, reused: 0, page_params: PageParams::FORMAT }
     }
 
-    /// Dedup by reuse against an index of the current tree.
-    pub fn reusing(mut self, reuse: Reuse) -> BlobWriter<'a> {
-        self.reuse = Some(reuse);
-        self
+    /// Dedup by reuse against an index of the current tree, framing with the index's framing
+    /// (the re-encryption rule was evaluated against it).
+    pub fn reusing(reuse: &'a Reuse, store: &'a mut dyn BlobStore, rng: &'a mut dyn CryptoRngCore) -> BlobWriter<'a> {
+        let mut w = BlobWriter::new(&reuse.framing, store, rng);
+        w.reuse = Some(reuse);
+        w
     }
 
     /// Page parameters reported to osis-crdt (`FORMAT` on the wire; tests shrink them).
@@ -392,7 +396,7 @@ impl<'a> BlobWriter<'a> {
 
     /// A reusable old chunk: held, intact, equal bytes, and kept by the re-encryption rule.
     fn reuse_chunk(&mut self, hash: &[u8; 32], bytes: &[u8]) -> Result<Option<Link>, Error> {
-        let Some(old) = self.reuse.as_ref().and_then(|r| r.chunks.get(hash)).copied() else { return Ok(None) };
+        let Some(old) = self.reuse.and_then(|r| r.chunks.get(hash)).copied() else { return Ok(None) };
         let blob = match self.store.fetch(&old.blob) {
             Ok(b) => b,
             Err(Error::Storage) => return Err(Error::Storage),
@@ -440,7 +444,7 @@ impl TreeSink for BlobWriter<'_> {
     fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error> {
         let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
         let hash = link_tree_hash(&self.framing.dedup, level, &hashes);
-        if let Some((old, children)) = self.reuse.as_ref().and_then(|r| r.nodes.get(&hash))
+        if let Some((old, children)) = self.reuse.and_then(|r| r.nodes.get(&hash))
             && *children == links_digest(links)
         {
             let old = *old;
@@ -474,8 +478,9 @@ fn links_digest(links: &[Link]) -> [u8; 32] {
 /// notes/local-store.md): chunk links by content hash, and node links whose blob the
 /// re-encryption rule keeps, with the digest of their children. Memory: one link per chunk and
 /// node of the current tree.
-#[derive(Default, Debug)]
 pub struct Reuse {
+    /// The new delta's framing: the rule is evaluated against it, and the writer frames with it.
+    framing: Framing,
     chunks: HashMap<[u8; 32], Link>,
     nodes: HashMap<[u8; 32], (Link, [u8; 32])>,
 }
@@ -484,8 +489,9 @@ impl Reuse {
     /// Walks the tree under `root` through the held node blobs (each verified; a missing,
     /// corrupt or foreign node just indexes nothing below it), visiting at most
     /// `max_len / CHUNK_MIN + 1` chunk links. Only `Storage` fails.
-    pub fn index(root: &Link, framing: &Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
-        let mut r = Reuse::default();
+    pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
+        let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new() };
+        let framing = &r.framing;
         let mut budget = (max_len / params.min.max(1)).saturating_add(1);
         let mut stack = vec![(*root, None)];
         let mut seen = std::collections::HashSet::new();
