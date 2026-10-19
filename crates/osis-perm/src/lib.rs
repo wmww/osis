@@ -5,12 +5,14 @@
 //! Layer 1 (notes/architecture.md). Plan: plans/perm.md.
 #![forbid(unsafe_code)]
 
+pub mod content;
 pub mod graph;
 pub mod held;
 pub mod timeline;
 pub mod types;
 mod walk;
 
+pub use content::{overlapping, Range, Validity};
 pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
 pub use timeline::{At, Timeline};

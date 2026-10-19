@@ -117,6 +117,12 @@ impl World {
         r.insert(author, t);
         self.commits.push(CSpec { id, author, t, ops: ops.to_vec(), recv: r });
     }
+    /// A content commit (no edge writes): only its receipts matter, for frontiers. Returns its
+    /// point.
+    pub fn content(&mut self, author: Tid, t: u64, recv: &[(Tid, u64)]) -> osis_perm::Point {
+        let id = self.commit(author, t, &[], recv);
+        osis_perm::Point { ts: ts(t), node: author, commit: id }
+    }
     /// One edge write: `member`'s edge on `target`.
     pub fn set(&mut self, author: Tid, target: Tid, member: Tid, e: Option<Edge>, t: u64, recv: &[(Tid, u64)]) -> CommitId {
         self.commit(author, t, &[(target, member, e)], recv)

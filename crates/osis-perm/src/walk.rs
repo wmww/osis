@@ -16,6 +16,7 @@
 //!   at their keys (before real writes with that key); a ledger tenure end with a frontier
 //!   audits like the demotion it records.
 
+use crate::content::{overlapping, Range};
 use crate::graph::{Class, Edges, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{lowers, Dots, Edge, EdgeKey, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
@@ -77,9 +78,28 @@ impl Input {
                 }
             }
         }
+        // Overlapping node-form ranges on `/members` void both commits (spec/commits.md §4);
+        // the node voids commits overlapping on its other aspects before handing them over.
+        let ranges = commits
+            .values()
+            .flat_map(|c| c.ops.iter().map(move |o| (c.id, c.author, o.target, o.dots)))
+            .chain(snaps.values().map(|s| (s.id, s.author, s.thing, s.dots)))
+            .filter_map(|(commit, node, tid, d)| match d {
+                Dots::Node { lo, hi } => Some(Range { commit, node, tid, ak: MEMBERS.to_string(), lo, hi }),
+                Dots::Commit => None,
+            });
+        let void = overlapping(ranges);
+        commits.retain(|id, _| !void.contains(id));
+        snaps.retain(|id, _| !void.contains(id));
+        // Who can hold a class: key actors, authors, and members that may be nodes.
         let mut nodes: BTreeSet<Tid> = things.iter().filter(|t| owners.is_key(t)).copied().collect();
         nodes.extend(commits.values().map(|c| c.author));
         nodes.extend(snaps.values().map(|s| s.author));
+        let members = commits
+            .values()
+            .flat_map(|c| c.ops.iter().map(|o| o.member))
+            .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.member))));
+        nodes.extend(members.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
         Input { owners, commits, snaps, nodes }
     }
 }
