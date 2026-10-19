@@ -22,7 +22,7 @@ Spec: spec/crdt.md §1–§5.6, §7–§9; spec/commits.md §4 (atomic apply exp
 - Performance posture: state structures sized for maps with many entries (BTreeMap by dot; local `key -> live dots` index); no O(state) work for a small delta beyond the touched elements; paged states live in the store (plans/store.md), so expose join over a page at a time.
 
 ## Steps
-- [ ] Types, order, interning; `Fragment` skeleton with all variants; wire grammar types. Commit this skeleton early and record "skeleton merged" in Progress: plans/crdt-seq.md starts from it.
+- [x] Types, order, interning; `Fragment` skeleton with all variants; wire grammar types. Commit this skeleton early and record "skeleton merged" in Progress: plans/crdt-seq.md starts from it.
 - [ ] Register, struct, enum, set, map, bags: join/prune/presence/read; differential tests against models/crdt (random op sequences from the model's generator; equal reads, equal canonical bytes, equal under random delivery orders and duplication).
 - [ ] Wire encode/decode + rule 7; every rejection a negative test; the model's lenient cases covered here.
 - [ ] Ops, counter consumption, net effect; undo; diff with View.
@@ -36,3 +36,4 @@ Everything in notes/crdt.md "Reference model" plus the listed additions: own-cou
 Every encoding but seq round-trips, joins and reads identically to the model under the differential suite; the crate has no `Unsupported` paths except seq; notes/crdt.md gains an "Implementation" section (structures, interning, change summary). Delete this plan when crdt-seq is also done, folding both into notes/crdt.md.
 
 ## Progress
+- Step 1 (skeleton merged): `Source` (Arc-interned) / `Dot` / `Stamp` / `CounterRange`, `Fragment` with all variants, `Seq` types and hooks in `seq.rs`, `View`, `PageSink`/`PageSource`, `Writer`, `Changes`, wire `Enc`/`Dec` tables; spec edit §3.3 rule 2 (own commit-form source sorts first).
