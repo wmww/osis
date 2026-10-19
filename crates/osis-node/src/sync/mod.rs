@@ -630,6 +630,27 @@ impl SyncEngine {
         self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || (l.synced && !l.syncing && !l.dirty && l.registering.is_none())))
     }
 
+    /// A one-line summary of each label on each connection (tests, diagnostics).
+    pub fn describe(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        for (id, c) in &self.conns {
+            for (l, x) in &c.labels {
+                v.push(format!(
+                    "conn {id} {l:?}: {:?} synced {} syncing {} dirty {} registering {} writer {} reader {} outstanding {}",
+                    x.phase,
+                    x.synced,
+                    x.syncing,
+                    x.dirty,
+                    x.registering.is_some(),
+                    x.keys.is_writer(),
+                    x.keys.epochs[0].is_some(),
+                    c.session.outstanding()
+                ));
+            }
+        }
+        v
+    }
+
     /// Diagnostics since the last call (tests).
     pub fn take_diagnostics(&mut self) -> Vec<String> {
         std::mem::take(&mut self.diagnostics)

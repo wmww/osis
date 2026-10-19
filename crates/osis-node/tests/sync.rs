@@ -4,6 +4,7 @@
 mod net;
 use net::*;
 use osis_core::{Ak, Role, Value};
+use osis_schema::AspectKey;
 use osis_node::sync::Event;
 
 pub fn trace(net: &mut Net, nodes: &[usize]) {
@@ -147,4 +148,62 @@ fn restart_resumes_spec_sync_6() {
     net.write(a, t, "two");
     net.run();
     assert_eq!(net.read(b, t), Some(s("two")));
+}
+
+// spec/sync.md §5-§7 (headline): two devices that are never online together converge through
+// one blind server, across a rotation, a compaction and an expiring write.
+#[test]
+fn briefly_online_devices_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.set_online(b, false);
+    let t = net.item(a, g, g, "a1");
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &BRIEF, &s("soon gone")).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.set_online(a, false);
+
+    net.set_online(b, true);
+    net.advance(10_000);
+    trace(&mut net, &[b]);
+    assert_eq!(net.read(b, t), Some(s("a1")));
+    net.write(b, t, "b1");
+    net.write(b, t, "b2");
+    net.run();
+    net.set_online(b, false);
+
+    // A: a rotation (its own, no departure) and a compaction while B is away
+    net.set_online(a, true);
+    net.advance(10_000);
+    assert_eq!(net.read(a, t), Some(s("b2")));
+    let (at, bt) = (net.tid(a), net.tid(b));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    rotation(e, g, &rs, 61, false);
+    let acts = net.sync(a).compact(&t, &Ak::new(REG.ak()).unwrap()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.write(a, t, "a2");
+    net.run();
+    trace(&mut net, &[a]);
+    net.set_online(a, false);
+
+    // an hour later the expiring write is gone everywhere; B catches up alone
+    net.clock.advance(3_600_000);
+    net.set_online(b, true);
+    net.advance(10_000);
+    trace(&mut net, &[b]);
+    assert_eq!(net.read(b, t), Some(s("a2")));
+    let brief = Ak::new(BRIEF.ak()).unwrap();
+    assert_eq!(net.engine(b).get(&t, &brief).unwrap(), None);
+    net.write(b, t, "b3");
+    net.run();
+    net.set_online(b, false);
+    net.set_online(a, true);
+    net.advance(10_000);
+    assert_eq!(net.read(a, t), Some(s("b3")));
 }
