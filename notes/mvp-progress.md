@@ -38,7 +38,7 @@ Wave 3 (transport, large-values, node-core, server running); wave 2 integration 
 | node-core | review fixes | reviewer: 3 high (un-merge loses writes, content rules on received commits, expired missing deltas) + sim divergence; agent fixing; established epochs after the keys follow-up |
 | transport | merged, reviewed | plan stays until server and node run over both transports |
 | large-values | library parts merged, reviewed | node integration in wave 4; issues/large-value-seek.md |
-| server | merged, reviewed; transport wiring running | plan stays until node-sync and sim run through it |
+| server | merged, reviewed; serves over QUIC (osis_transport::link) | plan stays until node-sync and sim run through it |
 | proto | review | review fixes done (label coupling resolved) |
 | keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
