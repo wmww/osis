@@ -105,14 +105,14 @@ fn folders() {
 
 // spec/sync.md §2: label replacement.
 #[test]
-#[ignore = "issues/node-sync-gaps.md"]
+#[ignore = "tier 2"]
 fn label_replacement() {
     ok("label_replacement", 1);
 }
 
 // spec/sync.md §2: label replacement with a member offline; old label cleaned up.
 #[test]
-#[ignore = "issues/node-sync-gaps.md"]
+#[ignore = "tier 2"]
 fn label_replacement_offline() {
     ok("label_replacement_offline", 1);
 }

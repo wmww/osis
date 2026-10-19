@@ -86,8 +86,8 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
-        let mut bodies = self.engine.label_bodies(&g)?;
-        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
+        let bodies = self.bodies_under(&g, &l)?;
+        let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
         let snaps = self.snapshots_at(&l);
         let unsettled = self.unsettled(&l, &g)?;
@@ -122,7 +122,7 @@ impl SyncEngine {
                 }
             }
         }
-        if read_ok && (keys.is_writer() || keys.deposit.is_some()) {
+        if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
             self.certificates(&g, l)?;
             self.heartbeat(&g, l, &keys, conn)?;
         }
@@ -191,8 +191,7 @@ impl SyncEngine {
         let Some(lc) = self.conns.values().filter(|c| c.server == *server).find_map(|c| c.labels.get(l).filter(|x| x.phase == super::Phase::Open)) else { return Ok(None) };
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
-        let mut bodies = self.engine.label_bodies(&g)?;
-        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
+        let bodies = self.bodies_under(&g, l)?;
         let snaps = self.snapshots_at(l);
         let unsettled = self.unsettled(l, &g)?;
         v.unsettled = unsettled.iter().cloned().collect();
@@ -213,6 +212,21 @@ impl SyncEngine {
             }
         }
         Ok(Some(v))
+    }
+
+    /// The bodies label `l` of `g` should hold: the closure's, never inbox-only ones; under a
+    /// replaced label membership-class ones only (spec/sync.md §2: its content entries go).
+    fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
+        let mut bodies = self.engine.label_bodies(g)?;
+        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
+        if self.is_replaced(g, l) {
+            bodies.retain(|b| b.membership);
+        }
+        Ok(bodies)
+    }
+
+    fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
+        self.engine.group_labels(g).unwrap_or_default().iter().any(|x| x.id == *l && x.replaced)
     }
 
     /// Aspects this node cannot judge coverage of yet: those of pending commits; every aspect

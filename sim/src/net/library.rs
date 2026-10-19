@@ -532,7 +532,6 @@ pub fn folders(seed: u64) -> Res<Report> {
 
 /// Label replacement (spec/sync.md §2): the admin replaces a group's label; members follow the
 /// new label and converge. (Old-label cleanup is checked by `label_replacement_offline`.)
-/// Fails some seeds (0): issues/node-sync-gaps.md (replaced labels).
 pub fn label_replacement(seed: u64) -> Res<Report> {
     replacement("label_replacement", seed, false)
 }
@@ -574,11 +573,22 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
         return Err(sim.fail(format!("the member does not follow the replacement label: {bl:?}")));
     }
     if offline {
-        // the old label keeps membership commits only
-        let left = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default().len()).unwrap_or(0);
-        let content = sim.known.iter().filter(|((l, b), (c, _))| *l == old && sim.hub(s).is_some_and(|h| h.store().live_ids(l).unwrap_or_default().contains(b)) && sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))).is_some_and(|h| !h.kind.is_membership())).count();
+        // the old label keeps membership-class commits and certificates (chain certificates,
+        // node cards, heartbeats: they verify what stays, spec/permissions.md §4) only
+        let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
+        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen" | "/keys");
+        let mut content = 0;
+        for ((l, b), (c, parts)) in &sim.known {
+            if *l != old || !live.contains(b) {
+                continue;
+            }
+            let Some(h) = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))) else { continue };
+            if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
+                content += 1;
+            }
+        }
         if content > 0 {
-            return Err(sim.fail(format!("the replaced label still holds {content} content entries ({left} live)")));
+            return Err(sim.fail(format!("the replaced label still holds {content} content entries ({} live)", live.len())));
         }
     }
     sim.finish()
