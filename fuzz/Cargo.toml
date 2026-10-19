@@ -16,6 +16,8 @@ members = ["."]
 libfuzzer-sys = "0.4"
 osis-core = { path = "../crates/osis-core" }
 osis-schema = { path = "../crates/osis-schema" }
+osis-crypto = { path = "../crates/osis-crypto" }
+osis-label = { path = "../crates/osis-label" }
 
 [profile.release]
 debug = 1
@@ -51,6 +53,13 @@ bench = false
 [[bin]]
 name = "schema_dsl"
 path = "fuzz_targets/schema_dsl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blob_prefix"
+path = "fuzz_targets/blob_prefix.rs"
 test = false
 doc = false
 bench = false

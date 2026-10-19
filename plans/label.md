@@ -19,7 +19,7 @@ Spec: spec/sync.md §1–§5, §9 (envelope), §11; spec/crypto.md §5–§7; sp
 - Bundle (§11): streaming writer/reader for registration paths, entries with wraps and stamps, blobs, deletions; the reader yields the same event stream a peer's log would (osis-proto consumes it).
 
 ## Steps
-- [ ] Prefix/framing/blob ID/open; wraps; MAX_BLOB; fuzz target for prefix and bundle parsers.
+- [x] Prefix/framing/blob ID/open; wraps; MAX_BLOB; fuzz target for prefix and bundle parsers (bundle target with step 4); chunk trees and blob-backed pages.
 - [ ] Labels, role keys, steps, step IDs, path validation; claim sets and claim keys both sides; entry boxes.
 - [ ] Open/register/stamp signatures; token presentation/verification; inbox blob; signal envelope.
 - [ ] `/label` types, Address, link and card formats; bundle writer/reader.
