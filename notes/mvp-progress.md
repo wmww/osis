@@ -56,7 +56,7 @@ Wave 5 (apps-e2e, sim phase C, sync bug-fix round running); wave 6 next.
 | cli | merged, reviewed; steps 4–5 done with apps-e2e | plan deleted (notes/cli.md); delivering commands flush before exit |
 | api (second half) | merged, reviewed | FC-3 (link flags) frozen; issues/api-deferred.md; plan step 5 (iterate with apps): frictions in issues/api-app-frictions.md |
 | flows/node-core follow-up | merged | grant history boxes; /created wait by entitlement |
-| apps-e2e | done on branch (review) | plan deleted, notes/apps.md; examples pass tier 1 in osis-sim `World`, localhost CLI e2e passes (tier 2); issues sync-deposit-resend, chat-costs, api-app-frictions; fix: `wait_synced` waits for inbox deliveries |
+| apps-e2e | merged at 52b4834 | plan deleted, notes/apps.md; examples pass tier 1 in osis-sim `World`, localhost CLI e2e passes (tier 2); issues sync-deposit-resend, chat-costs, api-app-frictions; fix: `wait_synced` waits for inbox deliveries |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
