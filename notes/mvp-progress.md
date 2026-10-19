@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
+Wave 2 (all of wave 1 merged).
 
 ## Plans
 | plan | state | notes |
@@ -19,7 +19,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | issues/deny-duplicates.md for the integration pass |
 | crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
-| perm | running (opus, worktree) | |
+| perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
 | store | merged, reviewed | issues/store-concurrent-readers.md; no decoded-page cache yet |
@@ -27,7 +27,7 @@ Wave 2 (perm and store from wave 1 still finishing; keys waits for perm).
 | commit | running (opus, worktree) | |
 | label | running (opus, worktree) | |
 | proto | running (opus, worktree) | |
-| keys | not started | after perm merges |
+| keys | running (opus, worktree) | |
 | node-core, server, transport, large-values | not started | wave 3 |
 | sim | not started | phase A after node-core layout; B after node-sync; C wave 5 |
 | node-sync, membership-flows, api (first half) | not started | wave 4 |
