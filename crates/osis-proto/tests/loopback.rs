@@ -407,6 +407,28 @@ fn stale_sync_key_gets_one_signed_step() {
     assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: vec![child], more: false }]);
 }
 
+// spec/sync.md §5 (member peer): a peer the store authenticated as a node of a current reader
+// opens the label whatever its proof; a superseded key still gets the child; others are refused.
+#[test]
+fn member_open_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let mut l = Label::new();
+    net.setup(&l);
+    let stranger = Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(98))) };
+    let ev = net.run(0, stranger.clone());
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
+    net.store.member_labels.insert(l.id);
+    let ev = net.run(0, stranger);
+    assert!(matches!(&ev[..], [ClientEvent::Opened { head, entry_box: None, .. }] if *head == l.steps[0]), "{ev:?}");
+    let ev = net.run(0, sync(l.id, None, vec![], vec![]));
+    assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
+    let old = l.head_keys().clone();
+    let (child, cs) = l.rotate(20);
+    net.run(0, Command::Register { label: l.id, step: child.clone(), claim_set: Some(cs) });
+    let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(old.sync.clone()) });
+    assert!(matches!(&ev[..], [ClientEvent::Step { step, .. }] if *step == child), "{ev:?}");
+}
+
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
 // spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]

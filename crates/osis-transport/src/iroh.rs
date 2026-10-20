@@ -311,6 +311,26 @@ impl RecvStream for IrohRecv {
     }
 }
 
+/// A self-hosted `iroh-relay` on localhost for tier-2 tests (feature `relay`): plain HTTP, no
+/// QUIC address discovery; shut down when dropped. `url` is the relay URL for `/reach` and
+/// `Iroh::with_relays`.
+#[cfg(feature = "relay")]
+pub struct TestRelay {
+    _server: iroh_relay::server::Server,
+    pub url: String,
+}
+
+#[cfg(feature = "relay")]
+impl TestRelay {
+    pub async fn spawn() -> Result<TestRelay, Error> {
+        let mut cfg = iroh_relay::server::ServerConfig::default();
+        cfg.relay = Some(iroh_relay::server::RelayConfig::new((std::net::Ipv4Addr::LOCALHOST, 0)));
+        let server = iroh_relay::server::Server::spawn(cfg).await.map_err(io)?;
+        let addr = server.http_addr().ok_or_else(|| Error::Io("relay without an http address".into()))?;
+        Ok(TestRelay { url: format!("http://{addr}"), _server: server })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Tier 2 (localhost sockets, `--ignored`). spec/sync.md §10.
@@ -374,6 +394,50 @@ mod tests {
             assert!(t.dial(&bad).await.is_err());
             c.close();
             c2.close();
+        });
+    }
+
+    // spec/sync.md §10: a peer registered at a self-hosted relay is dialed by key through the
+    // relay alone (the URL lists no direct address) and authenticated with that key.
+    #[cfg(feature = "relay")]
+    #[test]
+    #[ignore]
+    fn through_relay_spec_sync_10() {
+        rt().block_on(async {
+            let relay = TestRelay::spawn().await.unwrap();
+            let t = Iroh::with_relays(vec![relay.url.clone()]);
+            let secret = StaticSecret::from_bytes([10; 32]);
+            let mut l = t.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret }).await.unwrap();
+            let key = l.address().key;
+            let srv = tokio::spawn(async move {
+                let c = l.accept().await.unwrap();
+                let (mut s, mut r) = c.accept_stream().await.unwrap();
+                let mut buf = [0u8; 2];
+                let mut got = 0;
+                while got < 2 {
+                    got += r.read(&mut buf[got..]).await.unwrap();
+                }
+                s.write_all(&buf).await.unwrap();
+                s.finish().await.unwrap();
+                l
+            });
+            let addr = Address { url: crate::peer_url(std::slice::from_ref(&relay.url)), key };
+            let c = Iroh::new().dial(&addr).await.unwrap();
+            assert_eq!(c.peer_key(), key);
+            let (mut s, mut r) = c.open_stream().await.unwrap();
+            s.write_all(b"hi").await.unwrap();
+            let mut out = Vec::new();
+            let mut buf = [0u8; 8];
+            loop {
+                let n = r.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                out.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(out, b"hi");
+            let _l = srv.await.unwrap();
+            c.close();
         });
     }
 

@@ -414,7 +414,13 @@ impl ServerConnection {
                 None => Message::Error { id, code: Code::UNKNOWN_LABEL },
             },
             OpenOutcome::Child(step) => Message::Step { id, step: step.clone() },
-            OpenOutcome::Refused => Message::Error { id, code: Code::REFUSED },
+            OpenOutcome::Refused => match path.last() {
+                Some(head) if store.member_open(&label)? => {
+                    self.opened.insert(label);
+                    Message::Opened { id, head: head.clone(), entry_box: None }
+                }
+                _ => Message::Error { id, code: Code::REFUSED },
+            },
         })
     }
 
