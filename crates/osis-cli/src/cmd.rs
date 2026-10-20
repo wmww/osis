@@ -561,14 +561,8 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
         None if ctx.tty => {
             let cur = db.get(t, key.clone())?.ok_or_else(|| exit(3, "absent: nothing to edit (use set)"))?;
             let shown = text::print(&cur, if ctx.g.raw { None } else { ty });
-            let f = edit_file(&format!("{shown}\n"))?;
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-            let st = std::process::Command::new(&editor).arg(&f).status().map_err(|e| anyhow!("{editor}: {e}"))?;
-            let edited = std::fs::read_to_string(&f)?;
-            let _ = std::fs::remove_file(&f);
-            if !st.success() {
-                return Err(anyhow!("{editor} failed"));
-            }
+            let edited = edit_in(&edit_dir(), &editor, &format!("{shown}\n"))?;
             let al = |w: &str| ctx.alias(w);
             let new = text::parse(edited.trim(), ty, &al).map_err(|e| usage(format!("bad value: {e}")))?;
             (cur, new)
@@ -580,19 +574,41 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     ctx.emit(&commit.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(commit.map(J::str)))]))
 }
 
+/// Where `edit`'s temp file goes: the per-user runtime directory (owner-only, usually in
+/// memory) when there is one, else the temp directory.
+fn edit_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
+/// Runs `editor` on a temp file holding `text`; returns what it saved. The file (plaintext of
+/// the value) is removed whatever happens.
+fn edit_in(dir: &std::path::Path, editor: &str, text: &str) -> anyhow::Result<String> {
+    let f = edit_file(dir, text)?;
+    let st = std::process::Command::new(editor).arg(&f).status();
+    let edited = std::fs::read_to_string(&f);
+    let _ = std::fs::remove_file(&f);
+    if !st.map_err(|e| anyhow!("{editor}: {e}"))?.success() {
+        return Err(anyhow!("{editor} failed"));
+    }
+    Ok(edited?)
+}
+
 /// A new temp file (`create_new`, random name, owner-only) holding `text`.
-fn edit_file(text: &str) -> anyhow::Result<std::path::PathBuf> {
+fn edit_file(dir: &std::path::Path, text: &str) -> anyhow::Result<std::path::PathBuf> {
     use std::hash::{BuildHasher, Hasher};
     for _ in 0..16 {
         let r = std::collections::hash_map::RandomState::new().build_hasher().finish();
-        let f = std::env::temp_dir().join(format!("osis-edit-{r:016x}.txt"));
+        let f = dir.join(format!("osis-edit-{r:016x}.txt"));
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
         match o.open(&f) {
             Ok(mut h) => {
-                std::io::Write::write_all(&mut h, text.as_bytes())?;
+                if let Err(e) = std::io::Write::write_all(&mut h, text.as_bytes()) {
+                    let _ = std::fs::remove_file(&f);
+                    return Err(e.into());
+                }
                 return Ok(f);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1076,14 +1092,29 @@ mod tests {
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.
     #[test]
     fn edit_file_is_new_and_private_notes_cli() {
-        let a = super::edit_file("x").unwrap();
-        let b = super::edit_file("y").unwrap();
+        let a = super::edit_file(&std::env::temp_dir(), "x").unwrap();
+        let b = super::edit_file(&std::env::temp_dir(), "y").unwrap();
         assert_ne!(a, b);
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "x");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&a).unwrap().permissions()) & 0o077, 0);
         let _ = std::fs::remove_file(a);
         let _ = std::fs::remove_file(b);
+    }
+
+    // notes/cli.md Design: `edit`'s temp file holds the value's plaintext; it is removed
+    // whether the editor succeeds, fails or cannot start.
+    #[cfg(unix)]
+    #[test]
+    fn edit_file_removed_notes_cli() {
+        let d = std::env::temp_dir().join(format!("osis-cli-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(super::edit_in(&d, "true", "v").unwrap(), "v");
+        assert!(super::edit_in(&d, "false", "v").is_err());
+        assert!(super::edit_in(&d, "/nonexistent/editor", "v").is_err());
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "temp file left behind");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     // notes/cli.md Design: `--timeout 0` (no deadline) and huge timeouts do not overflow.
