@@ -11,3 +11,6 @@ Entry form: `## FC-<n>: <title>`, then the files changed (paths as in MANIFEST) 
 
 ## FC-3: link flags item
 - link/link.vec: `Link` takes an optional eighth item `flags` (bit 0: single use, present only with a bit set; spec/wire.md §10, spec/permissions.md §9), so a redeemer knows to remove L in its redemption; new cases for a single-use link and for refused flags.
+
+## FC-4: tree-node lengths
+- chunker/tree.vec, keys/seed.vec: a tree node carries the plaintext length under each link (`[level, [LINK+], [len+]]`, spec/wire.md §6) and its content hash covers them (`le64(level) || for each child: hash || le64(len)`, spec/crypto.md §6), so readers seek without fetching what lies before and a content hash pins the lengths; the root hashes of `tree.vec` and the `tree-ab` case of `seed.vec` (which gains `tree-lens`) change.

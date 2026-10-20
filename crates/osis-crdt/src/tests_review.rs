@@ -97,12 +97,12 @@ fn bag_redo_spec_4_6() {
     let mut w = Writer::new(ts(10 << 16), node.clone(), 1);
     let s0 = create(&mut w, &view, &Value::Int(5)).unwrap();
     let mut wu = Writer::new(ts(20 << 16), node.clone(), 2);
-    let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 } }, &s0, &Fragment::default(), &view).unwrap().unwrap();
+    let u1 = undo(&mut wu, &Undone { delta: &s0, source: &node, range: CounterRange { lo: 1, hi: 2 }, restored: &|_| false }, &s0, &Fragment::default(), &view).unwrap().unwrap();
     let mut s1 = s0.clone();
     s1.join(u1.clone());
     assert_eq!(s1.read(), Some(Value::Int(0)));
     let mut wr = Writer::new(ts(30 << 16), node.clone(), 3);
-    let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range() }, &s1, &s0, &view).unwrap().unwrap();
+    let redo = undo(&mut wr, &Undone { delta: &u1, source: &node, range: wu.range(), restored: &|_| false }, &s1, &s0, &view).unwrap().unwrap();
     let mut s2 = s1.clone();
     s2.join(redo);
     assert_eq!(s2.read(), Some(Value::Int(5)));
@@ -164,4 +164,71 @@ fn paging_limits_accept_valid_spec_8() {
     let snap = Snapshot { nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx(), Some(&mut pages)).unwrap();
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, s);
+}
+
+/// The stamp of a register fragment's write.
+fn written(f: &Fragment) -> Stamp {
+    match f {
+        Fragment::Register(r) => r.write.as_ref().map(|w| w.stamp.clone()).unwrap(),
+        _ => panic!("register"),
+    }
+}
+
+/// §4.6: undo steps back through repeated writes of one register: once the second write is
+/// undone, the winner is that undo's restoring write of the first value, so undoing the first
+/// writes the value before it; redo steps forward again. Another writer's value in between
+/// blocks the chain (the undo restored that value, not the undone one).
+#[test]
+fn register_undo_chain_spec_4_6() {
+    let view = TyView(Ty::Register);
+    let me = Source::node(Tid::from_bytes([1; 15]));
+    let write = |t: u64, n: u8, lo: u64, v: i64| {
+        let mut w = Writer::new(ts(t << 16), Source::node(Tid::from_bytes([n; 15])), lo);
+        let f = create(&mut w, &view, &Value::Int(v)).unwrap();
+        (f, w.range())
+    };
+    // undo of `d` (written in `range` by `src`) against `cur`, with the pre-commit `before`;
+    // `undos` are the stamps written by undo commits in effect
+    let undo_of = |t: u64, lo: u64, d: &Fragment, src: &Source, range: CounterRange, cur: &Fragment, before: &Fragment, undos: &[Stamp]| {
+        let restored = |s: &Stamp| undos.contains(s);
+        let mut w = Writer::new(ts(t << 16), me.clone(), lo);
+        undo(&mut w, &Undone { delta: d, source: src, range, restored: &restored }, cur, before, &view).unwrap()
+    };
+    let (c0, _) = write(5, 1, 1, 0);
+    let (c1, r1) = write(10, 1, 2, 1);
+    let (c2, r2) = write(20, 1, 3, 2);
+    let mut s = c0.clone();
+    let s0 = s.clone();
+    s.join(c1.clone());
+    let s1 = s.clone();
+    s.join(c2.clone());
+    let s2 = s.clone();
+    let u2 = undo_of(30, 4, &c2, &me, r2, &s, &s1, &[]).unwrap();
+    s.join(u2.clone());
+    assert_eq!(s.read(), Some(Value::Int(1)));
+    let s3 = s.clone();
+    // today's rule alone: the first write no longer wins, nothing to write
+    assert_eq!(undo_of(40, 5, &c1, &me, r1, &s, &s0, &[]), None);
+    let u1 = undo_of(40, 5, &c1, &me, r1, &s, &s0, &[written(&u2)]).unwrap();
+    s.join(u1.clone());
+    assert_eq!(s.read(), Some(Value::Int(0)));
+    // redo: undo of the undo of the first write (it wins), then of the second's (chained)
+    let ru1 = undo_of(50, 6, &u1, &me, CounterRange { lo: 5, hi: 6 }, &s, &s3, &[written(&u2), written(&u1)]).unwrap();
+    s.join(ru1.clone());
+    assert_eq!(s.read(), Some(Value::Int(1)));
+    let ru2 = undo_of(60, 7, &u2, &me, CounterRange { lo: 4, hi: 5 }, &s, &s2, &[written(&ru1)]).unwrap();
+    s.join(ru2);
+    assert_eq!(s.read(), Some(Value::Int(2)));
+    // another writer's 5 between the two writes: undoing the second restores 5, and the first
+    // one's undo then writes nothing
+    let (b, _) = write(15, 2, 1, 5);
+    let mut s = c0;
+    s.join(c1.clone());
+    s.join(b);
+    let sb = s.clone();
+    s.join(c2.clone());
+    let u2 = undo_of(30, 4, &c2, &me, r2, &s, &sb, &[]).unwrap();
+    s.join(u2.clone());
+    assert_eq!(s.read(), Some(Value::Int(5)));
+    assert_eq!(undo_of(40, 5, &c1, &me, r1, &s, &s0, &[written(&u2)]), None);
 }

@@ -188,3 +188,36 @@ fn paged_struct_field_converges() {
     let k = s("k5");
     assert_eq!(lp.peers[1].engine.get_at(&t, &ak("/t/book"), &[PathSeg::Field(0), PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
 }
+
+// spec/crdt.md §8 (the join of a state's pages is the state), notes/local-store.md Units: a
+// received delete arrives as one range record spanning many pages of a paged text; every page
+// it covers is rewritten, so the state survives a restart.
+#[test]
+#[ignore = "tier 2: ~20 s"]
+fn range_delta_rewrites_its_pages_spec_crdt_8() {
+    let mut lp = net(2, 14);
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let text: String = (0..70_000u32).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s(&text)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 5_000, len: 50_000 } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let want: String = text.chars().take(5_000).chain(text.chars().skip(55_000)).collect();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
+    // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
+    let carried = |f: Option<osis_crdt::Fragment>| {
+        let cx = osis_crdt::DeltaCtx { ts: osis_core::Ts::from_u64(1 << 40).unwrap(), own: osis_crdt::Source::node(b), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
+        let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.unwrap(), frontiers: Default::default() };
+        osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
+    };
+    let before = carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap());
+    lp.peers[0].restart(140).unwrap();
+    assert!(carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap()) == before, "state after restart");
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
+}

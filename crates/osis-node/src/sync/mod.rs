@@ -222,6 +222,9 @@ pub struct LabelStatus {
     pub last_sync: Option<u64>,
 }
 
+/// A body: its commit and parts `(ai, di)`.
+type BodyKey = (osis_core::CommitId, Vec<(usize, usize)>);
+
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
@@ -252,6 +255,12 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
+    /// fetches those its server holds.
+    pub(crate) tree_wants: BTreeSet<osis_core::BlobId>,
+    /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
+    /// never changes.
+    pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_core::BlobId>>,
     /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
     /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
     pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
@@ -267,6 +276,12 @@ pub struct SyncEngine {
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
     pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    /// Commit blobs whose every delta was checked against its header hash (`true`) or found
+    /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
+    /// uploads or justify deleting another entry (`SyncEngine::genuine`).
+    pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
+    /// When a certificate left to its author (`SETTLE_MS`) is due again (raw ms).
+    pub(crate) settle_at: Option<u64>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -333,6 +348,8 @@ impl SyncEngine {
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
+            tree_wants: BTreeSet::new(),
+            body_links: BTreeMap::new(),
             sent: BTreeMap::new(),
             timed_sent: BTreeSet::new(),
             deleting: BTreeMap::new(),
@@ -341,6 +358,8 @@ impl SyncEngine {
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
+            genuine: BTreeMap::new(),
+            settle_at: None,
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
@@ -897,6 +916,11 @@ impl SyncEngine {
     /// Session pings, periodic re-syncs, heartbeats and retries.
     fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
+        // certificates left to their author are due: every label judges again
+        if self.settle_at.is_some_and(|t| t <= now) {
+            self.settle_at = None;
+            self.mark_dirty();
+        }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
             if let Some(c) = self.conns.get_mut(&conn) {
@@ -958,6 +982,9 @@ impl SyncEngine {
         }
         for (_, x) in self.retry.values() {
             at(*x);
+        }
+        if let Some(x) = self.settle_at {
+            at(x);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
         for o in self.outbox.iter().filter(|o| o.after > now) {

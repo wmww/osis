@@ -189,7 +189,7 @@ impl Engine {
 
     /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
-    fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub(crate) fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "/secrets" | "/keys"))

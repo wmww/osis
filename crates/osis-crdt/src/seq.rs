@@ -9,7 +9,8 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
-use crate::stamp::{Dot, Source, Stamp, max_opt};
+use crate::seq_span::{chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
+use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
 use std::collections::BTreeMap;
 
@@ -38,15 +39,25 @@ pub struct SeqElem {
     pub(crate) pos: Vec<(Stamp, Anchor)>,
     /// Text: the deleted flag (LWW bool). List: the element reset, always `true`.
     pub(crate) deleted: Option<(Stamp, bool)>,
+    /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
+    /// the first element's.
+    pub(crate) span: u64,
 }
 
-/// A list or text fragment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A list or text fragment. Equality is per element, whatever the split into range records.
+#[derive(Clone, Debug)]
 pub struct Seq {
     pub(crate) text: bool,
     pub(crate) meta: Meta,
     pub(crate) elems: BTreeMap<Dot, SeqElem>,
 }
+
+impl PartialEq for Seq {
+    fn eq(&self, o: &Seq) -> bool {
+        self.text == o.text && self.meta == o.meta && elems_eq(&self.elems, &o.elems)
+    }
+}
+impl Eq for Seq {}
 
 impl Seq {
     pub fn empty(text: bool) -> Seq {
@@ -63,7 +74,7 @@ impl Seq {
 impl SeqElem {
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
-        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None }
+        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, span: 1 }
     }
     /// Whether the creation counts toward presence: value-less creations do not (§4.3).
     fn creation_counts(&self) -> bool {
@@ -231,23 +242,78 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     content_rule(se, text);
 }
 
-/// Joins `d`'s element records into `s` and prunes what lands against `e`.
+/// Joins `d`'s element records into `s` and prunes what lands against `e`. A record is cut
+/// where the state's records start (ranges of the state are first split at its bounds), so each
+/// piece meets one state record of its own span, or none.
 pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    for (dot, de) in d.elems {
+        let span = de.span.max(1);
+        let last = nth(&dot, span - 1);
+        split_at(&mut s.elems, &dot);
+        split_at(&mut s.elems, &nth(&dot, span));
+        // (offset, length, a state record starts there)
+        let mut segs: Vec<(u64, u64, bool)> = Vec::new();
+        let mut cur = 0u64;
+        for (k, ke) in s.elems.range(&dot..=&last) {
+            if k.src == dot.src {
+                let off = k.ctr - dot.ctr;
+                if off > cur {
+                    segs.push((cur, off - cur, false));
+                }
+                segs.push((off, ke.span, true));
+                cur = off.saturating_add(ke.span);
+            } else if let SourceKind::Derived(u) = k.src.kind() {
+                // a `Derived(S, c)` record sits between `(S, c)` and `(S, c + 1)`
+                let cut = u.ctr.saturating_sub(dot.ctr).saturating_add(1).min(span);
+                if cut > cur {
+                    segs.push((cur, cut - cur, false));
+                    cur = cut;
+                }
+            }
+        }
+        if cur < span {
+            segs.push((cur, span - cur, false));
+        }
+        if let [(0, n, existing)] = segs.as_slice()
+            && *n == span
+        {
+            join_record(s, dot, de, *existing, e, ch);
+        } else {
+            for (off, n, existing) in segs {
+                let (pd, pe) = piece(&dot, &de, off, n);
+                join_record(s, pd, pe, existing, e, ch);
+            }
+        }
+    }
+}
+
+/// Joins record `de` into the state record at `dot` of the same span (`existing`) or as a new
+/// record, first cutting a creation chain that straddles `e`.
+fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
-    for (dot, mut de) in d.elems {
-        match s.elems.get_mut(&dot) {
-            Some(se) => {
-                merge_elem(&dot, se, de, text, e, ch);
-                if !se.keeps(&dot) {
-                    s.elems.remove(&dot);
-                }
+    let cut = chain_cut(&dot, &de, e).or_else(|| if existing { s.elems.get(&dot).and_then(|se| chain_cut(&dot, se, e)) } else { None });
+    if let Some(c) = cut {
+        if existing {
+            split_at(&mut s.elems, &nth(&dot, c));
+        }
+        let (a, ea) = piece(&dot, &de, 0, c);
+        let (b, eb) = piece(&dot, &de, c, de.span - c);
+        join_record(s, a, ea, existing, e, ch);
+        join_record(s, b, eb, existing, e, ch);
+        return;
+    }
+    if existing {
+        if let Some(se) = s.elems.get_mut(&dot) {
+            merge_elem(&dot, se, de, text, e, ch);
+            if !se.keeps(&dot) {
+                s.elems.remove(&dot);
             }
-            None => {
-                if prune_elem(&dot, &mut de, text, e, ch) {
-                    ch.touch();
-                    s.elems.insert(dot, de);
-                }
-            }
+        }
+    } else {
+        let mut de = de;
+        if prune_elem(&dot, &mut de, text, e, ch) {
+            ch.touch();
+            s.elems.insert(dot, de);
         }
     }
 }
@@ -255,6 +321,7 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
 /// Prunes every element record under effective reset `e` (records are never removed, §4.2).
 pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
+    cut_chains(&mut s.elems, e);
     s.elems.retain(|d, el| prune_elem(d, el, text, e, ch));
 }
 
@@ -263,12 +330,13 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
     let mut m: Option<Stamp> = None;
     for (d, e) in &s.elems {
         let creation = !valued || e.creation_counts();
+        // a range's greatest creation is its last element's
         if creation {
-            m = max_opt(m, e.created.as_ref().map(|c| c.0.clone()));
+            m = max_opt(m, e.created.as_ref().map(|c| last_of(d, e, &c.0)));
         }
         // the creation write sits in `pos` too
         for p in e.pos.iter().filter(|p| creation || p.0.dot != *d) {
-            m = max_opt(m, Some(p.0.clone()));
+            m = max_opt(m, Some(last_of(d, e, &p.0)));
         }
         m = max_opt(m, e.reset());
         if let SeqContent::Frag(f) = &e.content {
@@ -283,15 +351,11 @@ pub(crate) fn has_records(s: &Seq) -> bool {
     !s.elems.is_empty()
 }
 
-/// Placed records in order (§6).
-fn placed(s: &Seq) -> Vec<(&Dot, &SeqElem)> {
-    let p = crate::linearize::place_idx(&s.elems);
-    p.order.iter().filter_map(|i| Some((*p.dots.get(*i)?, *p.elems.get(*i)?))).collect()
-}
-
-/// Visible elements in order: not deleted, with content that reads (§5.7 Read).
+/// Visible elements in order: not deleted, with content that reads (§5.7 Read). Never inside a
+/// range record (ranges have no content).
 pub(crate) fn visible(s: &Seq) -> Vec<Dot> {
-    placed(s).into_iter().filter(|(_, e)| is_visible(e, s.text)).map(|(d, _)| d.clone()).collect()
+    let p = crate::linearize::place_idx(&s.elems);
+    p.order.iter().filter_map(|i| p.nodes.get(*i)).filter(|n| is_visible(&n.elem, s.text)).map(|n| n.dot.clone().into_owned()).collect()
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
@@ -304,7 +368,8 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
 pub(crate) fn read(s: &Seq) -> Option<Value> {
-    let items = placed(s).into_iter().map(|(_, e)| e);
+    let p = crate::linearize::place_idx(&s.elems);
+    let items = p.order.iter().filter_map(|i| p.nodes.get(*i)).map(|n| &*n.elem);
     Some(if s.text {
         Value::Str(items.filter(|e| !e.flag()).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
     } else {
@@ -364,7 +429,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev)], deleted: None });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev)], deleted: None, span: 1 });
         prev = Anchor::Dot(d);
     }
     out

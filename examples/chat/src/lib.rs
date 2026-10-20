@@ -191,24 +191,27 @@ pub fn on_typing(db: &Osis, chat: Tid, f: impl Fn(Tid, bool) + Send + Sync + 'st
 
 /// A moderator removes a participant: its persona leaves the chat's group, then its person
 /// loses its edge (after the pre-sync; keys rotate). A participant who joined by link is a
-/// member of the link's actor, not of the chat: it is removed there, and a multi-use link is
-/// revoked too (the joiner may keep its seed, spec/permissions.md §9); the other joiners stay.
+/// member of the link's actor K (a member of the chat), not of the chat: it is removed there;
+/// while the link still works it ends with the joiner in one commit (the joiner may keep its
+/// seed, spec/permissions.md §9); the other joiners stay. Joiners of a link already revoked or
+/// used up are found through the chat's roster, not `links` (which lists working links only).
 pub async fn remove(db: &Osis, chat: Tid, persona: Tid) -> Result<()> {
     let person = owner(db, persona)?;
+    let direct = db.roster(chat).contains_key(&person);
+    let via = if direct { None } else { db.roster(chat).into_keys().find(|k| db.roster(*k).contains_key(&person)) };
+    if !direct && via.is_none() {
+        return Err(osis::Error::UnknownActor { tid: person });
+    }
     db.write_with(|w| {
         w.remove_subgroup(chat, persona)?;
         w.unplace(persona, chat)
     })?;
-    if db.roster(chat).contains_key(&person) {
-        return db.demote(chat, person, Lower::Remove, Demotion::default()).await;
+    match via {
+        None => db.demote(chat, person, Lower::Remove, Demotion::default()).await,
+        // a working multi-use link ends with the joiner, in one commit (one rotation)
+        Some(k) if db.links(chat).iter().any(|l| l.id == k && !l.single_use) => db.revoke_joiner(k, person, Demotion::default()).await,
+        Some(k) => db.demote(k, person, Lower::Remove, Demotion::default()).await,
     }
-    for l in db.links(chat) {
-        if db.roster(l.id).contains_key(&person) {
-            // a multi-use link ends with the joiner, in one commit (one rotation)
-            return if l.single_use { db.demote(l.id, person, Lower::Remove, Demotion::default()).await } else { db.revoke_joiner(l.id, person, Demotion::default()).await };
-        }
-    }
-    Err(osis::Error::UnknownActor { tid: person })
 }
 
 /// The owner of a thing, from its creation record (the person behind a persona).

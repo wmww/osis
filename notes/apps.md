@@ -14,7 +14,7 @@
 - Tier-1 time (idle 4 cores, debug): notes-app ≈ 5 s, chat ≈ 5 s, folder ≈ 3 s; persons and introductions cost ~1 s each in a debug build, so the cases over ~10 s (chat `removal_rotates`, `second_link_then_removal`; folder `invite_holder_shares_on`, `reader_writer_demotion`) are `#[ignore = "tier 2"]`.
 
 ## Findings (all filed)
-- Undo steps back once per register (issues/undo-chain-register.md): the notes undo test walks two aspects.
+- Undo stepped back once per register; fixed (spec/crdt.md §4.6 undo chains). The notes undo test still walks two aspects.
 - `wait_synced` resolved while inbox deposits were still unanswered, and those live only in memory: a link made, synced and closed could not be redeemed. Fixed: `wait_synced` waits for `SyncEngine::deliveries_pending() == 0`; the CLI runs delivering commands networked and flushes before exit. The inbox outbox is stored since; `take_direct` packages are not (issues/node-sync-gaps.md).
 - Chat costs (issues/chat-costs.md: wire-format knobs left), API frictions (issues/api-app-frictions.md).
 - The mirrored-edges folder variant needs an edge for the folder's actor, not per member (notes/permissions.md Patterns, corrected).

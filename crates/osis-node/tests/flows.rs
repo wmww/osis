@@ -768,10 +768,11 @@ fn single_use_finalization_audits_spec_perm_9() {
 
 // spec/permissions.md §9, spec/commits.md §2: revoking a joiner of a multi-use link removes it
 // and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
-// revoked one and a seed holder (L) get none; every peer applies the two-edge commit.
+// revoked one and a seed holder acting as L (bearer use) get none; every peer applies the
+// two-edge commit.
 #[test]
 fn revoke_joiner_one_rotation_spec_commits_2() {
-    let (mut lp, ps) = people(3, 519);
+    let (mut lp, ps) = people(4, 519);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -782,6 +783,9 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     spread(&mut lp);
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
     let k0 = newest_read(&lp, 0, link.k).unwrap();
+    // a stranger holding the seed reads as L (bearer use) before the revocation
+    lp.peers[3].engine.bear(&link).unwrap();
+    assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k0).is_some(), "bearer use works");
     let done = lp.peers[0].engine.revoke_joiner(&link.k, &l, &ps1, PreSync::Synced).unwrap();
     assert_eq!(done.commits.len(), 1, "one commit");
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
@@ -791,15 +795,39 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     spread(&mut lp);
     let k1 = newest_read(&lp, 0, link.k).unwrap();
     assert_ne!(k0, k1);
-    for i in 0..3 {
+    for i in 0..4 {
         let r = lp.peers[i].engine.roster(&link.k);
         assert!(!r.contains_key(&ps1) && !r.contains_key(&l) && r.contains_key(&ps2), "peer {i}: {r:?}");
     }
     assert!(lp.peers[2].engine.epochs(&link.k).unwrap().read.secret(&k1).is_some(), "the other joiner reads on");
     assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "the revoked joiner does not");
-    // nor with the seed it kept: L holds no box at the new epoch
-    let _ = lp.peers[1].engine.bear(&link);
-    assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "nor as L");
+    // and after it, bearer use of the seed gives nothing new
+    lp.peers[3].engine.bear(&link).unwrap();
+    assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the seed reads nothing new");
+}
+
+// spec/permissions.md §9, spec/commits.md §2: revoking the joiner of a used single-use link
+// (L already gone) is a plain removal of the joiner alone.
+#[test]
+fn revoke_joiner_after_single_use_spec_commits_2() {
+    let (mut lp, ps) = people(2, 521);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    spread(&mut lp);
+    lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    spread(&mut lp);
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    assert!(!lp.peers[0].engine.roster(&link.k).contains_key(&l), "single use removed L");
+    let done = lp.peers[0].engine.revoke_joiner(&link.k, &l, &ps1, PreSync::Synced).unwrap();
+    // (L's self-removal is first rotated out by the cascade; then the joiner's removal)
+    let removal = done.commits.iter().filter(|c| lp.peers[0].engine.header(c).unwrap().frontier.is_some()).count();
+    assert_eq!(removal, 1, "one removal");
+    carry(&mut lp, 0, &done);
+    spread(&mut lp);
+    for i in 0..2 {
+        assert!(!lp.peers[i].engine.roster(&link.k).contains_key(&ps1), "peer {i}");
+    }
 }
 
 // spec/permissions.md §9: bearer use reads without writing; `until` expires the link.

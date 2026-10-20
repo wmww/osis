@@ -810,6 +810,7 @@ mod tests {
         let (mut p, b, r, mut rng) = fresh(small());
         let mut d = p.begin().unwrap();
         let slots: Vec<u64> = (0..20).map(|_| p.alloc(&mut d).unwrap()).collect();
+        assert_eq!(slots.first(), Some(&1), "slot 0 is the catalog's");
         for &s in &slots {
             p.txn_write(&mut d, s, format!("unit {s}").into_bytes(), false, &mut rng).unwrap();
         }
@@ -918,16 +919,16 @@ mod tests {
     // spec/commits.md §5: dropping destroys every local copy; notes/local-store.md, Key tree: three levels of 256 cover 16M units. Same shape at arity 16:
     // a rotation rewrites exactly one node per level, whatever the store size.
     #[test]
-    #[ignore]
+    #[ignore = "tier 2"]
     fn shape_reduced_arity() {
         let cfg = StoreConfig { arity: 16, depth: 6, ..StoreConfig::default() };
         let (mut p, b, _r, mut rng) = fresh(cfg);
         let n = 200_000u64;
-        for chunk in 0..n / 10_000 {
+        for _ in 0..n / 10_000 {
             let mut d = p.begin().unwrap();
-            for i in 0..10_000 {
+            for _ in 0..10_000 {
                 let s = p.alloc(&mut d).unwrap();
-                p.txn_write(&mut d, s, (chunk * 10_000 + i).to_be_bytes().to_vec(), false, &mut rng).unwrap();
+                p.txn_write(&mut d, s, s.to_be_bytes().to_vec(), false, &mut rng).unwrap();
             }
             p.commit(d, &mut rng).unwrap();
         }

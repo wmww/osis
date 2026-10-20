@@ -445,7 +445,9 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     net.run();
     let ids = |net: &mut Net, c| -> BTreeSet<osis_core::BlobId> { net.engine(a).package(&c).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect() };
     let (first, second) = (ids(&mut net, c1), ids(&mut net, c2));
-    let live = net.engine(a).live_trees(&t).unwrap().unwrap();
+    let live = net.engine(a).live_trees(&t).unwrap();
+    assert!(live.missing.is_empty());
+    let live = live.blobs;
     let shared: BTreeSet<_> = first.intersection(&live).copied().collect();
     let unique: BTreeSet<_> = first.difference(&live).copied().collect();
     assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
@@ -470,4 +472,284 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     net.actions(b, acts);
     net.settle(100_000);
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+/// A thing in a new group `g` (admin `a`, reader or writer `b`) holding a 1 MiB blob written
+/// twice by `a`, the second version reusing most chunks of the first: the thing, the blob AK,
+/// the two commits, the second value, and the first commit's chunks the live tree shares and
+/// does not.
+#[allow(clippy::type_complexity)]
+fn reused_blob(net: &mut Net, a: usize, b: usize, role: Role, sv: usize) -> (osis_core::Tid, Ak, [osis_core::CommitId; 2], Vec<u8>, BTreeSet<osis_core::BlobId>, BTreeSet<osis_core::BlobId>) {
+    let g = net.group(a, &[(b, role)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let v1 = noise(1 << 20, 7);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let mut v2 = v1;
+    v2.splice(600_000..600_000, noise(100, 8));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
+    let c2 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let first: BTreeSet<_> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
+    let live = net.engine(a).live_trees(&t).unwrap().blobs;
+    let shared: BTreeSet<_> = first.intersection(&live).copied().collect();
+    let unique: BTreeSet<_> = first.difference(&live).copied().collect();
+    assert!(!shared.is_empty() && !unique.is_empty());
+    (t, Ak::new(BLOB.ak()).unwrap(), [c1, c2], v2, shared, unique)
+}
+
+// spec/sync.md §3 (closure: the chunk and tree-node blobs the commits reference), §2
+// (replacement): chunks the live value reuses are listed only by the version that introduced
+// them; once that version is purged and the label replaced, the writer still uploads them under
+// the new label with the live body, so a reader there reads the value.
+#[test]
+fn reused_chunks_follow_a_new_label_spec_sync_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let (t, blob_ak, [c1, _], v2, shared, _) = reused_blob(&mut net, a, b, Role::Read, sv);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let g = net.engine(a).groups_of(&t).into_iter().next().unwrap();
+    let old = net.label(a);
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.run();
+    diags(&mut net, &[a, b]);
+    let under: BTreeSet<_> = net.server_ids(sv, &new).into_iter().collect();
+    assert!(shared.is_subset(&under), "reused chunks under the new label: {} of {}", shared.intersection(&under).count(), shared.len());
+    let acts = net.sync(b).fetch_missing();
+    net.actions(b, acts);
+    net.settle(100_000);
+    assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+// spec/sync.md §3 (closure): a commit touching a thing of the group and another thing of the
+// same reader actor outside the group's closure uploads under the label only what its own
+// deltas link: never the outside thing's large value.
+#[test]
+fn body_links_stay_in_the_closure_spec_sync_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let t1 = net.item(a, g, g, "in");
+    // t2: owned by g, not in its /group
+    let mut m = Mutation::new();
+    let t2 = net.engine(a).new_thing(&mut m, g);
+    m.set(t2, &BLOB, &Value::Bytes(noise(1 << 20, 9))).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t1, &REG, &s("both")).unwrap();
+    m.set(t2, &REG, &s("both")).unwrap();
+    let both = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.run();
+    diags(&mut net, &[a, b]);
+    let outside = net.engine(a).live_trees(&t2).unwrap().blobs;
+    assert!(outside.len() > 4);
+    let l = net.label(a);
+    // the body under the label carries t2's part too (same reader actor)
+    let h = net.engine(a).header(&both).unwrap();
+    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
+    assert!(t2_part, "the commit's body under the label touches t2");
+    let under: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
+}
+
+// spec/sync.md §7 (chunk blobs still linked from a retained version are kept), spec/commits.md
+// §5: a right holder that never fetched the value's tree (lazy chunks) fetches its node blobs
+// before judging the dropped chunks, so it shreds those only the purged version reached, like
+// a node that holds the tree, and keeps the shared ones.
+#[test]
+fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    // b fetches chunk and tree-node blobs only on demand
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], inline_limit: 0, ..SyncConfig::default() });
+    let (t, blob_ak, [c1, c2], v2, shared, unique) = reused_blob(&mut net, a, b, Role::Admin, sv);
+    let root = match net.engine(a).get(&t, &blob_ak).unwrap() {
+        Some(Value::Link(l)) => l.blob,
+        v => panic!("{v:?}"),
+    };
+    assert!(net.engine(b).blob(&root).unwrap().is_none(), "b fetched no tree");
+    assert!(net.engine(b).header(&c2).is_some());
+    // the node holding the tree is away: b alone judges
+    net.set_online(a, false);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.run();
+    diags(&mut net, &[b]);
+    let l = net.label(b);
+    let server: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");
+    assert!(shared.is_subset(&server), "shared chunks stay");
+    let acts = net.sync(b).fetch_missing();
+    net.actions(b, acts);
+    net.settle(100_000);
+    assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+/// Node `n`'s certificate commit by `author` touching `ak` among `n`'s chain certificates for
+/// `g`, with the aspect indexes to carry.
+fn chain_commit(net: &mut Net, n: usize, g: osis_core::Tid, author: osis_core::Tid, ak: &str) -> (osis_core::CommitId, BTreeSet<usize>) {
+    let certs = net.engine(n).certificates(&g);
+    certs
+        .into_iter()
+        .find(|(c, _)| net.engine(n).header(c).is_some_and(|h| h.author == author && h.aspects.iter().any(|a| a.tid == author && a.ak.as_str() == ak)))
+        .expect("a chain commit")
+}
+
+/// The entries under `l` that node `n` knows holding commit `c` and present at server `sv`.
+fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<(osis_core::BlobId, EntryKind)> {
+    let live: BTreeSet<osis_core::BlobId> = net.server_ids(sv, l).into_iter().collect();
+    net.sync(n).entries(l).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).collect()
+}
+
+// spec/commits.md §4 (a delta must hash to its header entry), spec/permissions.md §4 (a copy
+// counts once opened as the same commit): a blob under the label with the header of the
+// writer's card commit but forged deltas holds nothing: the writer marks it bad and places its
+// own copy.
+#[test]
+fn forged_certificate_copy_ignored_spec_commits_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    net.set_online(w, false);
+    net.run();
+    let l = net.label(a);
+    let wt = net.tid(w);
+    let (cc, ais) = chain_commit(&mut net, w, g, wt, "/node");
+    let secret = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    let mut forged = Vec::new();
+    for b in net.engine(w).partial_bodies(&cc, &ais).unwrap() {
+        let mut blob = osis_commit::CommitBlob::decode(&b.plaintext).unwrap();
+        for p in &mut blob.parts {
+            p.delta.push(0);
+        }
+        let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
+        let s = osis_node::labeling::seal_body(&fake, &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
+        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None };
+        osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), &l, put).unwrap();
+        forged.push(s.id);
+    }
+    net.set_online(w, true);
+    net.run();
+    let entries = net.sync(w).entries(&l);
+    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad)), "the forged copies are bad input");
+    assert!(entries_of(&mut net, w, sv, &l, &cc).iter().any(|(id, _)| !forged.contains(id)), "the writer placed its own card");
+}
+
+// spec/permissions.md §4 (another node's copy counts while it is there): the reader relies on
+// the admin's copy of the admin's card; once that copy is deleted at the server, the reader
+// places its own.
+#[test]
+fn deleted_copy_placed_again_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.set_online(r, false);
+    net.run();
+    net.set_online(r, true);
+    net.run();
+    let l = net.label(a);
+    let at = net.tid(a);
+    let (cc, _) = chain_commit(&mut net, r, g, at, "/node");
+    let before = entries_of(&mut net, r, sv, &l, &cc);
+    assert_eq!(before.len(), 2, "the admin's copy only (two retention classes): {before:?}");
+    net.set_online(r, false);
+    for (id, _) in &before {
+        let now = net.now();
+        osis_proto::LabelStore::delete(net.servers[sv].hub.store_mut(), &l, id, now).unwrap();
+    }
+    net.set_online(r, true);
+    net.run();
+    // the next pass (the periodic one at the latest) sees the copy gone
+    net.advance(61_000);
+    net.run();
+    let after = entries_of(&mut net, r, sv, &l, &cc);
+    assert!(!after.is_empty() && after.iter().all(|x| !before.contains(x)), "the reader placed its own: {after:?}");
+}
+
+// spec/permissions.md §3, §4 (another node's new `/keys` is its author's to place; a node may
+// wait at most `SETTLE_MS` after receipt): the reader receives the admin's new card keys while
+// the admin is offline, holds back its copy, and places it once the wait is over.
+#[test]
+fn others_fresh_keys_left_to_author_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.run();
+    let l = net.label(a);
+    let at = net.tid(a);
+    net.set_online(a, false);
+    // a change of the admin node's `/keys` (a deposit seed field it lacked)
+    let mut m = Mutation::new();
+    let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some([0x5e; 32]))) };
+    m.op(at, &ct::KEYS, op).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.pair(a, r);
+    net.run();
+    assert_eq!(chain_commit(&mut net, r, g, at, "/keys").0, c, "the new keys are on the reader's chain");
+    assert!(entries_of(&mut net, r, sv, &l, &c).is_empty(), "left to its author for now");
+    net.advance(31_000);
+    net.run();
+    assert!(!entries_of(&mut net, r, sv, &l, &c).is_empty(), "placed once the wait is over");
+}
+
+// spec/crypto.md §4 (a grant or rotation boxing an epoch carries its history box), spec/
+// permissions.md §4 (copies placed by any node count): a newcomer first boxed after a rotation
+// opens certificate copies wrapped under the older epoch and so verifies a writer whose card
+// went up before the rotation (why copies under older epochs count for newcomers).
+#[test]
+fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let r = net.node(3, &[sv]);
+    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    net.set_online(r, false);
+    net.run();
+    let l = net.label(a);
+    let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
+    let old = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    // r joins with the rotation: its first box is at the new epoch
+    net.pair(r, a);
+    let e = net.engine(a);
+    set_edge(e, g, rt, Role::Read);
+    let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
+    rotation(e, g, &rs, 78, false);
+    net.pair(a, r);
+    net.run();
+    let t = net.item(w, g, g, "after");
+    net.run();
+    // the writer's card went up only under the old epoch
+    let (cc, _) = chain_commit(&mut net, w, g, wt, "/node");
+    let cards: Vec<osis_core::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
+    let store = net.servers[sv].hub.store();
+    assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
+    net.set_online(r, true);
+    net.run();
+    assert_eq!(net.read(r, t), Some(s("after")), "the newcomer verified the writer");
 }

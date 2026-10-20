@@ -62,7 +62,9 @@ fn anchor(a: &mut Anchor, f: DotFn<'_>) {
 
 fn seq(s: &mut Seq, f: DotFn<'_>) {
     meta(&mut s.meta, f);
-    s.elems = std::mem::take(&mut s.elems)
+    // per element: consecutive dots may map to different commits (imports remap deltas, which
+    // the format bounds)
+    s.elems = crate::seq_span::expand(std::mem::take(&mut s.elems))
         .into_iter()
         .map(|(d, mut e): (Dot, SeqElem)| {
             if let Some((st, a)) = &mut e.created {
