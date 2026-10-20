@@ -121,6 +121,13 @@ fn exit_codes_plan_cli_6() {
     let d = tmp("missing");
     let o = osis_cli::main_with(["osis", "-s", d.to_str().unwrap(), "whoami"], &mut &b""[..], &mut Vec::new(), &mut Vec::new());
     assert_eq!(o, 8);
+    // `restore` reads its card from `@FILE` or `-` (a recovery key need not sit in argv)
+    let d = tmp("restore-arg");
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let o = osis_cli::main_with(["osis", "-s", d.to_str().unwrap(), "restore", "@/nonexistent/card"], &mut &b""[..], &mut out, &mut err);
+    assert_eq!(o, 2, "{}", String::from_utf8_lossy(&err));
+    assert!(String::from_utf8_lossy(&err).contains("/nonexistent/card"));
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 // notes/cli.md Design: one process at a time; a second opener fails with exit 8.

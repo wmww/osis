@@ -33,7 +33,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | command | API | state |
 |---|---|---|
 | `init [--server A]` | `create` (prints the recovery card first) | now |
-| `restore CARD` | `restore` | now |
+| `restore CARD` (or `@FILE`, `-`) | `restore` | now |
 | `whoami` | `me`, `node`, `home`, `servers` | now |
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |

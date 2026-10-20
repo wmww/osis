@@ -210,7 +210,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         Cmd::Restore { card, server } => {
             let mut cfg = crate::config(&sel, &g, true);
             cfg.servers = seed(server)?;
-            let card: osis::RecoveryCard = card.parse()?;
+            let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
             let t = Ctx::timeout_flag(&g)?;
             match block_on(Osis::restore(cfg, &card), t) {
                 Some(r) => r?,
