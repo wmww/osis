@@ -344,7 +344,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             Ok(db.send_signal(t, &k, &v, target)?)
         }
-        Cmd::Signal(SignalCmd::Listen { t, kind, count }) => listen(ctx, &t, &kind, count),
+        Cmd::Signal(SignalCmd::Listen { t, kind, in_group, count }) => listen(ctx, &t, &kind, in_group, count),
         Cmd::History { scope: s, max, before } => history(ctx, &s, max, before),
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
@@ -371,6 +371,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             });
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, count, timeout)
+        }
+        Cmd::Via { t, member } => {
+            let p = db.member_path(ctx.tid(&t)?, ctx.tid(&member)?);
+            if p.is_empty() {
+                return Err(exit(3, "no such member"));
+            }
+            ctx.emit(&p.iter().map(|(a, b)| format!("{} {}", a.to_uri(), b.to_uri())).collect::<Vec<_>>(), J::Arr(p.iter().map(|(a, b)| J::Arr(vec![J::tid(*a), J::tid(*b)])).collect()))
+        }
+        Cmd::Now => {
+            let n = db.now().0;
+            ctx.emit(&[ts_text(ctx.g.raw, n)], J::obj([("now", J::int(n))]))
         }
         Cmd::Role { t } => {
             let r = db.role_on(ctx.tid(&t)?);
@@ -664,13 +675,19 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     }
     let groups = db.groups_of(t);
     let role = db.role_on(t);
+    let owner = db.owner_of(t);
+    let created = db.created(t);
     lines.push(format!("groups\t{}", groups.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ")));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
+    lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
+    lines.push(format!("created\t{}", created.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()))));
     let j = J::obj([
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
         ("groups", J::Arr(groups.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
+        ("owner", J::opt(owner.map(J::tid))),
+        ("created", J::opt(created.map(|c| J::obj([("commit", J::str(commit_text(&c.id))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])))),
     ]);
     ctx.emit(&lines, j)
 }
@@ -779,26 +796,29 @@ fn signal_type(ctx: &Ctx<'_>, kind: &str) -> Option<(Arc<Schema>, osis_schema::T
     ctx.schemas.iter().find_map(|s| s.signals.get(kind).map(|d| (s.clone(), d.ty.clone())))
 }
 
-fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, count: Option<usize>) -> anyhow::Result<()> {
+fn listen(ctx: &mut Ctx<'_>, t: &str, kind: &str, in_group: bool, count: Option<usize>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
     let k = osis::Ak::new(kind).map_err(|_| usage(format!("bad signal kind {kind:?}")))?;
     let st = signal_type(ctx, kind);
     let (raw, json_out) = (ctx.g.raw, ctx.g.json);
     let (tx, rx) = mpsc::channel::<String>();
-    let _sub = db.on_signal(t, k, move |_, e| {
+    let f = move |_: &osis::Osis, e: osis::SignalEvent<Value>| {
         let ty = st.as_ref().map(|(s, t)| (&**s, t));
         let (vt, vj) = match &e.value {
             Ok(v) => (text::print(v, if raw { None } else { ty }), json::value(v, if raw { None } else { ty })),
             Err(e) => (format!("(error: {e})"), J::Null),
         };
         let l = if json_out {
-            J::obj([("actor", J::tid(e.actor)), ("node", J::tid(e.node)), ("ts", J::int(e.ts.0)), ("value", vj)]).text()
+            J::obj([("tid", J::tid(e.tid)), ("actor", J::tid(e.actor)), ("node", J::tid(e.node)), ("ts", J::int(e.ts.0)), ("value", vj)]).text()
+        } else if in_group {
+            format!("{} {} {} {} {vt}", e.tid.to_uri(), e.actor.to_uri(), e.node.to_uri(), ts_text(raw, e.ts.0))
         } else {
             format!("{} {} {} {vt}", e.actor.to_uri(), e.node.to_uri(), ts_text(raw, e.ts.0))
         };
         let _ = tx.send(l);
-    });
+    };
+    let _sub = if in_group { db.on_signal_in(t, k, f) } else { db.on_signal(t, k, f) };
     let timeout = ctx.timeout_or(None)?;
     stream_lines(ctx, &rx, count, timeout)
 }
