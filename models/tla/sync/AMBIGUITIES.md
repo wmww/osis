@@ -1,5 +1,5 @@
 # Sync convergence model: ambiguities and findings
-> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S15 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes. S16 is a minor reading of the second-round text.
+> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S16 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes. S17 is a minor reading of the hardening text.
 
 ## Resolved (model updated, rerun clean)
 - **S1. A purge compacted away never reached a late node.** commits §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `wall_ms(ts) + MEMBERSHIP_KEEP`, whatever its deltas' bounds. `purge_reach.cfg` now passes `PurgeReachesAll` (within MEMBERSHIP_KEEP; see S15).
@@ -18,6 +18,12 @@
 - **S14. A header-only rewrite is never must-hold.** Accepted as written (notes/sync.md): headers persist at the nodes that applied the commit, not at the label. Model literal.
 - **S15. A node offline longer than MEMBERSHIP_KEEP never applies a purge.** Accepted limit (notes/sync.md); not checked (time stays below `PurgeKeep`).
 
-## S16. Which local drops need the snapshot first (reading)
-- Text: commits §5, in the keep-at-most bullet: "A node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body". Read literally it covers every drop, including a strict subset (its writes are in the superset) and a purged body (its live writes are in the rewrite it keeps).
-- Model: only drops past keep-at-most, the one drop reason that leaves the live writes in no held blob (expiry kills every write of the body). The literal reading would make a purge drop wait for a snapshot. Option: say "a body with live writes no other held blob carries".
+- **S16. Which local drops need the snapshot first.** sync §7: "the snapshot-first order binds only drops that would leave a live write in no held blob (keep-at-most), not strict-subset or purge drops". The model already did exactly this (`NeedsSnapToDrop`).
+
+## Hardening edits followed (rerun clean)
+- commits §5: a node-form body is covered only when the snapshot's frontier reaches its counters (a snapshot body: the frontiers). `Write` of a snapshot requires its author to have applied every commit it covers; no scenario changed (their `Deps` already ensured it). Snapshot-covers-snapshot is not exercised (one snapshot per scenario).
+- sync §6: "the label lacks" a body unless a blob of its commit holds every delta of it no snapshot under the label covers. `Upload`, `Relay`, `Deposit` use it; `Converge` checks it rather than an identical body.
+- sync §6 clock samples by round trip, request timeouts, sync §9 signal replay window: outside the model (no clock skew, no connections, no signals).
+
+## S17. A must-not-hold blob as the one that "holds" a body (reading)
+- sync §6: a writer uploads a must-hold body "the label lacks (a blob of the commit holding every delta of the body that no snapshot under the label covers holds it)". Read literally, a blob that is itself must-not-hold (a purged superset waiting for its carrier, an expired or past-keep-at-most blob of the same commit) still holds the body, so the upload waits until that blob is deleted. Model: literal; every instance passes, since the waiting blob's deletion is fair and the upload follows it.
