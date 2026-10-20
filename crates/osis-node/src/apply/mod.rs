@@ -498,6 +498,19 @@ impl Engine {
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.commits.get(id).map(|m| m.header.clone())
     }
+
+    /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
+    /// no snapshot (spec/commits.md: covering snapshots carry `/created` too) and valid here.
+    /// `/created` is kept forever, so every node reading the thing gets that commit; until it
+    /// is here (only a snapshot held) `None`.
+    pub fn creation(&self, tid: &Tid) -> Option<Creation> {
+        let ak = osis_core::Ak::new("/created").ok()?;
+        self.core.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
+            let m = self.core.commits.get(id)?;
+            let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
+            (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+        })
+    }
 }
 
 /// Rebuilds the engine's indexes from the store (open, and after a failed transaction).
@@ -653,6 +666,16 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         Exam::Ready(v) => Ok(v),
         _ => Ok(Vec::new()),
     }
+}
+
+/// When a thing was created (`Engine::creation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Creation {
+    pub commit: CommitId,
+    pub ts: osis_core::Ts,
+    pub node: Tid,
+    pub actor: Tid,
+    pub received: WallMs,
 }
 
 pub(crate) fn is_kind_snapshot(k: Kind) -> bool {

@@ -5,7 +5,7 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
-use osis_core::{Ak, Role, Tid, Value, WallMs};
+use osis_core::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
@@ -19,6 +19,27 @@ pub struct Edge {
     pub until: Option<WallMs>,
     /// The role this member may grant others (invite grants).
     pub invite: Option<Role>,
+}
+
+/// When a thing was created (`Osis::created`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Created {
+    /// The creating commit (never a compaction snapshot, which carries `/created` too).
+    pub commit: CommitId,
+    /// Its `ts`: the same on every node.
+    pub ts: Ts,
+    /// The authoring node and the actor it wrote for.
+    pub node: Tid,
+    pub actor: Tid,
+    /// When this node received it (per node).
+    pub received: WallMs,
+}
+
+impl Created {
+    /// Display time for feeds: `min(ts, received)` (a sender's clock may run ahead).
+    pub fn shown(&self) -> WallMs {
+        self.ts.wall_ms().min(self.received)
+    }
 }
 
 /// The membership timeline's roster of a thing: member actor → edge.
@@ -145,6 +166,19 @@ impl Reader<'_> {
     pub fn knows(&self, tid: Tid) -> bool {
         self.e.knows(&self.resolve(tid))
     }
+
+    /// The thing's owner (`None`: unknown, or a key actor).
+    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+        self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
+    }
+
+    /// The commit that created the thing (`Created`; a timeline sorts by `shown()`); `None`
+    /// while it is unknown or only a snapshot carrying its `/created` is here. Follows moves: a
+    /// moved thing reports its copy's creation, the move.
+    pub fn created(&self, tid: Tid) -> Option<Created> {
+        let c = self.e.creation(&self.resolve(tid))?;
+        Some(Created { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received })
+    }
 }
 
 impl Osis {
@@ -182,6 +216,22 @@ impl Osis {
 
     pub fn knows(&self, tid: Tid) -> bool {
         self.read(|r| r.knows(tid))
+    }
+
+    /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
+    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+        self.read(|r| r.owner_of(tid))
+    }
+
+    /// The commit that created the thing (`Reader::created`).
+    pub fn created(&self, tid: Tid) -> Option<Created> {
+        self.read(|r| r.created(tid))
+    }
+
+    /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
+    /// for app timestamps.
+    pub fn now(&self) -> WallMs {
+        self.engine(|e| e.now())
     }
 
     /// Whether two tids name the same thing across moves (spec/permissions.md §7): the only

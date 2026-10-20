@@ -21,22 +21,23 @@ pub use schema::{ATTACHMENT, BODY, NAME, TAGS, TITLE};
 /// A new notebook named `name`, in the person's home group and synced on the database's
 /// servers.
 pub fn new_notebook(db: &Osis, name: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let nb = w.create(db.me(), Place::In(db.home()))?;
-    w.make_group(nb)?;
-    w.at(nb, NAME).set(&name.to_string())?;
-    w.commit()?;
+    let nb = db.write_with(|w| {
+        let nb = w.create(db.me(), Place::In(db.home()))?;
+        w.make_group(nb)?;
+        w.at(nb, NAME).set(&name.to_string())?;
+        Ok(nb)
+    })?;
     db.sync(nb, &[])?;
     Ok(nb)
 }
 
 /// A new note in `notebook`, owned by it (so the notebook's members read and write it).
 pub fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let note = w.create(notebook, Place::In(notebook))?;
-    w.at(note, TITLE).set(&title.to_string())?;
-    w.commit()?;
-    Ok(note)
+    db.write_with(|w| {
+        let note = w.create(notebook, Place::In(notebook))?;
+        w.at(note, TITLE).set(&title.to_string())?;
+        Ok(note)
+    })
 }
 
 /// The notes of a notebook (its group's items), in tid order.
@@ -51,13 +52,11 @@ pub fn title(db: &Osis, note: Tid) -> Result<Option<String>> {
 /// Renames a note from what the user saw (`shown`) to `new`: only the change is written, so a
 /// concurrent rename elsewhere is merged, not clobbered blindly.
 pub fn rename(db: &Osis, note: Tid, shown: &str, new: &str) -> Result<()> {
-    db.write_with(|w| w.at(note, TITLE).edit(&shown.to_string(), &new.to_string()))?;
-    Ok(())
+    db.write_with(|w| w.at(note, TITLE).edit(&shown.to_string(), &new.to_string()))
 }
 
 pub fn tag(db: &Osis, note: Tid, tag: &str) -> Result<()> {
-    db.write_with(|w| w.at(note, TAGS).path(Path::root()).add(&tag.to_string()))?;
-    Ok(())
+    db.write_with(|w| w.at(note, TAGS).path(Path::root()).add(&tag.to_string()))
 }
 
 pub fn tags(db: &Osis, note: Tid) -> Result<BTreeSet<String>> {
@@ -79,8 +78,7 @@ pub fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
 
 /// Attaches a (possibly huge) markdown document from a reader.
 pub fn attach(db: &Osis, note: Tid, doc: impl Read) -> Result<()> {
-    db.write_with(|w| w.at(note, ATTACHMENT).set_stream(doc))?;
-    Ok(())
+    db.write_with(|w| w.at(note, ATTACHMENT).set_stream(doc))
 }
 
 /// The attachment as a stream, never materialized whole.

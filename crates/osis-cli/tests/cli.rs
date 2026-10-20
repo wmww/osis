@@ -426,6 +426,10 @@ fn inspect_and_diag_plan_cli_4() {
     let o = s.ok(&["inspect", "thing", &t]).out;
     assert!(o.contains("aspect /a/b commits=1"), "{o}");
     assert!(s.ok(&["inspect", "group", "home"]).out.contains(&t));
+    // notes/api.md Reads: `show` names the owner and the creating commit; `now` the clock
+    let shown = s.ok(&["show", &t]).out;
+    assert!(shown.contains("owner\tosis://") && shown.contains("created\t"), "{shown}");
+    assert!(!s.ok(&["now"]).out.trim().is_empty());
     assert!(s.ok(&["inspect", "actor", "me"]).out.starts_with("actor osis://"));
     let id = s.ok(&["history", "--thing", &t]).out.split(' ').next().unwrap().to_string();
     assert!(s.ok(&["inspect", "commit", &id]).out.contains("Header"));

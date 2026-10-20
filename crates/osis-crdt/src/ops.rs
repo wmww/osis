@@ -73,7 +73,10 @@ pub enum PathSeg {
 /// An op at a path (§5.x).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
-    /// Make the position read `v`: structural diff (§9). A map key that is not live is put.
+    /// Make the position read `v`: structural diff (§9). A map key that is not live is put (a
+    /// path op into it creates the entry unless its path goes on through a field or case,
+    /// §5.6). An entry so created by an expiring delta goes value-less at T, and later writes
+    /// into it stay hidden with it (§4.7).
     Set(Value),
     /// Reset, then create `v`.
     Replace(Value),

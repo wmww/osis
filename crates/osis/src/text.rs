@@ -3,7 +3,8 @@
 //! what changed since the last commit as one edit (a sequence edit rebased onto the current text
 //! for a `text` position, a register write otherwise); remote changes are merged into the buffer
 //! (local edits are committed first) and reported through `on_remote`. A session commits on
-//! `commit`, on the first edit after `Config::idle_commit` of inactivity, and on drop.
+//! `commit`, after `Config::idle_commit` without edits (a timer on the database's runtime;
+//! without one, at the next edit), and on drop.
 //! Not built: cut/paste with remembered ranges (issues/api-deferred.md).
 
 use crate::error::{Error, Result};
@@ -15,7 +16,7 @@ use osis_core::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::{AspectKey, Path, Type};
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
 type OnRemote = Box<dyn FnMut(&str) + Send>;
@@ -25,7 +26,51 @@ struct State {
     base: String,
     buf: String,
     last_edit: Option<Instant>,
+    /// An idle-commit timer is pending.
+    armed: bool,
     on_remote: Option<OnRemote>,
+}
+
+/// What a session is bound to.
+#[derive(Clone)]
+struct Bind {
+    tid: Tid,
+    key: crate::Key,
+    path: Path,
+    seq: bool,
+}
+
+/// Reports edits a session could not commit.
+fn uncommitted(db: &Osis, tid: Tid, e: &Error) {
+    let d = osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Uncommitted, tids: vec![tid], commit: None, peer: None, detail: format!("text session edits not committed: {e}") };
+    db.engine(|en| en.report(d));
+}
+
+/// Arms the idle-commit timer: when it fires, the edits are committed if the session has been
+/// idle for `idle_commit`, else it re-arms for the rest.
+fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bool {
+    let w = db.downgrade();
+    db.inner.net.after(
+        d,
+        Box::new(move || {
+            let (Some(db), Some(st)) = (w.upgrade(), st.upgrade()) else { return };
+            let mut s = lock(&st);
+            let idle = db.inner.idle_commit;
+            match s.last_edit.map(|t| t.elapsed()) {
+                Some(e) if e < idle => s.armed = arm(&db, Arc::downgrade(&st), b, idle - e),
+                Some(_) => {
+                    s.armed = false;
+                    // on failure the edits stay in the buffer; the next edit or commit retries
+                    if let Err(e) = flush(&db, b.tid, &b.key, &b.path, b.seq, &mut s) {
+                        uncommitted(&db, b.tid, &e);
+                    } else {
+                        s.last_edit = None;
+                    }
+                }
+                None => s.armed = false,
+            }
+        }),
+    )
 }
 
 /// A text buffer bound to a string position of an aspect.
@@ -75,15 +120,18 @@ impl Osis {
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, on_remote: None }));
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None }));
         let (st2, key2, path2) = (st.clone(), key.clone(), path.clone());
         let sub = self.at(tid, key.clone()).on_change(move |db, c| {
             if !matches!(c.source, Source::Remote(_) | Source::Derived(_)) {
                 return;
             }
             let mut s = lock(&st2);
-            // local edits first, rebased by the crdt; then the merged text
-            let _ = flush(db, tid, &key2, &path2, seq, &mut s);
+            // local edits first, rebased by the crdt; then the merged text (edits that cannot
+            // be committed are reported and dropped from the buffer: the merged text wins)
+            if let Err(e) = flush(db, tid, &key2, &path2, seq, &mut s) {
+                uncommitted(db, tid, &e);
+            }
             let merged = match db.read(|r| r.get_path(tid, &key2, &path2)) {
                 Ok(Some(Value::Str(x))) => x,
                 _ => return,
@@ -119,6 +167,10 @@ impl TextSession {
         }
         f(&mut s.buf)?;
         s.last_edit = Some(Instant::now());
+        if !s.armed {
+            let b = Bind { tid: self.tid, key: self.key.clone(), path: self.path.clone(), seq: self.seq };
+            s.armed = arm(&self.db, Arc::downgrade(&self.st), b, self.db.inner.idle_commit);
+        }
         Ok(())
     }
 

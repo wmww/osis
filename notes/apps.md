@@ -16,5 +16,6 @@
 ## Findings (all filed)
 - Undo stepped back once per register; fixed (spec/crdt.md §4.6 undo chains). The notes undo test still walks two aspects.
 - `wait_synced` resolved while inbox deposits were still unanswered, and those live only in memory: a link made, synced and closed could not be redeemed. Fixed: `wait_synced` waits for `SyncEngine::deliveries_pending() == 0`; the CLI runs delivering commands networked and flushes before exit. The inbox outbox is stored since; `take_direct` packages are not (issues/node-sync-gaps.md).
-- Chat costs (issues/chat-costs.md: wire-format knobs left), API frictions (issues/api-app-frictions.md).
+- Chat costs (issues/chat-costs.md: wire-format knobs left).
+- API frictions, all resolved in the API: expiring placements (`create_expiring`), path ops into an absent map key (spec/crdt.md §5.6), `now`, `owner_of`, `created` (the chat timeline sorts by it; no `sent` aspect), `demote` of a link joiner on the target, `on_signal_in`, `write_with` returning the closure's value, `expires(Option)`. Lists still read every item (issues/api-deferred.md, Queries).
 - The mirrored-edges folder variant needs an edge for the folder's actor, not per member (notes/permissions.md Patterns, corrected).

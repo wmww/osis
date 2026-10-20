@@ -12,6 +12,7 @@ use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::Mutation;
 use osis_schema::core_types::{GROUP, is_membership_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, Retention, Step, type_at, validate_write};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
@@ -42,27 +43,24 @@ pub struct Write<'d> {
     created: Vec<Tid>,
     /// Things placed into groups by this batch (the `NotSynced` check).
     placed: Vec<Tid>,
+    /// Per group whose `/group` this batch writes through the group calls: the expiry those
+    /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
+    group_exp: BTreeMap<Tid, Option<Duration>>,
 }
 
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new() }
+        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new() }
     }
 
-    /// `write_with` returning what `f` returns.
-    pub(crate) fn write_with_tid<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
+    /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
+    /// commit itself: `write()` and `commit()`).
+    pub fn write_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
         let mut w = self.write();
         let r = f(&mut w)?;
         w.commit()?;
         Ok(r)
-    }
-
-    /// Runs `f` on a new batch and commits it if `f` succeeds.
-    pub fn write_with(&self, f: impl FnOnce(&mut Write<'_>) -> Result<()>) -> Result<Option<Committed>> {
-        let mut w = self.write();
-        f(&mut w)?;
-        w.commit()
     }
 }
 
@@ -85,7 +83,17 @@ pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
 
 fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
     let v = Value::Tid(member);
-    PathOp { path: vec![PathSeg::Field(if items { 0 } else { 1 })], op: if add { Op::Add(v) } else { Op::Remove(v) } }
+    let f = if items { crate::core::group::ITEMS } else { crate::core::group::SUBGROUPS };
+    PathOp { path: vec![PathSeg::Field(f.0)], op: if add { Op::Add(v) } else { Op::Remove(v) } }
+}
+
+/// The wall time `d` from now; `Invalid` for a zero duration (an expiry must be in the future).
+fn expiry_in(db: &Osis, d: Duration) -> Result<WallMs> {
+    let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+    if ms == 0 {
+        return Err(Error::Invalid("expiry 0 ms is not in the future".into()));
+    }
+    Ok(WallMs(db.now().0.saturating_add(ms)))
 }
 
 impl<'d> Write<'d> {
@@ -106,6 +114,15 @@ impl<'d> Write<'d> {
 
     /// A new thing owned by `owner` (fixed forever; needs write on it), placed per `place`.
     pub fn create(&mut self, owner: Tid, place: Place) -> Result<Tid> {
+        self.create_expiring(owner, place, None)
+    }
+
+    /// `create` whose placements expire after `expires` (spec/commits.md §6; `None`: never), as
+    /// `place_expiring` does: a disappearing item leaves its groups by itself.
+    pub fn create_expiring(&mut self, owner: Tid, place: Place, expires: Option<Duration>) -> Result<Tid> {
+        if let Some(d) = expires {
+            expiry_in(self.db, d)?;
+        }
         let owner = self.known(owner)?;
         let groups = match &place {
             Place::In(g) => vec![*g],
@@ -117,7 +134,7 @@ impl<'d> Write<'d> {
         let t = self.db.engine(|e| e.new_thing(m, owner));
         self.created.push(t);
         for g in groups {
-            self.place(t, g)?;
+            self.place_expiring(t, g, expires)?;
         }
         Ok(t)
     }
@@ -128,13 +145,31 @@ impl<'d> Write<'d> {
         if !self.created.contains(&t) && self.db.get(t, GROUP)?.is_some() {
             return Ok(());
         }
+        self.group_expiry(t, None)?;
         self.m.set(t, &GROUP, &osis_schema::core_types::Group::default())?;
         Ok(())
     }
 
-    fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool) -> Result<()> {
+    /// Records that this batch writes `g`'s `/group` with expiry `d`; `Invalid` when another
+    /// write of it in this batch asked for a different one.
+    fn group_expiry(&mut self, g: Tid, d: Option<Duration>) -> Result<()> {
+        match self.group_exp.get(&g) {
+            Some(x) if *x == d => return Ok(()),
+            Some(_) => return Err(Error::Invalid(format!("this batch writes the groups of {g} with different expiries (expiry is per aspect write): use one batch each"))),
+            None => {}
+        }
+        if let Some(d) = d {
+            let t = expiry_in(self.db, d)?;
+            self.m.expires(g, &GROUP, t)?;
+        }
+        self.group_exp.insert(g, d);
+        Ok(())
+    }
+
+    fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
         let g = self.known(g)?;
         let member = self.resolve(member);
+        self.group_expiry(g, exp)?;
         self.m.op(g, &GROUP, group_op(items, member, add))?;
         Ok(())
     }
@@ -142,18 +177,25 @@ impl<'d> Write<'d> {
     /// Adds `tid` to the items of group `g`. A thing whose groups then include no synced one
     /// gets a `NotSynced` diagnostic after commit.
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
+        self.place_expiring(tid, g, None)
+    }
+    /// `place` whose placement expires after `expires` (`None`: never). Expiry is per aspect
+    /// write, so every group call on `g` in this batch must ask for the same expiry (else
+    /// `Invalid`).
+    pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
         let t = self.resolve(tid);
+        self.group(g, true, tid, true, expires)?;
         self.placed.push(t);
-        self.group(g, true, tid, true)
+        Ok(())
     }
     pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
-        self.group(g, true, tid, false)
+        self.group(g, true, tid, false, None)
     }
     pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, true)
+        self.group(g, false, sub, true, None)
     }
     pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, false)
+        self.group(g, false, sub, false, None)
     }
 
     /// Removes every aspect the node knows of `tid` and every known placement of it. The tid
@@ -303,7 +345,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// This write's delta expires at `t` (spec/commits.md §6); default from the key.
     /// Fails the following op with `Invalid` when `t` is not in the future.
     pub fn expires_at(mut self, t: WallMs) -> Self {
-        if self.bad.is_none() && t <= self.w.db.engine(|e| e.now()) {
+        if self.bad.is_none() && t <= self.w.db.now() {
             self.bad = Some(Error::Invalid(format!("expiry {} ms is not in the future", t.0)));
         } else if self.bad.is_none()
             && let Err(e) = self.w.m.expires(self.tid, &self.key, t)
@@ -315,9 +357,19 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// This write's delta expires `d` from now.
     pub fn expires_in(self, d: Duration) -> Self {
-        let now = self.w.db.engine(|e| e.now());
-        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-        self.expires_at(WallMs(now.0.saturating_add(ms)))
+        self.expires(Some(d))
+    }
+
+    /// `expires_in(d)` for `Some(d)`; `None` keeps the key's default.
+    pub fn expires(mut self, d: Option<Duration>) -> Self {
+        match d.map(|d| expiry_in(self.w.db, d)) {
+            None => self,
+            Some(Ok(t)) => self.expires_at(t),
+            Some(Err(e)) => {
+                self.bad.get_or_insert(e);
+                self
+            }
+        }
     }
 
     /// Retention of this write's delta instead of the key's default (spec/commits.md §5);

@@ -22,11 +22,11 @@
 //! # use osis::{Config, Osis, Place, Ak, Value};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("/note/title").unwrap();
-//! let note = db.write_with(|w| {
+//! let t = db.write_with(|w| {
 //!     let t = w.create(db.me(), Place::Unsynced)?;
-//!     w.at(t, title.clone()).set(&Value::Str("Groceries".into()))
+//!     w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
+//!     Ok(t)
 //! })?;
-//! # let t = db.engine(|e| e.header(&note.unwrap().commit)).unwrap().aspects[0].tid;
 //! assert_eq!(db.get(t, title.clone())?, Some(Value::Str("Groceries".into())));
 //! assert_eq!(db.get(t, Ak::new("/note/other").unwrap())?, None);
 //! # Ok::<(), osis::Error>(())
@@ -171,8 +171,7 @@
 //! ```
 //! # use osis::{Config, Osis, Place, Ak, Value, Target};
 //! let db = Osis::create(Config::memory())?.0;
-//! let t = db.write_with(|w| w.create(db.me(), Place::Unsynced).map(|_| ()))?;
-//! # let t = db.engine(|e| e.header(&t.unwrap().commit)).unwrap().aspects[0].tid;
+//! let t = db.write_with(|w| w.create(db.me(), Place::Unsynced))?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.on_signal(t, Ak::new("/app/typing").unwrap(), move |_, e| { let _ = tx.send(e.value); });
 //! db.send_signal(t, &Ak::new("/app/typing").unwrap(), &Value::Bool(true), Target::All)?;
@@ -255,7 +254,7 @@ pub use net::{ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
+pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
 pub use text::TextSession;
@@ -263,7 +262,7 @@ pub use undo::{DropReason, EntryState, HistoryEntry, HistoryQuery, UndoScope};
 pub use watch::{Change, Changed, CommitInfo, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Place, Write};
 
-pub use osis_core::{Ak, Clock, CommitId, ManualClock, Role, Tid, Ts, Value, WallMs};
+pub use osis_core::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, Diagnostic, DiagnosticKind};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Retention, Schema, Signal, Step, p};
 

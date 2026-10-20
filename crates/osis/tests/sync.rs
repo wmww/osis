@@ -5,7 +5,7 @@
 mod common;
 use common::world::World;
 use common::*;
-use osis::{Osis, Place, Role, SyncScope, SyncState, Tid, Value};
+use osis::{Demotion, Lower, Osis, Place, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -187,6 +187,72 @@ fn link_redeem_spec_permissions_9() {
     assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
 
+/// Alice's synced group with a multi-use read link redeemed by Bob and Carol: (world, alice,
+/// bob, carol, group, link actor K, link key L).
+fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[sv]).0);
+    w.run();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Read, osis::LinkOpts::default()).unwrap();
+    w.run();
+    for o in [&bob, &carol] {
+        assert_eq!(w.until(o.redeem(&link), 1000, 10).unwrap(), g);
+        w.run();
+    }
+    let k = alice.links(g)[0].id;
+    let l = alice.roster(k).into_keys().find(|m| alice.owner_of(*m).is_none()).unwrap();
+    (w, alice, bob, carol, g, k, l)
+}
+
+// spec/permissions.md §9 (a joiner is revoked together with the link key), notes/api.md
+// Sharing (`member_path`, `demote`): a link joiner reaches the target through K; removing it on
+// the target removes it and L from K in one commit, so a failed pre-sync leaves both in place
+// and a retry completes; a second removal writes nothing; a joiner's role cannot be lowered.
+#[test]
+fn demote_link_joiner_spec_permissions_9() {
+    let (mut w, alice, bob, carol, g, k, l) = joined_by_link();
+    assert_eq!(alice.member_path(g, bob.me()), vec![(g, k), (k, bob.me())]);
+    // offline, the required pre-sync fails: nothing changed
+    w.set_online(&alice, false);
+    let r = w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 60);
+    assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
+    assert!(alice.roster(k).contains_key(&bob.me()) && alice.roster(k).contains_key(&l), "no half-removal");
+    w.set_online(&alice, true);
+    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
+    let r = alice.roster(k);
+    assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
+    assert!(alice.member_path(g, bob.me()).is_empty());
+    assert!(alice.links(g).is_empty(), "the link ends with its joiner");
+    let commits = alice.engine(|e| e.commit_ids().len());
+    w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
+    assert_eq!(alice.engine(|e| e.commit_ids().len()), commits, "nothing left to remove");
+    assert!(matches!(w.until(alice.demote(g, carol.me(), Lower::To(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
+}
+
+// spec/permissions.md §9, notes/api.md Sharing (`demote`): after a joiner's removal the other
+// joiner reads new content and the removed one does not; another device of the sharer, which
+// holds no record of the link, refuses to demote a joiner instead of reporting success.
+// Tier 2: pairing and content sync.
+#[test]
+#[ignore = "tier 2"]
+fn demote_link_joiner_content_spec_permissions_9() {
+    let (mut w, alice, bob, carol, g, _, _) = joined_by_link();
+    w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 20).unwrap();
+    let after = item(&alice, g, g, "after bob left");
+    w.run();
+    assert_eq!(x(&carol, after), Some(s("after bob left")));
+    assert_eq!(x(&bob, after), None);
+    let join = Osis::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let alice2 = join.finish(&reply).unwrap();
+    w.run();
+    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    assert!(matches!(w.until(alice2.demote(g, carol.me(), Lower::Remove, skip), 1000, 10), Err(osis::Error::Invalid(_))));
+}
+
 // spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing
 // (demote): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
 // not; Bob's write made before the removal stays.
@@ -298,4 +364,58 @@ fn text_sessions_merge_spec_crdt_5_7() {
     w.run();
     db.settle();
     assert_eq!(sb.text(), merged);
+}
+
+// notes/api.md Sync configuration (`add_server`), spec/sync.md §2 (`/label` servers, inbox): a
+// database created without servers has its home label on none; adding a server moves the home
+// label and the person's inbox there, and the home group syncs.
+#[test]
+fn add_server_moves_labels_spec_sync_2() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (a, card) = Osis::create(w.cfg(1, &[])).unwrap();
+    assert!(card.is_none());
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
+    a.add_server(&w.addr(sv)).unwrap();
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
+    let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
+    assert_eq!(inbox.servers.len(), 1);
+    w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    a.remove_server(&w.addr(sv)).unwrap();
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
+}
+
+// notes/api.md Sync configuration (`add_server` scope), spec/sync.md §2: Alice's server changes
+// move her home label and her own shared group, not a group Bob owns that she co-administers,
+// not her link's actor (the link text names its servers); her shared group keeps its last
+// server.
+#[test]
+fn add_server_scope_spec_sync_2() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let (s0, s1) = (0, w.add_server());
+    let bob = &others[0];
+    let card = alice.contact_card().unwrap();
+    w.run();
+    let a = w.until(bob.import_contact(&card), 1000, 10).unwrap();
+    let mine = group(&alice);
+    alice.grant(mine, ids[0], Role::Write, Default::default()).unwrap();
+    let his = group(bob);
+    bob.grant(his, a, Role::Admin, Default::default()).unwrap();
+    w.run();
+    assert_eq!(alice.role_on(his), Some(Role::Admin));
+    alice.make_link(mine, Role::Read, osis::LinkOpts::default()).unwrap();
+    let k = alice.links(mine)[0].id;
+    w.run();
+    let servers = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().servers.len());
+    alice.add_server(&w.addr(s1)).unwrap();
+    w.run();
+    assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (2, 2, 1, 1));
+    alice.remove_server(&w.addr(s0)).unwrap();
+    alice.remove_server(&w.addr(s1)).unwrap();
+    w.run();
+    assert_eq!((servers(alice.home()), servers(mine), servers(his), servers(k)), (0, 1, 1, 1), "a shared group keeps its last server");
 }

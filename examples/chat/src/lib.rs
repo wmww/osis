@@ -13,7 +13,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::GROUP;
-use osis::{Demotion, EdgeOpts, FieldId, LinkOpts, Lower, Osis, Path, Place, Result, Role, ShareLink, SignalEvent, Subscription, Target, Tid, p};
+use osis::{Demotion, EdgeOpts, LinkOpts, Lower, Osis, Path, Place, Result, Role, ShareLink, SignalEvent, Subscription, Target, Tid, WallMs, p};
 use std::time::Duration;
 
 /// Typed keys generated from chat.osis.
@@ -22,23 +22,19 @@ pub mod schema {
     use osis::schema as osis_schema;
     include!(concat!(env!("OUT_DIR"), "/chat.rs"));
 }
-pub use schema::{HIDDEN, NICK, REACTIONS, READ, SENT, TEXT, TITLE, TYPING};
-
-/// `/group` field 0: items.
-fn items() -> Path {
-    p![FieldId(0)]
-}
+pub use schema::{HIDDEN, NICK, REACTIONS, READ, TEXT, TITLE, TYPING};
 
 /// A new chat with its creator's persona: (chat actor, persona). The chat is synced under its
 /// own label only, not placed in the creator's home group: the creator's other devices find it
 /// through the home label's `/label` cross-publish, and its rotations and messages are not
 /// copied under the home label.
 pub fn new_chat(db: &Osis, title: &str, nick: &str) -> Result<(Tid, Tid)> {
-    let mut w = db.write();
-    let chat = w.create(db.me(), Place::Unsynced)?;
-    w.make_group(chat)?;
-    w.at(chat, TITLE).set(&title.to_string())?;
-    w.commit()?;
+    let chat = db.write_with(|w| {
+        let chat = w.create(db.me(), Place::Unsynced)?;
+        w.make_group(chat)?;
+        w.at(chat, TITLE).set(&title.to_string())?;
+        Ok(chat)
+    })?;
     db.sync(chat, &[])?;
     let me = persona(db, chat, nick)?;
     Ok((chat, me))
@@ -46,12 +42,13 @@ pub fn new_chat(db: &Osis, title: &str, nick: &str) -> Result<(Tid, Tid)> {
 
 /// Makes this participant's persona in `chat` (it must be a writer of the chat already).
 pub fn persona(db: &Osis, chat: Tid, nick: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let p = w.create(db.me(), Place::In(chat))?;
-    w.make_group(p)?;
-    w.at(p, NICK).set(&nick.to_string())?;
-    w.add_subgroup(chat, p)?;
-    w.commit()?;
+    let p = db.write_with(|w| {
+        let p = w.create(db.me(), Place::In(chat))?;
+        w.make_group(p)?;
+        w.at(p, NICK).set(&nick.to_string())?;
+        w.add_subgroup(chat, p)?;
+        Ok(p)
+    })?;
     db.grant(p, chat, Role::Read, EdgeOpts::default())?;
     Ok(p)
 }
@@ -68,24 +65,14 @@ pub async fn join(db: &Osis, link: &ShareLink, nick: &str) -> Result<(Tid, Tid)>
     Ok((chat, p))
 }
 
-/// Posts a message as `persona` at `sent` (ms, the sender's clock); with `expires`, the message
-/// (its text, time and placement) disappears everywhere after that long.
-pub fn send(db: &Osis, persona: Tid, text: &str, sent: i64, expires: Option<Duration>) -> Result<Tid> {
-    let mut w = db.write();
-    let m = w.create(persona, Place::Unsynced)?;
-    expiring(w.at(m, TEXT), expires).set(&text.to_string())?;
-    expiring(w.at(m, SENT), expires).set(&sent)?;
-    // the placement is a write to the persona's `/group`: it expires with the message
-    expiring(w.at(persona, GROUP), expires).path(items()).add(&m)?;
-    w.commit()?;
-    Ok(m)
-}
-
-fn expiring<'w, 'd, K: osis::AspectKey>(a: osis::AspectWrite<'w, 'd, K>, expires: Option<Duration>) -> osis::AspectWrite<'w, 'd, K> {
-    match expires {
-        Some(d) => a.expires_in(d),
-        None => a,
-    }
+/// Posts a message as `persona`; with `expires`, the message (its text and its placement in the
+/// persona) disappears everywhere after that long.
+pub fn send(db: &Osis, persona: Tid, text: &str, expires: Option<Duration>) -> Result<Tid> {
+    db.write_with(|w| {
+        let m = w.create_expiring(persona, Place::In(persona), expires)?;
+        w.at(m, TEXT).expires(expires).set(&text.to_string())?;
+        Ok(m)
+    })
 }
 
 /// One message of a timeline.
@@ -95,7 +82,8 @@ pub struct Message {
     pub persona: Tid,
     pub nick: String,
     pub text: String,
-    pub sent: i64,
+    /// When it was sent: its creation's display time, `min(ts, received)`.
+    pub at: WallMs,
 }
 
 /// The personas of a chat (its subgroups).
@@ -103,7 +91,7 @@ pub fn personas(db: &Osis, chat: Tid) -> Result<Vec<Tid>> {
     Ok(db.get(chat, GROUP)?.map(|g| g.subgroups.into_iter().collect()).unwrap_or_default())
 }
 
-/// The chat's visible messages, oldest first (sent time, then tid). Without a query API this
+/// The chat's visible messages, oldest first (send time, then commit order and tid). Without a query API this
 /// reads every persona's group and every message (issues/api-deferred.md, Queries).
 pub fn timeline(db: &Osis, chat: Tid) -> Result<Vec<Message>> {
     let hidden = db.get(chat, HIDDEN)?.unwrap_or_default();
@@ -112,13 +100,13 @@ pub fn timeline(db: &Osis, chat: Tid) -> Result<Vec<Message>> {
         let nick = db.get(p, NICK)?.unwrap_or_default();
         let Some(g) = db.get(p, GROUP)? else { continue };
         for m in g.items.into_iter().filter(|m| !hidden.contains(m)) {
-            if let (Some(text), Some(sent)) = (db.get(m, TEXT)?, db.get(m, SENT)?) {
-                out.push(Message { tid: m, persona: p, nick: nick.clone(), text, sent });
+            if let (Some(text), Some(c)) = (db.get(m, TEXT)?, db.created(m)) {
+                out.push(((c.shown(), c.ts), Message { tid: m, persona: p, nick: nick.clone(), text, at: c.shown() }));
             }
         }
     }
-    out.sort_by_key(|m| (m.sent, m.tid));
-    Ok(out)
+    out.sort_by_key(|(k, m)| (*k, m.tid));
+    Ok(out.into_iter().map(|(_, m)| m).collect())
 }
 
 /// The texts of the timeline, for quick comparisons.
@@ -126,16 +114,10 @@ pub fn texts(db: &Osis, chat: Tid) -> Result<Vec<String>> {
     Ok(timeline(db, chat)?.into_iter().map(|m| m.text).collect())
 }
 
-/// Reacts to a message with `emoji` (on the reacting persona).
+/// Reacts to a message with `emoji` (on the reacting persona; the first reaction to a message
+/// creates its entry).
 pub fn react(db: &Osis, persona: Tid, msg: Tid, emoji: &str) -> Result<()> {
-    let e = emoji.to_string();
-    // a path op into an absent map key fails: the first reaction puts the set
-    let known = db.at(persona, REACTIONS).path(p![msg]).get_value()?.is_some();
-    db.write_with(|w| {
-        let mut a = w.at(persona, REACTIONS);
-        if known { a.path(p![msg]).add(&e) } else { a.path(Path::root()).put(&msg, &std::collections::BTreeSet::from([e.clone()])) }
-    })?;
-    Ok(())
+    db.write_with(|w| w.at(persona, REACTIONS).path(p![msg]).add(&emoji.to_string()))
 }
 
 /// Everyone's reactions to `msg`: (nick, emoji).
@@ -153,8 +135,7 @@ pub fn reactions(db: &Osis, chat: Tid, msg: Tid) -> Result<Vec<(String, String)>
 
 /// Moves the persona's read marker to `msg`.
 pub fn mark_read(db: &Osis, persona: Tid, msg: Tid) -> Result<()> {
-    db.write_with(|w| w.at(persona, READ).set(&msg))?;
-    Ok(())
+    db.write_with(|w| w.at(persona, READ).set(&msg))
 }
 
 pub fn read_marker(db: &Osis, persona: Tid) -> Result<Option<Tid>> {
@@ -163,8 +144,7 @@ pub fn read_marker(db: &Osis, persona: Tid) -> Result<Option<Tid>> {
 
 /// A moderator hides a message (nobody edits or purges another participant's message).
 pub fn hide(db: &Osis, chat: Tid, msg: Tid) -> Result<()> {
-    db.write_with(|w| w.at(chat, HIDDEN).path(Path::root()).add(&msg))?;
-    Ok(())
+    db.write_with(|w| w.at(chat, HIDDEN).path(Path::root()).add(&msg))
 }
 
 /// Says this participant is typing (or stopped). Never stored.
@@ -172,52 +152,24 @@ pub fn typing(db: &Osis, persona: Tid, on: bool) -> Result<()> {
     db.send_signal(persona, &TYPING, &on, Target::All)
 }
 
-/// Calls `f(persona, typing)` for typing signals of the chat's current personas. One
-/// subscription per persona: a persona that joins later needs a new call.
-pub fn on_typing(db: &Osis, chat: Tid, f: impl Fn(Tid, bool) + Send + Sync + 'static) -> Result<Vec<Subscription>> {
-    let f = std::sync::Arc::new(f);
-    Ok(personas(db, chat)?
-        .into_iter()
-        .map(|p| {
-            let f = f.clone();
-            db.on_signal(p, TYPING, move |_, e: SignalEvent<bool>| {
-                if let Ok(on) = e.value {
-                    f(p, on)
-                }
-            })
-        })
-        .collect())
+/// Calls `f(persona, typing)` for typing signals of the chat's personas, joiners after this
+/// call included.
+pub fn on_typing(db: &Osis, chat: Tid, f: impl Fn(Tid, bool) + Send + 'static) -> Subscription {
+    db.on_signal_in(chat, TYPING, move |_, e: SignalEvent<bool>| {
+        if let Ok(on) = e.value {
+            f(e.tid, on)
+        }
+    })
 }
 
 /// A moderator removes a participant: its persona leaves the chat's group, then its person
-/// loses its edge (after the pre-sync; keys rotate). A participant who joined by link is a
-/// member of the link's actor K (a member of the chat), not of the chat: it is removed there;
-/// while the link still works it ends with the joiner in one commit (the joiner may keep its
-/// seed, spec/permissions.md §9); the other joiners stay. Joiners of a link already revoked or
-/// used up are found through the chat's roster, not `links` (which lists working links only).
+/// loses its edge (after the pre-sync; keys rotate). For a participant who joined by link that
+/// edge is on the link's actor, and the link goes too (`Osis::demote`); the other joiners stay.
 pub async fn remove(db: &Osis, chat: Tid, persona: Tid) -> Result<()> {
-    let person = owner(db, persona)?;
-    let direct = db.roster(chat).contains_key(&person);
-    let via = if direct { None } else { db.roster(chat).into_keys().find(|k| db.roster(*k).contains_key(&person)) };
-    if !direct && via.is_none() {
-        return Err(osis::Error::UnknownActor { tid: person });
-    }
+    let person = db.owner_of(persona).ok_or(osis::Error::UnknownThing { tid: persona })?;
     db.write_with(|w| {
         w.remove_subgroup(chat, persona)?;
         w.unplace(persona, chat)
     })?;
-    match via {
-        None => db.demote(chat, person, Lower::Remove, Demotion::default()).await,
-        // a working multi-use link ends with the joiner, in one commit (one rotation)
-        Some(k) if db.links(chat).iter().any(|l| l.id == k && !l.single_use) => db.revoke_joiner(k, person, Demotion::default()).await,
-        Some(k) => db.demote(k, person, Lower::Remove, Demotion::default()).await,
-    }
-}
-
-/// The owner of a thing, from its creation record (the person behind a persona).
-pub fn owner(db: &Osis, t: Tid) -> Result<Tid> {
-    match db.get(t, osis::core::CREATED)? {
-        Some(osis::schema::osis_core::CreationRecord::Thing { owner, .. }) => Ok(owner),
-        _ => Err(osis::Error::UnknownThing { tid: t }),
-    }
+    db.demote(chat, person, Lower::Remove, Demotion::default()).await
 }

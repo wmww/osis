@@ -139,16 +139,20 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                         .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
-                    // a key that is not live: only a put creates it
-                    let v = match (&op.op, put) {
-                        (_, Some(v)) | (crate::ops::Op::Set(v), None) => v,
-                        _ => return Err(Error::Mismatch("no live entry with that key")),
-                    };
-                    if !rest.is_empty() {
-                        return Err(Error::Mismatch("no live entry with that key"));
+                    // a key that is not live, or a put_new: a new entry holding the op's writes
+                    // against an absent value (§5.6); an op that writes nothing creates nothing.
+                    // A path on through a field or case would create a partial struct or enum.
+                    if matches!(rest.first(), Some(PathSeg::Field(_) | PathSeg::Case(_))) {
+                        return Err(Error::Mismatch("no live entry with that key: put the whole value"));
                     }
-                    let d = w.fresh().dot;
-                    let c = crate::ops::create(w, &vview, v)?;
+                    let mut w2 = w.clone();
+                    let d = w2.fresh().dot;
+                    let c = match (&op.op, put, rest.is_empty()) {
+                        (_, Some(v), _) | (crate::ops::Op::Set(v), None, true) => Some(crate::ops::create(&mut w2, &vview, v)?),
+                        _ => resolve(&mut w2, None, None, None, rest, op, &vview, false)?,
+                    };
+                    let Some(c) = c else { return Ok(None) };
+                    *w = w2;
                     Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
             }

@@ -42,7 +42,7 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
 - **One delta must fit a blob**: a struct of many near-threshold registers is refused by the writer (Decentralization: "no size limit"): issues/struct-delta-size.md.
 - **Not checked**: "Runs in browsers" (no wasm build; the lower crates are sans-I/O and take rng and clock as parameters); "pushed, not polled" holds for connected nodes, push wake-ups for sleeping devices are a proposal (notes/networking.md).
-- **API conveniences not built** (no wire impact): queries and backlinks, `undelete`, `sync_policy`, bearer `open_link`, server-list changes: issues/api-deferred.md, issues/api-app-frictions.md.
+- **API conveniences not built** (no wire impact): queries and backlinks, `undelete` and text cut/paste, `sync_policy`, bearer `open_link`, streaming writes, `pending_uploads`: issues/api-deferred.md.
 
 ## Open issues by tag
 At the end of the run: 27 issues (security 4, post-mvp 3, owner-call 1, performance 7, tests 4). The current set changes as issues are solved: see `grep -h '^> Summary\|^> Tags' issues/*.md`.

@@ -46,14 +46,15 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
 | (none: interactive editors only) | `edit_text` (text sessions) | |
 | `write` (stdin) | one `write` batch | now |
-| `show T` | `aspects`, `get`, `knows`, `groups_of`, `role_on` | now |
+| `show T` | `aspects`, `get`, `knows`, `groups_of`, `role_on`, `owner_of`, `created` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
-| `signal send` / `signal listen` | `send_signal` / `on_signal` | now |
+| `signal send` / `signal listen [--in]` | `send_signal` / `on_signal`, `on_signal_in` | now |
 | `history` / `undo` / `redo` / `undo-commit` | `history` / `undo` / `redo` / `undo_commit` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` | now |
-| `roster T [--watch]` / `role T` | `roster`, `watch_roster` / `role_on` | now |
+| `roster T [--watch]` / `role T` / `via T MEMBER` | `roster`, `watch_roster` / `role_on` / `member_path` | now |
+| `now` | `now` | now |
 | `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | now |
 | `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
 | `card show/import` | `contact_card` / `import_contact` | now |

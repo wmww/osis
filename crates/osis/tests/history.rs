@@ -85,7 +85,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     let t = w.create(db.me(), Place::Unsynced).unwrap();
     w.commit().unwrap();
     db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
-    let newest = db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap().unwrap().commit;
+    let newest = commit_with(&db, |w| w.at(t, b.clone()).set(&Value::Int(1))).commit;
     db.engine(|e| e.drop_body(&newest, &t, &b)).unwrap();
     assert_eq!(db.undo(&UndoScope::Thing(t)), Err(Error::NotUndoable { commit: newest, reason: DropReason::Compacted }));
     assert_eq!(db.get(t, a).unwrap(), Some(Value::Int(1)));
@@ -116,7 +116,7 @@ fn history_states_spec_crdt_4_6() {
     w.make_group(g).unwrap();
     let t = w.create(db.me(), Place::In(g)).unwrap();
     w.commit().unwrap();
-    let c1 = db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
+    let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     let mut w = db.write();
     w.act_as(db.node());
     w.at(t, j.clone()).set(&Value::Int(5)).unwrap();
@@ -151,10 +151,10 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
     w.commit().unwrap();
-    let c1 = db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap().unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(5))).unwrap().unwrap();
+    let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
+    commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(2)));
+    commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
+    commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(5)));
     db.undo(&UndoScope::Thing(t)).unwrap().unwrap();
     assert_eq!(db.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
     assert_eq!(db.undo_commit(c1.commit), Err(Error::NotUndoable { commit: c1.commit, reason: DropReason::Superseded }));
