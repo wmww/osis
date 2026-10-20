@@ -519,7 +519,7 @@ mod tests {
                 Err(e) => panic!("{e}"),
             }
             fetched += 1;
-            let (id, b) = store.0.iter().find(|(id, _)| !held.0.contains_key(*id)).map(|(i, b)| (*i, b.clone())).unwrap();
+            let (id, b) = store.0.iter().filter(|(id, _)| !held.0.contains_key(*id)).min_by_key(|(id, _)| **id).map(|(i, b)| (*i, b.clone())).unwrap();
             held.0.insert(id, b);
         }
         assert!(fetched > 0 && held.0.len() < store.0.len());
