@@ -208,33 +208,38 @@ fn prune_entry(en: &mut Entry, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     en.reset.is_some() || en.frag.is_some()
 }
 
-fn join_entries(s: &mut BTreeMap<Dot, Entry>, d: BTreeMap<Dot, Entry>, e: Option<&Stamp>, ch: &mut Changes) {
-    for (dot, mut de) in d {
-        match s.get_mut(&dot) {
-            Some(se) => {
-                let raised = join_stamp(&mut se.reset, de.reset, ch);
-                prune_stamp(&mut se.reset, e, ch);
-                let ee = max_opt(e.cloned(), se.reset.clone());
-                if raised {
-                    prune_opt(&mut se.frag, ee.as_ref(), ch);
-                }
-                if se.key.is_none() && de.key.is_some() {
-                    se.key = de.key;
-                    ch.touch();
-                }
-                join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
-                if se.frag.is_none() {
-                    se.key = None;
-                }
-                if se.reset.is_none() && se.frag.is_none() {
-                    s.remove(&dot);
-                }
+fn join_entries(m: &mut Map, d: BTreeMap<Dot, Entry>, e: Option<&Stamp>, ch: &mut Changes) {
+    for (dot, de) in d {
+        join_entry(&mut m.entries, dot.clone(), de, e, ch);
+        m.index_dot(&dot);
+    }
+}
+
+fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&Stamp>, ch: &mut Changes) {
+    match s.get_mut(&dot) {
+        Some(se) => {
+            let raised = join_stamp(&mut se.reset, de.reset, ch);
+            prune_stamp(&mut se.reset, e, ch);
+            let ee = max_opt(e.cloned(), se.reset.clone());
+            if raised {
+                prune_opt(&mut se.frag, ee.as_ref(), ch);
             }
-            None => {
-                if prune_entry(&mut de, e, ch) {
-                    ch.touch();
-                    s.insert(dot, de);
-                }
+            if se.key.is_none() && de.key.is_some() {
+                se.key = de.key;
+                ch.touch();
+            }
+            join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
+            if se.frag.is_none() {
+                se.key = None;
+            }
+            if se.reset.is_none() && se.frag.is_none() {
+                s.remove(&dot);
+            }
+        }
+        None => {
+            if prune_entry(&mut de, e, ch) {
+                ch.touch();
+                s.insert(dot, de);
             }
         }
     }
@@ -293,7 +298,7 @@ pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
         Encoding::Struct => Fragment::Struct(Struct { meta, fields: BTreeMap::new() }),
         Encoding::Enum => Fragment::Enum(Enum { meta, case: None, payloads: BTreeMap::new() }),
         Encoding::Set => Fragment::Set(Set { meta, elems: BTreeMap::new() }),
-        Encoding::Map => Fragment::Map(Map { meta, entries: BTreeMap::new() }),
+        Encoding::Map => Fragment::Map(Map { meta, ..Map::default() }),
     })
 }
 
@@ -372,7 +377,7 @@ impl Fragment {
                 if raised {
                     a.entries.retain(|_, en| prune_entry(en, e.as_ref(), ch));
                 }
-                join_entries(&mut a.entries, b.entries, e.as_ref(), ch);
+                join_entries(&mut a, b.entries, e.as_ref(), ch);
                 Fragment::Map(a)
             }
             (Fragment::Seq(mut a), Fragment::Seq(mut b)) if a.text == b.text => {

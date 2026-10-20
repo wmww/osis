@@ -7,8 +7,11 @@ use crate::types::{Edge, MembershipCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_core::{CommitId, Role, Tid, Ts};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+
+/// History changes between two kept edge states (`edges_at` replays at most this many).
+const CHECKPOINT: usize = 256;
 
 /// When a query is evaluated: the edge state just before `point` (`None`: after every held
 /// write) with edges alive at `ts` (`None`: the end of time, where every `until` has passed).
@@ -42,6 +45,39 @@ pub struct Timeline {
     epoch_starts: BTreeMap<Tid, CommitId>,
     passes: usize,
     converged: bool,
+    /// Inputs `extend` must find unchanged.
+    nodes: BTreeSet<Tid>,
+    ever_members: BTreeMap<Tid, BTreeSet<Tid>>,
+    epoch_changed: bool,
+    /// The edge state before history change `i * CHECKPOINT`, for `edges_at`.
+    checkpoints: Vec<Edges>,
+    /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
+    /// component) is.
+    pub(crate) memo: Memo,
+}
+
+/// `first_held` by (node, thing, role).
+type FirstHeld = BTreeMap<(Tid, Tid, Role), Option<Option<Point>>>;
+/// `delta_valid` by its arguments.
+type Valid = BTreeMap<(Point, Tid, String, crate::types::Dots, Role), crate::content::Validity>;
+
+/// Memoized layer-2 answers.
+#[derive(Default)]
+pub(crate) struct Memo {
+    pub first_held: Mutex<FirstHeld>,
+    pub valid: Mutex<Valid>,
+}
+
+fn checkpoints(w: &walk::Walked) -> Vec<Edges> {
+    let mut out = Vec::with_capacity(w.history.len() / CHECKPOINT + 1);
+    let mut e = w.initial.clone();
+    for (i, c) in w.history.iter().enumerate() {
+        if i % CHECKPOINT == 0 {
+            out.push(e.clone());
+        }
+        e.set(c.member, c.target, c.edge);
+    }
+    out
 }
 
 impl Timeline {
@@ -49,6 +85,7 @@ impl Timeline {
     pub fn evaluate(held: &dyn HeldSet) -> Timeline {
         let input = Input::gather(held);
         let out = walk::run(&input);
+        let checkpoints = checkpoints(&out.walked);
         Timeline {
             owners: input.owners,
             commits: input.commits,
@@ -58,7 +95,55 @@ impl Timeline {
             epoch_starts: out.epoch_starts,
             passes: out.passes,
             converged: out.converged,
+            nodes: input.nodes,
+            ever_members: input.ever_members,
+            epoch_changed: out.epoch_changed,
+            checkpoints,
+            memo: Memo::default(),
         }
+    }
+
+    /// This timeline for `held`, which holds the same things, `/created` records and roster
+    /// snapshots plus membership commits placed after every write walked here: the walk goes
+    /// on from its end instead of starting over (equal to `evaluate`, the common case of a new
+    /// write). `None` when that does not hold (or the new writes drop something): evaluate.
+    pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
+        if !self.converged {
+            return None;
+        }
+        let input = Input::gather(held);
+        // a new author or member, or (after epoch changes) a new membership path, could have
+        // changed how earlier writes were walked
+        if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes || (self.epoch_changed && input.ever_members != self.ever_members) {
+            return None;
+        }
+        if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
+            return None;
+        }
+        let last = self.commits.values().map(|c| c.point()).chain(self.snaps.values().map(|s| s.point())).max();
+        let mut added: Vec<Arc<MembershipCommit>> = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.clone()).collect();
+        added.sort_by_key(|c| c.point());
+        if added.first().is_some_and(|c| last.is_some_and(|l| c.point() <= l)) {
+            return None;
+        }
+        let Timeline { walked, mut dropped, epoch_starts, passes, epoch_changed, .. } = self;
+        let walked = walk::extend(&input, &epoch_starts, &mut dropped, walked, &added)?;
+        let checkpoints = checkpoints(&walked);
+        Some(Timeline {
+            owners: input.owners,
+            commits: input.commits,
+            snaps: input.snaps,
+            walked,
+            dropped,
+            epoch_starts,
+            passes,
+            converged: true,
+            nodes: input.nodes,
+            ever_members: input.ever_members,
+            epoch_changed,
+            checkpoints,
+            memo: Memo::default(),
+        })
     }
     /// Walks evaluated (1 when nothing was dropped and no epoch start applied).
     pub fn passes(&self) -> usize {
@@ -103,8 +188,11 @@ impl Timeline {
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> Cow<'_, Edges> {
         let Some(p) = point else { return Cow::Borrowed(&self.walked.edges) };
-        let mut e = self.walked.initial.clone();
-        for c in self.walked.history.iter().take_while(|c| c.point < p) {
+        // from the newest kept state before `p`: O(edges + CHECKPOINT), not O(history)
+        let n = self.walked.history.partition_point(|c| c.point < p);
+        let k = (n / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
+        let mut e = self.checkpoints.get(k).cloned().unwrap_or_else(|| self.walked.initial.clone());
+        for c in self.walked.history.iter().take(n).skip(k * CHECKPOINT) {
             e.set(c.member, c.target, c.edge);
         }
         Cow::Owned(e)

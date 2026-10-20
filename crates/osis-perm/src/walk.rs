@@ -151,6 +151,18 @@ pub(crate) struct Walked {
     pub edges: Edges,
     pub applied: BTreeMap<WriteId, Applied>,
     pub demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
+    /// The rest of the walk's state, to continue it past its last write (`Timeline::extend`).
+    pub rest: Rest,
+}
+
+/// Walk state beyond what queries read (see `Pass`).
+#[derive(Default)]
+pub(crate) struct Rest {
+    prior: BTreeMap<(Tid, Tid), Edge>,
+    dead: BTreeSet<(Tid, Tid)>,
+    prior_node: BTreeMap<(Tid, Tid), BTreeMap<Tid, Edge>>,
+    by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
+    setter: BTreeMap<(Tid, Tid), WriteId>,
 }
 
 pub(crate) struct Outcome {
@@ -159,6 +171,23 @@ pub(crate) struct Outcome {
     pub epoch_starts: BTreeMap<Tid, CommitId>,
     pub passes: usize,
     pub converged: bool,
+    /// Whether the epoch starts ever changed (the rejection rule then read `Input::above`).
+    pub epoch_changed: bool,
+}
+
+/// Continues a converged walk with membership commits placed after every write it walked:
+/// the result of a from-scratch evaluation, provided they add nothing to D (every earlier
+/// pass restarted before reaching them, so it ran unchanged). `None`: D grew.
+pub(crate) fn extend(input: &Input, epoch: &BTreeMap<Tid, CommitId>, dropped: &mut BTreeMap<WriteId, Point>, walked: Walked, added: &[Arc<MembershipCommit>]) -> Option<Walked> {
+    let Walked { initial, history, edges, applied, demotions, rest } = walked;
+    let Rest { prior, dead, prior_node, by_author_target, setter } = rest;
+    let mut p = Pass { input, epoch, dropped, edges, initial, prior, dead, prior_node, applied, by_author_target, setter, history, demotions };
+    for c in added {
+        if p.commit(c) {
+            return None;
+        }
+    }
+    Some(p.finish())
 }
 
 /// A write placed by an epoch start's roster and ledger.
@@ -274,7 +303,7 @@ fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
 }
 
 enum PassResult {
-    Done(Walked),
+    Done(Box<Walked>),
     Restart,
 }
 
@@ -300,6 +329,11 @@ struct Pass<'a> {
 }
 
 impl Pass<'_> {
+    fn finish(self) -> Walked {
+        let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter };
+        Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, rest }
+    }
+
     fn view(&self, ts: Ts) -> View<'_> {
         View { owners: &self.input.owners, edges: &self.edges, ts: Some(ts) }
     }
@@ -604,6 +638,7 @@ pub(crate) fn run(input: &Input) -> Outcome {
     // paths cycle through mutual membership, where this bound ends the evaluation.
     let cap = (writes + 2).saturating_mul(ns.saturating_mul(ns + 2) + 1).saturating_mul(4);
     let mut passes = 0;
+    let mut epoch_changed = false;
     loop {
         passes += 1;
         let mut changed: Vec<Tid> = Vec::new();
@@ -629,6 +664,7 @@ pub(crate) fn run(input: &Input) -> Outcome {
             changed.push(*thing);
         }
         if !changed.is_empty() {
+            epoch_changed = true;
             // A rejected start gets another chance when a start changes anywhere authority on
             // its thing may come from (owners, members of what is above, at any time); D is
             // rebuilt, so writes a new start ignores leave no drops behind.
@@ -642,14 +678,14 @@ pub(crate) fn run(input: &Input) -> Outcome {
         }
         match res {
             PassResult::Done(walked) if changed.is_empty() => {
-                return Outcome { walked, dropped, epoch_starts: epoch, passes, converged: true };
+                return Outcome { walked: *walked, dropped, epoch_starts: epoch, passes, converged: true, epoch_changed };
             }
             _ if passes >= cap => {
                 let walked = match pass(input, &epoch, &mut dropped.clone(), &mut rejected.clone(), &mut BTreeMap::new()) {
-                    PassResult::Done(w) => w,
-                    PassResult::Restart => Walked { initial: Edges::default(), history: vec![], edges: Edges::default(), applied: BTreeMap::new(), demotions: BTreeMap::new() },
+                    PassResult::Done(w) => *w,
+                    PassResult::Restart => Walked { initial: Edges::default(), history: vec![], edges: Edges::default(), applied: BTreeMap::new(), demotions: BTreeMap::new(), rest: Rest::default() },
                 };
-                return Outcome { walked, dropped, epoch_starts: epoch, passes, converged: false };
+                return Outcome { walked, dropped, epoch_starts: epoch, passes, converged: false, epoch_changed };
             }
             _ => {}
         }
@@ -714,5 +750,5 @@ fn pass(
             return PassResult::Restart;
         }
     }
-    PassResult::Done(Walked { initial: p.initial, history: p.history, edges: p.edges, applied: p.applied, demotions: p.demotions })
+    PassResult::Done(Box::new(p.finish()))
 }

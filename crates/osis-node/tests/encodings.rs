@@ -142,3 +142,49 @@ fn large_value_spec_dm_6() {
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data)));
 }
+
+// spec/crdt.md §4.1, §8; notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct
+// aspect is paged too (the struct's other fields in the unit's skeleton). Path edits into the
+// map, edits of the other field, a restart, and a second writer's concurrent edits: reads and
+// canonical states agree with a model and across peers.
+#[test]
+fn paged_struct_field_converges() {
+    let mut lp = net(2, 21);
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let pad = "y".repeat(40);
+    let mut model: BTreeMap<Value, Value> = (0..3000).map(|i| (s(&format!("k{i}")), s(&format!("{pad}{i}")))).collect();
+    let book = |m: &BTreeMap<Value, Value>, note: &str| Value::Map([(Value::Int(0), Value::Map(m.clone())), (Value::Int(1), s(note))].into_iter().collect());
+    let mut m = Mutation::new();
+    m.set(t, &BOOK, &book(&model, "n0")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let mut note = "n0".to_string();
+    for round in 0..12 {
+        let w = round % 2;
+        let mut m = Mutation::new();
+        for j in 0..3 {
+            let k = s(&format!("k{}", (round * 37 + j * 101) % 3500));
+            let v = s(&format!("r{round}w{w}"));
+            m.op(t, &BOOK, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
+            model.insert(k, v);
+        }
+        if round % 3 == 0 {
+            note = format!("n{round}");
+            m.op(t, &BOOK, PathOp { path: vec![PathSeg::Field(1)], op: Op::Set(s(&note)) }).unwrap();
+        }
+        lp.peers[w].commit(m).unwrap().unwrap();
+        sync(&mut lp, w, 1 - w);
+        if round == 5 {
+            lp.peers[1].restart(77).unwrap();
+        }
+        for p in 0..2 {
+            assert_eq!(lp.peers[p].engine.get(&t, &ak("/t/book")).unwrap(), Some(book(&model, &note)), "round {round} peer {p}");
+        }
+    }
+    let x = lp.peers[0].engine.state(&t, &ak("/t/book")).unwrap();
+    assert_eq!(x, lp.peers[1].engine.state(&t, &ak("/t/book")).unwrap());
+    let k = s("k5");
+    assert_eq!(lp.peers[1].engine.get_at(&t, &ak("/t/book"), &[PathSeg::Field(0), PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
+}

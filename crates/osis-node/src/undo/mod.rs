@@ -26,12 +26,14 @@ fn decode_buffer(b: &[u8]) -> Result<Vec<(CommitId, Vec<u8>)>> {
     Ok(out)
 }
 
-/// Records the state of `(tid, ak)` before local commit `id` applies.
-pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
+/// Records the state of `(tid, ak)` before local commit `id` applies: the part undoing `delta`
+/// reads (`Fragment::footprint`), or all of it without one.
+pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta: Option<&Fragment>) -> Result<()> {
     tx.load(tid, ak)?;
-    let pre = match tx.core.states.get(&(*tid, ak.clone())).cloned().flatten() {
-        Some(f) => crate::engine::state::encode(&f)?,
-        None => Vec::new(),
+    let pre = match (tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref), delta) {
+        (Some(f), Some(d)) => crate::engine::state::encode(&f.footprint(d))?,
+        (Some(f), None) => crate::engine::state::encode(f)?,
+        (None, _) => Vec::new(),
     };
     let mut unit = tx.unit(tid, ak)?;
     let mut list = decode_buffer(&unit.undo)?;

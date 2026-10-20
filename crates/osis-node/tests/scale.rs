@@ -57,7 +57,7 @@ fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
-// spec/requirements.md, Scale: maps with millions of keys; a change inside a huge value costs
+// spec/crdt.md §8; spec/requirements.md, Scale: maps with millions of keys; a change inside a huge value costs
 // O(change). Measures one map entry edit at 10^4..10^6 keys: bytes the engine writes to the
 // store and the commit it produces. `OSIS_SCALE_MAX` caps the size (default 10^6).
 #[test]
@@ -104,7 +104,7 @@ fn big_map_edit_cost() {
 #[ignore]
 fn roster_removal_cost() {
     for n in [100usize, 1_000] {
-        let (mut e, _, _) = engine(7);
+        let (mut e, batches, bytes) = engine(7);
         let me = e.tid();
         let mut m = Mutation::new();
         let a = e.new_thing(&mut m, me);
@@ -154,5 +154,13 @@ fn roster_removal_cost() {
         assert!(boxes >= 2 * (n - 1));
         // Budget: notes/chat.md, 2.7 KB per remaining member per rotation, plus about 10%.
         assert!(total <= 3000 * (n - 1), "{total} B for {n} members");
+        // One history entry more afterwards: with the box map paged, only the skeleton (the small
+        // fields) is rewritten, not the whole `/secrets` state.
+        let mut m2 = Mutation::new();
+        m2.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(Value::Int(999_999))], op: Op::Set(Value::Bytes(vec![7; 64])) }).unwrap();
+        let w0 = bytes.load(Ordering::Relaxed);
+        let t2 = Instant::now();
+        e.commit(m2).unwrap().unwrap();
+        println!("roster {n}: one more /secrets entry {:?}, store writes {} B ({} batches total)", t2.elapsed(), bytes.load(Ordering::Relaxed) - w0, batches.load(Ordering::Relaxed));
     }
 }

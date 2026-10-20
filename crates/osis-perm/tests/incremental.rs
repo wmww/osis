@@ -1,6 +1,6 @@
 //! Incremental evaluation (spec/permissions.md §5.1 step 5: D is rebuilt from
-//! scratch on any change): per-component timelines, cached, equal the whole held set's
-//! timeline after every arrival, in random arrival orders.
+//! scratch on any change): per-component timelines, cached or continued past their last write,
+//! equal the whole held set's timeline after every arrival, in random and in timeline order.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -24,6 +24,9 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         for n in nodes {
             if part.standing(n, &t, At::END) != full.standing(n, &t, At::END) {
                 return Some(format!("standing of {n:?} on {t:?}"));
+            }
+            if part.demotions(n, &t) != full.demotions(n, &t) {
+                return Some(format!("demotions of {n:?} on {t:?}"));
             }
         }
         if part.epoch_start(&t) != full.epoch_start(&t) {
@@ -60,7 +63,15 @@ fn run(samples: u64, seed: u64) {
             w.merge(wk);
             nodes.extend(nk);
         }
-        let order = rng.perm(w.commits.len());
+        // random arrivals, or in timeline order (each new write after every held one: the
+        // cached walk is continued, `Timeline::extend`)
+        let order = if rng.below(2) == 0 {
+            rng.perm(w.commits.len())
+        } else {
+            let mut o: Vec<usize> = (0..w.commits.len()).collect();
+            o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+            o
+        };
         let mut held_ids = BTreeSet::new();
         let mut inc = Timelines::new();
         let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();

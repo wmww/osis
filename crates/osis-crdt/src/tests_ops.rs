@@ -116,7 +116,11 @@ proptest! {
         let src = source(&mw.source);
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
         let mut w = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
-        let Some(ud) = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap() else {
+        let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
+        // the node keeps only the footprint of the delta as its undo buffer
+        let mut w2 = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
+        prop_assert_eq!(undo(&mut w2, &u, &s1, &s0.footprint(&d), &TyView(ty.clone())).unwrap(), full.clone());
+        let Some(ud) = full else {
             prop_assert_eq!(read(&s1), read(&s0));
             return Ok(());
         };
@@ -342,4 +346,27 @@ fn diff_rewrites_value_less_field_spec_9() {
     assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![1]);
     st.join(d);
     assert_eq!(read(&st), Some(v(2, Some(7))));
+}
+
+proptest! {
+    /// §5.6: the local key index finds a key's live entries as a scan of the joined map does,
+    /// after any sequence of joins (several writers, removals, resets).
+    #[test]
+    fn key_index_matches_scan_spec_5_6(seed in any::<u64>()) {
+        let ty = sink_no_seq();
+        let mut r = Rng(seed | 1);
+        let commits = history(&mut r, std::slice::from_ref(&ty), 3, 4);
+        let mut s = Fragment::default();
+        for c in &commits {
+            s.join(frag(&c.delta));
+            let Fragment::Struct(st) = &s else { continue };
+            let Some(Fragment::Map(m)) = st.fields.get(&7) else { continue };
+            let scan = crate::ops::live_entries(&m.entries);
+            let keys: std::collections::BTreeSet<&Value> = m.entries.values().filter_map(|e| e.key.as_ref()).collect();
+            for k in keys {
+                let want: Vec<&crate::stamp::Dot> = scan.get(k).cloned().unwrap_or_default();
+                prop_assert_eq!(m.live_dots(k), want);
+            }
+        }
+    }
 }

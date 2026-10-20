@@ -88,13 +88,13 @@ pub fn frag(f: &m::Frag) -> Fragment {
             payloads: payloads.iter().map(|(k, f)| (*k, frag(f))).collect(),
         }),
         m::Frag::Set { c, elems: e } => Fragment::Set(Set { meta: meta(c), elems: elems(e) }),
-        m::Frag::Map { c, entries } => Fragment::Map(Map {
-            meta: meta(c),
-            entries: entries
+        m::Frag::Map { c, entries } => Fragment::Map(Map::new(
+            meta(c),
+            entries
                 .iter()
                 .map(|(d, e)| (dot(d), Entry { reset: ostamp(&e.reset), key: e.key.as_ref().map(value), frag: e.frag.as_ref().map(|f| Box::new(frag(f))) }))
                 .collect(),
-        }),
+        )),
         m::Frag::Seq { text, c, elems } => Fragment::Seq(Seq {
             text: *text,
             meta: meta(c),

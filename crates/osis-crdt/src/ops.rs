@@ -188,7 +188,7 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
                 let d = w.fresh().dot;
                 entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vv, val)?)) });
             }
-            Fragment::Map(Map { meta, entries })
+            Fragment::Map(Map::new(meta, entries))
         }
         (Encoding::List | Encoding::Text, v) => Fragment::Seq(seq::create(w, enc == Encoding::Text, view, v)?),
         _ => return Err(Error::Mismatch("value does not fit the encoding")),
@@ -215,7 +215,7 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
 pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
     let r = w.delta_stamp();
     let entries = dots.iter().map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None })).collect();
-    Fragment::Map(Map { meta: Meta::default(), entries })
+    Fragment::Map(Map::new(Meta::default(), entries))
 }
 
 /// The slot of encoding `enc` at a position, present only.
@@ -370,7 +370,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                     entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)) });
                 }
             }
-            Fragment::Map(Map { meta: Meta::default(), entries })
+            Fragment::Map(Map::new(Meta::default(), entries))
         }
         _ => return Err(Error::Mismatch("value does not fit the encoding")),
     };
@@ -425,7 +425,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .flat_map(|(_, ds)| ds)
                         .map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None }))
                         .collect();
-                    Ok((!entries.is_empty()).then(|| Fragment::Map(Map { meta: Meta::default(), entries })))
+                    Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }
                 (Some(Encoding::Set | Encoding::Map), None) => Ok(None),
                 _ => Err(Error::Mismatch("remove needs a set or map")),
