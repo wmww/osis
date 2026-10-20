@@ -451,3 +451,35 @@ fn rejected_start_reconsidered_through_member_actor() {
     assert_eq!(tl.epoch_start(&nn), Some(s));
     assert_eq!(edge_role(&tl, z, nn), Some(Write));
 }
+
+/// §1: an actor's owner is implicitly its admin: other admins' removal or demotion edges for it
+/// change nothing, and the owner still removes such an admin afterwards.
+// spec/permissions.md §1 (owner not removable)
+#[test]
+fn owner_not_removable_by_admins() {
+    let (mut w, n, g) = group();
+    w.set(n[1], g, n[0], None, 2, &[]);
+    w.set(n[2], g, n[0], edge(Read), 3, &[]);
+    let tl = eval(&w);
+    assert_eq!(role(&tl, n[0], g), Some(Admin));
+    w.set(n[0], g, n[1], None, 4, &[]);
+    let tl = eval(&w);
+    assert_eq!(role(&tl, n[0], g), Some(Admin));
+    assert_eq!(edge_role(&tl, n[1], g), None);
+}
+
+/// §1: edges are written only by admins: a writer's grant, raise or removal never applies.
+// spec/permissions.md §1 (membership-class by admins)
+#[test]
+fn writer_cannot_write_edges() {
+    let (mut w0, n, g) = group();
+    let z = w0.nodes_salted(1, 9)[0];
+    for (x, e) in [(z, edge(Read)), (n[4], edge(Admin)), (n[1], None), (n[2], edge(Read))] {
+        let mut w = w0.clone();
+        let before = eval(&w).roster(&g, At::END);
+        let c = w.set(n[4], g, x, e, 2, &[]);
+        let tl = eval(&w);
+        assert!(!tl.is_applied(&WriteId::Op(c, 0)), "{x:?} := {e:?}");
+        assert_eq!(tl.roster(&g, At::END), before);
+    }
+}
