@@ -58,7 +58,7 @@ fn key_actor_grant_raced_by_read_rotation() {
     w.apply(&mut s);
     assert!(reseal_needed(&s, &v, &members, WallMs(0), &knows).is_empty());
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
+    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
     assert!(kv.read.secret(&er2).is_some());
 }
 
@@ -78,7 +78,7 @@ fn key_actor_demoted_keeps_lower_roles() {
     let ew = v.write.newest().unwrap();
     assert_eq!(s.boxes.keys().filter(|b| b.member == k).cloned().collect::<Vec<_>>(), vec![box_key(k, Role::Write, &ew)]);
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
+    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
     assert!(kv.read.secret(&v.read.newest().unwrap()).is_some());
     assert!(kv.write.secret(&ew).is_some());
     assert!(kv.admin.secret(&rot.rotated[0].epoch).is_none());
@@ -86,6 +86,7 @@ fn key_actor_demoted_keeps_lower_roles() {
 
 // spec/crypto.md §4: carrying a lower role's secret to a key actor is encrypting under its epoch:
 // an uncovered one is rotated too.
+// spec/crypto.md §4 (encrypt under covering epoch)
 #[test]
 fn carried_role_rotates_when_uncovered() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));

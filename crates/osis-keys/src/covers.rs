@@ -59,12 +59,20 @@ pub fn expired(until: Option<WallMs>, now: WallMs) -> bool {
 pub trait HeldActors {
     fn secrets(&self, actor: &Tid) -> Option<&Secrets>;
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs>;
+    /// Whether a key-actor box keyed at a higher role whose key epoch is no longer current (a
+    /// grant raced by a rotation of that role only) carries role `r` at epoch `e`: the commit that
+    /// wrote it knew `e` (`Carries`). Such a box still hands its holder the lower role's secret.
+    fn stale_box_carries(&self, _key: &BoxKey, _r: Role, _e: &Epoch) -> bool {
+        false
+    }
 }
 
 /// In-memory `HeldActors`.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryHeldActors {
     pub map: BTreeMap<Tid, (Secrets, ActorEpochs)>,
+    /// `HeldActors::stale_box_carries` answers: (box key, role, epoch) it carries.
+    pub stale: BTreeSet<(BoxKey, Role, Epoch)>,
 }
 
 impl HeldActors for MemoryHeldActors {
@@ -74,6 +82,9 @@ impl HeldActors for MemoryHeldActors {
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs> {
         self.map.get(actor).map(|x| &x.1)
     }
+    fn stale_box_carries(&self, key: &BoxKey, r: Role, e: &Epoch) -> bool {
+        self.stale.contains(&(key.clone(), r, *e))
+    }
 }
 
 /// Whether a key-actor box keyed at a higher role (`key`) carries role `r` at epoch `e`; it
@@ -82,16 +93,17 @@ pub type Carries<'a> = Option<&'a dyn Fn(&BoxKey, Role, &Epoch) -> bool>;
 
 /// The boxes of `member` that may carry role `r` at epoch `e`: its box at (r, e), and a
 /// key-actor box (sealed, no keyset) keyed at a higher role's current epoch, which carries the
-/// roles below it (spec/crypto.md §4) where `carries` says so.
-fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: &Epoch, carries: Carries) -> bool {
+/// roles below it (spec/crypto.md §4) where `carries` says so; with `stale`, also such a box at
+/// a superseded epoch of the higher role where `stale` says it carries (r, e).
+fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: &Epoch, carries: Carries, stale: Option<&dyn HeldActors>) -> bool {
     let exact = box_key(*member, r, e);
     secrets.boxes.iter().any(|(k, b)| {
         k.member == *member
             && (*k == exact
                 || (k.role > r
                     && matches!(b, SecretBox::Sealed(s) if s.keyset.is_none())
-                    && from_schema(&k.epoch).is_ok_and(|ke| epochs.role(k.role).is_current(&ke))
-                    && carries.is_none_or(|f| f(k, r, e))))
+                    && (from_schema(&k.epoch).is_ok_and(|ke| epochs.role(k.role).is_current(&ke)) && carries.is_none_or(|f| f(k, r, e))
+                        || stale.is_some_and(|h| h.stale_box_carries(k, r, e)))))
     })
 }
 
@@ -105,7 +117,7 @@ pub fn covers(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &D
         return true;
     }
     let Some((m, rest)) = d.via.split_first() else {
-        return !boxes_for(secrets, epochs, &d.member, r, e, None);
+        return !boxes_for(secrets, epochs, &d.member, r, e, None, Some(held));
     };
     let named = match secrets.boxes.get(&box_key(*m, r, e)) {
         None => return true,
@@ -195,7 +207,7 @@ pub fn reseal_needed(
                 re.current()
                     .iter()
                     .filter(|e| re.provenance(e).is_some_and(Provenance::reseals))
-                    .any(|e| !boxes_for(secrets, epochs, &m.member, *r, e, Some(carries)))
+                    .any(|e| !boxes_for(secrets, epochs, &m.member, *r, e, Some(carries), None))
             })
             .collect();
         if !roles.is_empty() {

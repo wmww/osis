@@ -159,6 +159,7 @@ fn regrant_validates_gap_until_next_removal() {
 
 /// spec/commits.md §4: overlapping node-form ranges from one node on one aspect void both
 /// commits; adjacent ranges, other nodes and other aspects do not.
+// spec/permissions.md §5.2 (dot reuse)
 #[test]
 fn node_form_overlap_voids_both() {
     let mut w = World::new();

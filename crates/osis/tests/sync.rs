@@ -190,6 +190,7 @@ fn link_redeem_spec_permissions_9() {
 // spec/permissions.md §3 (removal with rotation), §5.3 (pre-sync), notes/api.md Sharing
 // (demote): Alice removes Bob after the pre-sync; Carol keeps reading new content, Bob does
 // not; Bob's write made before the removal stays.
+// spec/crypto.md §4 (removed member)
 #[test]
 fn removal_rotates_spec_permissions_3() {
     let mut w = World::new();

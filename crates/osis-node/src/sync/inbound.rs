@@ -218,7 +218,7 @@ impl SyncEngine {
     }
 
     fn secrets_count(&self) -> usize {
-        self.engine.core.secrets.values().map(|e| e.read.held().count() + e.write.held().count() + e.admin.held().count()).sum()
+        self.engine.core.secrets.values().map(|e| e.read.held_newest_first().len() + e.write.held_newest_first().len() + e.admin.held_newest_first().len()).sum()
     }
 
     fn open_one(&mut self, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {

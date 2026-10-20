@@ -326,6 +326,7 @@ fn local_rights_check_spec_permissions_1() {
 
 // notes/api.md Writes: membership-class and synthetic aspects are not written by ops.
 // spec/permissions.md §1
+// spec/permissions.md §1 (membership-class by admins): writer side
 #[test]
 fn membership_class_refused_spec_permissions_1() {
     let db = db(1);

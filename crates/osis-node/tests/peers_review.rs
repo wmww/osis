@@ -139,6 +139,7 @@ fn served_sessions_capped_and_idle_closed_spec_sync_5() {
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
+// spec/sync.md §5 (member peer)
 #[test]
 fn stranger_refused_spec_sync_5() {
     let mut net = Net::new();
@@ -160,6 +161,7 @@ fn stranger_refused_spec_sync_5() {
 // spec/sync.md §5, spec/permissions.md §3: a removed member's node is not dialed (its old
 // `/reach` is held, it may not read now) and, once the label has a new step, opens nothing
 // served.
+// spec/sync.md §5 (member peer)
 #[test]
 fn removed_member_not_dialed_nor_served_spec_sync_5() {
     let mut net = Net::new();

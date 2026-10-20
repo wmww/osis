@@ -14,6 +14,7 @@ use osis_schema::{Bound, PurgeBy, Retention};
 
 // spec/commits.md §4: a commit whose signature does not verify is bad input: a diagnostic,
 // nothing stored.
+// spec/commits.md §4 (signature)
 #[test]
 fn bad_signature_rejected_spec_commits_4() {
     let mut lp = net(2, 21);
@@ -186,6 +187,7 @@ impl osis_commit::Secrets for Dedup {
 
 // spec/versioning.md §2: an unknown encoding or format version parks the commit as bytes; it
 // is relayed and re-examined (after an upgrade), never rejected; others still apply.
+// spec/versioning.md §2 (park unknown)
 #[test]
 fn parked_spec_versioning_2() {
     let mut lp = net(2, 28);

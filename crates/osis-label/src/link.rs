@@ -247,6 +247,7 @@ pub(crate) mod tests {
 
     // spec/wire.md §10 (FC-3): `flags` is present only with a bit set; a seven-item link is
     // single use; a zero or unknown flag is refused.
+    // spec/wire.md §10 (reserved flags)
     #[test]
     fn flags() {
         let mut l = link();

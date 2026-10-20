@@ -157,6 +157,7 @@ fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
 // spec/permissions.md §2, §3; spec/sync.md §3: a grant gives the thing secrets of its own
 // first, carries the grantee's boxes, and reaches the grantee's devices as an inbox blob,
 // whose acceptance yields a certificate copy for the grantee's home label.
+// spec/permissions.md §2 (edge inbox delivery): grants
 #[test]
 fn grant_by_inbox_spec_perm_2() {
     let (mut lp, ps) = people(2, 502);
@@ -197,7 +198,11 @@ fn grant_carries_history_spec_crypto_4() {
     assert!(want.len() >= 2, "derived epoch and own epoch");
     let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
     lp.peers[1].engine.accept_inbox(blob).unwrap();
-    assert_eq!(held(&lp, 1), want, "from the pending grant");
+    // from the pending grant for reading only (spec/crypto.md §4: never encrypted under until
+    // an applied valid box carries it)
+    let reading: BTreeSet<osis_crypto::Epoch> = lp.peers[1].engine.epochs(&d).unwrap().read.held_newest_first().into_iter().map(|x| x.0).collect();
+    assert_eq!(reading, want, "from the pending grant");
+    assert!(held(&lp, 1).is_empty());
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(held(&lp, 1), want);
@@ -205,6 +210,7 @@ fn grant_carries_history_spec_crypto_4() {
 
 // spec/permissions.md §3; spec/commits.md §2: a removal and the target's rotation are one
 // commit; the removed member holds no secret of the new epoch and drops what it lost.
+// spec/crypto.md §4 (removed member), spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn removal_rotates_spec_perm_3() {
     let (mut lp, ps) = people(3, 503);
@@ -236,6 +242,7 @@ fn removal_rotates_spec_perm_3() {
 
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot
 // change or remove anyone else; a member leaves by self-removal.
+// spec/permissions.md §2 (invite scope)
 #[test]
 fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3, 504);
@@ -271,6 +278,7 @@ fn invite_power_spec_perm_2() {
 // notes/permissions.md Revocation; spec/permissions.md §5.1, §5.2: the demoter's frontier,
 // from its receipt record, keeps the edits it received and drops the demoted member's edits
 // it never saw (made before) and those made after.
+// spec/permissions.md §5.1 (frontier received)
 #[test]
 fn demotion_frontier_spec_perm_5_1() {
     const DAY: u64 = 86_400_000;
@@ -714,6 +722,7 @@ fn unheld_member_judged_by_keyset_spec_crypto_4() {
 // spec/permissions.md §3: o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may
 // not rotate K1, and a rotation of C would still box K1 at the uncovered epoch: it does not
 // rotate C (stranded on C until K1 rotates), however often it is asked.
+// spec/permissions.md §3 (required rotation)
 #[test]
 fn no_rotation_that_cannot_cover_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
@@ -816,6 +825,7 @@ fn roster_snapshot_spec_perm_6() {
 
 // spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
 // its members on the copy and points the old thing at it; a second move is refused.
+// spec/permissions.md §7 (one import)
 #[test]
 fn move_regrants_spec_perm_7() {
     let (mut lp, ps) = people(2, 516);
@@ -1038,4 +1048,69 @@ fn move_labels_copy_spec_perm_7() {
     let e = thing_of(&mut lp, 0, pa);
     let (copy, _) = lp.peers[0].engine.move_to(&e, &team).unwrap();
     assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
+}
+
+// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M"; a
+// key actor's box keyed at a higher role carries the roles below it. A node granted write with
+// `until` while another admin rotated write only (a demotion it had not seen with the grant)
+// keeps its box at the superseded write epoch, which still carries the read epoch. Once `until`
+// passes, the next writer rotates read before encrypting, and the key actor holds none of it.
+#[test]
+fn stale_key_actor_box_after_until_spec_crypto_4() {
+    let (mut lp, ps) = people(4, 521);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let n3 = lp.peers[3].engine.tid();
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    let r0 = newest_read(&lp, 1, t).unwrap();
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_some(), "the key actor holds the read epoch");
+    lp.advance(2 * 3_600_000);
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
+    assert!(still.is_empty());
+    let r1 = newest_read(&lp, 1, t).unwrap();
+    assert_ne!(r0, r1, "read rotated: {done:?}");
+    spread(&mut lp);
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
+}
+
+// spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs
+// its redemption in commit form.
+#[test]
+fn link_key_writes_commit_form_spec_commits_3() {
+    let (mut lp, ps) = people(2, 512);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    sync(&mut lp, 0, 1);
+    let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    let by_l: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[1].engine.header(c).unwrap().author == l).collect();
+    assert!(!by_l.is_empty());
+    for c in by_l {
+        assert_eq!(lp.peers[1].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
+    }
+}
+
+// spec/permissions.md §2 (edge inbox delivery): a change and a removal of an actor's edge reach
+// that actor as inbox blobs, like a grant.
+#[test]
+fn edge_change_and_removal_by_inbox_spec_perm_2() {
+    let (mut lp, ps) = people(2, 521);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let to_pb = |done: &Done| done.deliveries.iter().filter(|x| matches!(x, Delivery::Inbox { to, .. } if *to == pb)).count();
+    let down = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
+    assert_eq!(to_pb(&down), 1, "change");
+    spread(&mut lp);
+    let gone = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    assert_eq!(to_pb(&gone), 1, "removal");
 }

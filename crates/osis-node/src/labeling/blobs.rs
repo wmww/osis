@@ -85,7 +85,7 @@ impl HeadKeys {
 fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, Secret32)> {
     let re = e.role(role);
     let ep = osis_keys::registered_epoch(re, role, index, pk)?;
-    re.secret(&ep).map(|s| (ep, s.clone()))
+    re.reading_secret(&ep).map(|s| (ep, s.clone()))
 }
 
 impl Engine {

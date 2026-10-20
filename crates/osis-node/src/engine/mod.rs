@@ -130,6 +130,9 @@ pub(crate) struct Core {
     pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
     pub rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
+    /// grant may carry only those, spec/permissions.md §2).
+    pub grant_overreach: BTreeSet<(CommitId, usize)>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
@@ -165,6 +168,7 @@ pub(crate) struct Backup {
     member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     unresolved: BTreeSet<CommitId>,
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    grant_overreach: BTreeSet<(CommitId, usize)>,
     box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
     secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }
@@ -193,6 +197,7 @@ impl Core {
             member_keys: self.member_keys.clone(),
             unresolved: self.unresolved.clone(),
             rotation_role: self.rotation_role.clone(),
+            grant_overreach: self.grant_overreach.clone(),
             box_keys: self.box_keys.clone(),
             secrets_unresolved: self.secrets_unresolved.clone(),
         }));
@@ -222,6 +227,7 @@ impl Core {
             self.member_keys = b.member_keys;
             self.unresolved = b.unresolved;
             self.rotation_role = b.rotation_role;
+            self.grant_overreach = b.grant_overreach;
             self.box_keys = b.box_keys;
             self.secrets_unresolved = b.secrets_unresolved;
             self.timelines.update(&self.held);
@@ -251,6 +257,7 @@ impl Core {
             member_keys: BTreeMap::new(),
             unresolved: BTreeSet::new(),
             rotation_role: BTreeMap::new(),
+            grant_overreach: BTreeSet::new(),
             box_keys: BTreeMap::new(),
             secrets_unresolved: BTreeMap::new(),
             schemas: BTreeMap::new(),

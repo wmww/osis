@@ -86,6 +86,7 @@ pub(crate) fn membership_header(ak: &str) -> Header {
 // spec/commits.md §2, §5: membership commits carry no expires, keep fixed retention, may carry
 // several sorted delta hashes per aspect, may touch /secrets and /keys of several things; a
 // frontier only on membership commits; roster snapshots only /members and /tenures of one thing.
+// spec/commits.md §2 (membership no expires)
 #[test]
 fn validate_membership() {
     let h = membership_header("/members");
@@ -130,6 +131,7 @@ fn validate_membership() {
 
 // spec/commits.md §5, §6: expires after ts; no expires with a purge request; purge never names
 // membership deltas; relative keep at most only under writer.
+// spec/commits.md §5 (purge not membership), §5 (purge no expires)
 #[test]
 fn validate_expiry_purge_retention() {
     let h = sample_header();

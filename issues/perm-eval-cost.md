@@ -1,6 +1,6 @@
 # Evaluating the membership timeline costs restarts × passes × graph searches
 > Summary: osis-perm re-walks a whole connected component from scratch on every held-set change; each restart re-walks it, each explicit write searches the graph per affected node, and point queries (`delta_valid`, `edges_at`) replay the history; about 1 s in release at 10^4 edge writes. The node should cache and reuse.
-> Tags: permissions, node
+> Tags: permissions, node, security
 
 Repro: `cargo test --release -p osis-perm -- --ignored bench_10k_edges --nocapture`.
 
@@ -11,3 +11,4 @@ Cost shape (crates/osis-perm/src/walk.rs, timeline.rs, content.rs):
 - Measured (`tests/bench.rs`, release): 1k edge writes about 30 ms, 10k about 1 s; one arrival re-evaluates its whole component (`Timelines` caches only unchanged components).
 
 Recommendation: the node keeps one `Timelines` per store and answers content validity from cached per-(node, thing) results; perm adds reuse of the previous walk when a commit lands after every held write and adds no drop or epoch change (the common case), and snapshots of the edge state at intervals for point queries. Not needed for correctness.
+- With valid keys (security review): `Owners::chain` has no depth cap (the node caps epochs at 64 and departures at 8), so a writer nesting things owned by things makes every standing and chain query O(depth); with this issue's restarts that is a cost a member can drive. Cap or cache chains when caching lands.

@@ -323,6 +323,12 @@ impl Net {
 
     /// `group` with server addresses.
     pub fn group_at(&mut self, admin: usize, members: &[(usize, Role)], addrs: Vec<Address>) -> Tid {
+        self.group_seeded(admin, members, addrs, 1)
+    }
+
+    /// `group_at` with the rotation's rng seed: groups of one admin need distinct seeds, or they
+    /// get equal secrets and so one label ID.
+    pub fn group_seeded(&mut self, admin: usize, members: &[(usize, Role)], addrs: Vec<Address>, rng: u64) -> Tid {
         for (m, _) in members {
             self.pair(*m, admin);
         }
@@ -340,7 +346,7 @@ impl Net {
             recipients.push(recipient(e, *t, *r));
         }
         let e = self.engine(admin);
-        rotation(e, g, &recipients, 1, true);
+        rotation(e, g, &recipients, rng, true);
         self.engine(admin).create_label(&g, &addrs).unwrap();
         for (m, _) in members {
             self.pair(admin, *m);

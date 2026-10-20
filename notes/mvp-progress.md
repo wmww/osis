@@ -65,7 +65,7 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| hardening-signoff | not started | wave 6 |
+| hardening-signoff | step 1 merged (dd3fbbf: 46-rule checklist, 42 tested, issues/tests-spec-gaps.md); running: security reviews crypto+keys+perm+flows, label+server+node-sync, store+api | then: remaining sync bugs, scale and panic audit, re-review, report |
 
 ## Open escalations
 - Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
@@ -73,6 +73,7 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 
 ## Spec edits
 - wave 6 label+server/node-sync review: spec/sync.md §9 receivers drop a signal whose `ts` is more than `MAX_DRIFT` from their corrected clock (a server could replay captured signals indefinitely; replays inside the window remain, apps dedupe by sender sequence, notes/ephemeral.md).
+- crypto+keys security review: spec/crypto.md §4 a secret learned only from a pending or invalid commit is kept for reading and never encrypted under until an applied valid box carries it (a box anyone can seal to a member's `/keys` in a pending commit otherwise planted the secret of an epoch before its real box arrived).
 - sync bug-fix round 2: spec/commits.md §5 covered also needs the covering snapshot's frontiers to reach a node-form body's counters or a snapshot body's frontiers (node-form was implemented, snapshot-vs-snapshot was missing: covered-equal snapshots with smaller frontiers stood in for a carrier and a co-writer re-uploaded the body); spec/sync.md §6 the clock offset ignores samples whose round trip exceeds a few seconds, and a node SHOULD close and redial a connection with a request unanswered for minutes; §10 the LAN announcement datagram (60 bytes, UDP broadcast to port 47380) written as provisional, with the conservative candidate-route rule until the transport key is bound to the node (owner decision: bind it when the LAN loop is built).
 - wave 5 flows fixes: spec/permissions.md §3 a rotation boxing a member without a box at the current read epoch also goes to it by inbox (spec/sync.md §3 inbox blob list); no rotation of A for a departure inside a member that a fresh epoch would not cover; spec/crypto.md §4 a node holding no secret of M judges the inside-M covers rule by M's newest `/keys` keyset.
 - sync bug-fix round: spec/sync.md §6 a must-hold body is held by any blob of its commit holding its deltas that no snapshot under the label covers (a right holder that dropped covered deltas uploads a smaller projection; without this a co-writer that may not drop them re-uploads the whole body forever).

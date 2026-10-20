@@ -180,6 +180,7 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
 
 // spec/sync.md §3: a class above MAX_BLOB splits greedily in aspect-list order; spec/commits.md
 // §1: one delta that cannot fit a blob is refused by the writer.
+// spec/commits.md §1 (delta fits a blob): a single delta over MAX_BLOB is refused
 #[test]
 fn projection_splits_by_size() {
     let at = ts(1_000_000);
