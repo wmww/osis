@@ -12,7 +12,7 @@ use osis_core::{Clock, ManualClock, Tid, Value};
 use osis_crypto::SeededRng;
 use osis_node::local_peer::{LocalPeer, Peer};
 use osis_node::{Config, Engine, Mutation};
-use osis_store::{MemoryBackend, MemoryRoot, StoreConfig, forensic_node_keys, forensic_open};
+use osis_store::{MemoryBackend, MemoryRoot, StoreConfig};
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -31,48 +31,6 @@ fn peer(seed: u64) -> Peer {
 
 fn net2(seed: u64) -> LocalPeer {
     LocalPeer { peers: vec![peer(seed), peer(seed + 1)] }
-}
-
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
-}
-
-/// Whether an attacker decrypts `marker` from the rows ever written, starting from the keys the
-/// current tree yields and harvesting keys from opened tree nodes.
-fn recoverable(p: &mut Peer, marker: &[u8]) -> bool {
-    plaintexts(p).iter().any(|x| contains(x, marker))
-}
-
-/// Every row plaintext an attacker recovers.
-fn plaintexts(p: &mut Peer) -> Vec<Vec<u8>> {
-    let history = p.backend.history();
-    let mut keys = p.engine.forensic_keys().unwrap();
-    let mut known: HashSet<[u8; 32]> = keys.iter().copied().collect();
-    let mut opened = vec![false; history.len()];
-    let mut tried = 0;
-    let mut found = Vec::new();
-    while tried < keys.len() {
-        let batch: Vec<[u8; 32]> = keys[tried..].to_vec();
-        tried = keys.len();
-        for (i, (row, value)) in history.iter().enumerate() {
-            if opened[i] {
-                continue;
-            }
-            for k in &batch {
-                if let Some(plain) = forensic_open(row, value, k) {
-                    for nk in forensic_node_keys(row, &plain) {
-                        if known.insert(nk) {
-                            keys.push(nk);
-                        }
-                    }
-                    found.push(plain);
-                    opened[i] = true;
-                    break;
-                }
-            }
-        }
-    }
-    found
 }
 
 fn big(marker: &str) -> String {

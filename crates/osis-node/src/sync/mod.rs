@@ -343,6 +343,11 @@ impl SyncEngine {
             lan_peers: None,
             prefix_checked: BTreeSet::new(),
         })
+        .and_then(|mut s| {
+            // a forgetting a crash interrupted before its inbox check
+            s.forget_inbox()?;
+            Ok(s)
+        })
     }
 
     pub fn engine(&self) -> &Engine {
@@ -399,7 +404,7 @@ impl SyncEngine {
         // a self-removal is up: drop what was lost
         if !self.leaving.is_empty() && self.is_idle() && self.conns.values().any(|c| c.up) {
             self.leaving.clear();
-            if let Err(e) = self.engine.drop_lost_secrets() {
+            if let Err(e) = self.drop_lost() {
                 self.diag(format!("dropping lost secrets: {e}"));
             }
         }

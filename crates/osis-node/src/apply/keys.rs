@@ -274,7 +274,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     Ok(())
 }
 
-const UNRESOLVED: &[u8] = b"w/";
+pub(crate) const UNRESOLVED: &[u8] = b"w/";
 
 fn unresolved_key(c: &CommitId, ai: usize) -> Vec<u8> {
     [UNRESOLVED, &c.0[..], &(ai as u32).to_be_bytes()].concat()

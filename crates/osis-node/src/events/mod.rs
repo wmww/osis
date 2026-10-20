@@ -24,6 +24,8 @@ pub enum Cause {
     Purge,
     /// A late delta of an applied commit joined (spec/commits.md §4).
     LateDelta,
+    /// This node lost read access and forgot the aspects (spec/permissions.md §3).
+    LostAccess,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

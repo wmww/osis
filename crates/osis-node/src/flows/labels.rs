@@ -212,3 +212,9 @@ impl Engine {
         self.run(|tx| own_label(tx, &g))
     }
 }
+
+/// The label IDs `/label` of `g` records, inside a transaction (unparsable: none).
+pub(crate) fn labels_in(tx: &mut Tx<'_>, g: &Tid) -> Result<Vec<LabelId>> {
+    let Some(v) = tx.state(g, &ak("/label")?)?.and_then(Fragment::read) else { return Ok(Vec::new()) };
+    Ok(ct::LABEL.decode(&v).map(|m| m.into_keys().collect()).unwrap_or_default())
+}

@@ -21,6 +21,8 @@ use osis_schema::core_types::is_membership_class;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
+pub(crate) mod forget;
+
 /// A deletion obligation: (log sequence, commit, tid, ak, time).
 pub type Deletion = (u64, CommitId, Tid, Ak, WallMs);
 

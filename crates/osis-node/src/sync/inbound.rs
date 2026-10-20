@@ -366,6 +366,39 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
+    /// this node's own keys, and a grant carries its boxes: spec/permissions.md §3), then empties
+    /// the work list. Their entries stay opened, never fetched again.
+    pub(crate) fn forget_inbox(&mut self) -> Result<()> {
+        if self.state.forget.is_empty() {
+            return Ok(());
+        }
+        let things = self.state.forget.clone();
+        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Inbox).map(|(k, _)| *k).collect();
+        let mut gone = Vec::new();
+        for (l, b) in inbox {
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let opened = self.inbox_of(&l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
+            let Some((_, payload)) = opened else { continue };
+            let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
+            if names {
+                gone.push(b);
+            }
+        }
+        if !gone.is_empty() {
+            self.engine.run(|tx| {
+                for b in &gone {
+                    tx.txn.delete_blob(b);
+                }
+                Ok(())
+            })?;
+        }
+        for t in things {
+            self.state.forget_done(&t);
+        }
+        self.state.flush(&mut self.engine)
+    }
+
     /// A new head in a server's log: a child of the current one moves on; anything else reopens.
     pub(crate) fn new_head(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
