@@ -115,9 +115,9 @@ fn dials(acts: &[Action]) -> Vec<Address> {
 
 // spec/sync.md §10: a co-reader's signed announcement matches for the current and adjacent
 // windows, and the node then dials the announced transport key at the source address and port
-// (not the dialable key) once its retry pause is over (an announcement does not cut it short); a
-// stranger's tag, one two windows off, a signature by another key, a source that cannot be on
-// the LAN, or a repeat changes nothing.
+// (not the dialable key), even inside its retry pause (once per pause length); a stranger's tag,
+// one two windows off, a signature by another key, a source that cannot be on the LAN, or a
+// repeat changes nothing.
 #[test]
 fn lan_match_dials_announced_key_spec_sync_10() {
     let mut net = Net::new();
@@ -146,12 +146,19 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     let prev = signed(&mut net, b, lan_tag(&lan, now.saturating_sub(LAN_WINDOW_MS)), [0x77; 32], 4433);
     let (hit, acts) = net.sync(a).lan_seen(&prev, ip);
     assert_eq!(hit, Some(kb));
-    assert!(dials(&acts).is_empty(), "b's retry pause runs: {acts:?}");
-    let (hit, acts) = net.sync(a).lan_seen(&own, ip);
-    assert_eq!((hit, acts), (Some(kb), Vec::new()), "a repeat runs nothing");
+    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.5:4433".into(), key: [0x77; 32] }]);
+    let (hit, again) = net.sync(a).lan_seen(&own, ip);
+    assert_eq!((hit, again), (Some(kb), Vec::new()), "a repeat runs nothing");
+    // the candidate fails (nobody listens with its key), so does the peer:// route: a new
+    // candidate waits for the pause
+    net.actions(a, acts);
+    net.settle(100_000);
+    let (hit, acts) = net.sync(a).lan_seen(&own, "192.168.1.6".parse().unwrap());
+    assert_eq!(hit, Some(kb));
+    assert!(dials(&acts).is_empty(), "{acts:?}");
     net.clock.advance(60_001);
     let acts = net.sync(a).handle(osis_node::sync::Event::Tick);
-    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.5:4433".into(), key: [0x77; 32] }]);
+    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x77; 32] }]);
 }
 
 // spec/sync.md §10: the announcement is signed under the dialable key only when that key is

@@ -54,13 +54,14 @@ impl ManualNet {
     }
 }
 
-/// How servers are dialed (spec/sync.md §10).
+/// How servers and co-reader nodes are dialed (spec/sync.md §10).
 #[derive(Clone)]
 pub enum Transport {
-    /// QUIC (feature `quic`).
+    /// Servers over QUIC (feature `quic`); co-readers over iroh (feature `iroh`, with
+    /// `Config.relays`), on the LAN too with feature `lan`.
     #[cfg(feature = "quic")]
     Quic,
-    /// In-process endpoints (tests).
+    /// In-process endpoints for servers and co-readers (tests).
     InProcess(osis_transport::InProcess),
 }
 
@@ -136,21 +137,41 @@ impl Net {
         }
     }
 
-    /// Starts the driver task.
-    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, .. } = self else { return Ok(()) };
+    /// Starts the driver task over one transport for servers and co-readers (`Multi`). With
+    /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret and
+    /// publishes `/reach` with `relays`; with feature `lan` and QUIC it also runs the LAN loop.
+    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
+        let Net::Driver { handle, ctl, .. } = self else { return Ok(()) };
         let host = OsisHost(db);
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
-        match transport {
+        let mut multi = osis_transport::Multi::default();
+        // where the dialable-key listener goes, and whether the LAN loop runs
+        let (reach, lan): (Option<String>, bool) = match transport {
             Some(Transport::InProcess(t)) => {
-                handle.spawn(driver::run_host(host, t, Vec::new(), clock, rx, log));
+                let url = format!("mem://{}-peer", t.name());
+                multi.mem = Some(t);
+                (Some(url), false)
             }
             #[cfg(feature = "quic")]
             Some(Transport::Quic) | None => {
-                handle.spawn(driver::run_host(host, osis_transport::Quic::new(), Vec::new(), clock, rx, log));
+                multi.quic = Some(osis_transport::Quic::new());
+                #[cfg(feature = "iroh")]
+                {
+                    multi.iroh = Some(osis_transport::Iroh::with_relays(relays.clone()));
+                    (Some(osis_transport::peer_url(&[])), cfg!(feature = "lan"))
+                }
+                #[cfg(not(feature = "iroh"))]
+                (None, false)
             }
             #[cfg(not(feature = "quic"))]
             None => return Err(Error::Invalid("a runtime needs a transport (Config.transport; QUIC needs feature `quic`)".into())),
+        };
+        handle.spawn(driver::run_host(host, multi, Vec::new(), clock, rx, log));
+        if p2p && let Some(url) = reach {
+            let _ = ctl.send(Control::Reach { url, relays, reply: None });
+            if lan {
+                let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+            }
         }
         Ok(())
     }
@@ -274,5 +295,15 @@ impl crate::Osis {
             self.inner.net.timer(d);
         }
         Pending { slot }
+    }
+}
+
+impl crate::Osis {
+    /// Keeps this node's `/reach` (its dialable key) out of `group`'s labels, or puts it back:
+    /// for groups whose audience is open (public or bearer-read, spec/permissions.md §4).
+    /// Co-readers of only those labels then cannot dial this node off the LAN. Not stored: set it
+    /// at every open.
+    pub fn exclude_reach(&self, group: osis_core::Tid, excluded: bool) {
+        self.locked(|l| l.sync.set_no_reach(group, excluded));
     }
 }

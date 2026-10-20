@@ -327,7 +327,7 @@ pub struct SyncEngine {
     /// Sizes of blobs served to peers (memory only; pruned at ticks).
     pub(crate) blob_sizes: BTreeMap<osis_core::BlobId, u64>,
     /// LAN tags of the co-readers for the cached window and its neighbours, to dialable keys.
-    pub(crate) lan_tags: Option<(u64, BTreeMap<[u8; 16], [u8; 32]>)>,
+    pub(crate) lan_tags: Option<(u64, peers::LanTags)>,
     /// `peers()` and the `/reach` holders by dialable key, until a commit applies.
     pub(crate) peers_cache: Option<Arc<BTreeMap<[u8; 32], peers::Peer>>>,
     pub(crate) reach_index: Option<Arc<BTreeMap<[u8; 32], Tid>>>,

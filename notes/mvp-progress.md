@@ -37,7 +37,7 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **Peer input bounds** (Scale: "never causes unbounded allocation"): a tiny sequence snapshot run expands to 2^16 records: issues/crdt-run-amplification.md.
 - **Determinism** (Decentralization: "never of arrival order"): an invite grant's `/secrets` resets of entries the node has not seen pass, so validity depends on arrival order: issues/invite-grant-secrets.md.
 - **Chat costs** (Cost goal): last measured (`costs_join_message_removal`, chat of 4, wave 5) join 63 KB, removal 85 KB from the moderator plus 68 KB from the others, message about 2.5 KB (the tier-2 test fails its budgets); the corrected design cost (spec as written, engine waste removed) is join ≈ 38 KB, message ≈ 2.1 KB, removal ≈ 79 KB (≈ 45 KB with one rotation). The gap is not attributed yet; the design knobs (header once per commit, one KEM key per keyset, one sealed box per member, one rotation per link removal, no home-label copy) are listed in issues/chat-costs.md.
-- **LAN** (Offline and network: "works over LAN"): the LAN announcement datagram is in spec/sync.md §10 as provisional with the conservative candidate-route rule; the LAN loop, one driver for servers and peers, and the key binding are not built (owner: bind the key when the loop is built). issues/p2p-deferred.md.
+- **LAN** (Offline and network: "works over LAN"): built. The driver's LAN loop (feature `lan`) announces a fresh key per network, signed under the dialable key (spec/sync.md §10, datagram provisional); one driver (`Multi`) carries servers and peers; tier-2 tests over iroh on localhost and through a self-hosted relay. Follow-ups: issues/p2p-followups.md.
 - **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/header-list-commitments.md (header-list chunk commitments capped at 16, arbitrary cutoff), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
 - **One delta must fit a blob**: a struct of many near-threshold registers is refused by the writer (Decentralization: "no size limit"): issues/struct-delta-size.md.
@@ -67,7 +67,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 ## Suggested next plans
 - Query design pass: queries and backlinks (issues/api-deferred.md), which also removes the chat placement cost.
 - Push wake-ups for sleeping devices (notes/networking.md proposal).
-- BLE transport, and the LAN loop with one driver for servers and peers (issues/p2p-deferred.md).
+- BLE transport; P2P follow-ups (first contact by a link's sharer, LAN preferred over a running relay route; issues/p2p-followups.md).
 - Browser build: wasm target for the sans-I/O crates, a browser store backend and transport.
 - Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
 - Chat cost knobs (issues/chat-costs.md (b)) and attribution of the measured gap.

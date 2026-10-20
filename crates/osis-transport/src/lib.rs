@@ -1,5 +1,5 @@
 //! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess`, QUIC (`quic`), iroh (`iroh`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
-//! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md, issues/p2p-deferred.md.
+//! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md, issues/p2p-followups.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
 //! without tokio; the QUIC transport needs a tokio runtime. Framing is proto's job.
@@ -31,6 +31,8 @@ pub mod lan;
 pub mod iroh;
 #[cfg(feature = "iroh")]
 pub use crate::iroh::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
+#[cfg(feature = "relay")]
+pub use crate::iroh::TestRelay;
 
 use std::future::Future;
 

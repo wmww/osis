@@ -47,7 +47,9 @@ pub struct Peer {
 /// its transport key to the node, so a connection through an address that comes up (the
 /// transport authenticated that key) proves the route. Until then the address is a candidate:
 /// the proven route is dialed first, a candidate never displaces a running connection, and an
-/// address whose connection fails before coming up is backed off (not the peer).
+/// address whose connection fails before coming up is backed off (not the peer). A new
+/// candidate ends the peer's retry pause at most once per `peer_retry_ms`, so replayed
+/// announcements from many sources cannot make the node dial in a loop.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LanRoute {
     /// Proven address and when last heard (raw ms).
@@ -55,7 +57,12 @@ pub(crate) struct LanRoute {
     pub candidate: Option<(Address, u64)>,
     /// Addresses that failed, until when.
     pub failed: BTreeMap<Address, u64>,
+    /// When a new candidate last ended the peer's retry pause (raw ms).
+    pub cut: Option<u64>,
 }
+
+/// Co-readers' LAN tags (cached window and its neighbours) to their dialable keys.
+pub(crate) type LanTags = BTreeMap<[u8; 16], [u8; 32]>;
 
 /// The digest a LAN announcement's signature covers: BLAKE3(tag || key || port).
 fn announce_digest(a: &Announce) -> [u8; 32] {
@@ -239,7 +246,8 @@ impl SyncEngine {
             }
             r.failed.retain(|_, until| *until > now);
         }
-        self.lan.retain(|_, r| r.good.is_some() || r.candidate.is_some() || !r.failed.is_empty());
+        let pause = self.cfg.peer_retry_ms;
+        self.lan.retain(|_, r| r.good.is_some() || r.candidate.is_some() || !r.failed.is_empty() || r.cut.is_some_and(|t| t.saturating_add(pause) > now));
         let mut out = BTreeMap::new();
         for (k, p) in self.peers().iter() {
             let route = self.lan.get(k);
@@ -314,6 +322,10 @@ impl SyncEngine {
             }
         }
         r.candidate = Some((address, raw));
+        // dial it now, even inside the retry pause, once per pause length
+        if r.cut.is_none_or(|t| t.saturating_add(self.cfg.peer_retry_ms) <= raw) && self.retry.remove(&k).is_some() {
+            r.cut = Some(raw);
+        }
         (Some(k), self.handle(Event::Local))
     }
 

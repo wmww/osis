@@ -63,8 +63,13 @@ pub struct Config {
     pub seed: Option<u64>,
     /// Where background sync runs (default `Runtime::None`: no network).
     pub runtime: Runtime,
-    /// How servers are dialed (default: QUIC with feature `quic`).
+    /// How servers and co-reader nodes are dialed (default: QUIC with feature `quic`).
     pub transport: Option<Transport>,
+    /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
+    /// dialable key, publish `/reach`, and with feature `lan` announce on the LAN.
+    pub peers: bool,
+    /// Relay URLs published in `/reach` (self-hosted `iroh-relay`s; feature `iroh`).
+    pub relays: Vec<String>,
     /// Servers for `create`, `restore` and `pair`; an opened database keeps its stored list.
     pub servers: Vec<ServerAddr>,
     /// A text session commits after this much inactivity.
@@ -81,7 +86,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), servers: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT }
     }
 
     #[cfg(feature = "file-store")]
@@ -300,7 +305,7 @@ impl Osis {
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, closing: Mutex::new(Some(closing)), _closed: closed });
         inner.dispatch.spawn(queue, Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
-            inner.net.spawn_driver(ctl, cfg.transport.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
+            inner.net.spawn_driver(ctl, cfg.transport.clone(), cfg.peers, cfg.relays.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
         let db = Osis { inner };
         if let Runtime::Manual(m) = &cfg.runtime {

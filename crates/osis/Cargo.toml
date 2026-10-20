@@ -15,6 +15,10 @@ workspace = true
 file-store = ["osis-store/file-backend"]
 # `Transport::Quic`: direct server connections over QUIC (spec/sync.md §10).
 quic = ["osis-transport/quic"]
+# Co-readers over iroh beside QUIC servers (`Transport::Quic`; spec/sync.md §5, §10).
+iroh = ["quic", "osis-transport/iroh", "osis-node/iroh"]
+# The LAN loop: per-network keys and announcements (spec/sync.md §10).
+lan = ["iroh", "osis-node/lan"]
 
 [dependencies]
 osis-node.workspace = true

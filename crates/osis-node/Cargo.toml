@@ -38,3 +38,5 @@ quic = ["driver", "osis-transport/quic", "osis-server/quic"]
 iroh = ["driver", "osis-transport/iroh"]
 # The driver's LAN loop (UDP announcements, spec/sync.md §10).
 lan = ["driver", "osis-transport/lan"]
+# Tier-2 tests of peers through a self-hosted iroh-relay on localhost.
+relay = ["iroh", "osis-transport/relay"]
