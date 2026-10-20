@@ -1,4 +1,5 @@
-//! Command bodies (plans/cli.md §4): each a thin wrapper over one API call, plus printing.
+//! Command bodies (notes/cli.md Command table): each a thin wrapper over one API call, plus printing.
+//! Tests: spec: none (client surface).
 
 use crate::args::*;
 use crate::json::{self, J};
@@ -1085,7 +1086,7 @@ mod tests {
         let _ = std::fs::remove_file(b);
     }
 
-    // plans/cli.md §2: `--timeout 0` (no deadline) and huge timeouts do not overflow.
+    // notes/cli.md Design: `--timeout 0` (no deadline) and huge timeouts do not overflow.
     #[test]
     fn deadline_never_overflows_plan_cli_2() {
         assert_eq!(super::deadline(None), None);

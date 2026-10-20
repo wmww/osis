@@ -1,7 +1,7 @@
 //! osis-cli: the command-line tool `osis` over the `osis` API, for scripts, debugging and agents.
 //! One invocation opens the store, acts, closes. Text forms that read back what they print,
 //! `--json` for machines, exit codes by error category. Design: notes/cli.md.
-//! Layer 9 (notes/architecture.md). Plan: plans/cli.md.
+//! Layer 9 (notes/architecture.md). Plan: notes/cli.md.
 #![forbid(unsafe_code)]
 // The binary's crate: panics on programmer errors are allowed (notes/architecture.md §3).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A failure with its exit code (plans/cli.md §6); an empty message prints nothing.
+/// A failure with its exit code (notes/cli.md Exit codes); an empty message prints nothing.
 #[derive(Debug)]
 pub struct Exit(pub i32, pub String);
 
@@ -42,7 +42,7 @@ pub(crate) fn usage(m: impl Into<String>) -> anyhow::Error {
     exit(2, m)
 }
 
-/// Exit code and kind of an API error (plans/cli.md §6).
+/// Exit code and kind of an API error (notes/cli.md Exit codes).
 pub fn category(e: &Error) -> (i32, &'static str) {
     match e {
         Error::UnknownThing { .. } => (3, "UnknownThing"),

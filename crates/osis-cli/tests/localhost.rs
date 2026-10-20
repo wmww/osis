@@ -1,4 +1,4 @@
-//! The localhost end-to-end session (plans/apps-e2e.md, notes/cli.md Tests), tier 2: a real
+//! The localhost end-to-end session (notes/apps.md, notes/cli.md Tests), tier 2: a real
 //! `osis serve` process over QUIC on 127.0.0.1 and three store directories (Alice's two devices,
 //! Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
 //! on all three, sync, status, undo, bundles, inspect. Assertions read `--json` output.
@@ -67,7 +67,7 @@ fn pair(old: &Path, new: &Path, server: &str) {
 }
 
 // spec/sync.md §10 (QUIC to a known address), spec/permissions.md §9 (links), notes/api.md
-// (Devices, Sync), plans/cli.md Tests (tier 2): two people and three devices meet only through
+// (Devices, Sync), notes/cli.md Tests (tier 2): two people and three devices meet only through
 // one blind server process.
 #[test]
 #[ignore]

@@ -1,4 +1,4 @@
-//! The `osis` binary (plans/cli.md): `osis_cli::run` over the process's streams.
+//! The `osis` binary (notes/cli.md): `osis_cli::run` over the process's streams.
 #![forbid(unsafe_code)]
 
 use std::io::IsTerminal;

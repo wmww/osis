@@ -95,6 +95,7 @@ fn move_and_resolve_spec_perm_7() {
 }
 
 // notes/architecture.md §3: diagnostics are deduped.
+// spec: none (diagnostics are local, notes/architecture.md)
 #[test]
 fn diagnostics_deduped() {
     let mut lp = net(2, 63);

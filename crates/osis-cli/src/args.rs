@@ -1,4 +1,4 @@
-//! The command tree (plans/cli.md §4; notes/cli.md). Help text stays terse.
+//! The command tree (notes/cli.md Command table; notes/cli.md). Help text stays terse.
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-//! Write commands (plans/cli.md §4, Things and aspects): each applies to a `Write` batch, so a
+//! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write` batch, so a
 //! single command and a `write` script line share one implementation.
 
 use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, SubCmd, WriteFlags};

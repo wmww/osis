@@ -25,6 +25,7 @@ fn task(title: &str) -> Task {
 
 // notes/api.md Handle and lifecycle: a new database has a node, a person actor and its home
 // group; reopening the store gives the same identity.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn create_and_reopen_spec_api_handle() {
     let store = MemStore::new();
@@ -76,6 +77,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
 
 // notes/api.md Keys: a schema registered at run time types `Key` reads (reader defaults) and
 // validates writes; unknown AKs stay untyped.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn registered_schema_key_spec_api_keys() {
     let db = db(1);
@@ -101,6 +103,7 @@ fn registered_schema_key_spec_api_keys() {
 }
 
 // notes/api.md Reads: absent aspects and unknown things read as None, never as errors.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn absent_reads_none_spec_api_reads() {
     let db = db(1);
@@ -121,6 +124,7 @@ fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
 }
 
 // notes/api.md Writes: whole-value ops and every path op.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn write_ops_spec_api_writes() {
     let db = db(1);
@@ -188,6 +192,7 @@ fn write_ops_spec_api_writes() {
 
 // notes/api.md Writes, Footguns closed: `edit(base, new)` keeps a change made to another field
 // after the app read `base`; `set` of the same edited value writes that field back.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
     let db = db(1);
@@ -213,6 +218,7 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
 
 // notes/api.md Reads, Large values: a value above the materialization bound fails TooLarge
 // (chunked or not); a path read of a small position of the same aspect works.
+// spec/data-model.md §6
 #[test]
 fn materialization_bound_spec_data_model_6() {
     let c = clock();
@@ -247,6 +253,7 @@ fn large_value_round_trip_spec_data_model_6() {
 
 // notes/api.md Writes: create with explicit owner and placement; groups; place, unplace,
 // subgroups, delete.
+// spec/data-model.md §8
 #[test]
 fn create_place_delete_spec_data_model_8() {
     let db = db(1);
@@ -318,6 +325,7 @@ fn local_rights_check_spec_permissions_1() {
 }
 
 // notes/api.md Writes: membership-class and synthetic aspects are not written by ops.
+// spec/permissions.md §1
 #[test]
 fn membership_class_refused_spec_permissions_1() {
     let db = db(1);
@@ -357,6 +365,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
 }
 
 // notes/api.md Writes: `act_as` changes the header actor; the default is `me()`.
+// spec/commits.md §1
 #[test]
 fn act_as_spec_commits_1() {
     let db = db(1);
@@ -394,6 +403,7 @@ fn move_and_same_thing_spec_permissions_7() {
 
 // notes/api.md Sync configuration and status: without a runtime the surface works locally,
 // the stored server list survives a reopen, and waiting for another node fails `Network`.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn local_sync_surface_spec_api_sync() {
     let c = clock();
@@ -464,6 +474,7 @@ fn stream_len_set_stream_spec_data_model_6() {
 
 // spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing placed only in a
 // group no synced group holds gets `NotSynced`; one placed in the (labeled) home group does not.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn not_synced_diagnostic_spec_api_diagnostics() {
     let db = db(1);
@@ -487,6 +498,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
 
 // notes/api.md Handle (close): close() from a callback fails at once (it would wait on the
 // dispatcher that runs it); from the app it returns once the database is closed.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn close_spec_api_handle() {
     let db = db(1);

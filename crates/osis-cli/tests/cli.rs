@@ -1,6 +1,7 @@
-//! The `osis` binary run in-process (plans/cli.md Tests, tier 1): commands over memory and
-//! temp-dir stores, exit codes per error category (§6), `--json` (§5), `write` scripts, named
+//! The `osis` binary run in-process (notes/cli.md Tests, tier 1): commands over memory and
+//! temp-dir stores, exit codes per error category, `--json`, `write` scripts, named
 //! keys with a schema, the command table's coverage of the API. No network, no sleeps.
+//! spec: none (client surface: notes/cli.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use clap::CommandFactory;
@@ -61,13 +62,13 @@ fn tmp(name: &str) -> PathBuf {
     d
 }
 
-// plans/cli.md Tests: argument parsing for every command (clap's debug_assert).
+// notes/cli.md Tests: argument parsing for every command (clap's debug_assert).
 #[test]
 fn command_tree_is_consistent_plan_cli_tests() {
     Cli::command().debug_assert();
 }
 
-// plans/cli.md §4 Things and aspects: create, get, set, replace, rm, show, aspects, delete.
+// notes/cli.md Command table Things and aspects: create, get, set, replace, rm, show, aspects, delete.
 #[test]
 fn things_and_aspects_plan_cli_4() {
     let s = S::mem();
@@ -95,7 +96,7 @@ fn things_and_aspects_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "/note/n"]), 3);
 }
 
-// plans/cli.md §6: exit codes by error category.
+// notes/cli.md Exit codes: exit codes by error category.
 #[test]
 fn exit_codes_plan_cli_6() {
     let s = S::mem();
@@ -122,7 +123,7 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(o, 8);
 }
 
-// plans/cli.md §2: one process at a time; a second opener fails with exit 8.
+// notes/cli.md Design: one process at a time; a second opener fails with exit 8.
 #[test]
 fn store_dir_init_lock_plan_cli_2() {
     let d = tmp("lock");
@@ -148,7 +149,7 @@ fn store_dir_init_lock_plan_cli_2() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-// plans/cli.md §5: --json output carries tids under their API names.
+// notes/cli.md JSON mapping: --json output carries tids under their API names.
 #[test]
 fn json_output_plan_cli_5() {
     let s = S::mem();
@@ -163,7 +164,7 @@ fn json_output_plan_cli_5() {
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
 }
 
-// plans/cli.md §4 write: one Write, one commit; a failing line commits nothing.
+// notes/cli.md Command table write: one Write, one commit; a failing line commits nothing.
 #[test]
 fn write_script_atomic_plan_cli_4() {
     let s = S::mem();
@@ -215,7 +216,7 @@ fn untyped_index_paths_notes_cli() {
     assert_eq!(s.ok(&["history", "--group", "home"]).out, before);
 }
 
-// plans/cli.md §2 `--timeout 0` = no timeout; waits take it without overflow.
+// notes/cli.md Design `--timeout 0` = no timeout; waits take it without overflow.
 #[test]
 fn timeout_zero_plan_cli_2() {
     let s = S::mem();
@@ -227,7 +228,7 @@ fn timeout_zero_plan_cli_2() {
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
 
-// plans/cli.md §4 History and undo.
+// notes/cli.md Command table History and undo.
 #[test]
 fn history_undo_redo_plan_cli_4() {
     let s = S::mem();
@@ -250,7 +251,7 @@ fn history_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
 
-// plans/cli.md §4 Groups and Sharing: place, sub, groups, roster, role, move, same.
+// notes/cli.md Command table Groups and Sharing: place, sub, groups, roster, role, move, same.
 #[test]
 fn groups_and_moves_plan_cli_4() {
     let s = S::mem();
@@ -270,7 +271,7 @@ fn groups_and_moves_plan_cli_4() {
     assert_eq!(s.code(&["same", &t, &n]), 0);
 }
 
-// plans/cli.md §4 Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
+// notes/cli.md Command table Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
 // written from stdin streams back raw; its length reads without materializing.
 #[test]
 fn stream_and_len_plan_cli_4() {
@@ -285,7 +286,7 @@ fn stream_and_len_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "/a/none", "--len"]), 3);
 }
 
-// plans/cli.md §4 Sharing and membership, Sync, Identity and devices: the local half of the
+// notes/cli.md Command table Sharing and membership, Sync, Identity and devices: the local half of the
 // sharing commands on one store (no servers): links, cards, devices, grants by error category,
 // status (bundles are binary: the localhost e2e).
 #[test]
@@ -307,7 +308,7 @@ fn sharing_commands_local_plan_cli_4() {
     assert!(st.contains("no_servers") || st.contains("NoServers") || st.contains("\"groups\""), "{st}");
 }
 
-// plans/cli.md §4: commands over API pieces not built yet (queries, backlinks) parse and
+// notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
 // report Unsupported; sharing commands without a runtime or servers fail as the API does.
 #[test]
 fn unbuilt_commands_report_unsupported_plan_cli_4() {
@@ -323,7 +324,7 @@ fn unbuilt_commands_report_unsupported_plan_cli_4() {
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
-// plans/cli.md §4 Watching: initial value first; --count ends it.
+// notes/cli.md Command table Watching: initial value first; --count ends it.
 #[test]
 fn watch_initial_plan_cli_4() {
     let s = S::mem();
@@ -343,7 +344,7 @@ aspect /todo/count: counter<int>;
 signal /todo/ping: int;
 ";
 
-// plans/cli.md §1 Honest about names: named forms with a registered schema; --raw numbered.
+// notes/cli.md Design Honest about names: named forms with a registered schema; --raw numbered.
 #[test]
 fn named_keys_with_schema_plan_cli_1() {
     let d = tmp("schema");
@@ -403,7 +404,7 @@ fn named_keys_with_schema_plan_cli_1() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-// plans/cli.md §4 Inspection (format not stable): runs over the engine.
+// notes/cli.md Command table Inspection (format not stable): runs over the engine.
 #[test]
 fn inspect_and_diag_plan_cli_4() {
     let s = S::mem();
@@ -437,7 +438,7 @@ fn osis_methods() -> Vec<String> {
     out
 }
 
-// plans/cli.md Tests: every public `Osis` method appears in notes/cli.md's command table, so
+// notes/cli.md Tests: every public `Osis` method appears in notes/cli.md's command table, so
 // coverage cannot drift silently.
 #[test]
 fn every_api_method_has_a_command_plan_cli_tests() {

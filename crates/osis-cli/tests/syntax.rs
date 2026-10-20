@@ -1,5 +1,6 @@
-//! The text forms and the JSON mapping (plans/cli.md §3, §5; notes/cli.md Value syntax, JSON
+//! The text forms and the JSON mapping (notes/cli.md Value syntax, JSON
 //! mapping): every value prints one way and reads back, numbered or named.
+//! spec: none (client surface).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::{Schema, Tid, Value};
@@ -115,7 +116,7 @@ fn rec() -> impl Strategy<Value = Value> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
 
-    // plans/cli.md §3 Value, notes/cli.md Value syntax: numbered forms read back exactly
+    // notes/cli.md Value syntax Value, notes/cli.md Value syntax: numbered forms read back exactly
     // (floats incl. -0.0/NaN, tids, enums, sets, maps, unknown tags).
     #[test]
     fn numbered_round_trip(v in value()) {
@@ -148,7 +149,7 @@ fn m(e: Vec<(Value, Value)>) -> Value {
     Value::Map(e.into_iter().collect())
 }
 
-// plans/cli.md §3 table: one printed form per kind.
+// notes/cli.md Value syntax table: one printed form per kind.
 #[test]
 fn printed_forms_plan_cli_3() {
     let t = Tid::from_bytes([0; 15]);
@@ -176,7 +177,7 @@ fn printed_forms_plan_cli_3() {
     );
 }
 
-// plans/cli.md §3: whitespace, trailing commas, b64 input, JSON input, aliases.
+// notes/cli.md Value syntax: whitespace, trailing commas, b64 input, JSON input, aliases.
 #[test]
 fn input_forms_plan_cli_3() {
     let p = |s: &str| parse(s, None, &no_aliases);
@@ -235,7 +236,7 @@ fn named_forms_notes_cli() {
     assert!(parse("{prio: #nope}", Some((&sc, ty)), &no_aliases).is_err());
 }
 
-// plans/cli.md §5 JSON mapping.
+// notes/cli.md JSON mapping JSON mapping.
 #[test]
 fn json_mapping_plan_cli_5() {
     let j = |v: &Value| json::value(v, None).text();
@@ -250,7 +251,7 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&Value::Enum(2, Some(Box::new(Value::Bool(true))))), r#"{"$case":2,"$payload":true}"#);
     assert_eq!(j(&m(vec![(Value::Bool(true), Value::Int(1))])), r#"{"$map":[[true,1]]}"#);
     assert_eq!(j(&m(vec![(Value::Str("a".into()), Value::Int(1))])), r#"{"a":1}"#);
-    // plans/cli.md §5: a map whose keys are not all strings, or collide with a marker, is $map
+    // notes/cli.md JSON mapping: a map whose keys are not all strings, or collide with a marker, is $map
     assert_eq!(j(&m(vec![(Value::Int(0), Value::Int(1))])), r#"{"$map":[[0,1]]}"#);
     for k in ["$set", "$blob", "$case", "$map", "$tag"] {
         assert_eq!(j(&m(vec![(Value::Str(k.into()), Value::Int(1))])), format!(r#"{{"$map":[["{k}",1]]}}"#));

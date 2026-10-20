@@ -8,7 +8,8 @@ A test's citations: `spec/<file>.md §N[.M]` in the comment or attribute lines r
 (a bare `§N` refers to the last file named there, else to the file header's); without any, the
 citations of the file's `//!` header (marked inherited). Vector cases cite through `spec:`.
 Exempt from `--uncited`: models/ (oracles, not the implementation) and tests whose comment says
-`spec: none` (test infrastructure itself).
+`spec: none` (test infrastructure itself), or that cite nothing in a file whose `//!` header says
+`spec: none` (client surfaces specified in notes/, not spec/).
 
 Usage (repo root):
   python3 tools/spec_map.py            write notes/testing-map.md
@@ -62,7 +63,7 @@ def rust_tests():
                     j -= 1
                 comment = " ".join(l.strip().lstrip("/!") for l in reversed(above))
                 own = citations(comment + " " + name.replace("_", " "), header_file)
-                exempt = "spec: none" in comment or top == "models"
+                exempt = "spec: none" in comment or top == "models" or (not own and "spec: none" in header)
                 tests.append({"id": f"{rel}::{name}", "cites": own or header_cites, "inherited": not own, "exempt": exempt})
     return tests
 
