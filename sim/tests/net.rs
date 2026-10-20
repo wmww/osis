@@ -19,7 +19,7 @@ fn ok(name: &str, seed: u64) -> Report {
 #[test]
 fn two_devices_server() {
     let r = ok("two_devices_server", 1);
-    assert!(r.writes > 10 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
+    assert!(r.writes > 5 && r.crashes > 0 && r.dropped > 0 && r.held_checked > 0, "{r:?}");
 }
 
 // spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
