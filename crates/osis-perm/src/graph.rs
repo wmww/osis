@@ -159,9 +159,9 @@ pub type Patch = (Tid, Tid, Option<Edge>);
 /// of time), and optionally one edge patched.
 pub struct View<'a> {
     pub owners: &'a Owners,
-    pub edges: &'a Edges,
+    edges: &'a Edges,
     pub ts: Option<Ts>,
-    pub patch: Option<Patch>,
+    patch: Option<Patch>,
 }
 
 impl<'a> View<'a> {

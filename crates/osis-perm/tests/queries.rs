@@ -308,3 +308,57 @@ fn owner_chain_capped_spec_permissions_1() {
     assert_eq!(k, None, "one link deeper: no owner chain");
     assert!(up.len() <= MAX_OWNER_DEPTH + 1);
 }
+
+/// A `View` with one edge patched answers every authority query as the edge state cloned with
+/// that edge set (random owner trees, edges with `until` and invites, patches that add, change
+/// or remove an edge).
+#[test]
+fn patched_view_equals_cloned_edges() {
+    use osis_perm::graph::View;
+    use osis_perm::{Edges, Owners};
+    let mut rng = Rng(0x5eed_0301);
+    let pick = |rng: &mut Rng| -> Option<Edge> {
+        let role = [Read, Write, Admin][rng.below(3)];
+        let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
+        let until = (rng.below(3) == 0).then(|| osis_core::WallMs(rng.below(10) as u64));
+        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None })
+    };
+    for _ in 0..2000 {
+        let keys = key_actors(3, 11);
+        let mut o = Owners::default();
+        let mut ents: Vec<Tid> = Vec::new();
+        for (t, r) in &keys {
+            o.insert(*t, r);
+            ents.push(*t);
+        }
+        for i in 0..5u64 {
+            let (t, r) = thing_record(ents[rng.below(ents.len())], i);
+            o.insert(t, &r);
+            ents.push(t);
+        }
+        let mut edges = Edges::default();
+        for _ in 0..rng.below(12) {
+            let (m, t) = (ents[rng.below(ents.len())], ents[3 + rng.below(5)]);
+            if m != t {
+                edges.set(m, t, pick(&mut rng));
+            }
+        }
+        let (m, t) = (ents[rng.below(ents.len())], ents[3 + rng.below(5)]);
+        let patch = pick(&mut rng);
+        let mut cloned = edges.clone();
+        cloned.set(m, t, patch);
+        let at = (rng.below(2) == 0).then(|| ts(rng.below(10) as u64));
+        let a = View::new(&o, &edges, at).patched(m, t, patch);
+        let b = View::new(&o, &cloned, at);
+        for x in &ents {
+            let (ra, rb) = (a.roles_from(x), b.roles_from(x));
+            assert_eq!(ra, rb);
+            assert_eq!(a.reach_forward(x), b.reach_forward(x));
+            assert_eq!(a.reach_backward(x), b.reach_backward(x));
+            assert_eq!(a.admin_reaching(x), b.admin_reaching(x));
+            for n in &ents {
+                assert_eq!(a.standing(x, &ra, n), b.standing(x, &rb, n));
+            }
+        }
+    }
+}

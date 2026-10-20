@@ -336,3 +336,98 @@ fn own_demotion_replayed_spec_permissions_6() {
     assert!(ledger.iter().any(|t| t.member == a && t.since.is_some_and(|s| s == t.until) && t.until.node == k && t.frontier.is_some()), "{ledger:?}");
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
+
+/// §6 limitation (issues/ledger-same-ts-commits.md): two commits of one node at one ts (a
+/// shared key used from two devices) that demote a member and re-grant it are one ledger key;
+/// the replay sees the re-grant at that key and audits nothing, so the member's dropped edge
+/// write below the thing comes back after a re-snapshot. Pins the documented behaviour.
+#[test]
+fn same_ts_demote_regrant_not_replayed_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, m, z) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let q = w.thing(p);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, m, edge(Admin), 0, &all);
+    w.set(m, q, z, edge(Write), 1, &[]);
+    // C1 then C2 (IDs ascending): one key actor, one ts
+    w.set(k, p, m, None, 5, &all);
+    w.set(k, p, m, edge(Admin), 5, &all);
+    let tl = Timeline::evaluate(&w.held());
+    assert_eq!(tl.role(&z, &q, At::END), None, "the walk drops m's grant");
+    let mut w2 = w.clone();
+    let s = w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
+    let after = Timeline::evaluate(&w2.compacted(p, s));
+    assert_eq!(after.role(&z, &q, At::END), Some(Write), "known limitation: the replay audits nothing");
+}
+
+/// §6: an expiry by `until` is keyed before every write at its ts: an explicit demotion at
+/// that ts by a node whose tid sorts below the member's replays as the walk ordered it.
+#[test]
+fn expiry_before_same_ts_write_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, d, m) = (n[0], n[1], n[2]);
+    assert!(d < m);
+    let p = w.thing(k);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, d, edge(Admin), 0, &all);
+    w.set(k, p, m, edge_inv(Write, None, Some(5)), 0, &all);
+    let x = w.content(m, 1, &[]);
+    let y = w.content(m, 2, &[(d, 3)]);
+    w.set(d, p, m, None, 5, &all);
+    let tl = Timeline::evaluate(&w.held());
+    let valid = |pt| tl.delta_valid(pt, &p, "/doc", Dots::Commit, Write) == osis_perm::Validity::Valid;
+    assert_eq!((valid(x), valid(y)), (false, true), "d's removal audits the expired edge");
+    assert_eq!(neutral(&w, p, k, &[p], &[x, y]), None);
+}
+
+/// §6: a demoter's kept admin standing (it reaches the member it lowered to write) is audited
+/// by another node's write→write on that edge, which splits the write tenure in force.
+#[test]
+fn kept_standing_split_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, d2) = (n[0], n[1]);
+    let (p, a) = (w.thing(k), w.thing(k));
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, a, edge(Admin), 0, &all);
+    w.set(k, a, d2, edge(Admin), 0, &all);
+    w.set(k, p, d2, edge(Admin), 0, &all);
+    let x = w.content(d2, 1, &[]);
+    w.set(d2, p, a, edge(Write), 2, &all);
+    w.set(d2, p, d2, None, 3, &all);
+    w.set(k, p, a, edge(Write), 5, &all);
+    let tl = Timeline::evaluate(&w.held());
+    let ledger = tl.roster_state(&p).ledger;
+    assert!(ledger.iter().any(|t| t.member == a && t.until.node == k && t.until.ts == ts(5) && t.frontier.is_some()), "{ledger:?}");
+    assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
+}
+
+/// §6 bad ledgers: a frontier entry keyed to the member itself, a zero-tid key, `since` after
+/// `until`, an audit-only entry: evaluated without panic, granting no role after the start.
+#[test]
+fn adversarial_ledger_grants_nothing_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, m, z) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let zero = Tid::from_bytes([0; 15]);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, m, edge(Admin), 0, &all);
+    w.set(m, p, z, edge(Write), 1, &[]);
+    let ledger = vec![
+        (m, Admin, Some((0, k)), (3, m), true),
+        (m, Write, Some((4, k)), (4, zero), true),
+        (z, Admin, Some((7, k)), (2, k), true),
+        (z, Write, Some((6, k)), (6, k), true),
+        (m, Admin, None, (8, zero), false),
+    ];
+    w.snapshot_l(k, p, &[], &ledger, 10, &all);
+    let tl = Timeline::evaluate(&w.held());
+    for x in [m, z] {
+        assert_eq!(tl.role(&x, &p, At::END), None);
+    }
+    let _ = tl.roster_state(&p);
+}

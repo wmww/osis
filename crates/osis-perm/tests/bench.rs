@@ -49,7 +49,9 @@ fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
 #[ignore]
 fn bench_10k_edges() {
     let mut rng = Rng(0x5eed_0401);
-    for n in [1_000, 10_000] {
+    // `OSIS_BENCH_N` picks one size (for profiling).
+    let sizes: Vec<usize> = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).map_or(vec![1_000, 10_000], |n| vec![n]);
+    for n in sizes {
         let (w, nodes) = org(n, &mut rng);
         let held = w.held();
         let t0 = Instant::now();
