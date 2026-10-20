@@ -170,14 +170,14 @@ fn moderator_hides() {
 }
 
 // notes/chat.md Costs (budgets): bytes a join, a message and a removal send to the server in a
-// chat of N (`OSIS_CHAT_N`, default 4), against the design costs with a margin: join ≈ 38 KB
-// (chain certificates under two labels, grant, persona, inbox blobs), message ≈ 2.5 KB on the
-// wire (3 projections), removal ≈ 79 KB at 4 (two K and two C rotations, 2.7 KB per remaining
-// member per K rotation, copies under K, C and home), others little more than heartbeats and
-// their changed certificates. Tier 2 (about 18 s in a debug build, 4 s in release): run
+// chat of N (`OSIS_CHAT_N`, default 4), against the measured costs with a margin: join ≈ 41 KB
+// (the joiner's chain certificates under two labels, grant, persona, inbox blobs), message
+// ≈ 2.5 KB (3 projections), removal ≈ 26 KB at 4 and ≈ 3 KB more per member (one K and one C
+// rotation, 2.7 KB of boxes per remaining member), others only heartbeats (≈ 0.5 KB each).
+// Tier 2 (about 18 s in a debug build, 5 s in release): run
 // `cargo test --release -p chat -- --ignored --nocapture`.
 #[test]
-#[ignore = "issues/chat-costs.md"]
+#[ignore = "tier 2"]
 fn costs_join_message_removal() {
     let n: usize = std::env::var("OSIS_CHAT_N").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let mut w = World::new();
@@ -211,9 +211,9 @@ fn costs_join_message_removal() {
     let sum = |t: &std::collections::BTreeMap<String, (u64, u64)>| t.values().map(|v| v.1).sum::<u64>();
     eprintln!("chat of {n}\n join {} B {join:?}\n message {} B {msg:?}\n removal {} B {rm:?}\n others during removal {others_rm} B", sum(&join), sum(&msg), sum(&rm));
     assert!(sum(&msg) < 3_000, "a message: 3 projections, about 2.5 KB");
-    assert!(sum(&join) < 45_000, "join: about 38 KB");
-    assert!(sum(&rm) < 11_000 * n as u64 + 40_000, "removal: about 79 KB at 4 members");
-    assert!(others_rm < 6_000 * (n as u64 - 1), "others during a removal: heartbeats and certificates");
+    assert!(sum(&join) < 50_000, "join: about 41 KB");
+    assert!(sum(&rm) < 4_000 * n as u64 + 24_000, "removal: about 26 KB at 4 members, 3 KB per member");
+    assert!(others_rm < 1_500 * (n as u64 - 1), "others during a removal: heartbeats");
 }
 
 
