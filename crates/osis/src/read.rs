@@ -4,8 +4,8 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::watch::{Callback, Change, CommitInfo, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
-use osis_core::{Ak, Role, Tid, Value, WallMs};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
+use osis_core::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
@@ -19,6 +19,27 @@ pub struct Edge {
     pub until: Option<WallMs>,
     /// The role this member may grant others (invite grants).
     pub invite: Option<Role>,
+}
+
+/// When a thing was created (`Osis::created`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Created {
+    /// The creating commit (never a compaction snapshot, which carries `/created` too).
+    pub commit: CommitId,
+    /// Its `ts`: the same on every node.
+    pub ts: Ts,
+    /// The authoring node and the actor it wrote for.
+    pub node: Tid,
+    pub actor: Tid,
+    /// When this node received it (per node).
+    pub received: WallMs,
+}
+
+impl Created {
+    /// Display time for feeds: `min(ts, received)` (a sender's clock may run ahead).
+    pub fn shown(&self) -> WallMs {
+        self.ts.wall_ms().min(self.received)
+    }
 }
 
 /// The membership timeline's roster of a thing: member actor → edge.
@@ -151,12 +172,12 @@ impl Reader<'_> {
         self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
     }
 
-    /// The commit that created the thing (its `/created`): author, actor, `ts` and when this
-    /// node received it. A timeline sorts by its display time `min(ts, received)`.
-    pub fn created(&self, tid: Tid) -> Option<CommitInfo> {
-        let ak = Ak::new("/created").ok()?;
-        let (id, h, received) = self.e.first_commit(&self.resolve(tid), &ak)?;
-        Some(CommitInfo { id, actor: h.actor, node: h.author, ts: h.ts, received })
+    /// The commit that created the thing (`Created`; a timeline sorts by `shown()`); `None`
+    /// while it is unknown or only a snapshot carrying its `/created` is here. Follows moves: a
+    /// moved thing reports its copy's creation, the move.
+    pub fn created(&self, tid: Tid) -> Option<Created> {
+        let c = self.e.creation(&self.resolve(tid))?;
+        Some(Created { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received })
     }
 }
 
@@ -203,7 +224,7 @@ impl Osis {
     }
 
     /// The commit that created the thing (`Reader::created`).
-    pub fn created(&self, tid: Tid) -> Option<CommitInfo> {
+    pub fn created(&self, tid: Tid) -> Option<Created> {
         self.read(|r| r.created(tid))
     }
 

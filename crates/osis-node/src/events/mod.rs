@@ -68,6 +68,9 @@ pub enum DiagnosticKind {
     /// This node cannot open a label it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,
+    /// A text session could not commit its edits (the `osis` API: lost write access, storage);
+    /// they stay in its buffer.
+    Uncommitted,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

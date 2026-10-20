@@ -254,7 +254,7 @@ pub use net::{ManualNet, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, SignalKey, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Edge, PathRef, Reader, Roster};
+pub use read::{AspectRef, Created, Edge, PathRef, Reader, Roster};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
 pub use signal::{SignalEvent, Target};
 pub use text::TextSession;

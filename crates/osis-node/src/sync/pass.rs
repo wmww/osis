@@ -33,6 +33,10 @@ pub struct Verdicts {
     pub unsettled: Vec<Option<(Tid, Ak)>>,
 }
 
+/// How long another node's fresh demotion or `/keys` is left to its author before this node
+/// places it as its own chain certificate (ms; the periodic pass picks it up after).
+const SETTLE_MS: u64 = 30_000;
+
 /// An entry to send, by priority (membership and certificates before content before
 /// heartbeats).
 struct Out {
@@ -158,7 +162,7 @@ impl SyncEngine {
             }
         }
         if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
-            self.certificates(&g, l)?;
+            self.certificates(&g, l, &server)?;
             self.heartbeat(&g, l, &keys, conn)?;
         }
         // every certificate copy this node placed here: chain, card, flows' placements
@@ -605,31 +609,43 @@ impl SyncEngine {
         Ok(self.engine.package(c)?.map(|p| p.blobs.into_iter().map(|(id, _)| id).collect()).unwrap_or_default())
     }
 
-    /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
-    /// encryption per label, placed once per commit.
-    fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+    /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
+    /// aspects no entry under the label holds yet, as a fresh encryption per label.
+    fn certificates(&mut self, g: &Tid, l: LabelId, server: &ServerKey) -> Result<()> {
         let closure = self.engine.closure(g);
         for (c, ais) in self.engine.certificates(g) {
-            // the aspects this node's copies or any present blob of the commit under the label
-            // carry (a copy of carried parts is a strict subset or duplicate others delete, and
-            // placing it again churns, spec/sync.md §7): a chain grown since (an owner's
-            // `/created` this node learned later) places the rest
-            let placed: BTreeSet<usize> = self
-                .state
-                .entries
-                .range((l, BlobId([0; 32]))..)
-                .take_while(|((x, _), _)| *x == l)
-                .filter_map(|((_, id), e)| match &e.kind {
-                    Kind::Commit { commit, parts } if *commit == c && (e.cert || self.state.present_anywhere(&l, id)) => Some(parts.iter().map(|(ai, _)| *ai).collect::<Vec<_>>()),
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            // what the label's closure bodies carry is not copied again
+            // the aspects entries of `c` under the label hold: this node's copies, and any
+            // node's copy or body present at a server (opened, so the same commit: its ID is
+            // the hash of the header the parts were checked against; placing a carried part
+            // again churns, spec/sync.md §7)
+            let mut mine: BTreeSet<usize> = BTreeSet::new();
+            let mut held: BTreeSet<usize> = BTreeSet::new();
+            for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+                let Kind::Commit { commit, parts } = &e.kind else { continue };
+                if *commit != c {
+                    continue;
+                }
+                if e.cert {
+                    mine.extend(parts.iter().map(|(ai, _)| *ai));
+                }
+                if e.cert || self.state.is_present(server, &l, id) || self.state.present_anywhere(&l, id) {
+                    held.extend(parts.iter().map(|(ai, _)| *ai));
+                }
+            }
+            // what the label's closure bodies carry is never copied (a copy duplicating closure
+            // parts is a strict subset others delete)
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
-            let missing: BTreeSet<usize> = ais.difference(&placed).filter(|ai| placed.is_empty() || !inside.contains(ai)).copied().collect();
-            // placed before and gone since (deleted at the server): not placed again
-            if missing.is_empty() || placed.is_empty() && self.state.certs.contains(&(l, c)) {
+            let missing: BTreeSet<usize> = ais.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
+            // this node's own copy placed before and gone since (deleted at the server): not
+            // placed again
+            if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) {
+                continue;
+            }
+            // another node's fresh demotion or new `/keys` is its author's to place
+            // (spec/permissions.md §3): a later pass places what is still missing then, so
+            // members that learn of it under another label first do not all copy it
+            let fresh = self.engine.header(&c).filter(|h| h.author != self.engine.tid() && h.ts.wall_ms().0.saturating_add(SETTLE_MS) > self.now());
+            if fresh.is_some_and(|h| h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys"))) {
                 continue;
             }
             for b in self.engine.partial_bodies(&c, &missing)? {

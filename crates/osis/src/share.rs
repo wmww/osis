@@ -360,23 +360,45 @@ impl Osis {
 
     /// Lowers or removes `member`'s edge on `target` (spec/permissions.md §2, §3, §5): first the
     /// pre-sync of every label the demoted authority wrote under, as `d` says; then the
-    /// demotion with this node's frontier and the target's rotation, in one commit. A member
-    /// that joined by a link this node made (no edge on `target`, one on the link's actor) is
-    /// demoted there, and the link is revoked with it: the joiner may keep its seed
-    /// (spec/permissions.md §9; the link's other joiners stay).
+    /// demotion with this node's frontier and the target's rotation, in one commit.
+    ///
+    /// A removal follows every way the member reaches `target` (`member_path`) until none is
+    /// left; removing a member that reaches it no more writes nothing. A member that joined by
+    /// a link made on this device is removed from the link's actor K together with the link key
+    /// in one commit (`revoke_joiner`; the joiner may keep the seed, spec/permissions.md §9): the
+    /// link stops working for anyone who has not redeemed it, K's other joiners stay. A link
+    /// joiner's role cannot be lowered (it could act as the link key), only removed. A member
+    /// reaching `target` through another actor (a team, or a link made on another device) is
+    /// `Invalid`: demote it there.
     pub async fn demote(&self, target: Tid, member: Tid, to: Lower, d: Demotion) -> Result<()> {
         let (t, m) = (self.resolved(target), self.resolved(member));
-        if !self.roster(t).contains_key(&m) {
-            let made: Vec<(Tid, Tid)> = self.locked(|x| x.links.iter().filter(|(_, l)| l.target == t).map(|(k, l)| (*k, l.l)).collect());
-            if let Some((k, l)) = made.into_iter().find(|(k, _)| self.roster(*k).contains_key(&m)) {
-                self.demote_edge(k, m, to, d).await?;
-                if self.roster(k).contains_key(&l) {
-                    self.demote_edge(k, l, Lower::Remove, d).await?;
+        // each round removes one way in; the bound only guards against a roster that never settles
+        for _ in 0..16 {
+            let path = self.member_path(t, m);
+            let via = match (path.as_slice(), to) {
+                ([], Lower::Remove) => return Ok(()),
+                ([], Lower::To(_)) => return Err(Error::Invalid(format!("{m} is no member of {t}"))),
+                ([_], _) => None,
+                ([(_, k), (_, _)], _) => Some(*k),
+                ([(_, k), ..], _) => return Err(Error::Invalid(format!("{m} reaches {t} through {k}: demote it there"))),
+            };
+            match via {
+                None => self.demote_edge(t, m, to, d).await?,
+                Some(k) => {
+                    if !self.locked(|x| x.links.get(&k).is_some_and(|l| l.target == t)) {
+                        return Err(Error::Invalid(format!("{m} reaches {t} through {k} (a group actor, or a link made on another device): demote or revoke it there")));
+                    }
+                    if to != Lower::Remove {
+                        return Err(Error::Invalid(format!("{m} joined {t} by a link: it can only be removed")));
+                    }
+                    self.revoke_joiner(k, m, d).await?;
                 }
+            }
+            if to != Lower::Remove {
                 return Ok(());
             }
         }
-        self.demote_edge(t, m, to, d).await
+        Err(Error::Invalid(format!("{m} still reaches {t}")))
     }
 
     async fn demote_edge(&self, t: Tid, m: Tid, to: Lower, d: Demotion) -> Result<()> {
@@ -472,6 +494,22 @@ impl Osis {
     pub async fn revoke_link(&self, id: Tid, d: Demotion) -> Result<()> {
         let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
         self.demote_edge(id, l, Lower::Remove, d).await
+    }
+
+    /// Removes `joiner` from link `id`'s actor K and ends the link in the same commit, under one
+    /// rotation (spec/permissions.md §9: a joiner may keep the seed); the other joiners stay
+    /// members of K and need a new link to invite anyone. After the pre-sync `demote` does.
+    pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
+        let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
+        let m = self.resolved(joiner);
+        let things = self.engine(|e| {
+            let mut s = e.presync_scope(&id, &m, None);
+            s.extend(e.presync_scope(&id, &l, None));
+            s
+        });
+        let presync = self.presync(things, d).await?;
+        let done = self.engine(|e| e.revoke_joiner(&id, &l, &m, presync)).map_err(needs_admin)?;
+        self.carry(done)
     }
 
     /// Finalizes single-use links whose redemption removed the link key (spec/permissions.md
@@ -629,10 +667,12 @@ impl Osis {
         Ok(self.locked(|x| x.sync.config().servers.iter().cloned().map(ServerAddr).collect()))
     }
 
-    /// Adds a server for new labels (links, `sync`) and keeps a connection to it. Existing
-    /// labels on the database's servers (those whose list equals it) that this node
-    /// administers, and the person's inbox, move to the new list: a database created without
-    /// servers becomes reachable once one is added.
+    /// Adds a server for new labels (links, `sync`) and keeps a connection to it. The person's
+    /// inbox and existing labels on the database's servers (those whose list equals it) move to
+    /// the new list: the home label and groups the person owns (directly or through its
+    /// actors) that this node administers; not links or the contact card (their text names
+    /// their servers), not groups owned by others. A database created without servers becomes
+    /// reachable once one is added.
     pub fn add_server(&self, s: &ServerAddr) -> Result<()> {
         let mut v = self.servers()?;
         if !v.contains(s) {
@@ -641,7 +681,8 @@ impl Osis {
         self.set_servers(v)
     }
 
-    /// Removes a server, from the database's list and the labels that follow it (`add_server`).
+    /// Removes a server, from the database's list and the labels that follow it (`add_server`);
+    /// a group with members besides the person's devices keeps its last server.
     pub fn remove_server(&self, s: &ServerAddr) -> Result<()> {
         let mut v = self.servers()?;
         v.retain(|x| x != s);
@@ -653,9 +694,18 @@ impl Osis {
         self.locked(|x| -> Result<()> {
             let old: BTreeSet<osis_label::Address> = x.sync.config().servers.iter().cloned().collect();
             let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
+            // links and the contact card name their label's servers in their text: they stay
+            let mut fixed: BTreeSet<Tid> = x.links.keys().copied().collect();
+            if let Some(card) = x.engine().app_record(CONTACT)?
+                && let Ok(l) = osis_label::ShareLink::from_text(&String::from_utf8_lossy(&card))
+            {
+                fixed.insert(l.target);
+            }
+            // the labels first: a failed commit leaves the list as it was, so a retry matches
+            follow_labels(x.engine(), me, &fixed, &old, &new)?;
             save_servers(x.engine(), &v)?;
             x.sync.set_servers(new.clone());
-            follow_servers(x.engine(), me, &old, &new)
+            follow_inbox(x.engine(), me, &old, &new)
         })?;
         self.sync_now()
     }
@@ -813,19 +863,43 @@ impl Osis {
     }
 }
 
-/// Moves the labels this node administers whose server list is `old` (as a set), and the
-/// person's inbox when it is on `old`, to `new` (spec/sync.md §2 `/label` servers; the sync
-/// engine registers a label's path at a server that does not know it).
-fn follow_servers(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
-    let same = |s: &[osis_label::Address]| s.iter().cloned().collect::<BTreeSet<_>>() == *old;
+fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> bool {
+    s.iter().cloned().collect::<BTreeSet<_>>() == *old
+}
+
+/// Moves the labels whose server list is `old` (as a set) to `new` (spec/sync.md §2 `/label`
+/// servers; the sync engine registers a label's path at a server that does not know it): the
+/// home label and the labels of groups in the person's own owner tree this node administers,
+/// except `fixed` ones (links, the contact card) and link actors made elsewhere (a key-actor
+/// member that is no device of the person). A group with members besides the person and its
+/// devices never loses its last server.
+fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
+    let devices: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
+    let mine = |e: &osis_node::Engine, g: Tid| {
+        let mut cur = g;
+        for _ in 0..16 {
+            if cur == me {
+                return true;
+            }
+            match e.owner(&cur) {
+                Some(o) => cur = o,
+                None => return false,
+            }
+        }
+        false
+    };
     let mut m = osis_node::Mutation::new();
     let mut any = false;
     for g in e.labeled_groups() {
-        if e.role_on(&g) != Some(Role::Admin) {
+        if fixed.contains(&g) || e.role_on(&g) != Some(Role::Admin) || !mine(e, g) {
             continue;
         }
-        for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same(&l.servers)) {
+        let members: Vec<Tid> = e.roster(&g).into_keys().filter(|x| *x != me && !devices.contains(x)).collect();
+        if members.iter().any(|x| e.owner(x).is_none()) || new.is_empty() && !members.is_empty() {
+            continue;
+        }
+        for l in e.group_labels(&g)?.into_iter().filter(|l| !l.replaced && same_set(&l.servers, old)) {
             any = true;
             let path = vec![osis_crdt::PathSeg::Key(l.id.to_value()), osis_crdt::PathSeg::Field(2)];
             m.op(g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(list.clone()) })?;
@@ -834,7 +908,13 @@ fn follow_servers(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label:
     if any {
         e.commit(m)?;
     }
-    if e.get_typed(&me, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| same(&i.servers)) {
+    Ok(())
+}
+
+/// Moves the person's inbox to `new` when it is on `old`.
+fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
+    let list = Codec::to_value(&new.to_vec());
+    if e.get_typed(&me, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| same_set(&i.servers, old)) {
         let mut m = osis_node::Mutation::new();
         m.op(me, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(4), osis_crdt::PathSeg::Case(1), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(list) })?;
         e.commit(m)?;

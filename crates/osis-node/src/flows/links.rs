@@ -86,12 +86,14 @@ impl Engine {
         self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync: crate::flows::PreSync::Synced })
     }
 
-    /// Revokes one joiner of a link (spec/permissions.md §9): removes L first (the joiner may
-    /// still hold the seed), then the joiner; the remaining joiners need a new link.
+    /// Revokes one joiner of a link (spec/permissions.md §9): removes the joiner and L (the
+    /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
+    /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
+    /// the joiner alone.
     pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync) -> Result<Done> {
-        let mut done = self.demote(k, &crate::flows::Demotion { member: *l, new: None, presync })?;
-        done.extend(self.demote(k, &crate::flows::Demotion { member: *joiner, new: None, presync })?);
-        Ok(done)
+        let d = crate::flows::Demotion { member: *joiner, new: None, presync };
+        let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
+        self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] })
     }
 
     /// Bearer use (spec/permissions.md §9): act as L without writing anything; reads open

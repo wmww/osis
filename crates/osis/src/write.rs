@@ -12,6 +12,7 @@ use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::Mutation;
 use osis_schema::core_types::{GROUP, is_membership_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, Retention, Step, type_at, validate_write};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
@@ -42,12 +43,15 @@ pub struct Write<'d> {
     created: Vec<Tid>,
     /// Things placed into groups by this batch (the `NotSynced` check).
     placed: Vec<Tid>,
+    /// Per group whose `/group` this batch writes through the group calls: the expiry those
+    /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
+    group_exp: BTreeMap<Tid, Option<Duration>>,
 }
 
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new() }
+        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new() }
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
@@ -116,6 +120,9 @@ impl<'d> Write<'d> {
     /// `create` whose placements expire after `expires` (spec/commits.md §6; `None`: never), as
     /// `place_expiring` does: a disappearing item leaves its groups by itself.
     pub fn create_expiring(&mut self, owner: Tid, place: Place, expires: Option<Duration>) -> Result<Tid> {
+        if let Some(d) = expires {
+            expiry_in(self.db, d)?;
+        }
         let owner = self.known(owner)?;
         let groups = match &place {
             Place::In(g) => vec![*g],
@@ -138,13 +145,31 @@ impl<'d> Write<'d> {
         if !self.created.contains(&t) && self.db.get(t, GROUP)?.is_some() {
             return Ok(());
         }
+        self.group_expiry(t, None)?;
         self.m.set(t, &GROUP, &osis_schema::core_types::Group::default())?;
         Ok(())
     }
 
-    fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool) -> Result<()> {
+    /// Records that this batch writes `g`'s `/group` with expiry `d`; `Invalid` when another
+    /// write of it in this batch asked for a different one.
+    fn group_expiry(&mut self, g: Tid, d: Option<Duration>) -> Result<()> {
+        match self.group_exp.get(&g) {
+            Some(x) if *x == d => return Ok(()),
+            Some(_) => return Err(Error::Invalid(format!("this batch writes the groups of {g} with different expiries (expiry is per aspect write): use one batch each"))),
+            None => {}
+        }
+        if let Some(d) = d {
+            let t = expiry_in(self.db, d)?;
+            self.m.expires(g, &GROUP, t)?;
+        }
+        self.group_exp.insert(g, d);
+        Ok(())
+    }
+
+    fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
         let g = self.known(g)?;
         let member = self.resolve(member);
+        self.group_expiry(g, exp)?;
         self.m.op(g, &GROUP, group_op(items, member, add))?;
         Ok(())
     }
@@ -152,28 +177,25 @@ impl<'d> Write<'d> {
     /// Adds `tid` to the items of group `g`. A thing whose groups then include no synced one
     /// gets a `NotSynced` diagnostic after commit.
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
-        let t = self.resolve(tid);
-        self.placed.push(t);
-        self.group(g, true, tid, true)
+        self.place_expiring(tid, g, None)
     }
     /// `place` whose placement expires after `expires` (`None`: never). Expiry is per aspect
-    /// write: every change this batch makes to `g`'s groups expires with it.
+    /// write, so every group call on `g` in this batch must ask for the same expiry (else
+    /// `Invalid`).
     pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
-        self.place(tid, g)?;
-        if let Some(d) = expires {
-            let (g, t) = (self.resolve(g), expiry_in(self.db, d)?);
-            self.m.expires(g, &GROUP, t)?;
-        }
+        let t = self.resolve(tid);
+        self.group(g, true, tid, true, expires)?;
+        self.placed.push(t);
         Ok(())
     }
     pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
-        self.group(g, true, tid, false)
+        self.group(g, true, tid, false, None)
     }
     pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, true)
+        self.group(g, false, sub, true, None)
     }
     pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, false)
+        self.group(g, false, sub, false, None)
     }
 
     /// Removes every aspect the node knows of `tid` and every known placement of it. The tid

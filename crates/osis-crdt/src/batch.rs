@@ -136,13 +136,20 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                 }
                 None => {
                     // a key that is not live: a new entry holding the op's writes against an
-                    // absent value (§5.6); an op that writes nothing creates nothing
-                    let d = w.fresh().dot;
+                    // absent value (§5.6); an op that writes nothing creates nothing. A path on
+                    // through a field or case would create a partial struct or enum.
+                    if matches!(rest.first(), Some(PathSeg::Field(_) | PathSeg::Case(_))) {
+                        return Err(Error::Mismatch("no live entry with that key: put the whole value"));
+                    }
+                    let mut w2 = w.clone();
+                    let d = w2.fresh().dot;
                     let c = match (&op.op, rest.is_empty()) {
-                        (crate::ops::Op::Set(v), true) => Some(crate::ops::create(w, &vview, v)?),
-                        _ => resolve(w, None, None, None, rest, op, &vview, false)?,
+                        (crate::ops::Op::Set(v), true) => Some(crate::ops::create(&mut w2, &vview, v)?),
+                        _ => resolve(&mut w2, None, None, None, rest, op, &vview, false)?,
                     };
-                    c.map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
+                    let Some(c) = c else { return Ok(None) };
+                    *w = w2;
+                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
             }
         }

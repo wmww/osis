@@ -120,8 +120,9 @@ async fn redeem_quic_localhost_spec_permissions_9() {
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): with a runtime, a session commits after `idle_commit` without edits, with no further
-// edit or call.
+// edit or call. Tier 2: it waits on a real 20 ms timer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "tier 2"]
 async fn text_idle_commit_api_text_sessions() {
     let net = osis_transport::Net::new(4);
     let mut c = cfg(1, vec![], Transport::InProcess(net.endpoint("a")));

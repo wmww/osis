@@ -19,7 +19,7 @@ pub mod rotation;
 pub mod sync;
 pub mod undo;
 
-pub use apply::{Ingested, Reason};
+pub use apply::{Creation, Ingested, Reason};
 pub use engine::{Config, Engine, Mutation};
 pub use error::{Error, Result};
 pub use events::{Cause, Diagnostic, DiagnosticKind, Event, Origin};

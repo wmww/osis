@@ -269,6 +269,30 @@ fn path_op_into_absent_key_spec_5_6() {
     assert!(b.finish().is_none());
 }
 
+/// §5.6, spec/versioning.md §5: typed, a path op into an absent key that writes nothing creates
+/// no entry and consumes no counter; one going on through a struct field is refused (it would
+/// create a partial struct).
+#[test]
+fn absent_key_typed_spec_5_6() {
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    let sets = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Set(Box::new(Ty::Register)))));
+    let structs = TyView(Ty::Map(Box::new(Ty::Register), Box::new(inner)));
+    let st = Fragment::default();
+    let node = Source::node(Tid::from_bytes([4; 15]));
+    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), node.clone(), 1));
+    b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Remove(Value::Int(1)) }, &sets).unwrap();
+    b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(2)) }, &sets).unwrap();
+    let (d, range) = b.finish().unwrap();
+    assert_eq!(range, CounterRange { lo: 1, hi: 3 }, "entry and element only: the no-op took no counter");
+    let mut s = st.clone();
+    s.join(d);
+    assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(2)].into_iter().collect()))].into_iter().collect())));
+    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), node, 1));
+    let partial = PathOp { path: vec![PathSeg::Key(Value::Int(0)), PathSeg::Field(1)], op: Op::Set(Value::Int(5)) };
+    assert!(b.apply(&partial, &structs).is_err());
+    assert!(b.finish().is_none());
+}
+
 
 /// §5.5, §5.6, §9, spec/data-model.md §6: large values compare by keyed content hash: two writes
 /// of one content (other blob and key) are one set element, one map key, an unchanged register;

@@ -576,6 +576,20 @@ fn expiring_placement_api_writes() {
     let mut w = db.write();
     assert!(matches!(w.create_expiring(db.me(), Place::In(db.home()), Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
     assert!(matches!(w.at(kept, x).expires(Some(std::time::Duration::ZERO)).set(&s("now")), Err(Error::Invalid(_))));
+    // one batch cannot mix expiries on one group's `/group` (expiry is per aspect write)
+    drop(w);
+    let mut w = db.write();
+    let g = w.create(db.me(), Place::Unsynced).unwrap();
+    w.make_group(g).unwrap();
+    assert!(matches!(w.create_expiring(db.me(), Place::In(g), d), Err(Error::Invalid(_))), "the group's definition would expire");
+    assert!(matches!(w.create_expiring(db.me(), Place::Unsynced, Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
+    drop(w);
+    let mut w = db.write();
+    w.create_expiring(db.me(), Place::In(db.home()), d).unwrap();
+    w.create_expiring(db.me(), Place::In(db.home()), d).unwrap();
+    assert!(matches!(w.create_expiring(db.me(), Place::In(db.home()), Some(std::time::Duration::from_secs(5))), Err(Error::Invalid(_))));
+    assert!(matches!(w.create(db.me(), Place::In(db.home())), Err(Error::Invalid(_))));
+    drop(w);
     // the `/group` field constants are the ones `place` writes
     assert_eq!(db.at(db.home(), core::GROUP).path(p![core::group::ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
@@ -594,9 +608,11 @@ fn owner_created_now_api_reads() {
     let done = w.commit().unwrap().unwrap();
     assert_eq!(db.owner_of(t), Some(db.me()));
     let ci = db.created(t).unwrap();
-    assert_eq!((ci.id, ci.ts, ci.actor, ci.node, ci.received), (done.commit, done.ts, db.me(), db.node(), osis::WallMs(T0 + 5)));
+    assert_eq!((ci.commit, ci.ts, ci.node, ci.actor, ci.received), (done.commit, done.ts, db.node(), db.me(), osis::WallMs(T0 + 5)));
+    assert_eq!(ci.shown(), osis::WallMs(T0 + 5));
+    c.advance(5);
     db.write_with(|w| w.at(t, ak("/t/x")).set(&s("later"))).unwrap();
-    assert_eq!(db.created(t).unwrap().id, done.commit, "the creating commit, not the newest");
+    assert_eq!(db.created(t).unwrap(), ci, "the creation, not the newest commit");
     let other = common::db(2);
     assert_eq!(db.owner_of(other.me()), None);
     assert_eq!(db.created(other.me()), None);
@@ -650,4 +666,30 @@ fn signal_in_group_api_signals() {
     assert_eq!(recv(&rx), (g, Value::Int(2)));
     db.settle();
     assert!(rx.try_recv().is_err(), "nothing about things outside the group");
+}
+
+// spec/commits.md (`/created` is carried by the first commit and by covering snapshots),
+// notes/api.md Reads (`created`): a later compaction snapshot does not replace the creating
+// commit; a device holding the snapshot without that commit reports none.
+#[test]
+fn created_not_a_snapshot_spec_commits_2() {
+    let c = clock();
+    let a = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let j = Osis::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let b = j.finish(&reply).unwrap();
+    let mut w = a.write();
+    let t = w.create(a.me(), Place::Unsynced).unwrap();
+    w.at(t, ak("/t/x")).set(&s("v")).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    c.advance(60_000);
+    let snap = a.engine(|e| e.snapshot(&t, &ak("/t/x"))).unwrap().unwrap();
+    assert_eq!(a.created(t).unwrap().commit, done.commit);
+    let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.commit).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
+    for pk in pks {
+        b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
+    }
+    assert!(b.engine(|e| e.header(&done.commit)).is_none());
+    let _ = snap;
+    assert_eq!(b.created(t), None);
 }

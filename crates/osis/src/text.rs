@@ -40,6 +40,12 @@ struct Bind {
     seq: bool,
 }
 
+/// Reports edits a session could not commit.
+fn uncommitted(db: &Osis, tid: Tid, e: &Error) {
+    let d = osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Uncommitted, tids: vec![tid], commit: None, peer: None, detail: format!("text session edits not committed: {e}") };
+    db.engine(|en| en.report(d));
+}
+
 /// Arms the idle-commit timer: when it fires, the edits are committed if the session has been
 /// idle for `idle_commit`, else it re-arms for the rest.
 fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bool {
@@ -53,9 +59,13 @@ fn arm(db: &Osis, st: Weak<Mutex<State>>, b: Bind, d: std::time::Duration) -> bo
             match s.last_edit.map(|t| t.elapsed()) {
                 Some(e) if e < idle => s.armed = arm(&db, Arc::downgrade(&st), b, idle - e),
                 Some(_) => {
-                    let _ = flush(&db, b.tid, &b.key, &b.path, b.seq, &mut s);
-                    s.last_edit = None;
                     s.armed = false;
+                    // on failure the edits stay in the buffer; the next edit or commit retries
+                    if let Err(e) = flush(&db, b.tid, &b.key, &b.path, b.seq, &mut s) {
+                        uncommitted(&db, b.tid, &e);
+                    } else {
+                        s.last_edit = None;
+                    }
                 }
                 None => s.armed = false,
             }
@@ -117,8 +127,11 @@ impl Osis {
                 return;
             }
             let mut s = lock(&st2);
-            // local edits first, rebased by the crdt; then the merged text
-            let _ = flush(db, tid, &key2, &path2, seq, &mut s);
+            // local edits first, rebased by the crdt; then the merged text (edits that cannot
+            // be committed are reported and dropped from the buffer: the merged text wins)
+            if let Err(e) = flush(db, tid, &key2, &path2, seq, &mut s) {
+                uncommitted(db, tid, &e);
+            }
             let merged = match db.read(|r| r.get_path(tid, &key2, &path2)) {
                 Ok(Some(Value::Str(x))) => x,
                 _ => return,
