@@ -268,6 +268,8 @@ impl ClientSession {
             ClientInput::Bytes(b) => {
                 self.decoder.push(&b);
                 while !self.closed {
+                    // the peer's first frame is its Hello (spec/wire.md §11.1)
+                    self.decoder.set_max(if self.peer.is_some() { osis_core::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => self.frame(now, &body, &mut out),
                         Ok(None) => break,

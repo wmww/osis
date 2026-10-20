@@ -60,6 +60,7 @@ pub fn parse(text: &str) -> Result<Config, String> {
             "max_connections" => p.max_connections = usize::try_from(n()?).map_err(|_| bad("too large"))?,
             "hello_ms" => p.hello_ms = n()?,
             "max_queued_bytes" => p.max_queued_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,
+            "max_buffered_bytes" => p.max_buffered_bytes = usize::try_from(n()?).map_err(|_| bad("too large"))?,
             _ => return Err(bad(&format!("unknown key {k}"))),
         }
     }

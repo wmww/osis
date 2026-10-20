@@ -26,8 +26,10 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// A handshake not done in this time is dropped (provisional).
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Protocol v1 frame cap (spec/wire.md §11.1); flow-control windows are sized from it.
-const MAX_MESSAGE: u32 = 9_437_184;
+/// Flow-control windows per stream and per connection: the reader drains frames incrementally,
+/// so a window need not hold a whole frame; these bound what a peer makes us buffer.
+const STREAM_WINDOW: u32 = 1 << 20;
+const CONN_WINDOW: u32 = 4 << 20;
 /// Concurrent bidirectional streams a peer may open (provisional).
 const MAX_STREAMS: u32 = 16;
 /// Handshakes in progress per listener (provisional).
@@ -149,8 +151,7 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Bounded per-connection memory: no uni streams or datagrams, few bidi streams, windows of a
-/// few frames.
+/// Bounded per-connection memory: no uni streams or datagrams, few bidi streams, small windows.
 fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(KEEP_ALIVE));
@@ -158,8 +159,8 @@ fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
     t.max_concurrent_uni_streams(0u32.into());
     t.max_concurrent_bidi_streams(MAX_STREAMS.into());
     t.datagram_receive_buffer_size(None);
-    t.stream_receive_window(MAX_MESSAGE.saturating_mul(2).into());
-    t.receive_window(MAX_MESSAGE.saturating_mul(4).into());
+    t.stream_receive_window(STREAM_WINDOW.into());
+    t.receive_window(CONN_WINDOW.into());
     Ok(Arc::new(t))
 }
 

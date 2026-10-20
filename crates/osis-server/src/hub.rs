@@ -32,7 +32,8 @@ pub enum HubOutput {
 }
 
 enum Conn {
-    Served { c: Box<ServerConnection>, peer: [u8; 32], hello_by: Option<u64> },
+    /// `buffered`: partial frame bytes after the last input.
+    Served { c: Box<ServerConnection>, peer: [u8; 32], hello_by: Option<u64>, buffered: usize },
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
@@ -45,12 +46,14 @@ pub struct Hub<B: Backend> {
     sweep_hold: u64,
     /// The last sweep ran out of budget.
     sweep_more: bool,
+    /// Partial frame bytes over all served connections.
+    buffered: usize,
 }
 
 impl<B: Backend> Hub<B> {
     /// `static_key`: this node's transport key (bound by open signatures).
     pub fn new(store: BackendStore<B>, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub<B> {
-        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false }
+        Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0 }
     }
 
     pub fn store(&self) -> &BackendStore<B> {
@@ -84,7 +87,7 @@ impl<B: Backend> Hub<B> {
         }
         let cfg = ServerConfig { static_key: self.static_key, challenge: self.challenge() };
         let hello_by = Some(now.saturating_add(self.store.policy().hello_ms));
-        self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by });
+        self.conns.insert(id, Conn::Served { c: Box::new(ServerConnection::new(cfg)), peer, hello_by, buffered: 0 });
         let mut out = Vec::new();
         self.serve(now, id, ServerInput::Start, &mut out);
         out
@@ -103,7 +106,10 @@ impl<B: Backend> Hub<B> {
     pub fn input(&mut self, now: u64, id: ConnId, bytes: Vec<u8>) -> Vec<HubOutput> {
         let mut out = Vec::new();
         match self.conns.get(&id) {
-            Some(Conn::Served { .. }) => self.serve(now, id, ServerInput::Bytes(bytes), &mut out),
+            Some(Conn::Served { .. }) => {
+                self.serve(now, id, ServerInput::Bytes(bytes), &mut out);
+                self.limit_buffered(&mut out);
+            }
             Some(Conn::Peer { .. }) => self.replicate(now, id, Some(ClientInput::Bytes(bytes)), &mut out),
             None => {}
         }
@@ -112,7 +118,30 @@ impl<B: Backend> Hub<B> {
 
     /// The connection is gone (either side closed it).
     pub fn closed(&mut self, id: ConnId) {
-        self.conns.remove(&id);
+        self.remove(id);
+    }
+
+    /// Forgets a connection and its partial frame bytes.
+    fn remove(&mut self, id: ConnId) {
+        if let Some(Conn::Served { buffered, .. }) = self.conns.remove(&id) {
+            self.buffered = self.buffered.saturating_sub(buffered);
+        }
+    }
+
+    /// Partial frame bytes held for all served connections.
+    pub fn buffered(&self) -> usize {
+        self.buffered
+    }
+
+    /// Over `max_buffered_bytes` of partial frames: closes the connections holding the largest
+    /// until under it (anyone who can connect could otherwise hold `MAX_MESSAGE` per connection).
+    fn limit_buffered(&mut self, out: &mut Vec<HubOutput>) {
+        while self.buffered > self.store.policy().max_buffered_bytes {
+            let Some(id) = self.conns.iter().filter_map(|(id, c)| if let Conn::Served { buffered, .. } = c { Some((*buffered, *id)) } else { None }).max().map(|(_, id)| id) else { break };
+            self.remove(id);
+            out.push(HubOutput::Close(id));
+            out.push(HubOutput::Diagnostic(format!("connection {id}: closed, partial frames over the budget")));
+        }
     }
 
     /// Runs what is due: a bounded sweep (expiry, timed deletes, tombstones, claim sets), Hello
@@ -136,7 +165,7 @@ impl<B: Backend> Hub<B> {
         }
         let late: Vec<ConnId> = self.conns.iter().filter(|(_, c)| matches!(c, Conn::Served { hello_by: Some(t), .. } if *t <= now)).map(|(id, _)| *id).collect();
         for id in late {
-            self.conns.remove(&id);
+            self.remove(id);
             out.push(HubOutput::Close(id));
         }
         let due: Vec<(ConnId, bool)> = self
@@ -170,18 +199,21 @@ impl<B: Backend> Hub<B> {
     }
 
     fn serve(&mut self, now: u64, id: ConnId, input: ServerInput, out: &mut Vec<HubOutput>) {
-        let Some(Conn::Served { c, peer, hello_by }) = self.conns.get_mut(&id) else { return };
+        let Some(Conn::Served { c, peer, hello_by, buffered }) = self.conns.get_mut(&id) else { return };
         self.store.set_origin(Some(*peer));
         let outputs = c.handle(now, &mut self.store, input);
         self.store.set_origin(None);
         if c.version().is_some() {
             *hello_by = None;
         }
+        let now_buffered = c.buffered();
+        self.buffered = self.buffered.saturating_sub(*buffered).saturating_add(now_buffered);
+        *buffered = now_buffered;
         for o in outputs {
             match o {
                 ServerOutput::Send(b) => out.push(HubOutput::Send(id, b)),
                 ServerOutput::Close => {
-                    self.conns.remove(&id);
+                    self.remove(id);
                     out.push(HubOutput::Close(id));
                 }
                 ServerOutput::Changed(l) => self.changed(now, l, out),

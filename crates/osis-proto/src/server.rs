@@ -205,6 +205,11 @@ impl ServerConnection {
         self.version
     }
 
+    /// Bytes received and not yet parsed (a partial frame).
+    pub fn buffered(&self) -> usize {
+        self.decoder.pending()
+    }
+
     pub fn handle(&mut self, now: u64, store: &mut dyn LabelStore, input: ServerInput) -> Vec<ServerOutput> {
         let mut out = Vec::new();
         if self.closed {
@@ -215,6 +220,8 @@ impl ServerConnection {
             ServerInput::Bytes(b) => {
                 self.decoder.push(&b);
                 while !self.closed {
+                    // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
+                    self.decoder.set_max(if self.version.is_some() { osis_core::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
                     match self.decoder.next_frame() {
                         Ok(Some(body)) => self.frame(now, store, &body, &mut out),
                         Ok(None) => break,
