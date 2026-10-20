@@ -503,7 +503,7 @@ impl SyncEngine {
     /// §5); while one does, its prefix salt makes its chunk token.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
         // cheapest first: commit blobs have their own record, most deleted bytes are gone already
-        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || !self.dropped_chunks().contains_key(b) || self.state.entries.keys().any(|(_, x)| x == b) {
+        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.entries.keys().any(|(_, x)| x == b) || !self.dropped_chunks(|x| x == b)?.contains_key(b) {
             return Ok(());
         }
         let id = *b;
@@ -520,7 +520,21 @@ impl SyncEngine {
         for id in ids {
             self.forget_blob(&id)?;
         }
-        Ok(())
+        // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
+        let listed: BTreeSet<BlobId> = self.engine.core.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect();
+        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
+        if held.is_empty() {
+            return Ok(());
+        }
+        let named: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).filter(|b| held.contains(b)).collect();
+        let held: BTreeSet<BlobId> = held.difference(&named).copied().collect();
+        let gone: Vec<BlobId> = self.dropped_chunks(|b| held.contains(b))?.into_keys().collect();
+        self.engine.run(|tx| {
+            for b in &gone {
+                tx.txn.delete_blob(b);
+            }
+            Ok(())
+        })
     }
 
     /// Fetches blobs by ID from every open label holding them (lazy chunk reads).

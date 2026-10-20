@@ -154,6 +154,9 @@ pub(crate) struct Core {
     /// The lost-access trigger's work list (`rotation::LOST_DUE`; a superset after a rollback
     /// is harmless).
     pub lost_due: BTreeSet<Tid>,
+    /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
+    /// a state (`touch`, `rollback`).
+    pub live_trees: BTreeMap<Tid, Option<BTreeSet<osis_core::BlobId>>>,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -185,6 +188,7 @@ pub(crate) struct Backup {
 impl Core {
     /// Saves the indexes before the running transaction's first change to them.
     pub fn touch(&mut self) {
+        self.live_trees.clear();
         if self.backup.is_some() {
             return;
         }
@@ -215,6 +219,7 @@ impl Core {
 
     /// Undoes the aborted transaction's changes to the caches.
     fn rollback(&mut self) {
+        self.live_trees.clear();
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
             self.pages.remove(&k);
@@ -281,6 +286,7 @@ impl Core {
             skip_writer_rules: false,
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
+            live_trees: BTreeMap::new(),
         }
     }
 

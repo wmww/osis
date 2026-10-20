@@ -32,6 +32,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("offline_rotation", net::offline_rotation),
     ("disk_loss", net::disk_loss),
     ("grant_lost_on_crash", net::grant_lost_on_crash),
+    ("large_edits", net::large_edits),
     ("revocation_bob", library::revocation_bob),
     ("revocation_carol", library::revocation_carol),
     ("stolen_device", library::stolen_device),
