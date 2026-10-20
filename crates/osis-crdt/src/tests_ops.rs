@@ -370,3 +370,27 @@ proptest! {
         }
     }
 }
+
+/// §5.6 `put_new`: a new entry whatever is live, carrying the value whole (an unchanged value
+/// too) and resetting nothing; the key reads as the join of its live entries.
+#[test]
+fn map_put_new_spec_5_6() {
+    let view = AnyView;
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let one = |v: i64| Value::Map([(Value::Int(0), Value::Int(v))].into_iter().collect());
+    let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
+    let mut st = create(&mut w, &view, &one(1)).unwrap();
+    for (t, v) in [(2u64, 1i64), (3, 7)] {
+        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Put(Value::Int(v)) }, &view).unwrap();
+        let (d, _) = batch.finish().unwrap();
+        assert!(d.is_put_only_map());
+        st.join(d);
+        assert_eq!(st.read(), Some(one(v)));
+    }
+    let Fragment::Map(m) = &st else { panic!("map") };
+    assert_eq!(m.entries.len(), 3);
+    let mut batch = Batch::new(&st, Writer::new(ts(4 << 16), a, 4));
+    batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
+    assert!(!batch.finish().unwrap().0.is_put_only_map());
+}

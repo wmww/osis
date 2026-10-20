@@ -288,47 +288,36 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !grantee_boxes_only(core, &a.tid, fragment(d), &granted) {
+        if a.ak.as_str() == "/secrets" && !grantee_boxes_only(&a.tid, fragment(d), &granted) {
             core.grant_overreach.insert((*id, *ai));
         }
     }
 }
 
 /// Whether a `/secrets` delta writes only the boxes of the members `granted` puts on `actor`, at
-/// or below each one's role, and history boxes at or below the highest granted role
-/// (spec/permissions.md §2: an invite grant carries the grantee's boxes for those roles). A
-/// reset of a box entry must be of a grantee's box this node knows (a remove + put); resets of
-/// unknown entries and of history entries pass (issues/invite-grant-secrets.md).
-fn grantee_boxes_only(core: &Core, actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
+/// or below each one's role, and history boxes at or below the highest granted role, as puts
+/// only: no reset of the value, a field, a map or any entry (spec/permissions.md §2). Judged from
+/// the delta alone, so every node judges it alike whatever it holds.
+fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
     // a write or reset of the whole value removes every box
     if !f.is_plain_struct() {
         return false;
     }
     let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
-    let map_of = |id: u64| match st.field(id).and_then(|x| x.slot(osis_crdt::Encoding::Map)) {
-        Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) => Some(m.clone()),
-        _ => None,
-    };
     let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.member)).is_some_and(|r| k.role <= *r);
-    if let Some(m) = map_of(0) {
-        for (d, _, k, _) in m.entries() {
-            let key = match k {
-                Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
-                None => match core.box_keys.get(&(*actor, d.clone())) {
-                    Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
-                    None => continue,
-                },
-            };
-            if !key.is_some_and(|k| fits(&k)) {
-                return false;
-            }
+    for id in [0, 1] {
+        let Some(field) = st.field(id) else { continue };
+        if !field.is_put_only_map() {
+            return false;
         }
-    }
-    if let Some(m) = map_of(1) {
+        let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map) else { return false };
         for (_, _, k, _) in m.entries() {
-            let Some(k) = k else { continue };
-            let ok = typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t));
+            let Some(k) = k else { return false };
+            let ok = match id {
+                0 => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).is_some_and(|k| fits(&k)),
+                _ => typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t)),
+            };
             if !ok {
                 return false;
             }
@@ -559,6 +548,54 @@ mod tests {
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` delta carries only puts of its
+    // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)
+    // or a history box is un-merged at every node whatever the arrival order: validity depends on
+    // the delta alone.
+    #[test]
+    fn invite_grant_resets_unmerged_any_order_spec_perm_2() {
+        use osis_crdt::{Op, PathOp, PathSeg};
+        use osis_schema::Codec;
+        let mut lp = LocalPeer::new(6, 903, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a member whose box is reset
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
+        let b = tid(&mut lp, 1);
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        // a grant of e the receivers have not seen yet
+        let ge = *lp.peers[0].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
+        let ge = lp.peers[0].engine.package(&ge).unwrap().unwrap();
+        lp.deliver(1, &ge).unwrap();
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let ek = s.boxes.keys().find(|k| k.member == e).unwrap().clone();
+        let hk = s.history.keys().next().unwrap().clone();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(ek.to_value()) }).unwrap();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(hk.to_value()) }).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let bad = lp.peers[1].commit(m).unwrap().unwrap();
+        let bad = lp.peers[1].engine.package(&bad).unwrap().unwrap();
+        // receiver 3 gets the bad grant first, receiver 4 after the grant of e
+        lp.deliver(3, &bad).unwrap();
+        lp.deliver(3, &ge).unwrap();
+        lp.deliver(4, &ge).unwrap();
+        lp.deliver(4, &bad).unwrap();
+        let want = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        assert!(want.boxes.contains_key(&ek) && want.history.contains_key(&hk));
+        for r in [3, 4] {
+            assert_eq!(lp.peers[r].engine.roster(&t).get(&c).map(|x| x.role), Some(Role::Read), "the edge itself is a valid invite grant");
+            assert_eq!(lp.peers[r].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "receiver {r}");
+        }
     }
 }
 

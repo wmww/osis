@@ -97,21 +97,19 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m` (removed boxes reset; boxes and history boxes as remove +
-/// put, so a re-seal or grant re-writing an entry the member does not hold is a new entry there,
-/// not a write into one it never got, spec/crypto.md §4).
+/// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as new
+/// entries whatever is live (`Op::Put`), so a re-seal or grant re-writing an entry is carried
+/// whole, not a write into one the member never got or nothing for an unchanged value
+/// (spec/crypto.md §4), and a grant resets nothing (spec/permissions.md §2).
 pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Result<()> {
     for (k, b) in &w.boxes {
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) })?;
+        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Put(b.to_value()) })?;
     }
     for k in &w.removed {
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
     }
     for (k, h) in &w.history {
-        // remove + put: a put of an unchanged value writes nothing
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(k.to_value()) })?;
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) })?;
+        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(h.clone())) })?;
     }
     Ok(())
 }

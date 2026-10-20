@@ -77,6 +77,9 @@ pub enum Op {
     Set(Value),
     /// Reset, then create `v`.
     Replace(Value),
+    /// At a map key: a new entry holding `v` whatever is live there (§5.6, a concurrent put's
+    /// shape), so the delta carries `v` whole and resets nothing.
+    Put(Value),
     /// `remove_aspect`: reset with nothing after (root only).
     RemoveAspect,
     /// Set add.
@@ -382,6 +385,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
     match op {
         Op::Set(v) => diff(w, cur, view, v),
         Op::Replace(v) => replace(w, view, v).map(Some),
+        Op::Put(_) => Err(Error::Mismatch("put not at a map key")),
         Op::RemoveAspect => {
             if !root {
                 return Err(Error::Mismatch("remove_aspect below the root"));
