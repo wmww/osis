@@ -1045,3 +1045,38 @@ fn move_labels_copy_spec_perm_7() {
     let (copy, _) = lp.peers[0].engine.move_to(&e, &team).unwrap();
     assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }
+
+// spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs
+// its redemption in commit form.
+#[test]
+fn link_key_writes_commit_form_spec_commits_3() {
+    let (mut lp, ps) = people(2, 512);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    sync(&mut lp, 0, 1);
+    let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    let by_l: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[1].engine.header(c).unwrap().author == l).collect();
+    assert!(!by_l.is_empty());
+    for c in by_l {
+        assert_eq!(lp.peers[1].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
+    }
+}
+
+// spec/permissions.md §2 (edge inbox delivery): a change and a removal of an actor's edge reach
+// that actor as inbox blobs, like a grant.
+#[test]
+fn edge_change_and_removal_by_inbox_spec_perm_2() {
+    let (mut lp, ps) = people(2, 521);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let to_pb = |done: &Done| done.deliveries.iter().filter(|x| matches!(x, Delivery::Inbox { to, .. } if *to == pb)).count();
+    let down = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
+    assert_eq!(to_pb(&down), 1, "change");
+    spread(&mut lp);
+    let gone = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    assert_eq!(to_pb(&gone), 1, "removal");
+}
