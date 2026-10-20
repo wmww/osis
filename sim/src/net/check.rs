@@ -40,10 +40,11 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
 /// per entry it must hold, `STATE_PER_LABEL` per label and `STATE_BASE`. What it must hold is
 /// taken from honest servers only (the live entries of its labels, the fullest server per
 /// label), never from its own holdings, so junk a peer made it keep (or pending commits) raises
-/// no bound. Calibrated on seeds 0..3 of every scenario (notes/testing.md, Simulator); junk
+/// no bound. Calibrated on seeds 0..3 of every scenario: nodes used at most 0.47 of the
+/// bound (stored bytes at most 2.11x what they must hold; notes/testing.md, Simulator); junk
 /// kept, or state growing with time rather than with edits, breaks it.
 const STATE_FACTOR: u64 = 2;
-const STATE_PER_ENTRY: u64 = 1 << 10;
+const STATE_PER_ENTRY: u64 = 2 << 10;
 const STATE_PER_LABEL: u64 = 16 << 10;
 const STATE_BASE: u64 = 64 << 10;
 

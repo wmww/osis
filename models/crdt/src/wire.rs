@@ -21,6 +21,8 @@ pub struct Ctx {
     pub hi: Option<u64>,
     /// `Sources` of the delta: wire index i is `sources[i-1]`, 0 is `own`.
     pub sources: Vec<Source>,
+    /// Decoding a snapshot (bare-anchor runs allowed, §3.3 rule 7); set by `decode_snapshot`.
+    pub snapshot: bool,
     /// Commit table of the delta: wire index i is `commits[i-1]`; index 0 is (ts, own, lo).
     /// `base` is the counter a bare commit index stands for. Sorted by (source index, ts).
     pub commits: Vec<(Ts, Source, u64)>,
@@ -59,11 +61,11 @@ pub enum Ref<'a> {
 
 impl Ctx {
     pub fn new(ts: Ts, own: Source, lo: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: None, sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: None, snapshot: false, sources: Vec::new(), commits: Vec::new() }
     }
     /// Context of a writer's own delta with range `[lo, hi)`.
     pub fn writer(ts: Ts, own: Source, lo: u64, hi: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: Some(hi), sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: Some(hi), snapshot: false, sources: Vec::new(), commits: Vec::new() }
     }
     fn index(&mut self, s: &Source) -> u64 {
         if *s == self.own {
@@ -728,6 +730,16 @@ fn composite(a: &[Item], cx: &Ctx) -> Result<Composite, Error> {
     Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w: dec_opt_stamp(&a[2], cx)? })
 }
 
+/// Empty in the sense of §4.2 Emptiness: no surviving write and no record at any depth (a struct
+/// or enum whose children are all empty holds none).
+fn deep_empty(f: &Frag) -> bool {
+    match f {
+        Frag::Struct { fields, .. } => f.all_max().is_none() && fields.values().all(deep_empty),
+        Frag::Enum { payloads, .. } => f.all_max().is_none() && payloads.values().all(deep_empty),
+        _ => f.is_empty(),
+    }
+}
+
 /// Decode a fragment at an aspect root.
 pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
     decode_at(it, cx, true)
@@ -847,6 +859,11 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             return Err(Error::Bad("run order"));
         }
         got.push((first.clone(), n));
+        // a bare-anchor run (nothing but dots) only in a snapshot (§3.3 rule 7)
+        let empty = |i: usize| a[i].array().map_or(false, |x| x.is_empty());
+        if !cx.snapshot && empty(2) && empty(3) && empty(4) && empty(5) {
+            return Err(Error::Bad("bare anchors outside a snapshot"));
+        }
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {
             [] => {}
@@ -966,7 +983,12 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                     return Err(Error::Bad("content length"));
                 }
                 for (i, it) in v.iter().enumerate() {
-                    elems[i].content = Content::Frag(Box::new(decode_at(it, cx, false)?));
+                    // only non-empty fragments are carried (§3.2 Content, §4.2 Emptiness)
+                    let f = decode_at(it, cx, false)?;
+                    if deep_empty(&f) {
+                        return Err(Error::Bad("empty element fragment"));
+                    }
+                    elems[i].content = Content::Frag(Box::new(f));
                 }
             }
             _ => return Err(Error::Bad("content")),
@@ -1038,6 +1060,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
     let it = cbor::decode(bytes)?;
     match it.array()? {
         [Item::Bytes(n), sources, commits, f, fr] if n.len() == 16 => {
+            cx.snapshot = true;
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
