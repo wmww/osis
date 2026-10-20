@@ -3,7 +3,7 @@
 //! established and not superseded by an established rotation, newest = greatest n, ties by lowest
 //! nonce.
 
-use osis_core::{Role, Tid};
+use osis_core::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -71,16 +71,47 @@ pub struct EpochInfo {
     /// state. Unestablished epochs are kept for reading only: never current, supersede nothing,
     /// never encrypted under, never put in a history box.
     pub established: Option<Provenance>,
+    /// From a checked source (an applied valid box, a history box opened with such a secret, an
+    /// own rotation): may be encrypted under.
     pub secret: Option<Secret32>,
-    /// `secret` was learned only from an unchecked box (a pending or invalid commit, or a history
-    /// box opened with such a secret): kept for reading, never encrypted under, until an applied
-    /// valid box carries it (spec/crypto.md §4).
-    pub reading_only: bool,
+    /// Distinct candidates learned only from unchecked boxes (a pending commit, or a history box
+    /// opened with such a secret) while `secret` is none, each with its source: kept for reading,
+    /// never encrypted under, until an applied valid box carries one (spec/crypto.md §4). One per
+    /// author node and epoch, so a wrong secret planted first does not hide the genuine one;
+    /// readers try each. Bounded per role (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with
+    /// their source commit (`drop_reading_from`).
+    pub reading: Vec<(Secret32, Unchecked)>,
+}
+
+/// The source of a reading-only candidate: the unchecked commit and its author node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Unchecked {
+    pub author: Tid,
+    pub commit: CommitId,
+}
+
+/// The author recorded for a candidate whose commit's author has no chain the node knows
+/// (throwaway identities share one budget).
+pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
+
+/// Most reading-only candidates per role of one actor, and per author node (local policy: a
+/// planted candidate costs a KEM or DH per open, claim and inbox blob).
+pub const MAX_READING: usize = 256;
+pub const MAX_READING_PER_AUTHOR: usize = 64;
+
+impl EpochInfo {
+    /// The checked secret, else every reading-only candidate.
+    fn readable(&self) -> Vec<&Secret32> {
+        match &self.secret {
+            Some(s) => vec![s],
+            None => self.reading.iter().map(|(s, _)| s).collect(),
+        }
+    }
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading_only: false }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading: Vec::new() }
     }
 }
 
@@ -103,26 +134,59 @@ impl RoleEpochs {
     }
 
     /// Sets `e`'s secret from a checked source (an applied valid box, a history box opened with
-    /// such a secret, an own rotation); replaces a reading-only one.
+    /// such a secret, an own rotation); drops the reading-only candidates.
     pub fn set_secret(&mut self, e: Epoch, secret: Secret32) {
         let info = self.observe(e);
         info.secret = Some(secret);
-        info.reading_only = false;
+        info.reading.clear();
     }
 
-    /// Records a secret learned only from an unchecked box (spec/crypto.md §4): kept for reading
-    /// when `e` holds none; never replaces a secret.
-    pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32) {
-        let info = self.observe(e);
-        if info.secret.is_none() {
-            info.secret = Some(secret);
-            info.reading_only = true;
+    /// Records a secret learned only from an unchecked box (spec/crypto.md §4): one more
+    /// reading-only candidate when `e` holds no checked secret, `from`'s author has none for `e`
+    /// yet (authors whose chain the node does not know share `UNKNOWN_AUTHOR`, one budget, any
+    /// number per epoch), and neither cap is reached.
+    pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32, from: Unchecked) {
+        let known = from.author != UNKNOWN_AUTHOR;
+        if self.map.get(&e).is_some_and(|i| i.secret.is_some() || i.reading.iter().any(|(s, u)| *s == secret || (known && u.author == from.author))) {
+            return;
         }
+        let all = self.map.values().flat_map(|i| i.reading.iter());
+        let (total, mine) = all.fold((0, 0), |(t, m), (_, u)| (t + 1, m + usize::from(u.author == from.author)));
+        if total >= MAX_READING || mine >= MAX_READING_PER_AUTHOR {
+            return;
+        }
+        self.observe(e).reading.push((secret, from));
     }
 
-    /// Whether `e`'s secret is held only for reading (`set_reading_secret`).
+    /// Drops the reading-only candidates `commit` gave (it applied, or was dropped as bad
+    /// input). Returns whether any went.
+    pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
+        let mut any = false;
+        for i in self.map.values_mut() {
+            let n = i.reading.len();
+            i.reading.retain(|(_, u)| u.commit != *commit);
+            any |= i.reading.len() != n;
+        }
+        any
+    }
+
+    /// Drops the reading-only candidates of `e` that `keep` refuses (a published keyset of `e`
+    /// they do not derive). Returns whether any went.
+    pub fn retain_reading(&mut self, e: &Epoch, keep: impl Fn(&Secret32) -> bool) -> bool {
+        let Some(i) = self.map.get_mut(e) else { return false };
+        let n = i.reading.len();
+        i.reading.retain(|(s, _)| keep(s));
+        i.reading.len() != n
+    }
+
+    /// The source of `e`'s reading-only candidate `secret`.
+    pub fn reading_source(&self, e: &Epoch, secret: &Secret32) -> Option<Unchecked> {
+        self.map.get(e)?.reading.iter().find(|(s, _)| s == secret).map(|(_, u)| *u)
+    }
+
+    /// Whether `e`'s secrets are held only for reading (`set_reading_secret`).
     pub fn is_reading_only(&self, e: &Epoch) -> bool {
-        self.map.get(e).is_some_and(|i| i.secret.is_some() && i.reading_only)
+        self.map.get(e).is_some_and(|i| i.secret.is_none() && !i.reading.is_empty())
     }
 
     /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
@@ -199,13 +263,13 @@ impl RoleEpochs {
 
     /// `e`'s secret when it may be encrypted under (not reading-only).
     pub fn secret(&self, e: &Epoch) -> Option<&Secret32> {
-        self.map.get(e).filter(|i| !i.reading_only).and_then(|i| i.secret.as_ref())
+        self.map.get(e).and_then(|i| i.secret.as_ref())
     }
 
-    /// `e`'s secret for reading: any held, reading-only included (opening a label, unwrapping,
-    /// opening history boxes).
-    pub fn reading_secret(&self, e: &Epoch) -> Option<&Secret32> {
-        self.map.get(e).and_then(|i| i.secret.as_ref())
+    /// `e`'s secrets for reading: the checked one, else every reading-only candidate (opening a
+    /// label, unwrapping, opening history boxes).
+    pub fn reading_secrets(&self, e: &Epoch) -> Vec<&Secret32> {
+        self.map.get(e).map(EpochInfo::readable).unwrap_or_default()
     }
 
     /// Every known epoch, ascending.
@@ -215,7 +279,7 @@ impl RoleEpochs {
 
     /// Every held secret that may be encrypted under (not reading-only), ascending by epoch.
     pub fn held(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
-        self.map.iter().filter(|(_, i)| !i.reading_only).filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s)))
+        self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s)))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -273,9 +337,9 @@ impl RoleEpochs {
     }
 
     /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5).
-    /// Reading-only secrets included.
+    /// Reading-only candidates included, each (one epoch may appear several times).
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
-        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
+        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().flat_map(|(e, i)| i.readable().into_iter().map(|s| (*e, s))).collect();
         v.sort_by(|a, b| if is_newer(&a.0, &b.0) { std::cmp::Ordering::Less } else if a.0 == b.0 { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater });
         v
     }
@@ -284,7 +348,7 @@ impl RoleEpochs {
     pub fn drop_secrets(&mut self) {
         for i in self.map.values_mut() {
             i.secret = None;
-            i.reading_only = false;
+            i.reading.clear();
         }
     }
 }
@@ -333,6 +397,7 @@ impl ActorEpochs {
         for r in ROLES {
             for info in a.role_mut(r).map.values_mut() {
                 info.secret = info.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
+                info.reading = info.reading.iter().map(|(s, u)| (thing_role_secret(s, r, tid), *u)).collect();
                 info.established = info.established.map(|_| Provenance::Derived);
                 info.applied = None;
                 info.snapshot = false;
@@ -354,6 +419,15 @@ impl ActorEpochs {
         for r in ROLES {
             self.role_mut(r).drop_secrets();
         }
+    }
+
+    /// `RoleEpochs::drop_reading_from` for every role.
+    pub fn drop_reading_from(&mut self, commit: &CommitId) -> bool {
+        let mut any = false;
+        for r in ROLES {
+            any |= self.role_mut(r).drop_reading_from(commit);
+        }
+        any
     }
 }
 

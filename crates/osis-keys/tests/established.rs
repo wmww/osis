@@ -51,7 +51,7 @@ impl World {
         r0.keys.apply(&mut k0);
         r0.record(&mut a1v);
         let mut a2v = ActorEpochs::default();
-        ingest(&a, &s0, &Opener::Actor { member: a2, epochs: &a2e }, &mut a2v, true).unwrap();
+        ingest(&a, &s0, &Opener::Actor { member: a2, epochs: &a2e }, &mut a2v, None).unwrap();
         assert!(r0.secrets.applied(&mut a2v, (&r0.keys, &Keys::default())).unwrap());
         let e0 = r0.rotated[0].epoch;
         assert_eq!(a2v.read.current(), vec![e0]);
@@ -101,7 +101,7 @@ fn r9_reseal_before_rotation_commit() {
     reseal.apply(&mut s2);
     let mut a2v = w.a2v.clone();
     assert!(!reseal.applied(&mut a2v, (&KeysWrite::default(), &w.k0)).unwrap());
-    ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, true).unwrap();
+    ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert!(a2v.read.secret(&e1).is_some());
     assert!(!a2v.read.is_established(&e1));
     assert_eq!(a2v.read.current(), vec![w.e0]);
@@ -124,7 +124,7 @@ fn r9_reseal_before_rotation_commit() {
     r2.secrets.apply(&mut s3);
     r2.record(&mut a2v);
     let mut m1v = ActorEpochs::default();
-    ingest(&w.a, &s3, &Opener::Actor { member: w.m1, epochs: &w.m1e }, &mut m1v, true).unwrap();
+    ingest(&w.a, &s3, &Opener::Actor { member: w.m1, epochs: &w.m1e }, &mut m1v, None).unwrap();
     assert!(m1v.read.secret(&e2).is_some());
     assert!(m1v.read.secret(&e1).is_none(), "e2's history box carries e1");
 
@@ -161,7 +161,7 @@ fn reorder_holding_e2_without_e1() {
     let mut a2v = w.a2v.clone();
     reseal.applied(&mut a2v, (&KeysWrite::default(), &w.k0)).unwrap();
     r2.secrets.applied(&mut a2v, (&r2.keys, &w.k0)).unwrap();
-    ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, true).unwrap();
+    ingest(&w.a, &s2, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
     assert!(!a2v.read.is_established(&e1) && !a2v.read.is_established(&e2));
     assert_eq!(a2v.read.current(), vec![w.e0]);
@@ -201,7 +201,7 @@ fn snapshot_established_no_reseal() {
     let e1 = r1.rotated[0].epoch;
     let (g, ge) = (tid(5), person(0x50));
     let mut v = ActorEpochs::default();
-    ingest(&w.a, &s1, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, true).unwrap();
+    ingest(&w.a, &s1, &Opener::Actor { member: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
     assert!(v.read.current().is_empty());
     assert!(snapshot_keyed(&s1, &mut v).unwrap());
     assert_eq!(v.read.current(), vec![e1]);

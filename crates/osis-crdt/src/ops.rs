@@ -77,6 +77,10 @@ pub enum Op {
     Set(Value),
     /// Reset, then create `v`.
     Replace(Value),
+    /// Writes `v` whole with no diff and no reset (§5.6 `put_new`): at a map key a new entry
+    /// whatever is live there (a concurrent put's shape); at a register position a register
+    /// write (even when equal); refused anywhere else.
+    Put(Value),
     /// `remove_aspect`: reset with nothing after (root only).
     RemoveAspect,
     /// Set add.
@@ -382,6 +386,11 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
     match op {
         Op::Set(v) => diff(w, cur, view, v),
         Op::Replace(v) => replace(w, view, v).map(Some),
+        // a composite would merge with what is there (union, second entry, second copy)
+        Op::Put(v) => match create(w, view, v)? {
+            f if f.encoding() == Encoding::Register => Ok(Some(f)),
+            _ => Err(Error::Mismatch("put_new away from a map key needs a register position")),
+        },
         Op::RemoveAspect => {
             if !root {
                 return Err(Error::Mismatch("remove_aspect below the root"));

@@ -220,6 +220,11 @@ pub struct LabelStatus {
 type BodyKey = (osis_core::CommitId, Vec<(usize, usize)>);
 
 /// The sync engine of one node.
+/// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
+/// a server deleting each fresh chunk drives at most this rate of commits).
+pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
+pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
+
 pub struct SyncEngine {
     pub(crate) engine: Engine,
     events: Receiver<crate::Event>,
@@ -266,6 +271,12 @@ pub struct SyncEngine {
     pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
+    /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
+    /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
+    pub(crate) relink_backoff: BTreeMap<(Tid, osis_core::Ak), (u64, u64)>,
+    /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
+    pub(crate) relink_pending: BTreeSet<osis_core::BlobId>,
+    pub(crate) relink_at: u64,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
@@ -343,6 +354,9 @@ impl SyncEngine {
             deleting: BTreeMap::new(),
             missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
+            relink_backoff: BTreeMap::new(),
+            relink_pending: BTreeSet::new(),
+            relink_at: 0,
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
@@ -450,6 +464,7 @@ impl SyncEngine {
                 }
                 self.timers(out)?;
                 self.serve_timers(out);
+                self.relink_lost()?;
             }
             Event::Local => {}
             Event::Up { conn } => {

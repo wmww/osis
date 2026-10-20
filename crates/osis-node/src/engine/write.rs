@@ -48,6 +48,8 @@ pub struct Mutation {
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (membership flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
+    /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
+    pub(crate) fresh: std::collections::BTreeSet<osis_core::BlobId>,
 }
 
 impl Default for Mutation {
@@ -62,7 +64,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new() }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -401,7 +403,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let mut chunks = Vec::new();
         if kind == Kind::Content {
             let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing)?;
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing, &m.fresh)?;
         }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,

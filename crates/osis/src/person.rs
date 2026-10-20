@@ -185,7 +185,7 @@ impl Osis {
         let db = Osis::start(sync, clock, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r };
         db.locked(|x| {
-            let acts = x.sync.follow(c.person, c.home_label, c.servers.clone());
+            let acts = x.sync.follow(r, c.person, c.home_label, c.servers.clone());
             db.inner.net.apply(acts);
         });
         let p = c.person;

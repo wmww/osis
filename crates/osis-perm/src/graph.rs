@@ -3,6 +3,7 @@
 
 use crate::held::HeldSet;
 use crate::types::Edge;
+use osis_core::format::MAX_OWNER_DEPTH;
 use osis_core::{CreationRecord, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,12 +86,13 @@ impl Owners {
         }
     }
     /// Strict ancestors of `t` by ownership, nearest first, and the key actor at the top if the
-    /// chain reaches one (`t` itself for a key actor).
+    /// chain reaches one (`t` itself for a key actor) within `MAX_OWNER_DEPTH` owner links
+    /// (spec/permissions.md §1: a deeper thing has no owner chain). O(`MAX_OWNER_DEPTH`).
     pub fn chain(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let mut up = Vec::new();
         let mut seen = BTreeSet::from([*t]);
         let mut cur = *t;
-        loop {
+        for _ in 0..=MAX_OWNER_DEPTH {
             match self.owner(&cur) {
                 Some(Owner::Key) => return (up, Some(cur)),
                 Some(Owner::Actor(y)) if seen.insert(y) => {
@@ -100,6 +102,7 @@ impl Owners {
                 _ => return (up, None),
             }
         }
+        (up, None)
     }
 }
 

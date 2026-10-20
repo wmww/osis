@@ -97,7 +97,7 @@ fn grant_raced_by_rotation() {
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &members, now, &|_, _, _| true).is_empty());
     let mut gv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
+    ingest(&a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
 }
 
@@ -137,7 +137,7 @@ fn rotation_held_before_the_removal() {
     let e3 = heal.rotated[0].epoch;
     assert!(may_encrypt_under(&s, &v, Role::Read, &e3, &deps, &none));
     let mut mv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::Actor { member: m, epochs: &me }, &mut mv, true).unwrap();
+    ingest(&a, &s, &Opener::Actor { member: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
     // A key-actor member's box keyed at a higher role counts as a box for the lower roles.
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
@@ -169,8 +169,8 @@ fn stale_key_actor_box_still_carries() {
     let r0 = v.read.newest().unwrap();
     // K's box is keyed at the superseded write epoch and still opens r0
     let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
-    assert!(kv.read.reading_secret(&r0).is_some());
+    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, None).unwrap();
+    assert!(!kv.read.reading_secrets(&r0).is_empty());
     let deps = [Departure::member(k, Role::Read)];
     let mut held = MemoryHeldActors::default();
     let key = s.boxes.keys().find(|x| x.member == k).unwrap().clone();

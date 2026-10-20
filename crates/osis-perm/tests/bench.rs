@@ -94,7 +94,7 @@ fn bench_10k_edges() {
 #[test]
 #[ignore]
 fn bench_deep_owner_chain() {
-    for depth in [10usize, 100, 1_000] {
+    for depth in [10usize, osis_core::format::MAX_OWNER_DEPTH] {
         let mut w = World::new();
         let nodes = w.nodes(3);
         let mut chain = vec![w.thing(nodes[0])];

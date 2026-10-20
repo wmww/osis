@@ -302,8 +302,8 @@ fn static_entry_opens_home_label_spec_sync_5() {
     let t = net.item(a, alice.person, alice.person, "on the card's label");
     net.run();
     let card = alice.card.clone();
-    net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
-    let acts = net.sync(c).follow(card.person, card.home_label, card.servers.clone());
+    let rk = net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
+    let acts = net.sync(c).follow(rk, card.person, card.home_label, card.servers.clone());
     net.actions(c, acts);
     net.run();
     net.run();
@@ -564,4 +564,180 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     net.actions(b, acts);
     net.settle(100_000);
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+// spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a server deleted is
+// re-encrypted), §7: a purger that has not seen a co-writer's concurrent reuse deletes the
+// shared chunks at the server; the reuser, seeing them deleted, writes its value again with
+// them re-encrypted, so every reader still reads it whole.
+#[test]
+fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    // an admin co-writer: it holds the admin token secret, so its framing keeps a's chunks
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let blob_ak = Ak::new(BLOB.ak()).unwrap();
+    let v1 = noise(1 << 20, 9);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v1.clone())));
+    // b edits offline, reusing v1's chunks; a purges v1 without seeing that
+    net.set_online(b, false);
+    let mut v2 = v1.clone();
+    v2.splice(300_000..300_000, noise(100, 10));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    let first: BTreeSet<osis_core::BlobId> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
+    let reused: BTreeSet<_> = first.intersection(&net.engine(b).live_trees(&t).unwrap().blobs).copied().collect();
+    assert!(!reused.is_empty());
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let server: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(reused.is_disjoint(&server), "the purger deleted the chunks it judged dead");
+    net.set_online(b, true);
+    // past the redial pause
+    net.advance(6_000);
+    net.run();
+    for n in [a, b, c] {
+        let acts = net.sync(n).fetch_missing();
+        net.actions(n, acts);
+    }
+    net.settle(100_000);
+    let live = net.engine(b).live_trees(&t).unwrap().blobs;
+    assert!(live.is_disjoint(&reused), "the reuser re-encrypted them");
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2.clone())), "node {n}");
+    }
+}
+
+/// Commits `n` authored on `(t, ak)`, with their expiry there.
+fn own_writes(net: &mut Net, n: usize, t: osis_core::Tid, ak: &Ak) -> Vec<Option<u64>> {
+    let me = net.tid(n);
+    let ids = net.engine(n).commit_ids();
+    ids.iter().filter_map(|c| net.engine(n).header(c)).filter(|h| h.author == me).filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == *ak).map(|a| a.expires)).collect()
+}
+
+/// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the
+/// admin `a` purges v1 (deleting every chunk at the server) and writes `note` offline.
+fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_core::Tid, Ak, Vec<u8>) {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let doc = Ak::new("/u/doc").unwrap();
+    let k = |s: &str| Value::Str(s.into());
+    let v1 = noise(1 << 20, 11);
+    let mut m = Mutation::new();
+    m.set(t, &doc, &Value::Map([(k("big"), Value::Bytes(v1.clone())), (k("note"), k("x"))].into_iter().collect())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.set_online(b, false);
+    let mut v2 = v1.clone();
+    v2.splice(500_000..500_000, noise(50, 12));
+    let mut m = Mutation::new();
+    m.op(t, &doc, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k("big"))], op: osis_crdt::Op::Set(Value::Bytes(v2.clone())) }).unwrap();
+    if let Some(e) = expires {
+        m.expires(t, &doc, osis_core::WallMs(e)).unwrap();
+    }
+    net.engine(b).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: doc.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    // a's concurrent edit of another position, older than b's repair, unseen by b
+    net.set_online(a, false);
+    let mut m = Mutation::new();
+    m.op(t, &doc, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k("note"))], op: osis_crdt::Op::Set(k("y")) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.advance(1_000);
+    net.set_online(b, true);
+    net.advance(6_000);
+    net.run();
+    net.set_online(a, true);
+    net.advance(6_000);
+    net.run();
+    for n in [a, b, c] {
+        let acts = net.sync(n).fetch_missing();
+        net.actions(n, acts);
+    }
+    net.settle(100_000);
+    (net, [a, b, c], t, doc, v2)
+}
+
+// spec/sync.md §1: the reuser repairs only the large positions whose chunks are gone, so a
+// concurrent older edit of another position survives everywhere; the value reads whole.
+#[test]
+fn reencrypted_chunk_keeps_concurrent_edit_spec_sync_1() {
+    let (mut net, nodes, t, doc, v2) = reuse_race(None);
+    let want: Value = Value::Map([(Value::Str("big".into()), Value::Bytes(v2)), (Value::Str("note".into()), Value::Str("y".into()))].into_iter().collect());
+    for n in nodes {
+        assert_eq!(net.engine(n).get_full(&t, &doc).unwrap(), Some(want.clone()), "node {n}");
+    }
+}
+
+// spec/sync.md §1: the repair carries the reusing delta's expiry.
+#[test]
+fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
+    let at = 1_700_000_000_000 + 30 * 86_400_000;
+    let (mut net, [_, b, _], t, doc, _) = reuse_race(Some(at));
+    let w = own_writes(&mut net, b, t, &doc);
+    assert!(w.len() >= 2, "the edit and its repair: {w:?}");
+    assert!(w.iter().all(|e| *e == Some(at)), "{w:?}");
+}
+
+// spec/sync.md §1: a single hostile server (it alone decides what is gone) deleting each fresh
+// chunk again drives at most one repair per back-off interval per aspect, the interval doubling;
+// what the back-off holds back is retried when it passes.
+#[test]
+fn reencrypt_loop_bounded_spec_sync_1() {
+    let (mut net, [a, b, _], t, doc, _) = reuse_race(None);
+    let repairs = |net: &mut Net| own_writes(net, b, t, &doc).len();
+    let first = repairs(&mut net);
+    let l = net.label(a);
+    // the server drops every chunk the live value links, then b syncs again
+    let spam = |net: &mut Net| {
+        let live = net.engine(b).live_trees(&t).unwrap().blobs;
+        let now = net.now();
+        let ids = net.server_ids(0, &l);
+        for id in ids {
+            if live.contains(&id) {
+                osis_proto::LabelStore::delete(net.servers[0].hub.store_mut(), &l, &id, now).unwrap();
+            }
+        }
+        net.set_online(b, false);
+        net.set_online(b, true);
+        net.advance(6_000);
+        net.run();
+    };
+    for _ in 0..4 {
+        spam(&mut net);
+    }
+    assert_eq!(repairs(&mut net), first, "within the back-off: no repair");
+    // the held-back chunks are retried once the back-off passes
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert_eq!(repairs(&mut net), first + 1, "after it: one");
+    // the interval doubled: held back at 1.5 h, done past 2 h
+    spam(&mut net);
+    net.advance(90 * 60_000);
+    net.run();
+    assert_eq!(repairs(&mut net), first + 1, "the back-off doubled");
+    net.advance(45 * 60_000);
+    net.run();
+    assert_eq!(repairs(&mut net), first + 2);
 }
