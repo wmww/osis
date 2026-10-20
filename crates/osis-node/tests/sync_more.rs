@@ -434,3 +434,63 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     net.settle(100_000);
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
+
+/// Commits in the order server `s` logged their blobs under `l` (blob IDs mapped through node
+/// `n`'s entries; first appearance).
+fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_core::LabelId) -> Vec<osis_core::CommitId> {
+    use osis_proto::LabelStore;
+    let of: std::collections::BTreeMap<osis_core::BlobId, osis_core::CommitId> =
+        net.sync(n).entries(l).into_iter().filter_map(|(id, k)| if let EntryKind::Commit { commit, .. } = k { Some((id, commit)) } else { None }).collect();
+    let log = net.servers[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
+    let mut out = Vec::new();
+    for (_, r) in log {
+        if let osis_proto::LogRecord::Added(id) = r
+            && let Some(c) = of.get(&id)
+            && !out.contains(c)
+        {
+            out.push(*c);
+        }
+    }
+    out
+}
+
+// spec/permissions.md §3 (removal placement): a content write, then a removal, both before the
+// next sync; that sync places the removal (which carries the group's new `/keys`) under both of
+// the group's labels before the earlier content write.
+#[test]
+fn removal_placed_first_under_every_label_spec_perm_3() {
+    use osis_node::flows::{Delivery, Demotion, PreSync};
+    let mut net = Net::new();
+    let (s0, s1) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
+    let c = net.node(3, &[s0, s1]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[s0]);
+    let addr = net.address(s1);
+    let (l1, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    let labels: Vec<osis_core::LabelId> = net.sync(a).labels().into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.contains(&l1));
+    assert_eq!(net.read(c, t), Some(s("before")));
+    let ct_ = net.tid(c);
+    // a content write not yet uploaded, then the removal
+    let after = net.write(a, t, "after");
+    let done = net.engine(a).demote(&g, &Demotion { member: ct_, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
+    let removal = done.commits[0];
+    let h = net.engine(a).header(&removal).unwrap();
+    assert!(h.aspects.iter().any(|x| x.ak.as_str() == "/keys"), "the removal carries the new /keys");
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for (s, l) in [(s0, labels.iter().find(|l| **l != l1).copied().unwrap()), (s1, l1)] {
+        let order = logged_commits(&mut net, s, a, &l);
+        let (r, w) = (order.iter().position(|x| *x == removal), order.iter().position(|x| *x == after));
+        assert!(r.is_some() && w.is_some() && r < w, "server {s}: removal at {r:?}, later content at {w:?}");
+    }
+    assert_eq!(net.read(b, t), Some(s("after")));
+}
