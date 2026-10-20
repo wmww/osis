@@ -216,27 +216,36 @@ fn check_key(u: &dyn Units, key: &[u8]) -> Result<(), Error> {
 }
 
 pub(crate) fn get(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+    find(u, root, key)?.map(|v| resolve(u, &v)).transpose()
+}
+
+fn find(u: &mut dyn Units, root: u64, key: &[u8]) -> Result<Option<Val>, Error> {
     let mut slot = root;
     loop {
         match load(u, slot)? {
             Page::Inner(es) => slot = es.get(child_index(&es, key)).ok_or(Error::Corrupt("empty interior page"))?.child,
             Page::Leaf(es) => {
-                return match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
-                    Ok(i) => es.get(i).map(|e| resolve(u, &e.val)).transpose(),
-                    Err(_) => Ok(None),
-                };
+                return Ok(match es.binary_search_by(|e| e.key.as_slice().cmp(key)) {
+                    Ok(i) => es.get(i).map(|e| e.val.clone()),
+                    Err(_) => None,
+                });
             }
         }
     }
 }
 
-/// Inserts or replaces; true if the key was new.
+/// Inserts or replaces; true if the key was new. A large value replacing a large value keeps
+/// its unit, and a large value replaced by a small one goes shredded, so a later shred of the
+/// key reaches every earlier version of its value, as for values inline in their page.
 pub(crate) fn put(u: &mut dyn Units, root: u64, key: &[u8], val: Vec<u8>, shred: bool) -> Result<bool, Error> {
     check_key(u, key)?;
     let val = if val.len() > u.page_max() / 4 {
-        let slot = u.alloc()?;
+        let slot = match find(u, root, key)? {
+            Some(Val::Overflow { slot, .. }) => slot,
+            _ => u.alloc()?,
+        };
         let len = val.len() as u64;
-        u.write(slot, val, false)?;
+        u.write(slot, val, shred)?;
         Val::Overflow { slot, len }
     } else {
         Val::Inline(val)
@@ -265,7 +274,13 @@ fn insert(u: &mut dyn Units, slot: u64, key: &[u8], val: Val, shred: bool) -> Re
             Ok(i) => {
                 if let Some(e) = es.get_mut(i) {
                     let old = std::mem::replace(&mut e.val, val);
-                    free_val(u, &old, shred);
+                    if let (Val::Overflow { slot: a, .. }, Val::Overflow { slot: b, .. }) = (&old, &e.val) {
+                        if a != b {
+                            free_val(u, &old, shred);
+                        }
+                    } else {
+                        free_val(u, &old, true);
+                    }
                 }
                 false
             }
