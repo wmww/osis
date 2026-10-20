@@ -10,6 +10,21 @@ use crate::stamp::{CounterRange, Dot, Stamp, max_opt};
 use crate::view::View;
 use std::collections::BTreeMap;
 
+/// Does the op's path plus a value it carries nest deeper than `MAX_VALUE_DEPTH` (spec/data-model.md
+/// §5, Depth)? Checked before resolving, which recurses per level.
+fn too_deep(op: &PathOp) -> bool {
+    use crate::ops::Op;
+    use osis_core::format::MAX_VALUE_DEPTH;
+    let Some(room) = MAX_VALUE_DEPTH.checked_sub(op.path.len()) else { return true };
+    let keys = op.path.iter().any(|s| matches!(s, PathSeg::Key(k) if k.deeper_than(MAX_VALUE_DEPTH)));
+    keys || match &op.op {
+        Op::Set(v) | Op::Replace(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
+        Op::Edit { base, new } => base.deeper_than(room) || new.deeper_than(room),
+        Op::Insert { items, .. } => items.iter().any(|v| v.deeper_than(room)),
+        Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } => false,
+    }
+}
+
 /// Builds one aspect's delta from path ops.
 pub struct Batch<'s> {
     state: &'s Fragment,
@@ -25,6 +40,9 @@ impl<'s> Batch<'s> {
 
     /// Applies `op` under the writer's `view` (of the aspect root).
     pub fn apply<V: View>(&mut self, op: &PathOp, view: &V) -> Result<(), Error> {
+        if too_deep(op) {
+            return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH"));
+        }
         let d = resolve(&mut self.w, Some(self.state), self.acc.as_ref(), None, &op.path, op, view, true)?;
         if let Some(d) = d {
             let acc = self.acc.take();

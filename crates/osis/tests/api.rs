@@ -517,3 +517,26 @@ fn close_spec_api_handle() {
     db.close().unwrap();
     assert!(weak.upgrade().is_none(), "closed when close() returns");
 }
+
+// spec/data-model.md §5 (Depth: writers refuse deeper values); notes/api.md Errors: values past the limits
+// fail with an error, never a panic: deep nesting, a huge string, a huge map
+#[test]
+fn values_past_limits_error_spec_data_model() {
+    let db = db(1);
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let mut deep = Value::Int(0);
+    for _ in 0..600 {
+        deep = Value::List(vec![deep]);
+    }
+    assert!(db.write_with(|w| w.at(t, ak("/t/deep")).set(&deep)).is_err(), "nesting past the depth limit accepted");
+    let huge = Value::Str("x".repeat(8 << 20));
+    db.write_with(|w| w.at(t, ak("/t/huge")).set(&huge)).unwrap();
+    assert_eq!(db.get(t, ak("/t/huge")).unwrap(), Some(huge));
+    let big: BTreeMap<Value, Value> = (0..200_000i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+    let _ = db.write_with(|w| w.at(t, ak("/t/map")).set(&Value::Map(big)));
+    // still working
+    db.write_with(|w| w.at(t, ak("/t/x")).set(&Value::Int(1))).unwrap();
+    assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Int(1)));
+}
