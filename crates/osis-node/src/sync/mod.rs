@@ -38,6 +38,18 @@ use std::sync::mpsc::Receiver;
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
+/// An upload, deposit or delete not answered this long goes again at the next pass (ms): a
+/// reply lost on a live connection must not keep it back for good.
+const RESEND_MS: u64 = 30_000;
+
+/// Whether a request for `k` went out less than `RESEND_MS` before `now`.
+fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>, k: &(ConnId, LabelId, osis_core::BlobId), now: u64) -> bool {
+    m.get(k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
+}
+
+/// The earliest Tick asked for after any event (ms).
+const MIN_WAKE_MS: u64 = 1_000;
+
 /// A connection's handle, chosen by the sync engine.
 pub type ConnId = u64;
 
@@ -213,6 +225,8 @@ pub struct SyncEngine {
     pub(crate) passes: BTreeMap<(ServerKey, LabelId), u64>,
     pub(crate) membership_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
+    /// When the last Tick was handled (raw wall ms).
+    last_tick: u64,
     /// Signals received (also sent as engine events).
     pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
@@ -224,10 +238,23 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
+    /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
+    pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
+    /// Blobs a connection's server did not deliver when fetched.
+    pub(crate) missing: BTreeSet<(ConnId, osis_core::BlobId)>,
+    /// Deletes sent and not answered yet: later passes skip them.
+    pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
+    /// Timed deletes sent and not answered yet: recorded once the server says OK.
+    pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
+    /// Certificate copies waiting for a rotation (group, commit, aspects).
+    pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    /// Stranded heartbeats already answered by a re-seal.
+    pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_core::CommitId>,
     /// Things this node removed itself from (a self-removal not yet uploaded): its own departure
@@ -280,15 +307,22 @@ impl SyncEngine {
             passes: BTreeMap::new(),
             membership_seen: BTreeMap::new(),
             wake: None,
+            last_tick: 0,
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox,
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
+            sent: BTreeMap::new(),
+            timed_sent: BTreeSet::new(),
+            deleting: BTreeMap::new(),
+            missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
+            deferred: Vec::new(),
+            resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
             served: BTreeMap::new(),
@@ -342,6 +376,11 @@ impl SyncEngine {
     pub fn handle(&mut self, ev: Event) -> Vec<Action> {
         let mut out = Vec::new();
         self.state.now = self.now();
+        // a Tick consumed the driver's wake: the next one is always asked for again
+        if matches!(ev, Event::Tick) {
+            self.wake = None;
+            self.last_tick = self.raw_now();
+        }
         if let Err(e) = self.step(ev, &mut out) {
             self.diag(format!("sync: {e}"));
         }
@@ -367,7 +406,12 @@ impl SyncEngine {
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
         match ev {
             Event::Tick => {
-                self.engine.tick()?;
+                // keep-at-most drops change no read, so no engine event says so: forget the
+                // dropped bodies' blobs and let every label judge again (spec/commits.md §5)
+                if self.engine.tick_drops()? > 0 {
+                    self.mark_dirty();
+                    self.forget_dropped()?;
+                }
                 self.timers(out)?;
                 self.serve_timers(out);
             }
@@ -407,6 +451,11 @@ impl SyncEngine {
 
     /// A dialed connection ended: redial after the retry pause.
     fn lost(&mut self, conn: ConnId) {
+        // requests not answered go again on the next connection
+        self.sent.retain(|(c, _, _), _| *c != conn);
+        self.timed_sent.retain(|(c, _, _)| *c != conn);
+        self.deleting.retain(|(c, _, _), _| *c != conn);
+        self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered go out again on the next connection
             let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.keys().filter(|(s, _)| *s == c.server).copied().collect();
@@ -465,14 +514,19 @@ impl SyncEngine {
             }
         }
         if changed {
-            for c in self.conns.values_mut() {
-                for l in c.labels.values_mut() {
-                    l.dirty = true;
-                }
-            }
+            self.mark_dirty();
             self.forget_dropped()?;
         }
         Ok(())
+    }
+
+    /// Every label on every connection wants a pass.
+    fn mark_dirty(&mut self) {
+        for c in self.conns.values_mut() {
+            for l in c.labels.values_mut() {
+                l.dirty = true;
+            }
+        }
     }
 
     /// Whether every server this node syncs `actor`'s labels with has had a complete pass since
@@ -558,6 +612,15 @@ impl SyncEngine {
         Ok(still)
     }
 
+    /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
+    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
+        if self.engine.core.is_key_actor(&a) || self.leaving.contains(&a) || self.leaving.contains(g) {
+            return Ok(Default::default());
+        }
+        self.engine.run(|tx| crate::rotation::uncovered_roles(tx, &a))
+    }
+
     /// The servers and co-reader nodes to keep connections to (true: a node).
     fn wanted_servers(&mut self) -> BTreeMap<ServerKey, (Address, bool)> {
         let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
@@ -584,6 +647,8 @@ impl SyncEngine {
     fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let wanted = self.wanted_servers();
+        // a server no longer wanted keeps no retry time (it would hold the wake in the past)
+        self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
             if self.conns.values().any(|c| c.server == key) {
                 continue;
@@ -672,6 +737,15 @@ impl SyncEngine {
             }
             E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
             E::Fetched { label, items } => {
+                // asked for and not there: not asked again on this connection
+                let mut gone = false;
+                for f in items.iter().filter(|f| f.entry.is_none()) {
+                    self.fetching.remove(&f.blob_id);
+                    gone |= self.missing.insert((conn, f.blob_id));
+                }
+                if gone && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&label)) {
+                    lc.dirty = true;
+                }
                 let evs = items.into_iter().filter_map(|f| f.entry.map(|(blob, wrap, stamp)| osis_proto::Event::Added { blob_id: f.blob_id, blob: Some(blob), wrap, stamp })).collect();
                 self.log_events(Some(conn), label, evs, None, out)?;
             }
@@ -791,7 +865,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    fn next_wake(&self) -> Option<u64> {
+    /// When the next Tick is wanted (raw wall ms): session timers, re-syncs, served sessions'
+    /// idle ends, redials, inbox retries and the engine's expiry and keep-at-most timers. Never
+    /// before `MIN_WAKE_MS` after the last Tick, so an item due but not serviceable yet cannot
+    /// spin (and later events do not push a due wake back).
+    fn next_wake(&mut self) -> Option<u64> {
+        let now = self.raw_now();
         let mut t: Option<u64> = None;
         let mut at = |x: u64| t = Some(t.map_or(x, |y: u64| y.min(x)));
         for c in self.conns.values() {
@@ -799,7 +878,8 @@ impl SyncEngine {
                 at(x);
             }
             for l in c.labels.values() {
-                if l.phase == Phase::Open || l.phase == Phase::Failed {
+                // a label waiting for a reply re-syncs after it
+                if (l.phase == Phase::Open && !l.syncing) || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(self.cfg.resync_ms));
                 }
             }
@@ -810,10 +890,15 @@ impl SyncEngine {
         for (_, x) in self.retry.values() {
             at(*x);
         }
-        for o in self.outbox.iter().filter(|o| o.after > 0) {
+        // a due inbox blob goes once its server's connection is ready (an event of its own)
+        for o in self.outbox.iter().filter(|o| o.after > now) {
             at(o.after);
         }
-        t
+        let skew = self.now() as i64 - now as i64;
+        if let Ok(Some(x)) = self.engine.next_timer() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
+        t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
     /// Inbox blobs (grants, notices) not yet answered by a server: kept in memory only, so a
@@ -845,6 +930,13 @@ impl SyncEngine {
         l.syncing = true;
         l.last_sync = now;
         let cursor = self.state.cursors.get(&(server, label)).copied();
+        // a replay lists the live entries only: presence starts over from it (a cursor lost in a
+        // crash otherwise kept entries a wiped server no longer holds "present" for good)
+        if cursor.is_none() {
+            for b in self.state.present_at(&server, &label) {
+                self.state.set_present(server, label, b, false);
+            }
+        }
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
     }
 

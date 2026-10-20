@@ -18,6 +18,8 @@ pub enum Error {
     NoCommonVersion,
     /// A label object inside a message (step, claim set, entry box, proof, delete item, bundle).
     Label(osis_label::Error),
+    /// A request stayed unanswered past `REQUEST_TIMEOUT_MS`: the session closes.
+    Timeout,
 }
 
 osis_core::impl_error!(Error {
@@ -28,6 +30,7 @@ osis_core::impl_error!(Error {
     UnknownKind(k) => ("proto: unknown message kind {k}"),
     NoCommonVersion => ("proto: no common protocol version"),
     Label(e) => ("proto: {e}"),
+    Timeout => ("proto: request unanswered, connection closed"),
 });
 
 impl Classified for Error {

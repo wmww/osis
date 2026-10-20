@@ -327,7 +327,12 @@ impl Engine {
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
     /// parked for drift.
     pub fn tick(&mut self) -> Result<()> {
-        self.run(|tx| {
+        self.tick_drops().map(|_| ())
+    }
+
+    /// `tick`, returning how many timers fired (node-sync forgets the dropped bodies' blobs).
+    pub(crate) fn tick_drops(&mut self) -> Result<usize> {
+        let n = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
             tx.scan(records::TIMER, |k, v| {
@@ -338,6 +343,7 @@ impl Engine {
                 Ok(())
             })?;
             let mut changed = BTreeSet::new();
+            let n = due.len();
             for (k, c, ai, kind) in due {
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
@@ -348,9 +354,18 @@ impl Engine {
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            Ok(())
+            Ok(n)
         })?;
-        self.reexamine()
+        self.reexamine()?;
+        Ok(n)
+    }
+
+    /// When the next expiry or keep-at-most timer is due (corrected wall ms).
+    pub(crate) fn next_timer(&mut self) -> Result<Option<u64>> {
+        self.run(|tx| {
+            let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
+            Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
+        })
     }
 
     /// Drops a body (compaction between the bounds, executed by node-sync): aspect `ak` of
@@ -473,9 +488,17 @@ impl Engine {
             {
                 return Ok(Some(false));
             }
+            let held = crate::apply::held_parts(tx, &c, cai)?;
+            // a snapshot covers another only if its frontiers hold the other's too: otherwise a
+            // holder of it alone does not count what the other's frontier gave as received
+            if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
+                && other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f))
+            {
+                return Ok(Some(false));
+            }
             let snap: Vec<Fragment> = parts.into_iter().map(frag).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
-            let body: Vec<Fragment> = crate::apply::held_parts(tx, &c, cai)?.into_iter().map(frag).collect();
+            let body: Vec<Fragment> = held.into_iter().map(frag).collect();
             let before = crate::engine::state::encode(snap)?;
             let mut j = snap.clone();
             for b in body {

@@ -42,6 +42,12 @@ pub enum Kind {
     Commit { commit: CommitId, parts: Vec<(usize, usize)> },
     /// An inbox blob this node opened.
     Inbox,
+    /// Unwraps under a held secret but is no valid commit blob (spec/versioning.md §2: bad
+    /// input): never retried, never judged.
+    Bad,
+    /// A commit this build cannot interpret, held parked (spec/versioning.md §2): relayed,
+    /// never judged.
+    Parked(CommitId),
 }
 
 /// A label entry as this node knows it (spec/sync.md §4).
@@ -99,8 +105,9 @@ pub struct State {
     pub timed: BTreeSet<(ServerKey, LabelId, BlobId)>,
     /// Commits that travel by inbox only (re-seals): never placed under a label.
     pub inbox_only: BTreeSet<CommitId>,
-    /// The snapshot carrying a body's live writes once it was dropped (spec/sync.md §7).
-    pub carriers: BTreeMap<CommitId, CommitId>,
+    /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
+    /// (spec/sync.md §7).
+    pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
     /// The label logs member-peer sessions see (in memory).
@@ -150,6 +157,8 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
         Kind::Unknown => w.u8(0),
         Kind::Commit { commit, parts } => encode_parts(w.u8(1).raw(&commit.0), parts),
         Kind::Inbox => w.u8(2),
+        Kind::Bad => w.u8(3),
+        Kind::Parked(c) => w.u8(4).raw(&c.0),
     }
     .take()
 }
@@ -168,6 +177,8 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
             Kind::Commit { commit, parts: decode_parts(&mut r)? }
         }
         2 => Kind::Inbox,
+        3 => Kind::Bad,
+        4 => Kind::Parked(CommitId(r.arr()?)),
         _ => Kind::Unknown,
     };
     Ok(Entry { wrap, stamp, cert, kind })
@@ -229,7 +240,13 @@ impl State {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
                 b"s" => {
-                    s.carriers.insert(CommitId(r.arr()?), CommitId(Rd::new(&v).arr()?));
+                    let body = CommitId(r.arr()?);
+                    let mut x = Rd::new(&v);
+                    let mut list = Vec::new();
+                    while !x.is_empty() {
+                        list.push(CommitId(x.arr()?));
+                    }
+                    s.carriers.insert(body, list);
                 }
                 b"x" => {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
@@ -276,8 +293,8 @@ impl State {
             return Ok(());
         }
         let writes = std::mem::take(&mut self.writes);
-        engine.run(|tx| {
-            for (k, v) in writes {
+        let r = engine.run(|tx| {
+            for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
                     Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) { Shred::Yes } else { Shred::No })?,
@@ -287,7 +304,15 @@ impl State {
                 }
             }
             Ok(())
-        })
+        });
+        // the in-memory state already holds them: kept for the next flush, so what is durable
+        // never lags behind what this node acted on
+        if r.is_err() {
+            for (k, v) in writes {
+                self.writes.entry(k).or_insert(v);
+            }
+        }
+        r
     }
 
     fn put(&mut self, k: Vec<u8>, v: Vec<u8>) {
@@ -423,9 +448,14 @@ impl State {
         self.gone.iter().any(|(_, x, y)| x == l && y == b)
     }
 
+    /// Adds a carrier of `body` (a snapshot of one of its aspects).
     pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
-        self.put(key(CARRIER, &[&body.0]), snapshot.0.to_vec());
-        self.carriers.insert(body, snapshot);
+        let list = self.carriers.entry(body).or_default();
+        if !list.contains(&snapshot) {
+            list.push(snapshot);
+        }
+        let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
+        self.put(key(CARRIER, &[&body.0]), v);
     }
 
     pub fn set_inbox_only(&mut self, c: CommitId) {

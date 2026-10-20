@@ -361,6 +361,14 @@ impl SyncEngine {
     /// A request about `l` was refused.
     pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: u64, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(l) = l else { return Ok(()) };
+        // an upload or deposit refused whole goes again at a later pass; a timed delete too
+        if matches!(kind, 10 | 12) {
+            self.sent.retain(|(c, x, _), _| *c != conn || *x != l);
+        }
+        if kind == 14 {
+            self.timed_sent.retain(|(c, x, _)| *c != conn || *x != l);
+            self.deleting.retain(|(c, x, _), _| *c != conn || *x != l);
+        }
         let phase = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.phase.clone());
         match (kind, phase) {
             (4, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),

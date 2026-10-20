@@ -146,6 +146,12 @@ impl SyncEngine {
             if !may || self.engine.body_keep(&c, t, ak)?.at_least > now.0 || self.engine.covered(&s, &c, t, ak)? != Some(true) {
                 continue;
             }
+            // covered-equal snapshots: only the higher commit ID goes (spec/sync.md §7), as in
+            // the must-hold judgment, or this node drops the one a co-writer keeps uploading
+            let snapshot = matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot);
+            if snapshot && c < s && self.engine.covered(&c, &s, t, ak)? == Some(true) {
+                continue;
+            }
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
         }
@@ -165,7 +171,14 @@ impl SyncEngine {
             return Ok(());
         }
         let labels: Vec<LabelId> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id).collect();
-        if labels.is_empty() || self.uncovered(g)?.contains(&Role::Read) {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        // placing never rotates (a rotation's own copies placed here recursed into rotations):
+        // under an epoch that does not cover a known departure it waits for the next pass,
+        // which rotates first
+        if self.uncovered_now(g)?.contains(&Role::Read) {
+            self.deferred.push((*g, *c, aspects.clone()));
             return Ok(());
         }
         for l in labels {

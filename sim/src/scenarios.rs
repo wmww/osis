@@ -59,13 +59,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
 /// Scenarios a known engine bug breaks, with the issue: the sweep skips them unless asked;
 /// their tests are ignored with the issue's name. Fixing the issue removes the line.
 pub const BLOCKED: &[(&str, &str)] = &[
-    ("compaction", "issues/sync-compaction-ping-pong.md"),
-    ("disk_loss", "issues/flows-recovered-device-writes.md"),
-    ("head_moves_during_open", "issues/sync-stale-head.md"),
-    ("grant_lost_on_crash", "issues/sync-inbox-delivery.md"),
-    ("evil_server_drops", "issues/sync-request-timeout.md"),
-    ("malformed_blobs", "issues/sync-unopenable-entry-stall.md"),
-    ("future_format", "issues/sync-unopenable-entry-stall.md"),
 ];
 
 /// The issue blocking scenario `name`, if any.

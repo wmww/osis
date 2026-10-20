@@ -74,6 +74,14 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.keys = keys.clone();
         }
+        // certificate copies that waited for the rotation just run
+        if read_ok {
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|(x, _, _)| *x == g);
+            self.deferred = later;
+            for (x, c, ais) in now {
+                self.place_certificate_in(&x, &c, &ais)?;
+            }
+        }
         // a complete pass and still no secret of the head's read epoch: stranded
         if keys.epochs[0].is_none() {
             return self.stranded(conn, g, l, out);
@@ -106,9 +114,11 @@ impl SyncEngine {
         let bodies = self.bodies_under(&g, &l)?;
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
+        self.refetch(conn, server, l, &g, out)?;
         let unsettled = self.unsettled(&l, &g)?;
+        let snapping = self.unsettled_hold(&l, &g)?;
         for b in &bodies {
-            let Some(needed) = self.must_hold(b, &snaps, &unsettled)? else { continue };
+            let Some(needed) = self.must_hold(b, &snaps, &snapping)? else { continue };
             // another projection of the commit (a right holder dropped covered deltas) holds it
             if needed != b.parts && self.carried_by(&server, &l, &b.commit, &needed) {
                 continue;
@@ -140,6 +150,12 @@ impl SyncEngine {
                 }
             }
         }
+        // parked commits travel like at a blind node: stamped entries are relayed (spec/versioning.md §2)
+        for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+            if matches!(e.kind, Kind::Parked(_)) && e.stamp.is_some() {
+                sends.push(Out { prio: 3, id: *id });
+            }
+        }
         if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
             self.certificates(&g, l)?;
             self.heartbeat(&g, l, &keys, conn)?;
@@ -165,11 +181,12 @@ impl SyncEngine {
             sends.push(Out { prio, id });
         }
         sends.sort_by_key(|o| o.prio);
+        let raw = self.raw_now();
         let mut seen = BTreeSet::new();
         let mut uploads = Vec::new();
         let mut deposits = Vec::new();
         for o in sends {
-            if !seen.insert(o.id) || self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)) {
+            if !seen.insert(o.id) || self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)) || super::in_flight(&self.sent, &(conn, l, o.id), raw) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -191,16 +208,68 @@ impl SyncEngine {
             }
         }
         if let Some(w) = &keys.write {
-            self.promote(server, l, w, &mut uploads)?;
+            self.promote(conn, server, l, w, &mut uploads)?;
         }
         if !uploads.is_empty() {
+            self.sent.extend(uploads.iter().map(|u| ((conn, l, osis_label::blob_id(&u.blob)), raw)));
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
         for (blob, wrap, sig) in deposits {
+            self.sent.insert((conn, l, osis_label::blob_id(&blob)), raw);
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
         let settled = unsettled.is_empty();
-        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)
+        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)?;
+        self.reseal(&g, l)?;
+        Ok(())
+    }
+
+    /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
+    /// §3) for members whose node's heartbeat under the label reports it stranded (§4); delivered
+    /// by inbox. The other trigger (a member seen without a box, `Engine::reseal_due`) is not
+    /// wired: issues/reseal-inbox-only-dots.md.
+    fn reseal(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
+        if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
+            return Ok(());
+        }
+        // the newest heartbeat of each node under the label, when it reports it stranded
+        let me = self.engine.tid();
+        let mut beats: BTreeMap<Tid, (osis_core::Ts, CommitId)> = BTreeMap::new();
+        for ((_, _), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+            let Kind::Commit { commit, .. } = &e.kind else { continue };
+            let Some(h) = self.engine.header(commit) else { continue };
+            if h.author == me || !h.aspects.iter().any(|x| x.ak.as_str() == "/seen" && x.tid == h.author) {
+                continue;
+            }
+            if beats.get(&h.author).is_none_or(|(ts, _)| *ts < h.ts) {
+                beats.insert(h.author, (h.ts, *commit));
+            }
+        }
+        for (node, (_, c)) in beats {
+            if self.resealed.contains(&c) || !self.engine.get_typed(&node, &ct::SEEN)?.is_some_and(|s| s.stranded) {
+                continue;
+            }
+            self.resealed.insert(c);
+            // the member of the actor the node reads through: itself or up its owner chain
+            let members: BTreeSet<Tid> = self.engine.core.current_members(&a).into_iter().map(|x| x.0).collect();
+            let mut cur = Some(node);
+            for _ in 0..16 {
+                let Some(t) = cur else { break };
+                if members.contains(&t) {
+                    // a node that may not re-seal that member leaves it to one that may
+                    if let Ok(done) = self.engine.reshare(&a, &t) {
+                        self.take_done(done)?;
+                    }
+                    break;
+                }
+                cur = match self.engine.core.created(&t) {
+                    Some(osis_core::CreationRecord::Thing { owner, .. }) => Some(*owner),
+                    _ => None,
+                };
+            }
+        }
+        Ok(())
     }
 
     /// This node's verdicts on label `l` at `server` under the keys its last pass there used
@@ -213,14 +282,16 @@ impl SyncEngine {
         let snaps = self.snapshots_at(l);
         let unsettled = self.unsettled(l, &g)?;
         v.unsettled = unsettled.iter().cloned().collect();
+        let snapping = self.unsettled_hold(l, &g)?;
         for b in &bodies {
-            if let Some(needed) = self.must_hold(b, &snaps, &unsettled)? {
+            if let Some(needed) = self.must_hold(b, &snaps, &snapping)? {
                 v.must_hold.push((b.commit, needed));
             }
         }
         let entries: Vec<(BlobId, Entry)> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
         for (id, e) in entries {
-            let Some((Hold::MustNot(why), live, aspects)) = self.judge(server, l, &g, &id, &e, &bodies, unsettled.is_empty())? else { continue };
+            let j = self.judge(server, l, &g, &id, &e, &bodies, unsettled.is_empty())?;
+            let Some((Hold::MustNot(why), live, aspects)) = j else { continue };
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,
                 _ => self.carried(server, l, &e, &aspects, &snaps)?,
@@ -247,7 +318,60 @@ impl SyncEngine {
         self.engine.group_labels(g).unwrap_or_default().iter().any(|x| x.id == *l && x.replaced)
     }
 
-    /// Aspects this node cannot judge coverage of yet: those of pending commits; every aspect
+    /// Aspects where a body is not established uncovered yet (spec/sync.md §6), so not
+    /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every
+    /// aspect (`None`) while an entry of the label that opens under a held secret is being
+    /// fetched (it may be a snapshot). Other pending commits settle nothing (two writers'
+    /// pending commits otherwise withheld exactly what the other waited for), nor do entries
+    /// that do not open as a commit or whose bytes no server delivers.
+    fn unsettled_hold(&mut self, l: &LabelId, g: &Tid) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
+        let mut out = BTreeSet::new();
+        let secrets = self.read_secrets(g);
+        if self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|((_, b), e)| e.kind == Kind::Unknown && self.fetching.contains_key(b) && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()) {
+            out.insert(None);
+        }
+        for (c, r) in self.engine.pending() {
+            if r == crate::Reason::Parked {
+                continue;
+            }
+            let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
+            if let Ok(cb) = osis_commit::CommitBlob::decode(&bytes)
+                && is_snapshot(cb.header.kind)
+            {
+                out.extend(cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone()))));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Entries present at `server` that unwrap under a held read secret and were never opened:
+    /// opened now, or fetched again when their bytes are not here (a fetch lost to a cut or
+    /// crash, secrets that arrived later).
+    fn refetch(&mut self, conn: ConnId, server: ServerKey, l: LabelId, g: &Tid, out: &mut Vec<super::Action>) -> Result<()> {
+        let secrets = self.read_secrets(g);
+        let ids: Vec<BlobId> = self
+            .state
+            .entries
+            .range((l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| *x == l)
+            .filter(|((_, b), e)| e.kind == Kind::Unknown && !self.fetching.contains_key(b) && !self.missing.contains(&(conn, *b)) && self.state.is_present(&server, &l, b) && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())
+            .map(|((_, b), _)| *b)
+            .collect();
+        let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
+        // bytes here but never opened under the secrets held now
+        if !held.is_empty() {
+            self.open_entries(l, &held)?;
+        }
+        if want.is_empty() {
+            return Ok(());
+        }
+        for b in &want {
+            self.fetching.insert(*b, conn);
+        }
+        self.command(conn, Command::Fetch { label: l, ids: want }, out)
+    }
+
+    /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect
     /// (`None` in the set) while an entry of the label opens under a held secret and is not
     /// applied (a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
     fn unsettled(&mut self, l: &LabelId, g: &Tid) -> Result<BTreeSet<Option<(Tid, Ak)>>> {
@@ -271,7 +395,7 @@ impl SyncEngine {
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
     /// commits, never a heartbeat; per server (a blob may be deposited at several).
-    fn promote(&mut self, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+    fn promote(&mut self, conn: ConnId, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         let ids: Vec<(BlobId, Entry)> = self
             .state
             .entries
@@ -281,6 +405,9 @@ impl SyncEngine {
             .map(|((_, b), e)| (*b, e.clone()))
             .collect();
         for (id, mut e) in ids {
+            if super::in_flight(&self.sent, &(conn, l, id), self.raw_now()) {
+                continue;
+            }
             let Kind::Commit { commit, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
             if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) {
@@ -291,7 +418,8 @@ impl SyncEngine {
             uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
             e.stamp = Some(stamp);
             self.state.set_entry(l, id, e);
-            self.state.set_deposited(server, l, id, false);
+            // still deposited there until the server takes the stamped upload (a refusal, say a
+            // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
     }
@@ -681,14 +809,19 @@ impl SyncEngine {
                 }
                 continue;
             }
+            if super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
+                continue;
+            }
             if let Some(item) = self.delete_for(keys, &l, &id, &e, None)? {
+                let raw = self.raw_now();
+                self.deleting.insert((conn, l, id), raw);
                 items.push(item);
             }
         }
         // timed deletes: bodies under a relative keep-at-most with a known bound
         for b in bodies {
             let Some(id) = self.entry_for(&server, &l, b) else { continue };
-            if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) {
+            if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) || self.timed_sent.contains(&(conn, l, id)) {
                 continue;
             }
             let Some(h) = self.engine.header(&b.commit) else { continue };
@@ -704,7 +837,7 @@ impl SyncEngine {
                 continue;
             }
             if let Some(item) = self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
-                self.state.set_timed(server, l, id);
+                self.timed_sent.insert((conn, l, id));
                 items.push(item);
             }
         }
@@ -720,18 +853,25 @@ impl SyncEngine {
         let Kind::Commit { commit, .. } = &e.kind else { return Ok(false) };
         let dropped = self.engine.core.commits.get(commit).is_some_and(|m| !m.dropped.is_empty());
         for (t, a) in aspects {
-            // the snapshot that covered the body when it was dropped, else one covering it now
-            let candidates: Vec<CommitId> = match self.state.carriers.get(commit) {
-                Some(s) => vec![*s],
+            // the snapshot that covered the body when it was dropped, or one covered-equal to it
+            // whose frontier holds the body's counters (a co-writer's that went up in its place);
+            // a dropped body's content is gone, so `covered` checks only that frontier
+            let carrier = self.carrier_of(commit, t, a);
+            let candidates: Vec<CommitId> = match carrier {
                 None if dropped => Vec::new(),
-                None => snaps.get(&(*t, a.clone())).cloned().unwrap_or_default(),
+                _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
             };
             let mut ok = false;
             for s in candidates {
                 if s == *commit || !self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if *c == s) && self.state.is_present(server, l, b)) {
                     continue;
                 }
-                if self.state.carriers.get(commit) == Some(&s) || self.engine.covered(&s, commit, t, a)? == Some(true) {
+                let covers = self.engine.covered(&s, commit, t, a)? == Some(true);
+                let stand_in = match carrier {
+                    Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true) && self.engine.covered(&k, &s, t, a)? == Some(true)),
+                    None => false,
+                };
+                if stand_in || (!dropped && covers) {
                     ok = true;
                     break;
                 }
@@ -746,11 +886,14 @@ impl SyncEngine {
     /// A right holder that must delete a body with live writes and finds no carrier writes a
     /// covering snapshot first when it may write the aspect (spec/sync.md §7).
     fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
-        if self.state.carriers.contains_key(body) {
+        if aspects.iter().all(|(t, a)| self.carrier_of(body, t, a).is_some()) {
             return Ok(());
         }
         for (t, a) in aspects {
             if is_membership(a) || self.engine.role_on(t) < Some(Role::Write) {
+                continue;
+            }
+            if self.carrier_of(body, t, a).is_some() {
                 continue;
             }
             // a snapshot from this node's whole state covers every body of the aspect it applied
@@ -759,6 +902,21 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// The recorded carrier of a dropped body on `(t, a)`, followed through carriers that were
+    /// dropped in turn to one whose body this node still holds (a carrier dropped before it went
+    /// up carries nothing: its writes moved to a later snapshot, or a new one is due).
+    fn carrier_of(&self, body: &CommitId, t: &Tid, a: &Ak) -> Option<CommitId> {
+        let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a));
+        let mut c = *self.state.carriers.get(body)?.iter().rev().find(|c| on(c))?;
+        for _ in 0..64 {
+            if self.engine.holds_body(&c, t, a) {
+                return Some(c);
+            }
+            c = *self.state.carriers.get(&c)?.iter().rev().find(|c| on(c))?;
+        }
+        None
     }
 
     /// A delete item for an entry: delete key, else a token this node can derive.

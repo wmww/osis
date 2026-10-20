@@ -17,6 +17,9 @@ use std::collections::{BTreeMap, VecDeque};
 pub const INITIAL_PINGS: usize = 3;
 /// Interval of later pings.
 pub const PING_INTERVAL_MS: u64 = 5 * 60 * 1000;
+/// A request unanswered this long closes the session (a peer or middlebox that drops replies
+/// on an open stream; the node redials, spec/sync.md §6).
+pub const REQUEST_TIMEOUT_MS: u64 = 2 * 60 * 1000;
 /// Clock samples kept.
 const MAX_SAMPLES: usize = 9;
 /// Round trips before a clock offset is reported (one outlier among three moves nothing).
@@ -190,6 +193,13 @@ pub struct ClientSession {
     closed: bool,
     next_id: Id,
     pending: BTreeMap<Id, Pending>,
+    /// When each pending request was sent.
+    sent_at: BTreeMap<Id, u64>,
+    /// `now` of the running `handle`.
+    now: u64,
+    next_ping: u64,
+    /// The timer last asked for by `SetTimer`.
+    timer: u64,
     queued: VecDeque<Command>,
     samples: VecDeque<OffsetSample>,
     pongs: usize,
@@ -206,6 +216,10 @@ impl ClientSession {
             closed: false,
             next_id: 0,
             pending: BTreeMap::new(),
+            sent_at: BTreeMap::new(),
+            now: 0,
+            next_ping: 0,
+            timer: 0,
             queued: VecDeque::new(),
             samples: VecDeque::new(),
             pongs: 0,
@@ -232,6 +246,7 @@ impl ClientSession {
         if self.closed {
             return out;
         }
+        self.now = now;
         match input {
             ClientInput::Start => {
                 self.hello_sent = now;
@@ -251,9 +266,15 @@ impl ClientSession {
                 }
             }
             ClientInput::Timer => {
-                if self.is_ready() {
+                self.timer = 0;
+                if self.oldest_request().is_some_and(|t| t.saturating_add(REQUEST_TIMEOUT_MS) <= now) {
+                    event(&mut out, ClientEvent::PeerError(Error::Timeout));
+                    self.close(&mut out);
+                    return out;
+                }
+                if self.is_ready() && self.next_ping <= now {
                     self.request(&mut out, |id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
-                    out.push(ClientOutput::SetTimer(now.saturating_add(PING_INTERVAL_MS)));
+                    self.next_ping = now.saturating_add(PING_INTERVAL_MS);
                 }
             }
             ClientInput::Command(c) => {
@@ -264,7 +285,27 @@ impl ClientSession {
                 }
             }
         }
+        self.arm(&mut out);
         out
+    }
+
+    fn oldest_request(&self) -> Option<u64> {
+        self.sent_at.values().min().copied()
+    }
+
+    /// Asks for the timer at the next ping or request deadline, if that changed.
+    fn arm(&mut self, out: &mut Vec<ClientOutput>) {
+        if self.closed || !self.is_ready() {
+            return;
+        }
+        let mut t = self.next_ping;
+        if let Some(s) = self.oldest_request() {
+            t = t.min(s.saturating_add(REQUEST_TIMEOUT_MS));
+        }
+        if t != self.timer {
+            self.timer = t;
+            out.push(ClientOutput::SetTimer(t));
+        }
     }
 
     fn close(&mut self, out: &mut Vec<ClientOutput>) {
@@ -281,6 +322,7 @@ impl ClientSession {
         }
         let id = self.next_id;
         self.pending.insert(id, pending);
+        self.sent_at.insert(id, self.now);
         send(out, msg(id));
     }
 
@@ -430,7 +472,7 @@ impl ClientSession {
             for _ in 0..INITIAL_PINGS {
                 self.request(out, |id| Message::Ping { id, wall_ms: now }, Pending::Ping { sent: now });
             }
-            out.push(ClientOutput::SetTimer(now.saturating_add(PING_INTERVAL_MS)));
+            self.next_ping = now.saturating_add(PING_INTERVAL_MS);
             while let Some(c) = self.queued.pop_front() {
                 self.command(c, out);
             }
@@ -457,6 +499,7 @@ impl ClientSession {
     }
 
     fn reply(&mut self, now: u64, m: Message, out: &mut Vec<ClientOutput>) {
+        self.sent_at.remove(&m.id());
         let Some(pending) = self.pending.remove(&m.id()) else {
             event(out, ClientEvent::PeerError(Error::Malformed("reply to no request")));
             return;

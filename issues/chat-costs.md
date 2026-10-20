@@ -1,6 +1,8 @@
 # Chat join, message and removal cost far over the notes/chat.md estimates
-> Summary: Measured through examples/chat `costs_join_message_removal` (chat of 4, upstream bytes). Join ≈ 220 KB, message ≈ 2.5 KB, removing a link joiner ≈ 300 KB from the moderator plus ≈ 160 KB from the others. About two thirds is engine waste: re-uploads, whole-commit and duplicate certificate copies, and copies placed then deleted. Without the waste, the design costs about 38 KB per join, 2.1 KB per message and 45–80 KB per removal at 4 members (at 200 members, ≈ 0.55 MB once the double rotation and the home-label copy are gone). The "never settles" case is an endless rotation loop (issues/rotation-uncoverable-loop.md).
+> Summary: (Engine waste fixed in sync round 2; design knobs left.) Measured through examples/chat `costs_join_message_removal` (chat of 4, upstream bytes) before the fix: join ≈ 220 KB, message ≈ 2.5 KB, removing a link joiner ≈ 300 KB from the moderator plus ≈ 160 KB from the others. About two thirds is engine waste: re-uploads, whole-commit and duplicate certificate copies, and copies placed then deleted. Without the waste, the design costs about 38 KB per join, 2.1 KB per message and 45–80 KB per removal at 4 members (at 200 members, ≈ 0.55 MB once the double rotation and the home-label copy are gone). The "never settles" case is an endless rotation loop (issues/rotation-uncoverable-loop.md).
 > Tags: sync, node, flows, tests
+
+Status: the engine waste (re-uploads, certificate copies) is fixed (sync round 2): the test measured join 41 KB, message 2.5 KB, removal 70 KB from the moderator plus 15 KB from the others before flows round 2 merged; after it, join 63 KB, removal 85 KB plus 68 KB from the others (not attributed yet; the test asserts the design budgets and is ignored with this issue until they hold). Left here: that regression and the design knobs in (b).
 
 ## Breakdown (chat of 4: alice, two link joiners, a late joiner; blob bytes, KB)
 Each entry adds about 120 B of frame overhead (wrap 49, stamp 64, framing) on top of the blob bytes below. Attribution comes from a temporary per-entry log in `SyncEngine::command` (blob class, commit, aspects, delta sizes), not committed.
@@ -17,8 +19,8 @@ Each entry adds about 120 B of frame overhead (wrap 49, stamp 64, framing) on to
 Inside the commits: a rotation's `/keys` is 2.6 KB (2 hybrid KEM keys of 1216 B). K's `/secrets` costs 2.7 KB per remaining member (a read and a write sealed box) plus about 2.2 KB fixed (link-key box, history boxes). C's rotation is 4.2 KB, because K is C's only boxed member. A person's keyset is 5.2 KB, a node card 1.7 + 0.5 KB, a heartbeat 0.4 KB.
 
 ## (a) Implementation waste, fixes, savings
-- Re-uploads: a writer sends every stamped entry again on each pass until the server answers. Fix in issues/sync-upload-resend.md (with issues/sync-deposit-resend.md). Saves ≈ 150 KB per join, ≈ 170 KB from the remover and ≈ 50–65 KB from each other member per removal. These dominate, and they grow faster than linear (chat of 8: 790 KB).
-- Certificate copies (issues/labeling-cert-copies.md):
+- Re-uploads: a writer sends every stamped entry again on each pass until the server answers. Fixed (sync round 2). Saves ≈ 150 KB per join, ≈ 170 KB from the remover and ≈ 50–65 KB from each other member per removal. These dominate, and they grow faster than linear (chat of 8: 790 KB).
+- Certificate copies (fixed in sync round 2):
   - After a rotation, `place_all` copies the whole commit, `/secrets` included, under C. The chain projection is `/keys` + `/members`: 13.8 KB extra per removal now, ≈ 530 KB per K rotation at 200 members.
   - It duplicates the closure blob under K's own label: 21 KB.
   - Members upload chain projections that the admin's fuller copy makes must-not-hold, and the admin deletes them: ≈ 19 KB per member per removal.

@@ -4,7 +4,7 @@
 //! the tag's lan secret dials `peer://<sender ip>:<port>` with the announced key. Not mDNS: the
 //! announcement carries nothing stable across windows or networks.
 //!
-//! Datagram (provisional, not yet in the spec): `"osis lan 1"` (10 bytes), tag (16), key (32),
+//! Datagram (spec/sync.md §10, provisional): `"osis lan 1"` (10 bytes), tag (16), key (32),
 //! port (2, big-endian).
 
 use crate::{Address, PublicKey};

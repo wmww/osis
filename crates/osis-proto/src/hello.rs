@@ -81,11 +81,15 @@ impl OffsetSample {
     }
 }
 
+/// Round trips longer than this give no offset sample: the error is up to half the round trip,
+/// and a reply held across a suspend would set the clock by the suspend's length.
+pub const MAX_SAMPLE_RTT_MS: u64 = 10_000;
+
 /// Clock offset (peer minus local, ms) from round-trip samples: the median of the per-sample
 /// offsets, so one outlier among three samples moves nothing. Samples received before they were
-/// sent are dropped. `None` without a usable sample.
+/// sent, or more than `MAX_SAMPLE_RTT_MS` after, are dropped. `None` without a usable sample.
 pub fn estimate_offset(samples: &[OffsetSample]) -> Option<i64> {
-    let mut offsets: Vec<i64> = samples.iter().filter(|s| s.received >= s.sent).map(|s| s.offset()).collect();
+    let mut offsets: Vec<i64> = samples.iter().filter(|s| s.received >= s.sent && s.received - s.sent <= MAX_SAMPLE_RTT_MS).map(|s| s.offset()).collect();
     offsets.sort_unstable();
     offsets.get(offsets.len().checked_sub(1)? / 2).copied()
 }
@@ -128,5 +132,18 @@ mod tests {
         let est = estimate_offset(&[s(100, 1150, 200), s(300, 1340, 360), s(400, 90_000, 402)]).unwrap();
         assert_eq!(est, 1010);
         assert_eq!(estimate_offset(&[s(200, 5, 100)]), None);
+    }
+
+    // spec/sync.md §6: a round trip over MAX_SAMPLE_RTT_MS (pings held across a suspend) is no
+    // sample: three of them set nothing, and beside short ones they move nothing
+    #[test]
+    fn offset_ignores_long_round_trips() {
+        let s = |sent, peer, received| OffsetSample { sent, peer, received };
+        let day = 86_400_000;
+        let held = [s(0, day / 2, day), s(10, day / 2 + 10, day + 10), s(20, day / 2 + 20, day + 20)];
+        assert_eq!(estimate_offset(&held), None);
+        let mut mixed = held.to_vec();
+        mixed.push(s(day + 100, day + 1150, day + 200));
+        assert_eq!(estimate_offset(&mixed), Some(1000));
     }
 }

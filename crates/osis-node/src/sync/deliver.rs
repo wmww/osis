@@ -75,14 +75,14 @@ impl SyncEngine {
                     for t in under {
                         for g in self.groups_holding(&t) {
                             for c in &commits {
-                                self.place_all(&g, c)?;
+                                self.place_chain(&g, c)?;
                             }
                         }
                     }
                 }
                 Delivery::Certificate { commits, under } => {
                     for c in &commits {
-                        self.place_all(&under, c)?;
+                        self.place_chain(&under, c)?;
                     }
                 }
                 Delivery::Deposit { commit, under } => {
@@ -93,6 +93,20 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// Places `c`'s certificate deltas (edges, `/keys`, `/created`: spec/permissions.md §4) on
+    /// things outside `g`'s closure as a certificate copy under `g`'s labels; deltas on things
+    /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
+    /// `/secrets` boxes the label's readers cannot open).
+    fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+        let Some(h) = self.engine.header(c) else { return Ok(()) };
+        let closure = self.engine.closure(g);
+        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| matches!(a.ak.as_str(), "/members" | "/tenures" | "/keys" | "/created") && !closure.contains(&a.tid)).map(|(i, _)| i).collect();
+        if ais.is_empty() {
+            return Ok(());
+        }
+        self.place_certificate_in(g, c, &ais)
     }
 
     /// Places every aspect of `c` as a certificate copy under the labels of `g`.

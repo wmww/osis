@@ -57,6 +57,8 @@ pub struct Net {
     plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     /// (node, node) pairs that cannot connect.
     pub blocked_peers: BTreeSet<(usize, usize)>,
+    /// Message kinds nodes sent to servers, by kind.
+    pub sent_kinds: BTreeMap<u64, usize>,
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -65,7 +67,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), sent_kinds: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -210,6 +212,13 @@ impl Net {
                     self.queue.push_back(Msg::Close(m, pc));
                 }
                 Action::Send { conn, bytes } => {
+                    let mut d = osis_proto::FrameDecoder::new();
+                    d.push(&bytes);
+                    while let Ok(Some(body)) = d.next_frame() {
+                        if let Ok(m) = osis_proto::Message::decode(&body) {
+                            *self.sent_kinds.entry(m.kind()).or_default() += 1;
+                        }
+                    }
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
                         self.queue.push_back(Msg::ToHub(s, hc as ConnId, bytes));
                     }

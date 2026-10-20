@@ -200,7 +200,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
                 continue;
             }
             let Decoded::Snapshot(s) = d else { continue };
-            let Some(sv) = s.fragment.read().and_then(|v| ct::SECRETS.decode(&v).ok()) else { continue };
+            let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
             let e = tx.core.secrets.entry(a.tid).or_default();
             if osis_keys::snapshot_keyed(&sv, e).unwrap_or(false) {
                 save(tx, &a.tid)?;
@@ -239,7 +239,7 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
 
 /// The `/secrets` compaction gate (spec/crypto.md §4).
 pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
-    let Some(s) = state.read().and_then(|v| ct::SECRETS.decode(&v).ok()) else { return false };
+    let Some(s) = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return false };
     let e = core.epochs(actor).unwrap_or_default();
     osis_keys::may_compact_secrets(&s, &e).unwrap_or(false)
 }
