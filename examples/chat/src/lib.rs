@@ -2,7 +2,7 @@
 //! tests and the binary drive.
 //!
 //! - The **chat actor** C is a group owned by its creator's person, synced on the creator's
-//!   servers (its label is the chat's label). Its title and hidden-message set live on it.
+//!   servers under its own label (not placed in the home group). Its title and hidden-message set live on it.
 //!   Every participant is a writer of C; moderators are its admins.
 //! - Each participant has a **persona** P per chat: an actor and group owned by its person,
 //!   placed in C and added to C's subgroups. Edge (C on P, read) lets everyone in C read what P
@@ -29,10 +29,13 @@ fn items() -> Path {
     p![FieldId(0)]
 }
 
-/// A new chat with its creator's persona: (chat actor, persona).
+/// A new chat with its creator's persona: (chat actor, persona). The chat is synced under its
+/// own label only, not placed in the creator's home group: the creator's other devices find it
+/// through the home label's `/label` cross-publish, and its rotations and messages are not
+/// copied under the home label.
 pub fn new_chat(db: &Osis, title: &str, nick: &str) -> Result<(Tid, Tid)> {
     let mut w = db.write();
-    let chat = w.create(db.me(), Place::In(db.home()))?;
+    let chat = w.create(db.me(), Place::Unsynced)?;
     w.make_group(chat)?;
     w.at(chat, TITLE).set(&title.to_string())?;
     w.commit()?;
