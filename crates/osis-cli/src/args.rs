@@ -444,8 +444,11 @@ pub enum LinkCmd {
     },
     Redeem { link: String },
     Ls { t: String },
+    /// End link ID; with --joiner, also remove that joiner in the same commit
     Revoke {
         id: String,
+        #[arg(long, value_name = "ACTOR")]
+        joiner: Option<String>,
         #[command(flatten)]
         d: DemoteFlags,
     },

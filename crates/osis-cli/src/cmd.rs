@@ -410,10 +410,16 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let j = J::Arr(ls.iter().map(|l| J::obj([("id", J::tid(l.id)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect());
             ctx.emit(&lines, j)
         }
-        Cmd::Link(LinkCmd::Revoke { id, d }) => {
+        Cmd::Link(LinkCmd::Revoke { id, joiner, d }) => {
             let id = ctx.tid(&id)?;
             let d = demotion(&d, ctx)?;
-            wait(ctx, db.revoke_link(id, d))
+            match joiner {
+                Some(j) => {
+                    let j = ctx.tid(&j)?;
+                    wait(ctx, db.revoke_joiner(id, j, d))
+                }
+                None => wait(ctx, db.revoke_link(id, d)),
+            }
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;

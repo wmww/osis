@@ -337,6 +337,27 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
 }
 
 impl Engine {
+    /// Whether every delta of `blob` hashes to its entry in the commit's header (the applied,
+    /// resolved one when held; spec/commits.md §4): a blob of a held commit is otherwise never
+    /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
+    /// secret) or the resolved header is unknown.
+    pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
+        let h = match self.core.commits.get(&blob.id()) {
+            Some(m) => m.header.clone(),
+            None if blob.header.is_resolved() => Arc::new(blob.header.clone()),
+            None => return None,
+        };
+        for p in &blob.parts {
+            let Some(want) = h.aspects.get(p.ai).and_then(|a| a.hashes.get(p.di)) else { return Some(false) };
+            let a = h.aspects.get(p.ai)?;
+            let r = self.core.created(&a.tid)?;
+            if osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     /// Receives a commit blob's plaintext (`CommitBlobPlaintext`, spec/wire.md §4) with the page,
     /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
     /// a diagnostic and returned as an error; nothing of it is stored.

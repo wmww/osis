@@ -276,21 +276,22 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
     Ok(out)
 }
 
-/// Current members of `a` as box recipients; `skip` is left out (a departing member). Members
+/// Current members of `a` as box recipients; each of `skip` gets its new role or is left out
+/// (departing members). Members
 /// whose keys are unknown are left out (re-sealed later).
-pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: Option<(Tid, Option<Role>)>) -> Result<Vec<Recipient>> {
+pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Vec<Recipient>> {
     let now = tx.core.now();
     let mut out = Vec::new();
     for (m, role, until) in tx.core.current_members(a) {
         if until.is_some_and(|u| u <= now) {
             continue;
         }
-        let role = match skip {
-            Some((s, new)) if s == m => match new {
-                Some(r) => r,
+        let role = match skip.iter().find(|(s, _)| *s == m) {
+            Some((_, new)) => match new {
+                Some(r) => *r,
                 None => continue,
             },
-            _ => role,
+            None => role,
         };
         if let Ok(r) = recipient(tx, m, role) {
             out.push(r);
@@ -366,7 +367,7 @@ fn signer_of(tx: &Tx<'_>, who: Tid) -> Option<Tid> {
 /// by `who`.
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-    let members = recipients(tx, &a, None)?;
+    let members = recipients(tx, &a, &[])?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, a, roles, &held, &members)?;
     let unreached = unreached(tx, &a, &rot)?;
@@ -454,7 +455,7 @@ pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()
     let who = tx.core.id.tid();
     require_covered(tx, who, t, &ROLES.into_iter().collect(), done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the owner's secrets are not held"))?;
-    let members = recipients(tx, &t, None)?;
+    let members = recipients(tx, &t, &[])?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &members)?;
     let mut seed = [0u8; 32];
