@@ -83,6 +83,7 @@ impl Core {
         let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
         if held_any && Some(&epochs) != before.as_ref() {
             self.secrets.insert(*actor, epochs);
+            self.membership_changed();
             return true;
         }
         false
@@ -114,6 +115,7 @@ impl Core {
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             self.own_keys.insert(*actor);
+            self.membership_changed();
             if let Some(e) = self.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);
             }

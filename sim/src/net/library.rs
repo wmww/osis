@@ -555,8 +555,7 @@ pub fn label_replacement(seed: u64) -> Res<Report> {
 
 /// Label replacement with a member offline (spec/sync.md §2: the replacement `/label` commit
 /// stays under the old label, whose content entries the admin deletes, so a node that knows only
-/// the old label finds the new one). Fails: issues/node-sync-gaps.md (replaced labels: the old
-/// label's content entries are never deleted; the offline member does find the new label).
+/// the old label finds the new one).
 pub fn label_replacement_offline(seed: u64) -> Res<Report> {
     replacement("label_replacement_offline", seed, true)
 }

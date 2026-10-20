@@ -66,7 +66,7 @@ All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **d
 
 Unknown id (or an unknown nested id) parks the whole delta (spec/versioning.md §2). A parked delta is kept as bytes with its header tuple and re-examined after upgrade.
 
-An `any` position (spec/data-model.md §3) has no encoding of its own: a write chooses the encoding of the value's kind (map → map, list → list, set → set, enum → enum, everything else → register), recursively; kinds written at different times meet as slots (§7).
+An `any` position (spec/data-model.md §3) has no encoding of its own: a write chooses the encoding of the value's kind (map → map, list → list, set → set, enum → enum, everything else → register), recursively; kinds written at different times meet as slots (§7). A link (a chunked large value, spec/data-model.md §6) is written in register encoding at any position, typed or `any` (a roster snapshot's linked tenure frontier).
 
 ### 3.2 Grammar
 ```

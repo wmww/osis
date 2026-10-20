@@ -283,6 +283,7 @@ pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
 
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
+    tx.core.membership_changed();
     if let Some(e) = tx.core.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -349,6 +350,7 @@ impl Engine {
         let id = Identity::from_seed(seed);
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
+        self.core.membership_changed();
         self.run(reopen_all)?;
         Ok(t)
     }
@@ -361,6 +363,7 @@ impl Engine {
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §9).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
+        self.core.membership_changed();
     }
 
     /// Commits `m` in a running transaction.

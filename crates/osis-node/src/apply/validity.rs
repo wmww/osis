@@ -111,11 +111,92 @@ fn edge_ops(core: &Core, target: &Tid, f: &Fragment, dots: Dots) -> Option<Vec<E
     Some(per.into_iter().map(|(member, edge)| EdgeOp { target: *target, member, edge, dots }).collect())
 }
 
+/// Members a roster snapshot's `/members` or `/tenures` delta names (its edges or ledger
+/// entries): what a certificate copy of it is projected by (spec/permissions.md §6).
+pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {
+    match ak {
+        "/members" => entries(f)
+            .into_iter()
+            .filter_map(|(_, k, _)| match k {
+                Some(Value::Tid(m)) => Some(m),
+                _ => None,
+            })
+            .collect(),
+        "/tenures" => tenures(f).into_iter().map(|t| t.member).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The tenures a `/tenures` delta writes, each typed as a set element (a linked frontier inside
+/// it reads as its link); malformed ones are skipped.
+fn tenures(f: &Fragment) -> Vec<ct::Tenure> {
+    let Some(Value::Set(s)) = f.read() else { return Vec::new() };
+    s.into_iter().filter_map(|t| osis_schema::AspectKey::decode(&ct::TENURES, &Value::Set([t].into())).ok()).flat_map(|x| x.0).collect()
+}
+
 /// A roster snapshot's parts on one thing: roster, ledger, `/members` dots.
 type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>, Dots);
 
-/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set.
-pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+/// Links of the frontiers a `/tenures` delta's tenures carry by link.
+fn tenure_links(f: &Fragment) -> Vec<osis_core::Link> {
+    tenures(f)
+        .into_iter()
+        .filter_map(|t| match t.frontier {
+            Some(osis_schema::Chunked::Link(l)) => Some(l),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A tenure's frontier held by link (spec/permissions.md §6), read from its chunk tree under
+/// thing `tid`'s dedup secret; `None` while a blob of it is not held.
+fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link) -> Result<Option<Frontier>> {
+    let Some(dedup) = tx.core.dedup(tid) else { return Ok(None) };
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
+    let mut r = osis_label::BlobReader::new(&dedup, &mut blobs);
+    match osis_label::read_value(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, osis_commit::MAX_LIST_BYTES) {
+        Ok(v) => {
+            let f = typed(&v, "frontier").and_then(|v| ct::Frontier::from_value(&v).ok()).ok_or(Error::BadInput("a linked frontier is not a frontier"))?;
+            Ok(Some(frontier_of(f)))
+        }
+        Err(osis_label::Error::Missing) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The linked frontiers of a roster snapshot's `/tenures` parts, by link content hash; `None`
+/// while a blob of one is not held (the commit waits for it, spec/commits.md §4).
+pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<Option<BTreeMap<[u8; 32], Arc<Frontier>>>> {
+    let mut out = BTreeMap::new();
+    if h.kind != Kind::RosterSnapshot {
+        return Ok(Some(out));
+    }
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() != "/tenures" {
+            continue;
+        }
+        for l in tenure_links(fragment(d)) {
+            match linked_frontier(tx, &a.tid, &l)? {
+                Some(f) => {
+                    out.insert(l.hash, Arc::new(f));
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A linked
+/// tenure frontier not held here (a part kept from before) audits as empty.
+pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    let linked = linked_frontiers(tx, h, parts)?.unwrap_or_default();
+    add_membership_in(tx.core, h, id, parts, &linked);
+    Ok(())
+}
+
+fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], linked: &BTreeMap<[u8; 32], Arc<Frontier>>) {
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && a.ak.as_str() == "/members"
@@ -159,18 +240,13 @@ pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: 
                         }
                     }
                     "/tenures" => {
-                        if let Some(Value::Set(s)) = fragment(d).read() {
-                            for t in s {
-                                if let Some(t) = typed(&t, "tenure").and_then(|v| ct::Tenure::from_value(&v).ok()) {
-                                    let frontier = match t.frontier {
-                                        Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
-                                        // a linked frontier this node has not resolved audits as empty
-                                        Some(osis_schema::Chunked::Link(_)) => Some(Arc::new(Frontier::default())),
-                                        None => None,
-                                    };
-                                    e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
-                                }
-                            }
+                        for t in tenures(fragment(d)) {
+                            let frontier = match t.frontier {
+                                Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
+                                Some(osis_schema::Chunked::Link(l)) => Some(linked.get(&l.hash).cloned().unwrap_or_default()),
+                                None => None,
+                            };
+                            e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
                         }
                     }
                     _ => {}
@@ -351,7 +427,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
                 }
             }
         }
-        add_membership(tx.core, &m.header, &id, &parts);
+        add_membership(tx, &m.header, &id, &parts)?;
         any |= !tx.core.unresolved.contains(&id);
     }
     Ok(any)
@@ -388,7 +464,7 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
 /// flipped. Returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
-        tx.core.timelines.update(&tx.core.held);
+        tx.core.update_timelines();
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();

@@ -8,7 +8,6 @@ Repro: known approximations, no failing test.
 - **Snapshots vouch for nothing** (spec/permissions.md §5.2): a snapshot body is joined whole; on rebuild the writes of sources with an invalid delta held here are removed, but a write whose own delta is not held is never judged on its own.
 - **Deaths** are attributed to the original commit's body only; a snapshot body carrying the same write gets no death record, so its keep bounds are only those of its own deaths.
 - **Large values**: issues/large-value-residues.md.
-- **Linked frontiers** inside `/tenures` entries are treated as empty (audits drop everything they would have covered) until the node resolves them.
 - **Cost**: open replays every commit record; every changing transaction copies the in-memory indexes for rollback; each membership change re-judges every held delta (issues/perm-eval-cost.md); paging covers only root collections and root struct fields (issues/node-state-not-paged.md); `Timelines::update` walks the whole held set.
 - **Re-snapshot and deletion queues** are recorded (`deletions`, `resnapshot` logs); node-sync judges dropped parts from the commit index instead and does not read them, so nothing truncates them yet.
 - **`/groups`** is recomputed whole on every `/group` change (also on late deltas since node-sync found them missed): O(groups) per change, O(groups²) at open.

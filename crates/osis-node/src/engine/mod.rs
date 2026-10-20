@@ -5,7 +5,7 @@
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
-mod large;
+pub(crate) mod large;
 mod read;
 pub(crate) mod records;
 pub(crate) mod secrets;
@@ -131,6 +131,14 @@ pub(crate) struct Core {
     pub unresolved: BTreeSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
     pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
+    /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
+    pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    /// The newest noted commit writing a box: (actor, box key) -> its `ts`.
+    pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
+    /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
+    /// write's future `ts`); cleared by `membership_changed`. Not backed up: a rollback clears it.
+    pub departures: BTreeMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
     pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
@@ -182,10 +190,24 @@ pub(crate) struct Backup {
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     grant_overreach: BTreeSet<(CommitId, usize)>,
     box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }
 
 impl Core {
+    /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
+    /// called wherever those change.
+    pub fn membership_changed(&mut self) {
+        self.departures.clear();
+    }
+
+    /// Re-evaluates the timelines over the held set.
+    pub fn update_timelines(&mut self) {
+        self.timelines.update(&self.held);
+        self.membership_changed();
+    }
+
     /// Saves the indexes before the running transaction's first change to them.
     pub fn touch(&mut self) {
         self.live_trees.clear();
@@ -213,6 +235,8 @@ impl Core {
             rotation_role: self.rotation_role.clone(),
             grant_overreach: self.grant_overreach.clone(),
             box_keys: self.box_keys.clone(),
+            epoch_intro: self.epoch_intro.clone(),
+            box_written: self.box_written.clone(),
             secrets_unresolved: self.secrets_unresolved.clone(),
         }));
     }
@@ -220,6 +244,7 @@ impl Core {
     /// Undoes the aborted transaction's changes to the caches.
     fn rollback(&mut self) {
         self.live_trees.clear();
+        self.membership_changed();
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
             self.pages.remove(&k);
@@ -246,6 +271,8 @@ impl Core {
             self.rotation_role = b.rotation_role;
             self.grant_overreach = b.grant_overreach;
             self.box_keys = b.box_keys;
+            self.epoch_intro = b.epoch_intro;
+            self.box_written = b.box_written;
             self.secrets_unresolved = b.secrets_unresolved;
             self.timelines.update(&self.held);
         }
@@ -278,6 +305,9 @@ impl Core {
             rotation_role: BTreeMap::new(),
             grant_overreach: BTreeSet::new(),
             box_keys: BTreeMap::new(),
+            epoch_intro: BTreeMap::new(),
+            box_written: BTreeMap::new(),
+            departures: BTreeMap::new(),
             secrets_unresolved: BTreeMap::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),
@@ -362,6 +392,9 @@ impl Tx<'_> {
     /// Writes a state (keeping the unit's undo buffer unless `clear_undo`).
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
         self.core.touch();
+        if osis_schema::core_types::is_membership_class(ak.as_str()) {
+            self.core.membership_changed();
+        }
         self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         let (bytes, idx) = state::write_full(&mut self.txn, tid, ak, f.as_ref(), state::is_paged(&unit.state))?;
@@ -388,6 +421,9 @@ impl Tx<'_> {
     /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
     /// else is written whole. The caller has noted the state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
+        if osis_schema::core_types::is_membership_class(ak.as_str()) {
+            self.core.membership_changed();
+        }
         let k = (*tid, ak.clone());
         if let (Some(st), Some(idx)) = (&f, self.core.pages.get_mut(&k))
             && let Some(unit_state) = state::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?

@@ -370,3 +370,32 @@ proptest! {
         }
     }
 }
+
+/// spec/commits.md §2: a reset-plus-full-state delta of a map or set split per entry gives
+/// deltas sharing the commit-level stamp whose join is the whole, each encoding on its own
+/// under the commit's range.
+#[test]
+fn split_entries_join_back_spec_commits_2() {
+    use crate::codec::{decode_delta, encode_delta};
+    use crate::stamp::Interner;
+    use crate::wire::{Delta, DeltaCtx, DeltaKind};
+    let map = Value::Map((0..3i64).map(|i| (Value::Int(i), Value::Str(format!("v{i}")))).collect());
+    let set = Value::Set((0..3i64).map(Value::Int).collect());
+    for v in [map, set] {
+        let node = Source::node(Tid::from_bytes([5; 15]));
+        let mut w = crate::ops::Writer::new(ts(70 << 16), node.clone(), 1);
+        let whole = crate::ops::replace(&mut w, &AnyView, &v).unwrap();
+        let parts = whole.clone().split_entries();
+        assert_eq!(parts.len(), 3);
+        let cx = DeltaCtx { ts: ts(70 << 16), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
+        let mut joined = Fragment::empty(whole.encoding()).unwrap();
+        for p in parts {
+            let d = Delta { nonce: [1; 16], fragment: p.clone() };
+            let bytes = encode_delta(&d, &cx, None).unwrap();
+            assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap(), d);
+            joined.join(p);
+        }
+        assert_eq!(joined, whole);
+        assert_eq!(read(&joined), Some(v));
+    }
+}

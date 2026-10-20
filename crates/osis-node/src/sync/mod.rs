@@ -257,6 +257,8 @@ pub struct SyncEngine {
     pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
+    /// Servers where a replaced label is done with (`retire_at`).
+    pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
@@ -332,6 +334,7 @@ impl SyncEngine {
             deleting: BTreeMap::new(),
             missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
+            retired_at: BTreeSet::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
@@ -562,9 +565,9 @@ impl SyncEngine {
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of; an admin also keeps its replaced labels (spec/sync.md §2: it places the
-    /// membership-class commits there, the replacement's `/label` among them, and deletes the
-    /// content entries).
+    /// secrets of; an admin also keeps its replaced labels until done with them at every server
+    /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
+    /// `/label` among them, and deletes the content entries; `retire_at`).
     pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
@@ -573,7 +576,7 @@ impl SyncEngine {
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
             for l in self.engine.group_labels(&g).unwrap_or_default() {
-                if !l.replaced || admin {
+                if !l.replaced || admin && !self.state.retired.contains(&l.id) {
                     out.push((g, l));
                 }
             }

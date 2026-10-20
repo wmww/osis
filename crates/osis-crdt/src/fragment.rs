@@ -250,6 +250,24 @@ impl Fragment {
         }
     }
 
+    /// Splits a root map or set delta into one delta per entry or element, each carrying the
+    /// root's reset and presence write (spec/commits.md §2: several deltas of one aspect share
+    /// the commit-level stamp); their join is `self`. Anything else, or a collection of at most
+    /// one entry: `self` alone.
+    pub fn split_entries(self) -> Vec<Fragment> {
+        match self {
+            Fragment::Map(m) if m.entries.len() > 1 => {
+                let Map { meta, entries, .. } = m;
+                entries.into_iter().map(|(d, e)| Fragment::Map(Map::new(meta.clone(), BTreeMap::from([(d, e)])))).collect()
+            }
+            Fragment::Set(s) if s.elems.len() > 1 => {
+                let Set { meta, elems } = s;
+                elems.into_iter().map(|(d, e)| Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::from([(d, e)]) })).collect()
+            }
+            f => vec![f],
+        }
+    }
+
     /// The empty fragment of `enc`; `Slots` has none (it is formed by join).
     pub fn empty(enc: Encoding) -> Option<Fragment> {
         Some(match enc {

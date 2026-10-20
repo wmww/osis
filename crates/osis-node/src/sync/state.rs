@@ -32,6 +32,8 @@ const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
 const FORGET: &[u8] = b"y/f";
+/// Replaced labels this admin is done with (`SyncEngine::retire_at`).
+const RETIRED: &[u8] = b"y/q";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +122,8 @@ pub struct State {
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
     pub forget: BTreeSet<Tid>,
+    /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
+    pub retired: BTreeSet<LabelId>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -262,6 +266,9 @@ impl State {
                     let owner = x.tid()?;
                     let blob = x.bytes()?.to_vec();
                     s.outbox.insert(k, OutRec { label, server, owner, blob });
+                }
+                b"q" => {
+                    s.retired.insert(LabelId(r.arr()?));
                 }
                 b"f" => {
                     s.forget.insert(r.tid()?);
@@ -433,6 +440,12 @@ impl State {
                 }
             }
             self.del(key(BLOB, &[&id.0]));
+        }
+    }
+
+    pub fn retire(&mut self, l: LabelId) {
+        if self.retired.insert(l) {
+            self.put(key(RETIRED, &[&l.0]), Vec::new());
         }
     }
 

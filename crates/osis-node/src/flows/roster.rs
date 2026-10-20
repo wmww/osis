@@ -1,9 +1,8 @@
 //! Roster snapshots (spec/permissions.md §6): by owner-chain authority, the roster with `since`
 //! and the tenure ledger as perm's timeline computes them (`Timeline::roster_state`); policy:
-//! due once the thing's held `/members` deltas pass `ROSTER_SNAPSHOT_AFTER`.
-//!
-//! Reading (issues/roster-snapshot-deltas.md): one reset-plus-full-state delta per aspect, not
-//! one per edge and ledger entry, so a certificate copy cannot yet be projected per edge.
+//! due once the thing's held `/members` deltas pass `ROSTER_SNAPSHOT_AFTER`. The writer splits
+//! the replace into one reset-plus-state delta per edge and per ledger entry (spec/commits.md
+//! §2) and links frontiers above `CHUNK_THRESHOLD`; certificate copies carry the chain's deltas.
 
 use super::{Done, ak};
 use crate::engine::Engine;

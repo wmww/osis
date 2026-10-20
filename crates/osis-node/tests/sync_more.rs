@@ -203,9 +203,10 @@ fn label_published_under_home_label_spec_sync_2() {
     assert_eq!(net.read(b, t), Some(s("inside")));
 }
 
-// spec/sync.md §2 (replacement): a new label at the next index takes the live blobs; the old
-// one is marked replaced and no longer synced by members; the admin places the replacement's
-// `/label` commit under it and deletes its content entries there.
+// spec/sync.md §2 (replacement): the admin secret the old label registers is rotated first; a
+// new label at the next index takes the live blobs; the old one is marked replaced and no
+// longer synced by members; the admin places the replacement's `/label` commit under it,
+// deletes its content entries there, and then stops syncing it.
 #[test]
 fn label_replacement_spec_sync_2() {
     let mut net = Net::new();
@@ -217,7 +218,9 @@ fn label_replacement_spec_sync_2() {
     net.run();
     let old = net.label(a);
     let before: BTreeSet<_> = commits_under(&mut net, a, &old).into_iter().map(|x| x.0).collect();
+    let admin0 = net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0;
     let (new, _) = net.sync(a).replace_label(&g, &old).unwrap();
+    assert_ne!(net.engine(a).epochs(&g).unwrap().admin.newest_held().unwrap().0, admin0, "the admin secret rotated");
     // the admin restarts before syncing: it reopens the replaced label as well
     net.restart(a, 9);
     net.run();
@@ -236,11 +239,14 @@ fn label_replacement_spec_sync_2() {
         assert!(h.aspects.iter().all(|x| x.tid != t), "content of the item left under the old label");
         labels_after += usize::from(!before.contains(&commit) && h.aspects.iter().any(|x| x.ak.as_str() == "/label"));
     }
-    // the new label's record and the one marking the old one replaced
-    assert_eq!(labels_after, 2, "the replacement's /label commits under the old label");
+    // the new label's record with the old one marked replaced
+    assert_eq!(labels_after, 1, "the replacement's /label commit under the old label");
+    let labels: Vec<_> = net.sync(a).labels().into_iter().map(|(_, l)| l.id).collect();
+    assert_eq!(labels, vec![new], "the admin is done with the old label");
     net.write(b, t, "on the new label");
     net.run();
     assert_eq!(net.read(a, t), Some(s("on the new label")));
+    assert_eq!(net.server_ids(sv, &old).into_iter().collect::<BTreeSet<_>>(), live, "nothing more under the old label");
 }
 
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
