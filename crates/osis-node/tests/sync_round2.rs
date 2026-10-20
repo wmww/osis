@@ -20,6 +20,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::Comm
 // spec/versioning.md §2 (malformed data is rejected), spec/sync.md §6: a well-framed, stamped
 // blob of junk under the label is marked bad once; the writers keep uploading their must-hold
 // bodies (one such entry used to stop every upload under the label).
+// spec/versioning.md §2 (reject malformed)
 #[test]
 fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let mut net = Net::new();
@@ -120,6 +121,7 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
 
 // spec/commits.md §5 (keep at most: body and copies gone at the bound): a tick dropping a
 // replaced body also drops its blob and key at the node.
+// spec/commits.md §5 (keep at most)
 #[test]
 fn keep_at_most_drop_forgets_blob_spec_commits_5() {
     let mut net = Net::new();

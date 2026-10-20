@@ -199,6 +199,7 @@ mod tests {
     use super::*;
 
     // spec/permissions.md §5.1: a frontier covers what was received contiguously as of T.
+    // spec/permissions.md §5.1 (frontier received)
     #[test]
     fn contiguous_as_of_spec_5_1() {
         let n = Tid::from_bytes([1; 15]);

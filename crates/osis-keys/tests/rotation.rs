@@ -86,6 +86,7 @@ fn key_actor_demoted_keeps_lower_roles() {
 
 // spec/crypto.md §4: carrying a lower role's secret to a key actor is encrypting under its epoch:
 // an uncovered one is rotated too.
+// spec/crypto.md §4 (encrypt under covering epoch)
 #[test]
 fn carried_role_rotates_when_uncovered() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));

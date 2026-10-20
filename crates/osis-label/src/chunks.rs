@@ -422,6 +422,7 @@ mod tests {
 
     // spec/data-model.md §6: above CHUNK_THRESHOLD a blob is chunked, at or below it is not;
     // the tree holds its canonical bytes; equal content gives equal root hashes, other links.
+    // spec/data-model.md §6 (chunk threshold)
     #[test]
     fn threshold() {
         let f = framing();
@@ -450,6 +451,7 @@ mod tests {
     }
 
     // spec/data-model.md §6: a chunked value at or below the threshold is bad input.
+    // spec/data-model.md §6 (chunk threshold)
     #[test]
     fn small_chunked_rejected() {
         let f = framing();

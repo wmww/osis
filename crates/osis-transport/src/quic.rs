@@ -494,6 +494,62 @@ mod tests {
         stall.join().unwrap();
     }
 
+    fn lax_client(early: bool, me: Option<Arc<CertifiedKey>>) -> quinn::ClientConfig {
+        let b = rustls::ClientConfig::builder_with_provider(provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(Lax(false)));
+        let mut tls = match me {
+            Some(me) => b.with_client_cert_resolver(Arc::new(rustls::client::AlwaysResolvesClientRawPublicKeys::new(me))),
+            None => b.with_no_client_auth(),
+        };
+        tls.alpn_protocols = vec![ALPN.to_vec()];
+        tls.enable_early_data = early;
+        quinn::ClientConfig::new(Arc::new(quinn::crypto::rustls::QuicClientConfig::try_from(tls).unwrap()))
+    }
+
+    fn endpoint() -> quinn::Endpoint {
+        quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()).unwrap()
+    }
+
+    // spec/sync.md §10 (mutual auth): a client presenting no key is refused: the server yields
+    // no connection and the client's is closed.
+    #[test]
+    #[ignore]
+    fn client_without_key_refused() {
+        rt().block_on(async {
+            let (mut l, sa) = server(6).await;
+            let ep = endpoint();
+            let connecting = ep.connect_with(lax_client(false, None), sa, SERVER_NAME).unwrap();
+            if let Ok(Ok(c)) = tokio::time::timeout(Duration::from_secs(5), connecting).await {
+                tokio::time::timeout(Duration::from_secs(5), c.closed()).await.unwrap();
+            }
+            assert!(!matches!(tokio::time::timeout(Duration::from_secs(1), l.accept()).await, Ok(Ok(_))));
+        });
+    }
+
+    // spec/sync.md §10 (no 0-rtt): the server issues no session tickets, so a client asking for
+    // 0-RTT cannot use it on its next connection.
+    #[test]
+    #[ignore]
+    fn no_zero_rtt() {
+        rt().block_on(async {
+            let (mut l, sa) = server(7).await;
+            let me = keypair(&[8; 32]).unwrap().1;
+            let cfg = lax_client(true, Some(me));
+            let ep = endpoint();
+            let c1 = ep.connect_with(cfg.clone(), sa, SERVER_NAME).unwrap().await.unwrap();
+            let _s = tokio::time::timeout(Duration::from_secs(2), l.accept()).await.unwrap().unwrap();
+            // a round trip, so post-handshake messages (tickets, were any sent) have arrived
+            let _ = c1.open_bi().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            c1.close(0u32.into(), b"");
+            let connecting = ep.connect_with(cfg, sa, SERVER_NAME).unwrap();
+            assert!(connecting.into_0rtt().is_err(), "0-RTT offered");
+        });
+    }
+
     // spec: none (URL form: port required, IPv6 in brackets, length cap)
     #[test]
     fn url_forms() {

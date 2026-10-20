@@ -76,6 +76,7 @@ fn quic_round_trip_keys() {
 }
 
 // spec/sync.md §10: a client MUST check the server's key against the address.
+// spec/sync.md §10 (server key check)
 #[test]
 #[ignore]
 fn quic_pinned_key_mismatch_refused() {

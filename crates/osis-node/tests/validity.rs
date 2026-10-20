@@ -154,6 +154,7 @@ impl osis_commit::Secrets for Dedup {
 
 // spec/commits.md §4: two commits by one node with overlapping node-form ranges on one aspect
 // are both invalid.
+// spec/permissions.md §5.2 (dot reuse)
 #[test]
 fn overlapping_counters_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};

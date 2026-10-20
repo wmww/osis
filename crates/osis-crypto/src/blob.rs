@@ -138,6 +138,7 @@ mod tests {
     }
 
     // spec/wire.md §5: unpad rejections.
+    // spec/wire.md §5 (unpad)
     #[test]
     fn unpad_rejections() {
         assert_eq!(unpad(&pad(b"abc")), Ok(&b"abc"[..]));

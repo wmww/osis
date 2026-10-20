@@ -18,6 +18,7 @@ fn world() -> (World, usize) {
 }
 
 // spec/sync.md §5 Open: an ex-member's superseded sync key gets the child step and nothing else
+// spec/sync.md §5 (stale sync key), §5 (download needs open)
 #[test]
 fn stale_sync_key_gets_exactly_one_step() {
     let (mut w, c) = world();
@@ -43,6 +44,7 @@ fn stale_sync_key_gets_exactly_one_step() {
 }
 
 // spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a token
+// spec/sync.md §5 (upload refusals), §5 (delete keys), §5 (register)
 #[test]
 fn reader_cannot_write() {
     let (mut w, c) = world();
@@ -64,6 +66,7 @@ fn reader_cannot_write() {
 }
 
 // spec/sync.md §5 Delete, spec/crypto.md §7: a token deletes only the body whose prefix commits to it, at the level it was issued for
+// spec/sync.md §5 (delete keys)
 #[test]
 fn token_deletes_only_its_own_body() {
     let (mut w, c) = world();
@@ -91,6 +94,7 @@ fn token_deletes_only_its_own_body() {
 }
 
 // spec/sync.md §5: deposits over the budget and tombstoned IDs are refused; a blob is fetched only as an entry of an opened label
+// spec/sync.md §5 (deposit refusals), §5 (download needs open)
 #[test]
 fn budget_tombstone_and_fetch_scope() {
     let (mut w, c) = world();
@@ -118,6 +122,7 @@ fn budget_tombstone_and_fetch_scope() {
 }
 
 // spec/sync.md §5: a genesis step for an existing label (another admin's) is answered with the head; only a child of the head is accepted
+// spec/sync.md §5 (register)
 #[test]
 fn registration_squatting() {
     let (mut w, c) = world();
