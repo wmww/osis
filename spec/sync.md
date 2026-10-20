@@ -70,7 +70,7 @@ Each operation names a label. Writes are signed with the role keys of the server
 A connection may subscribe to labels. The peer then pushes new log events (with blobs, wraps and stamps) as they arrive, in the cursor-reply format.
 
 ## 9. Signals
-- A signal is an envelope (spec/crypto.md §5) published under a label with a signature under its write key or its deposit key. Inside: sender node, actor, `ts`, tid, kind, optional target node, value. Sending needs write on the thing; receiving needs read; receivers verify the sender's signature and chain like a commit and drop signals whose chain they lack.
+- A signal is an envelope (spec/crypto.md §5) published under a label with a signature under its write key or its deposit key. Inside: sender node, actor, `ts`, tid, kind, optional target node, value. Sending needs write on the thing; receiving needs read; receivers verify the sender's signature and chain like a commit and drop signals whose chain they lack, or whose `ts` is more than `MAX_DRIFT` from their corrected clock (a replay).
 - A node receiving a signal forwards it to its other subscribers of that label and stores nothing. Clients do not re-forward. At most once, best effort, in order per sender per connection.
 - A signal fires the sending node's own matching listeners. A node not named as the target drops a targeted signal.
 

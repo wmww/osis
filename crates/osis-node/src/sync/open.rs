@@ -237,10 +237,8 @@ impl SyncEngine {
 
     pub(crate) fn path_steps(&mut self, conn: ConnId, l: LabelId, steps: Vec<Step>, more: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
-        lc.path.extend(steps);
         // an opened head confirmed: steps registered since the Open reply move it on
         if lc.phase == Phase::Open {
-            let steps = std::mem::take(&mut lc.path);
             for s in steps {
                 self.new_head(conn, l, s, out)?;
             }
@@ -250,15 +248,31 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        if more || lc.phase != Phase::Verifying {
+        if lc.phase != Phase::Verifying {
+            return Ok(());
+        }
+        // each page verified as it comes, so a server's bad path is never buffered (spec/sync.md
+        // §5: each step under its parent's delete key, the genesis step against the label ID)
+        let mut ok = true;
+        for s in steps {
+            ok = match lc.path.last() {
+                None => s.label == l && s.verify_genesis().is_ok(),
+                Some(p) => s.verify_child(p).is_ok(),
+            };
+            if !ok {
+                break;
+            }
+            lc.path.push(s);
+        }
+        if more && ok {
             return Ok(());
         }
         let path = std::mem::take(&mut lc.path);
         let head = lc.head.take();
         let g = lc.group;
         lc.walk = None;
-        match (osis_label::verify_path(&l, &path), head) {
-            (Ok(()), Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
+        match (ok, head) {
+            (true, Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;
                 self.accept_head(conn, l, h, out)
             }

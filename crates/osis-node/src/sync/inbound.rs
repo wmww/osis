@@ -558,6 +558,11 @@ impl SyncEngine {
         if body.target.is_some_and(|t| t != self.engine.tid()) {
             return Ok(());
         }
+        // a replay (a server or relay re-sending a captured signal later) fires nothing
+        let (now, at) = (self.engine.now().0, body.ts.wall_ms().0);
+        if at.saturating_add(osis_core::format::MAX_DRIFT_MS) < now || at > now.saturating_add(osis_core::format::MAX_DRIFT_MS) {
+            return Ok(());
+        }
         let Some(CreationRecord::KeyActor { public_key, .. }) = self.engine.core.created(&body.node).cloned() else { return Ok(()) };
         let Ok(pk) = <[u8; 32]>::try_from(public_key.as_slice()) else { return Ok(()) };
         let Ok(vk) = VerifyingKey::from_bytes(&pk) else { return Ok(()) };

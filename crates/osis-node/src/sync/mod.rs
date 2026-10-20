@@ -724,6 +724,9 @@ impl SyncEngine {
             E::EntryStatus { label, blob_ids, codes, head } => self.entry_status(conn, label, blob_ids, codes, head, out)?,
             E::DeleteStatus { label, blob_ids, codes, head } => self.delete_status(conn, label, blob_ids, codes, head, out)?,
             E::Budget { label, blob_id, code, entries_left, head, .. } => self.budget(conn, label, blob_id, code, entries_left, head, out)?,
+            // a Push names its label: one not started on this connection is junk (spec/wire.md
+            // §11.2; peer input never grows storage unasked)
+            E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("server pushed a label not opened".into()),
             E::Events { label, events, cursor } => self.log_events(Some(conn), label, events, cursor, out)?,
             E::Want { label, ids } => self.want(conn, label, ids, out)?,
             E::Synced { label } => self.synced(conn, label, out)?,
