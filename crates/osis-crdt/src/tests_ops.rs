@@ -415,6 +415,9 @@ fn put_new_register_only_spec_5_6() {
     for v in [Value::Set([Value::Int(1)].into_iter().collect()), Value::List(vec![Value::Int(1)]), Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect())] {
         let mut b = Batch::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
         assert!(b.apply(&PathOp { path: vec![], op: Op::Put(v) }, &view).is_err());
+    }
+}
+
 /// spec/commits.md §2: a reset-plus-full-state delta of a map or set split per entry gives
 /// deltas sharing the commit-level stamp whose join is the whole, each encoding on its own
 /// under the commit's range.
