@@ -147,3 +147,34 @@ fn rotation_held_before_the_removal() {
     assert!(!may_encrypt_under(&s, &v, Role::Read, &e3, &kdep, &none));
     assert!(reseal_needed(&s, &v, &[Member { member: k, role: Role::Write, until: None }], WallMs(0), &|_, _, _| true).is_empty());
 }
+
+// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M"; a
+// key actor's box keyed at a higher role carries the roles below it. A key actor K granted write
+// while another node rotated write only (not knowing the grant) keeps a box keyed at the
+// superseded write epoch carrying the current read epoch: after K leaves (`until`, self-removal)
+// that read epoch must not count as covering K.
+#[test]
+fn stale_key_actor_box_still_carries() {
+    let (a, p) = (tid(1), tid(2));
+    let pe = person(0x20);
+    let (view, base) = switched(a, p, &pe, &[]);
+    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
+    let grant = box_member(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
+    let write: BTreeSet<Role> = [Role::Write].into_iter().collect();
+    let rot = rotate(&a, &write, &view, &base, &[owner_rcpt(p, &pe)], &|_, _| true, &mut rng(7)).unwrap();
+    let (mut s, mut v) = (base.clone(), view.clone());
+    grant.apply(&mut s);
+    rot.secrets.apply(&mut s);
+    rot.record(&mut v);
+    let r0 = v.read.newest().unwrap();
+    // K's box is keyed at the superseded write epoch and still opens r0
+    let mut kv = ActorEpochs::default();
+    ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
+    assert!(kv.read.reading_secret(&r0).is_some());
+    let deps = [Departure::member(k, Role::Read)];
+    let mut held = MemoryHeldActors::default();
+    let key = s.boxes.keys().find(|x| x.member == k).unwrap().clone();
+    held.stale.insert((key, Role::Read, r0));
+    assert!(!may_encrypt_under(&s, &v, Role::Read, &r0, &deps, &held));
+    assert_eq!(rotate_first(&s, &v, &read(), &read(), &deps, &held), read());
+}

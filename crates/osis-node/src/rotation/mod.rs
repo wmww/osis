@@ -135,7 +135,48 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
         }
         h.map.insert(a, (Default::default(), e));
     }
+    // key-actor boxes keyed at a superseded epoch of a higher role still carry lower roles'
+    // secrets (a grant raced by a rotation of that role only): the covers rule counts them
+    let mut stale = BTreeSet::new();
+    for (a, (s, e)) in &h.map {
+        let knew = box_knew(tx.core, a);
+        for (k, b) in &s.boxes {
+            let osis_schema::core_types::SecretBox::Sealed(sb) = b else { continue };
+            let Ok(ke) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
+            if sb.keyset.is_some() || e.role(k.role).is_current(&ke) {
+                continue;
+            }
+            for r in ROLES.into_iter().filter(|r| *r < k.role) {
+                for ce in e.role(r).current() {
+                    if knew(k, r, &ce) {
+                        stale.insert((k.clone(), r, ce));
+                    }
+                }
+            }
+        }
+    }
+    h.stale = stale;
     Ok(h)
+}
+
+/// For the covers rule: whether the commit that wrote key-actor box `k` may have known epoch `e`
+/// of role `r` (it carries that role's newest then). Only a box written before `e` was introduced
+/// (both commits held) is known not to carry it; unknown counts as carrying (a rotation, never a
+/// leak).
+fn box_knew<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
+    let a = *a;
+    move |k: &BoxKey, r: Role, e: &Epoch| {
+        let Ok(secrets_ak) = flows::ak("/secrets") else { return true };
+        let boxed = core
+            .box_keys
+            .iter()
+            .filter(|((t, _), v)| *t == a && osis_schema::Codec::from_value(v).ok().is_some_and(|bk: BoxKey| bk == *k))
+            .filter_map(|((t, d), _)| core.commit_of(t, &secrets_ak, d))
+            .filter_map(|c| core.commits.get(&c).map(|m| m.header.ts))
+            .min();
+        let introduced = introduced_by(core, &a, r, e).map(|x| x.2);
+        !matches!((boxed, introduced), (Some(b), Some(i)) if b < i)
+    }
 }
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write

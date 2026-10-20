@@ -1043,3 +1043,33 @@ fn move_labels_copy_spec_perm_7() {
     let (copy, _) = lp.peers[0].engine.move_to(&e, &team).unwrap();
     assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }
+
+// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M"; a
+// key actor's box keyed at a higher role carries the roles below it. A node granted write with
+// `until` while another admin rotated write only (a demotion it had not seen with the grant)
+// keeps its box at the superseded write epoch, which still carries the read epoch. Once `until`
+// passes, the next writer rotates read before encrypting, and the key actor holds none of it.
+#[test]
+fn stale_key_actor_box_after_until_spec_crypto_4() {
+    let (mut lp, ps) = people(4, 521);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let n3 = lp.peers[3].engine.tid();
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
+    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None }).unwrap();
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    let r0 = newest_read(&lp, 1, t).unwrap();
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_some(), "the key actor holds the read epoch");
+    lp.advance(2 * 3_600_000);
+    let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
+    assert!(still.is_empty());
+    let r1 = newest_read(&lp, 1, t).unwrap();
+    assert_ne!(r0, r1, "read rotated: {done:?}");
+    spread(&mut lp);
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
+}
