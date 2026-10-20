@@ -9,7 +9,7 @@ use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
 use osis_core::{CommitId, Role, Tid, Value};
 use osis_crdt::{Encoding, Fragment, MemberRef};
-use osis_keys::{KeysWrite, SecretsWrite};
+use osis_keys::{KeysWrite, ROLES, SecretsWrite};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, Keys, SecretBox};
 use osis_schema::{AspectKey, Codec, Type, typed_read};
 use osis_store::Shred;
@@ -32,14 +32,82 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records the box keys of keyed `/secrets` entries (a removal names only the entry's dot).
-pub(crate) fn note_box_keys(core: &mut Core, actor: &Tid, delta: &Fragment) {
+/// Records the box keys of keyed `/secrets` entries (a removal names only the entry's dot), and
+/// for each box written the commit's time: the earliest write of the box, and the earliest of
+/// its epoch (`Core::epoch_intro`).
+pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     if let Some(m) = map(field(delta, 0)) {
-        for (d, _, k, _) in m.entries() {
-            if let Some(k) = k {
-                core.box_keys.entry((*actor, d.clone())).or_insert_with(|| k.clone());
+        for (d, _, k, f) in m.entries() {
+            let Some(k) = k else { continue };
+            core.box_keys.entry((*actor, d.clone())).or_insert_with(|| k.clone());
+            if f.is_none() {
+                continue;
+            }
+            let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
+            if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
+                note_intro(core, h, actor, bk.role, e);
+            }
+            let w = core.box_written.entry((*actor, bk)).or_insert(h.ts);
+            *w = (*w).min(h.ts);
+        }
+    }
+}
+
+/// Records for each keyset a `/keys` delta writes the commit's time as the epoch's introduction
+/// if earliest (a rotation writes the rotated roles' keysets: an epoch boxed only to key actors,
+/// keyed at a higher role, is found by it).
+pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
+    for (r, ks) in keys_write(delta).keysets {
+        if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
+            note_intro(core, h, actor, r, e);
+        }
+    }
+}
+
+/// Re-derives `epoch_intro` and `box_written` of `actors` from their valid membership-kind
+/// `/secrets` and `/keys` parts (after validity flips, and at load once validity is judged):
+/// an invalid write (a removed admin's backdated rotation) never introduces an epoch.
+pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
+    if actors.is_empty() {
+        return Ok(());
+    }
+    tx.core.touch();
+    tx.core.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
+    tx.core.box_written.retain(|(a, _), _| !actors.contains(a));
+    for a in actors {
+        for ak in ["/secrets", "/keys"] {
+            let ak = osis_core::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
+            let ids: Vec<CommitId> = tx.core.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            for id in ids {
+                let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
+                if m.header.kind != Kind::Membership {
+                    continue;
+                }
+                let Some(ai) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak == ak) else { continue };
+                if !m.valid.get(ai).copied().unwrap_or(false) {
+                    continue;
+                }
+                for d in super::held_parts(tx, &id, ai)? {
+                    if let Decoded::Delta(d) = d {
+                        if ak.as_str() == "/keys" {
+                            note_keysets(tx.core, &m.header, a, &d.fragment);
+                        } else {
+                            note_box_keys(tx.core, &m.header, a, &d.fragment);
+                        }
+                    }
+                }
             }
         }
+    }
+    tx.core.membership_changed();
+    Ok(())
+}
+
+fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
+    let v = (h.ts, h.author, h.actor);
+    let slot = core.epoch_intro.entry((*actor, r, e)).or_insert(v);
+    if v < *slot {
+        *slot = v;
     }
 }
 
@@ -122,11 +190,14 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
+        if let (Decoded::Delta(d), "/keys", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
+            note_keysets(tx.core, h, &a.tid, &d.fragment);
+        }
         if a.ak.as_str() != "/secrets" || !valid.get(*ai).copied().unwrap_or(false) {
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
-        note_box_keys(tx.core, &a.tid, &d.fragment);
+        note_box_keys(tx.core, h, &a.tid, &d.fragment);
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
@@ -142,6 +213,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
 }
 
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
+    tx.core.membership_changed();
     if let Some(e) = tx.core.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -341,11 +413,36 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
-        if tx.core.ingest_secrets(&a, &s, false) {
+        // an author whose chain is not known here shares one budget with every such author
+        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        let from = osis_keys::Unchecked { author, commit: *id };
+        let published = Core::keys_in(tx, &a)?;
+        if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new(), published.as_ref()) {
             crate::flows::save_epochs(tx, &a)?;
         }
     }
     Ok(())
+}
+
+/// Drops the reading-only secrets pending commit `id` gave: it applied (its boxes are checked
+/// now, or stripped as invalid) or was dropped (spec/crypto.md §4). An actor they were the only
+/// secrets of is left to the lost-access trigger, which drops them with what they read.
+pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let actors: Vec<Tid> = tx.core.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
+    let mut lost = Vec::new();
+    for a in actors {
+        let Some(mut e) = tx.core.secrets.get(&a).cloned() else { continue };
+        e.drop_reading_from(id);
+        // an actor left with no secret is the lost-access trigger's: it forgets what they read
+        if ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty()) {
+            lost.push(a);
+            continue;
+        }
+        tx.core.touch();
+        tx.core.secrets.insert(a, e);
+        crate::flows::save_epochs(tx, &a)?;
+    }
+    crate::rotation::mark_lost_due(tx, lost)
 }
 
 /// The `/secrets` writes of a held, not applied membership commit, per actor, decoded
@@ -381,5 +478,66 @@ impl crate::engine::Engine {
             ep.role_mut(Role::Read).set_secret(e, secret);
             crate::flows::save_epochs(tx, &g)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::engine::secrets::MAX_READING_ACTORS;
+    use crate::local_peer::LocalPeer;
+    use crate::Mutation;
+    use osis_core::{CommitId, Role, Tid, Value, WallMs};
+    use osis_crypto::{Epoch, Secret32};
+    use osis_keys::{ActorEpochs, Unchecked};
+    use osis_schema::core_types as ct;
+
+    fn reading_only(n: u8, commit: CommitId) -> ActorEpochs {
+        let mut a = ActorEpochs::default();
+        a.read.set_reading_secret(Epoch::new(1, [n; 16]).unwrap(), Secret32::from_bytes([n; 32]), Unchecked { author: Tid::from_bytes([n; 15]), commit });
+        a
+    }
+
+    // spec/crypto.md §4: boxes of pending commits are read, but the node holds a bounded number
+    // of actors through reading-only secrets alone; past it a pending grant's boxes are not read.
+    #[test]
+    fn reading_only_actors_capped_spec_crypto_4() {
+        let mut lp = LocalPeer::new(3, 907, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+        let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
+        let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        for n in 0..MAX_READING_ACTORS {
+            let n = u8::try_from(n).unwrap();
+            lp.peers[1].engine.core.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
+        }
+        // pending (the thing's `/created` is not held): its boxes are read only under the cap
+        lp.deliver(1, &p1).unwrap();
+        lp.deliver(2, &p2).unwrap();
+        assert!(!lp.peers[2].engine.pending().is_empty());
+        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.secrets.get(&t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+        assert!(held(&lp, 2), "under the cap: read");
+        assert!(!held(&lp, 1), "at the cap: not read");
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped
+    // takes its reading-only candidates; an actor they were the only secrets of is handed to
+    // the lost-access trigger, which forgets it.
+    #[test]
+    fn applied_commit_hands_reading_only_actor_to_lost_trigger_spec_crypto_4() {
+        let mut lp = LocalPeer::new(1, 908, WallMs(1_700_000_000_000)).unwrap();
+        let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
+        lp.peers[0].engine.core.secrets.insert(x, reading_only(9, c));
+        lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
+        assert!(lp.peers[0].engine.core.lost_due.contains(&x));
+        lp.peers[0].engine.drop_lost_due().unwrap();
+        assert!(lp.peers[0].engine.core.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
     }
 }

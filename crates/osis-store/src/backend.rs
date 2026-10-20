@@ -106,6 +106,33 @@ pub(crate) fn owner_only() -> std::fs::OpenOptions {
     o
 }
 
+/// Best effort: makes an existing store file (0600) or directory (0700) readable by its owner
+/// only when group or other bits are set (a store made before files were created owner-only).
+/// Never follows a symlink; the system lets only the file's owner (or a privileged user) change
+/// its mode. Returns why it could not, for a diagnostic; never fails the open. No-op off unix.
+#[cfg(feature = "file-backend")]
+pub fn restrict_to_owner(path: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let m = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => return Some(format!("{}: {e}", path.display())),
+        };
+        if m.file_type().is_symlink() || m.permissions().mode() & 0o077 == 0 {
+            return None;
+        }
+        let mode = if m.is_dir() { 0o700 } else { 0o600 };
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            return Some(format!("{} is readable by others and its mode cannot be changed: {e}", path.display()));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    None
+}
+
 /// The least key greater than every key starting with `prefix`; `None` if there is none.
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();

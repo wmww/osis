@@ -187,6 +187,8 @@ impl SyncEngine {
             };
             sends.push(Out { prio, id });
         }
+        // a replaced label with everything to hold already there (`retire_at`)
+        let quiet = replaced && sends.iter().all(|o| self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)));
         sends.sort_by_key(|o| o.prio);
         let raw = self.raw_now();
         let mut seen = BTreeSet::new();
@@ -227,6 +229,9 @@ impl SyncEngine {
         }
         let settled = unsettled.is_empty();
         self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)?;
+        if quiet && settled {
+            self.retire_at(server, &g, l)?;
+        }
         self.reseal(&g, l)?;
         Ok(())
     }
@@ -331,7 +336,7 @@ impl SyncEngine {
         Ok(bodies)
     }
 
-    fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
+    pub(crate) fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
         self.engine.group_labels(g).unwrap_or_default().iter().any(|x| x.id == *l && x.replaced)
     }
 
@@ -681,34 +686,35 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
-        for (c, ais) in self.engine.certificates(g) {
-            let mut mine: BTreeSet<usize> = BTreeSet::new();
-            let mut others: Vec<(BlobId, Vec<usize>)> = Vec::new();
+        for (c, want) in self.engine.certificates(g) {
+            // the parts entries of `c` under the label hold: this node's copies, and another
+            // node's copy or body counted as described above
+            let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
+            let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
             for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
                 let Kind::Commit { commit, parts } = &e.kind else { continue };
                 if *commit != c {
                     continue;
                 }
-                let ais = parts.iter().map(|(ai, _)| *ai);
                 if e.cert {
-                    mine.extend(ais);
+                    mine.extend(parts.iter().copied());
                 } else if !servers.is_empty()
                     && servers.iter().all(|s| self.state.is_present(s, &l, id))
                     && (!self.engine.carries_secrets(g, &c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, id, &e.wrap).is_ok()))
                 {
-                    others.push((*id, ais.collect()));
+                    others.push((*id, parts.clone()));
                 }
             }
             let mut held = mine.clone();
-            for (id, ais) in others {
+            for (id, parts) in others {
                 if self.genuine(&id) {
-                    held.extend(ais);
+                    held.extend(parts);
                 }
             }
             // what the label's closure bodies carry is never copied (a copy duplicating closure
             // parts is a strict subset others delete)
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
-            let missing: BTreeSet<usize> = ais.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
+            let missing: BTreeSet<(usize, usize)> = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the server): not
             // placed again
             if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) {
@@ -722,15 +728,16 @@ impl SyncEngine {
             let due = self.engine.core.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
                 && let Some(h) = self.engine.header(&c)
-                && (h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
+                && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
             {
                 let at = self.raw_now().saturating_add(t - now);
                 self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
                 continue;
             }
-            for b in self.engine.partial_bodies(&c, &missing)? {
+            for b in self.engine.part_bodies(&c, &missing)? {
                 self.place(g, l, &b, true)?;
             }
+            self.place_linked(l, &c, &missing)?;
             self.state.add_cert(l, c);
         }
         Ok(())
@@ -810,6 +817,10 @@ impl SyncEngine {
         let server = c.server;
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
         let (g, keys, head) = (lc.group, lc.keys.clone(), lc.head.clone());
+        // a replaced label is never stepped again (spec/sync.md §2: its replacement carries on)
+        if self.is_replaced(&g, &l) {
+            return Ok(false);
+        }
         let (Some(_), Some(write), Some(head)) = (keys.delete.clone(), keys.write.clone(), head) else { return Ok(false) };
         let Some(e) = self.engine.epochs(&g) else { return Ok(false) };
         if !osis_keys::newer_than_head(&e, keys.epochs) {

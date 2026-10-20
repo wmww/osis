@@ -327,4 +327,3 @@ fn random_delivery_converges_spec_crdt_4_1() {
         }
     }
 }
-

@@ -231,7 +231,7 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
 /// refused (a used single-use link).
 fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid) -> Res<Result<(), String>> {
     let l = sim.engine(n)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?;
-    let acts = sim.sync(n)?.follow(link.k, link.k_label, link.servers.clone());
+    let acts = sim.sync(n)?.follow(l, link.k, link.k_label, link.servers.clone());
     sim.actions(n, acts)?;
     sim.quiet(40)?;
     let r = sim.engine(n)?.redeem(link, &person, link.single_use);
@@ -279,8 +279,8 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
     // both follow K's label, then redeem before either sees the other
     for n in [x, y] {
-        sim.engine(n)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?;
-        let acts = sim.sync(n)?.follow(link.k, link.k_label, link.servers.clone());
+        let held = sim.engine(n)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?;
+        let acts = sim.sync(n)?.follow(held, link.k, link.k_label, link.servers.clone());
         sim.actions(n, acts)?;
     }
     sim.quiet(40)?;
@@ -555,8 +555,7 @@ pub fn label_replacement(seed: u64) -> Res<Report> {
 
 /// Label replacement with a member offline (spec/sync.md §2: the replacement `/label` commit
 /// stays under the old label, whose content entries the admin deletes, so a node that knows only
-/// the old label finds the new one). Fails: issues/node-sync-gaps.md (replaced labels: the old
-/// label's content entries are never deleted; the offline member does find the new label).
+/// the old label finds the new one).
 pub fn label_replacement_offline(seed: u64) -> Res<Report> {
     replacement("label_replacement_offline", seed, true)
 }

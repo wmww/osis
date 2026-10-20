@@ -9,7 +9,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
-use osis_core::{Ak, CommitId, Role, Tid, Value};
+use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::{At, Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
@@ -111,11 +111,200 @@ fn edge_ops(core: &Core, target: &Tid, f: &Fragment, dots: Dots) -> Option<Vec<E
     Some(per.into_iter().map(|(member, edge)| EdgeOp { target: *target, member, edge, dots }).collect())
 }
 
+/// Members a roster snapshot's `/members` or `/tenures` delta names (its edges or ledger
+/// entries): what a certificate copy of it is projected by (spec/permissions.md §6).
+pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {
+    match ak {
+        "/members" => entries(f)
+            .into_iter()
+            .filter_map(|(_, k, _)| match k {
+                Some(Value::Tid(m)) => Some(m),
+                _ => None,
+            })
+            .collect(),
+        "/tenures" => tenures(f).into_iter().map(|t| t.member).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The tenures a `/tenures` delta writes, each typed as a set element (a linked frontier inside
+/// it reads as its link); malformed ones are skipped.
+fn tenures(f: &Fragment) -> Vec<ct::Tenure> {
+    let Some(Value::Set(s)) = f.read() else { return Vec::new() };
+    s.into_iter().filter_map(|t| osis_schema::AspectKey::decode(&ct::TENURES, &Value::Set([t].into())).ok()).flat_map(|x| x.0).collect()
+}
+
 /// A roster snapshot's parts on one thing: roster, ledger, `/members` dots.
 type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>, Dots);
 
-/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set.
-pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+/// A roster snapshot naming one member in two `/members` deltas of a thing is bad input
+/// (spec/permissions.md §6): which one counts would depend on the deltas a node holds.
+pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    if h.kind != Kind::RosterSnapshot {
+        return Ok(());
+    }
+    let mut seen: BTreeSet<(Tid, Tid)> = BTreeSet::new();
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() != "/members" {
+            continue;
+        }
+        for m in named_members("/members", fragment(d)) {
+            if !seen.insert((a.tid, m)) {
+                return Err(Error::BadInput("a roster snapshot names a member twice"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Links of the frontiers a `/tenures` delta's tenures carry by link.
+fn tenure_links(f: &Fragment) -> Vec<osis_core::Link> {
+    tenures(f)
+        .into_iter()
+        .filter_map(|t| match t.frontier {
+            Some(osis_schema::Chunked::Link(l)) => Some(l),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Local records of linked frontiers read once (`n/` + link content hash -> the frontier's
+/// canonical bytes), so judging never depends on the tree blobs staying held.
+const FRONTIERS: &[u8] = b"n/";
+
+/// Blob reads restricted to a commit's chunk list (spec/permissions.md §6: a linked frontier's
+/// tree blobs are listed); an unlisted blob is bad input, never waited for.
+struct Listed<'t, 'a, 'l> {
+    blobs: crate::engine::blobs::TxBlobs<'t, 'a>,
+    listed: &'l BTreeSet<osis_core::BlobId>,
+}
+
+impl osis_label::BlobFetch for Listed<'_, '_, '_> {
+    fn fetch(&mut self, id: &osis_core::BlobId) -> std::result::Result<Vec<u8>, osis_label::Error> {
+        if !self.listed.contains(id) {
+            return Err(osis_label::Error::Verify("a linked frontier blob outside the commit's chunk list"));
+        }
+        self.blobs.fetch(id)
+    }
+}
+
+/// What a roster snapshot's linked tenure frontiers resolve to here.
+#[derive(Default)]
+pub(crate) struct Linked {
+    /// By link content hash.
+    pub frontiers: BTreeMap<[u8; 32], Arc<Frontier>>,
+    /// Things with a linked frontier whose blobs are not held (the commit waits, spec/commits.md
+    /// §4; already applied: kept out of perm).
+    pub waiting: BTreeSet<Tid>,
+    /// Things with a linked frontier not held whose later epoch start is applied: no wait, kept
+    /// out of perm.
+    pub superseded: BTreeSet<Tid>,
+}
+
+/// One linked frontier: from the in-memory cache, the local record, or its tree (recorded then).
+/// `Ok(None)` while a listed blob is not held. Charges its canonical bytes to `budget`.
+fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &BTreeSet<osis_core::BlobId>, budget: &mut usize) -> Result<Option<Arc<Frontier>>> {
+    let charge = |budget: &mut usize, n: usize| -> Result<()> {
+        *budget = budget.checked_sub(n).ok_or(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS"))?;
+        Ok(())
+    };
+    if let Some((f, n)) = tx.core.frontiers.get(&link.hash).cloned() {
+        charge(budget, n)?;
+        return Ok(Some(f));
+    }
+    let key = [FRONTIERS, &link.hash[..]].concat();
+    let bytes = match tx.txn.get_local(&key)? {
+        Some(b) => b,
+        None => {
+            let Some(dedup) = tx.core.dedup(tid) else { return Ok(None) };
+            let mut src = Listed { blobs: crate::engine::blobs::TxBlobs::new(&mut tx.txn), listed };
+            let mut r = osis_label::BlobReader::new(&dedup, &mut src);
+            let v = match osis_label::read_value(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, *budget) {
+                Ok(v) => v,
+                Err(osis_label::Error::Missing) => return Ok(None),
+                Err(osis_label::Error::TooLarge(_)) => return Err(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS")),
+                Err(_) => return Err(Error::BadInput("a linked frontier does not read")),
+            };
+            let b = osis_core::encode(&v);
+            tx.txn.put_local(&key, &b, osis_store::Shred::No)?;
+            b
+        }
+    };
+    charge(budget, bytes.len())?;
+    let v = osis_core::decode(&bytes, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() }).map_err(|_| Error::BadInput("a linked frontier is not canonical"))?;
+    let f = typed(&v, "frontier").and_then(|v| ct::Frontier::from_value(&v).ok()).ok_or(Error::BadInput("a linked frontier is not a frontier"))?;
+    let f = Arc::new(frontier_of(f));
+    tx.core.frontiers.insert(link.hash, (f.clone(), bytes.len()));
+    Ok(Some(f))
+}
+
+/// Resolves the linked frontiers of a roster snapshot's `/tenures` parts (spec/permissions.md
+/// §6): each distinct link (by content hash) read once, within `MAX_LINKED_FRONTIERS`.
+pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<Linked> {
+    linked_frontiers_capped(tx, h, parts, osis_core::format::MAX_LINKED_FRONTIERS)
+}
+
+pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], cap: usize) -> Result<Linked> {
+    let mut out = Linked::default();
+    if h.kind != Kind::RosterSnapshot {
+        return Ok(out);
+    }
+    let mut links: BTreeMap<[u8; 32], (Tid, osis_core::Link)> = BTreeMap::new();
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() == "/tenures" {
+            for l in tenure_links(fragment(d)) {
+                links.entry(l.hash).or_insert((a.tid, l));
+            }
+        }
+    }
+    if links.is_empty() {
+        return Ok(out);
+    }
+    let listed: BTreeSet<osis_core::BlobId> = h.chunks.iter().map(|c| c.blob).collect();
+    let mut budget = cap;
+    for (hash, (tid, l)) in links {
+        if !listed.contains(&l.blob) {
+            return Err(Error::BadInput("a linked frontier outside the commit's chunk list"));
+        }
+        match linked_frontier(tx, &tid, &l, &listed, &mut budget)? {
+            Some(f) => {
+                out.frontiers.insert(hash, f);
+            }
+            None => {
+                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.commits.get(&c)).is_some_and(|m| m.header.ts > h.ts);
+                if later {
+                    out.superseded.insert(tid);
+                } else {
+                    out.waiting.insert(tid);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A roster
+/// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
+/// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
+/// `roster_snapshot` refuses it (`Core::frontier_unknown`).
+pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    let linked = match linked_frontiers(tx, h, parts) {
+        Ok(l) => l,
+        Err(_) if tx.core.skip_writer_rules && h.author == tx.core.id.tid() => Linked::default(),
+        Err(e) => return Err(e),
+    };
+    if !linked.waiting.is_empty() {
+        let now = tx.now();
+        tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
+        tx.core.frontier_unknown.extend(linked.waiting.iter().copied());
+    }
+    add_membership_in(tx.core, h, id, parts, &linked);
+    Ok(())
+}
+
+fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], linked: &Linked) {
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && a.ak.as_str() == "/members"
@@ -159,24 +348,22 @@ pub(crate) fn add_membership(core: &mut Core, h: &Header, id: &CommitId, parts: 
                         }
                     }
                     "/tenures" => {
-                        if let Some(Value::Set(s)) = fragment(d).read() {
-                            for t in s {
-                                if let Some(t) = typed(&t, "tenure").and_then(|v| ct::Tenure::from_value(&v).ok()) {
-                                    let frontier = match t.frontier {
-                                        Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
-                                        // a linked frontier this node has not resolved audits as empty
-                                        Some(osis_schema::Chunked::Link(_)) => Some(Arc::new(Frontier::default())),
-                                        None => None,
-                                    };
-                                    e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
-                                }
-                            }
+                        for t in tenures(fragment(d)) {
+                            let frontier = match t.frontier {
+                                Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
+                                Some(osis_schema::Chunked::Link(l)) => linked.frontiers.get(&l.hash).cloned(),
+                                None => None,
+                            };
+                            e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
                         }
                     }
                     _ => {}
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
+                if linked.waiting.contains(&thing) || linked.superseded.contains(&thing) {
+                    continue;
+                }
                 core.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
             }
         }
@@ -288,47 +475,45 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !grantee_boxes_only(core, &a.tid, fragment(d), &granted) {
+        if a.ak.as_str() == "/secrets" && !crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
             core.grant_overreach.insert((*id, *ai));
+        }
+    }
+    // one delta per `/secrets` aspect, known from the signed header: a node that never holds a
+    // part (dropped by expiry or purge) judges the others as one that held it does
+    for (ai, a) in h.aspects.iter().enumerate() {
+        if a.ak.as_str() == "/secrets" && a.hashes.len() != 1 {
+            core.grant_overreach.insert((*id, ai));
         }
     }
 }
 
 /// Whether a `/secrets` delta writes only the boxes of the members `granted` puts on `actor`, at
-/// or below each one's role, and history boxes at or below the highest granted role
-/// (spec/permissions.md §2: an invite grant carries the grantee's boxes for those roles). A
-/// reset of a box entry must be of a grantee's box this node knows (a remove + put); resets of
-/// unknown entries and of history entries pass (issues/invite-grant-secrets.md).
-fn grantee_boxes_only(core: &Core, actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
+/// or below each one's role, and history boxes at or below the highest granted role, as puts
+/// only: entries this delta creates (`own` dots), no reset of the value, a field, a map or any
+/// entry (spec/permissions.md §2). Judged from
+/// the delta alone, so every node judges it alike whatever it holds.
+fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
     // a write or reset of the whole value removes every box
     if !f.is_plain_struct() {
         return false;
     }
     let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
-    let map_of = |id: u64| match st.field(id).and_then(|x| x.slot(osis_crdt::Encoding::Map)) {
-        Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) => Some(m.clone()),
-        _ => None,
-    };
     let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.member)).is_some_and(|r| k.role <= *r);
-    if let Some(m) = map_of(0) {
-        for (d, _, k, _) in m.entries() {
-            let key = match k {
-                Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
-                None => match core.box_keys.get(&(*actor, d.clone())) {
-                    Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
-                    None => continue,
-                },
-            };
-            if !key.is_some_and(|k| fits(&k)) {
-                return false;
-            }
+    for id in [0, 1] {
+        let Some(field) = st.field(id) else { continue };
+        // every entry new: created by this delta (its own dots), never a write into another's
+        if !field.is_put_only_map(&|d| own.owns(d)) {
+            return false;
         }
-    }
-    if let Some(m) = map_of(1) {
+        let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map) else { return false };
         for (_, _, k, _) in m.entries() {
-            let Some(k) = k else { continue };
-            let ok = typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t));
+            let Some(k) = k else { return false };
+            let ok = match id {
+                0 => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).is_some_and(|k| fits(&k)),
+                _ => typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t)),
+            };
             if !ok {
                 return false;
             }
@@ -351,10 +536,25 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
                 }
             }
         }
-        add_membership(tx.core, &m.header, &id, &parts);
+        add_membership(tx, &m.header, &id, &parts)?;
         any |= !tx.core.unresolved.contains(&id);
     }
     Ok(any)
+}
+
+/// Whether `t`'s owner chain is not known to end at a key actor within `MAX_OWNER_DEPTH`
+/// owner links (spec/permissions.md §1): deeper, or a creation record on it is not held (unknown
+/// counts as invalid, so forgetting a record never makes a deep delta valid). O(`MAX_OWNER_DEPTH`).
+pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
+    let mut cur = *t;
+    for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+        match core.created(&cur) {
+            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+            Some(CreationRecord::KeyActor { .. }) => return false,
+            None => return true,
+        }
+    }
+    true
 }
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
@@ -364,6 +564,11 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     }
     let Some(a) = h.aspects.get(ai) else { return false };
     let ak = a.ak.as_str();
+    // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
+    // it applies (spec/permissions.md §1); judged per delta from creation records alone
+    if ak != "/created" && too_deep(core, &a.tid) {
+        return false;
+    }
     // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline);
     // a compaction snapshot's writes are judged as their authors' when bodies are rebuilt
     if ak == "/created" || ak == "/members" || ak == "/tenures" || super::is_kind_snapshot(h.kind) {
@@ -388,10 +593,11 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
 /// flipped. Returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
-        tx.core.timelines.update(&tx.core.held);
+        tx.core.update_timelines();
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
+    let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
     let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
@@ -408,6 +614,9 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                     if x.ak.as_str() == "/secrets" {
                         secrets_flips.push((id, ai, *b));
                     }
+                    if matches!(x.ak.as_str(), "/secrets" | "/keys") {
+                        intro_flips.insert(x.tid);
+                    }
                 }
             }
             m.valid = now;
@@ -419,6 +628,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             super::rebuild(tx, tid, ak)?;
         }
     }
+    super::keys::rebuild_intro(tx, &intro_flips)?;
     for (c, ai, now_valid) in secrets_flips {
         if now_valid {
             super::keys::revalidated(tx, &c, ai)?;
@@ -550,19 +760,175 @@ mod tests {
         let grant = *done.commits.last().unwrap();
         let h = lp.peers[0].engine.header(&grant).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
-        assert!(!lp.peers[0].engine.core.grant_overreach.contains(&(grant, ai)), "an honest grant");
+        // an admin's grant writes remove + put (no exemption needed): valid as the admin's
+        assert!(lp.peers[0].engine.core.commits.get(&grant).unwrap().valid[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (bk, bx) = s.boxes.iter().find(|(k, _)| k.member == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
-        crate::flows::put_secrets(&mut m, t, &w).unwrap();
+        crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` delta carries only puts of its
+    // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)
+    // or a history box is un-merged at every node whatever the arrival order: validity depends on
+    // the delta alone.
+    #[test]
+    fn invite_grant_resets_unmerged_any_order_spec_perm_2() {
+        use osis_crdt::{Op, PathOp, PathSeg};
+        use osis_schema::Codec;
+        let mut lp = LocalPeer::new(6, 903, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a member whose box is reset
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
+        let b = tid(&mut lp, 1);
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        // a grant of e the receivers have not seen yet
+        let ge = *lp.peers[0].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
+        let ge = lp.peers[0].engine.package(&ge).unwrap().unwrap();
+        lp.deliver(1, &ge).unwrap();
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let ek = s.boxes.keys().find(|k| k.member == e).unwrap().clone();
+        let hk = s.history.keys().next().unwrap().clone();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(ek.to_value()) }).unwrap();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(hk.to_value()) }).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let bad = lp.peers[1].commit(m).unwrap().unwrap();
+        let bad = lp.peers[1].engine.package(&bad).unwrap().unwrap();
+        // receiver 3 gets the bad grant first, receiver 4 after the grant of e
+        lp.deliver(3, &bad).unwrap();
+        lp.deliver(3, &ge).unwrap();
+        lp.deliver(4, &ge).unwrap();
+        lp.deliver(4, &bad).unwrap();
+        let want = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        assert!(want.boxes.contains_key(&ek) && want.history.contains_key(&hk));
+        for r in [3, 4] {
+            assert_eq!(lp.peers[r].engine.roster(&t).get(&c).map(|x| x.role), Some(Role::Read), "the edge itself is a valid invite grant");
+            assert_eq!(lp.peers[r].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "receiver {r}");
+        }
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` entries are new, created by its own
+    // delta. A record claiming the grantee's key at another member's entry dot would merge into
+    // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
+    #[test]
+    fn invite_grant_foreign_entry_dot_rejected_spec_perm_2() {
+        use osis_crdt::{Batch, Dot, Encoding, MemberRef, Op, PathOp, PathSeg, Source, Writer};
+        use osis_schema::Codec;
+        fn box_entries(f: &osis_crdt::Fragment) -> Vec<(Dot, Option<Value>)> {
+            let Some(MemberRef::Frag(osis_crdt::Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return Vec::new() };
+            let Some(MemberRef::Frag(osis_crdt::Fragment::Map(m))) = st.field(0).and_then(|x| x.slot(Encoding::Map)) else { return Vec::new() };
+            m.entries().map(|(d, _, k, _)| (d.clone(), k.cloned())).collect()
+        }
+        let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None };
+        lp.peers[0].engine.grant(&t, &b, &read).unwrap();
+        let ak = osis_core::Ak::new("/secrets").unwrap();
+        let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
+        let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        // the admin's own box entry
+        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.member == a)?))).unwrap();
+        let bx = s.boxes.get(&a_key).unwrap().clone();
+        let g_key = ct::BoxKey { member: g, role: Role::Read, epoch: a_key.epoch.clone() };
+        let schema = osis_schema::core_schema();
+        let view = schema.view("/secrets").unwrap();
+        let ts = osis_core::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
+        let mut batch = Batch::new(&st, Writer::new(ts, Source::node(b), 1));
+        batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
+        let (d, range) = batch.finish().unwrap();
+        let own = crate::engine::Owned::Node { node: b, lo: range.lo, hi: range.hi };
+        let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
+        assert!(super::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
+        let (g_dot, _) = box_entries(&d).remove(0);
+        let mut forged = d.clone();
+        forged.map_dots(&|x| (*x == g_dot).then(|| a_dot.clone()));
+        assert_eq!(box_entries(&forged).remove(0).0, a_dot);
+        assert!(!super::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
+    }
+    // spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
+    // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at
+    // every node alike. The writer refuses such a commit.
+    #[test]
+    fn owner_chain_deeper_than_cap_invalid_spec_permissions_1() {
+        use osis_core::format::MAX_OWNER_DEPTH;
+        let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let x = osis_core::Ak::new("/x/a").unwrap();
+        let mut owner = lp.peers[0].engine.tid();
+        let mut shallow = owner;
+        for i in 0..MAX_OWNER_DEPTH {
+            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, owner);
+            m.set(t, &x, &Value::Int(1)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            if i == 0 {
+                shallow = t;
+            }
+            owner = t;
+        }
+        let at_cap = owner;
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&at_cap, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
+        // one commit writing a shallow thing and a thing one link too deep
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, owner);
+        m.set(d, &x, &Value::Int(9)).unwrap();
+        m.set(shallow, &x, &Value::Int(2)).unwrap();
+        assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        for r in [0, 1, 2] {
+            if r > 0 {
+                lp.deliver(r, &pk).unwrap();
+            }
+            assert_eq!(lp.peers[r].engine.get(&shallow, &x).unwrap(), Some(Value::Int(2)), "peer {r}");
+            assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
+        }
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` aspect is one delta (the header
+    // says so to every node), so validity never depends on which of several parts a node holds.
+    #[test]
+    fn invite_grant_secrets_one_delta_spec_perm_2() {
+        let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let done = lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap();
+        let grant = *done.commits.last().unwrap();
+        let mut h = (*lp.peers[0].engine.header(&grant).unwrap()).clone();
+        let ai = h.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
+        let core = &mut lp.peers[0].engine.core;
+        let fake = osis_core::CommitId([0xfe; 32]);
+        super::note_required(core, &h, &fake, &[]);
+        assert!(!core.grant_overreach.contains(&(fake, ai)));
+        h.aspects[ai].hashes.push([0; 32]);
+        super::note_required(core, &h, &fake, &[]);
+        assert!(core.grant_overreach.contains(&(fake, ai)), "two deltas: no exemption whatever is held");
     }
 }
 

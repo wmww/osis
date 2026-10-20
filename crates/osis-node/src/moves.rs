@@ -50,7 +50,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId) -> Result<Option<
         };
         let mut f = d.fragment;
         f.map_dots(&map);
-        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new() });
+        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false });
     }
     if deltas.is_empty() {
         return Ok(None);

@@ -132,6 +132,19 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
     Ok(step.label)
 }
 
+/// Whether `group`'s newest admin epoch is one a step of `label` registers (its delete key).
+fn admin_registered(tx: &mut Tx<'_>, group: &Tid, label: &ct::Label) -> Result<bool> {
+    let Some(epochs) = tx.core.epochs(group) else { return Ok(false) };
+    let Some((newest, _)) = epochs.role(Role::Admin).newest_held() else { return Ok(false) };
+    for (step, _) in label_steps(label)?.values() {
+        let key = step.keys.get(osis_keys::label_role(Role::Admin));
+        if osis_keys::registered_epoch(epochs.role(Role::Admin), Role::Admin, label.index, key) == Some(newest) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
     Ok(tx.state(group, &ak("/label")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default())
 }
@@ -204,6 +217,42 @@ impl Engine {
             Ok(Some((step, set)))
         })?;
         Ok((step, done))
+    }
+
+    /// Replaces label `old` of `group` (spec/sync.md §2; an admin), in one transaction: rotates
+    /// the admin secret first when the newest admin epoch is one a step of the old label
+    /// registers (whoever took the label may hold it; a plain group gets secrets of its own),
+    /// then writes a new label one index above the highest at the old label's servers and marks
+    /// the old one replaced, in one commit. node-sync uploads the live blobs under the new label
+    /// and deletes the old label's content entries.
+    pub fn replace_label(&mut self, group: &Tid, old: &LabelId) -> Result<(LabelId, Done)> {
+        let (g, o) = (*group, *old);
+        self.run(|tx| {
+            let me = tx.core.id.tid();
+            if tx.core.role_now(&me, &g) != Some(Role::Admin) {
+                return Err(Error::Permission { tid: g });
+            }
+            let rec = labels_of(tx, &g)?.get(&o).cloned().ok_or(Error::Misuse("no such label"))?;
+            let mut done = Done::default();
+            rotation::require_covered(tx, me, g, &ROLES.into_iter().collect(), &mut done)?;
+            if admin_registered(tx, &g, &rec)? {
+                if tx.core.has_own_secrets(&g) {
+                    done.extend(rotation::rotate_now(tx, me, g, &[Role::Admin].into_iter().collect())?);
+                } else {
+                    rotation::own_secrets(tx, g, &mut done)?;
+                }
+            }
+            let epochs = tx.core.epochs(&g).ok_or(Error::Misuse("no secrets held for the group"))?;
+            let deposit = deposit_seed(tx, &g)?;
+            let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
+            let rs = readers(tx, &g, &re)?;
+            let mut m = Mutation::new();
+            let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.servers)?;
+            let path = vec![PathSeg::Key(o.to_value()), PathSeg::Field(3)];
+            m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(Value::Bool(true)) })?;
+            done.add(Engine::commit_tx(tx, m)?);
+            Ok((id, done))
+        })
     }
 
     /// The newest label of `group` with its servers.
