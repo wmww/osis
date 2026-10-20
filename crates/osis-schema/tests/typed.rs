@@ -64,6 +64,7 @@ fn new_reads_old_with_reader_defaults_spec_versioning_5() {
     assert_eq!(r, Value::List(vec![full]));
 }
 
+// spec/versioning.md §5 (typed read fails)
 #[test]
 fn typed_read_errors_carry_paths_spec_versioning_5() {
     let (v1, v2) = (schema(1, V1), schema(2, V2));
@@ -169,6 +170,7 @@ fn view_projects_onto_writer_schema_spec_crdt_9() {
     assert_eq!(c.element().unwrap().project(&Value::Int(4)).unwrap().into_owned(), Value::Int(4));
 }
 
+// spec/data-model.md §6 (chunk threshold)
 #[test]
 fn large_atomic_positions_spec_data_model_6() {
     let sc = schema(1, "aspect /n/a: struct { 0 b: blob, 1 t: text, 2 s: set<string>, 3 m: map<blob, string>, 4 x: any };");

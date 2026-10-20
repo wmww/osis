@@ -36,6 +36,7 @@ fn deaths_and_bounds_spec_commits_5() {
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
 // transaction that applies the kill (live state unchanged; a deletion for blind nodes queued);
 // a dropped body cannot be undone (§7).
+// spec/commits.md §5 (keep at most)
 #[test]
 fn keep_at_most_zero_spec_commits_5() {
     let mut lp = net(2, 52);

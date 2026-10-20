@@ -241,6 +241,7 @@ fn link_holders_tie_broken_by_commit_id() {
 
 /// §2 invite power: an invite holder cannot remove, demote or change others, raise itself, or
 /// grant above its invite; it can add an actor without an edge.
+// spec/permissions.md §2 (invite scope)
 #[test]
 fn invite_holder_limits() {
     let (_, n, _) = link(None);

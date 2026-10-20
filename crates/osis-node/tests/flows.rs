@@ -157,6 +157,7 @@ fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
 // spec/permissions.md §2, §3; spec/sync.md §3: a grant gives the thing secrets of its own
 // first, carries the grantee's boxes, and reaches the grantee's devices as an inbox blob,
 // whose acceptance yields a certificate copy for the grantee's home label.
+// spec/permissions.md §2 (edge inbox delivery): grants
 #[test]
 fn grant_by_inbox_spec_perm_2() {
     let (mut lp, ps) = people(2, 502);
@@ -205,6 +206,7 @@ fn grant_carries_history_spec_crypto_4() {
 
 // spec/permissions.md §3; spec/commits.md §2: a removal and the target's rotation are one
 // commit; the removed member holds no secret of the new epoch and drops what it lost.
+// spec/crypto.md §4 (removed member), spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn removal_rotates_spec_perm_3() {
     let (mut lp, ps) = people(3, 503);
@@ -236,6 +238,7 @@ fn removal_rotates_spec_perm_3() {
 
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot
 // change or remove anyone else; a member leaves by self-removal.
+// spec/permissions.md §2 (invite scope)
 #[test]
 fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3, 504);
@@ -271,6 +274,7 @@ fn invite_power_spec_perm_2() {
 // notes/permissions.md Revocation; spec/permissions.md §5.1, §5.2: the demoter's frontier,
 // from its receipt record, keeps the edits it received and drops the demoted member's edits
 // it never saw (made before) and those made after.
+// spec/permissions.md §5.1 (frontier received)
 #[test]
 fn demotion_frontier_spec_perm_5_1() {
     const DAY: u64 = 86_400_000;
@@ -714,6 +718,7 @@ fn unheld_member_judged_by_keyset_spec_crypto_4() {
 // spec/permissions.md §3: o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may
 // not rotate K1, and a rotation of C would still box K1 at the uncovered epoch: it does not
 // rotate C (stranded on C until K1 rotates), however often it is asked.
+// spec/permissions.md §3 (required rotation)
 #[test]
 fn no_rotation_that_cannot_cover_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
@@ -816,6 +821,7 @@ fn roster_snapshot_spec_perm_6() {
 
 // spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
 // its members on the copy and points the old thing at it; a second move is refused.
+// spec/permissions.md §7 (one import)
 #[test]
 fn move_regrants_spec_perm_7() {
     let (mut lp, ps) = people(2, 516);

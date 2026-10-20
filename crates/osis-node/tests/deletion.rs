@@ -84,6 +84,7 @@ fn compaction_then_deletion_spec_sync_7() {
 // heartbeat): an admin rotating out a member issues a child step at the server after uploading
 // the rotation commit; the remaining writer follows; the removed member's open walks to the new
 // step, its claim is refused and it places a stranded heartbeat by deposit.
+// spec/permissions.md §4 (stranded heartbeat), spec/crypto.md §4 (removed member)
 #[test]
 fn reregistration_after_rotation_spec_sync_5() {
     let mut net = Net::new();

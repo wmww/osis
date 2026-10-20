@@ -28,6 +28,7 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_core::LabelId, c: &osis_core::Comm
 // spec/crypto.md §4, spec/permissions.md §3: a member's `until` passes; before this node next
 // wraps under the group's read epoch it rotates (flows' cascade), so the departed member cannot
 // read what comes after.
+// spec/crypto.md §4 (encrypt under covering epoch), spec/permissions.md §3 (required rotation)
 #[test]
 fn rotates_before_wrapping_after_until_spec_crypto_4() {
     let mut net = Net::new();
