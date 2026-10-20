@@ -386,7 +386,8 @@ impl SyncEngine {
     /// checked once the applied header is resolved, before the entry counts as holding its
     /// body; a disagreeing blob is bad input (`Kind::Bad`) and the body is judged missing there.
     fn check_linked_prefixes(&mut self, l: LabelId) -> Result<()> {
-        let todo: Vec<(BlobId, CommitId, Vec<(usize, usize)>)> = self
+        type Parts = Vec<(usize, usize)>;
+        let todo: Vec<(BlobId, CommitId, Parts)> = self
             .state
             .entries
             .range((l, BlobId([0; 32]))..)

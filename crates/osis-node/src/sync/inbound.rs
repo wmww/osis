@@ -463,7 +463,8 @@ impl SyncEngine {
     /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md
     /// §5); while one does, its prefix salt makes its chunk token.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
-        if self.state.blobs.contains_key(b) || self.state.entries.keys().any(|(_, x)| x == b) || !self.dropped_chunks().contains_key(b) {
+        // cheapest first: commit blobs have their own record, most deleted bytes are gone already
+        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || !self.dropped_chunks().contains_key(b) || self.state.entries.keys().any(|(_, x)| x == b) {
             return Ok(());
         }
         let id = *b;

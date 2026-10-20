@@ -314,7 +314,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
     for i in 0..800 {
-        m.set(t, &Ak::new(&format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+        m.set(t, &Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
     }
     let c = net.engine(a).commit(m).unwrap().unwrap();
     let h = net.engine(a).header(&c).unwrap();
