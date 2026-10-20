@@ -143,7 +143,7 @@ fn large_value_spec_dm_6() {
     assert_eq!(lp.peers[1].engine.get_full(&t, &ak("/t/blob")).unwrap(), Some(Value::Bytes(data)));
 }
 
-// notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct
+// spec/crdt.md §4.1, §8; notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct
 // aspect is paged too (the struct's other fields in the unit's skeleton). Path edits into the
 // map, edits of the other field, a restart, and a second writer's concurrent edits: reads and
 // canonical states agree with a model and across peers.

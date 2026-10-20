@@ -154,7 +154,8 @@ fn restart_keeps_state() {
     assert_eq!(h.aspects[0].lo, 2);
 }
 
-// notes/local-store.md, Units: a large state is kept as pages and an edit rewrites only the pages
+// spec/crdt.md §4.1, §8 (a large state pages; the join of its pages is the state); notes/local-store.md,
+// Units: a large state is kept as pages and an edit rewrites only the pages
 // it touched; spec/requirements.md, Scale (a change inside a huge value costs O(change)). Seeded
 // random puts, removals and bulk inserts (page splits) into a paged map and a paged set, checked
 // against a model across restarts, plus an undo of an edit inside the paged map.

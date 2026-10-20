@@ -57,7 +57,7 @@ fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
 }
 
-// spec/requirements.md, Scale: maps with millions of keys; a change inside a huge value costs
+// spec/crdt.md §8; spec/requirements.md, Scale: maps with millions of keys; a change inside a huge value costs
 // O(change). Measures one map entry edit at 10^4..10^6 keys: bytes the engine writes to the
 // store and the commit it produces. `OSIS_SCALE_MAX` caps the size (default 10^6).
 #[test]
