@@ -1,9 +1,0 @@
-# A writer that has not seen a removal wraps new content under the removed member's epoch
-> Summary: `removed_replayer` fails 14 of seeds 1..50 (main: 13): a body an honest writer committed more than 1 s after the removal (by its `ts`) is wrapped under an epoch the removed member holds, so colluding with the server the ex-member reads it. The writer had not received the removal yet; the scenario's oracle assumes it had.
-> Tags: security, sync, tests
-
-Repro: `osis_sim::replay("removed_replayer", 2)` (sweep: `sim-sweep --seeds 50 --only removed_replayer`).
-
-- Seeds on this branch: 2, 4, 6, 11, 12, 22, 26, 27, 29, 34, 37, 39, 42, 44; on main: 4, 12, 24, 27, 28, 29, 31, 33, 35, 36, 44, 47, 49 (`osis_sim::replay("removed_replayer", 2)`). Seed 2: author is writer b, the admin holds epoch 3, the removed member epochs 0..2; b's commit is 22 s after the removal under a lossy network.
-- Spec reading: a writer encrypts under the newest epoch it holds; a removal it has not received cannot be honoured (spec/requirements.md, Out of scope bounds what an ex-member gets: content sealed before the removal *as seen by the sealer*). So either the oracle is too strict (judge by whether the sealing node had applied the removal when it wrapped, not by `ts`), or the requirement wants writers to sync before sealing after a reconnect.
-- Recommendation: make the oracle compare against the writer's knowledge (the sim can record when each node applied the removal), and keep the stricter question for the owner if needed.

@@ -101,7 +101,7 @@ impl SyncEngine {
                     v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
                 }
             }
-            v.extend(self.static_tries());
+            v.extend(self.static_tries().into_iter().map(|(_, x)| x));
             return (None, v);
         };
         let index = gl.index;
@@ -131,13 +131,16 @@ impl SyncEngine {
                 }
             }
         }
-        v.extend(self.static_tries());
+        // a key actor's signing key goes only where it is listed: elsewhere it would link labels
+        // and name the key to the server
+        let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        v.extend(self.static_tries().into_iter().filter(|(t, _)| members.contains_key(t)).map(|(_, x)| x));
         (Some(index), v)
     }
 
-    /// Static-entry opens for the key actors this node holds that are not nodes.
-    fn static_tries(&self) -> Vec<Try> {
-        self.engine.core.key_actors.values().map(|id| Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() }).collect()
+    /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
+    fn static_tries(&self) -> Vec<(Tid, Try)> {
+        self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
     /// Follows a label known only by ID and servers (a recovery card's home label, a link's
@@ -237,10 +240,8 @@ impl SyncEngine {
 
     pub(crate) fn path_steps(&mut self, conn: ConnId, l: LabelId, steps: Vec<Step>, more: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
-        lc.path.extend(steps);
         // an opened head confirmed: steps registered since the Open reply move it on
         if lc.phase == Phase::Open {
-            let steps = std::mem::take(&mut lc.path);
             for s in steps {
                 self.new_head(conn, l, s, out)?;
             }
@@ -250,15 +251,31 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        if more || lc.phase != Phase::Verifying {
+        if lc.phase != Phase::Verifying {
+            return Ok(());
+        }
+        // each page verified as it comes, so a server's bad path is never buffered (spec/sync.md
+        // §5: each step under its parent's delete key, the genesis step against the label ID)
+        let mut ok = true;
+        for s in steps {
+            ok = match lc.path.last() {
+                None => s.label == l && s.verify_genesis().is_ok(),
+                Some(p) => s.verify_child(p).is_ok(),
+            };
+            if !ok {
+                break;
+            }
+            lc.path.push(s);
+        }
+        if more && ok {
             return Ok(());
         }
         let path = std::mem::take(&mut lc.path);
         let head = lc.head.take();
         let g = lc.group;
         lc.walk = None;
-        match (osis_label::verify_path(&l, &path), head) {
-            (Ok(()), Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
+        match (ok, head) {
+            (true, Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;
                 self.accept_head(conn, l, h, out)
             }
