@@ -99,21 +99,21 @@ fn two_hop_departure() {
 
     // D holds P's old secrets; following the chain it opens nothing new.
     let mut dp = ActorEpochs::default();
-    ingest(&p.tid, &p.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp).unwrap();
-    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp).unwrap();
+    ingest(&p.tid, &p.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp, true).unwrap();
+    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp, true).unwrap();
     assert!(dp.read.secret(&p2.view.read.newest().unwrap()).is_none());
     let mut dtv = ActorEpochs::default();
-    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &dp }, &mut dtv).unwrap();
+    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &dp }, &mut dtv, true).unwrap();
     assert!(dtv.read.secret(&t2.view.read.newest().unwrap()).is_none());
     let mut du = ActorEpochs::default();
-    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &dtv }, &mut du).unwrap();
+    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &dtv }, &mut du, true).unwrap();
     assert!(du.read.secret(&u2.view.read.newest().unwrap()).is_none());
     // The remaining device follows the same chain to U's new epoch.
     let mut d2p = ActorEpochs::default();
-    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: d2t, seed: &d2seed }, &mut d2p).unwrap();
+    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: d2t, seed: &d2seed }, &mut d2p, true).unwrap();
     let mut d2tv = ActorEpochs::default();
-    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &d2p }, &mut d2tv).unwrap();
+    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &d2p }, &mut d2tv, true).unwrap();
     let mut d2u = ActorEpochs::default();
-    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &d2tv }, &mut d2u).unwrap();
+    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &d2tv }, &mut d2u, true).unwrap();
     assert!(d2u.read.secret(&u2.view.read.newest().unwrap()).is_some());
 }

@@ -197,7 +197,11 @@ fn grant_carries_history_spec_crypto_4() {
     assert!(want.len() >= 2, "derived epoch and own epoch");
     let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
     lp.peers[1].engine.accept_inbox(blob).unwrap();
-    assert_eq!(held(&lp, 1), want, "from the pending grant");
+    // from the pending grant for reading only (spec/crypto.md §4: never encrypted under until
+    // an applied valid box carries it)
+    let reading: BTreeSet<osis_crypto::Epoch> = lp.peers[1].engine.epochs(&d).unwrap().read.held_newest_first().into_iter().map(|x| x.0).collect();
+    assert_eq!(reading, want, "from the pending grant");
+    assert!(held(&lp, 1).is_empty());
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(held(&lp, 1), want);

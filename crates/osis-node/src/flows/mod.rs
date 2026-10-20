@@ -315,7 +315,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         for a in actors {
             let s = secrets_in(tx, &a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s) {
+            if tx.core.ingest_secrets(&a, &s, true) {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }
@@ -333,7 +333,7 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         for a in &actors {
             let s = secrets_in(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s) {
+            if tx.core.ingest_secrets(a, &s, true) {
                 save_epochs(tx, a)?;
                 any = true;
             }

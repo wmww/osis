@@ -83,7 +83,7 @@ fn own_secrets_switch() {
     let mut me = w.me.clone();
     let mut ma = ActorEpochs::default();
     // M opens with its own role secrets: Opener::Actor over M's epochs.
-    let errs = ingest(&w.a, &s, &Opener::Actor { member: w.m, epochs: &me }, &mut ma).unwrap();
+    let errs = ingest(&w.a, &s, &Opener::Actor { member: w.m, epochs: &me }, &mut ma, true).unwrap();
     assert!(errs.is_empty(), "{errs:?}");
     // Opening establishes nothing; applying the rotation commit does (spec/crypto.md §4).
     assert!(ma.read.current().is_empty());
@@ -95,18 +95,18 @@ fn own_secrets_switch() {
     assert!(ma.write.held().next().is_none());
     me.read = Default::default();
     let mut none = ActorEpochs::default();
-    ingest(&w.a, &s, &Opener::Actor { member: w.m, epochs: &me }, &mut none).unwrap();
+    ingest(&w.a, &s, &Opener::Actor { member: w.m, epochs: &me }, &mut none, true).unwrap();
     assert!(none.read.held().next().is_none());
 
     let mut la = ActorEpochs::default();
-    ingest(&w.a, &s, &Opener::KeyActor { member: w.l, seed: &w.lseed }, &mut la).unwrap();
+    ingest(&w.a, &s, &Opener::KeyActor { member: w.l, seed: &w.lseed }, &mut la, true).unwrap();
     applied(&mut la);
     assert_eq!(la.read.newest_held().unwrap().0, e(Role::Read));
     assert_eq!(la.write.newest_held().unwrap().0, e(Role::Write));
     assert!(la.admin.held().next().is_none());
 
     let mut pa = ActorEpochs::default();
-    ingest(&w.a, &s, &Opener::Actor { member: w.p, epochs: &w.pe }, &mut pa).unwrap();
+    ingest(&w.a, &s, &Opener::Actor { member: w.p, epochs: &w.pe }, &mut pa, true).unwrap();
     applied(&mut pa);
     for r in ROLES {
         assert_eq!(pa.role(r).newest_held().unwrap().0, e(r));
@@ -161,7 +161,7 @@ fn fork_merge() {
     for rot in [&x, &y] {
         rot.secrets.applied(&mut ma, (&rot.keys, &k1)).unwrap();
     }
-    ingest(&w.a, &s1, &Opener::Actor { member: w.m, epochs: &w.me }, &mut ma).unwrap();
+    ingest(&w.a, &s1, &Opener::Actor { member: w.m, epochs: &w.me }, &mut ma, true).unwrap();
     let mut cur = vec![ex, ey];
     cur.sort();
     assert_eq!(ma.read.current(), cur);
@@ -181,7 +181,7 @@ fn fork_merge() {
     assert!(!s3.boxes.keys().any(|k| k.role == Role::Read && (k.epoch == osis_keys::aspects::to_schema(&ex) || k.epoch == osis_keys::aspects::to_schema(&ey))));
     // A member that only gets the newest box reaches every earlier read secret by history.
     let mut fresh = ActorEpochs::default();
-    ingest(&w.a, &s3, &Opener::Actor { member: w.m, epochs: &w.me }, &mut fresh).unwrap();
+    ingest(&w.a, &s3, &Opener::Actor { member: w.m, epochs: &w.me }, &mut fresh, true).unwrap();
     // Holding s3 as a compaction snapshot establishes what it keys; history supersedes the rest.
     assert!(osis_keys::snapshot_keyed(&s3, &mut fresh).unwrap());
     for e in [ex, ey, r1.rotated[0].epoch, ep(1, 0x20)] {
