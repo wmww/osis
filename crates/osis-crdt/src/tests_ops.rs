@@ -103,18 +103,11 @@ proptest! {
         mw.next_commit(81 << 16);
         let Some(md) = random_op(&mut r, &mut mw, &ty, Some(&ms)) else { return Ok(()) };
         let s0 = frag(&ms);
-        // undo restores values, not absence: a register cannot be written "absent" and a
-        // collection emptied by an undo stays present (§4.3, §4.6); only fully present states
-        let Some(Value::Map(fields)) = s0.read() else { return Ok(()) };
-        let Ty::Struct(tf) = &ty else { return Ok(()) };
-        if fields.len() != tf.len() {
-            return Ok(());
-        }
         let d = frag(&md);
-        // nor where the delta writes into a nested position the pre-commit state lacks
-        if !present_along(Some(&s0), &d) {
-            return Ok(());
-        }
+        // undo restores values, not absence: a register cannot be written "absent" and a
+        // collection emptied by an undo stays present (§4.3, §4.6), so what lands in positions
+        // the pre-commit state lacks is not compared
+        let cmp = |s: &Fragment| strip_absent(Some(&s0), &d, read(s));
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
@@ -125,12 +118,12 @@ proptest! {
         let mut w2 = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
         prop_assert_eq!(undo(&mut w2, &u, &s1, &s0.footprint(&d), &TyView(ty.clone())).unwrap(), full.clone());
         let Some(ud) = full else {
-            prop_assert_eq!(read(&s1), read(&s0));
+            prop_assert_eq!(cmp(&s1), cmp(&s0));
             return Ok(());
         };
         let mut s2 = s1.clone();
         s2.join(ud);
-        prop_assert_eq!(read(&s2), read(&s0));
+        prop_assert_eq!(cmp(&s2), cmp(&s0));
     }
 
     /// notes/api.md `edit`: the value diff applied to the base reaches the new value, and a
@@ -157,22 +150,40 @@ proptest! {
     }
 }
 
-/// Whether every position `d` writes into without resetting it is present in `s` (undo cannot
-/// write absence there, §4.6).
-fn present_along(s: Option<&Fragment>, d: &Fragment) -> bool {
-    if d.meta().is_some_and(|m| m.reset.is_some()) {
-        return true;
-    }
-    let Some(s) = s.filter(|s| s.present()) else { return false };
-    match (s.chosen(), d) {
-        (Fragment::Struct(x), Fragment::Struct(y)) => y.fields.iter().all(|(id, f)| present_along(x.fields.get(id), f)),
-        (Fragment::Enum(x), Fragment::Enum(y)) => y.case.is_some() || y.payloads.iter().all(|(id, f)| present_along(x.payloads.get(id), f)),
-        // a nested edit goes into an entry the state holds; other entries are creations
-        (Fragment::Map(x), Fragment::Map(y)) => y.entries.iter().all(|(dot, e)| match (&e.frag, x.entries.get(dot)) {
-            (Some(f), Some(xe)) => present_along(xe.frag.as_deref(), f),
-            _ => true,
-        }),
-        _ => true,
+/// Read `v` of a state without the positions `d` writes into that are absent in `s`: undo
+/// restores values, not absence (§4.6), so what it leaves there is not compared.
+fn strip_absent(s: Option<&Fragment>, d: &Fragment, v: Option<Value>) -> Option<Value> {
+    let s = s.filter(|s| s.present())?;
+    match (s.chosen(), d, v?) {
+        (Fragment::Struct(x), Fragment::Struct(y), Value::Map(mut m)) => {
+            for (id, f) in &y.fields {
+                let k = Value::Int(*id as i64);
+                let sub = m.remove(&k);
+                if let Some(sv) = strip_absent(x.fields.get(id), f, sub) {
+                    m.insert(k, sv);
+                }
+            }
+            Some(Value::Map(m))
+        }
+        (Fragment::Enum(x), Fragment::Enum(y), Value::Enum(c, p)) if y.case.is_none() => {
+            let p = match y.payloads.get(&c) {
+                Some(f) => strip_absent(x.payloads.get(&c), f, p.map(|b| *b)).map(Box::new),
+                None => p,
+            };
+            Some(Value::Enum(c, p))
+        }
+        (Fragment::Map(x), Fragment::Map(y), Value::Map(mut m)) => {
+            for (dot, e) in &y.entries {
+                let (Some(f), Some(xe)) = (&e.frag, x.entries.get(dot)) else { continue };
+                let Some(k) = xe.key.clone() else { continue };
+                let sub = m.remove(&k);
+                if let Some(sv) = strip_absent(xe.frag.as_deref(), f, sub) {
+                    m.insert(k, sv);
+                }
+            }
+            Some(Value::Map(m))
+        }
+        (_, _, v) => Some(v),
     }
 }
 
@@ -438,5 +449,78 @@ fn put_new_register_only_spec_5_6() {
     for v in [Value::Set([Value::Int(1)].into_iter().collect()), Value::List(vec![Value::Int(1)]), Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect())] {
         let mut b = Batch::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
         assert!(b.apply(&PathOp { path: vec![], op: Op::Put(v) }, &view).is_err());
+    }
+}
+
+/// Two writers' concurrent puts of key `k` (two live entries), joined in either order.
+fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
+    let view = TyView(ty);
+    let (na, nb) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let k = Value::Str("k".into());
+    let st = |a: (u64, &str)| Value::Map([(Value::Int(a.0 as i64), Value::Str(a.1.into()))].into_iter().collect());
+    let mut w = Writer::new(ts(1 << 16), na.clone(), 1);
+    let base = create(&mut w, &view, &Value::Map(Default::default())).unwrap();
+    let put = |w: Writer, v: Value| {
+        let mut b = Batch::new(&base, w);
+        b.apply(&PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v) }, &view).unwrap();
+        b.finish().unwrap().0
+    };
+    let da = put(Writer::new(ts(2 << 16), na, 10), st((1, "a")));
+    let db = put(Writer::new(ts(2 << 16), nb, 1), st((2, "b")));
+    let both = Value::Map([(k.clone(), Value::Map([(Value::Int(1), Value::Str("a".into())), (Value::Int(2), Value::Str("b".into()))].into_iter().collect()))].into_iter().collect());
+    [(&da, &db), (&db, &da)]
+        .into_iter()
+        .map(|(x, y)| {
+            let mut s = base.clone();
+            s.join(x.clone());
+            s.join(y.clone());
+            assert_eq!(s.read(), Some(both.clone()));
+            (TyView(view.0.clone()), s, both.clone())
+        })
+        .collect()
+}
+
+/// Commits `op` on `s` as node 1 at ts 5, undoes it (full state and footprint as the buffer);
+/// returns the undo delta and the state after it.
+fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragment, Fragment) {
+    let node = Source::node(Tid::from_bytes([1; 15]));
+    let mut b = Batch::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
+    b.apply(&op, view).unwrap();
+    let (d, range) = b.finish().unwrap();
+    let mut s1 = s.clone();
+    s1.join(d.clone());
+    let u = Undone { delta: &d, source: &node, range, restored: &|_| false };
+    let ud = undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, s, view).unwrap().unwrap();
+    assert_eq!(undo(&mut Writer::new(ts(6 << 16), node.clone(), 40), &u, &s1, &s.footprint(&d), view).unwrap().as_ref(), Some(&ud));
+    let mut s2 = s1.clone();
+    s2.join(ud.clone());
+    (s1, ud, s2)
+}
+
+/// §4.6: removing a key two writers put concurrently and undoing it re-adds the key as one
+/// entry holding the joined value, in either join order.
+#[test]
+fn undo_remove_of_concurrent_key_spec_4_6() {
+    for (view, s, both) in concurrent_key() {
+        let (s1, ud, s2) = commit_and_undo(&view, &s, PathOp { path: vec![], op: Op::Remove(Value::Str("k".into())) });
+        assert_eq!(s1.read(), Some(Value::Map(Default::default())));
+        let Fragment::Map(m) = &ud else { panic!("map") };
+        assert_eq!(m.entries.values().filter(|e| e.key == Some(Value::Str("k".into()))).count(), 1);
+        assert_eq!(s2.read(), Some(both));
+    }
+}
+
+/// §4.6, §5.6: an edit into a key with two live entries goes to the lowest one; undoing it
+/// restores what the key read before (the join of its entries), in either join order.
+#[test]
+fn undo_edit_of_concurrent_key_spec_4_6() {
+    for (view, s, both) in concurrent_key() {
+        for field in [1, 2] {
+            let path = vec![PathSeg::Key(Value::Str("k".into())), PathSeg::Field(field)];
+            let (s1, _, s2) = commit_and_undo(&view, &s, PathOp { path, op: Op::Set(Value::Str("c".into())) });
+            assert_ne!(s1.read(), Some(both.clone()));
+            assert_eq!(s2.read(), Some(both.clone()), "field {field}");
+        }
     }
 }
