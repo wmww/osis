@@ -41,6 +41,14 @@ pub(crate) struct Feed {
     grown: BTreeSet<LabelId>,
 }
 
+impl Feed {
+    /// Forgets a label's log (this node no longer reads it).
+    pub(crate) fn forget(&mut self, l: &LabelId) {
+        self.labels.remove(l);
+        self.grown.remove(l);
+    }
+}
+
 #[derive(Default)]
 struct LabelLog {
     recs: VecDeque<(u64, LogRecord)>,

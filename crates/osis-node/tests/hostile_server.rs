@@ -256,7 +256,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (e1, &read), &mut SeededRng::from_u64(10)).unwrap();
     let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key };
     let item = osis_crypto::BoxItem { role: Role::Read, epoch: e1, secret: Secret32::from_bytes([0x99; 32]) };
-    let sealed = osis_crypto::seal_box(&keys.kem.public(), &slot, None, &[item], &mut SeededRng::from_u64(11)).unwrap();
+    let sealed = osis_crypto::seal_box(keys.kem.public(), &slot, None, &[item], &mut SeededRng::from_u64(11)).unwrap();
     use osis_schema::core_types as ct;
     let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
     let target = head.label;
@@ -398,4 +398,77 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let entries = net.sync(b).entries(&l);
     assert!(entries.iter().any(|(x, k)| *x == id && *k == osis_node::sync::EntryKind::Bad), "the forged blob is bad input");
     assert!(entries.iter().any(|(x, k)| *x != id && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)), "a writer placed its own encryption");
+}
+
+/// Junk entries under `l`, unstamped or stamped with `stamp_key`, each `tag`-distinct.
+fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecret>) -> (Vec<osis_core::BlobId>, Message) {
+    let blobs: Vec<Vec<u8>> = (0..n).map(|i| vec![tag, i, 7, 7]).collect();
+    let ids = blobs.iter().map(|b| osis_label::blob_id(b)).collect();
+    let events = blobs
+        .iter()
+        .map(|b| {
+            let id = osis_label::blob_id(b);
+            let wrap = [tag; 49];
+            osis_proto::Event::Added { blob_id: id, blob: Some(b.clone()), wrap, stamp: stamp_key.map(|k| osis_label::sign_stamp(k, l, &id, &wrap)) }
+        })
+        .collect();
+    (ids, Message::Push { label: *l, events, cursor: Cursor { log_id: [tag; 16], seq: 1 << 40 } })
+}
+
+// spec/requirements.md ("nothing trusts a server's word"; peer input never causes unbounded
+// storage): the cap on unvouched entries counts per server, so one server's junk does not evict
+// what another server announces
+#[test]
+fn unvouched_cap_per_server_spec_sync_3() {
+    let mut net = Net::new();
+    let (s1, s2) = (net.add_server(), net.add_server());
+    let cfg = osis_node::sync::SyncConfig { servers: vec![net.address(s1), net.address(s2)], unvouched_cap: 8, ..Default::default() };
+    let a = net.add_node(1, cfg);
+    let g = net.group(a, &[], &[s1, s2]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let (c1, c2) = (net.conn_to(a, s1).expect("s1"), net.conn_to(a, s2).expect("s2"));
+    let (_, flood) = junk(&l, 1, 40, None);
+    net.feed(a, Event::Bytes { conn: c1, bytes: frame(flood) });
+    net.settle(10_000);
+    let (ids, other) = junk(&l, 2, 1, None);
+    net.feed(a, Event::Bytes { conn: c2, bytes: frame(other) });
+    net.settle(10_000);
+    assert!(net.sync(a).entries(&l).iter().any(|(b, _)| *b == ids[0]), "s2's entry crowded out by s1's junk");
+}
+
+// spec/sync.md §5 (honest servers take stamps under the head's write key only), spec/
+// requirements.md (peer input never causes unbounded storage): stamps under a superseded step's
+// write key (a removed writer's) vouch for nothing once the head is newer: such entries are
+// capped and their bytes not kept
+#[test]
+fn old_step_stamp_vouches_nothing_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let cfg = osis_node::sync::SyncConfig { servers: vec![net.address(sv)], unvouched_cap: 8, ..Default::default() };
+    let a = net.add_node(1, cfg);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let old = net.engine(a).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
+    let old_write = label_role_key(LabelRole::Write, &old, 0);
+    let (at, bt) = (net.tid(a), net.tid(b));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin)]);
+    remove_member(e, g, bt, &rs, 43);
+    net.run();
+    assert_eq!(net.server_path(sv, &l).len(), 2, "a newer step");
+    let before = net.sync(a).entries(&l).len();
+    let conn = net.conn_to(a, sv).expect("connected");
+    let (ids, push) = junk(&l, 3, 40, Some(&old_write));
+    net.feed(a, Event::Bytes { conn, bytes: frame(push) });
+    net.settle(10_000);
+    for id in &ids {
+        assert!(!net.sync(a).holds_blob(id), "junk bytes kept on an old-step stamp");
+    }
+    let n = net.sync(a).entries(&l).len();
+    assert!(n <= before + 9, "{n}");
 }

@@ -13,6 +13,7 @@ use crate::engine::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, now_ts, put_keysets, put_secrets, recipient, save_epochs, secrets_in};
 use crate::Mutation;
+use crate::retention::forget::Forgotten;
 use osis_core::{Role, Tid, Ts};
 use osis_crypto::Epoch;
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
@@ -538,20 +539,21 @@ pub(crate) fn lost(core: &Core) -> Vec<Tid> {
     out
 }
 
-/// Drops the secrets of `lost` actors (diagnostic each).
-pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<Vec<Tid>> {
+/// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read.
+pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
     let lost = lost(tx.core);
     if lost.is_empty() {
-        return Ok(lost);
+        return Ok((lost, Forgotten::default()));
     }
     tx.core.touch();
     for a in &lost {
         tx.core.secrets.remove(a);
         tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
-        tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: "lost read access: secrets dropped".into() }, now);
+        tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: "lost read access: secrets and what only they read dropped".into() }, now);
     }
-    Ok(lost)
+    let f = crate::retention::forget::forget(tx, &lost)?;
+    Ok((lost, f))
 }
 
 impl Engine {
@@ -631,8 +633,19 @@ impl Engine {
     }
 
     /// Drops the secrets of actors this node lost read access to, and of what it reached only
-    /// through them (spec/permissions.md §3), with a diagnostic per actor. Returns them.
+    /// through them, and forgets every thing it no longer reads by another path
+    /// (spec/permissions.md §3), with a diagnostic per actor. Returns them.
     pub fn drop_lost_secrets(&mut self) -> Result<Vec<Tid>> {
-        self.run(drop_lost)
+        Ok(self.forget_lost()?.0)
+    }
+
+    /// `drop_lost_secrets`, with what was forgotten (node-sync drops its label sessions).
+    pub(crate) fn forget_lost(&mut self) -> Result<(Vec<Tid>, Forgotten)> {
+        let r = self.run(drop_lost)?;
+        if !r.1.things.is_empty() {
+            self.reload()?;
+            self.reexamine()?;
+        }
+        Ok(r)
     }
 }

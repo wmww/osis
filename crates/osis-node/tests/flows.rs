@@ -240,26 +240,164 @@ fn removal_rotates_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
 }
 
+/// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not
+/// incidentally rotate a leaked copy away), every row recorded, faults injectable.
+fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {
+    let clock = std::sync::Arc::new(osis_core::ManualClock::new(T0));
+    let (backend, root) = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
+    backend.record_history();
+    let c: std::sync::Arc<dyn osis_core::Clock> = clock.clone();
+    let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
+    let events = engine.subscribe();
+    osis_node::local_peer::Peer { engine, clock, backend, root, events }
+}
+
+fn forensic_cfg() -> osis_node::Config {
+    osis_node::Config { store: osis_store::StoreConfig { arity: 4, depth: 8, page_max: 512, ..osis_store::StoreConfig::default() }, ..osis_node::Config::default() }
+}
+
+/// Reopens peer `i` over its durable state.
+fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
+    let p = &mut lp.peers[i];
+    let c: std::sync::Arc<dyn osis_core::Clock> = p.clock.clone();
+    let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
+    p.events = engine.subscribe();
+    p.engine = engine;
+    Ok(())
+}
+
+fn big(marker: &str) -> String {
+    format!("{marker}{}", "x".repeat(400))
+}
+
+/// Things of a removal: `d` (bob read, removed), `f` (read by bob only through `d`), `e` (read by
+/// bob directly and through `d`), `mine` (bob's own).
+struct Lost {
+    lp: LocalPeer,
+    faults: osis_store::Faults,
+    d: Tid,
+    e: Tid,
+    f: Tid,
+    mine: Tid,
+}
+
+const D_MARK: &str = "LOST-D-MARK-31f0";
+const F_MARK: &str = "LOST-F-MARK-9c2a";
+const E_MARK: &str = "KEPT-E-MARK-5d17";
+const MINE_MARK: &str = "MINE-B-MARK-a40e";
+
+/// Alice shares d, e and f with bob as above and writes a marker on each, bob writes one on his
+/// own thing, then alice removes bob from d; bob has applied everything, dropped nothing.
+fn lost_setup(seed: u64) -> Lost {
+    let faults = osis_store::Faults::new();
+    let mut lp = LocalPeer { peers: vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)] };
+    let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&servers()).unwrap().0.person;
+    spread(&mut lp);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    let e = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&e, &d, &edge_of(Role::Read)).unwrap();
+    lp.peers[0].engine.grant(&e, &pb, &edge_of(Role::Read)).unwrap();
+    let f = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&f, &d, &edge_of(Role::Read)).unwrap();
+    for (t, mark) in [(d, D_MARK), (e, E_MARK), (f, F_MARK)] {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(&big(mark))).unwrap();
+        lp.peers[0].engine.commit(m).unwrap();
+    }
+    let mine = thing_of(&mut lp, 1, pb);
+    let mut m = Mutation::new();
+    m.set(mine, &REG, &s(&big(MINE_MARK))).unwrap();
+    lp.peers[1].engine.commit(m).unwrap();
+    spread(&mut lp);
+    for (t, mark) in [(d, D_MARK), (e, E_MARK), (f, F_MARK)] {
+        assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s(&big(mark))));
+        assert!(lp.peers[1].engine.epochs(&t).is_some_and(|x| x.read.held().next().is_some()), "bob holds the secrets");
+    }
+    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&d), None);
+    Lost { lp, faults, d, e, f, mine }
+}
+
+/// Bob reads only e and his own thing, and an attacker holding his device and every row it
+/// ever wrote recovers neither lost marker.
+fn assert_forgotten(x: &mut Lost) {
+    let b = &mut x.lp.peers[1];
+    let reg = ak("/t/reg");
+    assert_eq!(b.engine.get(&x.d, &reg).unwrap(), None, "lost content kept");
+    assert_eq!(b.engine.get(&x.f, &reg).unwrap(), None, "content lost through d kept");
+    assert_eq!(b.engine.get(&x.e, &reg).unwrap(), Some(s(&big(E_MARK))), "content readable by another path forgotten");
+    assert_eq!(b.engine.get(&x.mine, &reg).unwrap(), Some(s(&big(MINE_MARK))));
+    for t in [x.d, x.f] {
+        assert!(b.engine.epochs(&t).is_none_or(|e| e.read.held().next().is_none()), "secrets kept");
+    }
+    let plain = plaintexts(b);
+    for m in [D_MARK, F_MARK] {
+        assert!(!plain.iter().any(|p| contains(p, m.as_bytes())), "{m} recovered");
+    }
+    for m in [E_MARK, MINE_MARK] {
+        assert!(plain.iter().any(|p| contains(p, m.as_bytes())), "{m}: the attack finds live content");
+    }
+}
+
 // spec/permissions.md §3: a node that learns it lost read access to an actor MUST drop those
 // role secrets and every local unit it can no longer read by another path; spec/requirements.md,
 // Deletion: a node that lost access to data yields nothing it can no longer read.
-// Open: issues/lost-access-erasure.md (only the secrets are dropped).
+// spec/permissions.md §3 (drop lost secrets)
 #[test]
-#[ignore]
 fn removal_erases_lost_content_spec_perm_3() {
-    let (mut lp, ps) = people(2, 509);
-    let (pa, pb) = (ps[0], ps[1]);
-    let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    let mut x = lost_setup(509);
+    // the attack finds the lost content while it is held, and after a restart
+    assert!(recoverable(&mut x.lp.peers[1], D_MARK.as_bytes()));
+    reopen(&mut x.lp, 1, 1).unwrap();
+    assert_eq!(x.lp.peers[1].engine.get(&x.d, &ak("/t/reg")).unwrap(), Some(s(&big(D_MARK))));
+    let lost: BTreeSet<Tid> = x.lp.peers[1].engine.drop_lost_secrets().unwrap().into_iter().collect();
+    assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
+    let ev = x.lp.peers[1].drain_events();
+    assert!(ev.iter().any(|e| matches!(e, osis_node::Event::Changed { cause: osis_node::Cause::LostAccess, changed } if changed.contains(&(x.d, ak("/t/reg"))))));
+    assert_forgotten(&mut x);
+    // forgotten for good: after a restart, and a second drop finds nothing
+    reopen(&mut x.lp, 1, 2).unwrap();
+    assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
+    assert_forgotten(&mut x);
+    // bob keeps syncing what he reads
     let mut m = Mutation::new();
-    m.set(d, &REG, &s("LOST-MARK")).unwrap();
-    lp.peers[0].engine.commit(m).unwrap();
-    spread(&mut lp);
-    assert_eq!(lp.peers[1].engine.get(&d, &ak("/t/reg")).unwrap(), Some(s("LOST-MARK")));
-    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
-    spread(&mut lp);
-    assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&d));
-    assert_eq!(lp.peers[1].engine.get(&d, &ak("/t/reg")).unwrap(), None, "lost content kept");
+    m.set(x.e, &REG, &s("later")).unwrap();
+    let c = x.lp.peers[0].engine.commit(m).unwrap().unwrap();
+    send(&mut x.lp, 0, 1, &[c]);
+    assert_eq!(x.lp.peers[1].engine.get(&x.e, &ak("/t/reg")).unwrap(), Some(s("later")));
+}
+
+// spec/permissions.md §3 (drop lost secrets); spec/commits.md §4 (a transaction lands whole or
+// not at all): a crash at any write of the drop leaves bob, reopened, before it (dropping again
+// forgets) or after it, never between
+#[test]
+fn removal_erasure_crash_safe_spec_perm_3() {
+    for n in 0.. {
+        let mut x = lost_setup(511);
+        x.faults.at(n, osis_store::Fault::Crash);
+        let r = x.lp.peers[1].engine.drop_lost_secrets();
+        let crashed = x.faults.crashed();
+        assert_eq!(r.is_err(), crashed, "write {n}");
+        x.faults.revive();
+        // a crash during recovery as well
+        x.faults.at(0, osis_store::Fault::Crash);
+        let _ = reopen(&mut x.lp, 1, 3);
+        x.faults.revive();
+        reopen(&mut x.lp, 1, 4).unwrap();
+        let kept = x.lp.peers[1].engine.get(&x.d, &ak("/t/reg")).unwrap();
+        if kept.is_some() {
+            assert!(crashed, "write {n}");
+            assert_eq!(kept, Some(s(&big(D_MARK))), "torn state after a crash at write {n}");
+            assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&x.d));
+        }
+        assert_forgotten(&mut x);
+        if !crashed {
+            return;
+        }
+    }
 }
 
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot

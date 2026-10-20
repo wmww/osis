@@ -16,6 +16,7 @@ mod page;
 mod paging;
 mod remap;
 mod seq;
+mod shape;
 mod seq_diff;
 mod seq_ops;
 mod seq_wire;

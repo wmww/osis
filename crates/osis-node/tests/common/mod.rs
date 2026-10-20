@@ -130,3 +130,48 @@ pub fn states(e: &mut Engine, tids: &[Tid]) -> Vec<(Tid, Ak, Option<Value>)> {
     out.sort_by(|x, y| (x.0, x.1.as_str()).cmp(&(y.0, y.1.as_str())));
     out
 }
+
+// Forensic attack (spec/commits.md §5, spec/requirements.md Deletion: forward secure): peers
+// whose backend records every row written.
+
+pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Whether an attacker decrypts `marker` from the rows ever written, starting from the keys the
+/// current tree yields and harvesting keys from opened tree nodes.
+pub fn recoverable(p: &mut osis_node::local_peer::Peer, marker: &[u8]) -> bool {
+    plaintexts(p).iter().any(|x| contains(x, marker))
+}
+
+/// Every row plaintext an attacker recovers.
+pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
+    let history = p.backend.history();
+    let mut keys = p.engine.forensic_keys().unwrap();
+    let mut known: std::collections::HashSet<[u8; 32]> = keys.iter().copied().collect();
+    let mut opened = vec![false; history.len()];
+    let mut tried = 0;
+    let mut found = Vec::new();
+    while tried < keys.len() {
+        let batch: Vec<[u8; 32]> = keys[tried..].to_vec();
+        tried = keys.len();
+        for (i, (row, value)) in history.iter().enumerate() {
+            if opened[i] {
+                continue;
+            }
+            for k in &batch {
+                if let Some(plain) = osis_store::forensic_open(row, value, k) {
+                    for nk in osis_store::forensic_node_keys(row, &plain) {
+                        if known.insert(nk) {
+                            keys.push(nk);
+                        }
+                    }
+                    found.push(plain);
+                    opened[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+    found
+}

@@ -87,6 +87,8 @@ pub struct SyncConfig {
     pub max_served: usize,
     /// A served session without bytes this long is closed.
     pub serve_idle_ms: u64,
+    /// Unopened unvouched entries a label may hold per server (an inbox label a sixteenth).
+    pub unvouched_cap: usize,
 }
 
 impl Default for SyncConfig {
@@ -108,6 +110,7 @@ impl Default for SyncConfig {
             peer_total_bytes: 1 << 30,
             max_served: 64,
             serve_idle_ms: 120_000,
+            unvouched_cap: 1 << 16,
         }
     }
 }
@@ -343,6 +346,11 @@ impl SyncEngine {
             lan_peers: None,
             prefix_checked: BTreeSet::new(),
         })
+        .and_then(|mut s| {
+            // a forgetting a crash interrupted before its inbox check
+            s.forget_inbox()?;
+            Ok(s)
+        })
     }
 
     pub fn engine(&self) -> &Engine {
@@ -399,7 +407,7 @@ impl SyncEngine {
         // a self-removal is up: drop what was lost
         if !self.leaving.is_empty() && self.is_idle() && self.conns.values().any(|c| c.up) {
             self.leaving.clear();
-            if let Err(e) = self.engine.drop_lost_secrets() {
+            if let Err(e) = self.drop_lost() {
                 self.diag(format!("dropping lost secrets: {e}"));
             }
         }

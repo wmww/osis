@@ -23,7 +23,7 @@ impl SyncEngine {
                 }
             }
             if self.leaving.is_empty() {
-                self.engine.drop_lost_secrets()?;
+                self.drop_lost()?;
             }
         }
         self.take_done(done)?;
@@ -34,6 +34,39 @@ impl SyncEngine {
             }
         }
         Ok(self.handle(super::Event::Local))
+    }
+
+    /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
+    /// §3) and its sync state about it: the engine forgets the records in its transaction, this
+    /// reloads them and drops the sessions and in-memory marks of the forgotten labels. Flows'
+    /// self-removals call it once uploaded; an app calls it when told it was removed.
+    pub fn drop_lost(&mut self) -> Result<()> {
+        self.state.flush(&mut self.engine)?;
+        let (_, f) = self.engine.forget_lost()?;
+        if f.things.is_empty() {
+            return Ok(());
+        }
+        let feed = std::mem::take(&mut self.state.feed);
+        let now = self.state.now;
+        self.state = super::state::State::load(&mut self.engine)?;
+        self.state.feed = feed;
+        self.state.now = now;
+        let gone = |l: &LabelId| f.labels.contains(l);
+        for l in &f.labels {
+            self.state.feed.forget(l);
+        }
+        for c in self.conns.values_mut() {
+            c.labels.retain(|l, _| !gone(l));
+        }
+        self.label_actors.retain(|l, _| !gone(l));
+        self.passes.retain(|(_, l), _| !gone(l));
+        self.sent.retain(|(_, l, _), _| !gone(l));
+        self.deleting.retain(|(_, l, _), _| !gone(l));
+        self.timed_sent.retain(|(_, l, _)| !gone(l));
+        self.stranded_at.retain(|l, _| !gone(l));
+        self.reopens.retain(|(_, l), _| !gone(l));
+        self.served_cache = None;
+        self.forget_inbox()
     }
 
     /// Records a flow's deliveries; the next step sends them. A key actor's own departure

@@ -20,9 +20,6 @@ use std::collections::BTreeSet;
 
 /// Rounds of "new secrets opened more entries" per batch.
 const MAX_ROUNDS: usize = 16;
-/// Unstamped entries a label may hold that open under nothing held (`drop_unvouched`).
-const MAX_UNVOUCHED: usize = 1 << 16;
-const MAX_UNVOUCHED_INBOX: usize = 1 << 12;
 
 impl Engine {
     /// Stores blob ciphertexts (pages, chunks, commit blobs) by ID.
@@ -67,8 +64,10 @@ impl SyncEngine {
         let mut touched = Vec::new();
         let mut fetch = Vec::new();
         // entries new here that no writer vouched for (a deposit, or a server's junk): no stamp
-        // under the write key of any step this node knows (a server cannot make one)
+        // under the head's write key, or before a head is known any step's this node knows (a
+        // server cannot make one; a superseded step's key may be a removed writer's)
         let mut unvouched = Vec::new();
+        let head_write = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
         let mut writers: Vec<osis_crypto::VerifyingKey> = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).map(|x| x.writers.iter().copied().chain(x.head.as_ref().map(|h| h.keys.write)).collect()).unwrap_or_default();
         if server.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. }))
             && let Some(g) = self.group_of(&l)
@@ -83,7 +82,10 @@ impl SyncEngine {
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
-                    let vouched = stamp.is_some_and(|st| writers.iter().any(|w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok()));
+                    let vouched = stamp.is_some_and(|st| match &head_write {
+                        Some(w) => osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok(),
+                        None => writers.iter().any(|w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok()),
+                    });
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
@@ -188,9 +190,11 @@ impl SyncEngine {
     /// New entries no writer vouched for that neither opened nor unwrap under a held read secret
     /// (a deposit under an epoch not held yet, an entry stamped under a step this node does not
     /// know, or a server's junk): their bytes are not kept (fetched again once they unwrap,
-    /// `refetch`), and beyond `MAX_UNVOUCHED` such entries under the label not even the entry
+    /// `refetch`), and beyond `SyncConfig::unvouched_cap` such entries under the label at that
+    /// server not even its presence there, nor the entry once no server has it
     /// (spec/requirements.md: peer input never causes unbounded storage; a dropped real entry
-    /// comes back stamped once a writer promotes it, or with the next replay).
+    /// comes back stamped once a writer promotes it, or with the next replay). Counted per server:
+    /// one server's junk does not crowd out what others announce.
     fn drop_unvouched(&mut self, server: ServerKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -208,8 +212,8 @@ impl SyncEngine {
         // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
         // under a smaller cap
         let inbox = !self.inbox_of(&l).is_empty();
-        let cap = if inbox { MAX_UNVOUCHED_INBOX } else { MAX_UNVOUCHED };
-        let mut held = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|(_, e)| e.kind == Kind::Unknown && e.stamp.is_none()).count();
+        let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
+        let mut held = self.state.present_at(&server, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
         let mut gone = Vec::new();
         let mut over = 0usize;
         for (b, fresh) in ids {
@@ -223,8 +227,10 @@ impl SyncEngine {
             }
             if drop {
                 self.state.set_present(server, l, *b, false);
-                self.state.drop_entry(l, *b);
-                self.fetching.remove(b);
+                if !self.state.present_anywhere(&l, b) {
+                    self.state.drop_entry(l, *b);
+                    self.fetching.remove(b);
+                }
                 held -= 1;
                 over += 1;
             }
@@ -364,6 +370,39 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
+    /// this node's own keys, and a grant carries its boxes: spec/permissions.md §3), then empties
+    /// the work list. Their entries stay opened, never fetched again.
+    pub(crate) fn forget_inbox(&mut self) -> Result<()> {
+        if self.state.forget.is_empty() {
+            return Ok(());
+        }
+        let things = self.state.forget.clone();
+        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Inbox).map(|(k, _)| *k).collect();
+        let mut gone = Vec::new();
+        for (l, b) in inbox {
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let opened = self.inbox_of(&l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
+            let Some((_, payload)) = opened else { continue };
+            let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
+            if names {
+                gone.push(b);
+            }
+        }
+        if !gone.is_empty() {
+            self.engine.run(|tx| {
+                for b in &gone {
+                    tx.txn.delete_blob(b);
+                }
+                Ok(())
+            })?;
+        }
+        for t in things {
+            self.state.forget_done(&t);
+        }
+        self.state.flush(&mut self.engine)
     }
 
     /// A new head in a server's log: a child of the current one moves on; anything else reopens.

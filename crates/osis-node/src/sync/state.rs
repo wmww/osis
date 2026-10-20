@@ -3,7 +3,7 @@
 //! presence per server, cursors and heads per (server, label), blob keys of commit blobs,
 //! certificates and heartbeats placed, blobs a server tombstoned, label hints from inbox blobs.
 
-use crate::engine::Engine;
+use crate::engine::{Engine, Tx};
 use crate::engine::records::{Rd, Wr};
 use crate::error::{Error, Result};
 use osis_core::{BlobId, CommitId, LabelId, Tid};
@@ -30,6 +30,8 @@ const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
 const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
+/// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
+const FORGET: &[u8] = b"y/f";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +118,8 @@ pub struct State {
     pub outbox: BTreeMap<(ServerKey, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
     pub now: u64,
+    /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
+    pub forget: BTreeSet<Tid>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -258,6 +262,9 @@ impl State {
                     let owner = x.tid()?;
                     let blob = x.bytes()?.to_vec();
                     s.outbox.insert(k, OutRec { label, server, owner, blob });
+                }
+                b"f" => {
+                    s.forget.insert(r.tid()?);
                 }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
@@ -488,6 +495,13 @@ impl State {
         self.hints.insert(l, h);
     }
 
+    /// The inbox blobs of `t` are checked.
+    pub fn forget_done(&mut self, t: &Tid) {
+        if self.forget.remove(t) {
+            self.del(key(FORGET, &[t.as_bytes()]));
+        }
+    }
+
     pub fn remove_hint(&mut self, l: &LabelId) {
         if self.hints.remove(l).is_some() {
             self.del(key(HINT, &[&l.0]));
@@ -501,3 +515,75 @@ impl State {
     }
 }
 
+
+/// Removes, shredded, the sync records of what the engine forgets (inside its transaction,
+/// `retention::forget`): everything about `labels`, the blob records of `commits` and of blobs
+/// holding forgotten `parts`, carriers and certificates of `commits`, hints naming `things`; adds
+/// `things` to the inbox work list. Returns the blobs among those dropped and `extra` that no
+/// kept entry or blob record names (their ciphertexts may go).
+pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {
+    let mut recs = Vec::new();
+    tx.scan(b"y/", |k, v| {
+        recs.push((k.to_vec(), v));
+        Ok(())
+    })?;
+    let mut drop: Vec<Vec<u8>> = Vec::new();
+    let mut freed = extra;
+    let mut kept: BTreeSet<BlobId> = BTreeSet::new();
+    let lab = |b: &[u8]| -> Result<bool> { Ok(labels.contains(&LabelId(Rd::new(b).arr()?))) };
+    for (k, v) in recs {
+        let (p, rest) = k.split_at_checked(1).ok_or(Error::Corrupt("sync record"))?;
+        let gone = match p {
+            b"e" | b"x" => {
+                let mut r = Rd::new(rest);
+                let l = LabelId(r.arr()?);
+                let b = BlobId(r.arr()?);
+                let gone = labels.contains(&l);
+                if p == b"e" {
+                    if gone {
+                        freed.insert(b);
+                    } else {
+                        kept.insert(b);
+                    }
+                }
+                gone
+            }
+            b"p" | b"c" | b"h" | b"g" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
+            b"t" => lab(rest)?,
+            b"k" => {
+                let mut r = Rd::new(rest);
+                let l = LabelId(r.arr()?);
+                labels.contains(&l) || commits.contains(&CommitId(r.arr()?))
+            }
+            b"b" => {
+                let b = BlobId(Rd::new(rest).arr()?);
+                let mut x = Rd::new(&v);
+                let c = CommitId(x.arr()?);
+                let _key: [u8; 32] = x.arr()?;
+                let _cert = x.u8()?;
+                let ps = decode_parts(&mut x)?;
+                let gone = commits.contains(&c) || parts.get(&c).is_some_and(|s| ps.iter().any(|(ai, _)| s.contains(ai)));
+                if gone {
+                    freed.insert(b);
+                } else {
+                    kept.insert(b);
+                }
+                gone
+            }
+            b"s" => commits.contains(&CommitId(Rd::new(rest).arr()?)),
+            b"o" => lab(&v)?,
+            b"i" => lab(rest)? || things.contains(&Rd::new(&v).tid()?),
+            _ => false,
+        };
+        if gone {
+            drop.push([b"y/".as_slice(), &k].concat());
+        }
+    }
+    for k in drop {
+        tx.txn.remove_local(&k, Shred::Yes)?;
+    }
+    for t in things {
+        tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;
+    }
+    Ok(freed.difference(&kept).copied().collect())
+}

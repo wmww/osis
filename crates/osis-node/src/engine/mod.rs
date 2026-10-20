@@ -617,6 +617,8 @@ impl Engine {
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
+        fresh.schemas = std::mem::take(&mut self.core.schemas);
+        fresh.skip_writer_rules = self.core.skip_writer_rules;
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
