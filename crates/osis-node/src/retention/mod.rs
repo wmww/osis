@@ -488,9 +488,17 @@ impl Engine {
             {
                 return Ok(Some(false));
             }
+            let held = crate::apply::held_parts(tx, &c, cai)?;
+            // a snapshot covers another only if its frontiers hold the other's too: otherwise a
+            // holder of it alone does not count what the other's frontier gave as received
+            if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
+                && other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f))
+            {
+                return Ok(Some(false));
+            }
             let snap: Vec<Fragment> = parts.into_iter().map(frag).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
-            let body: Vec<Fragment> = crate::apply::held_parts(tx, &c, cai)?.into_iter().map(frag).collect();
+            let body: Vec<Fragment> = held.into_iter().map(frag).collect();
             let before = crate::engine::state::encode(snap)?;
             let mut j = snap.clone();
             for b in body {
