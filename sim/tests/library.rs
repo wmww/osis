@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Phase C: the scenario library, adversaries and version skew (sim/src/net/{library, adversary,
 //! skew}.rs), one seed each. Every run ends with the quiescent invariants. Scenarios an engine bug
-//! breaks are ignored with the issue's name; the slower ones (over about 5 s in a debug build,
-//! so the tier-1 run stays near 10 s) are tier 2 (`--release -- --ignored`) and swept nightly by `sim-sweep`.
+//! breaks are ignored with the issue's name; all but the quickest few
+//! (osis-sim's whole tier 1 stays near 10 s) are tier 2 (`--release -- --ignored`) and swept nightly by `sim-sweep`.
 
 use osis_sim::{Report, replay};
 
@@ -79,6 +79,7 @@ fn link_race() {
 // spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K;
 // the sharer's next rotation reaches it by inbox.
 #[test]
+#[ignore = "tier 2"]
 fn link_race_seed_6() {
     ok("link_race", 6);
 }
@@ -148,24 +149,28 @@ fn keep_at_most() {
 
 // spec/commits.md §5: sweep seed 6, a dropped body's blob kept at the node.
 #[test]
+#[ignore = "tier 2"]
 fn keep_at_most_seed_6() {
     ok("keep_at_most", 6);
 }
 
 // spec/commits.md §5, spec/sync.md §5: sweep seed 42, a timed delete lost on a cut connection.
 #[test]
+#[ignore = "tier 2"]
 fn keep_at_most_seed_42() {
     ok("keep_at_most", 42);
 }
 
 // spec/commits.md §5: sweep seed 62, the node is never ticked again, nothing is dropped.
 #[test]
+#[ignore = "tier 2"]
 fn keep_at_most_seed_62() {
     ok("keep_at_most", 62);
 }
 
 // spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff lost a heartbeat field; the pass aborted.
 #[test]
+#[ignore = "tier 2"]
 fn revocation_bob_seed_28() {
     ok("revocation_bob", 28);
 }
@@ -193,6 +198,7 @@ fn removed_replayer() {
 
 // spec/sync.md §5; spec/commits.md §4; spec/versioning.md §2: malformed blobs are rejected.
 #[test]
+#[ignore = "tier 2"]
 fn malformed_blobs() {
     ok("malformed_blobs", 1);
 }

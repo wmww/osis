@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase A scenarios, one seed each in tier 1 (the engine runs unoptimized in test builds:
-//! about 2 s per three-node run); the sweep is tier 3 (`#[ignore]`, run it with `--release`).
+//! Phase A scenarios, seed 1 each: the quickest in tier 1 (the engine runs unoptimized in test
+//! builds), the rest tier 2 (`--release -- --ignored`); the sweep is tier 3 (`#[ignore]`, run it with `--release`).
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
 use osis_sim::{Report, SCENARIOS, replay};
@@ -28,6 +28,7 @@ fn three_nodes_random_delivery() {
 // durable write recovers, the HLC and counters continue without reuse, nodes converge. Also
 // checks seed replay: the same seed gives the same run.
 #[test]
+#[ignore = "tier 2"]
 fn crash_and_restart() {
     let r = ok("crash_restart", 1);
     assert!(r.crashes > 0 && r.restarts > 0, "{r:?}");
@@ -44,6 +45,7 @@ fn drift_parks_until_clock_catches_up() {
 // spec/permissions.md §5 (removal, per-delta validity, un-merge); spec/requirements.md
 // (convergence).
 #[test]
+#[ignore = "tier 2"]
 fn revoke_while_writing_converges() {
     ok("revoke_while_writing", 1);
 }
@@ -51,6 +53,7 @@ fn revoke_while_writing_converges() {
 // spec/permissions.md §5.2; spec/crdt.md §4.6: sweep seeds that diverge after the removal
 // (fixed: un-merge by invalid delta, every body stripped before it joins).
 #[test]
+#[ignore = "tier 2"]
 fn revoke_regression_seeds() {
     for seed in [98, 244, 271] {
         ok("revoke_while_writing", seed);

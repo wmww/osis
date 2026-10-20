@@ -1,4 +1,4 @@
-//! Folders with rights end to end (notes/permissions.md Patterns), tier 1: databases and a blind
+//! Folders with rights end to end (notes/permissions.md Patterns), tier 1 (the slower cases tier 2): databases and a blind
 //! server in process (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -33,6 +33,7 @@ fn tree(alice: &Osis) -> (Tid, Tid, Tid) {
 // a reader reads and cannot write; a writer adds files; a demoted writer writes no more and
 // what it wrote stays.
 #[test]
+#[ignore = "tier 2"]
 fn reader_writer_demotion() {
     let mut w = World::new();
     let sv = w.add_server().unwrap();
@@ -66,6 +67,7 @@ fn reader_writer_demotion() {
 // spec/permissions.md §2 (invite grants: up to the invite role), notes/permissions.md Patterns
 // (folder with rights): an invite holder shares the tree on, not above its invite role.
 #[test]
+#[ignore = "tier 2"]
 fn invite_holder_shares_on() {
     let mut w = World::new();
     let sv = w.add_server().unwrap();

@@ -1,5 +1,6 @@
 //! The chat pattern end to end (notes/chat.md), tier 1: databases and a blind server in process
-//! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network). Tier 2: costs.
+//! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network). Tier 2: costs and the removal cases
+//! (about 10 s each in a debug build).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use chat::*;
@@ -110,6 +111,7 @@ fn single_use_link() {
 // removes Bob; Carol keeps reading new messages, Bob reads none, and what Bob posts afterwards
 // reaches nobody.
 #[test]
+#[ignore = "tier 2"]
 fn removal_rotates() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 2);
@@ -208,6 +210,7 @@ fn costs_join_message_removal() {
 // link, a writer of C that never read the first link's K1, settles after a joiner of K1 is
 // removed instead of rotating C without end.
 #[test]
+#[ignore = "tier 2"]
 fn second_link_then_removal() {
     let mut w = World::new();
     let (alice, _others, c, ps, _) = chat_link(&mut w, 1);
