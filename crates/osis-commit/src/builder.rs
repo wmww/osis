@@ -59,7 +59,7 @@ pub struct CommitBuilder {
     pub frontier: Option<Value>,
     pub origins: Vec<Origin>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
-    pub max_blob: usize,
+    pub(crate) max_blob: usize,
 }
 
 /// A built commit: the blob holding every delta, and the token secrets of each aspect (for

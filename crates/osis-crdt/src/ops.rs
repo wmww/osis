@@ -543,10 +543,17 @@ fn diff_values_at<V: View>(base: Option<&Value>, new: &Value, view: &V, path: &m
 }
 
 /// Joins `b` into a clone of `a` under `e` (used to see the batch's own writes over the state).
+/// `a` must be pruned (any state built by join, decode or the ops is): it is pruned again only
+/// when a reset `e` comes from above, which keeps cached placements.
 pub(crate) fn joined(a: Option<&Fragment>, b: Option<&Fragment>, e: Option<&Stamp>) -> Option<Fragment> {
     let mut ch = Changes::new();
     let mut out = a.cloned();
-    // a state is pruned already: only a reset from above changes it (keeps cached placements)
+    #[cfg(debug_assertions)]
+    if let (Some(x), None) = (&out, e) {
+        let mut p = x.clone();
+        p.prune(None, &mut Changes::new());
+        debug_assert!(p == *x, "joined: state not pruned");
+    }
     if let (Some(x), Some(_)) = (&mut out, e) {
         x.prune(e, &mut ch);
     }

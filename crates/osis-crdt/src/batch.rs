@@ -33,7 +33,8 @@ pub struct Batch<'s> {
 }
 
 impl<'s> Batch<'s> {
-    /// Ops resolve against `state` (the aspect's local state) and the batch so far.
+    /// Ops resolve against `state` (the aspect's local state, pruned as join and decode leave
+    /// it) and the batch so far.
     pub fn new(state: &'s Fragment, w: Writer) -> Batch<'s> {
         Batch { state, w, acc: None }
     }
