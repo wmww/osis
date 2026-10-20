@@ -2,6 +2,8 @@
 > Summary: spec/crypto.md §7 gives every `admin`/`author`/`writer` delta a level-1 token from the thing's admin secret, but a write-role member does not hold that secret, so it cannot compute the token hash the header must list; osis-commit omits level 1 in that case (provisional). Owner accepted option 1 for the MVP; revisit post-MVP.
 > Tags: commit, crypto, post-mvp
 
+Repro: design: `osis_commit::token_secrets` (provisional) omits level 1 for a non-admin writer.
+
 ## Problem
 Token hash = BLAKE3(kdf("delete token", secret, salt))[..16] needs the secret itself. A member with write on a thing (a group thing shared to writers, or a thing it does not own) holds the thing's read and write secrets, not its admin secret (spec/crypto.md §3, §4). So the default `author` retention (levels 1 and 2) cannot be written as specified by a non-admin writer.
 
