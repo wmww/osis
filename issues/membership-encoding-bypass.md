@@ -1,0 +1,10 @@
+# Wrong-encoding writes to `/keys` and `/secrets` bypass the field checks
+> Summary: The admin-only `/keys` fields check and the invite-grant `/secrets` limit look only at struct-shaped deltas; a register write at the aspect root (or, likely, a struct root reset) passes as a writer's or a grantee's write and wipes the whole aspect. A read-link holder can wipe every box and history box of the target; a writer can wipe an actor's admin keyset, key, inbox and deposit seed.
+> Tags: security, permissions, node
+
+Found by the wave 6 re-review (notes/testing.md Security reviews, Re-review). Confirmed with throwaway tests in `apply::validity` (`LocalPeer`, `skip_writer_rules`, `Mutation::unchecked`):
+- Writer: `m.set(t, &Ak::new("/keys"), &Value::Int(1))` committed by a write member is applied at the owner; `get_typed(t, KEYS)` then fails (`Mismatch { expected: "struct" }`). `rotation_required` returns Write because `f.slot(Struct)` is `None`.
+- Invite holder (a reader with `invite`, so any holder of a read link signing as L): an invite grant (`put_edge` of a new member) plus `m.set(t, &Ak::new("/secrets"), &Value::Int(1))` is applied at the owner; `/secrets` no longer decodes, and after the owner's next grant it reads `MissingField(1)`: every other member's box and every history box is gone (new grantees cannot read older content; `observe_state` ingests nothing while it does not decode). `grantee_boxes_only` returns true for a non-struct fragment.
+- Same shape, not tried: a writer's register write to `/secrets` (wipes admin boxes; `rotation_required` reads no roles and returns Write); a struct delta with a root reset (`Meta.reset`) and only allowed fields, for both checks.
+
+Fix: for `/keys` and `/secrets` (and any check that inspects a membership-class delta's shape), a delta that is not a plain `Fragment::Struct` or that carries a root reset needs admin (`rotation_required`) and gets no invite exemption (`grantee_boxes_only` false). Needs a read-only accessor for a struct's root reset in osis-crdt. Regression tests: the two scenarios above, asserting the owner's typed read is unchanged.
