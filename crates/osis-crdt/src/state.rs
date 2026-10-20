@@ -270,7 +270,7 @@ fn assemble(reg: Option<Register>, mut members: BTreeMap<Encoding, Fragment>) ->
 
 /// Whether member `f` adds nothing to the embedding of register `r`: `f ⊔ embed(r) = embed(r)`
 /// (§7 Canonical form).
-fn below_embedding(f: &Fragment, r: &Register) -> bool {
+pub(crate) fn below_embedding(f: &Fragment, r: &Register) -> bool {
     let Some(mut e) = embed(r, f.encoding()) else { return false };
     let mut ch = Changes::new();
     e.prune(None, &mut ch);

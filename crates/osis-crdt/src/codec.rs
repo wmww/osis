@@ -487,6 +487,16 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             if usize::from(reg.is_some()) + members.len() < 2 {
                 return Err(Error::Malformed("slots with fewer than two members"));
             }
+            // §7 Canonical form: no member is empty or adds nothing to the register's embedding
+            let empty_reg = reg.as_ref().is_some_and(|r| Fragment::Register(r.clone()).is_empty());
+            let below = |f: &Fragment, r: &Register| {
+                let mut f = f.clone();
+                f.prune(None, &mut crate::Changes::new());
+                f.is_empty() || crate::state::below_embedding(&f, r)
+            };
+            if empty_reg || members.values().any(|f| f.is_empty() || reg.as_ref().is_some_and(|r| below(f, r))) {
+                return Err(Error::Malformed("slots: a member empty or below the register's embedding"));
+            }
             Fragment::Slots(Slots { reg, members })
         }
         _ => return Err(Error::Malformed("fragment arity")),

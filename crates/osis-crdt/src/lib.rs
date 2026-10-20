@@ -45,6 +45,8 @@ mod tests_review;
 mod tests_seq;
 #[cfg(test)]
 mod tests_seq_ops;
+#[cfg(test)]
+mod tests_decoder;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};

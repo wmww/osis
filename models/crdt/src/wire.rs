@@ -696,7 +696,7 @@ fn dec_anchor(it: &Item, cx: &Ctx) -> Result<Anchor, Error> {
 fn dec_opt_frag(it: &Item, cx: &Ctx) -> Result<Option<Box<Frag>>, Error> {
     match it.array()? {
         [] => Ok(None),
-        [f] => Ok(Some(Box::new(decode(f, cx)?))),
+        [f] => Ok(Some(Box::new(decode_at(f, cx, false)?))),
         _ => Err(Error::Bad("opt frag")),
     }
 }
@@ -720,7 +720,7 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
 fn dec_fields(it: &Item, cx: &Ctx) -> Result<BTreeMap<u64, Frag>, Error> {
     let mut m = BTreeMap::new();
     for (k, v) in it.map()? {
-        m.insert(k.uint()?, decode(v, cx)?);
+        m.insert(k.uint()?, decode_at(v, cx, false)?);
     }
     Ok(m)
 }
@@ -728,8 +728,13 @@ fn composite(a: &[Item], cx: &Ctx) -> Result<Composite, Error> {
     Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w: dec_opt_stamp(&a[2], cx)? })
 }
 
-/// Decode a fragment.
+/// Decode a fragment at an aspect root.
 pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
+    decode_at(it, cx, true)
+}
+
+/// Decode a fragment; `top`: an aspect root or a `Slots` member, the only registers that carry a reset (§3.3 rule 7).
+fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
     let a = it.array()?;
     if a.is_empty() {
         return Err(Error::Bad("fragment"));
@@ -783,7 +788,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
         (10, 3) => {
             let reg = match a[1].array()? {
                 [] => None,
-                [r] => match decode(r, cx)? {
+                [r] => match decode_at(r, cx, true)? {
                     f @ Frag::Register { .. } => Some(Box::new(f)),
                     _ => return Err(Error::Bad("slots register")),
                 },
@@ -792,7 +797,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
             let mut slots = BTreeMap::new();
             let mut last = 0u8;
             for it in a[2].array()? {
-                let f = decode(it, cx)?;
+                let f = decode_at(it, cx, true)?;
                 let e = f.enc();
                 if e == 0 || e == 10 || e <= last {
                     return Err(Error::Bad("slot order"));
@@ -807,12 +812,24 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
         }
         _ => return Err(Error::Bad("encoding or arity")),
     };
+    if let Frag::Register { reset: Some(_), .. } = &f {
+        if !top {
+            return Err(Error::Bad("nested register reset"));
+        }
+    }
+    if let Frag::Slots { reg, slots } = &f {
+        // §7 canonical form: no empty member, none that adds nothing to the register's embedding
+        if reg.as_ref().map_or(false, |r| r.is_empty()) || slots.values().any(|m| m.is_empty() || reg.as_ref().map_or(false, |r| crate::state::below_embedding(m, r))) {
+            return Err(Error::Bad("non-canonical slots member"));
+        }
+    }
     Ok(f)
 }
 
 fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, Error> {
     let mut m: BTreeMap<Dot, SeqElem> = BTreeMap::new();
     let mut last: Option<Dot> = None;
+    let mut got: Vec<(Dot, usize)> = Vec::new();
     for r in it.array()? {
         let a = r.array()?;
         if a.len() != 6 {
@@ -826,6 +843,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         if last.as_ref().map_or(false, |l| wire_cmp(l, &first, &cx.own).is_ge()) {
             return Err(Error::Bad("run order"));
         }
+        got.push((first.clone(), n));
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {
             [] => {}
@@ -883,8 +901,13 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 }
             }
             last_pos = Some((i, s.clone()));
+            // the write stamped with the element's own dot is its creation (§3.3 rule 5: never a `PosW`)
+            if s.dot.source == first.source && s.dot.ctr == first.ctr + i as u64 {
+                return Err(Error::Bad("creation as a position write"));
+            }
             elems[i].pos.push((s, dec_anchor(&p[2], cx)?));
         }
+        let mut last_flag: Option<(usize, Stamp, bool)> = None;
         for fl in a[5].array()? {
             let x = fl.array()?;
             if x.len() != 4 {
@@ -902,13 +925,29 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if !text && !b {
                 return Err(Error::Bad("undelete of a list element"));
             }
+            // sorted by `i_from` (ranges never overlap), and maximal: an adjacent range of the same write
+            // continues the previous one (§3.3 rule 2)
+            if let Some((to, ls, lb)) = &last_flag {
+                if i <= *to || (i == *to + 1 && *ls == s && *lb == b) {
+                    return Err(Error::Bad("flagw order"));
+                }
+            }
+            last_flag = Some((j, s.clone(), b));
             for e in &mut elems[i..=j] {
-                e.deleted = crate::state::max_pair(e.deleted.take(), Some((s.clone(), b)));
+                // one surviving flag write per element: canonical ranges never overlap
+                if e.deleted.is_some() {
+                    return Err(Error::Bad("overlapping flag writes"));
+                }
+                e.deleted = Some((s.clone(), b));
             }
         }
         match &a[3] {
             Item::Array(v) if v.is_empty() => {}
             Item::Text(s) if text => {
+                // no char carried is `[]`, never an empty string (§3.2 Content)
+                if s.is_empty() {
+                    return Err(Error::Bad("empty content string"));
+                }
                 let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deleted.as_ref().map_or(false, |d| d.1)).collect();
                 let cs: Vec<char> = s.chars().collect();
                 if cs.len() != live.len() {
@@ -924,19 +963,30 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                     return Err(Error::Bad("content length"));
                 }
                 for (i, it) in v.iter().enumerate() {
-                    elems[i].content = Content::Frag(Box::new(decode(it, cx)?));
+                    elems[i].content = Content::Frag(Box::new(decode_at(it, cx, false)?));
                 }
             }
             _ => return Err(Error::Bad("content")),
         }
         for (i, mut e) in elems.into_iter().enumerate() {
             let d = Dot { source: first.source.clone(), ctr: first.ctr + i as u64 };
+            // `pos` is the top two position writes, the creation's included (§5.7); a `PosW` outside them is
+            // not on the wire (the creation stays in `created` once pushed out)
             e.pos.sort_by(|a, b| b.0.cmp(&a.0));
             e.pos.dedup_by(|a, b| a.0 == b.0);
+            if e.pos.iter().skip(2).any(|p| p.0.dot != d) {
+                return Err(Error::Bad("position write outside the top two"));
+            }
             e.pos.truncate(2);
             last = Some(d.clone());
             m.insert(d, e);
         }
+    }
+    // runs are maximal (§3.3 rule 3): the decoded elements regroup into exactly the runs read
+    let v = wire_sorted(&m, &cx.own);
+    let want: Vec<(Dot, usize)> = runs(text, &v).into_iter().map(|(i, n)| (v[i].0.clone(), n)).collect();
+    if want != got {
+        return Err(Error::Bad("runs not maximal"));
     }
     Ok(m)
 }
@@ -1007,6 +1057,12 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             }
             let extra: Vec<Source> = out.iter().map(|x| x.0.clone()).collect();
             cx.check(&frag, &extra)?;
+            // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
+            let mut own = false;
+            frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) if s.dot.source == cx.own && s.ts == cx.ts));
+            if own {
+                return Err(Error::Bad("own write in a snapshot"));
+            }
             Ok((frag, out))
         }
         _ => Err(Error::Bad("snapshot")),
