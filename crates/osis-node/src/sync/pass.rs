@@ -114,7 +114,6 @@ impl SyncEngine {
         let bodies = self.bodies_under(&g, &l)?;
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
-        let mut trees_done = BTreeSet::new();
         self.refetch(conn, server, l, &g, out)?;
         self.check_linked_prefixes(l)?;
         let unsettled = self.unsettled(&l, &g)?;
@@ -144,9 +143,7 @@ impl SyncEngine {
             sends.push(Out { prio, id });
             if keys.is_writer() {
                 let mut linked = self.chunk_blobs(&b.commit)?;
-                if !b.membership {
-                    linked.extend(self.live_tree_blobs(&l, b, &mut trees_done)?);
-                }
+                linked.extend(self.body_blobs(&l, b)?);
                 for cb in linked {
                     if !self.state.entries.contains_key(&(l, cb)) {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
@@ -610,24 +607,24 @@ impl SyncEngine {
         Ok(self.engine.package(c)?.map(|p| p.blobs.into_iter().map(|(id, _)| id).collect()).unwrap_or_default())
     }
 
-    /// Tree blobs the live states of a body's things link, held here or already an entry
-    /// under `l`, once per thing per pass (`done`): reused chunks and a snapshot's values are
-    /// not in the linking commit's chunk list, yet belong to the closure (spec/sync.md §3), so
-    /// a reader under a new label (replacement, a thing moving between groups) gets them.
-    fn live_tree_blobs(&mut self, l: &LabelId, b: &Body, done: &mut BTreeSet<Tid>) -> Result<Vec<BlobId>> {
-        let things: BTreeSet<Tid> = self.engine.header(&b.commit).map(|h| b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai).map(|a| a.tid)).collect()).unwrap_or_default();
-        let mut out = Vec::new();
-        for t in things {
-            if !done.insert(t) {
-                continue;
-            }
-            for id in self.engine.live_trees(&t)?.blobs {
-                if self.state.entries.contains_key(&(*l, id)) || self.engine.has_blob(&id) {
-                    out.push(id);
+    /// Blobs the body's own delta values link (trees of large values, pages), listed by its
+    /// commit or not: reused chunks and a snapshot's values belong to the closure too
+    /// (spec/sync.md §3), so a reader under a new label (replacement, a move) gets them. Those
+    /// held here or already an entry under `l`; the walk is cached per body once complete.
+    fn body_blobs(&mut self, l: &LabelId, b: &Body) -> Result<Vec<BlobId>> {
+        let key = (b.commit, b.parts.clone());
+        let all = match self.body_links.get(&key) {
+            Some(x) => x.clone(),
+            None => {
+                let r = self.engine.body_links(&b.plaintext)?;
+                let all: Vec<BlobId> = r.blobs.into_iter().collect();
+                if r.missing.is_empty() {
+                    self.body_links.insert(key, all.clone());
                 }
+                all
             }
-        }
-        Ok(out)
+        };
+        Ok(all.into_iter().filter(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id)).collect())
     }
 
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh

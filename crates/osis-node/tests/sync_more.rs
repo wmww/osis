@@ -495,6 +495,40 @@ fn reused_chunks_follow_a_new_label_spec_sync_3() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
+// spec/sync.md §3 (closure): a commit touching a thing of the group and another thing of the
+// same reader actor outside the group's closure uploads under the label only what its own
+// deltas link: never the outside thing's large value.
+#[test]
+fn body_links_stay_in_the_closure_spec_sync_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let t1 = net.item(a, g, g, "in");
+    // t2: owned by g, not in its /group
+    let mut m = Mutation::new();
+    let t2 = net.engine(a).new_thing(&mut m, g);
+    m.set(t2, &BLOB, &Value::Bytes(noise(1 << 20, 9))).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.set(t1, &REG, &s("both")).unwrap();
+    m.set(t2, &REG, &s("both")).unwrap();
+    let both = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.run();
+    diags(&mut net, &[a, b]);
+    let outside = net.engine(a).live_trees(&t2).unwrap().blobs;
+    assert!(outside.len() > 4);
+    let l = net.label(a);
+    // the body under the label carries t2's part too (same reader actor)
+    let h = net.engine(a).header(&both).unwrap();
+    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
+    assert!(t2_part, "the commit's body under the label touches t2");
+    let under: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
+}
+
 // spec/sync.md §7 (chunk blobs still linked from a retained version are kept), spec/commits.md
 // §5: a right holder that never fetched the value's tree (lazy chunks) fetches its node blobs
 // before judging the dropped chunks, so it shreds those only the purged version reached, like

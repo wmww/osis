@@ -147,10 +147,20 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
                 Value::Link(l) => Ok(Value::Link(held.get(&l.hash).copied().unwrap_or(l))),
                 small => Ok(small),
             })?;
+            // an item twice in `new` gets one tree; hashing first costs one more pass over the
+            // items not held, and spares writing the (usually many) unchanged ones
+            let mut made: HashMap<[u8; 32], Value> = HashMap::new();
             chunk_value(new, s, &ty, None, &mut |v, _| match hash(v)? {
                 Value::Link(l) => match held.get(&l.hash) {
                     Some(x) => Ok(Value::Link(*x)),
-                    None => put(v, None),
+                    None => {
+                        if let Some(x) = made.get(&l.hash) {
+                            return Ok(x.clone());
+                        }
+                        let x = put(v, None)?;
+                        made.insert(l.hash, x.clone());
+                        Ok(x)
+                    }
                 },
                 small => Ok(small),
             })
@@ -196,6 +206,17 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     Ok(blobs.written)
 }
 
+/// Blob IDs a delta's canonical bytes link (its values' trees, its pages), through the held
+/// node and page blobs.
+pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
+    let mut out = LiveTrees::default();
+    let Ok(v) = osis_core::decode(delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) else { return Ok(out.blobs) };
+    let mut roots = Vec::new();
+    links_in(&v, &mut roots);
+    tree_blobs(tx, dedup, &roots, &mut out)?;
+    Ok(out.blobs)
+}
+
 /// Every link inside `v` (the root links of its large values).
 pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     match v {
@@ -211,19 +232,27 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     }
 }
 
-/// Level and links of a tree node blob, if `link` names one (`Ok(None)`: a chunk);
+/// What a link reaches one step down: a tree node's children (with whether they are chunks),
+/// or the links inside a page or link page; `Ok(None)` for anything else (a chunk);
 /// `Err(Missing)` when the blob is not held.
-fn node_links(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(u64, Vec<Link>)>> {
+fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
     let blob = blobs.fetch(&link.blob)?;
     if osis_label::blob_id(&blob) != link.blob {
         return Ok(None);
     }
     let Ok((_, pt)) = osis_label::open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
-    let Ok((level, kids)) = osis_label::tree::parse_node(&pt) else { return Ok(None) };
-    if osis_label::tree::node_hash(dedup, level, &kids) != link.hash {
+    if let Ok((level, kids)) = osis_label::tree::parse_node(&pt)
+        && osis_label::tree::node_hash(dedup, level, &kids) == link.hash
+    {
+        return Ok(Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect())));
+    }
+    if osis_crypto::link_hash(dedup, &pt) != link.hash {
         return Ok(None);
     }
-    Ok(Some((level, kids.into_iter().map(|(l, _)| l).collect())))
+    let Ok(v) = osis_core::decode(&pt, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }) else { return Ok(None) };
+    let mut out = Vec::new();
+    links_in(&v, &mut out);
+    Ok(Some((false, out)))
 }
 
 /// Blob IDs of the trees a thing's live states link (`Engine::live_trees`).
@@ -235,9 +264,9 @@ pub struct LiveTrees {
     pub missing: BTreeSet<BlobId>,
 }
 
-/// The trees under `roots`, through the node blobs this node holds.
-fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link]) -> Result<LiveTrees> {
-    let mut out = LiveTrees::default();
+/// The trees (and pages) under `roots`, through the node and page blobs this node holds,
+/// added to `out`.
+fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut LiveTrees) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.txn);
@@ -245,9 +274,9 @@ fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link]) -> Result<LiveT
         if !out.blobs.insert(l.blob) || leaf {
             continue;
         }
-        match node_links(&mut blobs, dedup, &l) {
+        match below(&mut blobs, dedup, &l) {
             // children of a level-1 node are chunks: not fetched
-            Ok(Some((level, kids))) => stack.extend(kids.into_iter().map(|k| (k, level <= 1))),
+            Ok(Some((chunks, kids))) => stack.extend(kids.into_iter().map(|k| (k, chunks))),
             Ok(None) => {}
             Err(Error::Label(osis_label::Error::Missing)) => {
                 out.missing.insert(l.blob);
@@ -255,7 +284,7 @@ fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link]) -> Result<LiveT
             Err(e) => return Err(e),
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 impl Engine {
@@ -275,17 +304,38 @@ impl Engine {
         let aks = self.aspects(tid)?;
         let tid = *tid;
         let r = self.run(|tx| {
-            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(LiveTrees::default()) };
+            let mut out = LiveTrees::default();
+            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(out) };
             let mut roots = Vec::new();
             for ak in &aks {
                 if let Some(v) = tx.state(&tid, ak)?.and_then(Fragment::read) {
                     links_in(&v, &mut roots);
                 }
             }
-            tree_blobs(tx, &dedup, &roots)
+            tree_blobs(tx, &dedup, &roots, &mut out)?;
+            Ok(out)
         })?;
         self.core.live_trees.insert(tid, r.clone());
         Ok(r)
+    }
+
+    /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
+    /// held node and page blobs: the trees of its values and the pages of its fragments, listed
+    /// by its commit or not (spec/sync.md §3 closure). Complete when nothing is `missing`.
+    pub fn body_links(&mut self, plaintext: &[u8]) -> Result<LiveTrees> {
+        let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(LiveTrees::default()) };
+        let Some(h) = self.header(&cb.id()) else { return Ok(LiveTrees::default()) };
+        self.run(|tx| {
+            let mut out = LiveTrees::default();
+            for p in &cb.parts {
+                let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+                let Ok(v) = osis_core::decode(&p.delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: p.delta.len() }) else { continue };
+                let mut roots = Vec::new();
+                links_in(&v, &mut roots);
+                tree_blobs(tx, &dedup, &roots, &mut out)?;
+            }
+            Ok(out)
+        })
     }
 
     /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes

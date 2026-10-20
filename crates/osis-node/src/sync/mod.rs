@@ -216,6 +216,9 @@ pub struct LabelStatus {
     pub last_sync: Option<u64>,
 }
 
+/// A body: its commit and parts `(ai, di)`.
+type BodyKey = (osis_core::CommitId, Vec<(usize, usize)>);
+
 /// The sync engine of one node.
 pub struct SyncEngine {
     pub(crate) engine: Engine,
@@ -249,6 +252,9 @@ pub struct SyncEngine {
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
     /// fetches those its server holds.
     pub(crate) tree_wants: BTreeSet<osis_core::BlobId>,
+    /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
+    /// never changes.
+    pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_core::BlobId>>,
     /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
     /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
     pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
@@ -331,6 +337,7 @@ impl SyncEngine {
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
             tree_wants: BTreeSet::new(),
+            body_links: BTreeMap::new(),
             sent: BTreeMap::new(),
             timed_sent: BTreeSet::new(),
             deleting: BTreeMap::new(),

@@ -471,6 +471,12 @@ fn stream_len_set_stream_spec_data_model_6() {
     assert_eq!(st.seek(SeekFrom::Current(200_000)).unwrap(), 200_015);
     st.read_exact(&mut b).unwrap();
     assert_eq!(&b[..], &data[200_015..200_025]);
+    assert_eq!(st.stream_position().unwrap(), 200_025);
+    assert_eq!(st.seek(SeekFrom::Current(-150_000)).unwrap(), 50_025);
+    st.read_exact(&mut b).unwrap();
+    assert_eq!(&b[..], &data[50_025..50_035]);
+    assert!(st.seek(SeekFrom::Current(-60_000)).is_err());
+    assert_eq!(st.seek(SeekFrom::End(10)).unwrap(), 300_000, "past the end clamps to the end");
     // a small value streams too; absent reads None; a non-string fails
     let small = ak("/t/small");
     db.write_with(|w| w.at(t, small.clone()).set(&s("hello"))).unwrap();

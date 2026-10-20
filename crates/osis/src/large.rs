@@ -25,8 +25,9 @@ pub struct ValueStream {
 
 enum Src {
     Inline(Vec<u8>),
-    /// `buf[at..]`: the unread rest of the current chunk; `head`: bytes of the string head.
-    Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, at: usize, head: u64 },
+    /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
+    /// `start`; `head`: bytes of the string head.
+    Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -82,7 +83,7 @@ impl ValueStream {
                         None => return Err(not_string()),
                     }
                 };
-                let src = Src::Tree { reader, buf: first, at: head, head: head as u64 };
+                let src = Src::Tree { reader, buf: first, start: 0, at: head, head: head as u64 };
                 Ok(ValueStream { db: db.clone(), tid, len, src, pos: 0 })
             }
             _ => Err(not_string()),
@@ -112,10 +113,11 @@ impl ValueStream {
                 out.get_mut(..piece.len()).unwrap_or_default().copy_from_slice(piece);
                 piece.len()
             }
-            Src::Tree { reader, buf, at, .. } => {
+            Src::Tree { reader, buf, start, at, .. } => {
                 while *at >= buf.len() {
                     match self.db.engine(|e| e.next_chunk(&tid, reader))? {
                         Some(c) => {
+                            *start += buf.len() as u64;
                             *buf = c;
                             *at = 0;
                         }
@@ -153,10 +155,17 @@ impl Seek for ValueStream {
         }
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start"))?;
         let target = target.min(self.len);
-        if let Src::Tree { reader, buf, at, head } = &mut self.src {
-            reader.seek(head.saturating_add(target));
-            buf.clear();
-            *at = 0;
+        if let Src::Tree { reader, buf, start, at, head } = &mut self.src {
+            let to = head.saturating_add(target);
+            // inside the chunk held: just move; else restart the tree walk there
+            if (*start..=*start + buf.len() as u64).contains(&to) {
+                *at = (to - *start) as usize;
+            } else {
+                reader.seek(to);
+                buf.clear();
+                *start = to;
+                *at = 0;
+            }
         }
         self.pos = target;
         Ok(self.pos)

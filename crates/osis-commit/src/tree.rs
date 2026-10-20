@@ -6,7 +6,7 @@
 
 use crate::Error;
 use osis_core::cbor::{Limits, decode, encode};
-use osis_core::format::{MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
+use osis_core::format::{CHUNK_MAX, MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
 use osis_core::{BlobId, ChunkParams, Chunker, Link, Value};
 use osis_crypto::{SUITE_1, Secret32, link_hash, link_tree_hash};
 
@@ -42,11 +42,17 @@ pub fn parse_node(plaintext: &[u8]) -> Result<(u64, Vec<Kid>), Error> {
     if !(1..=TREE_MAX_LEVEL).contains(&level) || links.is_empty() || links.len() > TREE_FANOUT || lens.len() != links.len() {
         return Err(Error::Malformed("tree node bounds"));
     }
+    // a child of a level-k node holds at most 512^(k-1) chunks of at most CHUNK_MAX bytes
+    let fan = u64::try_from(TREE_FANOUT).unwrap_or(u64::MAX);
+    let max = u32::try_from(level - 1).ok().and_then(|e| fan.checked_pow(e)).and_then(|x| x.checked_mul(CHUNK_MAX as u64)).unwrap_or(u64::MAX);
     let mut sum = 0u64;
     let mut kids = Vec::with_capacity(links.len());
     for (l, n) in links.iter().zip(lens) {
         let (Value::Link(l), Value::Int(n)) = (l, n) else { return Err(Error::Malformed("tree node link")) };
         let n = u64::try_from(*n).map_err(|_| Error::Malformed("tree length"))?;
+        if n > max {
+            return Err(Error::Malformed("tree length"));
+        }
         sum = sum.checked_add(n).ok_or(Error::Malformed("tree length"))?;
         kids.push((*l, n));
     }
@@ -58,11 +64,11 @@ pub fn kids_len(kids: &[Kid]) -> u64 {
     kids.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n))
 }
 
-/// A tree node's content hash: over its level and its children's hashes (spec/wire.md §6; the
-/// lengths are not covered).
+/// A tree node's content hash: over its level and its children's hashes and lengths
+/// (spec/wire.md §6).
 pub fn node_hash(dedup: &Secret32, level: u64, kids: &[Kid]) -> [u8; 32] {
-    let hashes: Vec<[u8; 32]> = kids.iter().map(|(l, _)| l.hash).collect();
-    link_tree_hash(dedup, level, &hashes)
+    let children: Vec<([u8; 32], u64)> = kids.iter().map(|(l, n)| (l.hash, *n)).collect();
+    link_tree_hash(dedup, level, &children)
 }
 
 /// Streaming chunk-tree builder (spec/wire.md §6). Holds the current chunk and one open node per
@@ -181,7 +187,8 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
 /// the call retried (lazy fetch, spec/sync.md §6).
 pub struct TreeReader {
     root: Link,
-    opened: bool,
+    /// The root node once read (children reversed): kept across seeks.
+    root_node: Option<(u64, Vec<Kid>)>,
     total: Option<u64>,
     /// Per open node: its level and the children not yet passed, reversed.
     stack: Vec<(u64, Vec<Kid>)>,
@@ -198,12 +205,12 @@ impl TreeReader {
     pub fn new(root: Link, min_chunk: usize, max_len: usize) -> TreeReader {
         let min_chunk = min_chunk.max(1);
         let budget = (max_len / min_chunk).saturating_add(1);
-        TreeReader { root, opened: false, total: None, stack: Vec::new(), skip: 0, min_chunk, budget, chunks_left: budget }
+        TreeReader { root, root_node: None, total: None, stack: Vec::new(), skip: 0, min_chunk, budget, chunks_left: budget }
     }
 
-    /// Children held on the open path.
+    /// Children held on the open path and in the kept root.
     pub fn path_links(&self) -> usize {
-        self.stack.iter().map(|(_, l)| l.len()).sum()
+        self.stack.iter().chain(&self.root_node).map(|(_, l)| l.len()).sum()
     }
 
     /// The tree's plaintext length as its root claims, once the root was read.
@@ -212,11 +219,11 @@ impl TreeReader {
     }
 
     /// Restarts at byte `offset` of the plaintext: the next chunk returned starts there (`None`
-    /// at or past the end). Fetches nothing; the next `next_chunk` fetches the root and the
-    /// nodes on the path to the chunk holding `offset`, and that chunk.
+    /// at or past the end). Fetches nothing; the next `next_chunk` fetches the nodes below the
+    /// root (kept once read) on the path to the chunk holding `offset`, and that chunk.
     pub fn seek(&mut self, offset: u64) {
-        self.opened = false;
         self.stack.clear();
+        self.stack.extend(self.root_node.clone());
         self.skip = offset;
         self.chunks_left = self.budget;
     }
@@ -235,10 +242,10 @@ impl TreeReader {
 
     /// The next chunk (from the seek offset on, after a `seek`), or `None` at the end.
     pub fn next_chunk(&mut self, dedup: &Secret32, src: &mut dyn LinkSource) -> Result<Option<Vec<u8>>, Error> {
-        if !self.opened {
+        if self.root_node.is_none() {
             let node = Self::node(dedup, src, &self.root, None)?;
             self.total = Some(kids_len(&node.1));
-            self.opened = true;
+            self.root_node = Some(node.clone());
             self.stack.push(node);
         }
         loop {
@@ -470,6 +477,11 @@ mod tests {
         assert!(parse_node(&neg).is_err());
         let over = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca); 3]), Value::List(vec![Value::Int(i64::MAX); 3])]));
         assert!(parse_node(&over).is_err());
+        // per-level bounds: a chunk is at most CHUNK_MAX, a level-1 node 512 of them
+        let one = |level: i64, n: u64| encode(&Value::List(vec![Value::Int(level), Value::List(vec![Value::Link(ca)]), Value::List(vec![Value::Int(n as i64)])]));
+        let cmax = CHUNK_MAX as u64;
+        assert!(parse_node(&one(1, cmax)).is_ok() && parse_node(&one(1, cmax + 1)).is_err());
+        assert!(parse_node(&one(2, 512 * cmax)).is_ok() && parse_node(&one(2, 512 * cmax + 1)).is_err());
     }
 
     // spec/wire.md §6: a seek fetches the root and the nodes on the path to the target chunk,
@@ -499,5 +511,53 @@ mod tests {
             rest.extend(c);
         }
         assert_eq!(rest, bytes[95_990..]);
+        // a seek whose path node is missing fails Missing and, once it is back, the retry
+        // returns the bytes at the target
+        let (_, kids) = parse_node(&src.0[&root.hash]).unwrap();
+        let (n1, n1_len) = kids[1];
+        let held = src.0.remove(&n1.hash).unwrap();
+        let at = kids[0].1 + 7;
+        r.seek(at);
+        assert!(matches!(r.next_chunk(&d, &mut src), Err(Error::Missing)));
+        src.0.insert(n1.hash, held);
+        let got = r.next_chunk(&d, &mut src).unwrap().unwrap();
+        assert_eq!(got, bytes[at as usize..at as usize + got.len()]);
+        assert!(n1_len > 7);
+    }
+
+    // spec/wire.md §6: seeks on an empty value (one empty chunk), a single chunk, and across
+    // zero-length children (passed without a fetch; reading through one before the last is
+    // still bad input).
+    #[test]
+    fn seek_edges_spec_wire_6() {
+        let d = Secret32::from_bytes([7; 32]);
+        let mut src = ByHash::default();
+        let empty = write_tree(&mut src, SMALL, b"").unwrap();
+        let mut r = TreeReader::new(empty, SMALL.min, usize::MAX);
+        r.seek(0);
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), Some(vec![]));
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), None);
+        r.seek(3);
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), None);
+        let one = write_tree(&mut src, SMALL, b"single chunk").unwrap();
+        let mut r = TreeReader::new(one, SMALL.min, usize::MAX);
+        r.seek(7);
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), Some(b"chunk".to_vec()));
+        r.seek(12);
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), None);
+        // [a (20), empty (0), b (20)]
+        let (a, b) = (vec![1u8; 20], vec![2u8; 20]);
+        let (la, lb, le) = (hash_link(link_hash(&d, &a)), hash_link(link_hash(&d, &b)), hash_link(link_hash(&d, b"")));
+        src.0.insert(la.hash, a);
+        src.0.insert(lb.hash, b.clone());
+        src.0.insert(le.hash, vec![]);
+        let root = put_node(&mut src, &d, 1, &[(la, 20), (le, 0), (lb, 20)]);
+        let mut r = TreeReader::new(root, SMALL.min, usize::MAX);
+        r.seek(25);
+        src.1 = 0;
+        assert_eq!(r.next_chunk(&d, &mut src).unwrap(), Some(b[5..].to_vec()));
+        assert_eq!(src.1, 2, "root and b only");
+        r.seek(20);
+        assert!(matches!(r.next_chunk(&d, &mut src), Err(Error::Malformed("chunk below the minimum before the last"))));
     }
 }

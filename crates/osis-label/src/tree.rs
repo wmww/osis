@@ -199,12 +199,12 @@ impl PageSink for BlobWriter<'_> {
     }
 }
 
-/// Digest of a node's exact children: a node is reused only over the very blobs it links, with
-/// the lengths the writer computed (content hashes do not cover lengths, spec/wire.md §6).
+/// Digest of a node's exact links (a node is reused only over the very blobs it links; its
+/// content hash covers the lengths).
 fn kids_digest(kids: &[Kid]) -> [u8; 32] {
     let mut h = osis_core::hash::Hasher::new();
-    for (l, n) in kids {
-        h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key).update(&n.to_le_bytes());
+    for (l, _) in kids {
+        h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key);
     }
     h.finalize()
 }

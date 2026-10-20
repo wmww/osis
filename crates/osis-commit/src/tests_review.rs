@@ -23,13 +23,13 @@ fn tree_reader_bounded() {
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
     let plain = crate::tree::node_plaintext(1, &[(cl, CHUNK_MIN as u64); 4]).unwrap();
     let (nid, _) = m.put(&Prefix { salt: [1; 16], ..none.clone() }, &plain).unwrap();
-    let root = Link { hash: link_tree_hash(&d, 1, &[cl.hash; 4]), blob: nid, suite: 1, key: [0; 32] };
+    let root = Link { hash: link_tree_hash(&d, 1, &[(cl.hash, CHUNK_MIN as u64); 4]), blob: nid, suite: 1, key: [0; 32] };
     assert_eq!(read_list(&root, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * CHUNK_MIN);
     assert!(matches!(read_list(&root, &d, &mut m, 3 * CHUNK_MIN), Err(Error::TooLarge(_))));
     // a level 2 node repeating that level 1 node 512 times stops at the bound
     let plain2 = crate::tree::node_plaintext(2, &vec![(root, 4 * CHUNK_MIN as u64); 512]).unwrap();
     let (n2, _) = m.put(&Prefix { salt: [2; 16], ..none }, &plain2).unwrap();
-    let root2 = Link { hash: link_tree_hash(&d, 2, &vec![root.hash; 512]), blob: n2, suite: 1, key: [0; 32] };
+    let root2 = Link { hash: link_tree_hash(&d, 2, &vec![(root.hash, 4 * CHUNK_MIN as u64); 512]), blob: n2, suite: 1, key: [0; 32] };
     assert!(matches!(read_list(&root2, &d, &mut m, MAX_LIST_BYTES), Err(Error::TooLarge(_))));
 }
 
@@ -44,12 +44,12 @@ fn tree_short_nonfinal_chunk_rejected() {
     let cl = Link { hash: link_hash(&d, &chunk), blob: cid, suite: 1, key: [0; 32] };
     let plain = crate::tree::node_plaintext(1, &vec![(cl, 1024); 512]).unwrap();
     let (nid, _) = m.put(&Prefix { salt: [1; 16], ..none.clone() }, &plain).unwrap();
-    let root = Link { hash: link_tree_hash(&d, 1, &vec![cl.hash; 512]), blob: nid, suite: 1, key: [0; 32] };
+    let root = Link { hash: link_tree_hash(&d, 1, &vec![(cl.hash, 1024); 512]), blob: nid, suite: 1, key: [0; 32] };
     assert!(matches!(read_list(&root, &d, &mut m, MAX_LIST_BYTES), Err(Error::Malformed(_))));
     // the local output bound
     let plain = crate::tree::node_plaintext(1, &[(cl, 1024)]).unwrap();
     let (nid, _) = m.put(&Prefix { salt: [2; 16], ..none }, &plain).unwrap();
-    let root = Link { hash: link_tree_hash(&d, 1, &[cl.hash]), blob: nid, suite: 1, key: [0; 32] };
+    let root = Link { hash: link_tree_hash(&d, 1, &[(cl.hash, 1024)]), blob: nid, suite: 1, key: [0; 32] };
     assert_eq!(read_list(&root, &d, &mut m, 1024).unwrap(), chunk);
     assert!(matches!(read_list(&root, &d, &mut m, 1023), Err(Error::TooLarge(_))));
 }

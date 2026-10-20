@@ -211,6 +211,13 @@ impl<'a> LargeReader<'a> {
     /// Restarts at canonical byte `offset`: the next `fill` fetches only the tree path to the
     /// chunk holding it (spec/wire.md §6 lengths).
     pub fn seek(&mut self, offset: u64) {
+        // inside the chunk held (`total` counts up to its end): just move
+        let end = self.total as u64;
+        let start = end.saturating_sub(self.chunk.len() as u64);
+        if !self.chunk.is_empty() && (start..=end).contains(&offset) {
+            self.pos = (offset - start) as usize;
+            return;
+        }
         self.tree.seek(offset);
         self.chunk = Vec::new();
         self.pos = 0;
@@ -379,6 +386,9 @@ impl<'a> StringReader<'a> {
         if to > self.len {
             return Err(Error::Malformed("seek past the end"));
         }
+        if to == self.pos {
+            return Ok(());
+        }
         self.inner.seek(self.head.saturating_add(to));
         self.pos = to;
         self.text = (self.is_text && to == 0).then(Utf8::default);
@@ -527,10 +537,21 @@ mod tests {
         let d = data(5000, 5);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 333) else { panic!() };
         // Opening fetches only the path to the first chunk: blobs arrive one by one on Missing.
+        struct Lazy<'a>(&'a mut MemoryBlobs, Option<osis_core::BlobId>);
+        impl crate::tree::BlobFetch for Lazy<'_> {
+            fn fetch(&mut self, id: &osis_core::BlobId) -> Result<Vec<u8>, Error> {
+                let r = self.0.fetch(id);
+                if r.is_err() {
+                    self.1 = Some(*id);
+                }
+                r
+            }
+        }
         let mut held = MemoryBlobs::default();
         let mut fetched = 0;
         loop {
-            let mut r = BlobReader::new(&f.dedup, &mut held);
+            let mut lazy = Lazy(&mut held, None);
+            let mut r = BlobReader::new(&f.dedup, &mut lazy);
             match StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).map(|s| s.len()) {
                 Ok(n) => {
                     assert_eq!(n, 5000);
@@ -540,8 +561,8 @@ mod tests {
                 Err(e) => panic!("{e}"),
             }
             fetched += 1;
-            let (id, b) = store.0.iter().find(|(id, _)| !held.0.contains_key(*id)).map(|(i, b)| (*i, b.clone())).unwrap();
-            held.0.insert(id, b);
+            let id = lazy.1.unwrap();
+            held.0.insert(id, store.0[&id].clone());
         }
         assert!(fetched > 0 && held.0.len() < store.0.len());
         let mut store2 = store;
@@ -697,7 +718,15 @@ mod tests {
         let mut src = Count(&store, &fetches);
         let mut r = BlobReader::new(&f.dedup, &mut src);
         let mut sr = StringReader::open(root, &f.dedup, &mut r, LargeParams::FORMAT, usize::MAX).unwrap();
+        // a seek inside the chunk held, or to the position itself, fetches nothing
         fetches.set(0);
+        sr.seek(1000).unwrap();
+        let mut b = [0u8; 10];
+        sr.read_exact(&mut b).unwrap();
+        sr.seek(1010).unwrap();
+        sr.seek(5).unwrap();
+        sr.read_exact(&mut b).unwrap();
+        assert_eq!((&b[..], fetches.get()), (&d[5..15], 0));
         sr.seek(sr.len() - MIB as u64).unwrap();
         let mut out = Vec::new();
         sr.read_to_end(&mut out).unwrap();
@@ -706,9 +735,9 @@ mod tests {
         assert!(fetches.get() <= in_range + 2 * height, "{} fetches: {in_range} chunks, height {height}", fetches.get());
     }
 
-    // spec/wire.md §6: content hashes do not cover lengths, so a tree whose nodes lie about them
-    // has an honest tree's root hash: a reader rejects it, and an honest rewrite of the same
-    // bytes reuses its chunks but none of its nodes.
+    // spec/wire.md §6: content hashes cover lengths, so a tree whose nodes lie about them has
+    // another root hash than the honest tree of the same bytes (never equal as a value); a
+    // reader rejects it, and an honest rewrite reuses its chunks but none of its nodes.
     #[test]
     fn lying_lengths_spec_wire_6() {
         struct Liar<'a, 'b>(&'a mut BlobWriter<'b>);
@@ -733,12 +762,11 @@ mod tests {
         let mut bw = BlobWriter::new(&f, &mut store, &mut rng);
         let liar = write_tree(&mut Liar(&mut bw), SMALL.chunk, &canon).unwrap();
         let mut hs = HashSink::new(f.dedup.clone());
-        assert_eq!(write_tree(&mut hs, SMALL.chunk, &canon).unwrap().hash, liar.hash);
+        assert_ne!(write_tree(&mut hs, SMALL.chunk, &canon).unwrap().hash, liar.hash);
         let mut r = BlobReader::new(&f.dedup, &mut store);
         assert_eq!(read_value(liar, &f.dedup, &mut r, SMALL, usize::MAX), Err(Error::Malformed("tree length")));
         let (honest, written, reused) = rewrite(&mut store, &f, 15, &d, Some(liar));
-        assert_eq!(honest.hash, liar.hash);
-        assert_ne!(honest.blob, liar.blob);
+        assert_ne!(honest.hash, liar.hash);
         assert!(written >= 1 && written <= hs.nodes.len() && reused as u64 >= hs.chunks, "{written} written, {reused} reused");
     }
 
