@@ -106,6 +106,21 @@ pub(crate) fn owner_only() -> std::fs::OpenOptions {
     o
 }
 
+/// Makes an existing store file (0600) or directory (0700) readable by its owner only, whatever
+/// mode it was created with (a store made before files were created owner-only). No-op off unix.
+#[cfg(feature = "file-backend")]
+pub fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if std::fs::metadata(path)?.is_dir() { 0o700 } else { 0o600 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// The least key greater than every key starting with `prefix`; `None` if there is none.
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();

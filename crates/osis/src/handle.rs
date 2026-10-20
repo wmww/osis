@@ -182,6 +182,8 @@ fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_sto
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
             d.create(p).map_err(|e| Error::Storage(e.to_string()))?;
+            // a directory made before stores were created owner-only keeps its mode otherwise
+            osis_store::restrict_to_owner(p).map_err(|e| Error::Storage(e.to_string()))?;
             let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| Error::Storage(e.to_string()))?;
             Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join("root")))))
         }

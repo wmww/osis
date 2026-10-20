@@ -101,7 +101,10 @@ impl SyncEngine {
                     v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
                 }
             }
-            v.extend(self.static_tries().into_iter().map(|(_, x)| x));
+            // only the key actor the hint follows for: presenting every held one would link their
+            // labels at this server (spec/requirements.md, blind nodes)
+            let via = self.state.hints.get(l).and_then(|h| h.via);
+            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via).map(|(_, x)| x));
             return (None, v);
         };
         let index = gl.index;
@@ -143,10 +146,10 @@ impl SyncEngine {
         self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
-    /// Follows a label known only by ID and servers (a recovery card's home label, a link's
-    /// label): opened by guessed index or by a held key actor's static entry.
-    pub fn follow(&mut self, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
-        self.state.add_hint(label, super::state::Hint { thing, servers });
+    /// Follows `thing`'s label known only by ID and servers (a recovery card's home label, a
+    /// link's label): opened by guessed index or by the static entry of `via`, a held key actor.
+    pub fn follow(&mut self, via: Tid, thing: Tid, label: LabelId, servers: Vec<osis_label::Address>) -> Vec<super::Action> {
+        self.state.add_hint(label, super::state::Hint { thing, servers, via: Some(via) });
         self.handle(super::Event::Local)
     }
 

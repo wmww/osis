@@ -302,8 +302,8 @@ fn static_entry_opens_home_label_spec_sync_5() {
     let t = net.item(a, alice.person, alice.person, "on the card's label");
     net.run();
     let card = alice.card.clone();
-    net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
-    let acts = net.sync(c).follow(card.person, card.home_label, card.servers.clone());
+    let rk = net.engine(c).hold_key_actor(card.seed.clone()).unwrap();
+    let acts = net.sync(c).follow(rk, card.person, card.home_label, card.servers.clone());
     net.actions(c, acts);
     net.run();
     net.run();
@@ -433,4 +433,59 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     net.actions(b, acts);
     net.settle(100_000);
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+// spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a server deleted is
+// re-encrypted), §7: a purger that has not seen a co-writer's concurrent reuse deletes the
+// shared chunks at the server; the reuser, seeing them deleted, writes its value again with
+// them re-encrypted, so every reader still reads it whole.
+#[test]
+fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    // an admin co-writer: it holds the admin token secret, so its framing keeps a's chunks
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let blob_ak = Ak::new(BLOB.ak()).unwrap();
+    let v1 = noise(1 << 20, 9);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v1.clone())));
+    // b edits offline, reusing v1's chunks; a purges v1 without seeing that
+    net.set_online(b, false);
+    let mut v2 = v1.clone();
+    v2.splice(300_000..300_000, noise(100, 10));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    let first: BTreeSet<osis_core::BlobId> = net.engine(a).package(&c1).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect();
+    let reused: BTreeSet<_> = first.intersection(&net.engine(b).live_trees(&t).unwrap().unwrap()).copied().collect();
+    assert!(!reused.is_empty());
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let server: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    assert!(reused.is_disjoint(&server), "the purger deleted the chunks it judged dead");
+    net.set_online(b, true);
+    // past the redial pause
+    net.advance(6_000);
+    net.run();
+    for n in [a, b, c] {
+        let acts = net.sync(n).fetch_missing();
+        net.actions(n, acts);
+    }
+    net.settle(100_000);
+    let live = net.engine(b).live_trees(&t).unwrap().unwrap();
+    assert!(live.is_disjoint(&reused), "the reuser re-encrypted them");
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2.clone())), "node {n}");
+    }
 }

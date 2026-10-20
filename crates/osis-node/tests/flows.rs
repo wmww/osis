@@ -1345,14 +1345,14 @@ fn stale_key_actor_box_after_until_spec_crypto_4() {
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_some(), "the key actor holds the read epoch");
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r0).is_empty() == false, "the key actor holds the read epoch");
     lp.advance(2 * 3_600_000);
     let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
     let r1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(r0, r1, "read rotated: {done:?}");
     spread(&mut lp);
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r1).is_empty(), "the departed key actor is out");
 }
 
 // spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs

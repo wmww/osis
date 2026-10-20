@@ -80,11 +80,14 @@ pub struct OutRec {
     pub blob: Vec<u8>,
 }
 
-/// A label learned from an inbox blob before its `/label` is held.
+/// A label learned from an inbox blob before its `/label` is held, or followed by a held key
+/// actor's static entry (`via`: a recovery card's home label, a link's label).
 #[derive(Clone, Debug)]
 pub struct Hint {
     pub thing: Tid,
     pub servers: Vec<Address>,
+    /// The key actor whose static entry may open it; no other key actor's is presented.
+    pub via: Option<Tid>,
 }
 
 #[derive(Default)]
@@ -279,7 +282,8 @@ impl State {
                         let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("hint"))?;
                         servers.push(Address { url, key: x.arr()? });
                     }
-                    s.hints.insert(l, Hint { thing, servers });
+                    let via = if x.is_empty() { None } else { Some(x.tid()?) };
+                    s.hints.insert(l, Hint { thing, servers, via });
                 }
                 _ => {}
             }
@@ -490,6 +494,9 @@ impl State {
         let mut w = Wr::new().raw(h.thing.as_bytes()).u32(h.servers.len() as u32);
         for a in &h.servers {
             w = w.bytes(a.url.as_bytes()).raw(&a.key);
+        }
+        if let Some(v) = &h.via {
+            w = w.raw(v.as_bytes());
         }
         self.put(key(HINT, &[&l.0]), w.take());
         self.hints.insert(l, h);

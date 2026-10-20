@@ -22,5 +22,5 @@ pub use open::{MemorySecretStore, Opened, Opener, SecretStore, ingest, open_boxe
 pub use osis_crypto::Epoch;
 pub use planner::{Entry, Graph, MemoryGraph, PermGraph, Plan, lost_access, plan_departure, plan_inside};
 pub use tokens::{levels, token_candidates, token_secrets};
-pub use wrap::{WrapEpoch, label_role, newer_than_head, registered_epoch, registration_epochs, wrap_epoch};
+pub use wrap::{WrapEpoch, label_role, newer_than_head, registered_epoch, registered_secret, registration_epochs, wrap_epoch};
 pub use produce::{MemberKeys, Recipient, Rotated, Rotation, box_member, reseal_member, roles_up_to, rotate};

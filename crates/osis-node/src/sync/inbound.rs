@@ -141,6 +141,15 @@ impl SyncEngine {
                     if let Some(s) = server {
                         self.state.set_present(s, l, b, false);
                     }
+                    // a chunk a live value here links, deleted by a purger that had not seen its
+                    // reuse: written again re-encrypted (spec/sync.md §1)
+                    if !self.state.blobs.contains_key(&b) {
+                        match self.engine.relink(&b) {
+                            Err(e @ crate::Error::Store(_)) => return Err(e),
+                            Err(e) => self.diag(format!("re-encrypting a deleted chunk: {e}")),
+                            Ok(_) => {}
+                        }
+                    }
                     if !self.state.present_anywhere(&l, &b) {
                         self.state.remove_entry(l, b);
                         self.forget_blob(&b)?;
@@ -357,7 +366,7 @@ impl SyncEngine {
                     let pt = osis_core::encode(&payload.commit);
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
-                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone() });
+                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone(), via: None });
                         }
                     }
                     e.kind = Kind::Inbox;

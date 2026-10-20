@@ -116,4 +116,30 @@ mod file {
         drop(b);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    // spec/requirements.md Deletion (forward secure: nothing on the device yields what it may no
+    // longer read): store files made before files were created owner-only become so on open.
+    #[cfg(unix)]
+    #[test]
+    fn existing_store_files_become_owner_only_spec_requirements_deletion() {
+        use osis_store::{FileRoot, RootStorage};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("modes");
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let open = |p: &std::path::Path| std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        drop(RedbBackend::open(&dir.join("db")).unwrap());
+        let mut r = FileRoot::new(dir.join("root"));
+        r.store(&osis_store::RootRecord { epoch: 1, key: osis_crypto::Secret32::from_bytes([1; 32]) }).unwrap();
+        for p in [dir.join("db"), dir.join("root")] {
+            open(&p);
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        drop(RedbBackend::open(&dir.join("db")).unwrap());
+        assert!(FileRoot::new(dir.join("root")).load().unwrap().is_some());
+        osis_store::restrict_to_owner(&dir).unwrap();
+        assert_eq!(mode(&dir.join("db")), 0o600);
+        assert_eq!(mode(&dir.join("root")), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

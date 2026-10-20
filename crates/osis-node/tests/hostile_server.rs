@@ -202,7 +202,7 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     let addr = net.address(sv);
     let mut se: SyncEngine = net.take(a);
     let before = held(&se);
-    let acts = se.follow(ka, target, vec![addr]);
+    let acts = se.follow(ka, ka, target, vec![addr]);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
     se.handle(Event::Up { conn });
     let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
@@ -263,7 +263,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let addr = net.address(sv);
     let mut se: SyncEngine = net.take(a);
     let before = held(&se);
-    let acts = se.follow(ka, target, vec![addr]);
+    let acts = se.follow(ka, ka, target, vec![addr]);
     let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
     se.handle(Event::Up { conn });
     let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
@@ -471,4 +471,43 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     }
     let n = net.sync(a).entries(&l).len();
     assert!(n <= before + 9, "{n}");
+}
+
+// spec/requirements.md (blind nodes: a server cannot link labels), spec/sync.md §2, §5: a hinted
+// open (a link's or recovery card's label) presents only the static entry of the key actor it
+// follows for, never another held key actor's signing key.
+#[test]
+fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let (s1, s2) = (Secret32::from_bytes([0x3d; 32]), Secret32::from_bytes([0x3e; 32]));
+    let k1 = net.engine(a).hold_key_actor(s1.clone()).unwrap();
+    net.engine(a).hold_key_actor(s2.clone()).unwrap();
+    let (v1, v2) = (osis_crypto::KeyActorKeys::from_seed(&s1).signing.verifying_key(), osis_crypto::KeyActorKeys::from_seed(&s2).signing.verifying_key());
+    let target = LabelId([0x43; 16]);
+    let addr = net.address(sv);
+    let mut se: SyncEngine = net.take(a);
+    let acts = se.follow(k1, k1, target, vec![addr]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    let mut statics = Vec::new();
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            if let osis_label::Proof::Static { signing, .. } = proof {
+                statics.push(signing);
+            }
+            next.extend(se.handle(Event::Bytes { conn, bytes: frame(Message::Error { id, code: osis_proto::Code::REFUSED }) }));
+        }
+        acts = next;
+    }
+    assert!(statics.contains(&v1), "the followed key actor tries its static entry");
+    assert!(!statics.contains(&v2), "another held key actor is never named to the server");
 }

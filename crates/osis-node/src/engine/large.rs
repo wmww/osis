@@ -10,12 +10,14 @@
 use super::blobs::TxBlobs;
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_core::{Ak, BlobId, ChunkParams, Link, Tid, Value};
+use osis_core::{Ak, BlobId, ChunkParams, CommitId, Link, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, LargeParams, Reuse};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
-use std::collections::BTreeSet;
+use osis_schema::core_types::is_membership_class;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Upper bound on a large value read back whole (local policy; streams read beyond it).
 pub const MAX_READ: usize = 1 << 30;
@@ -143,8 +145,9 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
 /// position holds now (spec/sync.md §1: a reused chunk keeps its blob unless the re-encryption
 /// rule says otherwise; one this node no longer holds is written afresh). Returns the blobs
-/// written (ID, prefix salt): the delta's chunk list; reused blobs are not in it.
-pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing) -> Result<Vec<(BlobId, [u8; 16])>> {
+/// written (ID, prefix salt): the delta's chunk list; reused blobs are not in it. `fresh`: blobs
+/// never reused.
+pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<(BlobId, [u8; 16])>> {
     tx.load(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
     let mut blobs = TxBlobs::new(&mut tx.txn);
@@ -152,7 +155,11 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
     let mut put = |v: &Value, base: Option<&Link>| -> Result<Value> {
         let reuse = match base {
-            Some(b) => Some(Reuse::index(b, framing.clone(), &mut blobs, ChunkParams::FORMAT, max)?),
+            Some(b) => {
+                let mut r = Reuse::index(b, framing.clone(), &mut blobs, ChunkParams::FORMAT, max)?;
+                fresh.iter().for_each(|x| r.exclude(x));
+                Some(r)
+            }
             None => None,
         };
         let mut bw = match &reuse {
@@ -245,6 +252,60 @@ impl Engine {
         })?;
         self.core.live_trees.insert(tid, r.clone());
         Ok(r)
+    }
+
+    /// A chunk or tree node `lost` that a live value links was deleted at a server: a purger
+    /// that had not seen a concurrent reuse of it judged it dead (spec/sync.md §1). Writes each
+    /// aspect of a commit listing it whose state links it again (replace with its value read
+    /// whole, every large value re-chunked against its current tree) with `lost` re-encrypted,
+    /// where this node holds the value, may write the thing and knows the aspect's schema.
+    /// Returns the commit, if one was written.
+    pub fn relink(&mut self, lost: &BlobId) -> Result<Option<CommitId>> {
+        let id = *lost;
+        if !self.run(|tx| Ok(tx.txn.get_blob(&id)?.is_some()))? {
+            return Ok(None);
+        }
+        // reuse links within one position of one aspect: the aspects of the commits listing it
+        // the schema each was written with: `Some(None)` untyped, `None` not registered here
+        let mut aspects: BTreeMap<(Tid, Ak), Option<Option<Arc<Schema>>>> = BTreeMap::new();
+        for m in self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| c.blob == id)) {
+            let h = &m.header;
+            for a in &h.aspects {
+                let schema = match a.schema {
+                    None => Some(None),
+                    Some(i) => h.schemas.get(i).and_then(|(s, _)| self.core.schemas.get(s)).map(|s| Some(s.clone())),
+                };
+                aspects.entry((a.tid, a.ak.clone())).or_insert(schema);
+            }
+        }
+        let mut m = super::Mutation::new();
+        m.fresh.insert(id);
+        for ((tid, ak), schema) in aspects {
+            // an unknown schema: a typed value cannot be written back safely
+            let Some(schema) = schema else { continue };
+            if is_membership_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
+                continue;
+            }
+            let linked = self.run(|tx| {
+                let Some(dedup) = tx.core.dedup(&tid) else { return Ok(None) };
+                let mut roots = Vec::new();
+                if let Some(v) = tx.state(&tid, &ak)?.and_then(Fragment::read) {
+                    links_in(&v, &mut roots);
+                }
+                tree_blobs(tx, &dedup, &roots)
+            })?;
+            if !linked.is_some_and(|s| s.contains(&id)) {
+                continue;
+            }
+            let Ok(Some(v)) = self.get_full(&tid, &ak) else { continue };
+            let e = m.aspects.entry((tid, ak)).or_default();
+            e.schema = schema;
+            e.ops.push(PathOp { path: Vec::new(), op: Op::Replace(v) });
+        }
+        if m.aspects.is_empty() {
+            return Ok(None);
+        }
+        self.commit(m)
     }
 
     /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes

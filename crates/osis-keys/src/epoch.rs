@@ -71,16 +71,29 @@ pub struct EpochInfo {
     /// state. Unestablished epochs are kept for reading only: never current, supersede nothing,
     /// never encrypted under, never put in a history box.
     pub established: Option<Provenance>,
+    /// From a checked source (an applied valid box, a history box opened with such a secret, an
+    /// own rotation): may be encrypted under.
     pub secret: Option<Secret32>,
-    /// `secret` was learned only from an unchecked box (a pending or invalid commit, or a history
-    /// box opened with such a secret): kept for reading, never encrypted under, until an applied
-    /// valid box carries it (spec/crypto.md §4).
-    pub reading_only: bool,
+    /// Distinct candidates learned only from unchecked boxes (a pending or invalid commit, or a
+    /// history box opened with such a secret) while `secret` is none: kept for reading, never
+    /// encrypted under, until an applied valid box carries one (spec/crypto.md §4). Every one is
+    /// kept, so a wrong secret planted first does not hide the genuine one; readers try each.
+    pub reading: Vec<Secret32>,
+}
+
+impl EpochInfo {
+    /// The checked secret, else every reading-only candidate.
+    fn readable(&self) -> Vec<&Secret32> {
+        match &self.secret {
+            Some(s) => vec![s],
+            None => self.reading.iter().collect(),
+        }
+    }
 }
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading_only: false }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: None, snapshot: false, established: None, secret: None, reading: Vec::new() }
     }
 }
 
@@ -103,26 +116,25 @@ impl RoleEpochs {
     }
 
     /// Sets `e`'s secret from a checked source (an applied valid box, a history box opened with
-    /// such a secret, an own rotation); replaces a reading-only one.
+    /// such a secret, an own rotation); drops the reading-only candidates.
     pub fn set_secret(&mut self, e: Epoch, secret: Secret32) {
         let info = self.observe(e);
         info.secret = Some(secret);
-        info.reading_only = false;
+        info.reading.clear();
     }
 
-    /// Records a secret learned only from an unchecked box (spec/crypto.md §4): kept for reading
-    /// when `e` holds none; never replaces a secret.
+    /// Records a secret learned only from an unchecked box (spec/crypto.md §4): one more
+    /// reading-only candidate when `e` holds no checked secret.
     pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32) {
         let info = self.observe(e);
-        if info.secret.is_none() {
-            info.secret = Some(secret);
-            info.reading_only = true;
+        if info.secret.is_none() && !info.reading.contains(&secret) {
+            info.reading.push(secret);
         }
     }
 
-    /// Whether `e`'s secret is held only for reading (`set_reading_secret`).
+    /// Whether `e`'s secrets are held only for reading (`set_reading_secret`).
     pub fn is_reading_only(&self, e: &Epoch) -> bool {
-        self.map.get(e).is_some_and(|i| i.secret.is_some() && i.reading_only)
+        self.map.get(e).is_some_and(|i| i.secret.is_none() && !i.reading.is_empty())
     }
 
     /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
@@ -199,13 +211,13 @@ impl RoleEpochs {
 
     /// `e`'s secret when it may be encrypted under (not reading-only).
     pub fn secret(&self, e: &Epoch) -> Option<&Secret32> {
-        self.map.get(e).filter(|i| !i.reading_only).and_then(|i| i.secret.as_ref())
+        self.map.get(e).and_then(|i| i.secret.as_ref())
     }
 
-    /// `e`'s secret for reading: any held, reading-only included (opening a label, unwrapping,
-    /// opening history boxes).
-    pub fn reading_secret(&self, e: &Epoch) -> Option<&Secret32> {
-        self.map.get(e).and_then(|i| i.secret.as_ref())
+    /// `e`'s secrets for reading: the checked one, else every reading-only candidate (opening a
+    /// label, unwrapping, opening history boxes).
+    pub fn reading_secrets(&self, e: &Epoch) -> Vec<&Secret32> {
+        self.map.get(e).map(EpochInfo::readable).unwrap_or_default()
     }
 
     /// Every known epoch, ascending.
@@ -215,7 +227,7 @@ impl RoleEpochs {
 
     /// Every held secret that may be encrypted under (not reading-only), ascending by epoch.
     pub fn held(&self) -> impl Iterator<Item = (Epoch, &Secret32)> {
-        self.map.iter().filter(|(_, i)| !i.reading_only).filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s)))
+        self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s)))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -273,9 +285,9 @@ impl RoleEpochs {
     }
 
     /// Held secrets, newest first (a reader tries them in this order, spec/crypto.md §5).
-    /// Reading-only secrets included.
+    /// Reading-only candidates included, each (one epoch may appear several times).
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
-        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
+        let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().flat_map(|(e, i)| i.readable().into_iter().map(|s| (*e, s))).collect();
         v.sort_by(|a, b| if is_newer(&a.0, &b.0) { std::cmp::Ordering::Less } else if a.0 == b.0 { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater });
         v
     }
@@ -284,7 +296,7 @@ impl RoleEpochs {
     pub fn drop_secrets(&mut self) {
         for i in self.map.values_mut() {
             i.secret = None;
-            i.reading_only = false;
+            i.reading.clear();
         }
     }
 }
@@ -333,6 +345,7 @@ impl ActorEpochs {
         for r in ROLES {
             for info in a.role_mut(r).map.values_mut() {
                 info.secret = info.secret.as_ref().map(|s| thing_role_secret(s, r, tid));
+                info.reading = info.reading.iter().map(|s| thing_role_secret(s, r, tid)).collect();
                 info.established = info.established.map(|_| Provenance::Derived);
                 info.applied = None;
                 info.snapshot = false;

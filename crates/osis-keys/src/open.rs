@@ -109,25 +109,36 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
                 done.insert(k.clone());
                 continue;
             };
-            let Some(s) = epochs.role(k.role).reading_secret(&e).cloned() else { continue };
+            let candidates: Vec<Secret32> = epochs.role(k.role).reading_secrets(&e).into_iter().cloned().collect();
+            if candidates.is_empty() {
+                continue;
+            }
             // what a reading-only secret opens is reading-only too
             let unchecked = epochs.role(k.role).is_reading_only(&e);
             done.insert(k.clone());
             progress = true;
-            match open_history(&s, actor, k.role, &e, ct) {
+            // a reading-only epoch may hold several candidates: the one that opens the box counts
+            let mut opened = Err(Error::Mismatch("history box"));
+            for s in &candidates {
+                opened = open_history(s, actor, k.role, &e, ct).map_err(Error::from);
+                if opened.is_ok() {
+                    break;
+                }
+            }
+            match opened {
                 Ok(earlier) => {
                     let re = epochs.role_mut(k.role);
                     re.rotation(e, earlier.iter().map(|(x, _)| *x));
                     for (x, sx) in earlier {
                         if unchecked {
                             re.set_reading_secret(x, sx);
-                        } else if re.reading_secret(&x).is_none() || re.is_reading_only(&x) {
+                        } else if re.secret(&x).is_none() {
                             re.set_secret(x, sx);
                         }
                     }
                 }
                 Err(err) => {
-                    failed.insert(k.clone(), err.into());
+                    failed.insert(k.clone(), err);
                 }
             }
         }
@@ -151,7 +162,7 @@ pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut Acto
         let re = epochs.role_mut(o.role);
         if !checked {
             re.set_reading_secret(o.epoch, o.secret);
-        } else if re.reading_secret(&o.epoch).is_none() || re.is_reading_only(&o.epoch) {
+        } else if re.secret(&o.epoch).is_none() {
             re.set_secret(o.epoch, o.secret);
         }
     }

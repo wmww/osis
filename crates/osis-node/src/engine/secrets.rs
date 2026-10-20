@@ -192,7 +192,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                             Value::List(i.established.iter().map(|p| uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
-                            Value::Bool(i.reading_only),
+                            Value::List(i.reading.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                         ])
                     })
                     .collect(),
@@ -211,9 +211,12 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let (fields, reading_only) = match f.as_slice() {
-                [rest @ .., Value::Bool(ro)] if rest.len() == 7 => (rest, *ro),
-                rest => (rest, false),
+            // older layouts: 7 fields, or an 8th `Bool` marking `sec` reading-only
+            let empty = Vec::new();
+            let (fields, reading, old_ro) = match f.as_slice() {
+                [rest @ .., Value::List(r)] if rest.len() == 7 => (rest, r, false),
+                [rest @ .., Value::Bool(ro)] if rest.len() == 7 => (rest, &empty, *ro),
+                rest => (rest, &empty, false),
             };
             let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec)] = fields else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
@@ -229,9 +232,19 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             for s in sup {
                 info.supersedes.insert(Epoch::from_wire(s).map_err(|_| bad())?);
             }
-            if let [Value::Bytes(s)] = sec.as_slice() {
-                info.secret = Some(Secret32::from_bytes(s.as_slice().try_into().map_err(|_| bad())?));
-                info.reading_only = reading_only;
+            let secret = |v: &Value| match v {
+                Value::Bytes(s) => Ok(Secret32::from_bytes(s.as_slice().try_into().map_err(|_| bad())?)),
+                _ => Err(bad()),
+            };
+            if let [s] = sec.as_slice() {
+                if old_ro {
+                    info.reading.push(secret(s)?);
+                } else {
+                    info.secret = Some(secret(s)?);
+                }
+            }
+            for s in reading {
+                info.reading.push(secret(s)?);
             }
         }
     }
@@ -269,6 +282,7 @@ mod tests {
         a.read.set_secret(e1, Secret32::from_bytes([1; 32]));
         a.read.set_established(e1, Provenance::Own);
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]));
+        a.read.set_reading_secret(e2, Secret32::from_bytes([3; 32]));
         a.read.set_established(e2, Provenance::Chain);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);

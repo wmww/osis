@@ -271,6 +271,13 @@ impl Reuse {
         Ok(Some((prefix, level, links)))
     }
 
+    /// Never reuses `blob` (a chunk or node a server deleted, spec/sync.md §1): it is written
+    /// afresh, and so is every node above it.
+    pub fn exclude(&mut self, blob: &BlobId) {
+        self.chunks.retain(|_, l| l.blob != *blob);
+        self.nodes.retain(|_, (l, _)| l.blob != *blob);
+    }
+
     /// Chunk links indexed.
     pub fn chunks(&self) -> usize {
         self.chunks.len()

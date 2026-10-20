@@ -170,7 +170,7 @@ fn stale_key_actor_box_still_carries() {
     // K's box is keyed at the superseded write epoch and still opens r0
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
-    assert!(kv.read.reading_secret(&r0).is_some());
+    assert!(!kv.read.reading_secrets(&r0).is_empty());
     let deps = [Departure::member(k, Role::Read)];
     let mut held = MemoryHeldActors::default();
     let key = s.boxes.keys().find(|x| x.member == k).unwrap().clone();

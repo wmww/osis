@@ -191,7 +191,7 @@ fn unchecked_boxes_are_reading_only() {
     let mut gv = ActorEpochs::default();
     ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
     for e in f.forks {
-        assert_eq!(gv.read.reading_secret(&e), Some(&Secret32::from_bytes([0xee; 32])));
+        assert_eq!(gv.read.reading_secrets(&e), vec![&Secret32::from_bytes([0xee; 32])]);
         assert!(gv.read.secret(&e).is_none() && gv.read.is_reading_only(&e));
         gv.read.set_established(e, osis_keys::Provenance::Chain);
     }
@@ -230,4 +230,38 @@ fn reading_only_through_history() {
     assert!(older.iter().all(|e| gv.read.is_reading_only(e)));
     ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
     assert!(older.iter().all(|e| !gv.read.is_reading_only(e) && gv.read.secret(e).is_some()));
+}
+
+// spec/crypto.md §4: secrets of a pending grant are kept for reading. A wrong secret planted for
+// an epoch before the genuine pending box arrives does not hide it: every candidate is kept, the
+// history box opens with the genuine one and the head's registered label key finds it.
+#[test]
+fn planted_reading_secret_does_not_hide_genuine_spec_crypto_4() {
+    let f = forked();
+    let (g, ge) = (tid(5), person(0x50));
+    let rcpt = actor_rcpt(g, Role::Read, &ge);
+    let read = roles_up_to(Role::Read);
+    let mut fake_view = f.view.clone();
+    for e in f.forks {
+        fake_view.read.set_secret(e, Secret32::from_bytes([0xee; 32]));
+    }
+    let fake = box_member(&f.a, &fake_view, &f.s, &rcpt, &read, &mut rng(8)).unwrap().unwrap();
+    let mut s_fake = f.s.clone();
+    fake.apply(&mut s_fake);
+    let real = box_member(&f.a, &f.view, &f.s, &rcpt, &read, &mut rng(9)).unwrap().unwrap();
+    let mut s = f.s.clone();
+    real.apply(&mut s);
+    let mut gv = ActorEpochs::default();
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    for e in f.forks {
+        let genuine = f.view.read.secret(&e).unwrap();
+        assert_eq!(gv.read.reading_secrets(&e).len(), 2);
+        assert!(gv.read.reading_secrets(&e).contains(&genuine) && gv.read.is_reading_only(&e));
+        let key = osis_crypto::label_role_key(osis_keys::label_role(Role::Read), genuine, 3).verifying_key();
+        assert_eq!(osis_keys::registered_secret(&gv.read, Role::Read, 3, &key), Some((e, genuine)));
+    }
+    let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
+    assert!(!older.is_empty());
+    assert!(older.iter().all(|e| gv.read.reading_secrets(e) == vec![f.view.read.secret(e).unwrap()]), "history opened with the genuine one");
 }
