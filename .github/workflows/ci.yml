@@ -35,6 +35,8 @@ jobs:
         run: python3 tools/policy.py
       - name: every test cites a spec section
         run: python3 tools/spec_map.py --uncited
+      - name: every MUST has a test or an issue
+        run: python3 tools/spec_map.py --gaps
 
   deny:
     runs-on: ubuntu-latest
