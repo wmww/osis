@@ -16,7 +16,8 @@ Reference: plans/testing.md §6, notes/testing.md (budgets, spec map), notes/syn
 
 ## Steps
 - [x] Map + gaps; negative and metadata tests.
-- [ ] Review passes and fixes; scale checks; panic and dependency audit.
+- [ ] Review passes and fixes.
+- [x] Scale checks; panic and dependency audit.
 - [ ] Notes, deletions, report.
 
 ## Done when
@@ -24,3 +25,4 @@ The report is written, the owner can read notes/overview.md and know the state, 
 
 ## Progress
 - Step 1 done: tools/spec_map.py rule checklist (46 rules: 42 tested, 1 issued, 3 vacuous; `--gaps` in CI), anchors cited on existing tests, new negative tests (perm owner and edge writes, link commit form, edge change/removal inbox, keep at least, QUIC auth and 0-RTT) and metadata tests (osis-node metadata.rs); no security bug found; issues/tests-spec-gaps.md.
+- Step 2 scale checks and audits done (notes/testing.md "Scale checks", Fuzzing, Policy checks): store tables, paged snapshots, 4 GiB streaming, rotation bytes (2.7 KB per member), reconciliation rounds and text budget pass; misses filed: node state not paged (95 MB written per edit at 10^6 keys), rotation commit superlinear (29 s at 1000), dense-diff reconciliation bytes, perm eval (4–5 s at 10^4). 15 fuzz targets (new `delta`, `box`) 120 s each, no crash; clippy deny holds; deny, policy and the allowlist clean.
