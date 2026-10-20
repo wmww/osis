@@ -766,6 +766,42 @@ fn single_use_finalization_audits_spec_perm_9() {
     }
 }
 
+// spec/permissions.md §9, spec/commits.md §2: revoking a joiner of a multi-use link removes it
+// and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
+// revoked one and a seed holder (L) get none; every peer applies the two-edge commit.
+#[test]
+fn revoke_joiner_one_rotation_spec_commits_2() {
+    let (mut lp, ps) = people(3, 519);
+    let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    spread(&mut lp);
+    lp.peers[1].engine.redeem(&link, &ps1, false).unwrap();
+    spread(&mut lp);
+    lp.peers[2].engine.redeem(&link, &ps2, false).unwrap();
+    spread(&mut lp);
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    let k0 = newest_read(&lp, 0, link.k).unwrap();
+    let done = lp.peers[0].engine.revoke_joiner(&link.k, &l, &ps1, PreSync::Synced).unwrap();
+    assert_eq!(done.commits.len(), 1, "one commit");
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    assert!(h.frontier.is_some());
+    assert_eq!(h.aspects.iter().filter(|a| a.tid == link.k && a.ak.as_str() == "/secrets").count(), 1, "one rotation");
+    carry(&mut lp, 0, &done);
+    spread(&mut lp);
+    let k1 = newest_read(&lp, 0, link.k).unwrap();
+    assert_ne!(k0, k1);
+    for i in 0..3 {
+        let r = lp.peers[i].engine.roster(&link.k);
+        assert!(!r.contains_key(&ps1) && !r.contains_key(&l) && r.contains_key(&ps2), "peer {i}: {r:?}");
+    }
+    assert!(lp.peers[2].engine.epochs(&link.k).unwrap().read.secret(&k1).is_some(), "the other joiner reads on");
+    assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "the revoked joiner does not");
+    // nor with the seed it kept: L holds no box at the new epoch
+    let _ = lp.peers[1].engine.bear(&link);
+    assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "nor as L");
+}
+
 // spec/permissions.md §9: bearer use reads without writing; `until` expires the link.
 #[test]
 fn link_bearer_and_until_spec_perm_9() {

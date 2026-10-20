@@ -425,6 +425,22 @@ impl Osis {
         self.demote(id, l, Lower::Remove, d).await
     }
 
+    /// Removes `joiner` from link `id`'s actor K and ends the link in the same commit, under one
+    /// rotation (spec/permissions.md §9: a joiner may keep the seed); the other joiners stay
+    /// members of K and need a new link to invite anyone. After the pre-sync `demote` does.
+    pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
+        let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
+        let m = self.resolved(joiner);
+        let things = self.engine(|e| {
+            let mut s = e.presync_scope(&id, &m, None);
+            s.extend(e.presync_scope(&id, &l, None));
+            s
+        });
+        let presync = self.presync(things, d).await?;
+        let done = self.engine(|e| e.revoke_joiner(&id, &l, &m, presync)).map_err(needs_admin)?;
+        self.carry(done)
+    }
+
     /// Finalizes single-use links whose redemption removed the link key (spec/permissions.md
     /// §9), on a roster change of K and for every link at open (`all`). The trigger is K's roster
     /// itself, so a restart re-arms it; `finalized` is persisted.

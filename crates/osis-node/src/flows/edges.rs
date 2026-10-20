@@ -183,10 +183,11 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, member: &Tid) -> Vec<osis_crdt::Dot> {
 /// demotion carries the frontier and the target's rotation of the roles the member left in the
 /// same commit (spec/permissions.md §3), after the cascade on the target; a self-removal
 /// carries neither (the next node that may rotate does), and the leaver drops what it lost. An
-/// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). Then the
-/// inbox copy to the member, and placement before any other upload under every label the
-/// removed party could read.
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, frontier: Option<osis_core::Value>) -> Result<Done> {
+/// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). With
+/// `others`, an explicit removal of those members' edges too, under the same frontier and one
+/// rotation (spec/commits.md §2). Then the inbox copy to each member, and placement before any
+/// other upload under every label the removed parties could read.
+pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_core::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let member = d.member;
     let ts = now_ts(tx.core);
@@ -196,9 +197,18 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
+    // the other members removed in the same commit: distinct present edges, not the author's
+    let mut gone: Vec<(Tid, PermEdge)> = Vec::new();
+    for o in others {
+        let e = tl.edges_at(None).get(o, &target).copied().ok_or(Error::Misuse("no edge to remove"))?;
+        if d.new.is_some() || *o == member || *o == who || gone.iter().any(|(x, _)| x == o) {
+            return Err(Error::Misuse("a removal of several members removes distinct edges of others"));
+        }
+        gone.push((*o, e));
+    }
     let selfr = old.is_some() && crate::apply::validity::self_removal(tx.core, &who, &target, &member, ts);
     let admin = tx.core.role_now(&who, &target) == Some(Role::Admin);
-    if !selfr && !admin {
+    if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target });
     }
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
@@ -222,24 +232,32 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if let Some(n) = &d.new {
         put_edge(&mut m, target, member, n)?;
     }
+    for (o, _) in &gone {
+        remove_edge(&mut m, target, *o)?;
+    }
     if !selfr && let Some(f) = frontier {
         m.frontier(f);
     }
-    // an explicit demotion carries the target's rotation of the roles the member left
+    // an explicit demotion carries the target's rotation of the roles the members left
     let mut rot = None;
     let mut unreached = Vec::new();
-    let held_role = old.filter(|o| o.alive_at(Some(ts))).map(|o| o.role);
-    if !selfr
-        && let Some(dep) = Departure::of_change(member, held_role, d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role))
-        && tx.core.has_own_secrets(&target)
-    {
+    let new_role = d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role);
+    let mut left: BTreeSet<Role> = BTreeSet::new();
+    for (x, o, n) in std::iter::once((member, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
+        let held_role = o.filter(|o| o.alive_at(Some(ts))).map(|o| o.role);
+        if let Some(dep) = Departure::of_change(x, held_role, n) {
+            left.extend(ROLES.into_iter().filter(|r| *r >= dep.from && Some(*r) <= held_role));
+        }
+    }
+    if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
         // boxing to the remaining members encrypts under their keysets: the cascade first
         rotation::ensure_rotated(tx, who, target, &mut Vec::new(), &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
-        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r >= dep.from && Some(*r) <= held_role && may.contains(r)).collect();
+        let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
-            let members = rotation::recipients(tx, &target, Some((member, d.new.as_ref().map(|e| e.role))))?;
+            let skip: Vec<(Tid, Option<Role>)> = std::iter::once((member, d.new.as_ref().map(|e| e.role))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
+            let members = rotation::recipients(tx, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &members)?;
             unreached = rotation::unreached(tx, &target, &r)?;
             rot = Some(r);
@@ -257,9 +275,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     done.add(c);
     if let Some(c) = c {
-        done.deliveries.extend(deliver_parts(tx, member, c, &[target], Parts::Edge)?);
+        for x in std::iter::once(member).chain(gone.iter().map(|(x, _)| *x)) {
+            done.deliveries.extend(deliver_parts(tx, x, c, &[target], Parts::Edge)?);
+        }
         done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
-        // every label the removed party could read: the target and what its roles open
+        // every label the removed parties could read: the target and what its roles open
         let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
         let plan = osis_keys::plan_inside(&graph, target, ROLES.into_iter().collect(), Departure::member(member, Role::Read));
         let mut under: Vec<Tid> = plan.entries.keys().copied().collect();
@@ -314,6 +334,12 @@ impl Engine {
     }
 
     fn demote_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion) -> Result<Done> {
+        self.remove_signed(signer, target, d, &[])
+    }
+
+    /// `demote_signed` that also removes `others` in the same commit under one rotation
+    /// (spec/commits.md §2); `d.new` must then be `None`.
+    pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let t = *target;
         let ts = now_ts(&self.core);
@@ -323,21 +349,31 @@ impl Engine {
         };
         let frontier = match self.core.timelines.get(&t) {
             Some(tl) => {
-                let scope = match tl.edges_at(None).get(&d.member, &t) {
-                    Some(_) => tl.demotion_scope(&who, &d.member, &t, d.new.as_ref().map(perm_edge), ts),
-                    // an absent edge (a used single-use link): audit the member's own writes on
-                    // the target as if it still held its role (spec/permissions.md §5.1)
-                    None => {
-                        let things: std::collections::BTreeSet<Tid> = [t].into_iter().collect();
-                        osis_perm::DemotionScope { membership: [(d.member, things.clone())].into_iter().collect(), content: [(d.member, things)].into_iter().collect() }
+                let mut scope = osis_perm::DemotionScope::default();
+                for (i, x) in std::iter::once(&d.member).chain(others).enumerate() {
+                    let new = if i == 0 { d.new.as_ref().map(perm_edge) } else { None };
+                    let s = match tl.edges_at(None).get(x, &t) {
+                        Some(_) => tl.demotion_scope(&who, x, &t, new, ts),
+                        // an absent edge (a used single-use link): audit the member's own writes
+                        // on the target as if it still held its role (spec/permissions.md §5.1)
+                        None => {
+                            let things: BTreeSet<Tid> = [t].into_iter().collect();
+                            osis_perm::DemotionScope { membership: [(*x, things.clone())].into_iter().collect(), content: [(*x, things)].into_iter().collect() }
+                        }
+                    };
+                    for (n, ts) in s.membership {
+                        scope.membership.entry(n).or_default().extend(ts);
                     }
-                };
+                    for (n, ts) in s.content {
+                        scope.content.entry(n).or_default().extend(ts);
+                    }
+                }
                 Some(osis_schema::Codec::to_value(&self.frontier(&scope, as_of)?))
             }
             None => None,
         };
         let d = d.clone();
-        self.run(|tx| demote_in(tx, signer, t, &d, frontier))
+        self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))
     }
 
     /// Opens an inbox blob addressed to an actor this node holds the read secret of

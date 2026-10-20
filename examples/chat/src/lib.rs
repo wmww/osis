@@ -201,11 +201,8 @@ pub async fn remove(db: &Osis, chat: Tid, persona: Tid) -> Result<()> {
     }
     for l in db.links(chat) {
         if db.roster(l.id).contains_key(&person) {
-            db.demote(l.id, person, Lower::Remove, Demotion::default()).await?;
-            if !l.single_use {
-                db.revoke_link(l.id, Demotion::default()).await?;
-            }
-            return Ok(());
+            // a multi-use link ends with the joiner, in one commit (one rotation)
+            return if l.single_use { db.demote(l.id, person, Lower::Remove, Demotion::default()).await } else { db.revoke_joiner(l.id, person, Demotion::default()).await };
         }
     }
     Err(osis::Error::UnknownActor { tid: person })
