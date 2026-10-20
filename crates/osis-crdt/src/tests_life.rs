@@ -308,6 +308,84 @@ fn paging_format_size_spec_8() {
     assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment, d);
 }
 
+/// A struct of `n` string fields of `len` bytes, the last one an enum whose payload is such a
+/// struct again, as one writer's delta.
+fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
+    let inner: std::collections::BTreeMap<u64, Ty> = (0..n).map(|i| (i, Ty::Register)).collect();
+    let mut fields = inner.clone();
+    fields.insert(n, Ty::Enum([(1, Some(Ty::Struct(inner.clone())))].into_iter().collect()));
+    let ty = Ty::Struct(fields);
+    let strs = || (0..n).map(|i| (Value::Int(i as i64), Value::Str(format!("{i:04}{}", "x".repeat(len))))).collect::<std::collections::BTreeMap<_, _>>();
+    let mut v = strs();
+    v.insert(Value::Int(n as i64), Value::Enum(1, Some(Box::new(Value::Map(strs())))));
+    let node = Source::node(Tid::from_bytes([1; 15]));
+    let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
+    let d = crate::create(&mut w, &TyView(ty), &Value::Map(v)).unwrap();
+    (d, DeltaCtx { ts: ts(1 << 20), own: node, range: w.range(), kind: DeltaKind::Writer })
+}
+
+/// §8: a struct's field map and an enum's payload map page like element arrays: pages are maps
+/// of whole consecutive fields, the delta stays at the target whatever the field count, and it
+/// round-trips; below the target nothing pages.
+#[test]
+fn struct_field_paging_spec_8() {
+    for (n, paged) in [(3u64, false), (200, true)] {
+        let (d, cx) = wide_struct(n, 100);
+        let mut rec = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
+        assert_eq!(!rec.pages.is_empty(), paged, "n = {n}");
+        assert!(bytes.len() <= SMALL.target || !paged);
+        let mut maps = 0;
+        for p in &rec.pages {
+            match osis_core::decode(p, &osis_core::Limits::DEFAULT).unwrap() {
+                Value::Map(m) => {
+                    maps += 1;
+                    let last = m.iter().next_back().map(|(k, v)| osis_core::encode(k).len() + osis_core::encode(v).len()).unwrap();
+                    assert!(p.len() < SMALL.cut.max + last + 8, "page of {} bytes", p.len());
+                }
+                Value::List(items) => assert!(items.iter().all(|i| matches!(i, Value::Link(_))) && items.len() <= SMALL.fanout),
+                v => panic!("page {v:?}"),
+            }
+        }
+        assert!(maps > 1 || !paged);
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d);
+        // equal fields give equal pages
+        let mut again = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+        encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut again)).unwrap();
+        assert_eq!(again.pages, rec.pages);
+    }
+}
+
+/// §8: a field map unpaged above the target, a page that is not a map, an empty page, fields
+/// out of order across pages: rejected.
+#[test]
+fn struct_field_paging_rejections_spec_8() {
+    let (d, cx) = wide_struct(200, 100);
+    let mut rec = Recording { inner: MemoryPages::with_params(SMALL), pages: Vec::new() };
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut rec)).unwrap();
+    let plain = encode_delta(&Delta { nonce: [0; 16], fragment: d }, &cx, Some(&mut MemoryPages::with_params(PageParams { target: usize::MAX, ..SMALL }))).unwrap();
+    assert!(decode_delta(&plain, &cx, &mut Interner::new(), Some(&mut rec.inner)).is_err());
+    // swap the struct's top field links for crafted pages
+    let top = osis_core::decode(&bytes, &osis_core::Limits::DEFAULT).unwrap();
+    let with_children = |c: Value| {
+        let Value::List(mut a) = top.clone() else { panic!() };
+        let Some(Value::List(f)) = a.get_mut(3) else { panic!() };
+        f[3] = c;
+        osis_core::encode(&Value::List(a))
+    };
+    let mut pages = MemoryPages::with_params(SMALL);
+    let field = |i: i64| (Value::Int(i), Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::Str("v".into())]));
+    let page = |pages: &mut MemoryPages, v: Value| Value::Link(pages.put(&osis_core::encode(&v)).unwrap());
+    let a = page(&mut pages, Value::Map([field(5)].into_iter().collect()));
+    let b = page(&mut pages, Value::Map([field(2)].into_iter().collect()));
+    let empty = page(&mut pages, Value::Map(Default::default()));
+    let list = page(&mut pages, Value::List(vec![Value::Int(1)]));
+    for (links, why) in [(vec![a.clone(), b], "order"), (vec![a.clone(), empty], "empty"), (vec![a, list], "map")] {
+        let e = decode_delta(&with_children(Value::List(links)), &cx, &mut Interner::new(), Some(&mut pages)).unwrap_err();
+        assert!(e.to_string().contains(why), "{why}: {e}");
+    }
+}
+
 #[test]
 #[ignore]
 fn paging_large_spec_8() {

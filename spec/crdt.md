@@ -89,8 +89,8 @@ Fragment := Register | Bag | Struct | Enum | Set | Map | Seq | Slots
 Register := [0, R] | [0, R, Stamp] | [0, R, Stamp, Value]   ; [0, R, Stamp]: value-less write (§4.7)
 Slots    := [10, Opt(Register), [Fragment*]]  ; §7: register slot, then non-register slots by ascending encoding id, at least two members in all
 Bag      := [1|2|3, R, W, [Elem*]]           ; Elem as in Set; the value register holds int|float (anything else, only from §7, reads as nothing)
-Struct   := [4, R, W, {field_id: Fragment}]
-Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id] | [Stamp])
+Struct   := [4, R, W, {field_id: Fragment}]          ; or paged: [Link+], §8
+Enum     := [5, R, W, Case, {case_id: Fragment}]   Case := Opt([Stamp, case_id] | [Stamp])   ; payload map paged: [Link+], §8
 Set      := [6, R, W, [Elem*]]               Elem  := [Dot, R, Opt(Fragment)]
 Map      := [7, R, W, [Entry*]]              Entry := [Dot, R, Value, Opt(Fragment)] | [Dot, R, Opt(Fragment)]   ; Value is the key; omitted: key not carried
 Seq      := [8|9, R, W, [Run*]]
@@ -279,13 +279,13 @@ There are no other edges.
 
 ## 8. Paging (large deltas, states and snapshots)
 
-Principle: deltas, state and snapshots are the same grammar, so any fragment's collection arrays may be replaced by links to **pages**.
+Principle: deltas, state and snapshots are the same grammar, so any fragment's element arrays and field maps may be replaced by links to **pages**.
 
-- Grammar extension: in `Bag`, `Set`, `Map`, `Seq`, the element array may be `[Link*]` (each a LINK-tagged value, spec/data-model.md §5) instead of `[Elem*]`; a page blob is a canonical CBOR array of elements (`[Elem*]`, `[Entry*]`, `[Run*]`), or again `[Link*]` (at most 2 levels: a root of links to pages of links to pages). A fragment is paged iff its element array as plain CBOR would exceed `PAGE_TARGET = 64 KiB`; a paged array is split into pages at content-defined boundaries over the canonical bytes of consecutive elements (gear hash, min 16 KiB, max 256 KiB, shared with spec/data-model.md §6; exact rule and link pages: spec/wire.md §6), so equal element runs give equal pages whatever the history; a page holds whole elements, so one element above the maximum is a page by itself. Canonical: paging is mandatory above the threshold and forbidden below, so two nodes snapshotting identical states produce identical bytes. Pages are blobs under random keys like chunks (spec/data-model.md §6).
+- Grammar extension: in `Bag`, `Set`, `Map`, `Seq`, the element array may be `[Link+]` (each a LINK-tagged value, spec/data-model.md §5) instead of `[Elem*]`; in `Struct` and `Enum`, the field (payload) map may be `[Link+]` instead of `{id: Fragment}`, each field (its key and value) counting as one element. A page blob is a canonical CBOR array of elements (`[Elem*]`, `[Entry*]`, `[Run*]`) or a non-empty map of consecutive fields, or again `[Link+]` (at most 2 levels: a root of links to pages of links to pages). A fragment is paged iff its element array or field map as plain CBOR would exceed `PAGE_TARGET = 64 KiB`; a paged array or map is split into pages at content-defined boundaries over the canonical bytes of consecutive elements (gear hash, min 16 KiB, max 256 KiB, shared with spec/data-model.md §6; exact rule and link pages: spec/wire.md §6), so equal element runs give equal pages whatever the history; a page holds whole elements, so one element above the maximum is a page by itself. Canonical: paging is mandatory above the threshold and forbidden below, so two nodes snapshotting identical states produce identical bytes. Pages are blobs under random keys like chunks (spec/data-model.md §6).
 - Join of a fragment with links: the reader fetches every page before its commit is applied (spec/commits.md §4) and joins their elements; a page's elements are all keyed by dot, so pages are joined independently, streaming.
 - **Snapshot deltas** are `[nonce, Sources, Commits, Fragment, Frontiers]` with `Frontiers := [[Src, ctr]*]`, sorted by `Src`, one entry per `Node` source with `ctr` ≥ 1 the largest counter such that the writer has applied all of that node's writes in this aspect up to it (parked commits are not applied, §2.2). The fragment reflects every write in those ranges; a receiver adds `[1, ctr]` to its received-dot ranges for (aspect, node) for revoke frontiers (spec/permissions.md §5.1), and learns the node's tid from `Sources` (frontier-only sources come last, §3.3 rule 1). `Commit` sources have no frontier. A snapshot commit carries no writes of its own and consumes no counters (§2.4).
 - Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less and their deltas are never covered. Live content of any other delta is carried as usual, whatever its retention.
-- Any delta may page, so a commit has no size limit (spec/commits.md §1): a bulk import or a reset of a huge map is one atomic commit.
+- Any delta may page, so a commit has no size limit (spec/commits.md §1): a bulk import or a reset of a huge map is one atomic commit, and no delta or page outgrows a blob.
 
 ## 9. Structural diff
 
