@@ -239,6 +239,9 @@ fn file_backend_holds_no_plaintext() {
     shred_all(&mut s, &mut rng);
     drop(s);
     let raw = std::fs::read(dev.dir.join("db")).unwrap();
+    // Store files are readable by their owner only.
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(dev.dir.join("db")).unwrap().permissions()) & 0o077, 0);
     assert!(!contains(&raw, b"MARKER-file"));
     assert!(!contains(&raw, b"element 1"));
     let mut s = reopen(&dev);

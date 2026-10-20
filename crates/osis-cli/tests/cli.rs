@@ -136,6 +136,13 @@ fn store_dir_init_lock_plan_cli_2() {
     let (c, out, _) = call(&["init"]);
     assert_eq!(c, 0);
     assert!(out.starts_with("me\tosis://"));
+    // spec/requirements.md, Deletion (local keys): the store directory, its database and its
+    // root key are the owner's only
+    #[cfg(unix)]
+    for (p, m) in [(d.clone(), 0o700), (d.join("db.redb"), 0o600), (d.join("root"), 0o600)] {
+        let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&p).unwrap().permissions());
+        assert_eq!(mode & 0o777, m, "{}", p.display());
+    }
     assert_eq!(call(&["init"]).0, 8, "refuses a non-empty store");
     let (c, t, _) = call(&["create", "--owner", "me", "--unsynced", "/a/b", "1"]);
     assert_eq!(c, 0);

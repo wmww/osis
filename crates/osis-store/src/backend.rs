@@ -97,6 +97,15 @@ pub trait Backend: Send {
     }
 }
 
+/// Options creating a file readable by its owner only (a store file, the root).
+#[cfg(feature = "file-backend")]
+pub(crate) fn owner_only() -> std::fs::OpenOptions {
+    let mut o = std::fs::OpenOptions::new();
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    o
+}
+
 /// The least key greater than every key starting with `prefix`; `None` if there is none.
 pub fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix.to_vec();

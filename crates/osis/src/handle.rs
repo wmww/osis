@@ -177,7 +177,11 @@ fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_sto
         StoreAt::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
         #[cfg(feature = "file-store")]
         StoreAt::Dir(p) => {
-            std::fs::create_dir_all(p).map_err(|e| Error::Storage(e.to_string()))?;
+            let mut d = std::fs::DirBuilder::new();
+            d.recursive(true);
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
+            d.create(p).map_err(|e| Error::Storage(e.to_string()))?;
             let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| Error::Storage(e.to_string()))?;
             Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join("root")))))
         }
