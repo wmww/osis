@@ -142,7 +142,9 @@ impl SyncEngine {
             };
             sends.push(Out { prio, id });
             if keys.is_writer() {
-                for cb in self.chunk_blobs(&b.commit)? {
+                let mut linked = self.chunk_blobs(&b.commit)?;
+                linked.extend(self.body_blobs(&l, b)?);
+                for cb in linked {
                     if !self.state.entries.contains_key(&(l, cb)) {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
                         self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, kind: Kind::Unknown });
@@ -605,6 +607,26 @@ impl SyncEngine {
         Ok(self.engine.package(c)?.map(|p| p.blobs.into_iter().map(|(id, _)| id).collect()).unwrap_or_default())
     }
 
+    /// Blobs the body's own delta values link (trees of large values, pages), listed by its
+    /// commit or not: reused chunks and a snapshot's values belong to the closure too
+    /// (spec/sync.md §3), so a reader under a new label (replacement, a move) gets them. Those
+    /// held here or already an entry under `l`; the walk is cached per body once complete.
+    fn body_blobs(&mut self, l: &LabelId, b: &Body) -> Result<Vec<BlobId>> {
+        let key = (b.commit, b.parts.clone());
+        let all = match self.body_links.get(&key) {
+            Some(x) => x.clone(),
+            None => {
+                let r = self.engine.body_links(&b.plaintext)?;
+                let all: Vec<BlobId> = r.blobs.into_iter().collect();
+                if r.missing.is_empty() {
+                    self.body_links.insert(key, all.clone());
+                }
+                all
+            }
+        };
+        Ok(all.into_iter().filter(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id)).collect())
+    }
+
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
     /// encryption per label, placed once per commit.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
@@ -883,6 +905,16 @@ impl SyncEngine {
         // values; spec/sync.md §3: chunk blobs belong to the closure)
         let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
         let chunks = self.dropped_chunks(|b| present.contains(b))?;
+        let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants)
+            .into_iter()
+            .filter(|b| present.contains(b) && !self.missing.contains(&(conn, *b)) && !self.fetching.contains_key(b))
+            .collect();
+        if !wants.is_empty() {
+            for b in &wants {
+                self.fetching.insert(*b, conn);
+            }
+            self.command(conn, Command::Fetch { label: l, ids: wants }, out)?;
+        }
         for id in present {
             let Some((c, ch)) = chunks.get(&id) else { continue };
             if !self.state.entries.get(&(l, id)).is_some_and(|e| e.kind == Kind::Unknown) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
@@ -1035,9 +1067,11 @@ impl SyncEngine {
             }
         }
         for (t, bs) in by_thing {
-            // a tree not all held here may link any of them
+            // a tree not all held here may link any of them: its missing nodes are fetched
+            // (`tree_wants`) and the chunks judged once they are here
             let linked = self.engine.live_trees(&t)?;
-            out.retain(|b, _| !bs.contains(b) || linked.as_ref().is_some_and(|l| !l.contains(b)));
+            out.retain(|b, _| !bs.contains(b) || linked.missing.is_empty() && !linked.blobs.contains(b));
+            self.tree_wants.extend(linked.missing);
         }
         Ok(out)
     }

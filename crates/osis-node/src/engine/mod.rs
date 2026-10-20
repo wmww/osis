@@ -12,6 +12,7 @@ pub(crate) mod secrets;
 pub(crate) mod state;
 pub(crate) mod write;
 
+pub use large::LiveTrees;
 pub use write::Mutation;
 
 use crate::apply::Reason;
@@ -155,8 +156,8 @@ pub(crate) struct Core {
     /// is harmless).
     pub lost_due: BTreeSet<Tid>,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
-    /// a state (`touch`, `rollback`).
-    pub live_trees: BTreeMap<Tid, Option<BTreeSet<osis_core::BlobId>>>,
+    /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
+    pub live_trees: BTreeMap<Tid, LiveTrees>,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
