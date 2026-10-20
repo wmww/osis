@@ -9,7 +9,7 @@
 //! only visibility changes. Everything else (moves, resets, range splits, an older concurrent
 //! insert below newer siblings, `Derived` dots) falls back to a whole pass.
 
-use crate::linearize::{Placement, place_idx};
+use crate::linearize::{Placement, Row, place_idx};
 use crate::seq::{Anchor, SeqElem, is_visible};
 use crate::seq_span::{Elems, elem, find};
 use crate::stamp::{Dot, Stamp};
@@ -23,8 +23,6 @@ const RUN_SCANS: usize = 32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Lin {
     pub p: Placement,
-    /// Whether node `p.order[i]` is visible.
-    shown: Vec<bool>,
     /// Visible elements in order.
     pub vis: Vec<Dot>,
     /// Anchors naming no element.
@@ -43,10 +41,9 @@ pub(crate) enum Plan {
 impl Lin {
     pub(crate) fn build(elems: &Elems, text: bool) -> Lin {
         let placed = place_idx(elems);
-        let p = Placement::of(&placed);
-        let shown = placed.order.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| is_visible(&n.elem, text)).collect::<Vec<_>>();
-        let vis = p.order.iter().zip(&shown).filter(|(_, s)| **s).map(|(d, _)| d.clone()).collect();
-        Lin { p, shown, vis, waiting: placed.waiting }
+        let p = Placement::of(&placed, text);
+        let vis = p.rows.iter().filter(|r| r.shown).map(|r| r.dot.clone()).collect();
+        Lin { p, vis, waiting: placed.waiting }
     }
 
     /// The plan for joining record `(dot, de)` into `elems`; `None`: rebuild.
@@ -57,7 +54,7 @@ impl Lin {
                     return None;
                 }
                 let (stamp, anchor) = de.created.clone()?;
-                if de.pos.len() != 1 || de.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) {
+                if stamp.dot != *dot || de.pos.len() != 1 || de.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) {
                     return None;
                 }
                 let known = match &anchor {
@@ -97,7 +94,7 @@ impl Lin {
             match plan {
                 Plan::New { stamp, anchor, known } => {
                     // a write waiting for this dot now gets placed: rebuild
-                    if r.span != 1 || r.pos.len() != 1 || r.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) || self.waiting.contains(&dot) {
+                    if r.span != 1 || r.created.as_ref() != Some(&(stamp.clone(), anchor.clone())) || r.pos.len() != 1 || r.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) || self.waiting.contains(&dot) {
                         return false;
                     }
                     let key = match anchor {
@@ -147,7 +144,7 @@ impl Lin {
         for (key, stamp, run) in runs {
             let at = match &key {
                 None => 0,
-                Some(x) => match self.p.order.iter().position(|d| d == x) {
+                Some(x) => match self.p.index(x) {
                     Some(i) => i + 1,
                     // below a hidden node: hidden too
                     None => continue,
@@ -157,33 +154,34 @@ impl Lin {
             if self.child_stamp(elems, at, &key).is_some_and(|c| c >= stamp) {
                 return false;
             }
-            let shown: Vec<bool> = run.iter().map(|d| elems.get(d).is_some_and(|r| is_visible(r, text))).collect();
+            let mut parent = key;
+            let rows: Vec<Row> = run
+                .into_iter()
+                .map(|d| {
+                    let shown = elems.get(&d).is_some_and(|r| is_visible(r, text));
+                    let row = Row { dot: d.clone(), last: d.clone(), span: 1, created: true, parent: parent.take(), shown };
+                    parent = Some(d);
+                    row
+                })
+                .collect();
             let k = self.visible_before(at);
-            let vis: Vec<Dot> = run.iter().zip(&shown).filter(|(_, s)| **s).map(|(d, _)| d.clone()).collect();
-            self.vis.splice(k..k, vis);
-            let parents: Vec<Option<Dot>> = std::iter::once(key).chain(run.iter().take(run.len().saturating_sub(1)).cloned().map(Some)).collect();
-            let p = &mut self.p;
-            p.parent.splice(at..at, parents);
-            p.span.splice(at..at, run.iter().map(|_| 1));
-            p.created.splice(at..at, run.iter().map(|_| true));
-            p.last.splice(at..at, run.iter().cloned());
-            p.order.splice(at..at, run);
-            self.shown.splice(at..at, shown);
+            self.vis.splice(k..k, rows.iter().filter(|r| r.shown).map(|r| r.dot.clone()));
+            self.p.rows.splice(at..at, rows);
         }
         if flags.len() > FLAG_SCANS {
             let set: HashSet<&Dot> = flags.iter().collect();
-            for (d, sh) in self.p.order.iter().zip(self.shown.iter_mut()) {
-                if set.contains(d) {
-                    *sh = elems.get(d).is_some_and(|r| is_visible(r, text));
+            for r in &mut self.p.rows {
+                if set.contains(&r.dot) {
+                    r.shown = elems.get(&r.dot).is_some_and(|e| is_visible(e, text));
                 }
             }
-            self.vis = self.p.order.iter().zip(&self.shown).filter(|(_, s)| **s).map(|(d, _)| d.clone()).collect();
+            self.vis = self.p.rows.iter().filter(|r| r.shown).map(|r| r.dot.clone()).collect();
             return true;
         }
         for dot in flags {
-            let Some(i) = self.p.order.iter().position(|d| *d == dot) else { continue };
+            let Some(i) = self.p.index(&dot) else { continue };
             let now = elems.get(&dot).is_some_and(|r| is_visible(r, text));
-            let Some(was) = self.shown.get_mut(i) else { return false };
+            let Some(was) = self.p.rows.get_mut(i).map(|r| &mut r.shown) else { return false };
             if *was == now {
                 continue;
             }
@@ -201,17 +199,17 @@ impl Lin {
     /// The edge stamp of node `order[at]` if it is a child of `key` (`None`: HEAD): its
     /// greatest position write naming `key` (a demoted edge is the `prev` one, §6.2).
     fn child_stamp(&self, elems: &Elems, at: usize, key: &Option<Dot>) -> Option<Stamp> {
-        let c = self.p.order.get(at)?;
-        if key.is_some() && self.p.parent.get(at)? != key {
+        let row = self.p.rows.get(at)?;
+        if key.is_some() && row.parent != *key {
             return None;
         }
         let want = key.clone().map_or(Anchor::Head, Anchor::Dot);
-        let e = elem(elems, c)?;
+        let e = elem(elems, &row.dot)?;
         e.pos.iter().find(|(_, a)| *a == want).map(|(s, _)| s.clone())
     }
 
     /// Visible nodes before position `i` of the order.
     fn visible_before(&self, i: usize) -> usize {
-        self.shown.get(..i).map_or(0, |s| s.iter().filter(|b| **b).count())
+        self.p.rows.get(..i).map_or(0, |s| s.iter().filter(|r| r.shown).count())
     }
 }

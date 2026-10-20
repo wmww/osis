@@ -15,21 +15,29 @@ use crate::stamp::{Dot, SourceKind, Stamp};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-/// The placement of every placed node (deleted, content-less and bare anchors included).
+/// One placed node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Row {
+    /// First element. A visible element is a node of its own.
+    pub dot: Dot,
+    /// Last element (where children anchor).
+    pub last: Dot,
+    /// Elements in the node.
+    pub span: u64,
+    /// Whether the node is created (a chain); else its elements are bare anchors or flag-only,
+    /// each placed on its own.
+    pub created: bool,
+    /// Chosen parent node (by first element): `None` for HEAD and `END`.
+    pub parent: Option<Dot>,
+    /// Whether the node is visible (§5.7 Read).
+    pub shown: bool,
+}
+
+/// The placement of every placed node (deleted, content-less and bare anchors included) in
+/// order; hidden ones (unknown anchor, §6.1) are absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Placement {
-    /// First element of each placed node in order; hidden ones (unknown anchor, §6.1) are
-    /// absent. A visible element is a node of its own.
-    pub order: Vec<Dot>,
-    /// Last element of `order[i]`'s node (where its children anchor).
-    pub last: Vec<Dot>,
-    /// Elements in `order[i]`'s node.
-    pub span: Vec<u64>,
-    /// Whether `order[i]`'s node is created (a chain); else its elements are bare anchors or
-    /// flag-only, each placed on its own.
-    pub created: Vec<bool>,
-    /// Chosen parent node of `order[i]` (by first element): `None` for HEAD and `END`.
-    pub parent: Vec<Option<Dot>>,
+    pub rows: Vec<Row>,
 }
 
 /// A record or a piece of a range record.
@@ -206,22 +214,34 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
 
 /// Places the elements of a sequence (§6), by dot.
 #[cfg(test)]
-pub(crate) fn place(elems: &Elems) -> Placement {
-    Placement::of(&place_idx(elems))
+pub(crate) fn place(elems: &Elems, text: bool) -> Placement {
+    Placement::of(&place_idx(elems), text)
 }
 
 impl Placement {
     /// By dot, from a placement by index.
-    pub(crate) fn of(p: &Placed) -> Placement {
-        let node = |i: usize| p.nodes.get(i);
-        let first = |i: usize| node(i).map(|n| n.dot.clone().into_owned());
-        Placement {
-            order: p.order.iter().filter_map(|i| first(*i)).collect(),
-            last: p.order.iter().filter_map(|i| node(*i)).map(|n| nth(&n.dot, n.elem.span - 1)).collect(),
-            span: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.span).collect(),
-            created: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.created.is_some()).collect(),
-            parent: p.order.iter().map(|i| p.parent.get(*i).copied().flatten().filter(|j| *j < p.nodes.len()).and_then(first)).collect(),
-        }
+    pub(crate) fn of(p: &Placed, text: bool) -> Placement {
+        let first = |i: usize| p.nodes.get(i).map(|n| n.dot.clone().into_owned());
+        let rows = p
+            .order
+            .iter()
+            .filter_map(|i| {
+                let n = p.nodes.get(*i)?;
+                Some(Row {
+                    dot: n.dot.clone().into_owned(),
+                    last: nth(&n.dot, n.elem.span - 1),
+                    span: n.elem.span,
+                    created: n.elem.created.is_some(),
+                    parent: p.parent.get(*i).copied().flatten().filter(|j| *j < p.nodes.len()).and_then(first),
+                    shown: crate::seq::is_visible(&n.elem, text),
+                })
+            })
+            .collect();
+        Placement { rows }
+    }
+    /// Index of the node starting at `d`.
+    pub(crate) fn index(&self, d: &Dot) -> Option<usize> {
+        self.rows.iter().position(|r| r.dot == *d)
     }
 }
 

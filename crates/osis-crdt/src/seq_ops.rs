@@ -81,14 +81,14 @@ fn anchor_after(vis: &[Dot], at: usize) -> Result<Anchor, Error> {
 fn range_of(p: &Placement, vis: &[Dot], at: usize, len: usize) -> Result<Range<usize>, Error> {
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
     let (Some(first), Some(last)) = (vis.get(at), end.checked_sub(1).and_then(|e| vis.get(e))) else { return Ok(0..0) };
-    let i0 = p.order.iter().position(|d| d == first).unwrap_or(0);
-    let i1 = p.order.iter().position(|d| d == last).unwrap_or(i0);
+    let i0 = p.index(first).unwrap_or(0);
+    let i1 = p.index(last).unwrap_or(i0);
     Ok(i0..i1 + 1)
 }
 
 /// First dots of the nodes in `r`.
 fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
-    p.order.get(r).map(<[Dot]>::to_vec).unwrap_or_default()
+    p.rows.get(r).unwrap_or_default().iter().map(|r| r.dot.clone()).collect()
 }
 
 /// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
@@ -111,18 +111,19 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 /// root anchors at the last element of the previous root's moved subtree.
 fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
     let inr: HashSet<&Dot> = range.iter().collect();
-    let last_el: HashMap<&Dot, &Dot> = p.order.iter().zip(&p.last).collect();
-    let loose: HashMap<&Dot, u64> = p.order.iter().zip(p.span.iter().zip(&p.created)).filter(|(_, (n, c))| **n > 1 && !**c).map(|(d, (n, _))| (d, *n)).collect();
-    let parent: HashMap<&Dot, Option<&Dot>> = p.order.iter().zip(&p.parent).map(|(d, x)| (d, x.as_ref())).collect();
+    let last_el: HashMap<&Dot, &Dot> = p.rows.iter().map(|r| (&r.dot, &r.last)).collect();
+    let loose: HashMap<&Dot, u64> = p.rows.iter().filter(|r| r.span > 1 && !r.created).map(|r| (&r.dot, r.span)).collect();
+    let parent: HashMap<&Dot, Option<&Dot>> = p.rows.iter().map(|r| (&r.dot, r.parent.as_ref())).collect();
     let par = |d: &Dot| parent.get(d).copied().flatten();
-    let roots: Vec<&Dot> = p.order.iter().filter(|d| inr.contains(d) && !par(d).is_some_and(|x| inr.contains(x))).collect();
-    let outside: Vec<&Dot> = p.order.iter().filter(|d| !inr.contains(d) && par(d).is_some_and(|x| inr.contains(x))).collect();
+    let order = || p.rows.iter().map(|r| &r.dot);
+    let roots: Vec<&Dot> = order().filter(|d| inr.contains(d) && !par(d).is_some_and(|x| inr.contains(x))).collect();
+    let outside: Vec<&Dot> = order().filter(|d| !inr.contains(d) && par(d).is_some_and(|x| inr.contains(x))).collect();
     // the root whose moved subtree holds each element (preorder: parents come first)
     let rootset: HashSet<&Dot> = roots.iter().copied().collect();
     let outset: HashSet<&Dot> = outside.iter().copied().collect();
     let mut root_of: HashMap<&Dot, &Dot> = HashMap::new();
     let mut last: HashMap<&Dot, &Dot> = HashMap::new();
-    for d in &p.order {
+    for d in order() {
         let r = if outset.contains(d) || !inr.contains(d) && !rootset.contains(d) {
             None
         } else if rootset.contains(d) {
@@ -153,8 +154,8 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
 }
 
 /// The visible element before node `i` in placement order, or HEAD.
-fn pred_of(p: &Placement, s: &Seq, i: usize) -> Anchor {
-    p.order.get(..i).unwrap_or_default().iter().rev().find(|d| s.elems().get(*d).is_some_and(|e| is_visible(e, s.text))).cloned().map_or(Anchor::Head, Anchor::Dot)
+fn pred_of(p: &Placement, i: usize) -> Anchor {
+    p.rows.get(..i).unwrap_or_default().iter().rev().find(|r| r.shown).map_or(Anchor::Head, |r| Anchor::Dot(r.dot.clone()))
 }
 
 /// The dots a cut of `len` visible elements from `at` removes and a paste restores: the visible
@@ -173,7 +174,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
     let mut out = delta(text);
     match op {
         Op::Insert { at, items } => {
-            let anchor = anchor_after(visible(s), *at)?;
+            let anchor = anchor_after(&visible(s), *at)?;
             let cs = contents(w, text, view, items)?;
             if cs.is_empty() {
                 return Ok(None);
@@ -181,22 +182,23 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             insert_run(w, &mut out, anchor, cs);
         }
         Op::Delete { at, len } => {
-            let vis = visible(s);
-            let p = &s.lin().p;
+            let l = s.lin();
+            let (p, vis) = (&l.p, &l.vis);
             let d = w.delta_stamp();
             let r = range_of(p, vis, *at, *len)?;
-            let n = p.span.get(r.clone()).unwrap_or_default().iter().fold(0u64, |a, b| a.saturating_add(*b));
+            let rows = p.rows.get(r).unwrap_or_default();
+            let n = rows.iter().fold(0u64, |a, r| a.saturating_add(r.span));
             if n > osis_core::format::MAX_DELTA_BARE {
                 // §3.3 rule 7: the caller splits a delete this long across commits
                 return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
             }
-            for (dot, span) in dots_of(p, r.clone()).into_iter().zip(p.span.get(r).unwrap_or_default()) {
-                out.elems_mut().insert(dot, SeqElem { deleted: Some((d.clone(), true)), span: *span, ..SeqElem::bare() });
+            for r in rows {
+                out.elems_mut().insert(r.dot.clone(), SeqElem { deleted: Some((d.clone(), true)), span: r.span, ..SeqElem::bare() });
             }
         }
         Op::Move { at, len, to } => {
-            let vis = visible(s);
-            let p = &s.lin().p;
+            let l = s.lin();
+            let (p, vis) = (&l.p, &l.vis);
             let range = dots_of(p, range_of(p, vis, *at, *len)?);
             if range.is_empty() {
                 return Ok(None);
@@ -216,8 +218,9 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
-            let p = &s.lin().p;
-            let at_of: HashMap<&Dot, usize> = p.order.iter().enumerate().map(|(i, d)| (d, i)).collect();
+            let l = s.lin();
+            let p = &l.p;
+            let at_of: HashMap<&Dot, usize> = p.rows.iter().enumerate().map(|(i, r)| (&r.dot, i)).collect();
             let idx: Vec<usize> = dots.iter().filter_map(|d| at_of.get(d).copied()).collect();
             let (Some(i0), Some(i1)) = (idx.iter().min(), idx.iter().max()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
             if idx.len() != dots.len() {
@@ -232,7 +235,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             let inr: HashSet<&Dot> = range.iter().collect();
             let rest: Vec<Dot> = visible(s).iter().filter(|d| !inr.contains(d)).cloned().collect();
             let dest = anchor_after(&rest, *at)?;
-            let pred = pred_of(p, s, *i0);
+            let pred = pred_of(p, *i0);
             *out.elems_mut() = move_writes(w, p, &range, pred, dest);
             check_bare(&out)?;
             let d = w.delta_stamp();

@@ -608,8 +608,8 @@ fn records(f: &Fragment) -> usize {
 /// Every placed element in order.
 fn order(f: &Fragment) -> Vec<Dot> {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
-    let p = place(s.elems());
-    p.order.iter().zip(&p.span).flat_map(|(d, k)| (0..*k).map(move |i| nth(d, i))).collect()
+    let p = place(s.elems(), s.text);
+    p.rows.iter().flat_map(|r| (0..r.span).map(move |i| nth(&r.dot, i))).collect()
 }
 fn expanded(f: &Fragment) -> Fragment {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };

@@ -14,7 +14,12 @@ use crate::seq_span::{Elems, chain_cut, cut_chains, elems_eq, last_of, nth, piec
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+
+/// Sequences with fewer records build their placement per use instead of caching it (tests
+/// cache every sequence, so the lockstep tests check the cache).
+const LIN_MIN: usize = if cfg!(test) { 1 } else { 64 };
 
 /// `HEAD` or an element's dot (§3.2 `Anchor`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -47,14 +52,22 @@ pub struct SeqElem {
 }
 
 /// A list or text fragment. Equality is per element, whatever the split into range records.
-#[derive(Clone)]
 pub struct Seq {
     pub(crate) text: bool,
     pub(crate) meta: Meta,
     elems: Elems,
-    /// Placement cache (`seq_lin`): built on first use, kept up by joins that add elements or
-    /// change flags and content, dropped by any other change of `elems`. Not part of equality.
+    /// Placement cache (`seq_lin`) of a sequence of `LIN_MIN` records or more: built on first
+    /// use, kept up by joins that add elements or change flags and content if it was used since
+    /// the last such join, dropped by any other change of `elems`. Not part of equality.
     lin: OnceLock<Arc<Lin>>,
+    /// The cache was used since it was built or last followed a join.
+    used: AtomicBool,
+}
+
+impl Clone for Seq {
+    fn clone(&self) -> Seq {
+        Seq { text: self.text, meta: self.meta.clone(), elems: self.elems.clone(), lin: self.lin.clone(), used: AtomicBool::new(self.used.load(Ordering::Relaxed)) }
+    }
 }
 
 impl PartialEq for Seq {
@@ -75,7 +88,7 @@ impl Seq {
         Seq::new(text, Meta::default(), BTreeMap::new())
     }
     pub(crate) fn new(text: bool, meta: Meta, elems: Elems) -> Seq {
-        Seq { text, meta, elems, lin: OnceLock::new() }
+        Seq { text, meta, elems, lin: OnceLock::new(), used: AtomicBool::new(false) }
     }
     pub fn encoding(&self) -> Encoding {
         if self.text { Encoding::Text } else { Encoding::List }
@@ -92,9 +105,17 @@ impl Seq {
     pub(crate) fn into_elems(self) -> Elems {
         self.elems
     }
-    /// The placement (§6), cached.
-    pub(crate) fn lin(&self) -> &Lin {
-        self.lin.get_or_init(|| Arc::new(Lin::build(&self.elems, self.text)))
+    /// The placement (§6), cached from `LIN_MIN` records.
+    pub(crate) fn lin(&self) -> Arc<Lin> {
+        self.used.store(true, Ordering::Relaxed);
+        if let Some(l) = self.lin.get() {
+            return l.clone();
+        }
+        let l = Arc::new(Lin::build(&self.elems, self.text));
+        if self.elems.len() >= LIN_MIN {
+            let _ = self.lin.set(l.clone());
+        }
+        l
     }
     /// Whether a cached placement is held and equals a whole pass (tests).
     #[cfg(test)]
@@ -281,6 +302,11 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
 /// where the state's records start (ranges of the state are first split at its bounds), so each
 /// piece meets one state record of its own span, or none.
 pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    // a cache unused since it last followed a join is dropped (one rebuild at the next use
+    // instead of a follow per join of a burst)
+    if !s.used.swap(false, Ordering::Relaxed) {
+        s.lin.take();
+    }
     // how the cached placement follows each record, decided before that record joins
     let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
     for (dot, de) in d.elems {
@@ -412,8 +438,18 @@ pub(crate) fn has_records(s: &Seq) -> bool {
 
 /// Visible elements in order: not deleted, with content that reads (§5.7 Read). Never inside a
 /// range record (ranges have no content).
-pub(crate) fn visible(s: &Seq) -> &[Dot] {
-    &s.lin().vis
+pub(crate) fn visible(s: &Seq) -> Vis {
+    Vis(s.lin())
+}
+
+/// The visible elements of a placement (`visible`).
+pub(crate) struct Vis(pub Arc<Lin>);
+
+impl std::ops::Deref for Vis {
+    type Target = [Dot];
+    fn deref(&self) -> &[Dot] {
+        &self.0.vis
+    }
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
@@ -426,7 +462,8 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
 pub(crate) fn read(s: &Seq) -> Option<Value> {
-    let items = visible(s).iter().filter_map(|d| s.elems.get(d));
+    let vis = visible(s);
+    let items = vis.iter().filter_map(|d| s.elems.get(d));
     Some(if s.text {
         Value::Str(items.filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
     } else {
