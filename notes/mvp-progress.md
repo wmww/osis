@@ -52,7 +52,7 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **owner-call**: undo-chain-register.
 - **performance**: large-value-residues, perm-eval-cost, node-state-not-paged, crdt-seq-linearization-cost, chat-costs, large-value-seek, store-concurrent-readers.
 - **tests**: tests-spec-gaps (removal placement untested, three partial rules), tests-unbuilt (two sim adversaries, state-size invariant, 10^4-seed sweep, model refactors, TLA+ walk), store-shape-reduced-arity (tier-2 test fails, likely the test), chat-costs (tier-2 budget test).
-- **other** (component gaps): node-core-gaps (snapshot imports and judging, linked frontiers, open cost), node-sync-gaps (replaced labels, inbox re-send, hinted labels via links, revokes about seen authors, pass cost), flows-gaps (label replacement, large frontiers, contact cards), p2p-deferred (LAN loop, one driver), roster-snapshot-deltas (roster snapshots not per edge), ledger-late-audit (re-snapshot changes about 1 in 10^3 answers), struct-delta-size, tree-reader-bounds (reader bounds the spec could state), api-deferred, api-app-frictions.
+- **other** (component gaps): node-core-gaps (snapshot imports and judging, linked frontiers, open cost), node-sync-gaps (replaced labels, inbox re-send, hinted labels via links, revokes about seen authors, pass cost), flows-gaps (label replacement, large frontiers, contact cards), p2p-deferred (LAN loop, one driver), roster-snapshot-deltas (roster snapshots not per edge), ledger-late-audit (re-snapshot changes about 1 in 10^3 answers), struct-delta-size, api-deferred, api-app-frictions.
 
 ## Spec edits made during the run
 Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*/AMBIGUITIES.md.
