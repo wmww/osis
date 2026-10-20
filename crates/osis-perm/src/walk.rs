@@ -337,7 +337,7 @@ impl Pass<'_> {
     }
 
     fn view(&self, ts: Ts) -> View<'_> {
-        View { owners: &self.input.owners, edges: &self.edges, ts: Some(ts) }
+        View::new(&self.input.owners, &self.edges, Some(ts))
     }
 
     /// Epoch start of `thing`, if one is chosen.
@@ -416,14 +416,17 @@ impl Pass<'_> {
     /// A's chain writes (spec/permissions.md §5.1): the writes that set the admin edges on
     /// A's admin paths to `target`.
     fn chain_writes(&self, best: &BTreeMap<Tid, Role>, target: &Tid, ts: Ts) -> BTreeSet<WriteId> {
-        let view = self.view(ts);
-        let to = view.admin_reaching(target);
-        let on_path = |m: &Tid, t: &Tid| {
-            best.get(m) == Some(&Role::Admin)
-                && to.contains(t)
-                && self.edges.get(m, t).is_some_and(|e| e.role == Role::Admin && e.alive_at(Some(ts)))
-        };
-        self.setter.iter().filter(|((m, t), _)| on_path(m, t)).map(|(_, w)| *w).collect()
+        let mut out = BTreeSet::new();
+        for t in self.view(ts).admin_reaching(target) {
+            for (m, e) in self.edges.members(&t) {
+                if e.role == Role::Admin && e.alive_at(Some(ts)) && best.get(m) == Some(&Role::Admin)
+                    && let Some(w) = self.setter.get(&(*m, t))
+                {
+                    out.insert(*w);
+                }
+            }
+        }
+        out
     }
 
     /// An explicit write changed edge `(member, target)`: every node X reaching the member
@@ -435,23 +438,14 @@ impl Pass<'_> {
         let xs: Vec<Tid> = view.reach_backward(&member).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
         let ns = view.reach_forward(&target);
         let mut grew = false;
-        let mut shared = self.edges.clone();
-        if let Some(b) = base {
-            shared.set(member, target, Some(Edge { until: None, since: None, ..b }));
-        }
         for x in xs {
-            let mut own;
-            let was = match (base, mine.get(&x)) {
-                (b, Some(m)) => {
-                    own = self.edges.clone();
-                    own.set(member, target, Some(join(b, *m)));
-                    &own
-                }
-                (Some(_), None) => &shared,
+            let restored = match (base, mine.get(&x)) {
+                (b, Some(m)) => join(b, *m),
+                (Some(b), None) => Edge { until: None, since: None, ..b },
                 (None, None) => continue,
             };
             let view = self.view(ts);
-            let before = View { owners: &self.input.owners, edges: was, ts: Some(ts) };
+            let before = self.view(ts).patched(member, target, Some(restored));
             let (best, best_was) = (view.roles_from(&x), before.roles_from(&x));
             let pairs: Vec<(Tid, Standing, Standing)> = ns.iter().map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect();
             for (n, now, held) in pairs {

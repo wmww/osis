@@ -207,7 +207,7 @@ impl Timeline {
     /// Standing (class and effective role) of `node` on `thing`.
     pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
         let edges = self.edges_at(at.point);
-        let view = View { owners: &self.owners, edges: &edges, ts: at.ts };
+        let view = View::new(&self.owners, &edges, at.ts);
         let best = view.roles_from(node);
         view.standing(node, &best, thing)
     }
@@ -225,7 +225,7 @@ impl Timeline {
     /// Effective invite (§2).
     pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         let edges = self.edges_at(at.point);
-        let view = View { owners: &self.owners, edges: &edges, ts: at.ts };
+        let view = View::new(&self.owners, &edges, at.ts);
         let best = view.roles_from(node);
         view.invite(&best, thing)
     }
@@ -233,6 +233,6 @@ impl Timeline {
     /// Effective roles of `node` on every thing it reaches.
     pub fn roles_of(&self, node: &Tid, at: At) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
-        View { owners: &self.owners, edges: &edges, ts: at.ts }.roles_from(node)
+        View::new(&self.owners, &edges, at.ts).roles_from(node)
     }
 }

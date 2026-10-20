@@ -152,15 +152,56 @@ impl Edges {
     }
 }
 
+/// One edge set to a value over an edge state: (member, target, value).
+pub type Patch = (Tid, Tid, Option<Edge>);
+
 /// Authority queries over owners and an edge state, with edges alive at `ts` (`None`: the end
-/// of time).
+/// of time), and optionally one edge patched.
 pub struct View<'a> {
     pub owners: &'a Owners,
     pub edges: &'a Edges,
     pub ts: Option<Ts>,
+    pub patch: Option<Patch>,
 }
 
-impl View<'_> {
+impl<'a> View<'a> {
+    pub fn new(owners: &'a Owners, edges: &'a Edges, ts: Option<Ts>) -> View<'a> {
+        View { owners, edges, ts, patch: None }
+    }
+    /// The same view with edge (member, target) set to `edge`.
+    pub fn patched(self, member: Tid, target: Tid, edge: Option<Edge>) -> View<'a> {
+        View { patch: Some((member, target, edge)), ..self }
+    }
+
+    /// `f` on each edge of `member`: (target, value).
+    fn each_target(&self, member: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+        let patch = self.patch.as_ref().filter(|p| p.0 == *member);
+        for t in self.edges.targets(member) {
+            if patch.is_some_and(|p| p.1 == *t) {
+                continue;
+            }
+            if let Some(e) = self.edges.get(member, t) {
+                f(t, e);
+            }
+        }
+        if let Some((_, t, Some(e))) = patch {
+            f(t, e);
+        }
+    }
+
+    /// `f` on each edge on `target`: (member, value).
+    fn each_member(&self, target: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
+        let patch = self.patch.as_ref().filter(|p| p.1 == *target);
+        for (m, e) in self.edges.members(target) {
+            if patch.is_none_or(|p| p.0 != *m) {
+                f(m, e);
+            }
+        }
+        if let Some((m, _, Some(e))) = patch {
+            f(m, e);
+        }
+    }
+
     /// Effective role of `x` on every thing it reaches (spec/permissions.md §1): the maximum
     /// over paths of the minimum role along the path; `x` is admin of itself, an owner of what
     /// it owns.
@@ -180,13 +221,11 @@ impl View<'_> {
                 for &y in self.owners.owned(&e) {
                     relax(y, level, &mut stack);
                 }
-                for t in self.edges.targets(&e) {
-                    if let Some(edge) = self.edges.get(&e, t)
-                        && edge.alive_at(self.ts)
-                    {
+                self.each_target(&e, |t, edge| {
+                    if edge.alive_at(self.ts) {
                         relax(*t, level.min(edge.role), &mut stack);
                     }
-                }
+                });
             }
         }
         best
@@ -195,11 +234,11 @@ impl View<'_> {
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
     pub fn invite(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> Option<Role> {
         let mut inv = None;
-        for (m, e) in self.edges.members(n) {
+        self.each_member(n, |m, e| {
             if let (Some(i), Some(&r), true) = (e.invite, best.get(m), e.alive_at(self.ts)) {
                 inv = inv.max(Some(i.min(r).min(e.role)));
             }
-        }
+        });
         inv
     }
 
@@ -223,11 +262,16 @@ impl View<'_> {
         let mut seen = BTreeSet::from([*start]);
         let mut stack = vec![*start];
         while let Some(e) = stack.pop() {
-            for y in self.owners.owned(&e).iter().chain(self.edges.targets(&e)) {
+            for y in self.owners.owned(&e) {
                 if seen.insert(*y) {
                     stack.push(*y);
                 }
             }
+            self.each_target(&e, |y, _| {
+                if seen.insert(*y) {
+                    stack.push(*y);
+                }
+            });
         }
         seen
     }
@@ -238,9 +282,13 @@ impl View<'_> {
         let mut seen = BTreeSet::from([*start]);
         let mut stack = vec![*start];
         while let Some(e) = stack.pop() {
-            let owner = self.owners.owner_actor(&e);
-            let admins = self.edges.members(&e).filter(|(_, ed)| ed.role == Role::Admin && ed.alive_at(self.ts)).map(|(m, _)| *m);
-            for y in admins.chain(owner) {
+            let mut up: Vec<Tid> = self.owners.owner_actor(&e).into_iter().collect();
+            self.each_member(&e, |m, ed| {
+                if ed.role == Role::Admin && ed.alive_at(self.ts) {
+                    up.push(*m);
+                }
+            });
+            for y in up {
                 if seen.insert(y) {
                     stack.push(y);
                 }
@@ -254,8 +302,9 @@ impl View<'_> {
         let mut seen = BTreeSet::from([*start]);
         let mut stack = vec![*start];
         while let Some(e) = stack.pop() {
-            let owner = self.owners.owner_actor(&e);
-            for y in self.edges.members(&e).map(|(m, _)| *m).chain(owner) {
+            let mut up: Vec<Tid> = self.owners.owner_actor(&e).into_iter().collect();
+            self.each_member(&e, |m, _| up.push(*m));
+            for y in up {
                 if seen.insert(y) {
                     stack.push(y);
                 }
