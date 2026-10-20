@@ -78,8 +78,24 @@ fuzz/README.md: running, the target table (live and planned per crate), crash ha
 ## Size budgets and benches (crates/osis-bench)
 - Budgets: `crates/osis-bench/tests/budgets.rs`, each `#[test] #[ignore] fn budget_<name>()` calling `assert_budget(name, actual, budget)` with the source number plus a margin (about 10%), citing its source. They use public APIs only (osis-bench is layer 9 and may depend on any crate).
 - Live: `budget_creation_record`, `budget_minimal_commit` (commit blob plaintext of a header plus one register delta: 288 B against about 300, notes/crdt.md Commit floor), `budget_text_snapshot_ratio` (notes/crdt.md, Text size).
-- Pending budgets (add when the crate lands): removal from an N-member roster (no source number yet: set it from the first measurement); roster snapshot of N members, membership boxes about 1.2 KB per member and role (notes/crypto.md); revoke frontier after a long tenure (osis-perm, osis-commit).
+- Pending budgets: roster snapshot of N members, membership boxes about 1.2 KB per member and role (notes/crypto.md); revoke frontier after a long tenure (osis-perm, osis-commit).
 - Benches: `crates/osis-bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (prints median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). Run `cargo bench -p osis-bench`; nightly records the output as an artifact. Not gated. No criterion: a 40-line harness keeps the dependency tree and builds small.
+
+## Scale checks
+Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6).
+
+| check | how to run (`cargo test --release ... -- --ignored --nocapture`) | numbers | verdict |
+|---|---|---|---|
+| map edit at the node | `-p osis-node --test scale big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: store writes 367 KB / 4.0 MB / 94.6 MB, 71 ms / 0.84 s / 8.6 s; commit 299–307 B | **miss** (O(state)): issues/node-state-not-paged.md |
+| map edit in store tables | `-p osis-store --test paged million_keys` | 2 / 3 / 3 unit rows, 14 / 43 / 36 KB written, 0.1–0.3 ms per shredded edit; fill of 10^6 + index 100 s | pass |
+| paged snapshot rewrite | `-p osis-bench --test scale` | 3 / 27 / 292 pages (about 80 KB each); after one change 1 new page plus the top (31 KB of links at 10^6); re-encode still O(n): 8 ms / 0.12 s / 1.2 s | pass in bytes |
+| multi-GB value | `OSIS_LARGE_MIB=4096 -p osis-label --test scale` | 1 GiB: 13,451 blobs, write 141 MB/s, read 280 MB/s, peak RSS growth 3.2 MB / 1.2 MB; 4 GiB: 54,006 blobs, 233 / 385 MB/s, 5.9 MB / 0.9 MB (writer's `written` list is linear, ~60 B per blob) | pass (bound 64 MB) |
+| reconciliation 10^6 IDs, 1% diff | `-p osis-proto --lib million_blob_rounds` | 3 rounds (bound about log16(n/32) ≈ 4), 236 request messages, 35 MB up, 5 MB down, 1.3 s CPU | pass in rounds; bytes O(n): issues/rbsr-dense-diff-bytes.md |
+| removal from a roster | `-p osis-node --test scale roster_removal_cost` | read+write rotation of N writers: N=100 272 KB (2747 B per member), N=1000 2.70 MB (2707 B); `Engine::commit` 0.16 s / 28.7 s | pass in bytes (notes: 2.7 KB); **miss** in time: issues/rotation-commit-superlinear.md |
+| text snapshot budget | `-p osis-bench --test budgets budget_text_snapshot_ratio` | synthetic typist (20k edits): 2.89x at 100 edits per commit, 6.73x at 10 | pass (3.5x, 7x) |
+| perm evaluation | `-p osis-perm --test bench` | 10^3 edge writes 34 ms, 10^4 4.4–5.0 s, re-evaluation after one write 4.3 s; owner chain depth 10 / 100 / 1000: 0.3 / 1.7 / 34 ms, leaf role query 1 / 9 / 189 µs | **miss** (issues/perm-eval-cost.md) |
+
+Not covered: a million-key map through sync (pages fetched and joined whole), reconciliation over a real connection, a roster of thousands through the flows (grants and removals end to end).
 
 ## Coverage
 Nightly `coverage` job: `cargo llvm-cov --workspace`, lcov and summary as artifacts, `continue-on-error`. Measured, never gated; read it for untested decoder branches. Locally: `cargo llvm-cov -p <crate>` if cargo-llvm-cov is installed.

@@ -91,21 +91,36 @@ fn stream_and_positions() {
 }
 
 // spec/crdt.md §8: large states page; spec/requirements.md, Scale: maps with millions of keys; a million small units; one edit
-// touches O(1) pages.
+// touches O(1) pages. Trend at 10^4..10^6 (`OSIS_SCALE_MAX` caps it), numbers in notes/testing.md
+// ("Scale checks"): `cargo test --release -p osis-store --test paged million_keys -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn million_keys() {
-    let b = MemoryBackend::new();
-    let mut rng = SeededRng::from_u64(3);
-    let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-    fill(&mut s, &mut rng, 1_000_000, 50_000);
-    let before = b.dump();
-    let mut t = s.transaction(&mut rng).unwrap();
-    let elems = t.table(&tid(1), &ak("/big"), 0).unwrap().unwrap();
-    assert_eq!(t.table_len(elems).unwrap(), 1_000_000);
-    t.table_put(elems, b"key00500000", b"edited".to_vec(), Shred::Yes).unwrap();
-    t.commit().unwrap();
-    let changed = changed_units(&before, &b.dump());
-    assert!(changed <= 5, "{changed} unit rows rewritten");
+    let max: u32 = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+    let mut n = 10_000u32;
+    while n <= max {
+        let b = MemoryBackend::new();
+        let mut rng = SeededRng::from_u64(3);
+        let mut s = Store::create(Box::new(b.clone()), Box::new(osis_store::MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let t0 = std::time::Instant::now();
+        fill(&mut s, &mut rng, n, 50_000);
+        let fill_time = t0.elapsed();
+        let before = b.dump();
+        let t1 = std::time::Instant::now();
+        let mut t = s.transaction(&mut rng).unwrap();
+        let elems = t.table(&tid(1), &ak("/big"), 0).unwrap().unwrap();
+        assert_eq!(t.table_len(elems).unwrap(), u64::from(n));
+        let key = format!("key{:08}", n / 2);
+        t.table_put(elems, key.as_bytes(), b"edited".to_vec(), Shred::Yes).unwrap();
+        t.commit().unwrap();
+        let edit = t1.elapsed();
+        let after = b.dump();
+        let changed = changed_units(&before, &after);
+        let old: HashSet<&(Vec<u8>, Vec<u8>)> = before.iter().collect();
+        let (rows, bytes) = after.iter().filter(|kv| !old.contains(kv)).fold((0, 0), |(r, s), kv| (r + 1, s + kv.0.len() + kv.1.len()));
+        println!("table {n} keys (+{n}-entry index): fill {fill_time:?}; one shredded edit {edit:?}: {changed} unit rows, {rows} rows {bytes} B written");
+        assert!(changed <= 5, "{changed} unit rows rewritten");
+        n *= 10;
+    }
 }
 
