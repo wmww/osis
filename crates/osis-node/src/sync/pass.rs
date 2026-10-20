@@ -610,15 +610,17 @@ impl SyncEngine {
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let closure = self.engine.closure(g);
         for (c, ais) in self.engine.certificates(g) {
-            // the aspects this node's copies under the label carry: a chain grown since (an
-            // owner's `/created` this node learned later) places the rest
+            // the aspects this node's copies or any present blob of the commit under the label
+            // carry (a copy of carried parts is a strict subset or duplicate others delete, and
+            // placing it again churns, spec/sync.md §7): a chain grown since (an owner's
+            // `/created` this node learned later) places the rest
             let placed: BTreeSet<usize> = self
                 .state
                 .entries
                 .range((l, BlobId([0; 32]))..)
                 .take_while(|((x, _), _)| *x == l)
-                .filter_map(|(_, e)| match &e.kind {
-                    Kind::Commit { commit, parts } if e.cert && *commit == c => Some(parts.iter().map(|(ai, _)| *ai).collect::<Vec<_>>()),
+                .filter_map(|((_, id), e)| match &e.kind {
+                    Kind::Commit { commit, parts } if *commit == c && (e.cert || self.state.present_anywhere(&l, id)) => Some(parts.iter().map(|(ai, _)| *ai).collect::<Vec<_>>()),
                     _ => None,
                 })
                 .flatten()
