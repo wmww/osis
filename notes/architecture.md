@@ -73,7 +73,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `zeroize` 1.8 (crypto, transport): secret wipe on drop.
 - `subtle` 2.6 (crypto; no default features; already in the tree via the dalek crates): `ConstantTimeEq` for `Secret32`.
 - `rand_core` 0.6 (crypto; no default features; re-exported as `osis_crypto::{CryptoRngCore, RngCore, CryptoRng}`; other crates use the re-export): the injected-rng trait, the version the dalek 2.x crates use. `getrandom` comes only through osis-crypto's `os-rng` feature (`rand_core/getrandom`, `osis_crypto::OsRng`), for drivers; `cargo tree -p osis-store` has no getrandom.
-- `proptest` (dev, all crates; models use their own version line): property tests.
+- `proptest` (dev, all crates; models use their own version line): property tests. 1.12 brings `rand` 0.10 and `getrandom` 0.4 into test builds only.
 - `libfuzzer-sys` (`fuzz/` only, outside the workspace): cargo-fuzz harness.
 - `redb` 2.6 (store, feature `file-backend`; `default-features = false`): the file backend. Pure Rust, no C toolchain (rusqlite bundles SQLite: slower build, C), MSRV within ours; holds only ciphertext, so its engine never needs to erase (notes/local-store.md).
 - `quinn` 0.11 (transport, feature `quic`; no default features, `runtime-tokio`, `rustls-ring`): QUIC for direct server connections (spec/sync.md §10). Chosen over Noise-over-TCP: native streams, flow control, keep-alive and connection migration, the same stack iroh builds on; the cost is build time, kept off default builds.
