@@ -1,4 +1,4 @@
-//! Large atomic values (spec/data-model.md §6; plans/large-values.md): before an op's value is
+//! Large atomic values (spec/data-model.md §6; issues/large-value-reuse.md): before an op's value is
 //! resolved, every position that must be chunked (blobs, register strings, set elements and map
 //! keys above `CHUNK_THRESHOLD`) becomes a link to a chunk tree written as blob ciphertexts in
 //! the store, framed like the delta's pages. Links compare by content hash, so an unchanged

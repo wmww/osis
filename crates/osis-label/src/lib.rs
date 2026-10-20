@@ -3,7 +3,7 @@
 //! open/stamp/deposit/delete signatures, delete-token checks, inbox blobs, signal envelopes, the
 //! `/label` types, addresses, links and recovery cards, bundles (spec/sync.md, spec/wire.md
 //! §5, §6, §8-§10, §12, spec/crypto.md §5-§7). Pure functions; randomness injected.
-//! Layer 4 (notes/architecture.md). Notes: notes/sync.md (Implementation (osis-label)); plans/large-values.md.
+//! Layer 4 (notes/architecture.md). Notes: notes/sync.md (Implementation (osis-label)); notes/data-model.md (Large values).
 #![forbid(unsafe_code)]
 
 pub mod addr;

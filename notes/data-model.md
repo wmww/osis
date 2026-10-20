@@ -26,6 +26,7 @@
 - Implementation (osis-label `chunks`, `tree`): the writer knows the declared length up front, so inline vs link is decided before any byte (no buffering above the threshold). Equality by content hash lives in `osis_core::Value` itself, so every crdt and schema comparison (set read and ops, map keys, register diff) follows without special cases.
 - Reuse checks: an old chunk is reused only if held, intact (blob ID, decryption, equal plaintext) and kept by the re-encryption rule; a node only if its blob is kept and its children are exactly the old node's (otherwise a fresh node over the reused children). Missing old blobs (lazily fetched) are simply written afresh: reuse is an optimization, a fresh encryption is always valid. Reused blobs are not in the delta's chunk list (it lists blobs the delta introduces). Pages are never reused.
 - Range reads still fetch every chunk before the range: tree nodes carry no lengths (issues/large-value-seek.md).
+- Node (osis-node `engine/large.rs`, `engine/blobs.rs`; osis `large.rs`): the write path chunks large registers, blobs, strings, set elements and map keys; pages are fetched before their commit applies; the API offers `stream`, `len`, `set_stream`. The node does not reuse chunks yet, so an edit re-sends the whole value (issues/large-value-reuse.md).
 
 ## Wire choices (spec/wire.md)
 - Tags 1616-1619 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.

@@ -1,5 +1,5 @@
 //! `LocalPeer`: engines exchanging commit bytes directly, with no labels, servers or
-//! encryption under labels (the simulator's seed, plans/sim.md). Each engine has its own
+//! encryption under labels (the simulator's seed, notes/testing.md, Simulator). Each engine has its own
 //! `MemoryBackend`, `ManualClock` and seeded rng; delivery is explicit and order is the caller's.
 
 use crate::engine::{Config, Engine};

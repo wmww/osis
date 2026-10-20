@@ -1,4 +1,4 @@
-//! Phase C scenario library (plans/testing.md §5; notes/permissions.md, notes/chat.md): the
+//! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md, notes/chat.md): the
 //! named membership and retention stories over sync engines and blind servers. Each sets up with
 //! flows, runs a faulty schedule around the story's critical moment, checks the story's expected
 //! outcome, and ends with the quiescent invariants (`check`).
