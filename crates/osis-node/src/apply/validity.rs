@@ -230,6 +230,16 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
         Value::Map(m) => m.get(&Value::Int(id)).cloned(),
         _ => None,
     };
+    if ak == "/keys" {
+        // the admin keyset, a key actor's KEM key, the inbox and the deposit seed need admin
+        // (spec/crypto.md §3: inbox and deposit seed by an admin); read and write keysets their
+        // rotator
+        let admin = match f.slot(osis_crdt::Encoding::Struct) {
+            Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
+            _ => false,
+        };
+        return Some(if admin { Role::Admin } else { Role::Write });
+    }
     let v = f.read()?;
     let top = match ak {
         "/secrets" => {
@@ -241,7 +251,6 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
             }
             roles.into_iter().max()
         }
-        "/keys" => field(&v, 2).map(|_| Role::Admin),
         _ => return None,
     };
     Some(top.unwrap_or(Role::Write).max(Role::Write))
@@ -542,5 +551,60 @@ mod tests {
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
+}
+
+#[cfg(test)]
+mod keys_tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::local_peer::LocalPeer;
+    use crate::Mutation;
+    use osis_core::{Role, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+    use osis_schema::Codec;
+
+    // spec/crypto.md §3: "inbox and deposit seed by an admin; a key actor's by its own key". A
+    // writer's `/keys` write of the deposit seed or of a key-actor KEM key is invalid: otherwise a
+    // writer (kept valid by its demoter's frontier after removal) set an actor's `key` field and
+    // every later grant to the actor was sealed to it.
+    #[test]
+    fn writer_cannot_write_admin_keys_fields_spec_crypto_3() {
+        let mut lp = LocalPeer::new(2, 902, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
+        let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
+        let kem = lp.peers[1].engine.core.id.keys().kem.public().clone();
+        for (field, v) in [(5u64, Some([9u8; 32]).to_value()), (3, Some(ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec())).to_value())] {
+            let mut m = Mutation::new();
+            m.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Set(v) }).unwrap();
+            assert!(lp.peers[1].commit(m.clone()).is_err(), "refused writer-side");
+            lp.peers[1].engine.core.skip_writer_rules = true;
+            lp.peers[1].commit(m).unwrap().unwrap();
+            lp.peers[1].engine.core.skip_writer_rules = false;
+        }
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), before);
+        // spec/permissions.md §3: a writer rotates read and write only; an admin history box is
+        // an admin's write
+        let e = lp.peers[0].engine.epochs(&t).unwrap().admin.newest().unwrap();
+        let hk = ct::HistoryKey { role: Role::Admin, epoch: osis_keys::aspects::to_schema(&e) };
+        let mut m = Mutation::new();
+        m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(hk.to_value())], op: Op::Set(Value::Bytes(vec![0; 48])) }).unwrap();
+        assert!(lp.peers[1].commit(m.clone()).is_err(), "refused writer-side");
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        lp.sync_all().unwrap();
+        let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        assert_ne!(s.history.get(&hk), Some(&vec![0; 48]));
     }
 }
