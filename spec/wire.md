@@ -195,7 +195,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events, with blobs as in Sync under the connection's last `inline_limit` for that label. **Signal**: `auth` as in §9; the receiver forwards it unchanged to its other subscribers of the label and stores nothing.
-- Status codes: 0 ok, 1 refused, 2 malformed, 3 too large, 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
+- Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (client-local: a server answers an oversized message as malformed), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label.
 - Per-message caps: Upload and Delete 1024 items; Fetch 1024 IDs; `gained` and `want` 4096; Subscribe and Unsubscribe 1024 labels; Reconcile 256 ranges, ReconcileReply 4096; a peer may refuse to hold more than 4096 open labels per connection (code 4).
 
 ### 11.3 Range reconciliation

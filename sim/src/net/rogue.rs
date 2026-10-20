@@ -3,7 +3,7 @@
 //! keys, blobs, wraps and stamps the scenario builds go on the wire as they are: a removed
 //! member's stale steps and replays, malformed blobs, deposit floods.
 
-use super::{NetSim, Party};
+use super::{End, NetSim, Party, Payload};
 use crate::harness::Res;
 use osis_core::{LabelId, Tid};
 use osis_crypto::{Secret32, SigningSecret};
@@ -38,6 +38,29 @@ pub struct LabelKeys {
 }
 
 impl NetSim {
+    /// Bytes as if server `s` sent them to node `n` on its open connections there (a lying
+    /// server's word, in order after what is in flight); how many connections got them.
+    pub fn server_says(&mut self, s: usize, n: usize, bytes: &[u8]) -> usize {
+        let to: Vec<(u64, End)> = self
+            .links
+            .iter()
+            .filter_map(|(id, l)| match (l.dialer, l.acceptor) {
+                (End::Node(x, c), End::Hub(y, _)) | (End::Hub(y, _), End::Node(x, c)) if x == n && y == s => Some((*id, End::Node(x, c))),
+                _ => None,
+            })
+            .collect();
+        for (id, e) in &to {
+            self.send(*id, *e, Payload::Bytes(bytes.to_vec()));
+        }
+        to.len()
+    }
+
+    /// Commit `c` is an adversary's counter reuse under an honest node's key: the honest-node
+    /// counter check skips it.
+    pub fn equivocation(&mut self, c: osis_core::CommitId) {
+        self.check.equivocations.insert(c);
+    }
+
     /// A hand-driven session of an adversary at server `s` (Hellos exchanged).
     pub fn rogue(&mut self, s: usize) -> Res<Rogue> {
         let key = self.servers.get(s).map(|x| x.key).ok_or_else(|| self.fail(format!("no server {s}")))?;

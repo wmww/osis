@@ -12,6 +12,9 @@
 //! - spec/sync.md §6 (no ping-pong): once quiescent, further resync passes add and delete
 //!   nothing at any server.
 //! - spec/commits.md §4: nothing pends at quiescence (every reason resolved).
+//! - spec/requirements.md (Scale: state grows with the edits ever made; peer input never causes
+//!   unbounded storage): a node stores at most a fixed factor of what it must hold, plus a
+//!   fixed amount per commit and per label.
 
 use super::{NetSim, Party};
 use crate::harness::Res;
@@ -29,7 +32,64 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
     labels(sim)?;
     groups(sim)?;
     purged(sim)?;
+    state_size(sim)?;
     no_ping_pong(sim)
+}
+
+/// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold, plus `STATE_PER_ENTRY`
+/// per entry it must hold, `STATE_PER_LABEL` per label and `STATE_BASE`. What it must hold is
+/// taken from honest servers only (the live entries of its labels, the fullest server per
+/// label), never from its own holdings, so junk a peer made it keep (or pending commits) raises
+/// no bound. Calibrated on seeds 0..3 of every scenario: nodes used at most 0.47 of the
+/// bound (stored bytes at most 2.11x what they must hold; notes/testing.md, Simulator); junk
+/// kept, or state growing with time rather than with edits, breaks it.
+const STATE_FACTOR: u64 = 2;
+const STATE_PER_ENTRY: u64 = 2 << 10;
+const STATE_PER_LABEL: u64 = 16 << 10;
+const STATE_BASE: u64 = 64 << 10;
+
+/// spec/requirements.md (Scale): a node's state stays within `STATE_*` of what it must hold.
+fn state_size(sim: &mut NetSim) -> Res<()> {
+    let mut lines = Vec::new();
+    for n in 0..sim.nodes.len() {
+        if sim.excused.contains(&n) {
+            continue;
+        }
+        let Some(node) = sim.nodes.get(n) else { continue };
+        if !node.up || node.lost {
+            continue;
+        }
+        let stored: u64 = node.backend.dump().iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
+        let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
+        let labels = s.labels();
+        let (mut must, mut entries) = (0u64, 0u64);
+        for (_, gl) in &labels {
+            let mut most = (0u64, 0u64);
+            for a in &gl.servers {
+                let Some(i) = sim.servers.iter().position(|x| x.key == a.key) else { continue };
+                if sim.dishonest.contains(&i) {
+                    continue;
+                }
+                let Some(hub) = sim.servers.get(i).and_then(|x| x.hub.as_ref()) else { continue };
+                let st = hub.store();
+                let ids = st.live_ids(&gl.id).unwrap_or_default();
+                let bytes: u64 = ids.iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
+                most = most.max((bytes, ids.len() as u64));
+            }
+            must += most.0;
+            entries += most.1;
+        }
+        let bound = STATE_FACTOR * must + STATE_PER_ENTRY * entries + STATE_PER_LABEL * labels.len() as u64 + STATE_BASE;
+        let what = format!("node {n} stores {stored} B; must hold {must} B in {entries} entries under {} labels (bound {bound} B)", labels.len());
+        if stored > bound {
+            return Err(sim.fail(format!("{what}: over the bound")));
+        }
+        lines.push(what);
+    }
+    for l in lines {
+        sim.note(l);
+    }
+    Ok(())
 }
 
 /// Per aspect: the deltas a node holds of it (commit, delta index) and its read.

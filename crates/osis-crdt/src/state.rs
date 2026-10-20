@@ -708,7 +708,7 @@ fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Chang
 
 /// Prunes a position's members under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
-fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     // every member holds the register's embedding, whatever path the members came by (a
     // received snapshot's `Slots` included)
     let mut members = members;
