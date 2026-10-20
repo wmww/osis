@@ -4,7 +4,7 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
-use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf, live_entries};
+use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Stamp, max_opt};
 use crate::view::View;
@@ -128,16 +128,11 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         }
         PathSeg::Key(k) => {
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            let cur = joined(s, a, e.as_ref());
-            let found = match &cur {
-                Some(Fragment::Map(m)) => live_entries(&m.entries).get(k).and_then(|ds| Some(((*ds.first()?).clone(), key_state(m, ds)))),
-                _ => None,
-            };
-            match found {
+            match key_lookup(s, a, e.as_ref(), k) {
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
                     resolve(w, ks.as_ref(), None, None, rest, op, &vview, false)?
-                        .map(|c| Fragment::Map(Map { meta: Meta::default(), entries: BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]) }))
+                        .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
                     // a key that is not live: only a put creates it
@@ -147,7 +142,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                     }
                     let d = w.fresh().dot;
                     let c = crate::ops::create(w, &vview, v)?;
-                    Some(Fragment::Map(Map { meta: Meta::default(), entries: BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]) }))
+                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
             }
         }
@@ -160,6 +155,28 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             c.map(|c| Fragment::Seq(seq::wrap_element(d, c)))
         }
     })
+}
+
+/// The lowest live entry of key `k` and what the key reads as, at a map position with state `s`
+/// and batch writes `a` under the reset `e` from above (§5.6). Only the entries carrying `k`
+/// join: entries are independent per dot, so this equals a lookup in the whole join, in
+/// O(log n) instead of a copy of the map.
+fn key_lookup(s: Option<&Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_core::Value) -> Option<(Dot, Option<Fragment>)> {
+    fn map(f: Option<&Fragment>) -> Option<&Map> {
+        match f {
+            Some(Fragment::Map(m)) => Some(m),
+            _ => None,
+        }
+    }
+    let (sm, am) = (map(s), map(a));
+    let dots: std::collections::BTreeSet<&Dot> = [sm, am].into_iter().flatten().filter_map(|m| m.keys.get(k)).flatten().collect();
+    if dots.is_empty() {
+        return None;
+    }
+    let restrict = |m: Option<&Map>| m.map(|m| Fragment::Map(Map::new(m.meta.clone(), dots.iter().filter_map(|d| Some(((*d).clone(), m.entries.get(*d)?.clone()))).collect())));
+    let Some(Fragment::Map(m)) = joined(restrict(sm).as_ref(), restrict(am).as_ref(), e) else { return None };
+    let ds = m.live_dots(k);
+    Some(((*ds.first()?).clone(), key_state(&m, &ds)))
 }
 
 /// Merges `d` (a later op of the same commit) into `acc` (§4.5 net effect).
@@ -196,8 +213,11 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
             Fragment::Enum(Enum { meta, case, payloads })
         }
         (Fragment::Map(a), Fragment::Map(b)) => {
+            // the index carries over (a superset stays valid), so a long batch stays linear
+            let keys = a.keys;
             let (mut meta, mut entries) = start(a.meta, a.entries, b.meta);
             let mut omitted = false;
+            let touched: Vec<Dot> = b.entries.keys().cloned().collect();
             for (dot, de) in b.entries {
                 if de.reset.is_some() && w.made(&dot) {
                     omitted |= entries.remove(&dot).is_some();
@@ -209,7 +229,11 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
                 entries.insert(dot, Entry { reset: de.reset.or(prev.reset), key, frag });
             }
             keep_present(&mut meta, omitted && entries.is_empty(), w);
-            Fragment::Map(Map { meta, entries })
+            let mut m = Map { meta, entries, keys };
+            for d in &touched {
+                m.index_dot(d);
+            }
+            Fragment::Map(m)
         }
         (Fragment::Seq(a), Fragment::Seq(b)) => Fragment::Seq(seq::overlay(a, b, w)),
         (_, d) => d,

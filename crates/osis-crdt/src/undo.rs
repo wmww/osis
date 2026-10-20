@@ -4,7 +4,7 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
-use crate::ops::{PathSeg, Writer, create, live_entries, present_slot, remove, replace};
+use crate::ops::{PathSeg, Writer, create, present_slot, remove, replace};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source};
 use crate::view::View;
@@ -25,7 +25,7 @@ impl UndoBuffer for Fragment {
                 (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id).cloned(),
                 (PathSeg::Case(id), Fragment::Enum(e)) => e.payloads.get(id).cloned(),
                 (PathSeg::Key(k), Fragment::Map(m)) => {
-                    let d = live_entries(&m.entries).get(k).and_then(|ds| ds.first().map(|d| (*d).clone()));
+                    let d = m.live_dots(k).first().map(|d| (*d).clone());
                     d.and_then(|d| m.entries.get(&d)).and_then(|e| e.frag.as_deref().cloned())
                 }
                 (PathSeg::Index(i), Fragment::Seq(s)) => seq::element_at(&s, *i).and_then(|(_, c)| c),
@@ -194,7 +194,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             }
-            Fragment::Map(Map { meta: Meta::default(), entries })
+            Fragment::Map(Map::new(Meta::default(), entries))
         }
         Fragment::Struct(x) => {
             if x.meta.reset.is_some() {

@@ -67,7 +67,6 @@
 ## Implementation hints (non-normative)
 - Linearization: cache the order and tree; a delta touching k elements re-places those k subtrees; a cycle recomputes only its strongly connected component.
 - Large states page in the local store like snapshots (notes/local-store.md, Units). Very long texts (tens of MB) load fully for linearization; a subtree-count index is a later optimization.
-- Maps need a local `key -> live dots` index.
 - If a concurrent edit resurrects an element whose content this node dropped, request the specific blobs that carried it.
 - Cut/paste: the client remembers the cut dot ranges beside the clipboard text; paste emits move + undelete if the clipboard still matches, else a diff. Optional osis clipboard MIME type with (aspect, ranges); the protocol has no clipboard concept.
 - Undo stack is derived, not stored: the actor's own commits in scope (a set of aspects or a group) minus undone ones, plus undo commits for redo. Replicates for free, so undo works across devices. A node keeps its own bodies and pre-reset snapshots locally for the undo horizon.
@@ -95,7 +94,8 @@
 - **Wire**: runs per §3.3 rule 3 over `Enc::sorted`; a segment's `Ci` is read off the encoded creation stamp; decode claims own creations and position writes, rejects n = 0 or > 2^16, bad indices, list undeletes, content length mismatches, segments of another source, `Derived` creation runs in a writer's delta, empty list element fragments, bare-anchor runs outside snapshots, more than `MAX_DELTA_BARE` content-less elements in a writer or import delta (counted across pages on `Dec`, before allocating), writer `FlagW` stamps off the delta stamp; the re-encode check covers maximality and order. Issue: issues/crdt-run-amplification.md.
 - Timing: `budget_big_map_spec_4_1` (10^5-entry map, release): create 53 ms, join 43 ms, read 132 ms, encode 224 ms / 31 pages, decode 276 ms, one-entry join 0.3 µs.
 - **Access** (`access.rs`): `Map::entries()` read-only (node adapts `/members` entries into perm edge writes). **Remap** (`remap.rs`): `Fragment::map_dots` re-sources every dot (imports, spec/permissions.md §7).
-- Not yet: a map `key -> live dots` index (ops scan entries and clone the joined map per path op); join over one page at a time (pages are fetched and joined whole).
+- **Key index**: `Map.keys` (stored key -> dots that carried it, a superset; lookups check the entry; not part of `Eq`), kept by `join_entries`, `Map::new`, batch `overlay`, `map_dots`. `Batch` resolves `PathSeg::Key` by joining only the entries carrying the key (`key_lookup`, O(log n), no clone). Index paths and `Remove` of a map key still scan or clone.
+- Not yet: join over one page at a time (pages are fetched and joined whole, `codec::elem_items`).
 - **Tests**: differential lockstep and wire byte identity against the model for text, list, the kitchen sink and register/text slots (node and commit form), every rule 7 run rejection, the worked examples below as `*_spec_example` tests, random undelete, ops against a plain-string model, batch = one by one, convergence of replicas using these ops, undo, diff, `edit` rebase, cut/paste identity, list delete vs newer nested write, Derived anchors after expiry; tier 2: `seq_differential_large_spec_5_7`, `budget_big_text_spec_6` (timing), osis-bench `budget_text_snapshot_ratio` (synthetic typist, or the automerge-paper trace via `OSIS_TEXT_TRACE`: 2.9x at 100 edits per commit, 6.7x at 10 for the synthetic one).
 
 

@@ -2,7 +2,7 @@
 //! element identities, anchors, resets) mapped by a function; `ts` is kept. `Derived` dots map
 //! through their underlying dot.
 
-use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, Register, Set, Slots, Struct};
+use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::stamp::{Dot, Source, SourceKind, Stamp};
 use std::collections::BTreeMap;
@@ -108,9 +108,9 @@ impl Fragment {
                     x.map_dots(f);
                 }
             }
-            Fragment::Map(Map { meta: m, entries }) => {
-                meta(m, f);
-                *entries = std::mem::take(entries)
+            Fragment::Map(mp) => {
+                meta(&mut mp.meta, f);
+                mp.entries = std::mem::take(&mut mp.entries)
                     .into_iter()
                     .map(|(d, mut e): (Dot, Entry)| {
                         opt(&mut e.reset, f);
@@ -120,6 +120,7 @@ impl Fragment {
                         (dot(&d, f), e)
                     })
                     .collect();
+                mp.reindex();
             }
             Fragment::Seq(s) => seq(s, f),
             Fragment::Slots(Slots { reg, members }) => {

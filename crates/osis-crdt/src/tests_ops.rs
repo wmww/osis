@@ -343,3 +343,26 @@ fn diff_rewrites_value_less_field_spec_9() {
     st.join(d);
     assert_eq!(read(&st), Some(v(2, Some(7))));
 }
+
+proptest! {
+    /// §5.6: the local key index finds a key's live entries as a scan of the joined map does,
+    /// after any sequence of joins (several writers, removals, resets).
+    #[test]
+    fn key_index_matches_scan_spec_5_6(seed in any::<u64>()) {
+        let ty = sink_no_seq();
+        let mut r = Rng(seed | 1);
+        let commits = history(&mut r, std::slice::from_ref(&ty), 3, 4);
+        let mut s = Fragment::default();
+        for c in &commits {
+            s.join(frag(&c.delta));
+            let Fragment::Struct(st) = &s else { continue };
+            let Some(Fragment::Map(m)) = st.fields.get(&7) else { continue };
+            let scan = crate::ops::live_entries(&m.entries);
+            let keys: std::collections::BTreeSet<&Value> = m.entries.values().filter_map(|e| e.key.as_ref()).collect();
+            for k in keys {
+                let want: Vec<&crate::stamp::Dot> = scan.get(k).cloned().unwrap_or_default();
+                prop_assert_eq!(m.live_dots(k), want);
+            }
+        }
+    }
+}

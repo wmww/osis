@@ -18,9 +18,9 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 and (round 2) S11–S15, R8, R9, residue 1 resolved (spec edits below, issues/reseal-triggers.md) | follow-up agent: update both models to the round-2 text and rerun (plans/tla-models.md Progress lists the changes and expected flips); target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | |
-| crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
+| crdt-core | merged, reviewed | plan stays until crdt-seq is done |
 | perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
-| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq; issues/crdt-path-op-cost.md |
+| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
