@@ -93,6 +93,8 @@ fuzz/README.md: running, the target table (live and planned per crate), crash ha
 
 - Final sim sweep (toplevel, release, `sim-sweep --seeds 200 --budget-secs 3000`, 40 min on 4 cores): 38 scenarios × 200 seeds = 7600 runs, 5 failures (`link_race` 91/119/164/191, `evil_server` 134; issues/sim-sweep-residues.md); every other scenario green at 200 seeds.
 
+- Final tier 2 (toplevel, `cargo test --release --workspace --no-fail-fast -- --ignored --skip sweep`): 86 passed, 2 failed, both known: chat `costs_join_message_removal` (issues/chat-costs.md) and osis-store `pager::tests::shape_reduced_arity` (issues/store-shape-reduced-arity.md).
+
 ## Scale checks
 Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6).
 
