@@ -123,3 +123,12 @@ fn two_devices_server_seed_23() {
 fn server_loses_data_seed_41() {
     ok("server_loses_data", 41);
 }
+
+// spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
+// (chunk reuse): two devices edit an 8 MiB blob in turn through a server; each edit uploads
+// within 1.2x of the chunks it changed.
+#[test]
+#[ignore = "tier 2"]
+fn large_edits() {
+    ok("large_edits", 1);
+}

@@ -879,8 +879,9 @@ impl SyncEngine {
         }
         // chunks of dropped deltas (spec/commits.md §5: a purge drops every body carrying the
         // values; spec/sync.md §3: chunk blobs belong to the closure)
-        let chunks = self.dropped_chunks();
-        for id in self.state.present_at(&server, &l) {
+        let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
+        let chunks = self.dropped_chunks(|b| present.contains(b))?;
+        for id in present {
             let Some((c, ch)) = chunks.get(&id) else { continue };
             if !self.state.entries.get(&(l, id)).is_some_and(|e| e.kind == Kind::Unknown) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
                 continue;
@@ -999,11 +1000,13 @@ impl SyncEngine {
     /// keep at most, compaction), by the commit and chunk entry that list them, unless a commit
     /// whose creating deltas are not all dropped lists them too (chunk reuse, spec/sync.md §1).
     /// A chunk's creating deltas are those whose token indices are its own (one class); with no
-    /// such delta, every delta of the commit.
-    pub(crate) fn dropped_chunks(&self) -> BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)> {
+    /// such delta, every delta of the commit. Nor those a live tree links (spec/sync.md §7:
+    /// reused chunks and the chunks of compacted values are not in the linking commit's list).
+    /// Only the chunks `wanted` names are judged.
+    pub(crate) fn dropped_chunks(&mut self, wanted: impl Fn(&BlobId) -> bool) -> Result<BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)>> {
         let mut out = BTreeMap::new();
         if !self.engine.core.commits.values().any(|m| !m.dropped.is_empty() && !m.header.chunks.is_empty()) {
-            return out;
+            return Ok(out);
         }
         let mut live = BTreeSet::new();
         for (id, m) in &self.engine.core.commits {
@@ -1021,8 +1024,20 @@ impl SyncEngine {
                 }
             }
         }
-        out.retain(|b, _| !live.contains(b));
-        out
+        out.retain(|b, _| !live.contains(b) && wanted(b));
+        // the things of the listing commits: reuse and snapshots link within a thing
+        let mut by_thing: BTreeMap<Tid, BTreeSet<BlobId>> = BTreeMap::new();
+        for (b, (c, _)) in &out {
+            for a in self.engine.header(c).map(|h| h.aspects.clone()).unwrap_or_default() {
+                by_thing.entry(a.tid).or_default().insert(*b);
+            }
+        }
+        for (t, bs) in by_thing {
+            // a tree not all held here may link any of them
+            let linked = self.engine.live_trees(&t)?;
+            out.retain(|b, _| !bs.contains(b) || linked.as_ref().is_some_and(|l| !l.contains(b)));
+        }
+        Ok(out)
     }
 
     /// A delete item for a dropped chunk: the delete key, else its chunk token (from the salt in

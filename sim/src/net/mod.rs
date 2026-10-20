@@ -97,6 +97,8 @@ pub struct NetNode {
     /// Its disk is gone for good.
     pub lost: bool,
     pub tid: Tid,
+    /// Bytes the node sent (to servers and peers) so far.
+    pub sent_bytes: u64,
 }
 
 impl NetNode {
@@ -394,7 +396,7 @@ impl NetSim {
         let seed = self.dice.u64();
         let engine = open_engine(&backend, &root, &clock, seed, true).map_err(|e| self.fail(format!("node {i} create: {e}")))?;
         let tid = engine.tid();
-        self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid });
+        self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0 });
         self.boot(i, engine)?;
         Ok(i)
     }
@@ -486,6 +488,9 @@ impl NetSim {
             match a {
                 Action::Dial { conn, address } => self.dial(n, conn, &address)?,
                 Action::Send { conn, bytes } => {
+                    if let Some(x) = self.nodes.get_mut(n) {
+                        x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);
+                    }
                     if let Some((id, to)) = self.peer_end(End::Node(n, conn)) {
                         self.send(id, to, Payload::Bytes(bytes));
                     }

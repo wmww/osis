@@ -373,3 +373,64 @@ fn heartbeat_outlives_earlier_spec_permissions_4() {
     assert!(!seen.stranded);
     assert!(net.sync(a).take_diagnostics().iter().all(|d| !d.contains("missing field")));
 }
+
+/// Seeded pseudo-random bytes.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut v = vec![0u8; n];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+    v
+}
+
+// spec/sync.md §1 (a reused chunk keeps its blob), §7 (chunk blobs still linked from a retained
+// version are kept); spec/commits.md §5 (a purge drops every body carrying the values): purging
+// a version whose chunks the next version reuses deletes only the chunks only it reached, at
+// the server and locally; the shared ones still read through the live version, also at a
+// reader that fetches them afterwards.
+#[test]
+fn purge_shreds_only_unique_chunks_spec_sync_7() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let blob_ak = Ak::new(BLOB.ak()).unwrap();
+    let v1 = noise(1 << 20, 7);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v1.clone())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let mut v2 = v1.clone();
+    v2.splice(600_000..600_000, noise(100, 8));
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v2.clone())).unwrap();
+    let c2 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let ids = |net: &mut Net, c| -> BTreeSet<osis_core::BlobId> { net.engine(a).package(&c).unwrap().unwrap().blobs.into_iter().map(|(id, _)| id).collect() };
+    let (first, second) = (ids(&mut net, c1), ids(&mut net, c2));
+    let live = net.engine(a).live_trees(&t).unwrap().unwrap();
+    let shared: BTreeSet<_> = first.intersection(&live).copied().collect();
+    let unique: BTreeSet<_> = first.difference(&live).copied().collect();
+    assert!(shared.len() > unique.len() && !unique.is_empty(), "shared {} unique {}", shared.len(), unique.len());
+    assert!(second.is_disjoint(&first), "reused chunks are not listed again");
+    let l = net.label(a);
+    let at_server = |net: &Net| -> BTreeSet<osis_core::BlobId> { net.server_ids(sv, &l).into_iter().collect() };
+    assert!(first.is_subset(&at_server(&net)));
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("purged v1")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c1, tid: t, ak: blob_ak.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    diags(&mut net, &[a, b]);
+    let server = at_server(&net);
+    assert!(unique.is_disjoint(&server), "a chunk only the purged version reached is gone at the server");
+    assert!(shared.is_subset(&server), "shared chunks stay");
+    for id in &unique {
+        assert!(net.engine(a).blob(id).unwrap().is_none(), "unique chunk kept locally");
+    }
+    assert_eq!(net.engine(a).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2.clone())));
+    let acts = net.sync(b).fetch_missing();
+    net.actions(b, acts);
+    net.settle(100_000);
+    assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}

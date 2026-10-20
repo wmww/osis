@@ -419,3 +419,77 @@ pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {
     sim.run_until_quiescent(40)?;
     sim.finish()
 }
+
+/// Bytes of the chunks of `new`'s canonical encoding whose content `old`'s lacks: what any
+/// content-defined writer must upload for the edit.
+fn new_chunk_bytes(old: &[u8], new: &[u8]) -> u64 {
+    let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
+        let e = osis_core::encode(&Value::Bytes(d.to_vec()));
+        let mut out = Vec::new();
+        let mut rest = e.as_slice();
+        for n in osis_core::chunker::chunk_lengths(&e, osis_core::ChunkParams::FORMAT) {
+            let (c, r) = rest.split_at(n.min(rest.len()));
+            out.push(c.to_vec());
+            rest = r;
+        }
+        out
+    };
+    let have: std::collections::BTreeSet<Vec<u8>> = cuts(old).into_iter().collect();
+    cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len() as u64).sum()
+}
+
+/// Two devices of one person edit a large blob of many chunks in turn through one blind server
+/// (spec/requirements.md Scale: a change inside a huge value costs O(change); spec/sync.md §1
+/// chunk reuse): each reads the value whole (fetching the chunks it lacks), changes a few
+/// bytes and writes it back; what it uploads per edit stays within 1.2x of the chunks the
+/// edit changed, plus the tree's root node and a fixed allowance for the commit and protocol.
+pub fn large_edits(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x1a);
+    let mut sim = NetSim::new("large_edits", seed, NetConfig::default());
+    let s = sim.add_server()?;
+    let d0 = sim.add_node(&[s], clock(&mut d))?;
+    let d1 = sim.add_node(&[s], clock(&mut d))?;
+    let p = sim.person(d0, &[s])?.person;
+    sim.pair(d0, d1, p)?;
+    let t = sim.item(d0, p)?;
+    sim.quiet(40)?;
+    let file = Ak::new("/app/file").map_err(|e| sim.fail(e.to_string()))?;
+    let mut cur = vec![0u8; 8 << 20];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut cur);
+    let mut m = Mutation::new();
+    m.set(t, &file, &Value::Bytes(cur.clone())).map_err(|e| sim.fail(e.to_string()))?;
+    sim.commit(d0, m)?;
+    sim.quiet(40)?;
+    let chunks = osis_core::chunker::chunk_lengths(&osis_core::encode(&Value::Bytes(cur.clone())), osis_core::ChunkParams::FORMAT).len() as u64;
+    for i in 0..8u64 {
+        let n = if i % 2 == 0 { d1 } else { d0 };
+        // the editor reads the value whole first
+        let acts = sim.sync(n)?.fetch_missing();
+        sim.actions(n, acts)?;
+        sim.quiet(40)?;
+        let read = sim.engine(n)?.get_full(&t, &file).map_err(|e| sim.fail(format!("node {n} read: {e}")))?;
+        if read != Some(Value::Bytes(cur.clone())) {
+            return Err(sim.fail(format!("edit {i}: node {n} reads another value")));
+        }
+        let old = cur.clone();
+        let at = d.range_i64(0, cur.len() as i64) as usize;
+        let mut bytes = vec![0u8; d.range_i64(1, 2000) as usize];
+        osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed ^ i), &mut bytes);
+        cur.splice(at..at, bytes);
+        let sent0 = sim.nodes.get(n).map_or(0, |x| x.sent_bytes);
+        let mut m = Mutation::new();
+        m.set(t, &file, &Value::Bytes(cur.clone())).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?;
+        sim.quiet(40)?;
+        let sent = sim.nodes.get(n).map_or(0, |x| x.sent_bytes) - sent0;
+        let need = new_chunk_bytes(&old, &cur);
+        // the root node (about 100 B per chunk link) and the commit, entries and requests
+        let allowance = chunks * 120 + (32 << 10);
+        sim.note(format!("edit {i} by node {n}: sent {sent} B, new chunks {need} B, value {} B", cur.len()));
+        if sent * 10 > need * 12 + allowance * 10 {
+            return Err(sim.fail(format!("edit {i} by node {n}: sent {sent} B for {need} B of new chunks")));
+        }
+    }
+    sim.run_until_quiescent(40)?;
+    sim.finish()
+}

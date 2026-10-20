@@ -390,14 +390,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let mut chunks = Vec::new();
         if kind == Kind::Content {
             let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
-            let mut blobs = TxBlobs::new(&mut tx.txn);
-            {
-                let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-                for op in &mut am.ops {
-                    super::large::chunk_op(op, am.schema.as_deref(), ak.as_str(), &mut bw)?;
-                }
-            }
-            chunks = std::mem::take(&mut blobs.written);
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing)?;
         }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Writing path end to end: identity, creation, ops to commits, local apply, events, restart.
 
+mod common;
 use osis_core::{Ak, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::Peer;
@@ -229,4 +230,90 @@ fn paged_state_edits_and_restart() {
     p.engine.undo(&id).unwrap();
     assert_eq!(p.engine.get(&t, &am).unwrap(), before);
     assert!(last_edit.is_some());
+}
+
+/// Seeded pseudo-random bytes.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut v = vec![0u8; n];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut v);
+    v
+}
+
+/// Bytes of the chunks of `new`'s canonical encoding whose content `old`'s lacks: what any
+/// content-defined writer must write for the edit.
+fn new_chunk_bytes(old: &[u8], new: &[u8]) -> usize {
+    let cuts = |d: &[u8]| -> Vec<Vec<u8>> {
+        let e = osis_core::encode(&Value::Bytes(d.to_vec()));
+        let mut out = Vec::new();
+        let mut at = 0;
+        for n in osis_core::chunker::chunk_lengths(&e, osis_core::ChunkParams::FORMAT) {
+            out.push(e[at..at + n].to_vec());
+            at += n;
+        }
+        out
+    };
+    let have: std::collections::BTreeSet<Vec<u8>> = cuts(old).into_iter().collect();
+    cuts(new).into_iter().filter(|c| !have.contains(c)).map(|c| c.len()).sum()
+}
+
+// spec/requirements.md (Scale: a change inside a huge value costs O(change)); spec/sync.md §1
+// (a chunk reused by a later delta keeps its blob and prefix); spec/commits.md §1 (the chunk list
+// holds the blobs the deltas introduce): editing a value of many chunks writes, and lists for
+// upload, only the chunks the edit changed plus the tree's root node.
+#[test]
+fn large_edit_reuses_chunks_spec_sync_1() {
+    let mut p = peer(12);
+    let me = p.engine.tid();
+    let a = ak("/app/file");
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let mut cur = noise(4 << 20, 1);
+    m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+    let first = p.commit(m).unwrap().unwrap();
+    let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+    let whole = blobs(&mut p, first);
+    let chunks = osis_core::chunker::chunk_lengths(&osis_core::encode(&Value::Bytes(cur.clone())), osis_core::ChunkParams::FORMAT).len();
+    assert!(chunks > 30, "{chunks} chunks");
+    for name in ["insert 100 B", "overwrite 256 KiB", "append 10 KB", "delete 50 KB"] {
+        let old = cur.clone();
+        match name {
+            "insert 100 B" => drop(cur.splice(2 << 20..2 << 20, noise(100, 2))),
+            "overwrite 256 KiB" => cur[1 << 20..(1 << 20) + (256 << 10)].copy_from_slice(&noise(256 << 10, 3)),
+            "append 10 KB" => cur.extend(noise(10_000, 4)),
+            _ => drop(cur.drain(3 << 20..(3 << 20) + 50_000)),
+        }
+        let mut m = Mutation::new();
+        m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+        let c = p.commit(m).unwrap().unwrap();
+        let wrote = blobs(&mut p, c);
+        let need = new_chunk_bytes(&old, &cur);
+        // the root node: one link (about 100 B) per chunk
+        let node = chunks * 120 + 4096;
+        eprintln!("{name}: {wrote} B of blobs ({need} B of new chunks, whole value {whole} B)");
+        assert!(wrote * 10 <= need * 12 + node * 10, "{name}: wrote {wrote}, new chunks {need}");
+        assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::Bytes(cur.clone())), "{name}");
+    }
+    // the same value again changes nothing
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Bytes(cur.clone())).unwrap();
+    assert_eq!(p.commit(m).unwrap(), None);
+}
+
+// spec/data-model.md §6: a list item above CHUNK_THRESHOLD is chunked when inserted, as when set.
+#[test]
+fn large_list_insert_chunked_spec_dm_6() {
+    let mut p = peer(13);
+    let me = p.engine.tid();
+    let (key, a) = (&common::LIST, ak("/t/list"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, key, &Value::List(vec![common::s("a")])).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let big = Value::Str("large ".repeat(50_000));
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Insert { at: 1, items: vec![big.clone(), common::s("b")] } }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let Some(Value::List(l)) = p.engine.get(&t, &a).unwrap() else { panic!() };
+    assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Str(_)]), "{l:?}");
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::List(vec![common::s("a"), big, common::s("b")])));
 }
