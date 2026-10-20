@@ -175,7 +175,7 @@ fn moderator_hides() {
 // their changed certificates. Tier 2 (about 18 s in a debug build, 4 s in release): run
 // `cargo test --release -p chat -- --ignored --nocapture`.
 #[test]
-#[ignore = "tier 2"]
+#[ignore = "issues/chat-costs.md"]
 fn costs_join_message_removal() {
     let n: usize = std::env::var("OSIS_CHAT_N").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let mut w = World::new();
