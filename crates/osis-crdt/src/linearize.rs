@@ -29,7 +29,7 @@ pub(crate) struct Placement {
 
 /// A record or a piece of a range record.
 pub(crate) struct Node<'a> {
-    pub dot: Dot,
+    pub dot: Cow<'a, Dot>,
     pub elem: Cow<'a, SeqElem>,
 }
 
@@ -121,7 +121,7 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
     let mut out = Vec::with_capacity(elems.len());
     for (d, e) in elems {
         if e.span == 1 {
-            out.push(Node { dot: d.clone(), elem: Cow::Borrowed(e) });
+            out.push(Node { dot: Cow::Borrowed(d), elem: Cow::Borrowed(e) });
             continue;
         }
         let last = nth(d, e.span - 1);
@@ -130,14 +130,14 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
         for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| **t < &last).filter(|t| t.src == d.src) {
             let end = t.ctr - d.ctr + 1;
             let (x, y) = piece(d, e, off, end - off);
-            out.push(Node { dot: x, elem: Cow::Owned(y) });
+            out.push(Node { dot: Cow::Owned(x), elem: Cow::Owned(y) });
             off = end;
         }
         if off == 0 {
-            out.push(Node { dot: d.clone(), elem: Cow::Borrowed(e) });
+            out.push(Node { dot: Cow::Borrowed(d), elem: Cow::Borrowed(e) });
         } else {
             let (x, y) = piece(d, e, off, e.span - off);
-            out.push(Node { dot: x, elem: Cow::Owned(y) });
+            out.push(Node { dot: Cow::Owned(x), elem: Cow::Owned(y) });
         }
     }
     out
@@ -181,7 +181,7 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
 pub(crate) fn place(elems: &Elems) -> Placement {
     let p = place_idx(elems);
     let node = |i: usize| p.nodes.get(i);
-    let first = |i: usize| node(i).map(|n| n.dot.clone());
+    let first = |i: usize| node(i).map(|n| n.dot.clone().into_owned());
     Placement {
         order: p.order.iter().filter_map(|i| first(*i)).collect(),
         last: p.order.iter().filter_map(|i| node(*i)).map(|n| nth(&n.dot, n.elem.span - 1)).collect(),

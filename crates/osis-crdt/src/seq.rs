@@ -355,7 +355,7 @@ pub(crate) fn has_records(s: &Seq) -> bool {
 /// range record (ranges have no content).
 pub(crate) fn visible(s: &Seq) -> Vec<Dot> {
     let p = crate::linearize::place_idx(&s.elems);
-    p.order.iter().filter_map(|i| p.nodes.get(*i)).filter(|n| is_visible(&n.elem, s.text)).map(|n| n.dot.clone()).collect()
+    p.order.iter().filter_map(|i| p.nodes.get(*i)).filter(|n| is_visible(&n.elem, s.text)).map(|n| n.dot.clone().into_owned()).collect()
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
