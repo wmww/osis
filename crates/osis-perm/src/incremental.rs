@@ -107,7 +107,9 @@ impl Timelines {
             for s in held.roster_snapshots(t) {
                 ids.entry(*t).or_default().insert(s.id);
                 dsu.union(s.author, s.thing);
-                for m in s.roster.keys().chain(s.ledger.iter().flat_map(|x| [&x.member, &x.until.node])) {
+                // an entry with a frontier is a demotion by its key's node (§6)
+                let demoters = s.ledger.iter().filter(|x| x.frontier.is_some()).map(|x| &x.until.node);
+                for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).chain(demoters) {
                     dsu.union(*m, s.thing);
                 }
             }

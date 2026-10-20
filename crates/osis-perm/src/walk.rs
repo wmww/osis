@@ -15,8 +15,9 @@
 //!   (owners, members of what is above, at any time). D is rebuilt whenever
 //!   the epoch starts change, so writes a start ignores leave no drops.
 //! - Before its epoch start S, N's edges follow S's roster and ledger as virtual writes placed
-//!   at their keys (before real writes with that key); a ledger tenure end with a frontier
-//!   audits like the demotion it records.
+//!   at their keys (before real writes with that key); an entry with a frontier is the
+//!   explicit demotion it records, by its key's node (exempt as the author), audit-only
+//!   entries (`since` = `until`) included.
 
 use crate::content::{overlapping, Range};
 use crate::graph::{Class, Edges, Owners, Standing, View};
@@ -142,6 +143,9 @@ pub(crate) struct Change {
     pub edge: Option<Edge>,
     /// An explicit write (may demote, §5.1 step 4) with its frontier.
     pub explicit: Option<Option<Arc<Frontier>>>,
+    /// An explicit write that lowered the edge as restored (§5.1 step 4): the restored role
+    /// it audited from.
+    pub audited: Option<Role>,
 }
 
 /// Result of the final walk.
@@ -197,7 +201,7 @@ struct Virtual {
     member: Tid,
     edge: Option<Edge>,
     point: Point,
-    /// A tenure end with a frontier: the demoter node and the frontier.
+    /// An explicit demotion recorded by the ledger (§6): the demoter node and its frontier.
     audit: Option<(Tid, Arc<Frontier>)>,
 }
 
@@ -264,15 +268,13 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
         }
         for b in keys.into_iter().filter(|b| *b < skey) {
             let point = Point::first_at(b);
-            // A tenure end with a frontier audits like the demotion it records, even where the
-            // roster edge takes over at once: end the tenure, then re-grant.
-            let ending = tenures.iter().find(|t| t.until == b && t.frontier.is_some()).and_then(|t| t.frontier.clone());
-            if let Some(f) = ending {
+            // An entry with a frontier records an explicit demotion by `b`'s node, even where
+            // the roster edge takes over at once (end the tenure, then re-grant) or nothing
+            // changes (an audit-only entry).
+            if let Some(f) = tenures.iter().find(|t| t.until == b && t.frontier.is_some()).and_then(|t| t.frontier.clone()) {
                 let end = value(Some(b), false);
-                if end != prev {
-                    out.push(Virtual { thing: s.thing, member: m, edge: end, point, audit: Some((b.node, f)) });
-                    prev = end;
-                }
+                out.push(Virtual { thing: s.thing, member: m, edge: end, point, audit: Some((b.node, f)) });
+                prev = end;
             }
             let v = value(Some(b), true);
             if v != prev {
@@ -362,10 +364,10 @@ impl Pass<'_> {
             None => self.setter.remove(&key),
         };
         let explicit = auditor.map(|a| a.frontier_arc.clone());
-        self.history.push(Change { point, member, target, edge, explicit });
         let Some(aud) = auditor else {
             // No audit (self-removal, invite grant, epoch start, ledger end without a frontier):
             // everyone below keeps the standing it had, for the next explicit write.
+            self.history.push(Change { point, member, target, edge, explicit, audited: None });
             if let Some(o) = old {
                 let p = self.prior.remove(&key);
                 self.prior.insert(key, join(p, o));
@@ -378,7 +380,10 @@ impl Pass<'_> {
             (Some(a), Some(o)) => Some(join(Some(a), o)),
             (a, o) => a.or(o),
         };
-        let lowered = exceeds(mine.values().fold(base, |r, e| Some(join(r, *e))), edge, point.ts);
+        let restored = mine.values().fold(base, |r, e| Some(join(r, *e)));
+        let lowered = exceeds(restored, edge, point.ts);
+        let audited = restored.filter(|_| lowered).map(|r| r.role);
+        self.history.push(Change { point, member, target, edge, explicit, audited });
         let grew = lowered && self.audit_fall(key, base, &mine, point.ts, aud);
         if let Some(a) = own {
             // The author demoted itself: its own standing is kept for the next explicit write.
@@ -609,10 +614,9 @@ impl Pass<'_> {
 
     fn virtual_write(&mut self, v: &Virtual) -> bool {
         let auditor = v.audit.as_ref().map(|(node, f)| Auditor {
-            // A tenure with a frontier counts as an explicit demotion (§6). Its ending node may
-            // be a self-remover whose tenure a later demotion audited, so nobody is exempt;
-            // the ending node's chain writes count.
-            author: None,
+            // A ledger entry with a frontier counts as an explicit demotion by its key's node
+            // (§6): that node is exempt as from its own write, and its chain writes count.
+            author: Some(*node),
             frontier: Some(f.as_ref()),
             chain: {
                 let best = self.view(v.point.ts).roles_from(node);

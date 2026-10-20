@@ -15,10 +15,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const END_T: u64 = 50_000;
 
-/// Snapshots that changed an answer because a tenure's frontier is a later demotion's, which
-/// the ledger places at the tenure's end (issues/ledger-late-audit.md).
-static LATE_AUDITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 /// Everything a held set's timeline answers that a snapshot must not change.
 #[derive(PartialEq, Debug)]
 struct Answers {
@@ -42,13 +38,13 @@ fn answers(held: &MemoryHeldSet, things: &[Tid], probes: &[Point], keep: &dyn Fn
 }
 
 /// `author` (owner chain of `thing`) snapshots it at the end; nothing changes, and a node that
-/// compacted `thing` at the snapshot answers the same. A snapshot whose ledger places a later
-/// audit at a tenure's end may differ (issues/ledger-late-audit.md): counted, not failed.
+/// compacted `thing` at the snapshot answers the same, later audits and a demoter's own
+/// demotions included.
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
     let state = tl.roster_state(&thing);
-    let late = state.late_audits > 0 || state.own_demotions > 0;
     let mut w2 = w.clone();
+    let ledger = state.ledger.clone();
     let s = w2.snapshot_state(author, thing, state, END_T);
     // The thing's own earlier writes are replaced by the snapshot: compare everything else.
     let mut mine: BTreeSet<CommitId> = w.commits.iter().filter(|c| c.ops.iter().any(|o| o.0 == thing)).map(|c| c.id).collect();
@@ -61,11 +57,7 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    if late {
-        LATE_AUDITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
-    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}"))
+    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}"))
 }
 
 /// Content probes by every node at a few times, with random receipts.
@@ -131,7 +123,6 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("run_joint: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -142,7 +133,7 @@ fn joint_resnapshot_neutral() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "tier 2"]
 fn joint_resnapshot_neutral_large() {
     run_joint(20_000, 0x5eed_0102);
 }
@@ -190,7 +181,6 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("sample {s}: {d}\n{h:?}");
         }
     }
-    eprintln!("run_edges: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -200,7 +190,7 @@ fn edges_resnapshot_neutral() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "tier 2"]
 fn edges_resnapshot_neutral_large() {
     run_edges(30_000, 0x5eed_0104);
 }
@@ -256,7 +246,6 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("run_snapshot: {samples} histories, {} snapshots differing by a late audit or an own demotion", LATE_AUDITS.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is
@@ -267,7 +256,7 @@ fn snapshot_resnapshot_neutral() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "tier 2"]
 fn snapshot_resnapshot_neutral_large() {
     run_snapshot(30_000, 0x5eed_0106);
 }
@@ -295,4 +284,55 @@ fn ledger_carried_forward() {
     assert_eq!(s2.ledger.len(), 2, "d2's admin tenure ended by the demotion to write");
     assert_eq!(s2.roster.get(&d2).map(|e| (e.role, e.since.map(|k| k.ts))), Some((Write, Some(ts(12)))));
     assert_eq!(s2.roster.get(&d3).map(|e| e.since.map(|k| k.ts)), Some(Some(ts(11))));
+}
+
+/// §6, §5.1: a tenure ended by self-removal and audited later by an explicit demotion of its
+/// edge is an entry without a frontier plus an audit-only entry at the demotion's key, so the
+/// replay audits where the walk did (after d1 also left the group it reached P through).
+#[test]
+fn later_audit_is_an_entry_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, d1) = (n[0], n[1]);
+    let (p, a) = (w.thing(k), w.thing(k));
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, d1, edge(Admin), 0, &all);
+    w.set(k, a, d1, edge(Admin), 0, &all);
+    w.set(k, p, a, edge(Admin), 0, &all);
+    let x = w.content(d1, 1, &[]);
+    w.set(d1, p, d1, None, 2, &all);
+    w.set(d1, a, d1, None, 3, &all);
+    w.set(k, p, d1, None, 5, &all);
+    let tl = Timeline::evaluate(&w.held());
+    assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
+    let ledger = tl.roster_state(&p).ledger;
+    let key = |t, node| osis_perm::EdgeKey { ts: ts(t), node };
+    let shape: Vec<_> = ledger.iter().filter(|t| t.member == d1).map(|t| (t.role, t.since, t.until, t.frontier.is_some())).collect();
+    assert_eq!(shape, vec![(Admin, Some(key(0, k)), key(2, d1), false), (Admin, Some(key(5, k)), key(5, k), true)]);
+    assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
+}
+
+/// §6, §5.1: a demoter that reaches the member it demoted keeps its standing until the next
+/// explicit write on that edge; the ledger entry's key node is that demoter, and the next
+/// write's audit is an entry of its own.
+#[test]
+fn own_demotion_replayed_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, d2) = (n[0], n[1]);
+    let (p, a) = (w.thing(k), w.thing(k));
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, a, edge(Admin), 0, &all);
+    w.set(k, a, d2, edge(Admin), 0, &all);
+    w.set(k, p, d2, edge(Admin), 0, &all);
+    let x = w.content(d2, 1, &[]);
+    // explicit (d2 also holds edge admin on P), d2 exempt as the demoter
+    w.set(d2, p, a, None, 2, &all);
+    w.set(d2, p, d2, None, 3, &all);
+    w.set(k, p, a, None, 5, &all);
+    let tl = Timeline::evaluate(&w.held());
+    assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
+    let ledger = tl.roster_state(&p).ledger;
+    assert!(ledger.iter().any(|t| t.member == a && t.since.is_some_and(|s| s == t.until) && t.until.node == k && t.frontier.is_some()), "{ledger:?}");
+    assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }

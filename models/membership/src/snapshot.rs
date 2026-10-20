@@ -60,7 +60,10 @@ pub struct Event {
 /// `since` (None: from the beginning) until the demotion keyed `until` (None: it still holds
 /// admin in the roster). A closed interval's frontier is its demoter's receipts before its
 /// time; every earlier write of the member that the frontier misses is dropped (each later
-/// demotion re-audits, as in the walk).
+/// demotion re-audits, as in the walk). Every interval here ends by an explicit demotion:
+/// the spec's frontier-less ends (`until`, self-removal) and audit-only entries (`since` =
+/// `until`, an explicit demotion auditing after such an end or the standing a demoter kept)
+/// need writes this model lacks; osis-perm's re-snapshot runs (`tests/roster.rs`) cover them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub member: usize,
