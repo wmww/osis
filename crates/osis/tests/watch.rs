@@ -234,7 +234,7 @@ fn two_nodes_remote_watch() {
     let _s = b.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     let w = b.at(t, k.clone()).watch().unwrap();
     assert_eq!(recv(&rx).source, Source::Initial);
-    let done = a.write_with(|w| w.at(t, k.clone()).set(&Value::Int(9))).unwrap().unwrap();
+    let done = commit_with(&a, |w| w.at(t, k.clone()).set(&Value::Int(9)));
     deliver(&a, &b);
     let c = recv(&rx);
     assert!(matches!(c.source, Source::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.commit));
@@ -278,7 +278,7 @@ fn coalesced_call_carries_newest_source() {
     assert_eq!(recv(&rx).source, Source::Initial);
     let (_gate, go) = block_dispatcher(&db);
     db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
-    let last = db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap().unwrap();
+    let last = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(2)));
     go.send(()).unwrap();
     db.settle();
     let calls: Vec<_> = rx.try_iter().collect();

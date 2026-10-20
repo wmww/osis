@@ -96,4 +96,13 @@ impl SignalKey for Ak {
 /// here and written only through the sharing calls.
 pub mod core {
     pub use osis_schema::core_types::{ASPECTS, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, MEMBERS, MOVED, NODE, REACH, SECRETS, SEEN, TENURES, TID, WAS};
+
+    /// Field ids of `/group` (spec/data-model.md §8), for path ops on it.
+    pub mod group {
+        use osis_schema::FieldId;
+        /// `set<tid>`: the group's items.
+        pub const ITEMS: FieldId = FieldId(0);
+        /// `set<tid>`: its subgroups.
+        pub const SUBGROUPS: FieldId = FieldId(1);
+    }
 }

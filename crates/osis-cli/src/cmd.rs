@@ -569,7 +569,9 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
         }
         None => return Err(usage("off a terminal, edit needs --base VALUE and the new value on stdin")),
     };
-    let done = db.write_with(|w| w.at(t, key.clone()).edit(&base, &new))?;
+    let mut w = db.write();
+    w.at(t, key.clone()).edit(&base, &new)?;
+    let done = w.commit()?;
     let commit = done.map(|c| commit_text(&c.commit));
     ctx.emit(&commit.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(commit.map(J::str)))]))
 }

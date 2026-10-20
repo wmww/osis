@@ -70,6 +70,8 @@ pub(crate) enum Filter {
     Roster(Tid),
     Diagnostics,
     Signal(Tid, String),
+    /// Signals of a kind about anything in a group's closure (the group included).
+    SignalIn(Tid, String),
     Status,
 }
 
@@ -244,7 +246,21 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 return Vec::new();
             }
             let sig = SignalMsg { tid: *tid, kind: kind.as_str().to_string(), value: value.clone(), actor: *actor, node: *from, ts: ts.wall_ms() };
-            to(&|f| *f == Filter::Signal(sig.tid, sig.kind.clone()), Delivery::Signal(sig.clone()))
+            // the closure is read now, so things that joined the group later count
+            let mut groups: Option<Vec<Tid>> = None;
+            let mut in_group = |g: &Tid| *g == sig.tid || groups.get_or_insert_with(|| db.groups_of(sig.tid)).contains(g);
+            let mut out = Vec::new();
+            for s in &live {
+                let hit = match &s.filter {
+                    Filter::Signal(t, k) => *t == sig.tid && *k == sig.kind,
+                    Filter::SignalIn(g, k) => *k == sig.kind && in_group(g),
+                    _ => false,
+                };
+                if hit {
+                    out.push((s.clone(), Pre::Ready(Delivery::Signal(sig.clone()))));
+                }
+            }
+            out
         }
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
         _ => Vec::new(),

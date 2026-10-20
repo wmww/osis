@@ -277,10 +277,11 @@ fn create_place_delete_spec_data_model_8() {
             let s = w.create(db.me(), Place::Unsynced)?;
             w.make_group(s)?;
             w.add_subgroup(folder, s)?;
-            w.place(b, s)
+            w.place(b, s)?;
+            Ok(s)
         })
         .unwrap();
-    assert!(sub.is_some());
+    assert!(db.groups_of(b).contains(&sub));
     assert!(db.groups_of(b).contains(&folder));
     db.write_with(|w| w.delete(a)).unwrap();
     assert!(db.groups_of(a).is_empty());
@@ -539,4 +540,114 @@ fn values_past_limits_error_spec_data_model() {
     // still working
     db.write_with(|w| w.at(t, ak("/t/x")).set(&Value::Int(1))).unwrap();
     assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Int(1)));
+}
+
+// notes/api.md Writes (`create_expiring`, `expires`, `write_with`), spec/commits.md §6: a thing
+// created with an expiring placement leaves its group at T by itself, its expiring value goes
+// too; `expires(None)` is no expiry; a zero expiry is invalid; `write_with` returns the
+// closure's value.
+#[test]
+fn expiring_placement_api_writes() {
+    let c = clock();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let (x, d) = (ak("/t/x"), Some(std::time::Duration::from_secs(60)));
+    let gone = db
+        .write_with(|w| {
+            let t = w.create_expiring(db.me(), Place::In(db.home()), d)?;
+            w.at(t, x.clone()).expires(d).set(&s("bye"))?;
+            Ok(t)
+        })
+        .unwrap();
+    let kept = db
+        .write_with(|w| {
+            let t = w.create_expiring(db.me(), Place::In(db.home()), None)?;
+            w.at(t, x.clone()).expires(None).set(&s("stays"))?;
+            Ok(t)
+        })
+        .unwrap();
+    let items = |db: &Osis| db.get(db.home(), core::GROUP).unwrap().unwrap().items;
+    assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
+    c.advance(61_000);
+    db.engine(|e| e.tick()).unwrap();
+    assert!(!items(&db).contains(&gone), "the placement expired");
+    assert!(items(&db).contains(&kept));
+    assert_eq!(db.get(gone, x.clone()).unwrap(), None);
+    assert_eq!(db.get(kept, x.clone()).unwrap(), Some(s("stays")));
+    let mut w = db.write();
+    assert!(matches!(w.create_expiring(db.me(), Place::In(db.home()), Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(kept, x).expires(Some(std::time::Duration::ZERO)).set(&s("now")), Err(Error::Invalid(_))));
+    // the `/group` field constants are the ones `place` writes
+    assert_eq!(db.at(db.home(), core::GROUP).path(p![core::group::ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
+}
+
+// notes/api.md Reads (`owner_of`, `created`, `now`): the owner fixed at creation, the creating
+// commit with its time and receipt, the corrected clock.
+#[test]
+fn owner_created_now_api_reads() {
+    let c = clock();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    assert_eq!(db.now(), osis::WallMs(T0));
+    c.advance(5);
+    assert_eq!(db.now(), osis::WallMs(T0 + 5));
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    assert_eq!(db.owner_of(t), Some(db.me()));
+    let ci = db.created(t).unwrap();
+    assert_eq!((ci.id, ci.ts, ci.actor, ci.node, ci.received), (done.commit, done.ts, db.me(), db.node(), osis::WallMs(T0 + 5)));
+    db.write_with(|w| w.at(t, ak("/t/x")).set(&s("later"))).unwrap();
+    assert_eq!(db.created(t).unwrap().id, done.commit, "the creating commit, not the newest");
+    let other = common::db(2);
+    assert_eq!(db.owner_of(other.me()), None);
+    assert_eq!(db.created(other.me()), None);
+}
+
+// spec/crdt.md §5.6 (a path op into a key with no live entry creates it; concurrent creations
+// read as their join), notes/api.md Writes (path ops): two devices of one person each add to a
+// set under an absent map key; both elements survive the merge.
+#[test]
+fn path_op_into_absent_key_spec_crdt_5_6() {
+    let c = clock();
+    let a = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let j = Osis::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let b = j.finish(&reply).unwrap();
+    let r = ak("/t/reactions");
+    let t = a.write_with(|w| w.create(a.me(), Place::Unsynced)).unwrap();
+    deliver(&a, &b);
+    a.write_with(|w| w.at(t, r.clone()).path(p!["m1"]).add(&s("x"))).unwrap();
+    b.write_with(|w| w.at(t, r.clone()).path(p!["m1"]).add(&s("y"))).unwrap();
+    deliver(&a, &b);
+    deliver(&b, &a);
+    let want = Value::Map(BTreeMap::from([(s("m1"), Value::Set(BTreeSet::from([s("x"), s("y")])))]));
+    assert_eq!(a.get(t, r.clone()).unwrap(), Some(want.clone()));
+    assert_eq!(b.get(t, r).unwrap(), Some(want));
+}
+
+// notes/api.md Signals (`on_signal_in`), spec/sync.md §9: a listener on a group hears signals
+// about the group and anything in its closure, things placed after it registered included,
+// and nothing else; the event names the thing.
+#[test]
+fn signal_in_group_api_signals() {
+    let db = db(1);
+    let k = ak("/t/typing");
+    let g = db
+        .write_with(|w| {
+            let g = w.create(db.me(), Place::Unsynced)?;
+            w.make_group(g)?;
+            Ok(g)
+        })
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _sub = db.on_signal_in(g, k.clone(), move |_, e| {
+        let _ = tx.send((e.tid, e.value.unwrap()));
+    });
+    let (late, outside) = db.write_with(|w| Ok((w.create(db.me(), Place::In(g))?, w.create(db.me(), Place::Unsynced)?))).unwrap();
+    db.send_signal(outside, &k, &Value::Int(0), osis::Target::All).unwrap();
+    db.send_signal(late, &k, &Value::Int(1), osis::Target::All).unwrap();
+    db.send_signal(g, &k, &Value::Int(2), osis::Target::All).unwrap();
+    assert_eq!(recv(&rx), (late, Value::Int(1)));
+    assert_eq!(recv(&rx), (g, Value::Int(2)));
+    db.settle();
+    assert!(rx.try_recv().is_err(), "nothing about things outside the group");
 }

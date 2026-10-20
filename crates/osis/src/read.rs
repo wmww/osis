@@ -4,7 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
+use crate::watch::{Callback, Change, CommitInfo, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_core::{Ak, Role, Tid, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::{AspectKey, Codec, Path, Step, type_at, typed_read, value_at};
@@ -145,6 +145,19 @@ impl Reader<'_> {
     pub fn knows(&self, tid: Tid) -> bool {
         self.e.knows(&self.resolve(tid))
     }
+
+    /// The thing's owner (`None`: unknown, or a key actor).
+    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+        self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
+    }
+
+    /// The commit that created the thing (its `/created`): author, actor, `ts` and when this
+    /// node received it. A timeline sorts by its display time `min(ts, received)`.
+    pub fn created(&self, tid: Tid) -> Option<CommitInfo> {
+        let ak = Ak::new("/created").ok()?;
+        let (id, h, received) = self.e.first_commit(&self.resolve(tid), &ak)?;
+        Some(CommitInfo { id, actor: h.actor, node: h.author, ts: h.ts, received })
+    }
 }
 
 impl Osis {
@@ -182,6 +195,22 @@ impl Osis {
 
     pub fn knows(&self, tid: Tid) -> bool {
         self.read(|r| r.knows(tid))
+    }
+
+    /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
+    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+        self.read(|r| r.owner_of(tid))
+    }
+
+    /// The commit that created the thing (`Reader::created`).
+    pub fn created(&self, tid: Tid) -> Option<CommitInfo> {
+        self.read(|r| r.created(tid))
+    }
+
+    /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
+    /// for app timestamps.
+    pub fn now(&self) -> WallMs {
+        self.engine(|e| e.now())
     }
 
     /// Whether two tids name the same thing across moves (spec/permissions.md §7): the only

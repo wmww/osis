@@ -5,7 +5,7 @@
 mod common;
 use common::world::World;
 use common::*;
-use osis::{Osis, Place, Role, SyncScope, SyncState, Tid, Value};
+use osis::{Demotion, Lower, Osis, Place, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -298,4 +298,56 @@ fn text_sessions_merge_spec_crdt_5_7() {
     w.run();
     db.settle();
     assert_eq!(sb.text(), merged);
+}
+
+// spec/permissions.md §9 (a link joiner is revoked together with the link key), notes/api.md
+// Sharing (`member_path`, `demote`): a joiner is a member of the link's actor K, not of the
+// target; demoting it on the target removes it from K and revokes the multi-use link; the
+// other joiner stays and reads on, the removed one does not.
+#[test]
+fn demote_link_joiner_spec_permissions_9() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let [alice, bob, carol] = [1, 2, 3].map(|i| w.person(i, &[sv]).0);
+    let (bob, carol) = (&bob, &carol);
+    w.run();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts::default()).unwrap();
+    w.run();
+    for o in [bob, carol] {
+        assert_eq!(w.until(o.redeem(&link), 1000, 10).unwrap(), g);
+        w.run();
+    }
+    let k = alice.links(g)[0].id;
+    assert_eq!(alice.member_path(g, bob.me()), vec![(g, k), (k, bob.me())]);
+    w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 20).unwrap();
+    assert!(alice.member_path(g, bob.me()).is_empty());
+    assert!(alice.links(g).is_empty(), "the link is revoked with its joiner");
+    assert_eq!(alice.member_path(g, carol.me()), vec![(g, k), (k, carol.me())]);
+    let after = item(&alice, g, g, "after bob left");
+    w.run();
+    assert_eq!(x(carol, after), Some(s("after bob left")));
+    assert_eq!(x(bob, after), None);
+}
+
+// notes/api.md Sync configuration (`add_server`), spec/sync.md §2 (`/label` servers, inbox): a
+// database created without servers has its home label on none; adding a server moves the home
+// label and the person's inbox there, and the home group syncs.
+#[test]
+fn add_server_moves_labels_spec_sync_2() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (a, card) = Osis::create(w.cfg(1, &[])).unwrap();
+    assert!(card.is_none());
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
+    a.add_server(&w.addr(sv)).unwrap();
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
+    let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
+    assert_eq!(inbox.servers.len(), 1);
+    w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    a.remove_server(&w.addr(sv)).unwrap();
+    w.run();
+    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoServers);
 }

@@ -48,10 +48,11 @@ fn join_by_link_and_talk() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
-    let t = w.now() as i64;
-    let m1 = send(&alice, ps[0], "hi all", t, None).unwrap();
-    send(bob, ps[1], "hi alice", t + 1, None).unwrap();
-    send(carol, ps[2], "hello", t + 2, None).unwrap();
+    let m1 = send(&alice, ps[0], "hi all", None).unwrap();
+    w.advance(1);
+    send(bob, ps[1], "hi alice", None).unwrap();
+    w.advance(1);
+    send(carol, ps[2], "hello", None).unwrap();
     w.run();
     for db in [&alice, bob, carol] {
         assert_eq!(texts(db, c).unwrap(), ["hi all", "hi alice", "hello"]);
@@ -68,21 +69,27 @@ fn join_by_link_and_talk() {
 }
 
 // notes/chat.md Structure (typing as signals on the persona), spec/sync.md §9, spec/
-// requirements.md (Ephemeral data): typing reaches the other participants and is never stored.
+// requirements.md (Ephemeral data), notes/api.md Signals (`on_signal_in`): typing reaches the
+// other participants, a participant who joined after the listener included, and is never stored.
 #[test]
 fn typing_signals() {
     let mut w = World::new();
-    let (alice, others, c, ps) = chat_of(&mut w, 1);
+    let (alice, others, c, ps, link) = chat_link(&mut w, 1);
     let bob = &others[0];
     let (tx, rx) = mpsc::channel();
-    let _subs = on_typing(&alice, c, move |p, on| {
+    let _sub = on_typing(&alice, c, move |p, on| {
         let _ = tx.send((p, on));
-    })
-    .unwrap();
+    });
     typing(bob, ps[1], true).unwrap();
     w.run();
     assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), (ps[1], true));
     assert!(bob.aspects(ps[1]).unwrap().iter().all(|a| a.as_str() != "/chat/typing"), "not stored");
+    let carol = person(&mut w, 9, 0);
+    let (_, pc) = w.until(join(&carol, &link, "carol"), 1000, 10).expect("joined").unwrap();
+    w.run();
+    typing(&carol, pc, true).unwrap();
+    w.run();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), (pc, true));
 }
 
 // spec/permissions.md §9 (single-use links), notes/chat.md (join by link): the first redeemer
@@ -116,14 +123,13 @@ fn removal_rotates() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
-    let t = w.now() as i64;
-    send(bob, ps[1], "before", t, None).unwrap();
+    send(bob, ps[1], "before", None).unwrap();
     w.run();
     w.until(remove(&alice, c, ps[1]), 1000, 20).expect("pre-sync").unwrap();
     assert!(!alice.roster(c).contains_key(&bob.me()));
     assert!(!personas(&alice, c).unwrap().contains(&ps[1]));
-    send(&alice, ps[0], "after", t + 10, None).unwrap();
-    send(bob, ps[1], "still here?", t + 11, None).unwrap();
+    send(&alice, ps[0], "after", None).unwrap();
+    send(bob, ps[1], "still here?", None).unwrap();
     w.run();
     assert_eq!(texts(carol, c).unwrap(), ["after"], "the removed persona is out of the timeline");
     assert!(!texts(bob, c).unwrap().contains(&"after".to_string()), "nothing new for bob");
@@ -139,9 +145,8 @@ fn disappearing_messages() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 1);
     let bob = &others[0];
-    let t = w.now() as i64;
-    send(&alice, ps[0], "stays", t, None).unwrap();
-    let gone = send(&alice, ps[0], "self-destructs", t + 1, Some(Duration::from_secs(10))).unwrap();
+    send(&alice, ps[0], "stays", None).unwrap();
+    let gone = send(&alice, ps[0], "self-destructs", Some(Duration::from_secs(10))).unwrap();
     w.run();
     assert_eq!(texts(bob, c).unwrap(), ["stays", "self-destructs"]);
     w.set_online(bob, false);
@@ -160,8 +165,7 @@ fn moderator_hides() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 1);
     let bob = &others[0];
-    let t = w.now() as i64;
-    let spam = send(bob, ps[1], "spam", t, None).unwrap();
+    let spam = send(bob, ps[1], "spam", None).unwrap();
     w.run();
     hide(&alice, c, spam).unwrap();
     w.run();
@@ -188,7 +192,7 @@ fn costs_join_message_removal() {
     w.run();
     let join = w.tally(&late);
     w.start_tally();
-    send(&alice, ps[0], "hello", w.now() as i64, None).unwrap();
+    send(&alice, ps[0], "hello", None).unwrap();
     w.run();
     let msg = w.tally(&alice);
     w.start_tally();
@@ -221,8 +225,7 @@ fn second_link_then_removal() {
     w.run();
     w.until(remove(&alice, c, ps[1]), 1000, 20).expect("removed").unwrap();
     w.run();
-    let t = w.now() as i64;
-    send(&alice, ps[0], "after", t, None).unwrap();
+    send(&alice, ps[0], "after", None).unwrap();
     w.run();
     assert_eq!(texts(&late, c).unwrap(), ["after"]);
 }

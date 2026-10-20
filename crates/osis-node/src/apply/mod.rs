@@ -460,6 +460,14 @@ impl Engine {
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.commits.get(id).map(|m| m.header.clone())
     }
+
+    /// The oldest held commit touching `(tid, ak)` (in (`ts`, ID) order), its header and when
+    /// this node received it.
+    pub fn first_commit(&self, tid: &Tid, ak: &osis_core::Ak) -> Option<(CommitId, Arc<Header>, WallMs)> {
+        let (_, id) = self.core.by_aspect.get(&(*tid, ak.clone()))?.iter().next()?;
+        let m = self.core.commits.get(id)?;
+        Some((*id, m.header.clone(), m.received))
+    }
 }
 
 /// Rebuilds the engine's indexes from the store (open, and after a failed transaction).
