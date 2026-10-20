@@ -40,19 +40,12 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **LAN** (Offline and network: "works over LAN"): the LAN announcement datagram is in spec/sync.md §10 as provisional with the conservative candidate-route rule; the LAN loop, one driver for servers and peers, and the key binding are not built (owner: bind the key when the loop is built). issues/p2p-deferred.md.
 - **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/header-list-commitments.md (header-list chunk commitments capped at 16, arbitrary cutoff), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
-- **Undo steps back once per register** (API: plain undo): issues/undo-chain-register.md (owner-call, option 1 recommended).
 - **One delta must fit a blob**: a struct of many near-threshold registers is refused by the writer (Decentralization: "no size limit"): issues/struct-delta-size.md.
 - **Not checked**: "Runs in browsers" (no wasm build; the lower crates are sans-I/O and take rng and clock as parameters); "pushed, not polled" holds for connected nodes, push wake-ups for sleeping devices are a proposal (notes/networking.md).
 - **API conveniences not built** (no wire impact): queries and backlinks, `undelete`, `sync_policy`, bearer `open_link`, server-list changes: issues/api-deferred.md, issues/api-app-frictions.md.
 
 ## Open issues by tag
-27 issues. Counts by tag: security 4, post-mvp 3, owner-call 1, performance 7, tests 4; components: node 11, sync 7, storage 7, permissions 7, data-model 4, crdt 4, api 4, crypto 2, commit 2, sim 1, server 1, networking 1.
-- **security**: crdt-run-amplification (tiny snapshot run expands to 2^16 records), invite-grant-secrets (invite holders reset boxes; validity depends on arrival order), perm-eval-cost (uncapped owner chains a member can drive), rereview-residues (five low residues: first reading-only secret wins, head keys from reading-only secrets, hinted opens show every key actor, purged chunk vs reuse, old store file modes).
-- **post-mvp** (accepted): token-admin-secret, header-list-commitments, reseal-triggers.
-- **owner-call**: undo-chain-register.
-- **performance**: large-value-residues, perm-eval-cost, node-state-not-paged, crdt-seq-linearization-cost, chat-costs, large-value-seek, store-concurrent-readers.
-- **tests**: tests-spec-gaps (removal placement untested, three partial rules), tests-unbuilt (two sim adversaries, state-size invariant, 10^4-seed sweep, model refactors, TLA+ walk), chat-costs (tier-2 budget test).
-- **other** (component gaps): node-core-gaps (snapshot imports and judging, linked frontiers, open cost), node-sync-gaps (replaced labels, inbox re-send, hinted labels via links, revokes about seen authors, pass cost), flows-gaps (label replacement, large frontiers, contact cards), p2p-deferred (LAN loop, one driver), roster-snapshot-deltas (roster snapshots not per edge), ledger-late-audit (re-snapshot changes about 1 in 10^3 answers), struct-delta-size, tree-reader-bounds (reader bounds the spec could state), api-deferred, api-app-frictions.
+At the end of the run: 27 issues (security 4, post-mvp 3, owner-call 1, performance 7, tests 4). The current set changes as issues are solved: see `grep -h '^> Summary\|^> Tags' issues/*.md`.
 
 ## Spec edits made during the run
 Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*/AMBIGUITIES.md.

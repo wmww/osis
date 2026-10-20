@@ -1,7 +1,0 @@
-# Tree reader bounds are implementation policy
-> Summary: spec/wire.md §6 says nothing about minimum chunk sizes on read; osis-label bounds a chunk-tree reader's work by rejecting short non-final chunks and capping chunks visited, which the spec could state.
-> Tags: sync, data-model
-
-Repro: osis-commit `tree.rs` tests (short non-final chunk rejected, `TooLarge` past the bound).
-
-A reader of a hostile chunk tree could otherwise do unbounded work for no output: empty chunks and repeated links (legal, since identical chunks share a blob) let a 3-level tree cost about 262 000 fetches for 0 bytes. osis-commit's `TreeReader` (re-exported by osis-label) rejects as bad input any chunk other than the last that is empty or shorter than `CHUNK_MIN`, and visits at most `max_len / CHUNK_MIN + 1` chunks (`TooLarge` beyond), with the fan-out and level caps bounding the nodes per chunk. The spec states neither rule: every honest writer satisfies the first (the chunker never cuts below `CHUNK_MIN` except at the end), so adding "a chunk other than the last shorter than `CHUNK_MIN` is bad input" to spec/wire.md §6 would make the bound part of the format; until then it is policy, and another implementation may accept trees this one refuses.

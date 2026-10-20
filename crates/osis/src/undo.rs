@@ -40,8 +40,8 @@ impl Default for HistoryQuery {
 pub enum DropReason {
     /// Its body was dropped (compaction, keep-at-most, purge): spec/crdt.md §4.6.
     Compacted,
-    /// Undoing it writes nothing: a register it wrote is no longer the winner (spec/crdt.md
-    /// §4.6; issues/undo-chain-register.md).
+    /// Undoing it writes nothing: a register it wrote is no longer the winner and no undo in
+    /// effect restored its value (another writer's newer value; spec/crdt.md §4.6).
     Superseded,
 }
 

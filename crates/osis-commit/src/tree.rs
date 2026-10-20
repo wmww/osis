@@ -149,9 +149,9 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
 
 /// Streaming reader: yields the chunks in order, holding one node per level (memory: one chunk
 /// plus the path). Verifies every content hash and level (`Corrupt`) and the node bounds. Work
-/// is bounded by the value size: a chunk other than the last shorter than `min_chunk` (or empty)
-/// is bad input, and at most `max_len / min_chunk + 1` chunks are visited (`TooLarge` beyond;
-/// repeated links are legal: identical chunks share a blob). An error leaves the reader where it
+/// is bounded by the value size (spec/wire.md §6, tree reader bounds): a chunk other than the
+/// last shorter than `min_chunk` (or empty) is bad input, and at most `max_len / min_chunk + 1`
+/// chunks are visited (`TooLarge` beyond). An error leaves the reader where it
 /// was, so a `Missing` blob can be fetched and the call retried (lazy fetch, spec/sync.md §6).
 pub struct TreeReader {
     root: Option<Link>,
@@ -291,7 +291,7 @@ mod tests {
     // spec/wire.md §6: node closing rule (>= 2 links and hash starting 0x00, or 512), the root
     // is an interior node, levels link the level below, the root hash depends on content only.
     #[test]
-    fn shape_and_hashes() {
+    fn shape_and_hashes_spec_wire_6() {
         let d = data(200_000, 1);
         let mut hs = HashSink::new(Secret32::from_bytes([7; 32]));
         let root = write_tree(&mut hs, SMALL, &d).unwrap();
@@ -318,7 +318,7 @@ mod tests {
 
     // spec/wire.md §6: a node closes at 512 links when no hash starts with 0x00.
     #[test]
-    fn fanout_cap() {
+    fn fanout_cap_spec_wire_6() {
         struct NoZero(u64);
         impl TreeSink for NoZero {
             fn chunk(&mut self, _: &[u8]) -> Result<Link, Error> {
@@ -347,11 +347,10 @@ mod tests {
         }
     }
 
-    // spec/wire.md §6 (issues/tree-reader-bounds.md): reader work is bounded by the value size:
-    // an empty or short chunk before the last is bad input; repeated links (legal: identical
-    // chunks share a blob) cost at most max_len / min + 1 chunk fetches.
+    // spec/wire.md §6, tree reader bounds: an empty or short chunk before the last is bad input;
+    // repeated links cost at most max_len / CHUNK_MIN + 1 chunk fetches.
     #[test]
-    fn reader_bounds() {
+    fn reader_bounds_spec_wire_6() {
         let d = Secret32::from_bytes([7; 32]);
         let mut src = ByHash::default();
         let node = |src: &mut ByHash, level: u64, child: Link| {

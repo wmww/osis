@@ -114,7 +114,7 @@ proptest! {
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
-        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
+        let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() }, restored: &|_| false };
         let mut w = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
         let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
         // the node keeps only the footprint of the delta as its undo buffer

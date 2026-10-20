@@ -3,24 +3,43 @@
 //! recursive, and bounded: each element is demoted at most twice. Works on indices into the
 //! dot-ordered records (anchors resolve by binary search), so a pass is a few linear sweeps and
 //! one sort of each sibling list.
+//!
+//! A node is a record, a range record (`seq_span`) split only after elements that something
+//! anchors at: inside a node each element is the only child of the one before (a creation
+//! chain) or all are bare anchors on `END` in dot order, so the node places like its elements,
+//! and its first element's edge has the smallest stamp of the chain (§6.2 picks the same victim).
 
 use crate::seq::{Anchor, SeqElem};
-use crate::stamp::{Dot, Stamp};
-use std::collections::BTreeMap;
+use crate::seq_span::{Elems, nth, piece};
+use crate::stamp::{Dot, SourceKind, Stamp};
+use std::borrow::Cow;
 
-/// The placement of every placed element (deleted, content-less and bare anchors included).
+/// The placement of every placed node (deleted, content-less and bare anchors included).
 pub(crate) struct Placement {
-    /// Placed elements in order; hidden ones (unknown anchor, §6.1) are absent.
+    /// First element of each placed node in order; hidden ones (unknown anchor, §6.1) are
+    /// absent. A visible element is a node of its own.
     pub order: Vec<Dot>,
-    /// Chosen parent of `order[i]`: `None` for HEAD and `END`.
+    /// Last element of `order[i]`'s node (where its children anchor).
+    pub last: Vec<Dot>,
+    /// Elements in `order[i]`'s node.
+    pub span: Vec<u64>,
+    /// Whether `order[i]`'s node is created (a chain); else its elements are bare anchors or
+    /// flag-only, each placed on its own.
+    pub created: Vec<bool>,
+    /// Chosen parent node of `order[i]` (by first element): `None` for HEAD and `END`.
     pub parent: Vec<Option<Dot>>,
 }
 
-/// Placement by index: node `i < real` is the `i`-th record in dot order, the rest are virtual
-/// `Derived` anchors.
+/// A record or a piece of a range record.
+pub(crate) struct Node<'a> {
+    pub dot: Cow<'a, Dot>,
+    pub elem: Cow<'a, SeqElem>,
+}
+
+/// Placement by index: node `i < real` is the `i`-th record piece in dot order, the rest are
+/// virtual `Derived` anchors.
 pub(crate) struct Placed<'a> {
-    pub dots: Vec<&'a Dot>,
-    pub elems: Vec<&'a SeqElem>,
+    pub nodes: Vec<Node<'a>>,
     /// Placed real nodes in order.
     pub order: Vec<usize>,
     /// Chosen parent node per node.
@@ -36,7 +55,9 @@ enum Edge {
 }
 
 struct Graph<'a> {
+    /// First dot and span per node.
     dots: Vec<&'a Dot>,
+    spans: Vec<u64>,
     pos: Vec<&'a [(Stamp, Anchor)]>,
     real: usize,
     /// Candidate per element: 0 = `cur`, 1 = `prev`, 2 = `END` (§6.2).
@@ -47,7 +68,10 @@ struct Graph<'a> {
 impl Graph<'_> {
     fn lookup(&self, x: &Dot) -> Option<usize> {
         let (real, virt) = self.dots.split_at(self.real);
-        real.binary_search(&x).ok().or_else(|| virt.binary_search(&x).ok().map(|j| self.real + j))
+        // the node at or before `x` holds it if `x` is in its span
+        let i = real.partition_point(|d| *d <= x).checked_sub(1);
+        let held = i.filter(|i| real.get(*i).zip(self.spans.get(*i)).is_some_and(|(d, n)| d.src == x.src && x.ctr - d.ctr < *n));
+        held.or_else(|| virt.binary_search(&x).ok().map(|j| self.real + j))
     }
     fn compute(&self, i: usize) -> Edge {
         let c = self.cand.get(i).copied().unwrap_or(2);
@@ -88,45 +112,95 @@ impl Graph<'_> {
     }
 }
 
+/// The records as nodes: a range record is split after each element some position write
+/// anchors at, and where a virtual `Derived` anchor sits between its elements in dot order.
+fn nodes(elems: &Elems) -> Vec<Node<'_>> {
+    let mut targets: Vec<&Dot> = Vec::new();
+    if elems.values().any(|e| e.span > 1) {
+        targets = elems.values().flat_map(|e| e.pos.iter()).filter_map(|(_, a)| if let Anchor::Dot(d) = a { Some(d) } else { None }).collect();
+        targets.sort();
+        targets.dedup();
+    }
+    let mut out = Vec::with_capacity(elems.len());
+    for (d, e) in elems {
+        if e.span == 1 {
+            out.push(Node { dot: Cow::Borrowed(d), elem: Cow::Borrowed(e) });
+            continue;
+        }
+        let last = nth(d, e.span - 1);
+        let from = targets.partition_point(|t| *t < d);
+        let mut off = 0;
+        for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| **t < &last) {
+            // an element anchored at, or a virtual `Derived(S, c)` anchor (absent from the
+            // state, so placed on END between `(S, c)` and `(S, c + 1)`, §6.1) after `(S, c)`
+            let c = match t.src.kind() {
+                SourceKind::Derived(u) if u.src == d.src => u.ctr,
+                _ if t.src == d.src => t.ctr,
+                _ => continue,
+            };
+            let end = c - d.ctr + 1;
+            if end <= off {
+                continue;
+            }
+            let (x, y) = piece(d, e, off, end - off);
+            out.push(Node { dot: Cow::Owned(x), elem: Cow::Owned(y) });
+            off = end;
+        }
+        if off == 0 {
+            out.push(Node { dot: Cow::Borrowed(d), elem: Cow::Borrowed(e) });
+        } else {
+            let (x, y) = piece(d, e, off, e.span - off);
+            out.push(Node { dot: Cow::Owned(x), elem: Cow::Owned(y) });
+        }
+    }
+    out
+}
+
 /// Places the elements of a sequence (§6), by index.
-pub(crate) fn place_idx(elems: &BTreeMap<Dot, SeqElem>) -> Placed<'_> {
+pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
+    let nodes = nodes(elems);
+    let held = |d: &Dot| crate::seq_span::find(elems, d).is_some();
     // anchors naming a `Derived` dot not in the state are bare anchors at END (§6.1)
-    let mut virt: Vec<&Dot> = elems
-        .values()
-        .flat_map(|e| e.pos.iter())
+    let mut virt: Vec<Dot> = nodes
+        .iter()
+        .flat_map(|n| n.elem.pos.iter())
         .filter_map(|(_, a)| match a {
-            Anchor::Dot(d) if d.src.is_derived() && !elems.contains_key(d) => Some(d),
+            Anchor::Dot(d) if d.src.is_derived() && !held(d) => Some(d.clone()),
             _ => None,
         })
         .collect();
     virt.sort();
     virt.dedup();
-    let real = elems.len();
+    let real = nodes.len();
     let n = real + virt.len();
-    let mut g = Graph { dots: Vec::with_capacity(n), pos: Vec::with_capacity(n), real, cand: vec![0; n], edge: Vec::new() };
-    let mut refs = Vec::with_capacity(real);
-    for (d, e) in elems {
-        g.dots.push(d);
-        g.pos.push(&e.pos);
-        refs.push(e);
+    let mut g = Graph { dots: Vec::with_capacity(n), spans: Vec::with_capacity(real), pos: Vec::with_capacity(n), real, cand: vec![0; n], edge: Vec::new() };
+    for x in &nodes {
+        g.dots.push(&x.dot);
+        g.spans.push(x.elem.span);
+        g.pos.push(&x.elem.pos);
     }
-    for d in virt {
+    for d in &virt {
         g.dots.push(d);
         g.pos.push(&[]);
     }
     g.edge = (0..n).map(|i| g.compute(i)).collect();
     break_cycles(&mut g);
     let (order, parent) = traverse(&g);
-    Placed { dots: g.dots, elems: refs, order, parent }
+    drop(g);
+    Placed { nodes, order, parent }
 }
 
 /// Places the elements of a sequence (§6), by dot.
-pub(crate) fn place(elems: &BTreeMap<Dot, SeqElem>) -> Placement {
+pub(crate) fn place(elems: &Elems) -> Placement {
     let p = place_idx(elems);
-    let dot = |i: usize| p.dots.get(i).map(|d| (*d).clone());
+    let node = |i: usize| p.nodes.get(i);
+    let first = |i: usize| node(i).map(|n| n.dot.clone().into_owned());
     Placement {
-        order: p.order.iter().filter_map(|i| dot(*i)).collect(),
-        parent: p.order.iter().map(|i| p.parent.get(*i).copied().flatten().and_then(dot)).collect(),
+        order: p.order.iter().filter_map(|i| first(*i)).collect(),
+        last: p.order.iter().filter_map(|i| node(*i)).map(|n| nth(&n.dot, n.elem.span - 1)).collect(),
+        span: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.span).collect(),
+        created: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.created.is_some()).collect(),
+        parent: p.order.iter().map(|i| p.parent.get(*i).copied().flatten().filter(|j| *j < p.nodes.len()).and_then(first)).collect(),
     }
 }
 

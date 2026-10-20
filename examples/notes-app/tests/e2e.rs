@@ -125,8 +125,7 @@ fn large_attachment_streams() {
 }
 
 // notes/api.md Undo (history lists everyone's changes; undo and redo own ones), offline: one
-// device without servers keeps a full local history. Undo steps back once per register
-// (issues/undo-chain-register.md), so the stack here walks two aspects.
+// device without servers keeps a full local history. The stack here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {
     let db = Osis::create(osis::Config::memory()).unwrap().0;
