@@ -65,7 +65,7 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| hardening-signoff | step 1 merged; security reviews crypto/keys/perm/flows (8295ea0) and label/server/node-sync (7f4d0c3) merged with 8 fixes; running: store+api review, scale/panic audit, sync round 3 (hostile-server bounds, purged chunks, prefix check, read buffers, disk-loss chain, seed 11, reseal wiring) | then: re-review, report |
+| hardening-signoff | step 1 and three security reviews merged (13 fixes); running: scale/panic audit, sync round 3 | then: lost-access erasure (issues/lost-access-erasure.md, a spec MUST), re-review, report |
 
 ## Open escalations
 - Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
