@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB each): agents share CARGO_TARGET_DIR=$HOME/osis-shared-target; at most 3 agents at a time.
+Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB each): a shared CARGO_TARGET_DIR is unsafe (worktrees reuse each other's path-crate artifacts); each agent uses $HOME/osis-targets/<worktree> with CARGO_INCREMENTAL=0 and cleans before returning; at most 3 agents at a time.
 
 ## Plans
 | plan | state | notes |
@@ -65,7 +65,7 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| hardening-signoff | step 1 merged (dd3fbbf: 46-rule checklist, 42 tested, issues/tests-spec-gaps.md); running: security reviews crypto+keys+perm+flows, label+server+node-sync, store+api | then: remaining sync bugs, scale and panic audit, re-review, report |
+| hardening-signoff | step 1 merged; crypto/keys/perm/flows review merged at 8295ea0 (4 security fixes); running: label+server+node-sync review, store+api review, scale checks + panic/dependency audit | then: remaining sync bugs, re-review, report |
 
 ## Open escalations
 - Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
