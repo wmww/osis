@@ -118,12 +118,12 @@ fn small_linked_list_rejected() {
     let bytes = osis_core::encode(&h.list_value(ListField::Aspects).unwrap());
     let d = sec(0xd0, &t(2));
     let mut salt = 0u8;
-    let link = write_tree(&bytes, &d, &mut sink, &mut || {
+    let link = write_list(&bytes, &d, &mut sink, &mut || {
         salt += 1;
         Ok(Prefix { salt: [salt; 16], expiry: None, commitments: vec![] })
     })
     .unwrap();
-    assert_eq!(read_tree(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);
+    assert_eq!(read_list(&link, &d, &mut sink, MAX_LIST_BYTES).unwrap(), bytes);
     h.links.aspects = Some(link);
     let mut back = Header::decode(&h.encode()).unwrap();
     assert!(back.aspects.is_empty());

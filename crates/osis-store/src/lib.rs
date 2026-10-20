@@ -1,6 +1,6 @@
 //! osis-store: encrypted local store (notes/local-store.md): `Backend` (opaque transactional KV
 //! plus blob area; `MemoryBackend`, redb behind `file-backend`) and `Store` (encrypted units on a
-//! key tree rooted in erasable `RootStorage`). Layer 2 (notes/architecture.md). Plan: plans/store.md.
+//! key tree rooted in erasable `RootStorage`). Layer 2 (notes/architecture.md). Notes: notes/local-store.md.
 #![forbid(unsafe_code)]
 
 mod backend;

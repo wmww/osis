@@ -330,8 +330,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = db.aspects(ctx.tid(&t)?)?;
             ctx.emit(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>(), J::Arr(a.iter().map(|a| J::str(a.as_str())).collect()))
         }
-        Cmd::Ls { .. } => Err(not_supported("query (plans/api.md second half)")),
-        Cmd::Backlinks { .. } => Err(not_supported("backlinks (plans/api.md second half)")),
+        Cmd::Ls { .. } => Err(not_supported("query (issues/api-deferred.md)")),
+        Cmd::Backlinks { .. } => Err(not_supported("backlinks (issues/api-deferred.md)")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
         Cmd::Signal(SignalCmd::Send { t, kind, value, to }) => {
             let t = ctx.tid(&t)?;
@@ -467,7 +467,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
-        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (plans/api.md second half)")),
+        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (issues/api-deferred.md)")),
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
             db.export_bundle(&gs, &mut *ctx.out)?;

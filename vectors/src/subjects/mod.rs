@@ -107,7 +107,7 @@ impl Drop for FixedRng {
 /// no commitments (layout spec/wire.md §5, vectors of osis-label).
 pub const PREFIX: [u8; 26] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-/// 32 repeated bytes (the fixed seeds of plans/test-infra.md).
+/// 32 repeated bytes (the fixed seeds of the vectors).
 pub fn s32(b: u8) -> osis_crypto::Secret32 {
     osis_crypto::Secret32::from_bytes([b; 32])
 }

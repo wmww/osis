@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Codegen (plans/schema.md): generated modules for the notes, core and meta schemas are checked
+//! Codegen (notes/architecture.md §8): generated modules for the notes, core and meta schemas are checked
 //! in under tests/gen, compiled here, and must equal a fresh generation (regenerate:
 //! OSIS_REGEN_VECTORS=1). Typed keys round-trip through spec/versioning.md §5 typed reads.
 

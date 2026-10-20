@@ -1,4 +1,4 @@
-//! Established epochs (spec/crypto.md §4; issues/keys-established-epochs.md, node-core part):
+//! Established epochs (spec/crypto.md §4):
 //! an applied valid commit's `/secrets` write is `SecretsWrite::applied` with its `/keys` write
 //! and the keysets held before it; a held `/secrets` compaction snapshot keys its epochs
 //! (`snapshot_keyed`); a commit later found invalid has its rotations unset. Establishment is

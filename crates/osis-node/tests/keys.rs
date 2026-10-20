@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Established epochs at the engine level (spec/crypto.md §4; issues/keys-established-epochs.md).
+//! Established epochs at the engine level (spec/crypto.md §4).
 
 mod common;
 use common::*;

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Membership flows (plans/membership-flows.md) over `LocalPeer`: commits and inbox blobs are
+//! Membership flows over `LocalPeer`: commits and inbox blobs are
 //! delivered by hand between engines (no labels or servers).
 
 mod common;

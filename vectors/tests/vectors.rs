@@ -1,4 +1,4 @@
-//! One test per vector file, plus the manifest and freeze policy (plans/test-infra.md; format
+//! One test per vector file, plus the manifest and freeze policy (notes/testing.md; format
 //! vectors/README.md). Each file's cases cite their spec sections.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

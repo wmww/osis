@@ -61,7 +61,7 @@ proptest! {
     }
 }
 
-/// Tier 2 (plans/crdt-core.md benches): a 10^5-entry map delta joins, reads and encodes; a small
+/// Tier 2: a 10^5-entry map delta joins, reads and encodes; a small
 /// delta into the big state costs only what it touches.
 #[test]
 #[ignore]

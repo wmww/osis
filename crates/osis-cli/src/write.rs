@@ -250,7 +250,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             };
             O::Splice(range(&args[0])?, s)
         }
-        "undelete" => return Err(Error::Unsupported("undelete (plans/api.md second half)").into()),
+        "undelete" => return Err(Error::Unsupported("undelete (issues/api-deferred.md)").into()),
         "add" => {
             n(1)?;
             O::Add(ctx.value(&args[0], ety)?)

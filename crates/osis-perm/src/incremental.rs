@@ -1,4 +1,4 @@
-//! Incremental evaluation (plans/perm.md): the timeline split into connected components of
+//! Incremental evaluation (notes/permissions.md Implementation): the timeline split into connected components of
 //! things (edges join member, target and author; ownership joins a thing and its owner; a
 //! roster snapshot joins its thing, author and every node it names), each evaluated from
 //! scratch and cached by its exact inputs. A held-set change re-evaluates only the components

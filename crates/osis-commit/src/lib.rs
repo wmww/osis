@@ -2,7 +2,7 @@
 //! builder, delta verification, projection and purge rewrite, chunk trees (`tree`: the one
 //! writer and reader, osis-label re-exports it) and linked header lists
 //! (spec/commits.md, spec/wire.md §4, §6).
-//! Layer 3 (notes/architecture.md). Plan: plans/commit.md.
+//! Layer 3 (notes/architecture.md). Notes: notes/crdt.md (Implementation (`osis-commit`)).
 #![forbid(unsafe_code)]
 
 mod blob;
@@ -34,7 +34,7 @@ mod tests_review;
 pub use blob::{CommitBlob, Part};
 pub use builder::{AspectWrite, Built, CommitBuilder};
 pub use project::{Projection, prefix_inputs, project, rewrite, strict_subset};
-pub use lists::{BlobSink, BlobSource, MAX_LIST_BYTES, MemoryBlobs, read_tree, write_tree};
+pub use lists::{BlobSink, BlobSource, MAX_LIST_BYTES, MemoryBlobs, read_list, write_list};
 pub use error::Error;
 pub use header::{AspectEntry, ChunkEntry, FOREVER, Form, Header, Kind, Links, ListField, MAX_SCHEMAS, Origin, PurgeItem, Token, verify_signature};
 pub use tokens::{Prefix, Secrets, TokenSecret, token_secrets};

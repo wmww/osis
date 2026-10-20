@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{AspectEntry, ChunkEntry, Form, Header, Kind, Links, ListField, Origin, PurgeItem, Token, aspect_key, purge_value, token_value};
 use crate::project::check_fits;
 use crate::tokens::{Prefix, Secrets, TokenSecret, token_secrets};
-use crate::lists::{BlobSink, write_tree};
+use crate::lists::{BlobSink, write_list};
 use crate::Error;
 use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_COMMITMENTS};
 use osis_core::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
@@ -208,7 +208,7 @@ impl CommitBuilder {
                 Prefix::for_chunk(s, list_expiry, &list_secrets)
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
-            let link = write_tree(&bytes, &dedup, &mut rec, &mut prefix)?;
+            let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;
             list_blobs.extend(written);
             header.links.set(f, Some(link));
         }

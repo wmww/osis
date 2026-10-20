@@ -1,4 +1,4 @@
-//! Membership flows (plans/membership-flows.md; spec/permissions.md): person actors under a
+//! Membership flows (spec/permissions.md; notes/permissions.md Implementation): person actors under a
 //! recovery key, pairing, grants and inbox delivery, changes and removals with their rotation,
 //! demotions with the pre-sync and the receipt-record frontier, invite grants and self-removal,
 //! re-seal, registration steps, links, recovery cards, lost-access cleanup. Rotations, the

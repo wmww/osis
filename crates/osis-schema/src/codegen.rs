@@ -1,4 +1,4 @@
-//! Code generation from a schema (plans/schema.md): plain Rust structs and enums with `Codec`
+//! Code generation from a schema: plain Rust structs and enums with `Codec`
 //! (`codec_struct!` for structs), `TryFrom<&Value>` through the schema's typed read, field and
 //! case constants for paths, one `Aspect<T>`/`Signal<T>` constant per declared AK and signal kind.
 //! Usable from `build.rs` (`generate`) or the `osis-schema-gen` binary.

@@ -4,7 +4,7 @@
 //! the async `driver` over any osis-transport `Transport` (feature `driver`, default; QUIC: feature
 //! `quic`), and the binary's `config`
 //! (binary and `serve::run`, which `osis serve` calls: feature `bin`).
-//! Layer 6 (notes/architecture.md). Plan: plans/server.md.
+//! Layer 6 (notes/architecture.md). Notes: notes/sync.md (Implementation (osis-server)).
 #![forbid(unsafe_code)]
 
 pub mod config;

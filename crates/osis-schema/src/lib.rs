@@ -2,7 +2,7 @@
 //! additive evolution checker, typed reads and write validation, the `View` for the structural
 //! diff, the core schema and its Rust types, typed aspect keys, codegen (spec/data-model.md §2–§5,
 //! §9, §10; spec/versioning.md).
-//! Layer 2 (notes/architecture.md). Plan: plans/schema.md.
+//! Layer 2 (notes/architecture.md). Notes: notes/architecture.md §8, notes/versioning.md.
 #![forbid(unsafe_code)]
 
 /// Re-exported for generated code.

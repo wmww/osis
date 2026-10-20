@@ -1,5 +1,5 @@
 //! Sharing and sync through blind servers in process (notes/api.md Sharing and membership,
-//! Sync configuration and status; plans/api.md step 4), no tokio: see common/world.rs.
+//! Sync configuration and status), no tokio: see common/world.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
