@@ -333,7 +333,7 @@ impl Tx<'_> {
         }
         let f = match self.txn.get_aspect(tid, ak)? {
             Some(u) if state::is_paged(&u.state) => {
-                let (f, idx) = state::load_paged(&mut self.txn, tid, ak)?;
+                let (f, idx) = state::load_paged(&mut self.txn, tid, ak, &u.state)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
             }
@@ -374,14 +374,19 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Writes a state a join changed: `touched` (from `Fragment::touched_elems` of the delta)
-    /// says what it changed. A paged state rewrites only those pages; anything else is written
-    /// whole. The caller has noted the state as written (`Core::written`).
-    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touched: Option<(bool, Vec<Dot>)>, shred: Shred) -> Result<()> {
+    /// Writes a state a join changed: `touch` (`state::touch_of` the delta) says what it
+    /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
+    /// else is written whole. The caller has noted the state as written (`Core::written`).
+    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
         let k = (*tid, ak.clone());
-        if let (Some(st), Some(touched), Some(idx)) = (&f, &touched, self.core.pages.get_mut(&k))
-            && state::write_touched(&mut self.txn, idx, tid, ak, st, touched, shred)?.is_some()
+        if let (Some(st), Some(idx)) = (&f, self.core.pages.get_mut(&k))
+            && let Some(unit_state) = state::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
         {
+            if let Some(s) = unit_state {
+                let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
+                unit.state = s;
+                self.txn.put_aspect(tid, ak, &unit, shred)?;
+            }
             self.core.states.insert(k, f);
             return Ok(());
         }
