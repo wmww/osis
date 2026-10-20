@@ -1,5 +1,5 @@
 //! Range-based set reconciliation over blob IDs (spec/wire.md §11.3): additive fingerprints,
-//! 16-way splits, ID lists at 32, difference lists at 1024. Sets are sorted, deduplicated slices.
+//! 16-way splits, ID lists at 32 (8 under a dense difference), difference lists at 1024. Sets are sorted, deduplicated slices.
 
 use crate::Error;
 use crate::msg::{MAX_RECONCILE_RANGES, Mode, Range};
@@ -13,6 +13,8 @@ pub const LIST_MAX: usize = 32;
 pub const DIFF_MAX: usize = 1024;
 /// Subranges per split.
 pub const SPLIT: usize = 16;
+/// Most IDs in a subrange sent as mode 1 when the difference is dense.
+pub const DENSE_LIST: usize = 8;
 
 /// A range bound: at most 32 bytes, compared as if right-padded with zeros. As an upper bound
 /// the empty bound is the end of the ID space; as a lower bound it is zero.
@@ -99,22 +101,44 @@ pub fn fingerprint(ids: &[BlobId]) -> [u8; 16] {
 /// The ranges answering a mismatched fingerprint, or splitting an over-full mode 1 range: one
 /// mode 1 range when `own` holds at most 32, else 16 subranges of near-equal own counts (bounds:
 /// the first own ID of each subrange), each mode 0, or mode 1 where it holds at most 32.
-fn answer_or_split(own: &[BlobId], lower: &Bound, upper: &Bound, out: &mut Vec<Range>) {
+fn answer_or_split(own: &[BlobId], lower: &Bound, upper: &Bound, dense: bool, out: &mut Vec<Range>) {
     if own.len() <= LIST_MAX {
         out.push(Range { lower: lower.clone(), upper: upper.clone(), mode: Mode::Ids(own.to_vec()) });
         return;
     }
-    split(own, lower, upper, out);
+    split(own, lower, upper, dense, out);
 }
 
-fn split(own: &[BlobId], lower: &Bound, upper: &Bound, out: &mut Vec<Range>) {
+/// Whether the difference looks dense: at least a split's worth of fingerprint ranges in one
+/// message, most of them mismatched. Then nearly every small subrange would differ too and its
+/// ID list would carry nearly the whole set, so subranges go as fingerprints down to
+/// `DENSE_LIST` IDs (one more round, bytes about 16 fingerprints per difference instead of O(n)).
+fn dense(mismatched: &[Option<bool>]) -> bool {
+    let fps = mismatched.iter().flatten().count();
+    let bad = mismatched.iter().flatten().filter(|m| **m).count();
+    fps >= SPLIT && 2 * bad > fps
+}
+
+/// For each range: `Some(mismatched)` for a fingerprint range, `None` otherwise.
+fn mismatches<'a>(own: &[BlobId], ranges: impl IntoIterator<Item = &'a Range>) -> Vec<Option<bool>> {
+    ranges
+        .into_iter()
+        .map(|r| match &r.mode {
+            Mode::Fingerprint(fp) => Some(fingerprint(slice(own, &r.lower, &r.upper)) != *fp),
+            _ => None,
+        })
+        .collect()
+}
+
+fn split(own: &[BlobId], lower: &Bound, upper: &Bound, dense: bool, out: &mut Vec<Range>) {
+    let list_max = if dense { DENSE_LIST } else { LIST_MAX };
     let n = own.len();
     let mut lo = lower.clone();
     for i in 0..SPLIT {
         let (start, end) = (i * n / SPLIT, (i + 1) * n / SPLIT);
         let part = own.get(start..end).unwrap_or(&[]);
         let hi = if i + 1 == SPLIT { upper.clone() } else { own.get(end).map_or_else(|| upper.clone(), Bound::of) };
-        let mode = if part.len() <= LIST_MAX { Mode::Ids(part.to_vec()) } else { Mode::Fingerprint(fingerprint(part)) };
+        let mode = if part.len() <= list_max { Mode::Ids(part.to_vec()) } else { Mode::Fingerprint(fingerprint(part)) };
         out.push(Range { lower: lo, upper: hi.clone(), mode });
         lo = hi;
     }
@@ -129,19 +153,21 @@ fn minus(a: &[BlobId], b: &[BlobId]) -> Vec<BlobId> {
 /// to a responder.
 pub fn respond(own: &[BlobId], ranges: &[Range]) -> Result<Vec<Range>, Error> {
     let mut out = Vec::new();
-    for r in ranges {
+    let mism = mismatches(own, ranges);
+    let dense = dense(&mism);
+    for (r, bad) in ranges.iter().zip(mism) {
         let mine = slice(own, &r.lower, &r.upper);
         match &r.mode {
-            Mode::Fingerprint(fp) => {
-                if fingerprint(mine) != *fp {
-                    answer_or_split(mine, &r.lower, &r.upper, &mut out);
+            Mode::Fingerprint(_) => {
+                if bad == Some(true) {
+                    answer_or_split(mine, &r.lower, &r.upper, dense, &mut out);
                 }
             }
             Mode::Ids(theirs) => {
                 if mine.len() <= DIFF_MAX {
                     out.push(Range { lower: r.lower.clone(), upper: r.upper.clone(), mode: Mode::Diff { theirs: minus(mine, theirs), lacking: minus(theirs, mine) } });
                 } else {
-                    split(mine, &r.lower, &r.upper, &mut out);
+                    split(mine, &r.lower, &r.upper, dense, &mut out);
                 }
             }
             Mode::Diff { .. } => return Err(Error::Malformed("mode 2 in a request")),
@@ -206,19 +232,23 @@ impl Reconciler {
     /// token was outstanding.
     pub fn on_reply(&mut self, token: u64, own: &[BlobId], ranges: &[Range]) -> bool {
         let Some(asked) = self.asked.remove(&token) else { return false };
-        for r in ranges {
-            let ok = asked.iter().any(|(lo, hi, ids)| match r.mode {
-                Mode::Diff { .. } => *ids && within(lo, hi, &r.lower, &r.upper) && within(&r.lower, &r.upper, lo, hi),
-                _ => within(lo, hi, &r.lower, &r.upper),
-            });
-            if !ok {
-                continue;
-            }
+        let ranges: Vec<&Range> = ranges
+            .iter()
+            .filter(|r| {
+                asked.iter().any(|(lo, hi, ids)| match r.mode {
+                    Mode::Diff { .. } => *ids && within(lo, hi, &r.lower, &r.upper) && within(&r.lower, &r.upper, lo, hi),
+                    _ => within(lo, hi, &r.lower, &r.upper),
+                })
+            })
+            .collect();
+        let mism = mismatches(own, ranges.iter().copied());
+        let dense = dense(&mism);
+        for (r, bad) in ranges.into_iter().zip(mism) {
             let mine = slice(own, &r.lower, &r.upper);
             match &r.mode {
-                Mode::Fingerprint(fp) => {
-                    if fingerprint(mine) != *fp {
-                        answer_or_split(mine, &r.lower, &r.upper, &mut self.queue);
+                Mode::Fingerprint(_) => {
+                    if bad == Some(true) {
+                        answer_or_split(mine, &r.lower, &r.upper, dense, &mut self.queue);
                     }
                 }
                 Mode::Ids(theirs) => {
