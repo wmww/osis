@@ -385,12 +385,15 @@ impl Engine {
                 let mut progressed = false;
                 for b in blobs {
                     let id = b.id();
+                    let things: Vec<Tid> = if b.header.kind.is_membership() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
                     match ingest_blob(tx, b, Origin::Remote) {
                         Ok(Ingested::Applied(_)) => progressed = true,
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
                             tx.core.pending.remove(&id);
+                            // secrets read from its boxes go unless something else reads them
+                            crate::rotation::mark_lost_due(tx, things)?;
                             let now = tx.now();
                             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);
                         }
@@ -547,6 +550,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     tx.core.timelines.update(&tx.core.held);
     keys::load_unresolved(tx)?;
+    crate::rotation::load_lost_due(tx)?;
     let mut pend = Vec::new();
     let mut after: Option<CommitId> = None;
     loop {

@@ -335,9 +335,26 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
+    for (a, w) in pending_secrets_writes(tx.core, blob, id) {
+        if w.boxes.is_empty() && w.history.is_empty() {
+            continue;
+        }
+        let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
+        tx.core.touch();
+        if tx.core.ingest_secrets(&a, &s, false) {
+            crate::flows::save_epochs(tx, &a)?;
+        }
+    }
+    Ok(())
+}
+
+/// The `/secrets` writes of a held, not applied membership commit, per actor, decoded
+/// unverified (what `read_pending_boxes` reads; the lost-access trigger's pending grants).
+pub(crate) fn pending_secrets_writes(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
     let h = &blob.header;
+    let mut out = Vec::new();
     if !h.kind.is_membership() || !h.is_resolved() {
-        return Ok(());
+        return out;
     }
     let mut interner = osis_crdt::Interner::new();
     for p in &blob.parts {
@@ -347,17 +364,9 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
         let Ok(d) = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None) else { continue };
-        let (w, _) = secrets_write(tx.core, &a.tid, &d.fragment);
-        if w.boxes.is_empty() && w.history.is_empty() {
-            continue;
-        }
-        let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
-        tx.core.touch();
-        if tx.core.ingest_secrets(&a.tid, &s, false) {
-            crate::flows::save_epochs(tx, &a.tid)?;
-        }
+        out.push((a.tid, secrets_write(core, &a.tid, &d.fragment).0));
     }
-    Ok(())
+    out
 }
 
 impl crate::engine::Engine {

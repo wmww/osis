@@ -151,6 +151,9 @@ pub(crate) struct Core {
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
+    /// The lost-access trigger's work list (`rotation::LOST_DUE`; a superset after a rollback
+    /// is harmless).
+    pub lost_due: BTreeSet<Tid>,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -277,6 +280,7 @@ impl Core {
             written: Vec::new(),
             skip_writer_rules: false,
             key_actors: BTreeMap::new(),
+            lost_due: BTreeSet::new(),
         }
     }
 

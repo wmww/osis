@@ -41,8 +41,25 @@ impl SyncEngine {
     /// reloads them and drops the sessions and in-memory marks of the forgotten labels. Flows'
     /// self-removals call it once uploaded; an app calls it when told it was removed.
     pub fn drop_lost(&mut self) -> Result<()> {
+        self.forget_lost(false)
+    }
+
+    /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received
+    /// membership commits left it work, until none is left (forgetting re-examines pending
+    /// commits, which may apply more).
+    pub(crate) fn drop_lost_due(&mut self) -> Result<()> {
+        for _ in 0..16 {
+            if !self.engine.lost_due() {
+                break;
+            }
+            self.forget_lost(true)?;
+        }
+        Ok(())
+    }
+
+    fn forget_lost(&mut self, due: bool) -> Result<()> {
         self.state.flush(&mut self.engine)?;
-        let (_, f) = self.engine.forget_lost()?;
+        let (_, f) = self.engine.forget_lost(due)?;
         if f.things.is_empty() {
             return Ok(());
         }
@@ -55,7 +72,10 @@ impl SyncEngine {
         for l in &f.labels {
             self.state.feed.forget(l);
         }
-        for c in self.conns.values_mut() {
+        for (id, c) in self.conns.iter_mut() {
+            for l in c.labels.keys().filter(|l| gone(l)) {
+                self.unsubscribe.insert((*id, *l));
+            }
             c.labels.retain(|l, _| !gone(l));
         }
         self.label_actors.retain(|l, _| !gone(l));
@@ -67,6 +87,19 @@ impl SyncEngine {
         self.reopens.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
         self.forget_inbox()
+    }
+
+    /// Stops the pushes of forgotten labels' sessions (spec/sync.md §8) still connected and not
+    /// opened again.
+    pub(crate) fn stop_pushes(&mut self, out: &mut Vec<Action>) {
+        for (conn, l) in std::mem::take(&mut self.unsubscribe) {
+            if !self.cfg.subscribe || self.conns.get(&conn).is_none_or(|c| c.labels.contains_key(&l)) {
+                continue;
+            }
+            if let Err(e) = self.command(conn, osis_proto::Command::Unsubscribe { labels: vec![l] }, out) {
+                self.diag(format!("unsubscribe: {e}"));
+            }
+        }
     }
 
     /// Records a flow's deliveries; the next step sends them. A key actor's own departure

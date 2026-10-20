@@ -525,23 +525,105 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, member: Tid, roles: &BTreeSet<
     Ok(done)
 }
 
-/// Secrets this node no longer may read: actors it lost read on and what it reaches only
-/// through them (spec/permissions.md §3, osis-keys `lost_access`).
-pub(crate) fn lost(core: &Core) -> Vec<Tid> {
+/// The lost-access trigger's work list (spec/permissions.md §3, "a node that learns it lost
+/// read access"): `l/` + tid, a roster target of an applied received membership commit, or an
+/// aspect's thing of a dropped pending one. The held actors a role on it reaches are
+/// re-evaluated after the apply, in a transaction of their own (node-sync, every step).
+pub(crate) const LOST_DUE: &[u8] = b"l/";
+
+/// Adds `tids` to the work list.
+pub(crate) fn mark_lost_due(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) -> Result<()> {
+    for t in tids {
+        tx.txn.put_local(&[LOST_DUE, t.as_bytes()].concat(), &[], osis_store::Shred::No)?;
+        tx.core.lost_due.insert(t);
+    }
+    Ok(())
+}
+
+/// Loads the work list.
+pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
+    let mut v = Vec::new();
+    tx.scan(LOST_DUE, |k, _| {
+        v.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("lost-access work list"))?));
+        Ok(())
+    })?;
+    tx.core.lost_due.extend(v);
+    Ok(())
+}
+
+/// Empties the work list, returning it.
+fn take_due(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
+    let due = std::mem::take(&mut tx.core.lost_due);
+    for t in &due {
+        tx.txn.remove_local(&[LOST_DUE, t.as_bytes()].concat(), osis_store::Shred::No)?;
+    }
+    Ok(due)
+}
+
+/// Whether the node or a held key actor has a role on `a` now (any path, `until` honoured).
+fn readable(core: &Core, a: &Tid) -> bool {
     let node = core.id.tid();
-    let mut out = Vec::new();
-    for a in core.secrets.keys() {
-        let readable = core.role_now(&node, a).is_some() || core.key_actors.keys().any(|k| core.role_now(k, a).is_some());
-        if !readable {
-            out.push(*a);
+    core.role_now(&node, a).is_some() || core.key_actors.keys().any(|k| core.role_now(k, a).is_some())
+}
+
+/// Whether a role on `x` gives one on `a`: `x` is `a`, on its owner chain, or holds a role on it.
+fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
+    let mut cur = *a;
+    for _ in 0..64 {
+        if cur == *x {
+            return true;
+        }
+        match core.owner(&cur) {
+            Some(o) => cur = o,
+            None => break,
         }
     }
-    out
+    core.role_now(x, a).is_some()
+}
+
+/// Actors a held, not applied membership commit (pending, parked readable, or late parts)
+/// boxes secrets of to this node, a held key actor or an actor it reads now: grants this node
+/// may yet get (their secrets may be read already, spec/crypto.md §4), never a loss.
+fn pending_grants(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
+    let mut out = BTreeSet::new();
+    let node = tx.core.id.tid();
+    let mut after = None;
+    loop {
+        let page = tx.txn.pending(after.as_ref(), 256)?;
+        let n = page.len();
+        for (id, _, bytes) in page {
+            after = Some(id);
+            let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            for (a, w) in crate::apply::keys::pending_secrets_writes(tx.core, &blob, &id) {
+                let core = &*tx.core;
+                let ours = |m: &Tid| *m == node || core.key_actors.contains_key(m) || (core.secrets.contains_key(m) && readable(core, m));
+                if w.boxes.keys().any(|k| ours(&k.member)) {
+                    out.insert(a);
+                }
+            }
+        }
+        if n < 256 {
+            return Ok(out);
+        }
+    }
+}
+
+/// Of `cands`, the actors this node holds a secret of and lost read access to
+/// (spec/permissions.md §3): no role on them by any path now and no pending grant reaching them.
+/// Each actor is judged on its own, so what the node reached only through a lost one is lost
+/// with it. (Epochs observed without a secret are no access.)
+fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
+    let holds = |e: &ActorEpochs| ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
+    let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.secrets.get(a).is_some_and(holds) && !readable(tx.core, a)).collect();
+    if unread.is_empty() {
+        return Ok(unread);
+    }
+    let pend = pending_grants(tx)?;
+    Ok(unread.into_iter().filter(|a| !pend.iter().any(|x| reaches(tx.core, x, a))).collect())
 }
 
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read.
-pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
-    let lost = lost(tx.core);
+fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)> {
     if lost.is_empty() {
         return Ok((lost, Forgotten::default()));
     }
@@ -554,6 +636,24 @@ pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
     }
     let f = crate::retention::forget::forget(tx, &lost)?;
     Ok((lost, f))
+}
+
+/// Drops every held actor this node lost read access to (the work list is done with it).
+pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
+    take_due(tx)?;
+    let all: Vec<Tid> = tx.core.secrets.keys().copied().collect();
+    let lost = lost_among(tx, all)?;
+    drop_actors(tx, lost)
+}
+
+/// The trigger: takes the work list and drops the held actors a role on one of its things
+/// reaches that this node lost read access to (idempotent: the list goes in the same
+/// transaction).
+pub(crate) fn drop_lost_due(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
+    let due = take_due(tx)?;
+    let cands: Vec<Tid> = tx.core.secrets.keys().filter(|a| due.iter().any(|t| reaches(tx.core, t, a))).copied().collect();
+    let lost = lost_among(tx, cands)?;
+    drop_actors(tx, lost)
 }
 
 impl Engine {
@@ -636,12 +736,27 @@ impl Engine {
     /// through them, and forgets every thing it no longer reads by another path
     /// (spec/permissions.md §3), with a diagnostic per actor. Returns them.
     pub fn drop_lost_secrets(&mut self) -> Result<Vec<Tid>> {
-        Ok(self.forget_lost()?.0)
+        Ok(self.forget_lost(false)?.0)
     }
 
-    /// `drop_lost_secrets`, with what was forgotten (node-sync drops its label sessions).
-    pub(crate) fn forget_lost(&mut self) -> Result<(Vec<Tid>, Forgotten)> {
-        let r = self.run(drop_lost)?;
+    /// Whether the lost-access trigger has work (`drop_lost_due`).
+    pub fn lost_due(&self) -> bool {
+        !self.core.lost_due.is_empty()
+    }
+
+    /// The lost-access trigger (spec/permissions.md §3): after received membership commits
+    /// applied, drops the secrets of the actors they touched that this node lost read access to
+    /// by every path, unless a held pending grant reaches them, and forgets what only those
+    /// read. node-sync runs it every step; an app driving the engine alone calls it after
+    /// ingesting. Returns the actors dropped.
+    pub fn drop_lost_due(&mut self) -> Result<Vec<Tid>> {
+        Ok(self.forget_lost(true)?.0)
+    }
+
+    /// `drop_lost_secrets` (or, `due`, `drop_lost_due`), with what was forgotten (node-sync
+    /// drops its label sessions).
+    pub(crate) fn forget_lost(&mut self, due: bool) -> Result<(Vec<Tid>, Forgotten)> {
+        let r = self.run(|tx| if due { drop_lost_due(tx) } else { drop_lost(tx) })?;
         if !r.1.things.is_empty() {
             self.reload()?;
             self.reexamine()?;
