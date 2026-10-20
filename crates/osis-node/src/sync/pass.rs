@@ -208,7 +208,7 @@ impl SyncEngine {
             }
         }
         if let Some(w) = &keys.write {
-            self.promote(server, l, w, &mut uploads)?;
+            self.promote(conn, server, l, w, &mut uploads)?;
         }
         if !uploads.is_empty() {
             self.sent.extend(uploads.iter().map(|u| ((conn, l, osis_label::blob_id(&u.blob)), raw)));
@@ -395,7 +395,7 @@ impl SyncEngine {
 
     /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
     /// commits, never a heartbeat; per server (a blob may be deposited at several).
-    fn promote(&mut self, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+    fn promote(&mut self, conn: ConnId, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         let ids: Vec<(BlobId, Entry)> = self
             .state
             .entries
@@ -405,6 +405,9 @@ impl SyncEngine {
             .map(|((_, b), e)| (*b, e.clone()))
             .collect();
         for (id, mut e) in ids {
+            if super::in_flight(&self.sent, &(conn, l, id), self.raw_now()) {
+                continue;
+            }
             let Kind::Commit { commit, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
             if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) {
@@ -415,7 +418,8 @@ impl SyncEngine {
             uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
             e.stamp = Some(stamp);
             self.state.set_entry(l, id, e);
-            self.state.set_deposited(server, l, id, false);
+            // still deposited there until the server takes the stamped upload (a refusal, say a
+            // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
     }

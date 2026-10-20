@@ -457,6 +457,8 @@ impl SyncEngine {
                 Code::OK => {
                     grew |= !self.state.is_present(&server, &l, &b);
                     self.state.set_present(server, l, b, true);
+                    // a stamped upload of a deposited entry promoted it
+                    self.state.set_deposited(server, l, b, false);
                 }
                 Code::TOMBSTONED => {
                     self.state.set_gone(server, l, b);
