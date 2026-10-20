@@ -543,7 +543,7 @@ impl SyncEngine {
     pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
-            if self.engine.epochs(&g).is_none_or(|e| e.read.held().next().is_none()) {
+            if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
                 continue;
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);

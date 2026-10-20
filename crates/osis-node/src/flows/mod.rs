@@ -206,8 +206,9 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, member: Tid, role: Role) -> Result<Reci
             Some(k) => MemberKeys::KeyActor { kem: k.keys().kem.public().clone(), seed: None },
             None => return Err(Error::Misuse("no /keys held for the member")),
         },
+        // a key-actor KEM key on an actor's `/keys` is never sealed to (only key actors have one)
         (false, Some(k)) => {
-            let mk = MemberKeys::from_keys(&k)?;
+            let mk = MemberKeys::from_keys(&Keys { key: None, ..k })?;
             match tx.core.secrets.get(&member) {
                 Some(e) => mk.with_own(e),
                 None => mk,
@@ -315,7 +316,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         for a in actors {
             let s = secrets_in(tx, &a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s) {
+            if tx.core.ingest_secrets(&a, &s, true) {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }
@@ -333,7 +334,7 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         for a in &actors {
             let s = secrets_in(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s) {
+            if tx.core.ingest_secrets(a, &s, true) {
                 save_epochs(tx, a)?;
                 any = true;
             }

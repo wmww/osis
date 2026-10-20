@@ -298,7 +298,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     match ak.as_str() {
         "/secrets" => {
             if let Some(s) = v.as_ref().and_then(crate::engine::secrets::secrets_value)
-                && tx.core.ingest_secrets(tid, &s)
+                && tx.core.ingest_secrets(tid, &s, true)
                 && let Some(e) = tx.core.secrets.get(tid)
             {
                 let b = crate::engine::secrets::encode_epochs(e);

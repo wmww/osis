@@ -332,7 +332,8 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 /// it holds (issues/pending-boxes.md, decided; spec/crypto.md §4: such secrets are "kept for
 /// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
 /// target's `/created` and chain can open the target's label and download them. Parts are
-/// decoded unverified (a forged box only yields an unestablished epoch nothing encrypts under).
+/// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
+/// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
     let h = &blob.header;
     if !h.kind.is_membership() || !h.is_resolved() {
@@ -352,7 +353,7 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
-        if tx.core.ingest_secrets(&a.tid, &s) {
+        if tx.core.ingest_secrets(&a.tid, &s, false) {
             crate::flows::save_epochs(tx, &a.tid)?;
         }
     }

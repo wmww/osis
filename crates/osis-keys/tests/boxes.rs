@@ -56,7 +56,7 @@ fn grant_boxes_every_current_epoch() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
-    assert!(ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv).unwrap().is_empty());
+    assert!(ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap().is_empty());
     for (e, _) in f.view.read.held() {
         assert!(gv.read.secret(&e).is_some(), "{e:?}");
     }
@@ -75,7 +75,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
     // Establishment from the state as a snapshot (the grantee's commits elided).
     osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
     assert_eq!(kv.read.newest_held().map(|x| x.0), f.view.read.newest());
@@ -88,7 +88,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()));
 }
 
@@ -168,4 +168,66 @@ fn sizes() {
         let enc = osis_core::cbor::encode(&osis_schema::Codec::to_value(b));
         assert!(enc.len() < 100, "{k:?} {}", enc.len());
     }
+}
+
+// spec/crypto.md §4: "a secret learned only from a pending or invalid commit is kept for reading
+// and never encrypted under until an applied valid box carries it". Boxes sealed to the grantee
+// by someone holding other secrets (the unchecked set) yield reading-only secrets; no encrypting
+// getter returns them, even once the epochs are established; the applied valid box replaces
+// them, and a later unchecked box never replaces a checked secret.
+#[test]
+fn unchecked_boxes_are_reading_only() {
+    let f = forked();
+    let (g, ge) = (tid(5), person(0x50));
+    let rcpt = actor_rcpt(g, Role::Read, &ge);
+    let read = roles_up_to(Role::Read);
+    let mut fake_view = f.view.clone();
+    for e in f.forks {
+        fake_view.read.set_secret(e, Secret32::from_bytes([0xee; 32]));
+    }
+    let fake = box_member(&f.a, &fake_view, &f.s, &rcpt, &read, &mut rng(8)).unwrap().unwrap();
+    let mut s_fake = f.s.clone();
+    fake.apply(&mut s_fake);
+    let mut gv = ActorEpochs::default();
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    for e in f.forks {
+        assert_eq!(gv.read.reading_secret(&e), Some(&Secret32::from_bytes([0xee; 32])));
+        assert!(gv.read.secret(&e).is_none() && gv.read.is_reading_only(&e));
+        gv.read.set_established(e, osis_keys::Provenance::Chain);
+    }
+    assert!(gv.read.newest_held().is_none() && gv.read.newest_secret().is_none() && gv.read.held_established().next().is_none());
+    assert_eq!(osis_keys::wrap_epoch(&gv.read), osis_keys::WrapEpoch::None);
+    assert_eq!(gv.read.held_newest_first().len(), 2, "still tried for reading");
+    // the applied valid grant replaces them
+    let real = box_member(&f.a, &f.view, &f.s, &rcpt, &read, &mut rng(9)).unwrap().unwrap();
+    let mut s = f.s.clone();
+    real.apply(&mut s);
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
+    for e in f.forks {
+        assert_eq!(gv.read.secret(&e), f.view.read.secret(&e));
+    }
+    assert_eq!(gv.read.newest_held().map(|x| x.0), f.view.read.newest());
+    // an unchecked box arriving later changes nothing
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    for e in f.forks {
+        assert_eq!(gv.read.secret(&e), f.view.read.secret(&e));
+    }
+}
+
+// spec/crypto.md §4: what a reading-only secret opens through history boxes is reading-only too,
+// until the checked state carries it.
+#[test]
+fn reading_only_through_history() {
+    let f = forked();
+    let (g, ge) = (tid(5), person(0x50));
+    let w = box_member(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let mut s = f.s.clone();
+    w.apply(&mut s);
+    let mut gv = ActorEpochs::default();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    let older: Vec<_> = gv.read.held_newest_first().into_iter().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
+    assert!(!older.is_empty());
+    assert!(older.iter().all(|e| gv.read.is_reading_only(e)));
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
+    assert!(older.iter().all(|e| !gv.read.is_reading_only(e) && gv.read.secret(e).is_some()));
 }
