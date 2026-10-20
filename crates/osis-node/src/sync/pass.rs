@@ -853,24 +853,20 @@ impl SyncEngine {
         let Kind::Commit { commit, .. } = &e.kind else { return Ok(false) };
         let dropped = self.engine.core.commits.get(commit).is_some_and(|m| !m.dropped.is_empty());
         for (t, a) in aspects {
-            // the snapshot that covered the body when it was dropped, or one covering that
-            // snapshot (it may never go up: a co-writer's covered-equal one does), else one
-            // covering the body now
+            // the snapshot that covered the body when it was dropped (a dropped body is no
+            // longer there to judge: it would read as covered), else one covering it now
             let carrier = self.carrier_of(commit, t, a);
-            let mut candidates: Vec<CommitId> = carrier.into_iter().collect();
-            if carrier.is_some() || !dropped {
-                candidates.extend(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default());
-            }
+            let candidates: Vec<CommitId> = match carrier {
+                Some(k) => vec![k],
+                None if dropped => Vec::new(),
+                None => snaps.get(&(*t, a.clone())).cloned().unwrap_or_default(),
+            };
             let mut ok = false;
             for s in candidates {
                 if s == *commit || !self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if *c == s) && self.state.is_present(server, l, b)) {
                     continue;
                 }
-                let via = match carrier {
-                    Some(k) => k == s || self.engine.covered(&s, &k, t, a)? == Some(true),
-                    None => false,
-                };
-                if via || self.engine.covered(&s, commit, t, a)? == Some(true) {
+                if carrier == Some(s) || self.engine.covered(&s, commit, t, a)? == Some(true) {
                     ok = true;
                     break;
                 }

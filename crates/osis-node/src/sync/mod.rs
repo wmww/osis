@@ -930,6 +930,13 @@ impl SyncEngine {
         l.syncing = true;
         l.last_sync = now;
         let cursor = self.state.cursors.get(&(server, label)).copied();
+        // a replay lists the live entries only: presence starts over from it (a cursor lost in a
+        // crash otherwise kept entries a wiped server no longer holds "present" for good)
+        if cursor.is_none() {
+            for b in self.state.present_at(&server, &label) {
+                self.state.set_present(server, label, b, false);
+            }
+        }
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
