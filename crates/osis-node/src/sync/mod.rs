@@ -932,8 +932,8 @@ impl SyncEngine {
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
-    /// Inbox blobs (grants, notices) not yet answered by a server: kept in memory only, so a
-    /// closed database loses them (issues/sync-inbox-delivery.md); `wait_synced` waits for none.
+    /// Inbox blobs (grants, notices) not yet answered by a server (the outbox is stored and
+    /// restored at open); `wait_synced` waits for none.
     pub fn deliveries_pending(&self) -> usize {
         self.outbox.len() + self.inbox_sent.len()
     }

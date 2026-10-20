@@ -15,6 +15,6 @@
 
 ## Findings (all filed)
 - Undo steps back once per register (issues/undo-chain-register.md): the notes undo test walks two aspects.
-- `wait_synced` resolved while inbox deposits were still unanswered, and those live only in memory: a link made, synced and closed could not be redeemed. Fixed: `wait_synced` waits for `SyncEngine::deliveries_pending() == 0`; the CLI runs delivering commands networked and flushes before exit. Persisting the outbox stays in issues/sync-inbox-delivery.md.
+- `wait_synced` resolved while inbox deposits were still unanswered, and those live only in memory: a link made, synced and closed could not be redeemed. Fixed: `wait_synced` waits for `SyncEngine::deliveries_pending() == 0`; the CLI runs delivering commands networked and flushes before exit. The inbox outbox is stored since; `take_direct` packages are not (issues/node-sync-gaps.md).
 - Chat costs (issues/chat-costs.md; the non-settling removal is fixed, notes/node.md), API frictions (issues/api-app-frictions.md).
 - The mirrored-edges folder variant needs an edge for the folder's actor, not per member (notes/permissions.md Patterns, corrected).

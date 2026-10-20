@@ -165,7 +165,7 @@ fn needs_net(c: &Cmd) -> bool {
 }
 
 /// Commands whose API call hands other nodes something the engine keeps only in memory until
-/// sent (inbox grants, a new label's first commits; issues/sync-deliveries-lost-on-close.md):
+/// sent (inbox grants, a new label's first commits):
 /// they run with sync on and wait until it is at the servers before the process exits.
 fn delivers(c: &Cmd) -> bool {
     matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))

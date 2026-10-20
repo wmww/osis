@@ -329,7 +329,7 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 /// Opens, read-only, the boxes of a pending membership commit addressed to this node or an actor
-/// it holds (issues/pending-boxes.md, decided; spec/crypto.md §4: such secrets are "kept for
+/// it holds (spec/crypto.md §4: such secrets are "kept for
 /// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
 /// target's `/created` and chain can open the target's label and download them. Parts are
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced

@@ -183,7 +183,7 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
-// issues/commit-delta-content-rules.md; spec/commits.md §2: a membership commit changes at most
+// spec/commits.md §2: a membership commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
 fn membership_content_rules_spec_commits_2() {

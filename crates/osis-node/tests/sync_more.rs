@@ -244,7 +244,7 @@ fn label_replacement_spec_sync_2() {
 }
 
 // spec/sync.md §3 (inbox), spec/crypto.md §4 (secrets of a pending commit kept for reading;
-// issues/pending-boxes.md decided): a grant reaches another person's device only as an inbox
+// decided): a grant reaches another person's device only as an inbox
 // blob; it opens the pending grant's boxes, reaches the group's label from the blob's hints,
 // downloads the group's chain and content, and the grant applies.
 #[test]
