@@ -177,6 +177,9 @@ pub(crate) struct LConn {
     pub walk: Option<Step>,
     /// A static-entry open's entry box, opened once the server's path verified the head.
     pub entry_box: Option<osis_schema::core_types::SecretBox>,
+    /// Write keys of a server path verified here (a label not recorded in `/label`): stamps
+    /// under them vouch for an entry.
+    pub writers: Vec<osis_crypto::VerifyingKey>,
 }
 
 pub(crate) struct Conn {

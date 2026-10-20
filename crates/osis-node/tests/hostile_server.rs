@@ -152,7 +152,8 @@ fn key_actor_not_presented_elsewhere_spec_sync_5() {
 
 // spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §3 (only writers
 // add stamped entries; deposits are readable by co-readers): a server's made-up unstamped
-// entries under an opened label that open under nothing held leave no entry and no blob.
+// entries under an opened label that open under nothing held leave no blob, and only a capped
+// number of entries.
 #[test]
 fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let mut net = Net::new();
@@ -168,10 +169,12 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
     net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
     net.settle(10_000);
-    assert_eq!(net.sync(a).entries(&l).len(), before, "no junk entry kept");
     for b in &blobs {
         assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no junk blob kept");
     }
+    // past the cap not even the entry: a server's endless junk leaves bounded metadata
+    let n = net.sync(a).entries(&l).len();
+    assert!(n <= before + 50, "{n}");
 }
 
 // spec/sync.md §2, §5 (a key actor claims the current step by its static entry; the step's entry

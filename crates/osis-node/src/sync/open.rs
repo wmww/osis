@@ -170,6 +170,7 @@ impl SyncEngine {
             path: Vec::new(),
             walk: None,
             entry_box: None,
+            writers: Vec::new(),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
@@ -284,6 +285,13 @@ impl SyncEngine {
         let g = lc.group;
         lc.walk = None;
         let entry_box = lc.entry_box.take();
+        if ok {
+            for st in &path {
+                if !lc.writers.contains(&st.keys.write) {
+                    lc.writers.push(st.keys.write);
+                }
+            }
+        }
         match (ok, head) {
             (true, Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;

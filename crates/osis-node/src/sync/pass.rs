@@ -597,24 +597,35 @@ impl SyncEngine {
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
     /// encryption per label, placed once per commit.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        let closure = self.engine.closure(g);
         for (c, ais) in self.engine.certificates(g) {
             if self.state.inbox_only.contains(&c) {
                 continue;
             }
-            let placed: Vec<BlobId> = self
+            // the aspects this node's copies under the label carry: a chain grown since (an
+            // owner's `/created` this node learned later) places the rest
+            let placed: BTreeSet<usize> = self
                 .state
                 .entries
                 .range((l, BlobId([0; 32]))..)
                 .take_while(|((x, _), _)| *x == l)
-                .filter(|(_, e)| e.cert && matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c))
-                .map(|((_, id), _)| *id)
+                .filter_map(|(_, e)| match &e.kind {
+                    Kind::Commit { commit, parts } if e.cert && *commit == c => Some(parts.iter().map(|(ai, _)| *ai).collect::<Vec<_>>()),
+                    _ => None,
+                })
+                .flatten()
                 .collect();
-            if placed.is_empty() && !self.state.certs.contains(&(l, c)) {
-                for b in self.engine.partial_bodies(&c, &ais)? {
-                    self.place(g, l, &b, true)?;
-                }
-                self.state.add_cert(l, c);
+            // what the label's closure bodies carry is not copied again
+            let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let missing: BTreeSet<usize> = ais.difference(&placed).filter(|ai| placed.is_empty() || !inside.contains(ai)).copied().collect();
+            // placed before and gone since (deleted at the server): not placed again
+            if missing.is_empty() || placed.is_empty() && self.state.certs.contains(&(l, c)) {
+                continue;
             }
+            for b in self.engine.partial_bodies(&c, &missing)? {
+                self.place(g, l, &b, true)?;
+            }
+            self.state.add_cert(l, c);
         }
         Ok(())
     }

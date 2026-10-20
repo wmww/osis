@@ -20,6 +20,9 @@ use std::collections::BTreeSet;
 
 /// Rounds of "new secrets opened more entries" per batch.
 const MAX_ROUNDS: usize = 16;
+/// Unstamped entries a label may hold that open under nothing held (`drop_unvouched`).
+const MAX_UNVOUCHED: usize = 1 << 16;
+const MAX_UNVOUCHED_INBOX: usize = 1 << 12;
 
 impl Engine {
     /// Stores blob ciphertexts (pages, chunks, commit blobs) by ID.
@@ -63,11 +66,24 @@ impl SyncEngine {
         let mut blobs = Vec::new();
         let mut touched = Vec::new();
         let mut fetch = Vec::new();
-        // entries new here that no writer vouched for (a deposit, or a server's junk)
+        // entries new here that no writer vouched for (a deposit, or a server's junk): no stamp
+        // under the write key of any step this node knows (a server cannot make one)
         let mut unvouched = Vec::new();
+        let mut writers: Vec<osis_crypto::VerifyingKey> = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).map(|x| x.writers.iter().copied().chain(x.head.as_ref().map(|h| h.keys.write)).collect()).unwrap_or_default();
+        if server.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. }))
+            && let Some(g) = self.group_of(&l)
+            && let Some(gl) = self.group_label(&g, &l)
+        {
+            for (st, _) in gl.steps.values() {
+                if !writers.contains(&st.keys.write) {
+                    writers.push(st.keys.write);
+                }
+            }
+        }
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
+                    let vouched = stamp.is_some_and(|st| writers.iter().any(|w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok()));
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
@@ -81,7 +97,7 @@ impl SyncEngine {
                     });
                     match self.state.entries.get(&(l, blob_id)).cloned() {
                         None => {
-                            if server.is_some() && stamp.is_none() {
+                            if server.is_some() && stamp.is_none() && !vouched {
                                 // bytes held before (another label's entry) stay whatever happens
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
@@ -169,10 +185,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Forgets new unstamped entries that neither opened nor unwrap under a held read secret:
-    /// a server can make up any number of them, so nothing of them is kept (spec/requirements.md:
-    /// peer input never causes unbounded storage). A real deposit under an epoch not held yet
-    /// comes back stamped once a writer promotes it, or with the next replay.
+    /// New entries no writer vouched for that neither opened nor unwrap under a held read secret
+    /// (a deposit under an epoch not held yet, an entry stamped under a step this node does not
+    /// know, or a server's junk): their bytes are not kept (fetched again once they unwrap,
+    /// `refetch`), and beyond `MAX_UNVOUCHED` such entries under the label not even the entry
+    /// (spec/requirements.md: peer input never causes unbounded storage; a dropped real entry
+    /// comes back stamped once a writer promotes it, or with the next replay).
     fn drop_unvouched(&mut self, server: ServerKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -187,18 +205,32 @@ impl SyncEngine {
                 listed.extend(h.chunks.iter().map(|ch| ch.blob));
             }
         }
+        // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
+        // under a smaller cap
+        let inbox = !self.inbox_of(&l).is_empty();
+        let cap = if inbox { MAX_UNVOUCHED_INBOX } else { MAX_UNVOUCHED };
+        let mut held = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|(_, e)| e.kind == Kind::Unknown && e.stamp.is_none()).count();
         let mut gone = Vec::new();
+        let mut over = 0usize;
         for (b, fresh) in ids {
-            let junk = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
-            if !junk {
+            let unopened = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
+            if !unopened {
                 continue;
             }
-            self.state.set_present(server, l, *b, false);
-            self.state.drop_entry(l, *b);
-            self.fetching.remove(b);
-            if *fresh && !self.state.blobs.contains_key(b) {
+            let drop = held > cap;
+            if *fresh && !self.state.blobs.contains_key(b) && (drop || !inbox) {
                 gone.push(*b);
             }
+            if drop {
+                self.state.set_present(server, l, *b, false);
+                self.state.drop_entry(l, *b);
+                self.fetching.remove(b);
+                held -= 1;
+                over += 1;
+            }
+        }
+        if over > 0 {
+            self.diag(format!("label {l:?}: {over} unopened unstamped entries over the cap dropped"));
         }
         if !gone.is_empty() {
             self.engine.run(|tx| {
