@@ -547,7 +547,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
         }
         (Encoding::List | Encoding::Text, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;
-            let mut s = Seq { text: enc == Encoding::Text, meta, elems: BTreeMap::new() };
+            let mut s = Seq::new(enc == Encoding::Text, meta, BTreeMap::new());
             let (runs, fetched) = elem_items(cx, es)?;
             seq::decode_elems(&mut s, &runs, cx)?;
             cx.done(fetched);

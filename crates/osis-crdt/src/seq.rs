@@ -9,10 +9,12 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
-use crate::seq_span::{chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
+use crate::seq_lin::Lin;
+use crate::seq_span::{Elems, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
 use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock};
 
 /// `HEAD` or an element's dot (§3.2 `Anchor`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,11 +47,14 @@ pub struct SeqElem {
 }
 
 /// A list or text fragment. Equality is per element, whatever the split into range records.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Seq {
     pub(crate) text: bool,
     pub(crate) meta: Meta,
-    pub(crate) elems: BTreeMap<Dot, SeqElem>,
+    elems: Elems,
+    /// Placement cache (`seq_lin`): built on first use, kept up by joins that add elements or
+    /// change flags and content, dropped by any other change of `elems`. Not part of equality.
+    lin: OnceLock<Arc<Lin>>,
 }
 
 impl PartialEq for Seq {
@@ -59,12 +64,42 @@ impl PartialEq for Seq {
 }
 impl Eq for Seq {}
 
+impl std::fmt::Debug for Seq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Seq").field("text", &self.text).field("meta", &self.meta).field("elems", &self.elems).finish()
+    }
+}
+
 impl Seq {
     pub fn empty(text: bool) -> Seq {
-        Seq { text, meta: Meta::default(), elems: BTreeMap::new() }
+        Seq::new(text, Meta::default(), BTreeMap::new())
+    }
+    pub(crate) fn new(text: bool, meta: Meta, elems: Elems) -> Seq {
+        Seq { text, meta, elems, lin: OnceLock::new() }
     }
     pub fn encoding(&self) -> Encoding {
         if self.text { Encoding::Text } else { Encoding::List }
+    }
+    /// The element records by dot.
+    pub(crate) fn elems(&self) -> &Elems {
+        &self.elems
+    }
+    /// The records for a change the placement cache does not follow (it is dropped).
+    pub(crate) fn elems_mut(&mut self) -> &mut Elems {
+        self.lin.take();
+        &mut self.elems
+    }
+    pub(crate) fn into_elems(self) -> Elems {
+        self.elems
+    }
+    /// The placement (§6), cached.
+    pub(crate) fn lin(&self) -> &Lin {
+        self.lin.get_or_init(|| Arc::new(Lin::build(&self.elems, self.text)))
+    }
+    /// Whether a cached placement is held and equals a whole pass (tests).
+    #[cfg(test)]
+    pub(crate) fn lin_check(&self) -> Option<bool> {
+        self.lin.get().map(|l| **l == Lin::build(&self.elems, self.text))
     }
 }
 
@@ -246,7 +281,29 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
 /// where the state's records start (ranges of the state are first split at its bounds), so each
 /// piece meets one state record of its own span, or none.
 pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    // how the cached placement follows each record, decided before that record joins
+    let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
     for (dot, de) in d.elems {
+        if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get()) {
+            match l.plan(&s.elems, &dot, &de) {
+                Some(p) => ps.push((dot.clone(), p)),
+                None => plans = None,
+            }
+        }
+        join_one(s, dot, de, e, ch);
+    }
+    let ok = match (plans, s.lin.get_mut()) {
+        (Some(ps), Some(l)) => Arc::make_mut(l).follow(&s.elems, s.text, ps),
+        _ => false,
+    };
+    if !ok {
+        s.lin.take();
+    }
+}
+
+/// Joins one record of a delta (`join_elems`).
+fn join_one(s: &mut Seq, dot: Dot, de: SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
+    {
         let span = de.span.max(1);
         let last = nth(&dot, span - 1);
         split_at(&mut s.elems, &dot);
@@ -287,6 +344,7 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
     }
 }
 
+
 /// Joins record `de` into the state record at `dot` of the same span (`existing`) or as a new
 /// record, first cutting a creation chain that straddles `e`.
 fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&Stamp>, ch: &mut Changes) {
@@ -321,8 +379,9 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
 /// Prunes every element record under effective reset `e` (records are never removed, §4.2).
 pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
-    cut_chains(&mut s.elems, e);
-    s.elems.retain(|d, el| prune_elem(d, el, text, e, ch));
+    let elems = s.elems_mut();
+    cut_chains(elems, e);
+    elems.retain(|d, el| prune_elem(d, el, text, e, ch));
 }
 
 /// Greatest stamp inside the elements; with `valued`, only presence-counting writes (§4.3).
@@ -353,9 +412,8 @@ pub(crate) fn has_records(s: &Seq) -> bool {
 
 /// Visible elements in order: not deleted, with content that reads (§5.7 Read). Never inside a
 /// range record (ranges have no content).
-pub(crate) fn visible(s: &Seq) -> Vec<Dot> {
-    let p = crate::linearize::place_idx(&s.elems);
-    p.order.iter().filter_map(|i| p.nodes.get(*i)).filter(|n| is_visible(&n.elem, s.text)).map(|n| n.dot.clone().into_owned()).collect()
+pub(crate) fn visible(s: &Seq) -> &[Dot] {
+    &s.lin().vis
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
@@ -368,10 +426,9 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
 pub(crate) fn read(s: &Seq) -> Option<Value> {
-    let p = crate::linearize::place_idx(&s.elems);
-    let items = p.order.iter().filter_map(|i| p.nodes.get(*i)).map(|n| &*n.elem);
+    let items = visible(s).iter().filter_map(|d| s.elems.get(d));
     Some(if s.text {
-        Value::Str(items.filter(|e| !e.flag()).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
+        Value::Str(items.filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
     } else {
         Value::List(items.filter_map(|e| if let SeqContent::Frag(f) = &e.content { f.read() } else { None }).collect())
     })
@@ -380,7 +437,7 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 
 /// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
-    for (d, el) in s.elems.iter_mut() {
+    for (d, el) in s.elems_mut().iter_mut() {
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
             SeqContent::Frag(f) => f.strip_values(expired),
@@ -400,7 +457,8 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
 /// Removes every write whose dot's author matches (un-merge, §4.6); records stay as anchors.
 pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
     let bad = |st: &Stamp| pred(st.dot.owner());
-    for (d, el) in s.elems.iter_mut() {
+    let elems = s.elems_mut();
+    for (d, el) in elems.iter_mut() {
         // the creation write of an invalid insert stays, so the element is a hidden anchor
         el.pos.retain(|p| !bad(&p.0) || p.0.dot == *d);
         if el.deleted.as_ref().is_some_and(|x| bad(&x.0)) {
@@ -415,7 +473,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
             }
         }
     }
-    s.elems.retain(|d, el| el.keeps(d));
+    elems.retain(|d, el| el.keeps(d));
 }
 
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.

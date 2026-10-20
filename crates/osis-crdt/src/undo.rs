@@ -85,6 +85,7 @@ fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, vi
 fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, view: &V, path: &mut Vec<PathSeg>, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
     let slot = present_slot(s, o.encoding());
+    let slot = slot.as_deref();
     let out = match o {
         Fragment::Register(reg) => {
             if reg.reset.is_some() {

@@ -87,7 +87,7 @@ fn commit_index(v: &Value) -> u64 {
 
 /// The `[Run*]` array of `s` (before paging), runs in wire order.
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
-    let v = cx.sorted(&s.elems);
+    let v = cx.sorted(s.elems());
     let mut out = Vec::new();
     for run in runs(s.text, &v) {
         let Some(&(k0, e0, off0, _)) = run.first() else { continue };
@@ -332,10 +332,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 } else {
                     SeqContent::None
                 };
-                if overlaps(&s.elems, &dot, len) {
+                if overlaps(s.elems(), &dot, len) {
                     return Err(Error::Malformed("element in two runs"));
                 }
-                s.elems.insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
                 at += len;
             }
         }

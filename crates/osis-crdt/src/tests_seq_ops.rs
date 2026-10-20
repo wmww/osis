@@ -58,6 +58,7 @@ impl Replica {
         let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
         assert_eq!(back, d, "a writer's delta round-trips");
         self.state.join(back);
+        crate::testutil::check_lin(&self.state);
         Some((d, self.src.clone(), range))
     }
 }
@@ -92,8 +93,8 @@ fn random_text_op(r: &mut Rng, n: usize, st: &Fragment) -> Op {
             // paste a run of cut (deleted) text, adjacent in placement order
             let Fragment::Seq(sq) = st else { return Op::Insert { at: 0, items: vec![s("a")] } };
             let mut runs: Vec<Vec<crate::Dot>> = vec![vec![]];
-            for d in crate::linearize::place(&sq.elems).order {
-                let e = crate::seq_span::elem(&sq.elems, &d).unwrap();
+            for d in crate::linearize::place(sq.elems()).order {
+                let e = crate::seq_span::elem(sq.elems(), &d).unwrap();
                 match (e.flag(), &e.content) {
                     (true, crate::seq::SeqContent::Char(_)) => runs.last_mut().unwrap().push(d),
                     (true, _) => {}
@@ -127,7 +128,7 @@ fn apply_text(model: &mut Vec<char>, o: &Op, st: &Fragment) {
         }
         Op::Paste { dots, at } => {
             let Fragment::Seq(sq) = st else { return };
-            let cs: Vec<char> = dots.iter().filter_map(|d| if let crate::seq::SeqContent::Char(c) = sq.elems[d].content { Some(c) } else { None }).collect();
+            let cs: Vec<char> = dots.iter().filter_map(|d| if let crate::seq::SeqContent::Char(c) = sq.elems()[d].content { Some(c) } else { None }).collect();
             model.splice(*at..*at, cs);
         }
         Op::Set(Value::Str(x)) => *model = x.chars().collect(),
@@ -404,7 +405,7 @@ fn budget_big_text_spec_6() {
     assert_eq!(read_str(&a.state).len(), 100_000);
     let t = Instant::now();
     let Fragment::Seq(sq) = &a.state else { panic!() };
-    let p = crate::linearize::place(&sq.elems);
+    let p = crate::linearize::place(sq.elems());
     let place = t.elapsed();
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     let t = Instant::now();
@@ -428,6 +429,29 @@ fn budget_big_text_spec_6() {
     let decode = t.elapsed();
     eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, encode {encode:?}, decode {decode:?}", p.order.len());
     let _ = v;
+}
+
+/// §6 (`seq_lin`): typing and deleting at random places, joined by another replica, keeps the
+/// cached placement (no whole pass) and it equals a whole pass.
+#[test]
+fn cached_placement_follows_typing_spec_6() {
+    let mut r = Rng(11);
+    let mut a = Replica::new(1);
+    let mut b = Replica::new(2);
+    let mut kept = 0;
+    for k in 0..200u64 {
+        let n = read_str(&a.state).chars().count();
+        let o = if n > 0 && r.chance(1, 4) { Op::Delete { at: r.below(n), len: 1 } } else { Op::Insert { at: r.below(n + 1), items: vec![s("xy")] } };
+        let (d, _, _) = a.commit(k + 1, &[op(o)], &text_view()).unwrap();
+        let before = read_str(&b.state);
+        b.state.join(d);
+        crate::testutil::check_lin(&b.state);
+        if matches!(&b.state, Fragment::Seq(x) if x.lin_check() == Some(true)) {
+            kept += 1;
+        }
+        assert_eq!(read_str(&a.state), read_str(&b.state), "after {before:?}");
+    }
+    assert!(kept >= 199, "kept {kept}");
 }
 
 /// notes/api.md `edit`: a base element changed concurrently (and a remote insert beside it) is
@@ -462,7 +486,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     let mut d = crate::seq::Seq::empty(true);
     let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
-    d.elems.insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None, span: 1 });
+    d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
     let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
@@ -504,7 +528,7 @@ fn move_undo_spec_5_7() {
     let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
     let x = undo(&mut w, &u, &b.state, &before, &text_view()).unwrap();
     assert!(x.is_some_and(|x| match x {
-        Fragment::Seq(sq) => sq.elems.len() == 1,
+        Fragment::Seq(sq) => sq.elems().len() == 1,
         _ => false,
     }));
 }

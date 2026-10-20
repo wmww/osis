@@ -4,7 +4,7 @@
 
 use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
-use crate::linearize::{Placement, place};
+use crate::linearize::Placement;
 use crate::ops::{Op, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, is_visible, top2, visible};
 use crate::seq_span::{elem, expand, nth};
@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 
 fn delta(text: bool) -> Seq {
-    Seq { text, meta: Meta::default(), elems: BTreeMap::new() }
+    Seq::new(text, Meta::default(), BTreeMap::new())
 }
 
 /// A creation run of `contents` chained from `anchor` (§5.7 insert); returns the new dots.
@@ -26,7 +26,7 @@ fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: Vec<SeqCont
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
-        s.elems.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
+        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
         prev = Anchor::Dot(d.clone());
         out.push(d);
     }
@@ -93,7 +93,7 @@ fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
 
 /// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
 fn check_bare(out: &Seq) -> Result<(), Error> {
-    let n = out.elems.values().fold(0u64, |a, e| a.saturating_add(e.span));
+    let n = out.elems().values().fold(0u64, |a, e| a.saturating_add(e.span));
     if n > osis_core::format::MAX_DELTA_BARE {
         return Err(Error::Mismatch("move of more than MAX_DELTA_BARE elements"));
     }
@@ -154,14 +154,14 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
 
 /// The visible element before node `i` in placement order, or HEAD.
 fn pred_of(p: &Placement, s: &Seq, i: usize) -> Anchor {
-    p.order.get(..i).unwrap_or_default().iter().rev().find(|d| s.elems.get(*d).is_some_and(|e| is_visible(e, s.text))).cloned().map_or(Anchor::Head, Anchor::Dot)
+    p.order.get(..i).unwrap_or_default().iter().rev().find(|d| s.elems().get(*d).is_some_and(|e| is_visible(e, s.text))).cloned().map_or(Anchor::Head, Anchor::Dot)
 }
 
 /// The dots a cut of `len` visible elements from `at` removes and a paste restores: the visible
 /// ones (the clipboard text). A client remembers them beside the clipboard (§5.7 cut, paste).
 pub fn cut_dots(state: &Fragment, at: usize, len: usize) -> Result<Vec<Dot>, Error> {
-    let Fragment::Seq(s) = state.chosen() else { return Err(Error::Mismatch("not a sequence")) };
-    let vis = visible(&s);
+    let crate::state::MemberRef::Frag(Fragment::Seq(s)) = state.chosen_member() else { return Err(Error::Mismatch("not a sequence")) };
+    let vis = visible(s);
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
     Ok(vis.get(at..end).map(<[Dot]>::to_vec).unwrap_or_default())
 }
@@ -173,8 +173,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
     let mut out = delta(text);
     match op {
         Op::Insert { at, items } => {
-            let vis = visible(s);
-            let anchor = anchor_after(&vis, *at)?;
+            let anchor = anchor_after(visible(s), *at)?;
             let cs = contents(w, text, view, items)?;
             if cs.is_empty() {
                 return Ok(None);
@@ -183,63 +182,63 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
         }
         Op::Delete { at, len } => {
             let vis = visible(s);
-            let p = place(&s.elems);
+            let p = &s.lin().p;
             let d = w.delta_stamp();
-            let r = range_of(&p, &vis, *at, *len)?;
+            let r = range_of(p, vis, *at, *len)?;
             let n = p.span.get(r.clone()).unwrap_or_default().iter().fold(0u64, |a, b| a.saturating_add(*b));
             if n > osis_core::format::MAX_DELTA_BARE {
                 // §3.3 rule 7: the caller splits a delete this long across commits
                 return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
             }
-            for (dot, span) in dots_of(&p, r.clone()).into_iter().zip(p.span.get(r).unwrap_or_default()) {
-                out.elems.insert(dot, SeqElem { deleted: Some((d.clone(), true)), span: *span, ..SeqElem::bare() });
+            for (dot, span) in dots_of(p, r.clone()).into_iter().zip(p.span.get(r).unwrap_or_default()) {
+                out.elems_mut().insert(dot, SeqElem { deleted: Some((d.clone(), true)), span: *span, ..SeqElem::bare() });
             }
         }
         Op::Move { at, len, to } => {
             let vis = visible(s);
-            let p = place(&s.elems);
-            let range = dots_of(&p, range_of(&p, &vis, *at, *len)?);
+            let p = &s.lin().p;
+            let range = dots_of(p, range_of(p, vis, *at, *len)?);
             if range.is_empty() {
                 return Ok(None);
             }
             let inr: HashSet<&Dot> = range.iter().collect();
             let rest: Vec<Dot> = vis.iter().filter(|d| !inr.contains(d)).cloned().collect();
             let dest = anchor_after(&rest, *to)?;
-            let pred = anchor_after(&vis, *at)?;
-            out.elems = move_writes(w, &p, &range, pred, dest);
+            let pred = anchor_after(vis, *at)?;
+            *out.elems_mut() = move_writes(w, p, &range, pred, dest);
             check_bare(&out)?;
         }
         Op::Paste { dots, at } => {
             if !text {
                 return Err(Error::Mismatch("paste is a text op"));
             }
-            let held = |d: &Dot| s.elems.get(d).is_some_and(|e| matches!(e.content, SeqContent::Char(_)));
+            let held = |d: &Dot| s.elems().get(d).is_some_and(|e| matches!(e.content, SeqContent::Char(_)));
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
-            let p = place(&s.elems);
+            let p = &s.lin().p;
             let at_of: HashMap<&Dot, usize> = p.order.iter().enumerate().map(|(i, d)| (d, i)).collect();
             let idx: Vec<usize> = dots.iter().filter_map(|d| at_of.get(d).copied()).collect();
             let (Some(i0), Some(i1)) = (idx.iter().min(), idx.iter().max()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
             if idx.len() != dots.len() {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
-            let range = dots_of(&p, *i0..*i1 + 1);
+            let range = dots_of(p, *i0..*i1 + 1);
             // visible text inside the remembered range: the clipboard no longer matches
             let clip: HashSet<&Dot> = dots.iter().collect();
-            if range.iter().any(|d| !clip.contains(d) && s.elems.get(d).is_some_and(|e| is_visible(e, text))) {
+            if range.iter().any(|d| !clip.contains(d) && s.elems().get(d).is_some_and(|e| is_visible(e, text))) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
             let inr: HashSet<&Dot> = range.iter().collect();
-            let rest: Vec<Dot> = visible(s).into_iter().filter(|d| !inr.contains(d)).collect();
+            let rest: Vec<Dot> = visible(s).iter().filter(|d| !inr.contains(d)).cloned().collect();
             let dest = anchor_after(&rest, *at)?;
-            let pred = pred_of(&p, s, *i0);
-            out.elems = move_writes(w, &p, &range, pred, dest);
+            let pred = pred_of(p, s, *i0);
+            *out.elems_mut() = move_writes(w, p, &range, pred, dest);
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
-                let c = s.elems.get(dot).map_or(SeqContent::None, |e| e.content.clone());
-                let el = out.elems.entry(dot.clone()).or_insert_with(SeqElem::bare);
+                let c = s.elems().get(dot).map_or(SeqContent::None, |e| e.content.clone());
+                let el = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 el.deleted = Some((d.clone(), false));
                 el.content = c;
             }
@@ -247,13 +246,13 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
         Op::Edit { base, new } => return crate::seq_diff::edit(w, s, view, base, new),
         _ => return Err(Error::Mismatch("not a sequence op")),
     }
-    Ok((!out.elems.is_empty()).then_some(out))
+    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// The visible element at index `i`: its dot and, for a list, its content fragment.
 pub(crate) fn element_at(s: &Seq, i: usize) -> Option<(Dot, Option<Fragment>)> {
-    let d = visible(s).into_iter().nth(i)?;
-    let content = match s.elems.get(&d).map(|e| &e.content) {
+    let d = visible(s).get(i)?.clone();
+    let content = match s.elems().get(&d).map(|e| &e.content) {
         Some(SeqContent::Frag(f)) => Some((**f).clone()),
         _ => None,
     };
@@ -263,7 +262,7 @@ pub(crate) fn element_at(s: &Seq, i: usize) -> Option<(Dot, Option<Fragment>)> {
 /// A list delta carrying `content` (a nested delta) on existing element `d` (§5.7 element edits).
 pub(crate) fn wrap_element(d: Dot, content: Fragment) -> Seq {
     let el = SeqElem { content: SeqContent::Frag(Box::new(content)), ..SeqElem::bare() };
-    Seq { text: false, meta: Meta::default(), elems: BTreeMap::from([(d, el)]) }
+    Seq::new(false, Meta::default(), BTreeMap::from([(d, el)]))
 }
 
 /// Merges `d`, a later op of the same commit, into `acc` (§4.5 net effect): a later write
@@ -271,8 +270,9 @@ pub(crate) fn wrap_element(d: Dot, content: Fragment) -> Seq {
 /// in the commit is omitted and anchors naming it are rewritten to its own anchor.
 pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     let text = acc.text;
-    let (mut meta, mut elems) = if d.meta.reset.is_some() { (d.meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset, w: d.meta.w.or(acc.meta.w) }, expand(acc.elems)) };
-    for (dot, de) in expand(d.elems) {
+    let d_meta = d.meta.clone();
+    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()) }, expand(acc.into_elems())) };
+    for (dot, de) in expand(d.into_elems()) {
         let prev = elems.remove(&dot).unwrap_or_else(SeqElem::bare);
         let mut pos = prev.pos;
         pos.extend(de.pos);
@@ -309,7 +309,7 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
         // the omitted removal was a write inside the sequence (§4.3)
         meta.w = Some(w.delta_stamp());
     }
-    Seq { text, meta, elems }
+    Seq::new(text, meta, elems)
 }
 
 /// Nested undo of a list element's content: `(writer, undone content, current content, content
@@ -325,22 +325,22 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
     let mut out = delta(text);
     let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
     let mut reinsert: Vec<(Dot, Value)> = Vec::new();
-    let was_visible = |d: &Dot| before.is_none_or(|b| b.elems.get(d).is_some_and(|e| is_visible(e, text)));
-    for (dot, el) in &expand(undone.elems.clone()) {
-        let now = cur.and_then(|c| elem(&c.elems, dot));
+    let was_visible = |d: &Dot| before.is_none_or(|b| b.elems().get(d).is_some_and(|e| is_visible(e, text)));
+    for (dot, el) in &expand(undone.elems().clone()) {
+        let now = cur.and_then(|c| elem(c.elems(), dot));
         let now = now.as_deref();
-        let pre = before.and_then(|b| elem(&b.elems, dot));
+        let pre = before.and_then(|b| elem(b.elems(), dot));
         let pre = pre.as_deref();
         if el.created.is_some() && made(dot) {
             // insert: text delete flag, list element reset
-            out.elems.insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
+            out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             continue;
         }
         match &el.deleted {
             Some((_, true)) if text && was_visible(dot) => {
                 // delete: undelete carrying the content
                 let c = [pre, now].into_iter().flatten().map(|e| e.content.clone()).find(|c| matches!(c, SeqContent::Char(_)));
-                out.elems.insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), content: c.unwrap_or(SeqContent::None), ..SeqElem::bare() });
+                out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), content: c.unwrap_or(SeqContent::None), ..SeqElem::bare() });
             }
             Some((_, true)) if !text => {
                 // list delete: re-insert the value with a fresh dot after the old element
@@ -350,7 +350,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
                 }
             }
             Some((_, false)) if before.is_none() || pre.is_some_and(SeqElem::flag) => {
-                out.elems.insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
+                out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
             }
             _ => {}
         }
@@ -373,7 +373,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             let cur_c = now.and_then(|n| if let SeqContent::Frag(x) = &n.content { Some(&**x) } else { None });
             let pre_c = pre.and_then(|e| if let SeqContent::Frag(x) = &e.content { Some((**x).clone()) } else { None });
             if let Some(c) = nested(w, f, cur_c, pre_c)? {
-                let e = out.elems.entry(dot.clone()).or_insert_with(SeqElem::bare);
+                let e = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 e.content = SeqContent::Frag(Box::new(c));
             }
         }
@@ -382,7 +382,7 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
     moves.sort_by(|a, b| a.0.cmp(&b.0));
     for (_, d, a) in moves {
         let st = w.fresh();
-        out.elems.entry(d).or_insert_with(SeqElem::bare).pos.push((st, a));
+        out.elems_mut().entry(d).or_insert_with(SeqElem::bare).pos.push((st, a));
     }
     if !reinsert.is_empty() {
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;
@@ -391,5 +391,5 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             insert_run(w, &mut out, Anchor::Dot(d), vec![c]);
         }
     }
-    Ok((!out.elems.is_empty()).then_some(out))
+    Ok((!out.elems().is_empty()).then_some(out))
 }
