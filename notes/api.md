@@ -34,7 +34,7 @@
 - Typed failure: `Error::Type { path, reason }` (unknown case, mismatch, missing required field). Untyped reads never fail on typed grounds.
 - **Materialization bound**: a value whose canonical size exceeds `materialize_limit` returns `Error::TooLarge { limit }` (the bound; a length is unknown without reading) from `get` and from any typed read; read it by `stream()` or by path (a path read into a huge map or list costs O(entry) and never loads the whole). Explicit failure beats an out-of-memory.
 - Values are snapshots: plain `Value` or generated structs, nothing reactive hidden inside.
-- `Path`: steps `Field(id) | Case(id) | Key(Value) | Index(usize) | Elem(Value)`; `p![..]` builds one from literals and generated field/case constants (`task::DONE`). Typed path builders from codegen are optional (plans/schema.md).
+- `Path`: steps `Field(id) | Case(id) | Key(Value) | Index(usize) | Elem(Value)`; `p![..]` builds one from literals and generated field/case constants (`task::DONE`). Typed path builders from codegen are not built (optional).
 
 ## Watching
 - `db.at(tid, key).watch() -> Watch<T>`: taken atomically with the current value, so no change is missed between read and subscribe. `current() -> Result<Option<T>>`, `async changed()`, `changed_timeout(d)`, `on_change(f) -> Subscription`.

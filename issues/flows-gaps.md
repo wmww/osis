@@ -1,5 +1,5 @@
 # Membership flows: what is approximate or missing
-> Summary: Parts of plans/membership-flows.md not done or done approximately in `osis-node` `flows/` and `rotation/`: label replacement, unit erasure on lost access, frontiers above `CHUNK_THRESHOLD`, contact cards, departures recomputed from the whole edge history, the key-actor `carries` test, and delivery steps left to node-sync.
+> Summary: Parts of the membership flows not done or done approximately in `osis-node` `flows/` and `rotation/`: label replacement, unit erasure on lost access, frontiers above `CHUNK_THRESHOLD`, contact cards, departures recomputed from the whole edge history, the key-actor `carries` test, and delivery steps left to node-sync.
 > Tags: permissions, sync, node
 
 - **Label replacement** (spec/sync.md §2: admin rotation if needed, new index, re-upload, mark replaced, delete old content entries): node-sync's `replace_label` makes the next index, marks the old one replaced, and members follow (sim `label_replacement`); the admin rotation and the old label's maintenance are not done (issues/node-sync-gaps.md, Replaced labels; sim `label_replacement_offline`).
