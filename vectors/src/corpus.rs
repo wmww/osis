@@ -69,7 +69,44 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
         ("tid_parse", tids),
         ("chunker", vec![vec![0], vec![1; 300], chunk]),
         ("commit_header", [field_bytes("commit", "header"), field_bytes("commit", "blob")].concat()),
+        ("delta", delta_seeds()),
+        ("box", [field_bytes("box", "sealed"), field_bytes("box", "wrap"), field_bytes("box", "box"), field_bytes("box", "padded"), field_bytes("box", "sealed-value")].concat()),
     ]
+}
+
+/// `delta`: a form byte (0 writer delta, 1 snapshot; fuzz/fuzz_targets/delta.rs fixes the
+/// contexts) and an encoded delta of each encoding's typical values.
+fn delta_seeds() -> Vec<Vec<u8>> {
+    use osis_core::{Tid, Ts, Value};
+    use osis_crdt::{AnyView, CounterRange, Delta, DeltaCtx, DeltaKind, Fragment, Frontiers, Snapshot, Source, Writer, create, encode_delta, encode_snapshot};
+    let ts = Ts::from_u64(1_700_000_000_000 << 16).unwrap_or_default();
+    let s = |x: &str| Value::Str(x.into());
+    let values = [
+        Value::Int(7),
+        s("hello"),
+        Value::Bytes(vec![1, 2, 3]),
+        Value::List(vec![s("a"), s("b"), s("c")]),
+        Value::Map([(s("x"), Value::Int(1)), (s("y"), Value::List(vec![Value::Int(2)]))].into_iter().collect()),
+        Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()),
+    ];
+    let writer = Source::node(Tid::from_bytes([1; 15]));
+    let mut out = Vec::new();
+    for v in &values {
+        let mut w = Writer::new(ts, writer.clone(), 1);
+        let Ok(fragment) = create(&mut w, &AnyView, v) else { continue };
+        let cx = DeltaCtx { ts, own: writer.clone(), range: CounterRange { lo: 1, hi: 1000 }, kind: DeltaKind::Writer };
+        if let Ok(b) = encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &cx, None) {
+            out.push([vec![0], b].concat());
+        }
+        let mut st = Fragment::default();
+        st.join(fragment);
+        let cx = DeltaCtx { ts, own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+        let snap = Snapshot { nonce: [2; 16], fragment: st, frontiers: Frontiers::default() };
+        if let Ok(b) = encode_snapshot(&snap, &cx, None) {
+            out.push([vec![1], b].concat());
+        }
+    }
+    out
 }
 
 /// Replaces each target's seed directory with the seeds; returns how many files were written.

@@ -76,3 +76,36 @@ fn bench_10k_edges() {
         );
     }
 }
+
+// spec: none (cost measurement, issues/perm-eval-cost.md): an owner chain of depth d (each thing
+// owned by the previous), one member granted at the top, 100 edge writes at the bottom; evaluate
+// and a role query at the leaf.
+#[test]
+#[ignore]
+fn bench_deep_owner_chain() {
+    for depth in [10usize, 100, 1_000] {
+        let mut w = World::new();
+        let nodes = w.nodes(3);
+        let mut chain = vec![w.thing(nodes[0])];
+        for _ in 1..depth {
+            let top = *chain.last().unwrap();
+            chain.push(w.thing(top));
+        }
+        let (top, leaf) = (chain[0], *chain.last().unwrap());
+        w.set(nodes[0], top, nodes[1], edge(Admin), 1, &[(nodes[0], 1)]);
+        for i in 0..100u64 {
+            let e = if i % 2 == 0 { edge(Read) } else { edge(Write) };
+            w.set(nodes[1], leaf, nodes[2], e, 2 + i, &[(nodes[1], 2 + i)]);
+        }
+        let held = w.held();
+        let t0 = Instant::now();
+        let tl = Timeline::evaluate(&held);
+        let eval = t0.elapsed();
+        let t1 = Instant::now();
+        let r = tl.role(&nodes[1], &leaf, At::END);
+        let query = t1.elapsed();
+        assert_eq!(r, Some(Admin));
+        assert_eq!(tl.role(&nodes[2], &leaf, At::END), Some(Write));
+        eprintln!("owner chain depth {depth}, 100 edge writes at the leaf: evaluate {eval:?} ({} passes), role query at the leaf {query:?}", tl.passes());
+    }
+}

@@ -131,6 +131,46 @@ fn large_sets_rounds() {
     assert!(rounds <= 6, "{rounds} rounds");
 }
 
+// spec/wire.md §11.3, spec/sync.md §6: a million-blob label with 1% difference reconciles in
+// about log16(n/32) round trips (notes/sync.md); tier 2 scale check, numbers in notes/testing.md
+// (`cargo test --release -p osis-proto --lib million_blob_rounds -- --ignored --nocapture`).
+#[test]
+#[ignore]
+fn million_blob_rounds() {
+    let n = 1_000_000u64;
+    let a = set(0..n);
+    // 5000 of a's IDs missing at b, 5000 IDs only b holds: 10^4 differences.
+    let b = set((0..n).filter(|i| i % 200 != 7).chain(n..n + 5000));
+    let t = std::time::Instant::now();
+    let mut r = Reconciler::new(&a);
+    let (mut rounds, mut msgs, mut up, mut down) = (0usize, 0usize, 0usize, 0usize);
+    while r.has_queued() {
+        rounds += 1;
+        assert!(rounds < 64, "no convergence");
+        let mut replies = Vec::new();
+        while let Some((token, batch)) = r.next_batch() {
+            let req = Message::Reconcile { id: 1, label: LabelId([0; 16]), ranges: batch };
+            up += req.encode().len();
+            let Message::Reconcile { ranges, .. } = req else { unreachable!() };
+            let rep = Message::ReconcileReply { id: 1, ranges: respond(&b, &ranges).unwrap() };
+            let enc = rep.encode();
+            assert!(enc.len() <= osis_core::format::MAX_MESSAGE);
+            down += enc.len();
+            msgs += 1;
+            let Message::ReconcileReply { ranges, .. } = rep else { unreachable!() };
+            replies.push((token, ranges));
+        }
+        for (token, rep) in replies {
+            assert!(r.on_reply(token, &a, &rep));
+        }
+    }
+    assert_eq!(r.need, diff(&b, &a));
+    assert_eq!(r.have, diff(&a, &b));
+    eprintln!("10^6 IDs, 10^4 differences: {rounds} rounds, {msgs} request messages, {up} B up, {down} B down, {:?}", t.elapsed());
+    // log16(10^6 / 32) is about 3.7: the opening round plus one per split level.
+    assert!(rounds <= 6, "{rounds} rounds");
+}
+
 proptest! {
     // spec/wire.md §11.3: two arbitrary sets reconcile exactly within bounded rounds
     #[test]

@@ -725,6 +725,7 @@ dependencies = [
  "libfuzzer-sys",
  "osis-commit",
  "osis-core",
+ "osis-crdt",
  "osis-crypto",
  "osis-label",
  "osis-proto",
