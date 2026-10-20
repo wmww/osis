@@ -1,6 +1,6 @@
 # Sequence reads and ops re-linearize the whole state
 > Summary: Every sequence read, index resolution and op places all elements from scratch (`linearize::place_idx`, O(n log n)), and a batch's second and later ops clone the aspect state; a 10^5-char text costs tens of ms per read or op. The incremental cache of notes/crdt.md (re-place touched subtrees, recompute an SCC on cycles) is not built.
-> Tags: crdt
+> Tags: performance, crdt
 
 Repro: `cargo test --release -p osis-crdt -- --ignored budget_big_text_spec_6 --nocapture` prints the times.
 

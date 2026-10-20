@@ -183,7 +183,7 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
-// issues/commit-delta-content-rules.md; spec/commits.md §2: a membership commit changes at most
+// spec/commits.md §2: a membership commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
 fn membership_content_rules_spec_commits_2() {
@@ -236,7 +236,7 @@ fn commit_form_order_spec_crdt_3_3() {
     }
 }
 
-// spec/requirements.md, Authorship: every write is attributable and verifiable. A node cannot
+// spec/wire.md §4: spec/requirements.md, Authorship: every write is attributable and verifiable. A node cannot
 // sign a write claiming an actor whose write secret it does not hold (the author chain).
 #[test]
 fn foreign_actor_claim_refused_spec_wire_4() {

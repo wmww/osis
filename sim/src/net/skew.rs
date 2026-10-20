@@ -158,8 +158,7 @@ pub fn newer_schema(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
-    // separate commits: compacting /k/rec then drops whole commits (a commit also touching
-    // another aspect would hit issues/sync-compaction-ping-pong.md)
+    // separate commits: compacting /k/rec then drops whole commits
     let mut m = Mutation::new();
     m.set(t, &REC2, &rec(&[(0, "n"), (1, "nb")])).map_err(|e| sim.fail(e.to_string()))?;
     sim.commit(n, m)?;

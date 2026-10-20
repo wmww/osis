@@ -2,6 +2,8 @@
 > Summary: MUSTs and refusal rules the spec-to-test map shows untested or only partly tested, by subsystem, with the crate that enforces each.
 > Tags: tests, node, commit, server
 
+Repro: `python3 tools/spec_map.py` (notes/testing-map.md lists the partly tested rules).
+
 notes/testing-map.md ("MUSTs and refusal rules") lists every rule; these are the gaps.
 
 ## node-sync (osis-node)

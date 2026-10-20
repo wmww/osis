@@ -2,6 +2,8 @@
 > Summary: The node pages a large root collection and large collection fields of a root struct (one entry edit at 10^6 keys: 1.1–1.9 ms, about 50 KB written; a `/secrets` write at a 1000-member roster 19 KB); deeper collections, a sequence's undo buffer, the first load of a paged state per session and `/secrets` ingestion are still O(state).
 > Tags: performance, node, storage
 
+Repro: `cargo test --release -p osis-node --test scale -- --ignored --nocapture` (`big_map_edit_cost`, `roster_removal_cost` print the costs).
+
 Done (notes/node.md, Paged state): root collections, and collection fields of a root struct, above `PAGE_TARGET` live as ~8 KB pages of consecutive elements in aspect table 0; a join rewrites the pages holding the delta's root dots; joins are in place; the undo buffer keeps `Fragment::footprint`; `Core::invalid` keeps un-merge O(invalid parts); `Engine::get_at` reads one key in O(log n).
 
 Remaining (spec/requirements.md, Scale):

@@ -3,7 +3,7 @@
 //! kept current), each delta is judged on its own (layer 2), and a change of the held set
 //! re-judges every held delta; an aspect with a flip is rebuilt from its held bodies
 //! (un-merge or re-merge, spec/crdt.md §4.6). Also the membership-commit content rules
-//! osis-commit cannot see (issues/commit-delta-content-rules.md).
+//! osis-commit cannot see (spec/commits.md §2).
 
 use crate::engine::write::required_role;
 use crate::engine::{Core, Tx};
@@ -446,8 +446,8 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
-/// Rules of a membership commit that need its deltas (issues/commit-delta-content-rules.md;
-/// spec/commits.md §2, spec/wire.md §4 position 13, spec/permissions.md §3).
+/// Rules of a membership commit that need its deltas
+/// (spec/commits.md §2, spec/wire.md §4 position 13, spec/permissions.md §3).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
     if h.kind != Kind::Membership {
         return Ok(());

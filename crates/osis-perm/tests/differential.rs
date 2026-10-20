@@ -1,4 +1,4 @@
-//! Differential tests against models/membership (plans/testing.md §3): random histories from
+//! Differential tests against models/membership (notes/testing.md): random histories from
 //! the model, evaluated by both; equal rosters, roles, applied and dropped sets.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

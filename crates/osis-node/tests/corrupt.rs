@@ -26,7 +26,7 @@ fn reopen(rows: &[(Vec<u8>, Vec<u8>)], root: &osis_store::RootRecord) -> osis_no
     Engine::open(Box::new(b), Box::new(r), Config::default(), c, Box::new(SeededRng::from_u64(3)))
 }
 
-// notes/architecture.md §3 (no panics on data): seeded bit flips across every row and the root
+// spec: none (no panics on data, notes/architecture.md §3): seeded bit flips across every row and the root
 #[test]
 fn bit_flips_error_never_panic() {
     let mut lp: LocalPeer = net(1, 81);

@@ -1,5 +1,5 @@
 # Node sync: what is approximate or not there yet
-> Summary: Open items of osis-node's sync layer: replaced labels synced by admins for good, inbox re-send and consumed-blob deletion, hinted labels reached through a link actor, revokes about seen authors, cost of a pass, in-memory outbox and stranded times, lazy-chunk policy, certificate projections, revokes about seen authors.
+> Summary: Open items of osis-node's sync layer: replaced labels synced by admins for good, inbox re-send and consumed-blob deletion, hinted labels reached through a link actor, revokes about seen authors, cost of a pass, in-memory outbox and stranded times, lazy-chunk policy, certificate projections.
 > Tags: sync, node
 
 Repro: known gaps, no failing test.

@@ -1,6 +1,8 @@
 # Wave 6 re-review: low-severity residues
 > Summary: Small residues found re-reviewing the wave 6 security fixes: the first reading-only secret of an epoch is never replaced by a later unchecked one; head keys derive stamp/delete keys from reading-only secrets; hinted opens present every held key actor; purged-chunk deletes can race a concurrent reuse; pre-existing store files keep their mode.
-> Tags: security, node
+> Tags: security, node, storage
+
+Repro: code reading, no failing test (each item names its function).
 
 1. **First reading-only secret wins** (`osis-keys` `RoleEpochs::set_reading_secret`). A box in a pending commit planting a wrong secret for epoch e before a genuine pending grant's box arrives keeps the wrong one: the grantee cannot open the target's label (sync key mismatch) until the grant applies, and the grant may wait on what that label holds. Needs an insider (knows e, can deliver a membership commit). Fix: keep every reading-only candidate per epoch (readers try each), or let a later unchecked secret replace one that does not derive the head's registered keys.
 2. **Head keys from reading-only secrets** (`labeling/blobs.rs` `matching` uses `reading_secret` for the write and delete keys too). A key derived from it matches the head's registered key, so the secret is genuine; still, spec/crypto.md §4 says such a secret is never encrypted under (signing a stamp or delete is). Fix: write and delete keys only from `secret()`.
