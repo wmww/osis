@@ -107,7 +107,7 @@ pub enum ClientEvent {
     DeleteStatus { label: LabelId, blob_ids: Vec<BlobId>, codes: Vec<Code>, head: Option<Step> },
     Budget { label: LabelId, blob_id: BlobId, code: Code, entries_left: u64, bytes_left: u64, head: Option<Step> },
     /// Log events of a Sync reply or a Push, in order; then keep `cursor` for the label (none:
-    /// a bundle, a peer with no cursor).
+    /// a bundle, a peer with no cursor, a Push while a Sync of the label runs).
     Events { label: LabelId, events: Vec<Event>, cursor: Option<Cursor> },
     /// Gained IDs the peer lacks: upload them.
     Want { label: LabelId, ids: Vec<BlobId> },
@@ -514,7 +514,13 @@ impl ClientSession {
         };
         match msg {
             Message::Ping { id, .. } => send(out, Message::Pong { id, wall_ms: now }),
-            Message::Push { label, events, cursor } => event(out, ClientEvent::Events { label, events, cursor: Some(cursor) }),
+            Message::Push { label, events, cursor } => {
+                // while a Sync of the label runs (a replay above all) its pages still bring
+                // entries from before the push: keeping the push's cursor would skip them for
+                // good if the connection ended first
+                let syncing = self.pending.values().any(|p| matches!(p, Pending::Sync { label: l, .. } if *l == label));
+                event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
+            }
             Message::Signal { label, blob, wrap, auth } => event(out, ClientEvent::Signal { label, blob, wrap, auth }),
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
