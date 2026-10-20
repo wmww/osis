@@ -153,3 +153,79 @@ fn restart_keeps_state() {
     let h = p.engine.header(&id).unwrap();
     assert_eq!(h.aspects[0].lo, 2);
 }
+
+// notes/local-store.md, Units: a large state is kept as pages and an edit rewrites only the pages
+// it touched; spec/requirements.md, Scale (a change inside a huge value costs O(change)). Seeded
+// random puts, removals and bulk inserts (page splits) into a paged map and a paged set, checked
+// against a model across restarts, plus an undo of an edit inside the paged map.
+#[test]
+fn paged_state_edits_and_restart() {
+    let mut p = peer(11);
+    let me = p.engine.tid();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let (am, aset) = (ak("/app/big"), ak("/app/bigset"));
+    let pad = "x".repeat(40);
+    let mut model: BTreeMap<Value, Value> = (0..3000i64).map(|i| (Value::Int(i), Value::Str(format!("{pad}{i}")))).collect();
+    let mut smodel: std::collections::BTreeSet<Value> = (0..3000i64).map(|i| Value::Str(format!("{pad}{i}"))).collect();
+    m.set(t, &am, &Value::Map(model.clone())).unwrap();
+    m.set(t, &aset, &Value::Set(smodel.clone())).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let mut r = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = || {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        r
+    };
+    let mut last_edit = None;
+    for round in 0..40 {
+        let mut m = Mutation::new();
+        let k = Value::Int((next() % 4000) as i64);
+        match next() % 4 {
+            0 if model.contains_key(&k) => {
+                m.op(t, &am, PathOp { path: vec![], op: Op::Remove(k.clone()) }).unwrap();
+                model.remove(&k);
+            }
+            1 => {
+                // a bulk insert lands in the last page and splits it
+                for j in 0..300 {
+                    let k = Value::Int(10_000 + round * 300 + j);
+                    let v = Value::Str(format!("{pad}{round}"));
+                    m.op(t, &am, PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
+                    model.insert(k, v);
+                }
+            }
+            _ => {
+                let v = Value::Int(round);
+                m.op(t, &am, PathOp { path: vec![PathSeg::Key(k.clone())], op: Op::Set(v.clone()) }).unwrap();
+                model.insert(k, v);
+            }
+        }
+        let s = Value::Str(format!("{pad}{}", next() % 4000));
+        if smodel.contains(&s) {
+            m.op(t, &aset, PathOp { path: vec![], op: Op::Remove(s.clone()) }).unwrap();
+            smodel.remove(&s);
+        } else {
+            m.op(t, &aset, PathOp { path: vec![], op: Op::Add(s.clone()) }).unwrap();
+            smodel.insert(s);
+        }
+        last_edit = p.commit(m).unwrap();
+        if round % 10 == 9 {
+            p.restart(100 + round as u64).unwrap();
+        }
+        assert_eq!(p.engine.get(&t, &am).unwrap(), Some(Value::Map(model.clone())), "round {round}");
+        assert_eq!(p.engine.get(&t, &aset).unwrap(), Some(Value::Set(smodel.clone())), "round {round}");
+        let k = Value::Int((next() % 4000) as i64);
+        assert_eq!(p.engine.get_at(&t, &am, &[PathSeg::Key(k.clone())]).unwrap(), model.get(&k).cloned());
+    }
+    // a path edit, then its undo (the undo buffer keeps only the edited entry)
+    let before = p.engine.get(&t, &am).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &am, PathOp { path: vec![PathSeg::Key(Value::Int(5))], op: Op::Set(Value::Int(-5)) }).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert_ne!(p.engine.get(&t, &am).unwrap(), before);
+    p.engine.undo(&id).unwrap();
+    assert_eq!(p.engine.get(&t, &am).unwrap(), before);
+    assert!(last_edit.is_some());
+}

@@ -96,10 +96,15 @@ pub(crate) struct Core {
     pub id: Identity,
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
+    /// Page indexes of the cached states kept paged in the store.
+    pub pages: HashMap<(Tid, Ak), state::PageIndex>,
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: MemoryHeldSet,
     pub timelines: Timelines,
     pub commits: BTreeMap<CommitId, Meta>,
+    /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
+    /// writes to strip in O(invalid parts), not O(history).
+    pub invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
@@ -153,6 +158,7 @@ pub(crate) struct Core {
 pub(crate) struct Backup {
     held: MemoryHeldSet,
     commits: BTreeMap<CommitId, Meta>,
+    invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
     ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
     pending: BTreeMap<CommitId, Reason>,
@@ -182,6 +188,7 @@ impl Core {
         self.backup = Some(Box::new(Backup {
             held: self.held.clone(),
             commits: self.commits.clone(),
+            invalid: self.invalid.clone(),
             by_aspect: self.by_aspect.clone(),
             ranges: self.ranges.clone(),
             pending: self.pending.clone(),
@@ -207,11 +214,13 @@ impl Core {
     fn rollback(&mut self) {
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
+            self.pages.remove(&k);
         }
         if let Some(b) = self.backup.take() {
             let b = *b;
             self.held = b.held;
             self.commits = b.commits;
+            self.invalid = b.invalid;
             self.by_aspect = b.by_aspect;
             self.ranges = b.ranges;
             self.pending = b.pending;
@@ -239,9 +248,11 @@ impl Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
+            pages: HashMap::new(),
             held: MemoryHeldSet::new(),
             timelines: Timelines::new(),
             commits: BTreeMap::new(),
+            invalid: BTreeMap::new(),
             by_aspect: BTreeMap::new(),
             ranges: BTreeMap::new(),
             pending: BTreeMap::new(),
@@ -271,6 +282,24 @@ impl Core {
 
     pub fn now(&self) -> WallMs {
         self.hlc.wall()
+    }
+
+    /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
+    pub fn index_validity(&mut self, id: &CommitId) {
+        let Some(m) = self.commits.get(id) else { return };
+        for (ai, a) in m.header.aspects.iter().enumerate() {
+            let k = (a.tid, a.ak.clone());
+            if m.valid.get(ai).copied().unwrap_or(false) {
+                if let Some(s) = self.invalid.get_mut(&k) {
+                    s.remove(id);
+                    if s.is_empty() {
+                        self.invalid.remove(&k);
+                    }
+                }
+            } else {
+                self.invalid.entry(k).or_default().insert(*id);
+            }
+        }
     }
 
     /// The commit that wrote dot `d` on `(tid, ak)`, if held.
@@ -303,6 +332,11 @@ impl Tx<'_> {
             return Ok(());
         }
         let f = match self.txn.get_aspect(tid, ak)? {
+            Some(u) if state::is_paged(&u.state) => {
+                let (f, idx) = state::load_paged(&mut self.txn, tid, ak)?;
+                self.core.pages.insert(k.clone(), idx);
+                Some(f)
+            }
             Some(u) if !u.state.is_empty() => Some(state::decode(&u.state)?),
             _ => None,
         };
@@ -320,9 +354,11 @@ impl Tx<'_> {
         self.core.touch();
         self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
-        unit.state = match &f {
-            Some(f) => state::encode(f)?,
-            None => Vec::new(),
+        let (bytes, idx) = state::write_full(&mut self.txn, tid, ak, f.as_ref(), state::is_paged(&unit.state))?;
+        unit.state = bytes;
+        match idx {
+            Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
+            None => self.core.pages.remove(&(*tid, ak.clone())),
         };
         if clear_undo {
             unit.undo.clear();
@@ -336,6 +372,20 @@ impl Tx<'_> {
         }
         self.core.states.insert((*tid, ak.clone()), f);
         Ok(())
+    }
+
+    /// Writes a state a join changed: `touched` (from `Fragment::touched_elems` of the delta)
+    /// says what it changed. A paged state rewrites only those pages; anything else is written
+    /// whole. The caller has noted the state as written (`Core::written`).
+    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touched: Option<(bool, Vec<Dot>)>, shred: Shred) -> Result<()> {
+        let k = (*tid, ak.clone());
+        if let (Some(st), Some(touched), Some(idx)) = (&f, &touched, self.core.pages.get_mut(&k))
+            && state::write_touched(&mut self.txn, idx, tid, ak, st, touched, shred)?.is_some()
+        {
+            self.core.states.insert(k, f);
+            return Ok(());
+        }
+        self.set_state(tid, ak, f, shred, false)
     }
 
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {

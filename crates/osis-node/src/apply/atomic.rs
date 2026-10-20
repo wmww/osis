@@ -52,18 +52,26 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 /// Joins `delta` into the state of `(tid, ak)`, holding value-less what must be.
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
     tx.load(tid, ak)?;
-    let mut st = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten().unwrap_or_default();
     // writes owned by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too)
     let invalid = invalid_of(tx.core, tid, ak);
     if !invalid.is_empty() {
         delta.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
     }
+    // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
+    strip_valueless(tx.core, tid, ak, &mut delta);
+    let touched = delta.touched_elems();
+    // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
+    let k = (*tid, ak.clone());
+    tx.core.touch();
+    tx.core.written.push(k.clone());
+    let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let ch = st.join(delta);
-    strip_valueless(tx.core, tid, ak, &mut st);
+    let st = (!st.is_empty()).then_some(st);
     if ch.is_changed() || !ch.deaths().is_empty() {
-        let st = (!st.is_empty()).then_some(st);
-        tx.set_state(tid, ak, st, Shred::No, false)?;
+        tx.set_state_touched(tid, ak, st, touched, Shred::No)?;
+    } else {
+        tx.core.states.insert(k, st);
     }
     Ok(ch)
 }
@@ -71,7 +79,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
 /// The owners of writes of the held deltas on `(tid, ak)` that are invalid here.
 pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     let mut out = Vec::new();
-    for (_, c) in core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
+    for c in core.invalid.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.commits.get(c) else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         if m.valid.get(ai).copied().unwrap_or(false) {
@@ -155,13 +163,23 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let meta = Meta { header: h.clone(), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
     tx.core.commits.insert(id, meta.clone());
+    tx.core.index_validity(&id);
 
     // receipt record (spec/permissions.md §5.1; spec/crdt.md §8)
     super::receipt::record(tx, &h, &id, &parts, received)?;
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
-        for a in h.aspects.iter() {
-            crate::undo::remember(tx, &id, &a.tid, &a.ak)?;
+        for (ai, a) in h.aspects.iter().enumerate() {
+            let mut mine = parts.iter().filter(|(x, _, _)| *x == ai).map(|(_, _, d)| match d {
+                Decoded::Delta(x) => &x.fragment,
+                Decoded::Snapshot(x) => &x.fragment,
+            });
+            // one delta: keep only what undoing it reads
+            let delta = match (mine.next(), mine.next()) {
+                (Some(d), None) => Some(d),
+                _ => None,
+            };
+            crate::undo::remember(tx, &id, &a.tid, &a.ak, delta)?;
         }
     }
     let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
@@ -294,6 +312,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
 /// Keeps the indexes derived from states current: secrets opened from `/secrets`, own keys
 /// from `/keys`, the `/was` and `/moved` indexes, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if !matches!(ak.as_str(), "/secrets" | "/keys" | "/was" | "/moved" | "/group") {
+        return Ok(());
+    }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
     match ak.as_str() {
         "/secrets" => {

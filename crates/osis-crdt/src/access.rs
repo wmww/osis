@@ -2,6 +2,7 @@
 //! writes, spec/permissions.md §5.1): map entries with their keys and fragments.
 
 use crate::fragment::{Fragment, Map};
+use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
 use osis_core::Value;
 
@@ -16,5 +17,23 @@ impl crate::fragment::Struct {
     /// A field's fragment.
     pub fn field(&self, id: u64) -> Option<&Fragment> {
         self.fields.get(&id)
+    }
+}
+
+impl Fragment {
+    /// The position at `path` as a read sees it: a struct field, the current case's payload, what
+    /// a map key reads as (its live entries joined, §5.6), a list element by index. Only that
+    /// position is copied; a key costs O(log n).
+    pub fn at(&self, path: &[crate::ops::PathSeg]) -> Option<Fragment> {
+        use crate::ops::PathSeg;
+        let Some((seg, rest)) = path.split_first() else { return Some(self.clone()) };
+        let MemberRef::Frag(f) = self.chosen_member() else { return None };
+        match (seg, f) {
+            (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.at(rest),
+            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
+            (PathSeg::Key(k), Fragment::Map(m)) => crate::ops::key_state(m, &m.live_dots(k))?.at(rest),
+            (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.at(rest),
+            _ => None,
+        }
     }
 }

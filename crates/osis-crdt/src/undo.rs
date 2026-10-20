@@ -277,3 +277,32 @@ impl UndoBuffer for Sub {
         self.0.as_ref().and_then(|e| e.before(path))
     }
 }
+
+impl Fragment {
+    /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
+    /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
+    /// writes, and of a map, set or bag the delta does not reset only the elements it writes
+    /// (a key's lowest live entry is the one a local write went into, §5.6). Everything else,
+    /// sequences included (their undo reads by position), is kept whole.
+    pub fn footprint(&self, delta: &Fragment) -> Fragment {
+        if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
+            return self.clone();
+        }
+        match (self, delta) {
+            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct {
+                meta: s.meta.clone(),
+                fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.footprint(df)))).collect(),
+            }),
+            (Fragment::Map(s), Fragment::Map(d)) => {
+                Fragment::Map(Map::new(s.meta.clone(), d.entries.keys().filter_map(|k| Some((k.clone(), s.entries.get(k)?.clone()))).collect()))
+            }
+            (Fragment::Set(s), Fragment::Set(d)) => {
+                Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
+            }
+            (Fragment::Bag(s), Fragment::Bag(d)) => {
+                Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
+            }
+            _ => self.clone(),
+        }
+    }
+}

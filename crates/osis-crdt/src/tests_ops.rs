@@ -116,7 +116,11 @@ proptest! {
         let src = source(&mw.source);
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() } };
         let mut w = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
-        let Some(ud) = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap() else {
+        let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
+        // the node keeps only the footprint of the delta as its undo buffer
+        let mut w2 = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
+        prop_assert_eq!(undo(&mut w2, &u, &s1, &s0.footprint(&d), &TyView(ty.clone())).unwrap(), full.clone());
+        let Some(ud) = full else {
             prop_assert_eq!(read(&s1), read(&s0));
             return Ok(());
         };

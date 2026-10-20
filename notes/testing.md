@@ -87,7 +87,7 @@ Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at
 
 | check | how to run (`cargo test --release ... -- --ignored --nocapture`) | numbers | verdict |
 |---|---|---|---|
-| map edit at the node | `-p osis-node --test scale big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: store writes 367 KB / 4.0 MB / 94.6 MB, 71 ms / 0.84 s / 8.6 s; commit 299–307 B | **miss** (O(state)): issues/node-state-not-paged.md |
+| map edit at the node | `-p osis-node --test scale big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: 1.3 / 1.3 / 1.1 ms, store writes 18 / 32 / 54 KB (paged state; was 71 ms / 0.84 s / 8.6 s and 0.4 / 4.0 / 94.6 MB); fill 0.2 / 1.6 / 10.4 s; commit 299–307 B | pass |
 | map edit in store tables | `-p osis-store --test paged million_keys` | 2 / 3 / 3 unit rows, 14 / 43 / 36 KB written, 0.1–0.3 ms per shredded edit; fill of 10^6 + index 100 s | pass |
 | paged snapshot rewrite | `-p osis-bench --test scale` | 3 / 27 / 292 pages (about 80 KB each); after one change 1 new page plus the top (31 KB of links at 10^6); re-encode still O(n): 8 ms / 0.12 s / 1.2 s | pass in bytes |
 | multi-GB value | `OSIS_LARGE_MIB=4096 -p osis-label --test scale` | 1 GiB: 13,451 blobs, write 141 MB/s, read 280 MB/s, peak RSS growth 3.2 MB / 1.2 MB; 4 GiB: 54,006 blobs, 233 / 385 MB/s, 5.9 MB / 0.9 MB (writer's `written` list is linear, ~60 B per blob) | pass (bound 64 MB) |
