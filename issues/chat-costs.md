@@ -2,6 +2,8 @@
 > Summary: (Engine waste fixed in sync round 2; design knobs left.) Measured through examples/chat `costs_join_message_removal` (chat of 4, upstream bytes) before the fix: join ≈ 220 KB, message ≈ 2.5 KB, removing a link joiner ≈ 300 KB from the moderator plus ≈ 160 KB from the others. About two thirds is engine waste: re-uploads, whole-commit and duplicate certificate copies, and copies placed then deleted. Without the waste, the design costs about 38 KB per join, 2.1 KB per message and 45–80 KB per removal at 4 members (at 200 members, ≈ 0.55 MB once the double rotation and the home-label copy are gone). The "never settles" case is an endless rotation loop (issues/rotation-uncoverable-loop.md).
 > Tags: sync, node, flows, tests
 
+Repro: `cargo test --release -p chat -- --ignored costs_join_message_removal --nocapture` (fails its design budgets).
+
 Status: the engine waste (re-uploads, certificate copies) is fixed (sync round 2): the test measured join 41 KB, message 2.5 KB, removal 70 KB from the moderator plus 15 KB from the others before flows round 2 merged; after it, join 63 KB, removal 85 KB plus 68 KB from the others (not attributed yet; the test asserts the design budgets and is ignored with this issue until they hold). Left here: that regression and the design knobs in (b).
 
 ## Breakdown (chat of 4: alice, two link joiners, a late joiner; blob bytes, KB)

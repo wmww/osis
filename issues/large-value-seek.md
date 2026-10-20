@@ -1,6 +1,8 @@
 # Seeking into a large value fetches everything before the offset
-> Summary: Tree nodes carry no lengths (spec/wire.md §6), so a range read or `Seek` into a large blob or string must fetch and decrypt every chunk before the offset; plans/api.md wants `stream` to be `Read + Seek` with lazy chunks.
+> Summary: Tree nodes carry no lengths (spec/wire.md §6), so a range read or `Seek` into a large blob or string must fetch and decrypt every chunk before the offset; notes/api.md wants `stream` to be `Read + Seek` with lazy chunks.
 > Tags: data-model, api, storage
+
+Repro: design: osis-label `StringReader::skip` reads every chunk before the offset.
 
 osis-label's `StringReader::skip` reads and discards. Reading the last MiB of a 10 GB blob fetches 10 GB. Memory stays bounded; transfer and time do not.
 

@@ -1,5 +1,5 @@
 //! Sharing and sync through blind servers in process (notes/api.md Sharing and membership,
-//! Sync configuration and status; plans/api.md step 4), no tokio: see common/world.rs.
+//! Sync configuration and status), no tokio: see common/world.rs.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -259,6 +259,7 @@ const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two devices edit one text concurrently in sessions; each commit is one edit, the
 // remote edit merges into the other buffer and both converge with both edits.
+// spec/crdt.md §5.7
 #[test]
 fn text_sessions_merge_spec_crdt_5_7() {
     let mut w = World::new();

@@ -1,6 +1,6 @@
 //! osis-crdt: merge encodings: state, delta grammar, join, read, diff, paging (spec/crdt.md).
-//! Defines `View`, `PageSink`, `PageSource`. Sequences (`seq`) are plans/crdt-seq.md's.
-//! Layer 1 (notes/architecture.md). Plans: plans/crdt-core.md, plans/crdt-seq.md.
+//! Defines `View`, `PageSink`, `PageSource`. Sequences in `seq`.
+//! Layer 1 (notes/architecture.md). Notes: notes/crdt.md (Implementation).
 #![forbid(unsafe_code)]
 
 mod access;

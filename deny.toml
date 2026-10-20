@@ -48,14 +48,9 @@ skip-tree = [
 skip = [
     { crate = "chacha20@0.10.2", reason = "proptest (dev) and libcrux-traits' unused rand 0.10; crypto uses 0.9 via chacha20poly1305" },
     { crate = "rand_core@0.10.1", reason = "libcrux-traits' unused rand 0.10 and proptest's chacha20 0.10; dalek 2.x needs 0.6" },
-    { crate = "cpufeatures@0.3.1", reason = "blake3 1.8 and chacha20 0.10; dalek and poly1305 still on 0.2" },
-    { crate = "getrandom@0.4.3", reason = "uuid in hax-lib-macros-types (libcrux build-time macros); rand_core 0.6 uses 0.2" },
     { crate = "hax-lib@0.3.7", reason = "libcrux-ml-kem 0.0.11 pulls hax-lib 0.3 (core-models) and 0.4" },
     { crate = "hax-lib-macros@0.3.7", reason = "as hax-lib 0.3" },
     { crate = "hax-lib-macros-types@0.3.7", reason = "as hax-lib 0.3" },
-    { crate = "shlex@1.3.0", reason = "bindgen, a build dep of crabgrind under libcrux-secrets; cc uses 2.0" },
-    { crate = "syn@3.0.9", reason = "serde_derive in hax-lib-macros-types (libcrux build-time macros); everything else on syn 2" },
-    { crate = "windows-sys@0.52.0", reason = "ring 0.17 (osis-transport feature quic, Windows only); quinn-udp, socket2 and tokio on 0.61" },
 ]
 
 [sources]

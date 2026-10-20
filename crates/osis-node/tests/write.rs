@@ -133,6 +133,7 @@ fn authority_checked_before_signing_spec_perm_1() {
 }
 
 // notes/local-store.md: everything survives a restart (reload from the store).
+// spec/commits.md §4 (one storage transaction per apply: state survives a reopen)
 #[test]
 fn restart_keeps_state() {
     let mut p = peer(7);

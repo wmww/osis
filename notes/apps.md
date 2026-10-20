@@ -11,7 +11,7 @@
 ## Tests
 - Tier 1, `cargo test -p <example>`: `tests/e2e.rs` drives databases on `Runtime::Manual` against osis-server `Hub`s in process through `osis_sim::world::World` (one `ManualClock`, `run`/`advance`/`until`, `set_online` for partitions; offline databases still tick, so expiry and timeouts run). No sleeps, no network, seeded.
 - Chat `costs_join_message_removal` (ignored with issues/chat-costs.md until the design budgets hold; upstream bytes per message kind via `World::start_tally`/`tally`, design budgets from notes/chat.md; per-entry attribution: a temporary log in `SyncEngine::command` that classifies each Upload/Deposit/Delete entry from `state.entries` (kind, cert flag), the commit header and `get_commit` delta sizes, plus per-phase markers in the test); crates/osis-cli/tests/localhost.rs (a real `osis serve` and three store directories through the binary: init, pair offer/join, link make/redeem, writes on three devices, sync, status, undo, bundle, inspect; about 35 s).
-- Tier-1 wall time (4 cores under load ~8, debug): notes-app ≈ 5 s alone, chat ≈ 11 s, folder ≈ 30 s before the deposit re-send fix (persons and introductions cost ~1 s each in a debug build).
+- Tier-1 time (idle 4 cores, debug): notes-app ≈ 5 s, chat ≈ 5 s, folder ≈ 3 s; persons and introductions cost ~1 s each in a debug build, so the cases over ~10 s (chat `removal_rotates`, `second_link_then_removal`; folder `invite_holder_shares_on`, `reader_writer_demotion`) are `#[ignore = "tier 2"]`.
 
 ## Findings (all filed)
 - Undo steps back once per register (issues/undo-chain-register.md): the notes undo test walks two aspects.

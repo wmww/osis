@@ -1,6 +1,6 @@
 //! osis-vectors: conformance vector format (`.vec` files), manifest with the freeze policy,
 //! per-subject checkers and generators. Format and policy: vectors/README.md.
-//! Layer 9 (notes/architecture.md). Plan: plans/test-infra.md.
+//! Layer 9 (notes/architecture.md). Notes: notes/testing.md, vectors/README.md.
 #![forbid(unsafe_code)]
 // Test tooling: a panic is a test failure, not a peer-triggered crash.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

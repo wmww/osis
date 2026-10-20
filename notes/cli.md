@@ -1,5 +1,5 @@
 # CLI
-> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work, which report Unsupported for API pieces not built); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from plans/cli.md.
+> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes; the command table over the `osis` API (which commands work, which report Unsupported for API pieces not built); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from the original plan.
 
 ## Design
 - **Thin**: a command is one API call plus parsing and printing (`crates/osis-cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
@@ -17,7 +17,7 @@
 - **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library behind feature `bin`); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
 - **`inspect`** is `Debug` dumps over `Osis::engine()` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
-## Deviations from the original design (the deleted plans/cli.md)
+## Deviations from the original design (the deleted CLI plan)
 - `history --limit N` is `--max N` (`--limit` is the global materialization bound).
 - `same` false exits 3 (§6 table) rather than 1 (§4 text).
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.

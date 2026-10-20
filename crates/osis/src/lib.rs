@@ -1,7 +1,7 @@
 //! osis: the public API, the only crate apps depend on. A synchronous local data API over the
 //! node engine: typed aspect keys, reads with paths and a materialization bound, RAII watches
 //! on one dispatcher thread, the `Write` batch, undo and history, signals, diagnostics, one
-//! `Error`. Layer 8 (notes/architecture.md). Design: notes/api.md. Plan: plans/api.md.
+//! `Error`. Layer 8 (notes/architecture.md). Design: notes/api.md.
 //!
 //! # Open a database
 //! Owner and placement of new things are always explicit; `me()` is the usual owner.

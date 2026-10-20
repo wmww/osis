@@ -1,4 +1,4 @@
-//! Rotations (spec/permissions.md §3, spec/crypto.md §4; plans/membership-flows.md): the
+//! Rotations (spec/permissions.md §3, spec/crypto.md §4): the
 //! departures this node knows of, read from the membership timeline (every applied edge write
 //! that lowered an edge, and edges past their `until`, whose member holds less now) and from
 //! state (every box holder at a current epoch that holds less than that role now), recursively

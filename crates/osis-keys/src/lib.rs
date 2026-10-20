@@ -1,7 +1,7 @@
 //! osis-keys: per-role epochs with forks, `/keys` and `/secrets` writes, box production and
 //! opening, history boxes, derived secrets, the covers rule, the rotation planner, wrap epoch
 //! choice, label epochs and token secrets (spec/crypto.md §3–§5, §7; spec/permissions.md §3).
-//! Layer 3 (notes/architecture.md). Plan: plans/keys.md.
+//! Layer 3 (notes/architecture.md). Notes: notes/crypto.md (osis-keys).
 #![forbid(unsafe_code)]
 
 pub mod aspects;

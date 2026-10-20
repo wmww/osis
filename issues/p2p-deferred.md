@@ -2,6 +2,8 @@
 > Summary: Co-readers sync labels with no server (in process and over iroh on localhost); the iroh transport and LAN announcement codec/socket exist. Left: LAN loop in a driver, one driver carrying servers and peers, the member-node rule without an open, `/reach` exclusion per label, a relay test, peer coverage in `complete_pass`, LAN key binding.
 > Tags: sync, networking
 
+Repro: not built yet, no failing test.
+
 Works (notes/networking.md, Implementation; tests: osis-node tests/peers.rs, tests/driver.rs `driver_p2p_*`, osis-transport `iroh.rs`/`lan.rs`): `/reach` publish and rotation, co-reader selection and dialing at `peer://`, member-peer serving over the node's own entries, LAN tags and matching (`lan_seen`), `Iroh` (dial by key, direct and relay hints, `dial_as`), `run_serving` with listeners.
 
 Left, roughly in order:

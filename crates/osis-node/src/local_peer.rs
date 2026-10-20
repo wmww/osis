@@ -96,7 +96,7 @@ impl Engine {
         }
         let Some(dedup) = self.core.dedup(actor) else { return Ok(()) };
         let mut r = Rec { e: self, seen: Vec::new() };
-        let _ = osis_commit::read_tree(root, &dedup, &mut r, osis_commit::MAX_LIST_BYTES);
+        let _ = osis_commit::read_list(root, &dedup, &mut r, osis_commit::MAX_LIST_BYTES);
         out.extend(r.seen);
         Ok(())
     }

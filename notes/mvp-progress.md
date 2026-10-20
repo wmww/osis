@@ -44,7 +44,7 @@ Wave 5 integration pass; wave 6 (hardening-signoff) next.
 | node-core, server, transport, large-values | not started | wave 3 |
 | sync bug-fix round 1 | merged at 261f7da | all six phase B issues fixed; phase B scenarios green at 8 seeds |
 | sync bug-fix round 2 | merged | all assigned issues closed; new: issues/reseal-inbox-only-dots.md, sim-disk-loss-chain-lost, sim-removed-replayer-late-wrap (security tag), sim-two-devices-seed-11; chat costs over budget (test ignored) |
-| wave 5 integration pass | running (opus, worktree) | |
+| wave 5 integration pass | done (worktree branch, merge pending) | workspace green (clippy all features, deny, policy, spec map, vectors); tier 1 about 70 s of test time (notes/testing.md table); tier 2 fails only chat costs and store shape_reduced_arity (their issues); 12 complete plans folded; read_list/write_list rename; issues carry Repro lines |
 | chat-costs analysis | merged | two thirds engine waste: issues sync-upload-resend, labeling-cert-copies (→ sync round 2), rotation-uncoverable-loop (→ flows round 2); design costs recorded in notes/chat.md and issues/chat-costs.md |
 | crdt/flows bug-fix round | merged | expiring diff, single-use redemption, move copies, label replacement fixed; new issues/flows-race-winner-stranded.md, issues/flows-move-derived-owner.md |
 | flows round 2 | merged at 6258e9a | race winner, derived-owner move, rotation loop fixed; three sync follow-ups routed to sync round 2; issues/link-race-deposit-not-promoted.md |

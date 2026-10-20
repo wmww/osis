@@ -1,4 +1,4 @@
-//! Incremental evaluation (plans/perm.md; spec/permissions.md §5.1 step 5: D is rebuilt from
+//! Incremental evaluation (spec/permissions.md §5.1 step 5: D is rebuilt from
 //! scratch on any change): per-component timelines, cached, equal the whole held set's
 //! timeline after every arrival, in random arrival orders.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

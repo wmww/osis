@@ -1,7 +1,7 @@
 //! osis-proto: the node-to-node sync protocol (spec/sync.md §5-§9, §11; spec/wire.md §11-§13):
 //! frames, Hello, every message, range reconciliation, and sans-I/O client and server engines
 //! (`handle(now, Input) -> Vec<Output>`; no async, no sockets, time passed in).
-//! Layer 5 (notes/architecture.md). Plan: plans/proto.md.
+//! Layer 5 (notes/architecture.md). Notes: notes/sync.md (Protocol implementation).
 #![forbid(unsafe_code)]
 
 pub mod bundle;

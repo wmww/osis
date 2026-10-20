@@ -11,8 +11,6 @@ pub enum Error {
     Malformed(&'static str),
     /// An encoding ID this build does not know (§3.1). Parked.
     UnknownEncoding(u64),
-    /// Known to the spec but not implemented in this build (sequences until plans/crdt-seq.md). Local.
-    Unsupported(&'static str),
     /// An op or value that does not fit the state or view it was applied to (caller error). Local.
     Mismatch(&'static str),
     /// A page could not be written or read.
@@ -23,7 +21,6 @@ osis_core::impl_error!(Error {
     Cbor(e) => ("delta: {e}"),
     Malformed(m) => ("malformed delta: {m}"),
     UnknownEncoding(id) => ("unknown merge encoding {id}"),
-    Unsupported(m) => ("unsupported: {m}"),
     Mismatch(m) => ("op does not fit: {m}"),
     Page(e) => ("page: {e}"),
 });
@@ -33,7 +30,7 @@ impl Classified for Error {
         match self {
             Error::Cbor(_) | Error::Malformed(_) => ErrorClass::BadInput,
             Error::UnknownEncoding(_) => ErrorClass::Parked,
-            Error::Unsupported(_) | Error::Mismatch(_) => ErrorClass::Local,
+            Error::Mismatch(_) => ErrorClass::Local,
             Error::Page(e) => e.class(),
         }
     }

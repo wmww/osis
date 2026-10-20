@@ -79,7 +79,7 @@ impl LinkSource for ListSource<'_> {
 
 /// Writes the chunk tree of a header list's bytes and returns its root link (empty input: one
 /// empty chunk). `prefix` gives each blob's prefix inputs (a fresh salt each call).
-pub fn write_tree(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Result<Prefix, Error>) -> Result<Link, Error> {
+pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefix: &mut dyn FnMut() -> Result<Prefix, Error>) -> Result<Link, Error> {
     tree::write_tree(&mut ListSink { dedup, sink, prefix }, ChunkParams::FORMAT, bytes)
 }
 
@@ -90,7 +90,7 @@ pub const MAX_LIST_BYTES: usize = 64 * CHUNK_THRESHOLD;
 /// Reads the bytes of a header list's chunk tree under `root`, checking every content hash. A
 /// non-final chunk below `CHUNK_MIN` is bad input; output above `max` bytes is refused
 /// (`TooLarge`, a local bound), which also bounds the chunks visited.
-pub fn read_tree(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
+pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
     tree::read_tree(root, dedup, &mut ListSource(src), ChunkParams::FORMAT, max)
 }
 
@@ -104,7 +104,7 @@ impl Header {
             if !self.list_is_empty(f) {
                 continue;
             }
-            let bytes = read_tree(&link, actor_dedup, src, max)?;
+            let bytes = read_list(&link, actor_dedup, src, max)?;
             if bytes.len() <= CHUNK_THRESHOLD {
                 return Err(Error::Malformed("linked list at or below CHUNK_THRESHOLD"));
             }

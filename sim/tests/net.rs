@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase B scenarios (sync engines and blind servers engine to engine), one seed each in tier 1.
+//! Phase B scenarios (sync engines and blind servers engine to engine), seed 1 each: the quickest in tier
+//! 1 (osis-sim's whole tier 1 stays near 10 s), the rest tier 2 (`--release -- --ignored`).
 //! Every run ends with the quiescent invariants (sim/src/net/check.rs: convergence by held
 //! deltas, member liveness and agreement, label required sets at servers, must-not-hold absent,
 //! deposit promotion, tombstones, purges, no ping-pong). A failure prints its seed and the
@@ -25,6 +26,7 @@ fn two_devices_server() {
 // spec/sync.md §5 (replication, push only), §6; spec/sync.md §3 (grants by inbox): three
 // persons share a group through two replicating servers with server crashes and partitions.
 #[test]
+#[ignore = "tier 2"]
 fn three_persons_two_servers() {
     let r = ok("three_persons_two_servers", 1);
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
@@ -33,6 +35,7 @@ fn three_persons_two_servers() {
 // spec/sync.md §5 (deletion by token); spec/commits.md §5 (purge): a removed writer's body
 // purged by a remaining writer without the delete key.
 #[test]
+#[ignore = "tier 2"]
 fn removed_writer() {
     ok("removed_writer", 1);
 }
@@ -40,12 +43,14 @@ fn removed_writer() {
 // spec/sync.md §5, §6: a reader relays stamped entries to a server the writer cannot reach;
 // the readers' opens race the admin's registrations.
 #[test]
+#[ignore = "tier 2"]
 fn reader_relays() {
     ok("reader_relays", 1);
 }
 
 // spec/permissions.md §3, §4: a device stranded past MEMBERSHIP_KEEP is re-sealed by pairing.
 #[test]
+#[ignore = "tier 2"]
 fn stranded_reseal() {
     ok("stranded_reseal", 1);
 }
@@ -59,6 +64,7 @@ fn server_loses_data() {
 // spec/sync.md §5 (open by stale sync key, walk); spec/permissions.md §3: a reader offline
 // across two rotations walks the steps; removed members hold no later epoch.
 #[test]
+#[ignore = "tier 2"]
 fn offline_rotation() {
     ok("offline_rotation", 1);
 }
@@ -71,12 +77,14 @@ fn replay_is_exact() {
 
 // spec/sync.md §7: compaction deletes covered bodies once the snapshot is there; then a purge.
 #[test]
+#[ignore = "tier 2"]
 fn compaction() {
     ok("compaction", 1);
 }
 
 // spec/permissions.md §9: disk loss and recovery from the card.
 #[test]
+#[ignore = "tier 2"]
 fn disk_loss() {
     ok("disk_loss", 1);
 }
@@ -96,6 +104,7 @@ fn two_devices_server_seed_23() {
 
 // spec/sync.md §6: sweep seed 41, a must-hold body never re-uploaded after the wipe and crashes.
 #[test]
+#[ignore = "tier 2"]
 fn server_loses_data_seed_41() {
     ok("server_loses_data", 41);
 }

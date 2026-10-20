@@ -24,13 +24,13 @@ fn tree_reader_bounded() {
     let plain = osis_core::encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(cl); 4])]));
     let (nid, _) = m.put(&Prefix { salt: [1; 16], ..none.clone() }, &plain).unwrap();
     let root = Link { hash: link_tree_hash(&d, 1, &[cl.hash; 4]), blob: nid, suite: 1, key: [0; 32] };
-    assert_eq!(read_tree(&root, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * CHUNK_MIN);
-    assert!(matches!(read_tree(&root, &d, &mut m, 3 * CHUNK_MIN), Err(Error::TooLarge(_))));
+    assert_eq!(read_list(&root, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * CHUNK_MIN);
+    assert!(matches!(read_list(&root, &d, &mut m, 3 * CHUNK_MIN), Err(Error::TooLarge(_))));
     // a level 2 node repeating that level 1 node 512 times stops at the bound
     let plain2 = osis_core::encode(&Value::List(vec![Value::Int(2), Value::List(vec![Value::Link(root); 512])]));
     let (n2, _) = m.put(&Prefix { salt: [2; 16], ..none }, &plain2).unwrap();
     let root2 = Link { hash: link_tree_hash(&d, 2, &vec![root.hash; 512]), blob: n2, suite: 1, key: [0; 32] };
-    assert!(matches!(read_tree(&root2, &d, &mut m, MAX_LIST_BYTES), Err(Error::TooLarge(_))));
+    assert!(matches!(read_list(&root2, &d, &mut m, MAX_LIST_BYTES), Err(Error::TooLarge(_))));
 }
 
 // spec/wire.md §6: a short chunk repeated (so not final) is bad input.
@@ -45,13 +45,13 @@ fn tree_short_nonfinal_chunk_rejected() {
     let plain = osis_core::encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(cl); 512])]));
     let (nid, _) = m.put(&Prefix { salt: [1; 16], ..none.clone() }, &plain).unwrap();
     let root = Link { hash: link_tree_hash(&d, 1, &vec![cl.hash; 512]), blob: nid, suite: 1, key: [0; 32] };
-    assert!(matches!(read_tree(&root, &d, &mut m, MAX_LIST_BYTES), Err(Error::Malformed(_))));
+    assert!(matches!(read_list(&root, &d, &mut m, MAX_LIST_BYTES), Err(Error::Malformed(_))));
     // the local output bound
     let plain = osis_core::encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(cl)])]));
     let (nid, _) = m.put(&Prefix { salt: [2; 16], ..none }, &plain).unwrap();
     let root = Link { hash: link_tree_hash(&d, 1, &[cl.hash]), blob: nid, suite: 1, key: [0; 32] };
-    assert_eq!(read_tree(&root, &d, &mut m, 1024).unwrap(), chunk);
-    assert!(matches!(read_tree(&root, &d, &mut m, 1023), Err(Error::TooLarge(_))));
+    assert_eq!(read_list(&root, &d, &mut m, 1024).unwrap(), chunk);
+    assert!(matches!(read_list(&root, &d, &mut m, 1023), Err(Error::TooLarge(_))));
 }
 
 // spec/commits.md §5, §6: `/created` (fixed retention) never carries `expires`.

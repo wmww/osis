@@ -1,4 +1,4 @@
-//! Cost of a 10^4-edge-write history (plans/perm.md): from scratch and incremental. Tier 2:
+//! Cost of a 10^4-edge-write history (issues/perm-eval-cost.md): from scratch and incremental. Tier 2:
 //! `cargo test -p osis-perm --release --test bench -- --ignored --nocapture`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

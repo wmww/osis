@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Form, Kind, MemoryBlobs};
 use osis_core::Classified;
-use osis_core::{BlobId, Role, Tid, Ts, Value, WallMs};
+use osis_core::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_crypto::{RngCore, Secret32, SeededRng};
 use osis_node::{Event, Ingested, Mutation, Origin, Reason};
@@ -326,5 +326,3 @@ fn random_delivery_converges_spec_crdt_4_1() {
     }
 }
 
-#[allow(dead_code)]
-fn unused(_: BlobId) {}

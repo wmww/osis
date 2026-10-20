@@ -1,4 +1,4 @@
-//! The sans-I/O sync engine (plans/node-sync.md; notes/architecture.md §2): one synchronous
+//! The sans-I/O sync engine (notes/sync.md; notes/architecture.md §2): one synchronous
 //! state machine per node, `SyncEngine::handle(Event) -> Vec<Action>`, holding the engine, one
 //! osis-proto `ClientSession` per server connection, the labeling decisions and the convergence
 //! loop (spec/sync.md §5-§9). Two drivers move its bytes and timers: the tokio driver

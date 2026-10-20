@@ -1,11 +1,11 @@
 # Node (osis-node)
-> Summary: Module layout and ownership of `osis-node`, the engine's public surface, what it keeps in the store and in memory, and the readings node-core fixed (pending, validity, bodies, receipts, counters). node-sync and membership-flows extend the layout here.
+> Summary: Module layout and ownership of `osis-node`, the engine's public surface, what it keeps in the store and in memory, and the readings node-core fixed (pending, validity, bodies, receipts, counters). The plans that built it are done; the origin column says which part of the spec each module serves.
 
 ## Modules and ownership
-| module | owner plan | contents |
+| module | origin | contents |
 |---|---|---|
-| `engine/` | node-core | `Engine` (create/open, one store transaction per call, caches), `Mutation` and the writing path (`write.rs`), reads and synthetic aspects (`read.rs`), HLC (`clock.rs`), secrets and the commit `Secrets` (`secrets.rs`), local state codec (`state.rs`), store record layouts (`records.rs`), blob adapters (`blobs.rs`) |
-| `apply/` | node-core | `ingest`, `examine` (verification, pending reasons, parking), atomic apply (`atomic.rs`), perm adaptation and validity (`validity.rs`), receipt record (`receipt.rs`), `load` (index rebuild) |
+| `engine/` | node-core | `Engine` (create/open, one store transaction per call, caches), `Mutation` and the writing path (`write.rs`), reads and synthetic aspects (`read.rs`), HLC (`clock.rs`), secrets and the commit `Secrets` (`secrets.rs`), local state codec (`state.rs`), store record layouts (`records.rs`), blob adapters (`blobs.rs`), large values: chunking in the write path, `read_large` (`large.rs`) |
+| `apply/` | node-core | `ingest`, `examine` (verification, pending reasons, parking), atomic apply (`atomic.rs`), perm adaptation and validity (`validity.rs`), receipt record (`receipt.rs`), established epochs from applied `/secrets` writes (`keys.rs`), `load` (index rebuild) |
 | `retention/` | node-core | deaths, keep bounds, expiry and keep-at-most timers (`tick`), purge requests, body drops, compaction snapshots, `covered`, deletion and re-snapshot queues |
 | `undo/` | node-core | undo buffer, undo commits, derived undo/redo stacks, admin change list |
 | `identity/` | node-core | node seed, keys, creation records |

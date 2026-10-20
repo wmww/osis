@@ -182,7 +182,7 @@ pub enum Fragment {
     Enum(Enum),
     Set(Set),
     Map(Map),
-    /// List or text (§5.7), implemented by plans/crdt-seq.md.
+    /// List or text (§5.7).
     Seq(Seq),
     Slots(Slots),
 }

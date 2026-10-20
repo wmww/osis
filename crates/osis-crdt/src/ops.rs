@@ -66,7 +66,7 @@ pub enum PathSeg {
     Key(Value),
     /// The payload of the current enum case.
     Case(u64),
-    /// A list element by visible index (plans/crdt-seq.md).
+    /// A list element by visible index.
     Index(usize),
 }
 
@@ -460,7 +460,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
 }
 
 /// The ops that turn `base` into `new` under `view`, exact by field, case, key, set value and
-/// bag value (notes/api.md `edit`); sequences are delegated to plans/crdt-seq.md. Applied
+/// bag value (notes/api.md `edit`); sequences are delegated to `seq`. Applied
 /// against the current state they leave everything the user did not change alone.
 pub fn diff_values<V: View>(base: Option<&Value>, new: &Value, view: &V) -> Result<Vec<PathOp>, Error> {
     let mut out = Vec::new();

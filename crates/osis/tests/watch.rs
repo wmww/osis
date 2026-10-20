@@ -1,5 +1,6 @@
 //! Watches, subscriptions, the dispatcher, diagnostics, signals, two nodes (notes/api.md
 //! Watching, Signals, Diagnostics, Footguns closed).
+//! spec: none (API surface, notes/api.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;

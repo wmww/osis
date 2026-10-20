@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Membership flows (plans/membership-flows.md) over `LocalPeer`: commits and inbox blobs are
+//! Membership flows over `LocalPeer`: commits and inbox blobs are
 //! delivered by hand between engines (no labels or servers).
 
 mod common;
@@ -299,6 +299,7 @@ fn demotion_frontier_spec_perm_5_1() {
 
 // notes/permissions.md (membership model: mutual removal): two admins removing each other
 // concurrently resolve to the earlier removal; the later one's author was already out.
+// spec/permissions.md §5.1
 #[test]
 fn mutual_removal_spec_perm_5_1() {
     let (mut lp, ps) = people(3, 506);
@@ -987,6 +988,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
 // notes/permissions.md Revocation (stolen device): the thief backdates a write; the honest
 // device's backdated revoke takes its frontier from its receipts as of the theft, so the
 // thief's edits are dropped and the device's earlier ones stay.
+// spec/permissions.md §5.3
 #[test]
 fn backdated_revoke_spec_perm_5_3() {
     const HOUR: u64 = 3_600_000;

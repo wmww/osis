@@ -28,7 +28,7 @@ pub enum Error {
     Storage(String),
     /// Another node could not be reached in time.
     Network(String),
-    /// Not provided by this build yet (sharing and sync land with plans/api.md's second half).
+    /// Not provided by this build yet (issues/api-deferred.md).
     Unsupported(&'static str),
     /// The database is closed.
     Closed,

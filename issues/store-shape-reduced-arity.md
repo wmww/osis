@@ -2,6 +2,8 @@
 > Summary: The ignored osis-store test `pager::tests::shape_reduced_arity` (`cargo test --release -p osis-store -- --ignored`) fails its last assertion: slot 7 reads the value written as 6. Likely the test assumes `alloc` hands out slots from 0 (an off-by-one in the test), but could be a pager bug; found at the wave 3 integration pass.
 > Tags: storage, tests
 
+Repro: `cargo test --release -p osis-store -- --ignored shape_reduced_arity` (fails at the wave 5 integration pass too).
+
 ```
 thread 'pager::tests::shape_reduced_arity' panicked at crates/osis-store/src/pager.rs:942:9:
 assertion `left == right` failed

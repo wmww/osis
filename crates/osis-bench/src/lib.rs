@@ -1,7 +1,7 @@
 //! osis-bench: a dependency-free bench harness (benches/, `cargo bench -p osis-bench`) and the
 //! size budgets (tests/budgets.rs, tier 2). Numbers are tracked by the nightly workflow, never
 //! gated; budgets are. Conventions: notes/testing.md.
-//! Layer 9 (notes/architecture.md). Plan: plans/test-infra.md.
+//! Layer 9 (notes/architecture.md). Notes: notes/testing.md.
 #![forbid(unsafe_code)]
 
 pub mod text;

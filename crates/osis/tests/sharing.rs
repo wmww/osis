@@ -118,6 +118,7 @@ fn demotion_presync_policies_spec_permissions_5_3() {
 
 // notes/api.md Sync status (watch_status, Stranded), Diagnostics: a watcher sees the home group
 // synced; a device removed while away is stranded on the home label and says so.
+// spec/permissions.md §3
 #[test]
 fn watch_status_and_stranded_spec_permissions_3() {
     let mut w = World::new();
@@ -175,6 +176,7 @@ fn bundle_round_trip_spec_sync_11() {
 
 // notes/api.md Handle (restore), Sharing (redeem): waits time out with `Network`; a failed
 // restore leaves no person record; a dropped redemption leaves no waiter and no held key.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn waits_time_out_and_roll_back_spec_api_handle() {
     let mut a = World::new();

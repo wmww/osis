@@ -2,6 +2,8 @@
 > Summary: What osis-node's engine does approximately or not yet: imports from snapshot origins, element-level judging inside compaction snapshots, deaths of writes carried only by snapshots, chunk reuse and streaming of large values, O(history) open and re-judging, paged local state.
 > Tags: node, permissions, storage
 
+Repro: known approximations, no failing test.
+
 - **Import from snapshots** (spec/permissions.md §7): only ordinary commits are origins; writes held only in a compaction snapshot (their own body dropped) are not imported, and the schema table of import deltas is left empty (untyped).
 - **Snapshots vouch for nothing** (spec/permissions.md §5.2): a snapshot body is joined whole; on rebuild the writes of sources with an invalid delta held here are removed, but a write whose own delta is not held is never judged on its own.
 - **Deaths** are attributed to the original commit's body only; a snapshot body carrying the same write gets no death record, so its keep bounds are only those of its own deaths.

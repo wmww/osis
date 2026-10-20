@@ -83,6 +83,7 @@ fn bob_revocation_spec_perm_5_2() {
 
 // notes/permissions.md Revocation, Carol variant: Carol, offline with Bob, applied X; once
 // she holds the revoke X is un-merged at her node too, while her own edit stays.
+// spec/permissions.md §5.2
 #[test]
 fn carol_variant_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(42);

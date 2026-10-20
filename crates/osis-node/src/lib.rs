@@ -1,9 +1,8 @@
 //! osis-node: the node. Engine (identity, clock, writing, reads), apply (receiving, pending and
 //! parking, atomic apply, validity and un-merge, receipt record), retention (deaths, bounds,
-//! expiry, purge, snapshots), undo, engine events; `labeling`, `sync`, `flows` are filled by
-//! plans/node-sync.md and plans/membership-flows.md. Module ownership: notes/node.md.
-//! Layer 7 (notes/architecture.md). Plans: node-core (done; notes/node.md), plans/node-sync.md,
-//! plans/membership-flows.md.
+//! expiry, purge, snapshots), undo, engine events; `labeling` and `sync` (the sync
+//! engine), `flows` and `rotation` (membership). Modules: notes/node.md.
+//! Layer 7 (notes/architecture.md).
 #![forbid(unsafe_code)]
 
 pub mod apply;
