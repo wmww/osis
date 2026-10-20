@@ -111,6 +111,10 @@ proptest! {
             return Ok(());
         }
         let d = frag(&md);
+        // nor where the delta writes into a nested position the pre-commit state lacks
+        if !present_along(Some(&s0), &d) {
+            return Ok(());
+        }
         let mut s1 = s0.clone();
         s1.join(d.clone());
         let src = source(&mw.source);
@@ -150,6 +154,25 @@ proptest! {
             state.join(d);
         }
         prop_assert_eq!(read(&state), Some(new));
+    }
+}
+
+/// Whether every position `d` writes into without resetting it is present in `s` (undo cannot
+/// write absence there, §4.6).
+fn present_along(s: Option<&Fragment>, d: &Fragment) -> bool {
+    if d.meta().is_some_and(|m| m.reset.is_some()) {
+        return true;
+    }
+    let Some(s) = s.filter(|s| s.present()) else { return false };
+    match (s.chosen(), d) {
+        (Fragment::Struct(x), Fragment::Struct(y)) => y.fields.iter().all(|(id, f)| present_along(x.fields.get(id), f)),
+        (Fragment::Enum(x), Fragment::Enum(y)) => y.case.is_some() || y.payloads.iter().all(|(id, f)| present_along(x.payloads.get(id), f)),
+        // a nested edit goes into an entry the state holds; other entries are creations
+        (Fragment::Map(x), Fragment::Map(y)) => y.entries.iter().all(|(dot, e)| match (&e.frag, x.entries.get(dot)) {
+            (Some(f), Some(xe)) => present_along(xe.frag.as_deref(), f),
+            _ => true,
+        }),
+        _ => true,
     }
 }
 

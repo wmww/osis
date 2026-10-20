@@ -185,6 +185,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 _ => None,
             };
             let mut entries = BTreeMap::new();
+            // removed entries, joined per key: a key held by several entries comes back as one
+            // (re-adding each at the undo's one stamp would tie their registers)
+            let mut removed: BTreeMap<osis_core::Value, Fragment> = BTreeMap::new();
             for (d, e) in &m.entries {
                 if e.frag.is_some() && u.made(d) {
                     entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None });
@@ -198,16 +201,23 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     if let Some(c) = res? {
                         entries.insert(d.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) });
                     }
-                } else if e.reset.is_some() {
-                    let kv = prev.as_ref().and_then(|p| match p {
-                        Fragment::Map(p) => p.entries.get(d).and_then(|x| Some((x.key.clone()?, x.frag.as_ref()?.read()?))),
-                        _ => None,
-                    });
-                    if let Some((k, v)) = kv {
-                        let nd = w.fresh().dot;
-                        entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)) });
+                } else if e.reset.is_some()
+                    && let Some(Fragment::Map(p)) = &prev
+                    && let Some(x) = p.entries.get(d)
+                    && let (Some(k), Some(f)) = (&x.key, &x.frag)
+                {
+                    match removed.get_mut(k) {
+                        Some(acc) => acc.join_into((**f).clone(), None, &mut crate::changes::Changes::new()),
+                        None => {
+                            removed.insert(k.clone(), (**f).clone());
+                        }
                     }
                 }
+            }
+            for (k, f) in removed {
+                let Some(v) = f.read() else { continue };
+                let nd = w.fresh().dot;
+                entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)) });
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }
