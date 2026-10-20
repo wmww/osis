@@ -394,6 +394,11 @@ impl Net {
         self.servers[s].hub.store().live_ids(l).unwrap()
     }
 
+    /// Node `n`'s connection to server `s`, if up (to inject a hostile server's frames).
+    pub fn conn_to(&self, n: usize, s: usize) -> Option<ConnId> {
+        self.links.iter().find(|((x, _), (y, _))| *x == n && *y == s).map(|((_, c), _)| *c)
+    }
+
     pub fn labels_at(&self, s: usize) -> Vec<osis_core::LabelId> {
         self.servers[s].hub.store().labels_after(None, 1000).unwrap()
     }

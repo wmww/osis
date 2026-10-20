@@ -13,7 +13,11 @@ use super::scenarios::{clock, persons, purge, shared_group, sim, write_gone};
 use super::{Evil, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
-use osis_core::{BlobId, Role};
+use osis_core::{BlobId, CommitId, Role, Tid};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Per honest node: the commits it had authored when it first held the removal.
+type Knew = BTreeMap<Tid, BTreeSet<CommitId>>;
 use osis_crypto::SeededRng;
 use osis_proto::{ClientEvent, Code, Command, Entry, LabelStore, OpenKey};
 
@@ -128,12 +132,14 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     purge(&mut sim, a, gone, t)?;
     sim.quiet(40)?;
     sim.sever(Party::N(m), Party::S(s));
-    let removed_at = sim.engine(a)?.now();
     sim.remove(a, g, pm)?;
     sim.excused.insert(m);
-    sim.run(40)?;
+    let mut knew = BTreeMap::new();
+    run_noting(&mut sim, 40, [a, b], g, pm, &mut knew)?;
     sim.quiet(40)?;
+    note_removal(&mut sim, [a, b], g, pm, &mut knew)?;
     sim.advance(60_000)?;
+    note_removal(&mut sim, [a, b], g, pm, &mut knew)?;
     let evil_c = add_tag(&mut sim, m, t, "m-after")?;
     // the replay, by hand
     let mut r = sim.rogue(s)?;
@@ -169,7 +175,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     }
     sim.rogue_close(&mut r);
     sim.unsever(Party::N(m), Party::S(s));
-    sim.run(60)?;
+    run_noting(&mut sim, 60, [a, b], g, pm, &mut knew)?;
     sim.run_until_quiescent(40)?;
     for n in [a, b] {
         let ts = tags(&mut sim, n, t)?;
@@ -188,13 +194,14 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     let mut checked = 0;
     for id in hub.store().live_ids(&old.label).unwrap_or_default() {
         let Some((c, _)) = sim.known.get(&(old.label, id)) else { continue };
-        // honest commits made after the removal (M's own are M's)
-        let late = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).is_some_and(|h| h.ts.wall_ms().0 > removed_at.0 + 1_000 && h.author != mt);
+        // honest commits written after their author had applied the removal (spec/requirements.md,
+        // Out of scope: revocation reaches a writer when it next syncs; M's own are M's)
+        let late = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).is_some_and(|h| h.author != mt && knew.get(&h.author).is_some_and(|own| !own.contains(c)));
         let Some(e) = hub.store().entry(&old.label, &id).ok().flatten() else { continue };
         if late {
             checked += 1;
             if osis_label::unwrap_any(secrets.iter(), &id, &e.wrap).is_some() {
-                let h = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).map(|h| format!("author {} kind {:?} ts {} (removal {}) aspects {:?}", h.author, h.kind, h.ts.wall_ms().0, removed_at.0, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()));
+                let h = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).map(|h| format!("author {} kind {:?} ts {} (written after its author held the removal) aspects {:?}", h.author, h.kind, h.ts.wall_ms().0, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()));
                 return Err(sim.fail(format!("the removed member's secrets open {id:?} of {c:?}, made after its removal: {h:?}; M epochs {me:?} A epochs {ae:?} a {ta} b {tb} m {mt}")));
             }
         }
@@ -203,6 +210,36 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         return Err(sim.fail("no body made after the removal to check"));
     }
     sim.finish()
+}
+
+/// Notes, per node tid, the commits it had authored when it is first seen holding `member`'s
+/// removal from `g` (noted after the step that brought it, so judged leniently, never wrongly
+/// late).
+fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, member: Tid, knew: &mut Knew) -> Res<()> {
+    for n in nodes {
+        let t = sim.tid(n)?;
+        if knew.contains_key(&t) {
+            continue;
+        }
+        let Some(e) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.engine_mut()) else { continue };
+        let members = e.get_typed(&g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        if !members.contains_key(&member) {
+            let own: BTreeSet<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == t)).collect();
+            knew.insert(t, own);
+        }
+    }
+    Ok(())
+}
+
+/// `sim.run(n)` noting after each step who holds the removal.
+fn run_noting(sim: &mut NetSim, n: u64, nodes: [usize; 2], g: Tid, member: Tid, knew: &mut Knew) -> Res<()> {
+    note_removal(sim, nodes, g, member, knew)?;
+    sim.calm = false;
+    for _ in 0..n {
+        sim.step()?;
+        note_removal(sim, nodes, g, member, knew)?;
+    }
+    Ok(())
 }
 
 /// A member uploads malformed blobs (spec/sync.md §5, spec/commits.md §4; spec/versioning.md §2:

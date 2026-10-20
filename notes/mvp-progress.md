@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB each): agents share CARGO_TARGET_DIR=$HOME/osis-shared-target; at most 3 agents at a time.
+Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB each): a shared CARGO_TARGET_DIR is unsafe (worktrees reuse each other's path-crate artifacts); each agent uses $HOME/osis-targets/<worktree> with CARGO_INCREMENTAL=0 and cleans before returning; at most 3 agents at a time.
 
 ## Plans
 | plan | state | notes |
@@ -65,13 +65,14 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | p2p | merged, reviewed | plan deleted; issues/p2p-deferred.md (one driver for servers+peers, LAN loop, relay test, spec for LAN datagram) |
 | wave 2 integration pass | merged | issues/tree-unify.md and base64url merge for the wave 3 pass |
 | wave 3 integration pass | merged | tree unified in osis-commit; FC-2 frozen; issues/store-shape-reduced-arity.md; 3 uncited node tests |
-| hardening-signoff | step 1 merged (dd3fbbf: 46-rule checklist, 42 tested, issues/tests-spec-gaps.md); running: security reviews crypto+keys+perm+flows, label+server+node-sync, store+api | then: remaining sync bugs, scale and panic audit, re-review, report |
+| hardening-signoff | step 1 merged; security reviews crypto/keys/perm/flows (8295ea0) and label/server/node-sync (7f4d0c3) merged with 8 fixes; running: store+api review, scale/panic audit, sync round 3 (hostile-server bounds, purged chunks, prefix check, read buffers, disk-loss chain, seed 11, reseal wiring) | then: re-review, report |
 
 ## Open escalations
 - Sim phase C: issues/sync-unopenable-entry-stall.md (security: one bad entry stalls a label; newer-format commits not parked), sync-wake-lost, sync-clock-offset-rtt, sync-unsettled-deadlock, sync-timed-delete-lost, sync-keep-at-most-blob-kept, sync-request-timeout, sync-lost-upload-after-crash, crdt-expiring-diff, flows-single-use-redemption-unplaced, flows-move-unlabeled-copy: second bug-fix round after the first lands.
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- wave 6 label+server/node-sync review: spec/sync.md §9 receivers drop a signal whose `ts` is more than `MAX_DRIFT` from their corrected clock (a server could replay captured signals indefinitely; replays inside the window remain, apps dedupe by sender sequence, notes/ephemeral.md).
 - crypto+keys security review: spec/crypto.md §4 a secret learned only from a pending or invalid commit is kept for reading and never encrypted under until an applied valid box carries it (a box anyone can seal to a member's `/keys` in a pending commit otherwise planted the secret of an epoch before its real box arrived).
 - sync bug-fix round 2: spec/commits.md §5 covered also needs the covering snapshot's frontiers to reach a node-form body's counters or a snapshot body's frontiers (node-form was implemented, snapshot-vs-snapshot was missing: covered-equal snapshots with smaller frontiers stood in for a carrier and a co-writer re-uploaded the body); spec/sync.md §6 the clock offset ignores samples whose round trip exceeds a few seconds, and a node SHOULD close and redial a connection with a request unanswered for minutes; §10 the LAN announcement datagram (60 bytes, UDP broadcast to port 47380) written as provisional, with the conservative candidate-route rule until the transport key is bound to the node (owner decision: bind it when the LAN loop is built).
 - wave 5 flows fixes: spec/permissions.md §3 a rotation boxing a member without a box at the current read epoch also goes to it by inbox (spec/sync.md §3 inbox blob list); no rotation of A for a departure inside a member that a fresh epoch would not cover; spec/crypto.md §4 a node holding no secret of M judges the inside-M covers rule by M's newest `/keys` keyset.

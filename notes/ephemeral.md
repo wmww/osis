@@ -8,7 +8,7 @@ Owner's goal: event-stream-like apps on the same infrastructure, first-class if 
 - Dedicated API (`send_signal`, `listen_signals`, notes/api.md), not `set_aspect`. Kinds are declared in the schema so generic tools understand them; a signal is never readable as an aspect.
 - Targeting an actor: a thing shared with them, with its own label. Targeting one device: the target-node field. No label per device.
 - A signal on a thing without its own label reaches every subscriber of the enclosing group, who decrypt and drop it. Busy channels get their own group.
-- A node connected to several relays may see a signal twice: latest-wins values are idempotent; event-style signals carry a sender sequence.
+- A node connected to several relays may see a signal twice: latest-wins values are idempotent; event-style signals carry a sender sequence. Receivers drop a signal whose `ts` is more than `MAX_DRIFT` from their clock (spec/sync.md §9), so a server replays a captured signal only within that window.
 - Late joiners see nothing until the next signal: presence apps heartbeat; "last seen" is a normal aspect written at a low rate.
 - What must survive a receiver being offline is state: inbox pattern (receiver-owned list, senders append, owner deletes, expiry as backstop) or a list with expiry.
 - Cost: an envelope is about a minimal commit; latency one relay hop. A junk signal costs subscribers a signature check.
