@@ -175,6 +175,11 @@ pub(crate) struct LConn {
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the server's path is checked after the open.
     pub walk: Option<Step>,
+    /// A static-entry open's entry box, opened once the server's path verified the head.
+    pub entry_box: Option<osis_schema::core_types::SecretBox>,
+    /// Write keys of a server path verified here (a label not recorded in `/label`): stamps
+    /// under them vouch for an entry.
+    pub writers: Vec<osis_crypto::VerifyingKey>,
 }
 
 pub(crate) struct Conn {
@@ -281,6 +286,9 @@ pub struct SyncEngine {
     pub(crate) charges: BTreeMap<(LabelId, osis_core::BlobId), ([u8; 32], u64)>,
     /// `peers()` for LAN matching, per tag window.
     pub(crate) lan_peers: Option<(u64, Vec<peers::LanSecret>)>,
+    /// Commit blobs with linked header lists whose prefix was checked against the resolved
+    /// header (spec/commits.md §4).
+    pub(crate) prefix_checked: BTreeSet<osis_core::BlobId>,
 }
 
 impl SyncEngine {
@@ -333,6 +341,7 @@ impl SyncEngine {
             served_cache: None,
             charges: BTreeMap::new(),
             lan_peers: None,
+            prefix_checked: BTreeSet::new(),
         })
     }
 

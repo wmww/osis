@@ -115,6 +115,7 @@ impl SyncEngine {
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
         self.refetch(conn, server, l, &g, out)?;
+        self.check_linked_prefixes(l)?;
         let unsettled = self.unsettled(&l, &g)?;
         let snapping = self.unsettled_hold(&l, &g)?;
         for b in &bodies {
@@ -225,13 +226,24 @@ impl SyncEngine {
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
-    /// §3) for members whose node's heartbeat under the label reports it stranded (§4); delivered
-    /// by inbox. The other trigger (a member seen without a box, `Engine::reseal_due`) is not
-    /// wired: issues/reseal-inbox-only-dots.md.
+    /// §3): members seen without a box at a current epoch (`Engine::reseal_due`) and members
+    /// whose node's heartbeat under the label reports it stranded (§4); delivered by inbox and
+    /// placed under the actor's labels like any membership commit.
     fn reseal(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
         if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
             return Ok(());
+        }
+        // the complete pass was checked just above
+        struct Passed;
+        impl crate::flows::SyncState for Passed {
+            fn complete_pass(&self, _: &Tid) -> bool {
+                true
+            }
+        }
+        match self.engine.reseal_due(&a, &Passed) {
+            Ok(done) => self.take_done(done)?,
+            Err(e) => self.diag(format!("re-seal of {a}: {e}")),
         }
         // the newest heartbeat of each node under the label, when it reports it stranded
         let me = self.engine.tid();
@@ -303,11 +315,10 @@ impl SyncEngine {
         Ok(Some(v))
     }
 
-    /// The bodies label `l` of `g` should hold: the closure's, never inbox-only ones; under a
-    /// replaced label membership-class ones only (spec/sync.md §2: its content entries go).
+    /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
+    /// membership-class ones only (spec/sync.md §2: its content entries go).
     fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
         let mut bodies = self.engine.label_bodies(g)?;
-        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
         if self.is_replaced(g, l) {
             bodies.retain(|b| b.membership);
         }
@@ -369,6 +380,46 @@ impl SyncEngine {
             self.fetching.insert(*b, conn);
         }
         self.command(conn, Command::Fetch { label: l, ids: want }, out)
+    }
+
+    /// Prefix vs header for commit blobs whose header lists went by link (spec/commits.md §4):
+    /// checked once the applied header is resolved, before the entry counts as holding its
+    /// body; a disagreeing blob is bad input (`Kind::Bad`) and the body is judged missing there.
+    fn check_linked_prefixes(&mut self, l: LabelId) -> Result<()> {
+        type Parts = Vec<(usize, usize)>;
+        let todo: Vec<(BlobId, CommitId, Parts)> = self
+            .state
+            .entries
+            .range((l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| *x == l)
+            .filter(|((_, b), _)| !self.prefix_checked.contains(b))
+            .filter_map(|((_, b), e)| match &e.kind {
+                Kind::Commit { commit, parts } => Some((*b, *commit, parts.clone())),
+                _ => None,
+            })
+            .filter(|(_, c, _)| self.engine.header(c).is_some_and(|h| osis_commit::ListField::ALL.iter().any(|f| h.links.get(*f).is_some())))
+            .collect();
+        for (b, c, parts) in todo {
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let Some(h) = self.engine.header(&c) else { continue };
+            self.prefix_checked.insert(b);
+            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
+                (Ok(p), Ok((expiry, tokens))) => {
+                    let toks: Vec<(u8, [u8; 16])> = tokens.iter().map(|t| (t.level, t.hash)).collect();
+                    parts.is_empty() || p.agrees(expiry.map(WallMs), &toks)
+                }
+                _ => false,
+            };
+            if !agrees {
+                self.diag(format!("blob {b:?}: prefix disagrees with its resolved header"));
+                if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                    e.kind = Kind::Bad;
+                    self.state.set_entry(l, b, e);
+                }
+                self.state.remove_blob(&b);
+            }
+        }
+        Ok(())
     }
 
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect
@@ -557,24 +608,32 @@ impl SyncEngine {
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
     /// encryption per label, placed once per commit.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        let closure = self.engine.closure(g);
         for (c, ais) in self.engine.certificates(g) {
-            if self.state.inbox_only.contains(&c) {
-                continue;
-            }
-            let placed: Vec<BlobId> = self
+            // the aspects this node's copies under the label carry: a chain grown since (an
+            // owner's `/created` this node learned later) places the rest
+            let placed: BTreeSet<usize> = self
                 .state
                 .entries
                 .range((l, BlobId([0; 32]))..)
                 .take_while(|((x, _), _)| *x == l)
-                .filter(|(_, e)| e.cert && matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c))
-                .map(|((_, id), _)| *id)
+                .filter_map(|(_, e)| match &e.kind {
+                    Kind::Commit { commit, parts } if e.cert && *commit == c => Some(parts.iter().map(|(ai, _)| *ai).collect::<Vec<_>>()),
+                    _ => None,
+                })
+                .flatten()
                 .collect();
-            if placed.is_empty() && !self.state.certs.contains(&(l, c)) {
-                for b in self.engine.partial_bodies(&c, &ais)? {
-                    self.place(g, l, &b, true)?;
-                }
-                self.state.add_cert(l, c);
+            // what the label's closure bodies carry is not copied again
+            let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let missing: BTreeSet<usize> = ais.difference(&placed).filter(|ai| placed.is_empty() || !inside.contains(ai)).copied().collect();
+            // placed before and gone since (deleted at the server): not placed again
+            if missing.is_empty() || placed.is_empty() && self.state.certs.contains(&(l, c)) {
+                continue;
             }
+            for b in self.engine.partial_bodies(&c, &missing)? {
+                self.place(g, l, &b, true)?;
+            }
+            self.state.add_cert(l, c);
         }
         Ok(())
     }
@@ -659,7 +718,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
-        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(id, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a) && !self.state.inbox_only.contains(id)).map(|(id, _)| *id).collect();
+        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a)).map(|(id, _)| *id).collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {
@@ -818,6 +877,23 @@ impl SyncEngine {
                 items.push(item);
             }
         }
+        // chunks of dropped deltas (spec/commits.md §5: a purge drops every body carrying the
+        // values; spec/sync.md §3: chunk blobs belong to the closure)
+        let chunks = self.dropped_chunks();
+        for id in self.state.present_at(&server, &l) {
+            let Some((c, ch)) = chunks.get(&id) else { continue };
+            if !self.state.entries.get(&(l, id)).is_some_and(|e| e.kind == Kind::Unknown) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
+                continue;
+            }
+            match self.chunk_delete(conn, keys, &l, &id, c, ch, out)? {
+                Some(item) => {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, id), raw);
+                    items.push(item);
+                }
+                None => continue,
+            }
+        }
         // timed deletes: bodies under a relative keep-at-most with a known bound
         for b in bodies {
             let Some(id) = self.entry_for(&server, &l, b) else { continue };
@@ -917,6 +993,55 @@ impl SyncEngine {
             c = *self.state.carriers.get(&c)?.iter().rev().find(|c| on(c))?;
         }
         None
+    }
+
+    /// Chunk, tree-node and page blobs whose creating deltas this node dropped (purge, expiry,
+    /// keep at most, compaction), by the commit and chunk entry that list them, unless a commit
+    /// whose creating deltas are not all dropped lists them too (chunk reuse, spec/sync.md §1).
+    /// A chunk's creating deltas are those whose token indices are its own (one class); with no
+    /// such delta, every delta of the commit.
+    pub(crate) fn dropped_chunks(&self) -> BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)> {
+        let mut out = BTreeMap::new();
+        if !self.engine.core.commits.values().any(|m| !m.dropped.is_empty() && !m.header.chunks.is_empty()) {
+            return out;
+        }
+        let mut live = BTreeSet::new();
+        for (id, m) in &self.engine.core.commits {
+            let h = &m.header;
+            for ch in &h.chunks {
+                let idx: Vec<usize> = ch.tokens.iter().map(|(i, _)| *i).collect();
+                let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tokens == idx).map(|(ai, _)| ai).collect();
+                let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
+                let mut parts = ais.iter().flat_map(|ai| (0..h.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(move |di| (*ai, di))).peekable();
+                let dropped = parts.peek().is_some() && parts.all(|p| m.dropped.contains(&p));
+                if dropped {
+                    out.entry(ch.blob).or_insert((*id, ch.clone()));
+                } else {
+                    live.insert(ch.blob);
+                }
+            }
+        }
+        out.retain(|b, _| !live.contains(b));
+        out
+    }
+
+    /// A delete item for a dropped chunk: the delete key, else its chunk token (from the salt in
+    /// its prefix; a chunk never fetched is fetched first).
+    #[allow(clippy::too_many_arguments)]
+    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, c: &CommitId, ch: &osis_commit::ChunkEntry, out: &mut Vec<super::Action>) -> Result<Option<osis_label::DeleteItem>> {
+        if keys.delete.is_some() {
+            return Ok(delete_item(keys, l, *id, None, &[]));
+        }
+        let Some(blob) = self.engine.blob(id)? else {
+            if !self.fetching.contains_key(id) && !self.missing.contains(&(conn, *id)) {
+                self.fetching.insert(*id, conn);
+                self.command(conn, Command::Fetch { label: *l, ids: vec![*id] }, out)?;
+            }
+            return Ok(None);
+        };
+        let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
+        let tokens = self.engine.chunk_tokens(c, ch, prefix.salt());
+        Ok(delete_item(keys, l, *id, None, &tokens))
     }
 
     /// A delete item for an entry: delete key, else a token this node can derive.

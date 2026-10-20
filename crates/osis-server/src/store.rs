@@ -55,6 +55,9 @@ pub struct Policy {
     pub hello_ms: u64,
     /// Bytes queued for one connection beyond which it is dropped (a peer that does not read).
     pub max_queued_bytes: usize,
+    /// Partially received frame bytes over all connections beyond which the connection holding
+    /// the largest partial frame is closed.
+    pub max_buffered_bytes: usize,
 }
 
 impl Default for Policy {
@@ -78,6 +81,7 @@ impl Default for Policy {
             max_connections: 10_000,
             hello_ms: 10_000,
             max_queued_bytes: 32 << 20,
+            max_buffered_bytes: 512 << 20,
         }
     }
 }

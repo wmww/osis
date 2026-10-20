@@ -191,6 +191,11 @@ impl Reconciler {
         Some((self.next, batch))
     }
 
+    /// Ranges waiting to be sent.
+    pub fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     /// Whether ranges remain to be sent.
     pub fn has_queued(&self) -> bool {
         !self.queue.is_empty()

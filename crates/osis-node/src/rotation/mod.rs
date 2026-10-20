@@ -499,8 +499,9 @@ fn carries_fn<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> 
 }
 
 /// A re-seal of `member` for `roles` of `a` (spec/permissions.md §3): its boxes at the
-/// chain-established current epochs, with history boxes, delivered by inbox only (a node: over
-/// a direct connection); the commit is listed in `Done::inbox_only`.
+/// chain-established current epochs, with history boxes, delivered by inbox (a node: over a
+/// direct connection) and placed under the actor's labels like any membership commit (later
+/// removals reset its box entries: every node must hold them, or the removal waits for good).
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, member: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
     let mut done = Done::default();
     // boxing is encrypting under: rotate first where a departure is uncovered
@@ -518,7 +519,6 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, member: Tid, roles: &BTreeSet<
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
-        done.inbox_only.push(c);
         done.deliveries.extend(flows::edges::deliver_to(tx, member, c, &[a])?);
     }
     Ok(done)

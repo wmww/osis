@@ -182,7 +182,9 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
     let dials: Vec<JoinHandle<()>> = peers.into_iter().map(|a| tokio::spawn(keep_dialing(transport.clone(), secret.clone(), a, ev_tx.clone(), log.clone()))).collect();
     let (in_tx, mut incoming) = mpsc::channel(64);
     let idle = Duration::from_millis(hub.store().policy().hello_ms);
-    let server = tokio::spawn(link::serve(listener, idle, FINISH_WAIT, in_tx));
+    // transport connections capped like sessions (each connection may carry several)
+    let max = hub.store().policy().max_connections;
+    let server = tokio::spawn(link::serve_max(listener, idle, FINISH_WAIT, in_tx, max));
     let mut d = Driver { hub, clock, log, conns: HashMap::new(), next: 1, ev_tx };
     let mut listening = true;
     loop {

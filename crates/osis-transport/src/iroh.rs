@@ -25,8 +25,15 @@ pub const ALPN: &[u8] = b"osis";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Concurrent bidirectional streams a peer may open (provisional).
 const MAX_STREAMS: u32 = 16;
-/// Protocol v1 frame cap (spec/wire.md §11.1); flow-control windows are sized from it.
-const MAX_MESSAGE: u32 = 9_437_184;
+/// Flow-control windows per stream and per connection (as `quic.rs`: the reader drains frames
+/// incrementally).
+const STREAM_WINDOW: u32 = 1 << 20;
+const CONN_WINDOW: u32 = 4 << 20;
+/// Keep-alive and idle timeout (as `quic.rs`, provisional).
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Handshakes in progress per listener (as `quic.rs`, provisional); more are refused.
+const MAX_INCOMING: usize = 1024;
 
 /// The P2P transport. Clones share the listening endpoints.
 #[derive(Clone, Default)]
@@ -60,13 +67,19 @@ fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(e.to_string())
 }
 
+/// Bounded per-connection memory: no uni streams or datagrams, few bidi streams, small windows.
 fn transport_config() -> QuicTransportConfig {
-    QuicTransportConfig::builder()
+    let mut b = QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(VarInt::from_u32(MAX_STREAMS))
         .max_concurrent_uni_streams(VarInt::from_u32(0))
-        .stream_receive_window(VarInt::from_u32(2 * MAX_MESSAGE))
-        .receive_window(VarInt::from_u32(4 * MAX_MESSAGE))
-        .build()
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONN_WINDOW))
+        .datagram_receive_buffer_size(None)
+        .keep_alive_interval(KEEP_ALIVE);
+    if let Ok(t) = IDLE_TIMEOUT.try_into() {
+        b = b.max_idle_timeout(Some(t));
+    }
+    b.build()
 }
 
 /// An endpoint with `secret` (fresh when none), the given relays as home relays, bound to
@@ -133,13 +146,16 @@ impl Iroh {
             Some(ep) => (ep, false),
             None => (endpoint(own, relays, &[], false).await?, true),
         };
-        let c = match ep.connect(target, ALPN).await {
-            Ok(c) => c,
-            Err(e) => {
+        let c = match tokio::time::timeout(HANDSHAKE_TIMEOUT, ep.connect(target, ALPN)).await {
+            Ok(Ok(c)) => c,
+            r => {
                 if owned {
                     ep.close().await;
                 }
-                return Err(Error::Unreachable(e.to_string()));
+                return Err(Error::Unreachable(match r {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "handshake timed out".into(),
+                }));
             }
         };
         let peer = *c.remote_id().as_bytes();
@@ -159,11 +175,19 @@ impl Iroh {
         // handshakes run concurrently, each under a deadline, so a silent dialer blocks nobody
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let e2 = ep.clone();
+        let pending = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tokio::spawn(async move {
             while let Some(inc) = e2.accept().await {
-                let tx = tx.clone();
+                if pending.load(std::sync::atomic::Ordering::Acquire) >= MAX_INCOMING {
+                    drop(inc);
+                    continue;
+                }
+                pending.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let (tx, pending) = (tx.clone(), pending.clone());
                 tokio::spawn(async move {
-                    let Ok(Ok(c)) = tokio::time::timeout(HANDSHAKE_TIMEOUT, inc).await else { return };
+                    let r = tokio::time::timeout(HANDSHAKE_TIMEOUT, inc).await;
+                    pending.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    let Ok(Ok(c)) = r else { return };
                     let peer = *c.remote_id().as_bytes();
                     let _ = tx.send(IrohConn { c, peer, ep: None }).await;
                 });
