@@ -25,6 +25,8 @@ pub struct Checker {
     /// Last own `ts` per node index.
     last_own: BTreeMap<usize, Ts>,
     pub applied: u64,
+    /// Authors whose keys an adversary signs counter-reusing commits with (no honest-node check).
+    pub equivocators: BTreeSet<Tid>,
 }
 
 impl Checker {
@@ -62,7 +64,7 @@ impl Checker {
     /// spec/crdt.md §2.3: node-form counter ranges of distinct commits by one author never
     /// overlap on one aspect.
     fn header(&mut self, id: &CommitId, h: &Header) -> std::result::Result<(), String> {
-        if !self.seen.insert(*id) || h.form != Form::Node {
+        if !self.seen.insert(*id) || h.form != Form::Node || self.equivocators.contains(&h.author) {
             return Ok(());
         }
         for a in &h.aspects {

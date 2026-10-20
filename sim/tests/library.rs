@@ -245,6 +245,20 @@ fn deposit_flood() {
     ok("deposit_flood", 1);
 }
 
+// spec/commits.md §4: an equivocating writer's two counter-reusing commits are both invalid.
+#[test]
+#[ignore = "tier 2"]
+fn equivocating_writer() {
+    ok("equivocating_writer", 1);
+}
+
+// spec/sync.md §5, §7: a server re-announcing purged entries brings nothing back.
+#[test]
+#[ignore = "tier 2"]
+fn tombstone_liar() {
+    ok("tombstone_liar", 1);
+}
+
 // spec/versioning.md §1, §2: a newer format version is parked, relayed, never destroyed.
 #[test]
 #[ignore = "tier 2"]
