@@ -283,6 +283,9 @@ pub struct SyncEngine {
     pub(crate) charges: BTreeMap<(LabelId, osis_core::BlobId), ([u8; 32], u64)>,
     /// `peers()` for LAN matching, per tag window.
     pub(crate) lan_peers: Option<(u64, Vec<peers::LanSecret>)>,
+    /// Commit blobs with linked header lists whose prefix was checked against the resolved
+    /// header (spec/commits.md §4).
+    pub(crate) prefix_checked: BTreeSet<osis_core::BlobId>,
 }
 
 impl SyncEngine {
@@ -335,6 +338,7 @@ impl SyncEngine {
             served_cache: None,
             charges: BTreeMap::new(),
             lan_peers: None,
+            prefix_checked: BTreeSet::new(),
         })
     }
 

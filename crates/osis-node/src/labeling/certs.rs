@@ -87,7 +87,11 @@ impl Engine {
             return Ok(Vec::new());
         }
         let membership = cut.header.kind.is_membership();
-        let ps = osis_commit::project(&cut, |_| ())?;
+        let resolved = match self.core.commits.get(&id) {
+            Some(m) if !cut.header.is_resolved() => m.header.clone(),
+            _ => std::sync::Arc::new(cut.header.clone()),
+        };
+        let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;
         Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, tokens: p.tokens, plaintext: p.plaintext, membership }).collect())
     }
 }

@@ -115,6 +115,7 @@ impl SyncEngine {
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
         self.refetch(conn, server, l, &g, out)?;
+        self.check_linked_prefixes(l)?;
         let unsettled = self.unsettled(&l, &g)?;
         let snapping = self.unsettled_hold(&l, &g)?;
         for b in &bodies {
@@ -369,6 +370,45 @@ impl SyncEngine {
             self.fetching.insert(*b, conn);
         }
         self.command(conn, Command::Fetch { label: l, ids: want }, out)
+    }
+
+    /// Prefix vs header for commit blobs whose header lists went by link (spec/commits.md §4):
+    /// checked once the applied header is resolved, before the entry counts as holding its
+    /// body; a disagreeing blob is bad input (`Kind::Bad`) and the body is judged missing there.
+    fn check_linked_prefixes(&mut self, l: LabelId) -> Result<()> {
+        let todo: Vec<(BlobId, CommitId, Vec<(usize, usize)>)> = self
+            .state
+            .entries
+            .range((l, BlobId([0; 32]))..)
+            .take_while(|((x, _), _)| *x == l)
+            .filter(|((_, b), _)| !self.prefix_checked.contains(b))
+            .filter_map(|((_, b), e)| match &e.kind {
+                Kind::Commit { commit, parts } => Some((*b, *commit, parts.clone())),
+                _ => None,
+            })
+            .filter(|(_, c, _)| self.engine.header(c).is_some_and(|h| osis_commit::ListField::ALL.iter().any(|f| h.links.get(*f).is_some())))
+            .collect();
+        for (b, c, parts) in todo {
+            let Some(bytes) = self.engine.blob(&b)? else { continue };
+            let Some(h) = self.engine.header(&c) else { continue };
+            self.prefix_checked.insert(b);
+            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
+                (Ok(p), Ok((expiry, tokens))) => {
+                    let toks: Vec<(u8, [u8; 16])> = tokens.iter().map(|t| (t.level, t.hash)).collect();
+                    parts.is_empty() || p.agrees(expiry.map(WallMs), &toks)
+                }
+                _ => false,
+            };
+            if !agrees {
+                self.diag(format!("blob {b:?}: prefix disagrees with its resolved header"));
+                if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
+                    e.kind = Kind::Bad;
+                    self.state.set_entry(l, b, e);
+                }
+                self.state.remove_blob(&b);
+            }
+        }
+        Ok(())
     }
 
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect

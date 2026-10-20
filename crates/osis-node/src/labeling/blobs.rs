@@ -48,7 +48,8 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
     let c = CommitBlob::decode(&pt)?;
     let parts: Vec<(usize, usize)> = c.parts.iter().map(|p| (p.ai, p.di)).collect();
     if !c.header.is_resolved() {
-        // linked header lists: the agreement is checked once node-core resolved them
+        // linked header lists: the agreement is checked once node-core resolved them (the
+        // pass, `check_linked_prefixes`)
         return Ok((pt, c));
     }
     let (expiry, tokens) = osis_commit::prefix_inputs(&c.header, &parts)?;
@@ -95,8 +96,13 @@ impl Engine {
         let id = *c;
         let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         let membership = blob.header.kind.is_membership();
-        let readers: Vec<Tid> = blob.header.aspects.iter().map(|a| self.core.reader_of(&a.tid)).collect();
-        let ps = osis_commit::project(&blob, |ai| readers.get(ai).copied())?;
+        // linked header lists: classed by the applied (resolved) header
+        let resolved = match self.core.commits.get(&id) {
+            Some(m) if !blob.header.is_resolved() => m.header.clone(),
+            _ => std::sync::Arc::new(blob.header.clone()),
+        };
+        let readers: Vec<Tid> = resolved.aspects.iter().map(|a| self.core.reader_of(&a.tid)).collect();
+        let ps = osis_commit::project_resolved(&blob, &resolved, |ai| readers.get(ai).copied())?;
         Ok(ps
             .into_iter()
             .filter_map(|p| {

@@ -98,10 +98,16 @@ pub(crate) fn check_fits(c: &CommitBlob) -> Result<(), Error> {
 /// greedily in aspect-list order. `readers(ai)` is the reader-set key of aspect `ai`'s thing.
 /// Ordered by class key, then split order.
 pub fn project<K: Ord + Clone>(c: &CommitBlob, readers: impl Fn(usize) -> K) -> Result<Vec<Projection<K>>, Error> {
+    project_resolved(c, &c.header, readers)
+}
+
+/// [`project`] of a commit whose header lists go by link, classed by `resolved` (its header
+/// with the lists read, spec/commits.md §1); the blobs carry the header as signed.
+pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, readers: impl Fn(usize) -> K) -> Result<Vec<Projection<K>>, Error> {
     type Class<K> = (K, Vec<u8>, Option<u64>, Vec<usize>);
     let mut classes: BTreeMap<Class<K>, Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
-        let a = c.header.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
+        let a = resolved.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
         let key = (readers(p.ai), osis_core::encode(&retention_value(&a.retention)), a.expires, a.tokens.clone());
         classes.entry(key).or_default().push(p);
     }
@@ -110,8 +116,8 @@ pub fn project<K: Ord + Clone>(c: &CommitBlob, readers: impl Fn(usize) -> K) -> 
     let mut out = Vec::new();
     for ((k, _, expires, _), parts) in classes {
         let ai = parts.first().map_or(0, |p| p.ai);
-        let retention = c.header.aspects.get(ai).map(|a| a.retention).unwrap_or_default();
-        let (_, tokens) = prefix_inputs(&c.header, &[(ai, 0)])?;
+        let retention = resolved.aspects.get(ai).map(|a| a.retention).unwrap_or_default();
+        let (_, tokens) = prefix_inputs(resolved, &[(ai, 0)])?;
         let fits = |n: usize, body: usize| blob_len(fixed.saturating_add(head_len(n)).saturating_add(body), tokens.len()) <= MAX_BLOB;
         let mut groups: Vec<Vec<&Part>> = Vec::new();
         let mut cur: Vec<&Part> = Vec::new();

@@ -294,3 +294,44 @@ fn writer_purge_deletes_chunks_by_token_spec_crypto_7() {
     let left: Vec<_> = chunks.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
     assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the server", left.len(), chunks.len());
 }
+
+// spec/commits.md §4 (a commit blob whose prefix disagrees with its header is bad input), for a
+// commit whose header lists go by link (spec/commits.md §1): checked once the lists are
+// resolved; the forged blob counts as no body, so a writer places its own.
+#[test]
+fn linked_header_prefix_checked_spec_commits_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    net.set_online(a, false);
+    let mut m = osis_node::Mutation::new();
+    for i in 0..800 {
+        m.set(t, &Ak::new(&format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+    }
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    let h = net.engine(a).header(&c).unwrap();
+    assert!(h.links.aspects.is_some(), "the aspect list goes by link");
+    let body = net.engine(a).bodies(&c).unwrap().into_iter().next().unwrap();
+    let parts = body.parts.clone();
+    // the same body under a prefix with another expiry and no commitments
+    let prefix = osis_label::Prefix::new([5; 16], Some(osis_core::WallMs(T0 + 1_000_000_000)), vec![]).unwrap();
+    let (key, blob) = osis_label::frame(&prefix, &body.plaintext, &mut SeededRng::from_u64(3)).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let secret = net.engine(a).wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &id, &key).unwrap();
+    let pk = net.engine(a).package(&c).unwrap().unwrap();
+    let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; 49], stamp: None }).collect();
+    events.push(osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None });
+    let conn = net.conn_to(b, sv).expect("connected");
+    net.feed(b, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
+    net.settle(10_000);
+    assert!(net.engine(b).header(&c).is_some(), "applied from the forged blob");
+    let entries = net.sync(b).entries(&l);
+    assert!(entries.iter().any(|(x, k)| *x == id && *k == osis_node::sync::EntryKind::Bad), "the forged blob is bad input");
+    assert!(entries.iter().any(|(x, k)| *x != id && matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)), "a writer placed its own encryption");
+}
