@@ -79,6 +79,43 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     assert_eq!(net.server_ids(sv, &l).len(), n);
 }
 
+// spec/permissions.md §4 (chain certificates per label: what any entry already holds is not
+// copied again; closure deltas are never copied): the admin places first, then a writer, then a
+// reader; the later ones copy only their own cards, so no delta of any commit sits in two
+// entries under the label.
+#[test]
+fn certificates_once_per_label_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let r = net.node(3, &[sv]);
+    let _g = net.group(a, &[(w, Role::Write), (r, Role::Read)], &[sv]);
+    net.set_online(w, false);
+    net.set_online(r, false);
+    net.run();
+    net.set_online(w, true);
+    net.run();
+    net.set_online(r, true);
+    net.run();
+    let l = net.label(a);
+    let ids: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let mut held: std::collections::BTreeMap<osis_core::CommitId, Vec<(usize, usize)>> = Default::default();
+    for (id, k) in net.sync(a).entries(&l) {
+        if let EntryKind::Commit { commit, parts } = k
+            && ids.contains(&id)
+        {
+            let seen = held.entry(commit).or_default();
+            assert!(parts.iter().all(|p| !seen.contains(p)), "a delta of {commit:?} twice under the label");
+            seen.extend(parts);
+        }
+    }
+    for n in [w, r] {
+        let t = net.tid(n);
+        assert!(held.keys().any(|c| net.engine(a).header(c).is_some_and(|h| h.author == t && h.aspects.iter().any(|x| x.ak.as_str() == "/node"))), "node {n}'s card is there");
+    }
+}
+
 // spec/sync.md §6, spec/commits.md §4: pages of a paged delta are fetched before its commit
 // applies; chunks of a large value are fetched lazily, on demand.
 #[test]
