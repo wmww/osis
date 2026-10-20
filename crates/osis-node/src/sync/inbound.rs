@@ -126,6 +126,7 @@ impl SyncEngine {
                     if !self.state.present_anywhere(&l, &b) {
                         self.state.remove_entry(l, b);
                         self.forget_blob(&b)?;
+                        self.forget_chunk(&b)?;
                     }
                 }
                 LogEvent::Pending { .. } => {}
@@ -177,9 +178,18 @@ impl SyncEngine {
             return Ok(());
         }
         let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+        // pages and chunks a waiting commit lists (a reader's deposited commit) stay
+        let mut listed = BTreeSet::new();
+        for (c, r) in self.engine.pending() {
+            if r == crate::Reason::WaitBlobs
+                && let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).map(|cb| cb.header)
+            {
+                listed.extend(h.chunks.iter().map(|ch| ch.blob));
+            }
+        }
         let mut gone = Vec::new();
         for (b, fresh) in ids {
-            let junk = self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
+            let junk = !listed.contains(b) && self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
             if !junk {
                 continue;
             }
@@ -379,7 +389,9 @@ impl SyncEngine {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
             let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
             for ch in &cb.header.chunks {
-                if self.state.entries.contains_key(&(l, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob, conn).is_none() {
+                // asked of the label whether or not an entry was seen (an unstamped one that
+                // opened under nothing is not kept, `drop_unvouched`)
+                if !self.missing.contains(&(conn, ch.blob)) && !self.engine.has_blob(&ch.blob) && self.fetching.insert(ch.blob, conn).is_none() {
                     missing.push(ch.blob);
                 }
             }
@@ -414,6 +426,19 @@ impl SyncEngine {
             })?;
         }
         Ok(())
+    }
+
+    /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md
+    /// §5); while one does, its prefix salt makes its chunk token.
+    pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
+        if self.state.blobs.contains_key(b) || self.state.entries.keys().any(|(_, x)| x == b) || !self.dropped_chunks().contains_key(b) {
+            return Ok(());
+        }
+        let id = *b;
+        self.engine.run(|tx| {
+            tx.txn.delete_blob(&id);
+            Ok(())
+        })
     }
 
     /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
@@ -544,6 +569,7 @@ impl SyncEngine {
                     if !self.state.present_anywhere(&l, &b) {
                         self.state.remove_entry(l, b);
                         self.forget_blob(&b)?;
+                        self.forget_chunk(&b)?;
                     }
                 }
                 Code::NOT_HEAD => stale = true,

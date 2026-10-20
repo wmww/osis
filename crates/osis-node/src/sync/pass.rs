@@ -818,6 +818,23 @@ impl SyncEngine {
                 items.push(item);
             }
         }
+        // chunks of dropped deltas (spec/commits.md §5: a purge drops every body carrying the
+        // values; spec/sync.md §3: chunk blobs belong to the closure)
+        let chunks = self.dropped_chunks();
+        for id in self.state.present_at(&server, &l) {
+            let Some((c, ch)) = chunks.get(&id) else { continue };
+            if !self.state.entries.get(&(l, id)).is_some_and(|e| e.kind == Kind::Unknown) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
+                continue;
+            }
+            match self.chunk_delete(conn, keys, &l, &id, c, ch, out)? {
+                Some(item) => {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, id), raw);
+                    items.push(item);
+                }
+                None => continue,
+            }
+        }
         // timed deletes: bodies under a relative keep-at-most with a known bound
         for b in bodies {
             let Some(id) = self.entry_for(&server, &l, b) else { continue };
@@ -917,6 +934,55 @@ impl SyncEngine {
             c = *self.state.carriers.get(&c)?.iter().rev().find(|c| on(c))?;
         }
         None
+    }
+
+    /// Chunk, tree-node and page blobs whose creating deltas this node dropped (purge, expiry,
+    /// keep at most, compaction), by the commit and chunk entry that list them, unless a commit
+    /// whose creating deltas are not all dropped lists them too (chunk reuse, spec/sync.md §1).
+    /// A chunk's creating deltas are those whose token indices are its own (one class); with no
+    /// such delta, every delta of the commit.
+    pub(crate) fn dropped_chunks(&self) -> BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)> {
+        let mut out = BTreeMap::new();
+        if !self.engine.core.commits.values().any(|m| !m.dropped.is_empty() && !m.header.chunks.is_empty()) {
+            return out;
+        }
+        let mut live = BTreeSet::new();
+        for (id, m) in &self.engine.core.commits {
+            let h = &m.header;
+            for ch in &h.chunks {
+                let idx: Vec<usize> = ch.tokens.iter().map(|(i, _)| *i).collect();
+                let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tokens == idx).map(|(ai, _)| ai).collect();
+                let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
+                let mut parts = ais.iter().flat_map(|ai| (0..h.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(move |di| (*ai, di))).peekable();
+                let dropped = parts.peek().is_some() && parts.all(|p| m.dropped.contains(&p));
+                if dropped {
+                    out.entry(ch.blob).or_insert((*id, ch.clone()));
+                } else {
+                    live.insert(ch.blob);
+                }
+            }
+        }
+        out.retain(|b, _| !live.contains(b));
+        out
+    }
+
+    /// A delete item for a dropped chunk: the delete key, else its chunk token (from the salt in
+    /// its prefix; a chunk never fetched is fetched first).
+    #[allow(clippy::too_many_arguments)]
+    fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, c: &CommitId, ch: &osis_commit::ChunkEntry, out: &mut Vec<super::Action>) -> Result<Option<osis_label::DeleteItem>> {
+        if keys.delete.is_some() {
+            return Ok(delete_item(keys, l, *id, None, &[]));
+        }
+        let Some(blob) = self.engine.blob(id)? else {
+            if !self.fetching.contains_key(id) && !self.missing.contains(&(conn, *id)) {
+                self.fetching.insert(*id, conn);
+                self.command(conn, Command::Fetch { label: *l, ids: vec![*id] }, out)?;
+            }
+            return Ok(None);
+        };
+        let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
+        let tokens = self.engine.chunk_tokens(c, ch, prefix.salt());
+        Ok(delete_item(keys, l, *id, None, &tokens))
     }
 
     /// A delete item for an entry: delete key, else a token this node can derive.

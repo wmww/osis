@@ -300,6 +300,33 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// The chunk tokens this node can derive for chunk entry `ch` of commit `c` whose blob
+    /// prefix has `salt` (spec/crypto.md §7: per token secret of the delta that created it),
+    /// with their levels.
+    pub fn chunk_tokens(&mut self, c: &CommitId, ch: &osis_commit::ChunkEntry, salt: &[u8; 16]) -> Vec<(u8, Secret32)> {
+        let Some(h) = self.header(c) else { return Vec::new() };
+        let idx: Vec<usize> = ch.tokens.iter().map(|(i, _)| *i).collect();
+        let Some(a) = h.aspects.iter().find(|a| a.tokens == idx) else { return Vec::new() };
+        let Some(thing) = self.epochs(&a.tid) else { return Vec::new() };
+        let author = if h.kind == Kind::Import { None } else { self.epochs(&h.actor) };
+        let mut out = Vec::new();
+        for (i, chash) in &ch.tokens {
+            let Some(t) = h.tokens.get(*i) else { continue };
+            for (_, s) in osis_keys::token_candidates(t.level, &thing, author.as_ref()) {
+                if osis_crypto::token_hash(osis_crypto::delete_token(s, &h.salt).expose()) == t.hash {
+                    let tok = osis_crypto::delete_token(s, salt);
+                    if osis_crypto::token_hash(tok.expose()) == *chash {
+                        out.push((t.level, tok));
+                    }
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A delete item for an entry: by the delete key when held, else by a token and the key its
 /// level needs (spec/sync.md §5), under established epochs only (spec/crypto.md §4).
 pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, tokens: &[(u8, Secret32)]) -> Option<osis_label::DeleteItem> {

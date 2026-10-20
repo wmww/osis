@@ -234,7 +234,6 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
 // chunks]" at untrusted nodes), spec/sync.md §5 (token holders delete must-not-hold bodies): a
 // purged large value's chunk blobs leave the server.
 #[test]
-#[ignore = "issues/purged-chunks-at-servers.md"]
 fn purged_chunks_leave_the_server_spec_sync_5() {
     use osis_schema::AspectKey;
     let mut net = Net::new();
@@ -256,6 +255,40 @@ fn purged_chunks_leave_the_server_spec_sync_5() {
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
     m.remove_aspect(t, &GONE).unwrap();
     net.engine(a).commit(m).unwrap();
+    net.run();
+    net.run();
+    let left: Vec<_> = chunks.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
+    assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the server", left.len(), chunks.len());
+}
+
+// spec/crypto.md §7 (chunk token: one per token secret of the delta that created the chunk),
+// spec/sync.md §5: a writer that is no admin of the label purges a `writer` value another node
+// wrote; it fetches the chunks it never read for their salts and deletes them by chunk token.
+#[test]
+fn writer_purge_deletes_chunks_by_token_spec_crypto_7() {
+    use osis_schema::AspectKey;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let big: String = (0..300_000u32).map(|i| char::from(b'a' + (i.wrapping_mul(2654435761) >> 27) as u8 % 26)).collect();
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s(&big)).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let chunks: Vec<osis_core::BlobId> = net.engine(a).header(&c).unwrap().chunks.iter().map(|ch| ch.blob).collect();
+    assert!(!chunks.is_empty(), "a chunked value");
+    assert!(chunks.iter().all(|id| net.server_ids(sv, &l).contains(id)), "chunks uploaded");
+    // the admin (holder of the delete key) is gone: only the writer's token can delete
+    net.set_online(a, false);
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(b).commit(m).unwrap();
+    net.feed(b, Event::Local);
     net.run();
     net.run();
     let left: Vec<_> = chunks.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
