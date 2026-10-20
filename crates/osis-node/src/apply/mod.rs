@@ -226,7 +226,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
         Exam::Ready(parts) => {
             tx.core.touch();
             if tx.core.pending.remove(&id).is_some() {
-                tx.txn.remove_pending(&id, Shred::No)?;
+                tx.txn.remove_pending(&id, Shred::Yes)?;
             }
             apply_verified(tx, &blob, parts, origin, received)?;
             Ok(Ingested::Applied(id))
@@ -274,7 +274,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     if blob.parts.is_empty() {
         if tx.core.pending.remove(id).is_some() {
             tx.core.touch();
-            tx.txn.remove_pending(id, Shred::No)?;
+            tx.txn.remove_pending(id, Shred::Yes)?;
         }
         return Ok(Ingested::Duplicate(*id));
     }
@@ -284,7 +284,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         Exam::Ready(parts) => {
             if tx.core.pending.remove(id).is_some() {
                 tx.core.touch();
-                tx.txn.remove_pending(id, Shred::No)?;
+                tx.txn.remove_pending(id, Shred::Yes)?;
             }
             atomic::join_late(tx, id, &merged, parts)?;
             Ok(Ingested::Applied(*id))
@@ -389,7 +389,7 @@ impl Engine {
                         Ok(Ingested::Applied(_)) => progressed = true,
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {
-                            tx.txn.remove_pending(&id, Shred::No)?;
+                            tx.txn.remove_pending(&id, Shred::Yes)?;
                             tx.core.pending.remove(&id);
                             let now = tx.now();
                             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(id), peer: None, detail: e.to_string() }, now);

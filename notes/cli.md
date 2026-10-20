@@ -11,7 +11,7 @@
 - **Paths**: typed positions follow the type. `[n]` on an untyped position: `get` reads the saved value (a list: index; else map key). Writes (`set`, `replace`, `rm`, `op`, script lines) take it as a map key, and refuse it (exit 2) when the saved value there is a list (untyped lists take no index writes; register a schema) or when the same batch already wrote that aspect or created/deleted the thing (`write` scripts: the pending state is invisible to reads, so the saved state cannot decide). Never a silent map write over a list.
 - **Commit ids** print as 64 lower-case hex digits (input for `undo-commit`, `inspect commit`).
 - **`write` scripts**: lines are tokenized at whitespace outside quotes and brackets, so a value is one token with its quotes kept; a token wholly in single quotes loses them (`''` is the root path). `$NAME` (from `create --as NAME`) works as a tid argument and inside values. Errors from a line's arguments carry `line N`; rights and unknown things are checked at commit (no line). Output: the commit id (or `-`), then `NAME<TAB>tid` per bound name.
-- **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600), then `$EDITOR`.
+- **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600, in `$XDG_RUNTIME_DIR` when set), then `$EDITOR`; the file is removed whatever the editor does.
 - **Delivering commands** (`grant`, `edge`, `leave`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the servers"); skipped for a store without servers. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
 - **`serve`**: calls `osis_server::serve::run` (the `osis-server` binary's body, moved into the library behind feature `bin`); without `--config`: listen `quic://127.0.0.1:0`, data `osis-server-data`, key `<data>/server.key`. The address `<url>#<key>` is the first stdout line; logs go to stderr.
@@ -33,7 +33,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | command | API | state |
 |---|---|---|
 | `init [--server A]` | `create` (prints the recovery card first) | now |
-| `restore CARD` | `restore` | now |
+| `restore CARD` (or `@FILE`, `-`) | `restore` | now |
 | `whoami` | `me`, `node`, `home`, `servers` | now |
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |

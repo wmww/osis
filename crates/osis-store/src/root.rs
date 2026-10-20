@@ -165,7 +165,7 @@ mod file {
                 _ => 0,
             };
             let created = !self.path.exists();
-            let mut f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&self.path).map_err(io)?;
+            let mut f = crate::backend::owner_only().read(true).write(true).create(true).truncate(false).open(&self.path).map_err(io)?;
             let bytes = osis_crypto::Zeroizing::new(Self::encode(seq, record));
             self.write_slot(&mut f, first, &bytes)?;
             self.write_slot(&mut f, 1 - first, &bytes)?;
@@ -214,6 +214,9 @@ mod tests {
         assert_eq!(r.load().unwrap(), Some(rec(2, 0xb2)));
         let raw = std::fs::read(&path).unwrap();
         assert!(!raw.windows(32).any(|w| w == [0xa1; 32]), "old key left in the file");
+        // The root key is readable by its owner only.
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions()) & 0o077, 0);
         // Torn write of one slot: the other still loads.
         let mut torn = raw.clone();
         torn[10] ^= 1;

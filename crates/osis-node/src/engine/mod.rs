@@ -475,6 +475,13 @@ impl Engine {
         self.run(|tx| Ok(tx.txn.get_local(&k)?))
     }
 
+    /// Every key the store's current tree yields: what an attacker holding the device starts
+    /// from. Shredding tests.
+    #[doc(hidden)]
+    pub fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>> {
+        Ok(self.store.forensic_keys()?)
+    }
+
     /// Writes a local record of the API layer.
     pub fn set_app_record(&mut self, name: &str, value: &[u8]) -> Result<()> {
         let k = [records::APP, name.as_bytes()].concat();
