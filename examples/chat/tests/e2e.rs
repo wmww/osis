@@ -68,6 +68,38 @@ fn join_by_link_and_talk() {
     assert_eq!(read_marker(&alice, ps[2]).unwrap(), Some(m1));
 }
 
+// notes/chat.md Structure (the chat is synced under its own label, not placed in the home
+// group), spec/sync.md §2 (a labeled group's `/label` is published under the owner's home
+// label): the creator's second device and a device restored from the recovery card find the
+// chat through the home label and read its timeline.
+#[test]
+fn creator_devices_find_chat_through_home_label() {
+    let mut w = World::new();
+    let sv = w.add_server().unwrap();
+    let (alice, card) = w.person(1, &[sv]).unwrap();
+    let card = card.unwrap();
+    w.run();
+    let bob = person(&mut w, 2, sv);
+    let (c, pa) = new_chat(&alice, "Lunch", "alice").unwrap();
+    assert!(!alice.groups_of(c).contains(&alice.home()), "not a home item");
+    let link = invite(&alice, c, false).unwrap();
+    w.run();
+    let (_, pb) = w.until(join(&bob, &link, "bob"), 1000, 10).expect("joined").unwrap();
+    send(&alice, pa, "hi", None).unwrap();
+    w.advance(1);
+    send(&bob, pb, "hello", None).unwrap();
+    w.run();
+    let joining = Osis::pair(w.cfg(3, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(joining.request()).unwrap();
+    let phone = joining.finish(&reply).unwrap();
+    w.run();
+    assert_eq!(texts(&phone, c).unwrap(), ["hi", "hello"], "the second device");
+    w.advance(1000);
+    let restored = w.until(Osis::restore(w.cfg(4, &[]), &card), 1000, 10).unwrap().unwrap();
+    w.run();
+    assert_eq!(texts(&restored, c).unwrap(), ["hi", "hello"], "a device restored from the card");
+}
+
 // notes/chat.md Structure (typing as signals on the persona), spec/sync.md §9, spec/
 // requirements.md (Ephemeral data), notes/api.md Signals (`on_signal_in`): typing reaches the
 // other participants, a participant who joined after the listener included, and is never stored.

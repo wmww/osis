@@ -18,7 +18,7 @@ fn too_deep(op: &PathOp) -> bool {
     let Some(room) = MAX_VALUE_DEPTH.checked_sub(op.path.len()) else { return true };
     let keys = op.path.iter().any(|s| matches!(s, PathSeg::Key(k) if k.deeper_than(MAX_VALUE_DEPTH)));
     keys || match &op.op {
-        Op::Set(v) | Op::Replace(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
+        Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
         Op::Edit { base, new } => base.deeper_than(room) || new.deeper_than(room),
         Op::Insert { items, .. } => items.iter().any(|v| v.deeper_than(room)),
         Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } => false,
@@ -128,23 +128,27 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         }
         PathSeg::Key(k) => {
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            match key_lookup(s, a, e.as_ref(), k) {
+            let put = match &op.op {
+                crate::ops::Op::Put(v) if rest.is_empty() => Some(v),
+                _ => None,
+            };
+            match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
                     resolve(w, ks.as_ref(), None, None, rest, op, &vview, false)?
                         .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
-                    // a key that is not live: a new entry holding the op's writes against an
-                    // absent value (§5.6); an op that writes nothing creates nothing. A path on
-                    // through a field or case would create a partial struct or enum.
+                    // a key that is not live, or a put_new: a new entry holding the op's writes
+                    // against an absent value (§5.6); an op that writes nothing creates nothing.
+                    // A path on through a field or case would create a partial struct or enum.
                     if matches!(rest.first(), Some(PathSeg::Field(_) | PathSeg::Case(_))) {
                         return Err(Error::Mismatch("no live entry with that key: put the whole value"));
                     }
                     let mut w2 = w.clone();
                     let d = w2.fresh().dot;
-                    let c = match (&op.op, rest.is_empty()) {
-                        (crate::ops::Op::Set(v), true) => Some(crate::ops::create(&mut w2, &vview, v)?),
+                    let c = match (&op.op, put, rest.is_empty()) {
+                        (_, Some(v), _) | (crate::ops::Op::Set(v), None, true) => Some(crate::ops::create(&mut w2, &vview, v)?),
                         _ => resolve(&mut w2, None, None, None, rest, op, &vview, false)?,
                     };
                     let Some(c) = c else { return Ok(None) };

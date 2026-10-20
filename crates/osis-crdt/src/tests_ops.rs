@@ -3,7 +3,7 @@
 use crate::batch::Batch;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
-use crate::stamp::{CounterRange, Source};
+use crate::stamp::{CounterRange, Dot, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
@@ -414,5 +414,81 @@ proptest! {
                 prop_assert_eq!(m.live_dots(k), want);
             }
         }
+    }
+}
+
+/// §5.6 `put_new`: a new entry whatever is live, carrying the value whole (an unchanged value
+/// too) and resetting nothing; the key reads as the join of its live entries. A set into a live
+/// key is no put (its entry is not the delta's own).
+#[test]
+fn map_put_new_spec_5_6() {
+    let view = AnyView;
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let one = |v: i64| Value::Map([(Value::Int(0), Value::Int(v))].into_iter().collect());
+    let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
+    let mut st = create(&mut w, &view, &one(1)).unwrap();
+    for (t, v) in [(2u64, 1i64), (3, 7)] {
+        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Put(Value::Int(v)) }, &view).unwrap();
+        let (d, range) = batch.finish().unwrap();
+        let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
+        assert!(d.is_put_only_map(&own));
+        // a set into the live key writes into an existing entry: not a put
+        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(v + 100)) }, &view).unwrap();
+        let (s, range) = batch.finish().unwrap();
+        let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
+        assert!(!s.is_put_only_map(&own));
+        st.join(d);
+        assert_eq!(st.read(), Some(one(v)));
+    }
+    let Fragment::Map(m) = &st else { panic!("map") };
+    assert_eq!(m.entries.len(), 3);
+    let mut batch = Batch::new(&st, Writer::new(ts(4 << 16), a, 4));
+    batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
+    assert!(!batch.finish().unwrap().0.is_put_only_map(&|_| true));
+}
+
+/// §5.6 `put_new` away from a map key: a register is written again; a composite (it would merge
+/// with what is there) is refused.
+#[test]
+fn put_new_register_only_spec_5_6() {
+    let view = AnyView;
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let st = Fragment::default();
+    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), a.clone(), 1));
+    assert!(b.apply(&PathOp { path: vec![], op: Op::Put(Value::Int(3)) }, &view).is_ok());
+    for v in [Value::Set([Value::Int(1)].into_iter().collect()), Value::List(vec![Value::Int(1)]), Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect())] {
+        let mut b = Batch::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
+        assert!(b.apply(&PathOp { path: vec![], op: Op::Put(v) }, &view).is_err());
+    }
+}
+
+/// spec/commits.md §2: a reset-plus-full-state delta of a map or set split per entry gives
+/// deltas sharing the commit-level stamp whose join is the whole, each encoding on its own
+/// under the commit's range.
+#[test]
+fn split_entries_join_back_spec_commits_2() {
+    use crate::codec::{decode_delta, encode_delta};
+    use crate::stamp::Interner;
+    use crate::wire::{Delta, DeltaCtx, DeltaKind};
+    let map = Value::Map((0..3i64).map(|i| (Value::Int(i), Value::Str(format!("v{i}")))).collect());
+    let set = Value::Set((0..3i64).map(Value::Int).collect());
+    for v in [map, set] {
+        let node = Source::node(Tid::from_bytes([5; 15]));
+        let mut w = crate::ops::Writer::new(ts(70 << 16), node.clone(), 1);
+        let whole = crate::ops::replace(&mut w, &AnyView, &v).unwrap();
+        let parts = whole.clone().split_entries();
+        assert_eq!(parts.len(), 4, "the reset alone, then one per entry");
+        let cx = DeltaCtx { ts: ts(70 << 16), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
+        let mut joined = Fragment::empty(whole.encoding()).unwrap();
+        for p in parts {
+            let d = Delta { nonce: [1; 16], fragment: p.clone() };
+            let bytes = encode_delta(&d, &cx, None).unwrap();
+            assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap(), d);
+            joined.join(p);
+        }
+        assert_eq!(joined, whole);
+        assert_eq!(read(&joined), Some(v));
     }
 }

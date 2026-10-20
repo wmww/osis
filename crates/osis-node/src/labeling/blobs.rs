@@ -82,11 +82,12 @@ impl HeadKeys {
     }
 }
 
-/// The held epoch of `role` whose label key at `index` is `pk`, with its secret.
-fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, Secret32)> {
+/// The held epoch of `role` whose label key at `index` is `pk`, with the secret deriving it
+/// and whether that secret may be encrypted under (not reading-only, spec/crypto.md §4).
+fn matching(e: &ActorEpochs, role: Role, index: u64, pk: &osis_crypto::VerifyingKey) -> Option<(Epoch, Secret32, bool)> {
     let re = e.role(role);
-    let ep = osis_keys::registered_epoch(re, role, index, pk)?;
-    re.reading_secret(&ep).map(|s| (ep, s.clone()))
+    let (ep, s) = osis_keys::registered_secret(re, role, index, pk)?;
+    Some((ep, s.clone(), re.secret(&ep).is_some()))
 }
 
 impl Engine {
@@ -189,7 +190,7 @@ impl Engine {
 
     /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
-    fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub(crate) fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
         parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "/secrets" | "/keys"))
@@ -246,19 +247,20 @@ impl Engine {
     pub fn head_keys(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
-            if let Some((ep, s)) = matching(&e, Role::Read, index, &head.keys.sync) {
+            if let Some((ep, s, _)) = matching(&e, Role::Read, index, &head.keys.sync) {
                 k.sync = Some(label_role_key(LabelRole::Sync, &s, index));
                 k.sync_established = self.established(g, &e, Role::Read, &ep);
                 k.epochs[0] = Some(ep);
             }
-            if let Some((ep, s)) = matching(&e, Role::Write, index, &head.keys.write) {
-                if self.established(g, &e, Role::Write, &ep) {
+            // stamps and deletes are encrypting under: never from a reading-only secret
+            if let Some((ep, s, checked)) = matching(&e, Role::Write, index, &head.keys.write) {
+                if checked && self.established(g, &e, Role::Write, &ep) {
                     k.write = Some(label_role_key(LabelRole::Write, &s, index));
                 }
                 k.epochs[1] = Some(ep);
             }
-            if let Some((ep, s)) = matching(&e, Role::Admin, index, &head.keys.delete) {
-                if self.established(g, &e, Role::Admin, &ep) {
+            if let Some((ep, s, checked)) = matching(&e, Role::Admin, index, &head.keys.delete) {
+                if checked && self.established(g, &e, Role::Admin, &ep) {
                     k.delete = Some(label_role_key(LabelRole::Delete, &s, index));
                 }
                 k.epochs[2] = Some(ep);
@@ -349,4 +351,27 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec/crypto.md §4: a secret learned only from a pending or invalid commit is never
+    // encrypted under; signing a stamp or delete is. A reading-only write or admin secret still
+    // finds the head's epoch (opening, walking) but is not offered for signing.
+    #[test]
+    fn reading_only_head_secret_never_signs_spec_crypto_4() {
+        let e = Epoch::new(2, [2; 16]).unwrap();
+        let s = Secret32::from_bytes([5; 32]);
+        let mut a = ActorEpochs::default();
+        a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
+        a.write.set_established(e, osis_keys::Provenance::Chain);
+        let pk = label_role_key(osis_keys::label_role(Role::Write), &s, 0).verifying_key();
+        let (ep, got, checked) = matching(&a, Role::Write, 0, &pk).unwrap();
+        assert_eq!((ep, &got, checked), (e, &s, false));
+        a.write.set_secret(e, s.clone());
+        assert!(matching(&a, Role::Write, 0, &pk).unwrap().2);
+    }
 }

@@ -52,19 +52,15 @@ impl SyncEngine {
         Ok((l, self.handle(super::Event::Local)))
     }
 
-    /// Replaces label `old` of `g` (spec/sync.md §2; an admin): a new label one index above the
-    /// highest at the same servers (rotate the admin secret first when the loss calls for it),
-    /// the old one marked replaced; passes then upload the live blobs under the new label, and
-    /// under the old one (an admin keeps syncing it, `labels`) only membership-class commits,
-    /// the replacement's `/label` among them, deleting its content entries; certificates stay.
+    /// Replaces label `old` of `g` (spec/sync.md §2; an admin, `Engine::replace_label`: the
+    /// admin rotation if the loss calls for it, a new label at the same servers, the old one
+    /// marked replaced); passes then upload the live blobs under the new label, and under the
+    /// old one (an admin keeps syncing it until done there, `labels`) only membership-class
+    /// commits, the replacement's `/label` among them, deleting its content entries;
+    /// certificates stay.
     pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
-        let servers = self.engine.group_labels(g)?.into_iter().find(|l| l.id == *old).map(|l| l.servers).ok_or(Error::Misuse("no such label"))?;
-        let (new, done) = self.engine.create_label(g, &servers)?;
+        let (new, done) = self.engine.replace_label(g, old)?;
         self.take_done(done)?;
-        let mut m = crate::Mutation::new();
-        let path = vec![osis_crdt::PathSeg::Key(osis_schema::Codec::to_value(old)), osis_crdt::PathSeg::Field(3)];
-        m.op(*g, &ct::LABEL, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(Value::Bool(true)) })?;
-        self.engine.commit(m)?;
         Ok((new, self.handle(super::Event::Local)))
     }
 
@@ -192,7 +188,46 @@ impl SyncEngine {
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
                 self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone() } });
             }
+            let parts = self.engine.header(c).map(|h| h.aspects.iter().enumerate().filter(|(i, _)| aspects.contains(i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect()).unwrap_or_default();
+            self.place_linked(l, c, &parts)?;
             self.state.add_cert(l, *c);
+        }
+        Ok(())
+    }
+
+    /// After a settled pass of replaced label `l` of `g` at `server` that had nothing left to
+    /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
+    /// membership-class commits, the replacement's `/label` among them, and certificates stay);
+    /// once done at every server of the label (or no key opens it there), this admin stops
+    /// syncing it for good; `labels` retires it after `MEMBERSHIP_KEEP` whatever.
+    pub(crate) fn retire_at(&mut self, server: super::state::ServerKey, g: &Tid, l: LabelId) -> Result<()> {
+        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
+        for b in self.state.present_at(&server, &l) {
+            let Some(Kind::Commit { commit, parts }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
+            let Some(h) = self.engine.header(commit) else { return Ok(()) };
+            if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
+                return Ok(());
+            }
+        }
+        self.retired_at.insert((server, l));
+        let servers: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.servers).unwrap_or_default();
+        // a server where no key opens the label (taken by whoever replaced it) counts as done
+        let failed = |k: &super::state::ServerKey| self.conns.values().any(|c| c.server == *k && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Failed));
+        if servers.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
+            self.state.retire(l);
+        }
+        Ok(())
+    }
+
+    /// The blobs a certificate copy of `parts` of `c` links (header lists, linked frontiers) as
+    /// certificate entries under `l` (spec/sync.md §3), so a verifier that syncs nothing else
+    /// under the label resolves them.
+    pub(crate) fn place_linked(&mut self, l: LabelId, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> Result<()> {
+        for b in self.engine.linked_blobs(c, parts)? {
+            if !self.state.entries.contains_key(&(l, b)) {
+                let wrap = osis_crypto::filler_wrap(&mut *self.rng);
+                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, kind: Kind::Unknown });
+            }
         }
         Ok(())
     }

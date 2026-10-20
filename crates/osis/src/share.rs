@@ -468,7 +468,7 @@ impl Osis {
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
         let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
-            let acts = x.sync.follow(link.k, link.k_label, link.servers.clone());
+            let acts = x.sync.follow(l, link.k, link.k_label, link.servers.clone());
             self.inner.net.apply(acts);
             Ok(l)
         })?;

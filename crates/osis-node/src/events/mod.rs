@@ -71,6 +71,9 @@ pub enum DiagnosticKind {
     /// A text session could not commit its edits (the `osis` API: lost write access, storage);
     /// they stay in its buffer.
     Uncommitted,
+    /// A local storage condition: a store file or directory readable by others whose mode
+    /// could not be tightened (the `osis` file store).
+    Storage,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

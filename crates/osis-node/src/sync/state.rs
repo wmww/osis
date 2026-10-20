@@ -32,6 +32,8 @@ const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
 const FORGET: &[u8] = b"y/f";
+/// Replaced labels this admin is done with (`SyncEngine::retire_at`).
+const RETIRED: &[u8] = b"y/q";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,11 +82,14 @@ pub struct OutRec {
     pub blob: Vec<u8>,
 }
 
-/// A label learned from an inbox blob before its `/label` is held.
+/// A label learned from an inbox blob before its `/label` is held, or followed by a held key
+/// actor's static entry (`via`: a recovery card's home label, a link's label).
 #[derive(Clone, Debug)]
 pub struct Hint {
     pub thing: Tid,
     pub servers: Vec<Address>,
+    /// The key actor whose static entry may open it; no other key actor's is presented.
+    pub via: Option<Tid>,
 }
 
 #[derive(Default)]
@@ -120,6 +125,11 @@ pub struct State {
     pub now: u64,
     /// Things forgotten whose opened inbox blobs are not yet checked (`y/f`).
     pub forget: BTreeSet<Tid>,
+    /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
+    pub retired: BTreeSet<LabelId>,
+    /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
+    /// with a time): retired after `MEMBERSHIP_KEEP` whatever its servers say.
+    pub replaced_seen: BTreeMap<LabelId, u64>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -263,6 +273,14 @@ impl State {
                     let blob = x.bytes()?.to_vec();
                     s.outbox.insert(k, OutRec { label, server, owner, blob });
                 }
+                b"q" => {
+                    let l = LabelId(r.arr()?);
+                    if v.is_empty() {
+                        s.retired.insert(l);
+                    } else {
+                        s.replaced_seen.insert(l, Rd::new(&v).u64()?);
+                    }
+                }
                 b"f" => {
                     s.forget.insert(r.tid()?);
                 }
@@ -279,7 +297,8 @@ impl State {
                         let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("hint"))?;
                         servers.push(Address { url, key: x.arr()? });
                     }
-                    s.hints.insert(l, Hint { thing, servers });
+                    let via = if x.is_empty() { None } else { Some(x.tid()?) };
+                    s.hints.insert(l, Hint { thing, servers, via });
                 }
                 _ => {}
             }
@@ -436,6 +455,23 @@ impl State {
         }
     }
 
+    pub fn retire(&mut self, l: LabelId) {
+        self.replaced_seen.remove(&l);
+        if self.retired.insert(l) {
+            self.put(key(RETIRED, &[&l.0]), Vec::new());
+        }
+    }
+
+    /// When a replaced label was first seen (recorded now if not yet).
+    pub fn replaced_seen(&mut self, l: LabelId, now: u64) -> u64 {
+        if let Some(t) = self.replaced_seen.get(&l) {
+            return *t;
+        }
+        self.replaced_seen.insert(l, now);
+        self.put(key(RETIRED, &[&l.0]), Wr::new().u64(now).take());
+        now
+    }
+
     pub fn add_cert(&mut self, l: LabelId, c: CommitId) {
         if self.certs.insert((l, c)) {
             self.put(key(CERT, &[&l.0, &c.0]), Vec::new());
@@ -486,10 +522,18 @@ impl State {
         }
     }
 
-    pub fn add_hint(&mut self, l: LabelId, h: Hint) {
+    /// Records a hint; a hint naming no key actor keeps the one an earlier hint followed for (an
+    /// inbox payload naming a followed label must not stall the follow).
+    pub fn add_hint(&mut self, l: LabelId, mut h: Hint) {
+        if h.via.is_none() {
+            h.via = self.hints.get(&l).and_then(|x| x.via);
+        }
         let mut w = Wr::new().raw(h.thing.as_bytes()).u32(h.servers.len() as u32);
         for a in &h.servers {
             w = w.bytes(a.url.as_bytes()).raw(&a.key);
+        }
+        if let Some(v) = &h.via {
+            w = w.raw(v.as_bytes());
         }
         self.put(key(HINT, &[&l.0]), w.take());
         self.hints.insert(l, h);
@@ -586,4 +630,21 @@ pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things
         tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;
     }
     Ok(freed.difference(&kept).copied().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
+    // payload names the same label first (its static entry is still tried).
+    #[test]
+    fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
+        let mut s = State::default();
+        let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
+        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: Some(k) });
+        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: None });
+        assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
+    }
 }

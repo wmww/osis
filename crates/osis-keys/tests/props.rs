@@ -150,7 +150,7 @@ impl Sim {
             Kind::Actor(e) => Opener::Actor { member: *t, epochs: e },
             Kind::Key(seed) => Opener::KeyActor { member: *t, seed },
         };
-        let errs = ingest(&self.a, &self.s, &opener, &mut v, true).unwrap();
+        let errs = ingest(&self.a, &self.s, &opener, &mut v, None).unwrap();
         assert!(errs.is_empty(), "{errs:?}");
         v
     }

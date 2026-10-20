@@ -81,7 +81,7 @@ impl Engine {
         Ok(Some(Package { id: *id, bytes, blobs }))
     }
 
-    fn tree_blobs(&mut self, root: &Link, actor: &osis_core::Tid, out: &mut BTreeSet<BlobId>) -> Result<()> {
+    pub(crate) fn tree_blobs(&mut self, root: &Link, actor: &osis_core::Tid, out: &mut BTreeSet<BlobId>) -> Result<()> {
         struct Rec<'e> {
             e: &'e mut Engine,
             seen: Vec<BlobId>,

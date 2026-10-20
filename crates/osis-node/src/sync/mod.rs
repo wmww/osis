@@ -222,7 +222,15 @@ pub struct LabelStatus {
     pub last_sync: Option<u64>,
 }
 
+/// A body: its commit and parts `(ai, di)`.
+type BodyKey = (osis_core::CommitId, Vec<(usize, usize)>);
+
 /// The sync engine of one node.
+/// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
+/// a server deleting each fresh chunk drives at most this rate of commits).
+pub(crate) const RELINK_BACKOFF_MS: u64 = 3_600_000;
+pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
+
 pub struct SyncEngine {
     pub(crate) engine: Engine,
     events: Receiver<crate::Event>,
@@ -252,6 +260,12 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
+    /// fetches those its server holds.
+    pub(crate) tree_wants: BTreeSet<osis_core::BlobId>,
+    /// Blobs each body's deltas link (`pass::body_blobs`), once the walk was complete: a body
+    /// never changes.
+    pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_core::BlobId>>,
     /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
     /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
     pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
@@ -263,10 +277,24 @@ pub struct SyncEngine {
     pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
+    /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
+    /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
+    pub(crate) relink_backoff: BTreeMap<(Tid, osis_core::Ak), (u64, u64)>,
+    /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
+    pub(crate) relink_pending: BTreeSet<osis_core::BlobId>,
+    pub(crate) relink_at: u64,
+    /// Servers where a replaced label is done with (`retire_at`).
+    pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
     pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    /// Commit blobs whose every delta was checked against its header hash (`true`) or found
+    /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
+    /// uploads or justify deleting another entry (`SyncEngine::genuine`).
+    pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
+    /// When a certificate left to its author (`SETTLE_MS`) is due again (raw ms).
+    pub(crate) settle_at: Option<u64>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -333,14 +361,22 @@ impl SyncEngine {
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
+            tree_wants: BTreeSet::new(),
+            body_links: BTreeMap::new(),
             sent: BTreeMap::new(),
             timed_sent: BTreeSet::new(),
             deleting: BTreeMap::new(),
             missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
+            relink_backoff: BTreeMap::new(),
+            relink_pending: BTreeSet::new(),
+            relink_at: 0,
+            retired_at: BTreeSet::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
+            genuine: BTreeMap::new(),
+            settle_at: None,
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
@@ -445,6 +481,7 @@ impl SyncEngine {
                 }
                 self.timers(out)?;
                 self.serve_timers(out);
+                self.relink_lost()?;
             }
             Event::Local => {}
             Event::Up { conn } => {
@@ -568,9 +605,9 @@ impl SyncEngine {
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of; an admin also keeps its replaced labels (spec/sync.md §2: it places the
-    /// membership-class commits there, the replacement's `/label` among them, and deletes the
-    /// content entries).
+    /// secrets of; an admin also keeps its replaced labels until done with them at every server
+    /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
+    /// `/label` among them, and deletes the content entries; `retire_at`).
     pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
@@ -579,7 +616,14 @@ impl SyncEngine {
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
             for l in self.engine.group_labels(&g).unwrap_or_default() {
-                if !l.replaced || admin {
+                if l.replaced && admin && !self.state.retired.contains(&l.id) {
+                    // a server where the label was lost may never settle a pass: a bound
+                    let now = self.now();
+                    if self.state.replaced_seen(l.id, now).saturating_add(osis_core::format::MEMBERSHIP_KEEP_MS) <= now {
+                        self.state.retire(l.id);
+                    }
+                }
+                if !l.replaced || admin && !self.state.retired.contains(&l.id) {
                     out.push((g, l));
                 }
             }
@@ -897,6 +941,11 @@ impl SyncEngine {
     /// Session pings, periodic re-syncs, heartbeats and retries.
     fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
+        // certificates left to their author are due: every label judges again
+        if self.settle_at.is_some_and(|t| t <= now) {
+            self.settle_at = None;
+            self.mark_dirty();
+        }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
             if let Some(c) = self.conns.get_mut(&conn) {
@@ -958,6 +1007,9 @@ impl SyncEngine {
         }
         for (_, x) in self.retry.values() {
             at(*x);
+        }
+        if let Some(x) = self.settle_at {
+            at(x);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
         for o in self.outbox.iter().filter(|o| o.after > now) {

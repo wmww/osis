@@ -6,7 +6,7 @@
 //! fetched before apply; signals are verified and fired.
 
 use super::state::{BlobRec, Entry, Hint, Kind, ServerKey};
-use super::{ConnId, Phase, SyncEngine};
+use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
 use crate::labeling::open_commit;
@@ -29,17 +29,20 @@ impl Engine {
         }
         self.run(|tx| {
             for (id, b) in blobs {
-                if osis_label::blob_id(&b) == id && tx.txn.get_blob(&id)?.is_none() {
+                if osis_label::blob_id(&b) == id && tx.txn.read_blob(&id, 0, 0)?.is_none() {
                     tx.txn.put_blob(&id, b)?;
                 }
             }
             Ok(())
-        })
+        })?;
+        // a node blob may complete a tree walk that lacked it
+        self.core.live_trees.retain(|_, t| t.missing.is_empty());
+        Ok(())
     }
 
     pub(crate) fn has_blob(&mut self, id: &BlobId) -> bool {
         let id = *id;
-        self.run(|tx| Ok(tx.txn.get_blob(&id)?.is_some())).unwrap_or(false)
+        self.run(|tx| Ok(tx.txn.read_blob(&id, 0, 0)?.is_some())).unwrap_or(false)
     }
 }
 
@@ -55,6 +58,42 @@ impl SyncEngine {
             return Some(h.thing);
         }
         self.labels().into_iter().find(|(_, gl)| gl.id == *l).map(|(g, _)| g)
+    }
+
+    /// Re-encrypts the deleted chunks waiting in `relink_pending` (`Engine::relink`), at most
+    /// once per back-off interval per aspect; those an aspect's back-off holds back wait until it
+    /// passes (retried on ticks), the rest are done.
+    pub(crate) fn relink_lost(&mut self) -> Result<()> {
+        let now = self.now();
+        if self.relink_pending.is_empty() || now < self.relink_at {
+            return Ok(());
+        }
+        let backoff = &mut self.relink_backoff;
+        let mut next: Option<u64> = None;
+        let mut allow = |t: &Tid, ak: &osis_core::Ak| {
+            let e = backoff.entry((*t, ak.clone())).or_insert((0, RELINK_BACKOFF_MS));
+            if now < e.0 {
+                next = Some(next.map_or(e.0, |n| n.min(e.0)));
+                return false;
+            }
+            *e = (now.saturating_add(e.1), e.1.saturating_mul(2).min(RELINK_BACKOFF_MAX_MS));
+            true
+        };
+        let pending = self.relink_pending.clone();
+        let r = self.engine.relink(&pending, &mut allow);
+        match next {
+            Some(n) => self.relink_at = n,
+            None => self.relink_pending.clear(),
+        }
+        match r {
+            Err(e @ crate::Error::Store(_)) => Err(e),
+            Err(e) => {
+                self.relink_pending.clear();
+                self.diag(format!("re-encrypting deleted chunks: {e}"));
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+        }
     }
 
     /// Log events of a Sync reply, a push, a fetch or a bundle (`conn` none).
@@ -79,6 +118,8 @@ impl SyncEngine {
                 }
             }
         }
+        // deleted blobs that are no commit blob: chunks a live value may still link
+        let mut lost = BTreeSet::new();
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
@@ -142,6 +183,10 @@ impl SyncEngine {
                         self.state.set_present(s, l, b, false);
                     }
                     if !self.state.present_anywhere(&l, &b) {
+                        // gone from every server of the label: a chunk an own commit may link
+                        if !self.state.blobs.contains_key(&b) {
+                            lost.insert(b);
+                        }
                         self.state.remove_entry(l, b);
                         self.forget_blob(&b)?;
                         self.forget_chunk(&b)?;
@@ -154,6 +199,13 @@ impl SyncEngine {
                     }
                 }
             }
+        }
+        // a chunk a live value here links, deleted by a purger that had not seen its reuse:
+        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
+        if !lost.is_empty() {
+            self.relink_pending.extend(lost);
+            self.relink_at = 0;
+            self.relink_lost()?;
         }
         if let (Some(s), Some(c)) = (server, cursor) {
             self.state.set_cursor(s, l, Some(c));
@@ -357,7 +409,7 @@ impl SyncEngine {
                     let pt = osis_core::encode(&payload.commit);
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
-                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone() });
+                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone(), via: None });
                         }
                     }
                     e.kind = Kind::Inbox;
@@ -661,6 +713,13 @@ impl SyncEngine {
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("delete refused: code {}", c.0)),
             }
+        }
+        // a replaced label is judged done after its deletions (`retire_at`): pass again
+        if let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group)
+            && self.is_replaced(&g, &l)
+            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+        {
+            lc.dirty = true;
         }
         if stale && let Some(h) = head {
             self.new_head(conn, l, h, out)?;

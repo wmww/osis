@@ -377,8 +377,8 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
     let fresh = sim.add_node(&[s], clock(&mut d))?;
     let card = person.card.clone();
     let r = sim.engine(fresh)?.hold_key_actor(card.seed.clone());
-    r.map_err(|e| sim.fail(format!("hold_key_actor: {e}")))?;
-    let acts = sim.sync(fresh)?.follow(card.person, card.home_label, card.servers.clone());
+    let rk = r.map_err(|e| sim.fail(format!("hold_key_actor: {e}")))?;
+    let acts = sim.sync(fresh)?.follow(rk, card.person, card.home_label, card.servers.clone());
     sim.actions(fresh, acts)?;
     sim.quiet(40)?;
     let lost = sim.tid(d0)?;

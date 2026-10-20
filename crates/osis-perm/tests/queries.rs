@@ -283,3 +283,28 @@ fn demotion_scope() {
     assert!(tl.demotion_scope(&d2, &x, &g, edge(Write), ts(5)).is_empty());
     assert!(tl.demotion_scope(&d1, &d1, &p, None, ts(5)).is_empty(), "never its own subject");
 }
+
+/// spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
+/// links; a deeper thing has none, and a chain query walks at most that far.
+#[test]
+fn owner_chain_capped_spec_permissions_1() {
+    use osis_core::format::MAX_OWNER_DEPTH;
+    let (key, rec) = key_actors(1, 9).remove(0);
+    let mut o = osis_perm::Owners::default();
+    o.insert(key, &rec);
+    let mut chain = Vec::new();
+    let mut top = key;
+    for i in 0..=MAX_OWNER_DEPTH as u64 {
+        let (t, r) = thing_record(top, i);
+        o.insert(t, &r);
+        chain.push(t);
+        top = t;
+    }
+    // chain[i] is i + 1 links below the key actor; `up` ends with the key actor
+    let at_cap = chain[MAX_OWNER_DEPTH - 1];
+    let (up, k) = o.chain(&at_cap);
+    assert_eq!((up.len(), up.last(), k), (MAX_OWNER_DEPTH, Some(&key), Some(key)));
+    let (up, k) = o.chain(chain.last().unwrap());
+    assert_eq!(k, None, "one link deeper: no owner chain");
+    assert!(up.len() <= MAX_OWNER_DEPTH + 1);
+}

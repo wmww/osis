@@ -768,10 +768,11 @@ fn single_use_finalization_audits_spec_perm_9() {
 
 // spec/permissions.md §9, spec/commits.md §2: revoking a joiner of a multi-use link removes it
 // and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
-// revoked one and a seed holder (L) get none; every peer applies the two-edge commit.
+// revoked one and a seed holder acting as L (bearer use) get none; every peer applies the
+// two-edge commit.
 #[test]
 fn revoke_joiner_one_rotation_spec_commits_2() {
-    let (mut lp, ps) = people(3, 519);
+    let (mut lp, ps) = people(4, 519);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
     let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
@@ -782,6 +783,9 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     spread(&mut lp);
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
     let k0 = newest_read(&lp, 0, link.k).unwrap();
+    // a stranger holding the seed reads as L (bearer use) before the revocation
+    lp.peers[3].engine.bear(&link).unwrap();
+    assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k0).is_some(), "bearer use works");
     let done = lp.peers[0].engine.revoke_joiner(&link.k, &l, &ps1, PreSync::Synced).unwrap();
     assert_eq!(done.commits.len(), 1, "one commit");
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
@@ -791,15 +795,39 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     spread(&mut lp);
     let k1 = newest_read(&lp, 0, link.k).unwrap();
     assert_ne!(k0, k1);
-    for i in 0..3 {
+    for i in 0..4 {
         let r = lp.peers[i].engine.roster(&link.k);
         assert!(!r.contains_key(&ps1) && !r.contains_key(&l) && r.contains_key(&ps2), "peer {i}: {r:?}");
     }
     assert!(lp.peers[2].engine.epochs(&link.k).unwrap().read.secret(&k1).is_some(), "the other joiner reads on");
     assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "the revoked joiner does not");
-    // nor with the seed it kept: L holds no box at the new epoch
-    let _ = lp.peers[1].engine.bear(&link);
-    assert!(lp.peers[1].engine.epochs(&link.k).is_none_or(|e| e.read.secret(&k1).is_none()), "nor as L");
+    // and after it, bearer use of the seed gives nothing new
+    lp.peers[3].engine.bear(&link).unwrap();
+    assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the seed reads nothing new");
+}
+
+// spec/permissions.md §9, spec/commits.md §2: revoking the joiner of a used single-use link
+// (L already gone) is a plain removal of the joiner alone.
+#[test]
+fn revoke_joiner_after_single_use_spec_commits_2() {
+    let (mut lp, ps) = people(2, 521);
+    let (pa, ps1) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &link_spec(d, Role::Write, None)).unwrap();
+    spread(&mut lp);
+    lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
+    spread(&mut lp);
+    let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+    assert!(!lp.peers[0].engine.roster(&link.k).contains_key(&l), "single use removed L");
+    let done = lp.peers[0].engine.revoke_joiner(&link.k, &l, &ps1, PreSync::Synced).unwrap();
+    // (L's self-removal is first rotated out by the cascade; then the joiner's removal)
+    let removal = done.commits.iter().filter(|c| lp.peers[0].engine.header(c).unwrap().frontier.is_some()).count();
+    assert_eq!(removal, 1, "one removal");
+    carry(&mut lp, 0, &done);
+    spread(&mut lp);
+    for i in 0..2 {
+        assert!(!lp.peers[i].engine.roster(&link.k).contains_key(&ps1), "peer {i}");
+    }
 }
 
 // spec/permissions.md §9: bearer use reads without writing; `until` expires the link.
@@ -874,6 +902,59 @@ fn reseal_raced_grant_spec_perm_3() {
     spread(&mut lp);
     assert!(lp.peers[3].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "dave stays out");
     assert!(lp.peers[1].engine.reseal_due(&t, &Pass).unwrap().commits.is_empty(), "nothing left");
+}
+
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4: a person actor's members are all key
+// actors (its devices, its recovery key), boxed once each keyed at their top role; after a
+// device removal rotates every role, the read and write epochs are found introduced by the
+// rotation's keysets, so nobody is "seen without a box" and nothing is re-sealed.
+#[test]
+fn key_actor_members_not_resealed_spec_perm_3() {
+    struct Pass;
+    impl osis_node::flows::SyncState for Pass {
+        fn complete_pass(&self, _: &Tid) -> bool {
+            true
+        }
+    }
+    let mut lp = net(3, 533);
+    let (p, _) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    let p = p.person;
+    for i in [1, 2] {
+        let n = lp.peers[i].engine.tid();
+        let card: Vec<CommitId> = lp.peers[i].engine.commit_ids();
+        send(&mut lp, i, 0, &card);
+        let paired = lp.peers[0].engine.pair(&p, &n).unwrap();
+        carry(&mut lp, 0, &paired);
+        let grant = *paired.commits.last().unwrap();
+        lp.peers[i].engine.paired(&p, &grant).unwrap();
+    }
+    spread(&mut lp);
+    let n2 = lp.peers[2].engine.tid();
+    let done = lp.peers[0].engine.demote(&p, &Demotion { member: n2, new: None, presync: PreSync::Synced }).unwrap();
+    carry(&mut lp, 0, &done);
+    spread(&mut lp);
+    let e = newest_read(&lp, 0, p).unwrap();
+    assert_eq!(newest_read(&lp, 1, p), Some(e), "the remaining device follows");
+    for i in [0, 1] {
+        assert!(lp.peers[i].engine.reseal_due(&p, &Pass).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
+    }
+}
+
+// spec/crypto.md §4 (departure by `until`): the departures known are kept per actor; one that
+// starts when an edge's `until` passes is seen once the clock passes it, with nothing applied.
+#[test]
+fn departures_follow_the_clock_spec_crypto_4() {
+    let (mut lp, ps) = people(2, 534);
+    let (pa, pb) = (ps[0], ps[1]);
+    let t = thing_of(&mut lp, 0, pa);
+    let until = osis_core::WallMs(lp.peers[0].engine.now().0 + 5_000);
+    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None }).unwrap();
+    assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty());
+    lp.advance(10_000);
+    let deps = lp.peers[0].engine.departures(&t).unwrap();
+    assert!(deps.iter().any(|d| d.member == pb), "{deps:?}");
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
+    assert!(still.is_empty() && done.commits.len() == 1, "rotated away");
 }
 
 // notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a device whose
@@ -1381,14 +1462,14 @@ fn stale_key_actor_box_after_until_spec_crypto_4() {
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r0).is_some(), "the key actor holds the read epoch");
+    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r0).is_empty(), "the key actor holds the read epoch");
     lp.advance(2 * 3_600_000);
     let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
     let r1 = newest_read(&lp, 1, t).unwrap();
     assert_ne!(r0, r1, "read rotated: {done:?}");
     spread(&mut lp);
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secret(&r1).is_none(), "the departed key actor is out");
+    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r1).is_empty(), "the departed key actor is out");
 }
 
 // spec/commits.md §3 (shared key commit form): a link key, usable from several devices, signs
@@ -1424,4 +1505,117 @@ fn edge_change_and_removal_by_inbox_spec_perm_2() {
     spread(&mut lp);
     let gone = lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
     assert_eq!(to_pb(&gone), 1, "removal");
+}
+
+/// The deltas of commit `c` on `(t, a)`, their bytes.
+fn aspect_deltas(e: &mut osis_node::Engine, c: &CommitId, t: Tid, a: &str) -> Vec<Vec<u8>> {
+    let h = e.header(c).unwrap();
+    let ai = h.aspects.iter().position(|x| x.tid == t && x.ak.as_str() == a).unwrap();
+    let blob = osis_commit::CommitBlob::decode(&e.commit_bytes(c).unwrap().unwrap()).unwrap();
+    blob.parts.into_iter().filter(|p| p.ai == ai).map(|p| p.delta).collect()
+}
+
+// spec/permissions.md §6, spec/commits.md §2: a roster snapshot carries one reset-plus-state
+// delta per edge (and per ledger entry), each the size of one edge whatever the roster's size,
+// so a large roster never approaches `MAX_BLOB` as one delta.
+#[test]
+fn roster_snapshot_one_delta_per_edge_spec_perm_6() {
+    let mut lp = net(2, 530);
+    let t = new_thing(&mut lp, 0);
+    let n = 200;
+    for i in 0..n {
+        let m = Tid::from_bytes([u8::try_from(i % 250).unwrap(), 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]);
+        set_edge(&mut lp.peers[0].engine, t, m, Some(edge(Role::Read)), None);
+    }
+    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
+    let c = *done.commits.last().unwrap();
+    let members = aspect_deltas(&mut lp.peers[0].engine, &c, t, "/members");
+    assert_eq!(members.len(), n + 1, "the reset alone, then one delta per edge");
+    assert!(members.iter().all(|d| d.len() < 300), "{:?}", members.iter().map(Vec::len).max());
+    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &c, t, "/tenures").len(), 1, "an empty ledger: the reset alone");
+    // a receiver joins the deltas back into the whole roster
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
+    assert_eq!(lp.peers[1].engine.roster(&t).len(), n);
+}
+
+// spec/permissions.md §4, §6; spec/sync.md §3: a certificate copy of a person actor's roster
+// snapshot under a co-reader's label carries only the chain's edge (the device that writes),
+// never the person's other devices.
+#[test]
+fn roster_snapshot_certificate_projected_spec_perm_6() {
+    let mut lp = net(3, 531);
+    let (p, done) = lp.peers[0].engine.create_person(&servers()).unwrap();
+    assert_eq!(done.commits.len(), 1);
+    let n1 = lp.peers[1].engine.tid();
+    let card1: Vec<CommitId> = lp.peers[1].engine.commit_ids();
+    send(&mut lp, 1, 0, &card1);
+    let paired = lp.peers[0].engine.pair(&p.person, &n1).unwrap();
+    carry(&mut lp, 0, &paired);
+    let bob = lp.peers[2].engine.create_person(&servers()).unwrap().0.person;
+    spread(&mut lp);
+    let g = thing_of(&mut lp, 0, p.person);
+    lp.peers[0].engine.grant(&g, &bob, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let r = lp.peers[0].engine.hold_key_actor(p.card.seed.clone()).unwrap();
+    let done = lp.peers[0].engine.roster_snapshot(&p.person, Some(&r)).unwrap();
+    let s = *done.commits.last().unwrap();
+    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &s, p.person, "/members").len(), 3, "the reset, both devices");
+    let certs = lp.peers[0].engine.certificates(&g);
+    let parts = certs.get(&s).expect("the snapshot is a chain certificate");
+    let h = lp.peers[0].engine.header(&s).unwrap();
+    let members_ai = h.aspects.iter().position(|a| a.ak.as_str() == "/members").unwrap();
+    assert_eq!(parts.iter().filter(|(ai, _)| *ai == members_ai).count(), 2, "the reset and one edge: {parts:?}");
+    let bodies = lp.peers[0].engine.part_bodies(&s, parts).unwrap();
+    let carried: BTreeSet<(usize, usize)> = bodies.iter().flat_map(|b| b.parts.iter().copied()).collect();
+    assert_eq!(&carried, parts);
+    // the copy names this device only
+    let me = lp.peers[0].engine.tid();
+    let copy = bodies.iter().find(|b| b.parts.iter().any(|(ai, _)| *ai == members_ai)).unwrap();
+    assert!(contains(&copy.plaintext, me.as_bytes()) && !contains(&copy.plaintext, n1.as_bytes()));
+}
+
+// spec/permissions.md §5.1, §6; spec/data-model.md §6: a demotion's frontier above
+// `CHUNK_THRESHOLD` goes by link, the roster snapshot's ledger carries it by link, and a node
+// holding only the snapshot waits for the frontier's blobs, then judges the demoted writer's
+// covered writes by it (valid, not dropped as by an empty frontier).
+#[test]
+fn linked_tenure_frontier_spec_perm_6() {
+    use std::collections::BTreeMap;
+    let mut lp = net(3, 532);
+    let t = new_thing(&mut lp, 0);
+    let x = lp.peers[1].engine.tid();
+    let grant = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    add_tag(&mut lp, 1, t, "by x");
+    sync(&mut lp, 1, 0);
+    // the frontier covers x's write, padded past the threshold
+    let tags_of = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
+    let mut writes = BTreeMap::from([(t, tags_of(1))]);
+    for i in 0..4000u32 {
+        let b = i.to_be_bytes();
+        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags_of(5));
+    }
+    let frontier = osis_schema::Codec::to_value(&ct::Frontier { writes, commits: BTreeSet::new() });
+    assert!(osis_core::encode(&frontier).len() > osis_core::format::CHUNK_THRESHOLD);
+    let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
+    assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
+    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
+    let s = *done.commits.last().unwrap();
+    let ledger = lp.peers[0].engine.get_typed(&t, &ct::TENURES).unwrap().unwrap();
+    assert!(matches!(ledger.0.as_slice(), [ct::Tenure { frontier: Some(osis_schema::Chunked::Link(_)), .. }]), "{ledger:?}");
+    // peer 2: everything but the grant and the demotion; the snapshot first without its blobs
+    let mut ids = lp.peers[0].engine.commit_ids();
+    ids.retain(|c| *c != grant && *c != demotion && *c != s);
+    for id in ids {
+        let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+        lp.deliver(2, &pk).unwrap();
+    }
+    let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+    assert!(!pk.blobs.is_empty());
+    let r = lp.peers[2].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+    assert_eq!(r, osis_node::Ingested::Pending(s, osis_node::Reason::WaitBlobs));
+    lp.deliver(2, &pk).unwrap();
+    assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
+    assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
 }

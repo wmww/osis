@@ -138,11 +138,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let mut held_changed = note_created(tx, &h, &parts)?;
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, &id, &parts);
-        validity::add_membership(tx.core, &h, &id, &parts);
+        validity::add_membership(tx, &h, &id, &parts)?;
         held_changed = true;
     }
     if held_changed {
-        tx.core.timelines.update(&tx.core.held);
+        tx.core.update_timelines();
     }
 
     // overlapping node-form counters void both commits
@@ -283,11 +283,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
                 all.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
             }
         }
-        validity::add_membership(tx.core, &h, id, &all);
+        validity::add_membership(tx, &h, id, &all)?;
         held_changed = true;
     }
     if held_changed {
-        tx.core.timelines.update(&tx.core.held);
+        tx.core.update_timelines();
     }
     for (tid, ak) in &changed {
         observe_state(tx, tid, ak)?;
@@ -326,8 +326,9 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let v = tx.state(tid, ak)?.and_then(Fragment::read);
     match ak.as_str() {
         "/secrets" => {
+            let alts = tx.state(tid, ak)?.map(crate::engine::secrets::history_alts).unwrap_or_default();
             if let Some(s) = v.as_ref().and_then(crate::engine::secrets::secrets_value)
-                && tx.core.ingest_secrets(tid, &s, true)
+                && tx.core.ingest_secrets(tid, &s, None, &alts, None)
                 && let Some(e) = tx.core.secrets.get(tid)
             {
                 let b = crate::engine::secrets::encode_epochs(e);
@@ -339,6 +340,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         "/keys" => {
             if let Some(k) = v.as_ref().and_then(crate::engine::secrets::keys_value) {
                 tx.core.observe_keys(tid, &k);
+                // reading-only candidates the published keysets contradict go
+                if let Some(e) = tx.core.secrets.get_mut(tid)
+                    && osis_keys::prune_reading(e, &k)
+                {
+                    crate::flows::save_epochs(tx, tid)?;
+                }
             }
         }
         "/was" => {

@@ -52,7 +52,13 @@ pub fn registration_epochs(a: &ActorEpochs) -> Option<[(Epoch, &Secret32); 3]> {
 /// or not: opening a label is not encrypting under (spec/crypto.md §4). A stamp, step or delete
 /// under it needs `RoleEpochs::is_established`.
 pub fn registered_epoch(re: &RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<Epoch> {
-    re.held_newest_first().into_iter().find(|(_, s)| label_role_key(label_role(r), s, index).verifying_key() == *key).map(|(e, _)| e)
+    registered_secret(re, r, index, key).map(|(e, _)| e)
+}
+
+/// `registered_epoch` with the secret that derives `key` (of a reading-only epoch, the candidate
+/// that matches).
+pub fn registered_secret<'a>(re: &'a RoleEpochs, r: Role, index: u64, key: &VerifyingKey) -> Option<(Epoch, &'a Secret32)> {
+    re.held_newest_first().into_iter().find(|(_, s)| label_role_key(label_role(r), s, index).verifying_key() == *key)
 }
 
 /// Whether an admin holds an established epoch newer than a head registers, per role
