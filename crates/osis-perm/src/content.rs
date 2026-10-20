@@ -24,6 +24,18 @@ impl Timeline {
     /// demotion below it (a ledger tenure with a frontier included) follows, and else only if
     /// the newest such demotion's frontier covers its dots.
     pub fn delta_valid(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
+        let key = (at, *thing, ak.to_string(), dots, required);
+        if let Some(v) = self.memo.valid.lock().ok().and_then(|m| m.get(&key).copied()) {
+            return v;
+        }
+        let v = self.delta_valid_uncached(at, thing, ak, dots, required);
+        if let Ok(mut m) = self.memo.valid.lock() {
+            m.insert(key, v);
+        }
+        v
+    }
+
+    fn delta_valid_uncached(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
         let x = at.node;
         // A re-grant makes valid *again*: only writes from the start of X's first tenure of
         // `required` on the thing.
@@ -51,6 +63,18 @@ impl Timeline {
     /// Where `x` first held `required` on `thing`: `Some(None)` from the beginning, `Some(p)`
     /// from the change at `p`, `None` never.
     fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
+        let key = (*x, *thing, required);
+        if let Some(v) = self.memo.first_held.lock().ok().and_then(|m| m.get(&key).copied()) {
+            return v;
+        }
+        let v = self.first_held_uncached(x, thing, required);
+        if let Ok(mut m) = self.memo.first_held.lock() {
+            m.insert(key, v);
+        }
+        v
+    }
+
+    fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let mut edges = self.walked.initial.clone();
         let holds = |edges: &crate::graph::Edges, ts: Option<osis_core::Ts>| {
             let view = crate::graph::View { owners: &self.owners, edges, ts };

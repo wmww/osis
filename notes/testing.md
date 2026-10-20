@@ -94,7 +94,7 @@ Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at
 | reconciliation 10^6 IDs, 1% diff | `-p osis-proto --lib million_blob_rounds` | 3 rounds (bound about log16(n/32) ≈ 4), 236 request messages, 5.3 MB up, 5.9 MB down, 0.4 s CPU (was 35 MB up, 5 MB down before the dense-difference rule) | pass |
 | removal from a roster | `-p osis-node --test scale roster_removal_cost` | read+write rotation of N writers: N=100 272 KB (2747 B per member), N=1000 2.70 MB (2707 B); `Engine::commit` 0.10 s / 1.05 s (was 0.16 s / 28.7 s before the map key index) | pass (notes: 2.7 KB; linear) |
 | text snapshot budget | `-p osis-bench --test budgets budget_text_snapshot_ratio` | synthetic typist (20k edits): 2.89x at 100 edits per commit, 6.73x at 10 | pass (3.5x, 7x) |
-| perm evaluation | `-p osis-perm --test bench` | 10^3 edge writes 34 ms, 10^4 4.4–5.0 s, re-evaluation after one write 4.3 s; owner chain depth 10 / 100 / 1000: 0.3 / 1.7 / 34 ms, leaf role query 1 / 9 / 189 µs | **miss** (issues/perm-eval-cost.md) |
+| perm evaluation | `-p osis-perm --test bench` | 10^3 edge writes 25 ms, 10^4 4.3 s from scratch; one more write 3 ms / 30 ms (continued walk; was 38 ms / 4.3 s); `delta_valid` 0.1–0.2 ms cold, 0.6 µs memoized; owner chain depth 10 / 100 / 1000: 0.4 / 2.4 / 51 ms, leaf role query 2 / 13 / 300 µs | incremental pass; from scratch and owner chains **miss** (issues/perm-eval-cost.md) |
 
 Not covered: a million-key map through sync (pages fetched and joined whole), reconciliation over a real connection, a roster of thousands through the flows (grants and removals end to end).
 
