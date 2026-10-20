@@ -183,15 +183,27 @@ fn costs_join_message_removal() {
     let mut w = World::new();
     let (alice, others, c, ps, link) = chat_link(&mut w, n - 2);
     let late = person(&mut w, 99, 0);
+    // names for the upload trace (`OSIS_TRACE_UPLOADS=1`: one line per entry sent)
+    let t4 = |t: Tid| t.to_string().chars().take(4).collect::<String>();
+    let mut legend = vec![("chat".to_string(), c), ("link".to_string(), alice.links(c)[0].id)];
+    for (i, db) in [&alice].into_iter().chain(&others).chain([&late]).enumerate() {
+        legend.push((format!("person{i}"), db.me()));
+        legend.push((format!("node{i}"), db.node()));
+    }
+    legend.extend(ps.iter().enumerate().map(|(i, p)| (format!("persona{i}"), *p)));
+    eprintln!("legend {}", legend.iter().map(|(n, t)| format!("{n}={}", t4(*t))).collect::<Vec<_>>().join(" "));
     w.start_tally();
+    eprintln!("TRACE step join");
     w.until(join(&late, &link, "late"), 1000, 10).unwrap().unwrap();
     w.run();
     let join = w.tally(&late);
     w.start_tally();
+    eprintln!("TRACE step message");
     send(&alice, ps[0], "hello", w.now() as i64, None).unwrap();
     w.run();
     let msg = w.tally(&alice);
     w.start_tally();
+    eprintln!("TRACE step removal");
     w.until(remove(&alice, c, ps[1]), 1000, 20).unwrap().unwrap();
     w.run();
     let rm = w.tally(&alice);
