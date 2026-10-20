@@ -83,5 +83,8 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Security residues: invite-grant-secrets, crdt-run-amplification, rereview-residues.
 - TLA+ target 3 (membership walk) when spec/permissions.md §5–§6 next changes; the rest of issues/tests-unbuilt.md.
 
+## Late additions
+- Large-value chunk reuse merged at fbc1d2f (edit cost now ~the changed chunks; issues/large-value-residues.md). Final tier 2 and a 200-seed sweep rerun by the toplevel on this code (results below in notes/testing.md).
+
 ## How to resume
 Read notes/overview.md (state, code map, how to run), then this report, `grep -h '^> Summary\|^> Tags' issues/*.md`, notes/architecture.md (rules) and notes/testing.md (tiers, sim replay). spec/requirements.md is the checklist for any new work. `plans/` holds only the MVP run's own plans (mvp_meta, hardening-signoff), deleted by the toplevel at the end.
