@@ -3,7 +3,7 @@
 
 ## 1. Concepts
 - **Actor**: a thing with role secrets (spec/crypto.md §3). A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself. A **node** is a key actor whose seed never leaves its device. A **person actor** represents a user; its nodes are its members (by app convention its owner is a recovery key and its nodes are its admins).
-- **Ownership**: every thing has exactly one owner actor, fixed by its creation record. An actor is a thing, so it has an owner too; owner chains end at a key actor.
+- **Ownership**: every thing has exactly one owner actor, fixed by its creation record. An actor is a thing, so it has an owner too; owner chains end at a key actor, within `MAX_OWNER_DEPTH` (64) owner links: a commit touching a thing further below its key actor is bad input.
 - **Membership**: an edge (member actor, target, role) with roles read < write < admin, stored in the target's `/members`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, where a path climbs membership edges and owner links (an owner holds admin on what it owns). Evaluated with the timeline (§5.1) at t.
 - **Admin** = write + change membership + purge (§8). An admin edge on a plain thing grants membership changes and purge on that thing.

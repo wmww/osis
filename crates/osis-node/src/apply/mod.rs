@@ -133,15 +133,23 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // the owner chain up to a key actor (spec/permissions.md §4)
         let mut cur = a.tid;
         let mut chain = vec![cur];
-        for _ in 0..64 {
+        let mut top = false;
+        for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
             match chain_rec(&cur, tx.core) {
                 Some(CreationRecord::Thing { owner, .. }) => {
                     cur = owner;
                     chain.push(cur);
                 }
-                Some(CreationRecord::KeyActor { .. }) => break,
+                Some(CreationRecord::KeyActor { .. }) => {
+                    top = true;
+                    break;
+                }
                 None => return Ok(Exam::Pending(Reason::MissingChain(cur))),
             }
+        }
+        // creation records are immutable: every node judges this alike (spec/permissions.md §1)
+        if !top {
+            return Err(Error::BadInput("owner chain deeper than MAX_OWNER_DEPTH"));
         }
         // the author's chain certificates: it is on the owner chain, or held edge writes lead
         // from it to the chain (a revoked author keeps its certificates and still applies,

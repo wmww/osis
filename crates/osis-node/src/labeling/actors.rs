@@ -8,8 +8,8 @@ use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Owner chains longer than this are refused (they end at a key actor long before).
-const MAX_CHAIN: usize = 64;
+/// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
+const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
 
 /// A label of a group as its `/label` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]

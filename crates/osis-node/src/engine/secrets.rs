@@ -11,8 +11,8 @@ use osis_keys::{ActorEpochs, Opener, Provenance, ROLES};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets};
 
-/// Owner chains longer than this are refused (they end at a key actor long before).
-const MAX_CHAIN: usize = 64;
+/// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
+const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
     pub(crate) fn created(&self, tid: &Tid) -> Option<&CreationRecord> {

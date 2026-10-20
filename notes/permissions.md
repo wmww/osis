@@ -37,7 +37,7 @@ A small set of concepts that compose; hierarchical; keys for nodes, actors and o
 - Problem: checking a write on N needs the membership of N's owner chain and of the author's own actors, which only members can read. Resolution: signed membership commits are the certificates and travel under the labels where needed. No verify role, no certificate format, no extra key.
 - Leaks: a reader of L learns the chain of every author under L (one edge and the roster size per level, plus each `/created` record and hence that thing's dedup secret), never rosters. Author identity is inherent anyway.
 - Roster snapshots in certificates are projected per edge: a whole snapshot would hand every reader of L the full device roster of each author's person actor and the rosters, `/label` IDs and servers of every team above it.
-- Accepted: revocation reach is eventual (L's readers accept a revoked node until some member of the revoking actor syncs L); chain depth equals nesting depth.
+- Accepted: revocation reach is eventual (L's readers accept a revoked node until some member of the revoking actor syncs L); chain depth equals nesting depth, at most `MAX_OWNER_DEPTH` (64) owner links (spec/permissions.md §1; a member nesting deeper would make every standing query cost more).
 - Rejected: a transitive "verify" role (outside collaborators learn full rosters; every rotation re-wraps to everyone below); per-commit certificate chains (a few hundred bytes per commit against a 300-byte floor).
 
 ## Revocation
