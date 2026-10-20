@@ -233,6 +233,67 @@ fn forged_entry_box_teaches_nothing_spec_sync_5() {
     assert_eq!(held(&se), before, "a forged head's box teaches nothing");
 }
 
+// spec/sync.md §2 (a step's entry box carries the read secret of its epoch, whose sync key the
+// step registers), spec/crypto.md §4 (sealed boxes are unauthenticated): a genuine head with a
+// substituted entry box (sealed by the server to the key actor's public KEM key) teaches no
+// secret: one that does not derive the head's sync key is refused.
+#[test]
+fn substituted_entry_box_teaches_nothing_spec_sync_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let seed = Secret32::from_bytes([0x3d; 32]);
+    let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
+    let held = |se: &SyncEngine| se.engine().epochs(&ka).is_some_and(|e| e.read.held_newest_first().iter().any(|(_, s)| s.expose() == &[0x99; 32]));
+    let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
+    let b = 0x70u8;
+    let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
+    let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
+    let delete = label_role_key(LabelRole::Delete, &admin, 0);
+    let reader = || osis_label::Reader::Static { signing: keys.signing.verifying_key(), entry: osis_label::EntryTo::Sealed(keys.kem.public()) };
+    let e1 = Epoch::new(1, [1; 16]).unwrap();
+    // the genuine genesis (its path verifies), and a box for its slot carrying another secret
+    let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (e1, &read), &mut SeededRng::from_u64(10)).unwrap();
+    let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key };
+    let item = osis_crypto::BoxItem { role: Role::Read, epoch: e1, secret: Secret32::from_bytes([0x99; 32]) };
+    let sealed = osis_crypto::seal_box(&keys.kem.public(), &slot, None, &[item], &mut SeededRng::from_u64(11)).unwrap();
+    use osis_schema::core_types as ct;
+    let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
+    let target = head.label;
+    let addr = net.address(sv);
+    let mut se: SyncEngine = net.take(a);
+    let before = held(&se);
+    let acts = se.follow(ka, target, vec![addr]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    let mut path = None;
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            let reply = match proof {
+                osis_label::Proof::Static { .. } => Message::Opened { id, head: head.clone(), entry_box: Some(forged.clone()) },
+                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
+            };
+            let r = se.handle(Event::Bytes { conn, bytes: frame(reply) });
+            path = path.or_else(|| sent(&r, conn).into_iter().find_map(|m| if let Message::Path { id, label, .. } = m { (label == target).then_some(id) } else { None }));
+            next.extend(r);
+        }
+        acts = next;
+    }
+    let pid = path.expect("the head's path is asked for");
+    se.take_diagnostics();
+    se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![head.clone()], more: false }) });
+    let diags = se.take_diagnostics();
+    assert_eq!(held(&se), before, "a substituted box teaches nothing");
+    assert!(diags.iter().any(|x| x.contains("does not derive the head's sync key")), "{diags:?}");
+}
+
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
 // chunks]" at untrusted nodes), spec/sync.md §5 (token holders delete must-not-hold bodies): a
 // purged large value's chunk blobs leave the server.
