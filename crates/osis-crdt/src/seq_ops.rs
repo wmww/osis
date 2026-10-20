@@ -7,7 +7,7 @@ use crate::fragment::{Fragment, Meta};
 use crate::linearize::{Placement, place};
 use crate::ops::{Op, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, is_visible, top2, visible};
-use crate::seq_span::{elem, expand};
+use crate::seq_span::{elem, expand, nth};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
 use crate::view::View;
@@ -91,16 +91,28 @@ fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
     p.order.get(r).map(<[Dot]>::to_vec).unwrap_or_default()
 }
 
+/// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
+fn check_bare(out: &Seq) -> Result<(), Error> {
+    let n = out.elems.values().fold(0u64, |a, e| a.saturating_add(e.span));
+    if n > osis_core::format::MAX_DELTA_BARE {
+        return Err(Error::Mismatch("move of more than MAX_DELTA_BARE elements"));
+    }
+    Ok(())
+}
+
 fn position(w: &mut Writer, a: Anchor) -> SeqElem {
     SeqElem { pos: vec![(w.fresh(), a)], ..SeqElem::bare() }
 }
 
 /// The position writes moving `range` (placement order, by node) to `dest`, re-anchoring the
-/// nodes outside it that hang below it at `pred` (§5.7 move). A node's first element carries its
-/// edge; the next root anchors at the last element of the previous root's moved subtree.
+/// nodes outside it that hang below it at `pred` (§5.7 move). A creation chain's first element
+/// carries its edge; the elements of a range without creation are each a root (bare anchors and
+/// flag-only elements sit on END one by one), so each gets a write, chained in order. The next
+/// root anchors at the last element of the previous root's moved subtree.
 fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
     let inr: HashSet<&Dot> = range.iter().collect();
     let last_el: HashMap<&Dot, &Dot> = p.order.iter().zip(&p.last).collect();
+    let loose: HashMap<&Dot, u64> = p.order.iter().zip(p.span.iter().zip(&p.created)).filter(|(_, (n, c))| **n > 1 && !**c).map(|(d, (n, _))| (d, *n)).collect();
     let parent: HashMap<&Dot, Option<&Dot>> = p.order.iter().zip(&p.parent).map(|(d, x)| (d, x.as_ref())).collect();
     let par = |d: &Dot| parent.get(d).copied().flatten();
     let roots: Vec<&Dot> = p.order.iter().filter(|d| inr.contains(d) && !par(d).is_some_and(|x| inr.contains(x))).collect();
@@ -130,6 +142,10 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
     let mut anchor = dest;
     for r in roots {
         out.insert(r.clone(), position(w, anchor));
+        for i in 1..loose.get(r).copied().unwrap_or(1) {
+            let a = Anchor::Dot(nth(r, i - 1));
+            out.insert(nth(r, i), position(w, a));
+        }
         let l = last.get(r).copied().unwrap_or(r);
         anchor = Anchor::Dot(last_el.get(l).copied().unwrap_or(l).clone());
     }
@@ -191,6 +207,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             let dest = anchor_after(&rest, *to)?;
             let pred = anchor_after(&vis, *at)?;
             out.elems = move_writes(w, &p, &range, pred, dest);
+            check_bare(&out)?;
         }
         Op::Paste { dots, at } => {
             if !text {
@@ -218,6 +235,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             let dest = anchor_after(&rest, *at)?;
             let pred = pred_of(&p, s, *i0);
             out.elems = move_writes(w, &p, &range, pred, dest);
+            check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
                 let c = s.elems.get(dot).map_or(SeqContent::None, |e| e.content.clone());

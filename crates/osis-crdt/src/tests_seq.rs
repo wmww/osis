@@ -689,11 +689,16 @@ proptest! {
     #[test]
     fn ranges_place_like_elements_spec_6(seed in any::<u64>()) {
         let mut r = Rng(seed | 1);
-        let commits = crate::testutil::history(&mut r, &[Ty::Text, Ty::List(Box::new(inner()))], 3, 6);
+        // text slots: embedded chars (`Derived` dots) beside range records
+        let types: &[Ty] = if seed % 2 == 0 { &[Ty::Text, Ty::List(Box::new(inner()))] } else { &[Ty::Register, Ty::Text] };
+        let commits = crate::testutil::history(&mut r, types, 3, 6);
         let mut state = None;
         for c in &commits {
             mapply(&mut state, c.delta.clone());
-            let f = frag(state.as_ref().unwrap());
+            let f = match frag(state.as_ref().unwrap()) {
+                Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text).cloned().unwrap_or_default(),
+                f => f,
+            };
             let Fragment::Seq(_) = &f else { continue };
             let flat = expanded(&f);
             prop_assert_eq!(order(&f), order(&flat));
@@ -701,4 +706,124 @@ proptest! {
             prop_assert_eq!(snapshot_of(&f), snapshot_of(&flat));
         }
     }
+}
+
+/// A created char `c` of `dot` at `t`, anchored at `at`.
+fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
+    let s = Stamp { ts: ts(t << 16), dot };
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at)], deleted: None, span: 1 }
+}
+/// Through a snapshot: uniform stretches become range records.
+fn via_snapshot(f: &Fragment) -> Fragment {
+    decode_snapshot(&snapshot_of(f), &snap_cx(), &mut Interner::new(), None).unwrap().fragment
+}
+/// `op` applied by node 4 at t = 9: the delta and the joined state.
+fn apply_op(f: &Fragment, op: crate::ops::Op) -> (Fragment, Fragment) {
+    let mut b = crate::batch::Batch::new(f, crate::ops::Writer::new(ts(9 << 16), n(4), 1));
+    b.apply(&crate::ops::PathOp { path: vec![], op }, &crate::testutil::TyView(Ty::Text)).unwrap();
+    let (d, _) = b.finish().unwrap();
+    let mut s = f.clone();
+    s.join(d.clone());
+    (d, s)
+}
+
+/// §5.7 move, §6: bare anchors left by a reset sit on END one by one, so moving a selection
+/// that spans some moves each of them; a state from a snapshot (range records) and one built
+/// element by element give the same writes and read.
+#[test]
+fn move_over_bare_ranges_spec_5_7() {
+    let mut elems = BTreeMap::new();
+    let mut prev = Anchor::Head;
+    for (k, c) in "hello".chars().enumerate() {
+        let d = Dot::new(n(1), k as u64 + 1);
+        elems.insert(d.clone(), char_at(d.clone(), 1, prev, c));
+        prev = Anchor::Dot(d);
+    }
+    for c in 1..=10 {
+        elems.insert(Dot::new(n(2), c), SeqElem::bare());
+    }
+    elems.insert(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 3, Anchor::Dot(Dot::new(n(2), 5)), 'a'));
+    elems.insert(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 3, Anchor::Dot(Dot::new(n(2), 10)), 'x'));
+    let flat = seq_of(elems, None);
+    assert_eq!(reads(&flat).as_deref(), Some("helloax"));
+    let ranged = via_snapshot(&flat);
+    assert!(records(&ranged) < 10, "{} records", records(&ranged));
+    let (d1, s1) = apply_op(&flat, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
+    let (d2, s2) = apply_op(&ranged, crate::ops::Op::Move { at: 5, len: 2, to: 0 });
+    assert_eq!(d1, d2);
+    assert_eq!(reads(&s1).as_deref(), Some("axhello"));
+    assert_eq!(s1, s2);
+    assert_eq!(order(&s1), order(&s2));
+}
+
+/// The bare range `(node 2, 1..=10)` as one record, and the same element by element.
+fn bare_ten() -> (Fragment, Fragment) {
+    let flat = seq_of((1..=10).map(|c| (Dot::new(n(2), c), SeqElem::bare())).collect(), None);
+    let mut e = SeqElem::bare();
+    e.span = 10;
+    (seq_of(BTreeMap::from([(Dot::new(n(2), 1), e)]), None), flat)
+}
+
+/// §2.2, §7: a `Derived(S, 5)` record sorts between `(S, 5)` and `(S, 6)`: joining one splits a
+/// range of `S` there (`split_at`), and a range delta over it is cut there (`join_elems`).
+#[test]
+fn derived_keys_split_ranges_spec_7() {
+    let (mut a, mut b) = bare_ten();
+    let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
+    let emb = one(dd.clone(), char_at(dd, 4, Anchor::Head, 'q'));
+    let flag = one(Dot::new(n(2), 1), SeqElem { deleted: Some((st(5, 5, 1), true)), span: 10, ..SeqElem::bare() });
+    for d in [emb, flag] {
+        a.join(d.clone());
+        b.join(d);
+        assert_eq!(a, b);
+        assert_eq!(order(&a), order(&b));
+        assert_eq!(a.read(), b.read());
+    }
+    assert_eq!(records(&a), 3);
+    assert_eq!(snapshot_of(&a), snapshot_of(&b));
+}
+
+/// §6.1: an element anchored at a `Derived(S, 5)` dot absent from the state sits under a
+/// virtual anchor between `(S, 5)` and `(S, 6)` on END; a range of `S` places around it like
+/// its elements do (hidden order included).
+#[test]
+fn virtual_derived_anchor_inside_range_spec_6_1() {
+    let (mut a, mut b) = bare_ten();
+    let dd = Dot::new(crate::stamp::Source::derived(Dot::new(n(2), 5)).unwrap(), 1);
+    let y = one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(dd), 'y'));
+    let z = one(Dot::new(n(3), 2), char_at(Dot::new(n(3), 2), 4, Anchor::Dot(Dot::new(n(2), 10)), 'z'));
+    for d in [y, z] {
+        a.join(d.clone());
+        b.join(d);
+    }
+    assert_eq!(order(&a), order(&b));
+    assert_eq!(reads(&a).as_deref(), Some("yz"));
+    // a delete over the selection flags the same hidden elements
+    let (d1, _) = apply_op(&a, crate::ops::Op::Delete { at: 0, len: 2 });
+    let (d2, _) = apply_op(&b, crate::ops::Op::Delete { at: 0, len: 2 });
+    assert_eq!(d1, d2);
+}
+
+/// §6.2: a creation chain whose first element anchors inside its own run is a cycle; as one
+/// range record it breaks like its elements.
+#[test]
+fn chain_anchored_into_itself_spec_6_2() {
+    let s0 = st(1, 1, 1);
+    let at = Anchor::Dot(Dot::new(n(1), 3));
+    let e = SeqElem { created: Some((s0.clone(), at.clone())), pos: vec![(s0, at)], deleted: Some((st(2, 2, 1), true)), span: 5, ..SeqElem::bare() };
+    let mut a = seq_of(BTreeMap::from([(Dot::new(n(1), 1), e)]), None);
+    a.join(one(Dot::new(n(3), 1), char_at(Dot::new(n(3), 1), 4, Anchor::Dot(Dot::new(n(1), 5)), 'v')));
+    let b = expanded(&a);
+    assert_eq!(order(&a), order(&b));
+    assert_eq!(reads(&a).as_deref(), Some("v"));
+    assert_eq!(snapshot_of(&a), snapshot_of(&b));
+}
+
+/// §3.3 rule 7: runs that overlap (here the second starts inside the first) are bad input.
+#[test]
+fn rejects_overlapping_runs_spec_3_3() {
+    let runs = vec![run(i(1), 5, l(vec![]), l(vec![]), vec![], vec![]), run(i(3), 5, l(vec![]), l(vec![]), vec![], vec![])];
+    let bytes = osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), text_with(runs), l(vec![])]));
+    let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
+    assert_eq!(osis_core::Classified::class(&e), ErrorClass::BadInput, "{e}");
 }

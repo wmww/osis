@@ -44,8 +44,9 @@ pub struct Undone<'a> {
     /// The original writer's source and counter range: elements it created.
     pub source: &'a Source,
     pub range: CounterRange,
-    /// Whether the write stamped so was written by an undo commit in effect (one no undo
-    /// commit in effect undoes): a node's judgment from its commit headers (§4.6).
+    /// Whether the write stamped so may be stepped back through (§4.6): written by an undo
+    /// commit in effect (one no undo commit in effect undoes), with every change of the aspect
+    /// after the undone commit out of effect. A node's judgment from its commit headers.
     pub restored: &'a dyn Fn(&Stamp) -> bool,
 }
 
@@ -56,6 +57,7 @@ impl Undone<'_> {
     /// Whether undoing a register, case or position write `(stamp, value)` writes the previous
     /// value against the current winner `cur` (§4.6): the undone write still wins, or an undo
     /// in effect restored its value (so undo steps back through repeated edits of one register).
+    /// A value-less write (expired, §4.7) equals nothing: callers pass only valued ones.
     pub(crate) fn steps_back<T: PartialEq>(&self, undone: (&Stamp, &T), cur: Option<(&Stamp, &T)>) -> bool {
         cur.is_some_and(|(s, v)| s == undone.0 || (v == undone.1 && (self.restored)(s)))
     }

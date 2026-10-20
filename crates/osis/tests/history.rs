@@ -140,3 +140,23 @@ fn history_states_spec_crdt_4_6() {
     assert_eq!(h.iter().find(|e| e.commit == c1.commit).map(|e| e.state), Some(EntryState::Dropped(DropReason::Compacted)));
     assert!(db.undo_commit(osis::CommitId([7; 32])).is_err());
 }
+
+// spec/crdt.md §4.6: undo never steps back over a live later change: x = 1, 2, 1, 5; undoing
+// the 5 restores 1, and a selective undo of the first write is then superseded (the later
+// writes are still in effect), so x stays 1.
+#[test]
+fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
+    let db = db(1);
+    let k = ak("/t/x");
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let c1 = db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(5))).unwrap().unwrap();
+    db.undo(&UndoScope::Thing(t)).unwrap().unwrap();
+    assert_eq!(db.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.undo_commit(c1.commit), Err(Error::NotUndoable { commit: c1.commit, reason: DropReason::Superseded }));
+    assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
+}

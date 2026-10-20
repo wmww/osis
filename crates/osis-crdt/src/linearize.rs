@@ -11,7 +11,7 @@
 
 use crate::seq::{Anchor, SeqElem};
 use crate::seq_span::{Elems, nth, piece};
-use crate::stamp::{Dot, Stamp};
+use crate::stamp::{Dot, SourceKind, Stamp};
 use std::borrow::Cow;
 
 /// The placement of every placed node (deleted, content-less and bare anchors included).
@@ -23,6 +23,9 @@ pub(crate) struct Placement {
     pub last: Vec<Dot>,
     /// Elements in `order[i]`'s node.
     pub span: Vec<u64>,
+    /// Whether `order[i]`'s node is created (a chain); else its elements are bare anchors or
+    /// flag-only, each placed on its own.
+    pub created: Vec<bool>,
     /// Chosen parent node of `order[i]` (by first element): `None` for HEAD and `END`.
     pub parent: Vec<Option<Dot>>,
 }
@@ -110,7 +113,7 @@ impl Graph<'_> {
 }
 
 /// The records as nodes: a range record is split after each element some position write
-/// anchors at.
+/// anchors at, and where a virtual `Derived` anchor sits between its elements in dot order.
 fn nodes(elems: &Elems) -> Vec<Node<'_>> {
     let mut targets: Vec<&Dot> = Vec::new();
     if elems.values().any(|e| e.span > 1) {
@@ -127,8 +130,18 @@ fn nodes(elems: &Elems) -> Vec<Node<'_>> {
         let last = nth(d, e.span - 1);
         let from = targets.partition_point(|t| *t < d);
         let mut off = 0;
-        for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| **t < &last).filter(|t| t.src == d.src) {
-            let end = t.ctr - d.ctr + 1;
+        for t in targets.get(from..).unwrap_or_default().iter().take_while(|t| **t < &last) {
+            // an element anchored at, or a virtual `Derived(S, c)` anchor (absent from the
+            // state, so placed on END between `(S, c)` and `(S, c + 1)`, §6.1) after `(S, c)`
+            let c = match t.src.kind() {
+                SourceKind::Derived(u) if u.src == d.src => u.ctr,
+                _ if t.src == d.src => t.ctr,
+                _ => continue,
+            };
+            let end = c - d.ctr + 1;
+            if end <= off {
+                continue;
+            }
             let (x, y) = piece(d, e, off, end - off);
             out.push(Node { dot: Cow::Owned(x), elem: Cow::Owned(y) });
             off = end;
@@ -186,6 +199,7 @@ pub(crate) fn place(elems: &Elems) -> Placement {
         order: p.order.iter().filter_map(|i| first(*i)).collect(),
         last: p.order.iter().filter_map(|i| node(*i)).map(|n| nth(&n.dot, n.elem.span - 1)).collect(),
         span: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.span).collect(),
+        created: p.order.iter().filter_map(|i| node(*i)).map(|n| n.elem.created.is_some()).collect(),
         parent: p.order.iter().map(|i| p.parent.get(*i).copied().flatten().filter(|j| *j < p.nodes.len()).and_then(first)).collect(),
     }
 }
