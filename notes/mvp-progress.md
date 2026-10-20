@@ -7,7 +7,7 @@
 - Integration branch: `main`. Sub-agent worktrees under `.worktrees/`.
 
 ## Current wave
-Wave 5 integration pass; wave 6 (hardening-signoff) next.
+Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB each): agents share CARGO_TARGET_DIR=$HOME/osis-shared-target; at most 3 agents at a time.
 
 ## Plans
 | plan | state | notes |
