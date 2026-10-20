@@ -1,0 +1,234 @@
+//! Roster snapshot inputs (spec/permissions.md §6, spec/commits.md §4): linked tenure frontiers
+//! recorded once read, never audited as empty, bounded, bad input when unlisted or not a
+//! frontier; members named twice; certificate projections failing closed.
+
+use crate::local_peer::LocalPeer;
+use crate::{Ingested, Mutation};
+use osis_core::{CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_crdt::{Op, PathOp, PathSeg};
+use osis_schema::core_types as ct;
+use osis_schema::Codec;
+use std::collections::{BTreeMap, BTreeSet};
+
+const T0: WallMs = WallMs(1_700_000_000_000);
+
+fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<Value> {
+    lp.peers[i].engine.get(&t, &osis_core::Ak::new("/t/tags").unwrap()).unwrap()
+}
+
+/// A frontier covering `x`'s first write on `t`'s `/t/tags`, padded past `CHUNK_THRESHOLD`
+/// with `pad` (distinct pads give distinct frontiers).
+fn big_frontier(t: Tid, x: Tid, pad: u8) -> ct::Frontier {
+    let tags = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
+    let mut writes = BTreeMap::from([(t, tags(1))]);
+    for i in 0..4000u32 {
+        let b = i.to_be_bytes();
+        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], pad, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags(5));
+    }
+    ct::Frontier { writes, commits: BTreeSet::new() }
+}
+
+/// Peer 0 owns `t`; peer 1's node wrote a tag as a writer and was demoted with a linked
+/// frontier covering it; peer 0 wrote a roster snapshot of `t` (the ledger links it).
+fn demoted_writer() -> (LocalPeer, Tid, Tid, CommitId) {
+    let mut lp = LocalPeer::new(2, 940, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let x = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &osis_core::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    edge(&mut lp, t, x, Some(Role::Write), None);
+    lp.sync(0, 1).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &osis_core::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    lp.peers[1].commit(m).unwrap();
+    lp.sync(1, 0).unwrap();
+    edge(&mut lp, t, x, None, Some(big_frontier(t, x, 1).to_value()));
+    let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
+    (lp, t, x, s)
+}
+
+fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) {
+    let mut mu = Mutation::new();
+    let op = match role {
+        Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None }.to_value()) },
+        None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
+    };
+    mu.op(t, &ct::MEMBERS, op).unwrap();
+    if let Some(f) = frontier {
+        mu.frontier(f);
+    }
+    lp.peers[0].commit(mu).unwrap().unwrap();
+}
+
+/// The linked frontiers' tree blobs of commit `c` (its chunk list).
+fn chunk_blobs(lp: &mut LocalPeer, c: &CommitId) -> Vec<osis_core::BlobId> {
+    lp.peers[0].engine.header(c).unwrap().chunks.iter().map(|x| x.blob).collect()
+}
+
+// spec/permissions.md §6: a linked frontier read once is recorded, so a restart with its tree
+// gone still judges by it; with neither the record nor the tree, the snapshot stays out of the
+// timeline (never an empty frontier) and no roster snapshot of the thing is written.
+#[test]
+fn load_with_missing_frontier_blob_spec_perm_6() {
+    let (mut lp, t, _, s) = demoted_writer();
+    let roster = lp.peers[0].engine.roster(&t);
+    let blobs = chunk_blobs(&mut lp, &s);
+    assert!(!blobs.is_empty());
+    lp.peers[0].engine.run(|tx| {
+        for b in &blobs {
+            tx.txn.delete_blob(b);
+        }
+        Ok(())
+    }).unwrap();
+    lp.peers[0].restart(941).unwrap();
+    assert_eq!(lp.peers[0].engine.roster(&t), roster);
+    assert_eq!(tags(&mut lp, 0, t), Some(Value::Set([Value::Str("by x".into())].into())), "judged by the recorded frontier");
+    // the record gone too: kept out of the timeline, refused as a snapshot source
+    lp.peers[0].engine.run(|tx| {
+        let mut keys = Vec::new();
+        tx.scan(b"n/", |k, _| {
+            keys.push(k.to_vec());
+            Ok(())
+        })?;
+        for k in keys {
+            tx.txn.remove_local(&[b"n/".as_slice(), &k].concat(), osis_store::Shred::No)?;
+        }
+        Ok(())
+    }).unwrap();
+    lp.peers[0].restart(942).unwrap();
+    assert!(lp.peers[0].engine.core.frontier_unknown.contains(&t));
+    assert!(lp.peers[0].engine.roster_snapshot(&t, None).is_err(), "no snapshot from an unknown ledger");
+    assert_eq!(tags(&mut lp, 0, t), Some(Value::Set([Value::Str("by x".into())].into())), "the full history still judges it");
+}
+
+/// Peer 0 writes, breaking the writer rules, a roster snapshot of `t` whose ledger is
+/// `tenures` (values as written); returns the commit.
+fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Replace(Value::Map(BTreeMap::new())) }).unwrap();
+    m.op(t, &ct::TENURES, PathOp { path: Vec::new(), op: Op::Replace(Value::Set(tenures.into_iter().collect())) }).unwrap();
+    m.roster = true;
+    lp.peers[0].engine.core.skip_writer_rules = true;
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].engine.core.skip_writer_rules = false;
+    c
+}
+
+fn tenure(member: Tid, frontier: Option<Value>) -> Value {
+    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member }, frontier: None }.to_value();
+    if let (Value::Map(m), Some(f)) = (&mut v, frontier) {
+        m.insert(Value::Int(4), Value::Enum(1, Some(Box::new(f))));
+    }
+    v
+}
+
+fn deliver_all(lp: &mut LocalPeer, last: &CommitId) -> crate::Result<Ingested> {
+    for p in lp.packages(0).unwrap() {
+        if p.id != *last {
+            lp.deliver(1, &p).unwrap();
+        }
+    }
+    let pk = lp.peers[0].engine.package(last).unwrap().unwrap();
+    lp.deliver(1, &pk)
+}
+
+// spec/permissions.md §6: a linked frontier whose value is not a frontier is bad input.
+#[test]
+fn malformed_linked_frontier_spec_perm_6() {
+    let mut lp = LocalPeer::new(2, 943, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    let junk = Value::Bytes(vec![9; osis_core::format::CHUNK_THRESHOLD + 10]);
+    let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(junk))]);
+    assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
+}
+
+// spec/permissions.md §6, spec/commits.md §4: a link outside the commit's chunk list is bad
+// input, never waited for.
+#[test]
+fn unresolvable_linked_frontier_spec_perm_6() {
+    let mut lp = LocalPeer::new(2, 944, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    let fake = osis_core::Link { hash: [3; 32], blob: osis_core::BlobId([4; 32]), suite: 1, key: [5; 32] };
+    let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(Value::Link(fake)))]);
+    assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
+}
+
+// spec/permissions.md §6 (`MAX_LINKED_FRONTIERS`): many tenures linking one frontier read it
+// once; distinct linked frontiers above the bound are bad input.
+#[test]
+fn linked_frontier_amplification_bound_spec_perm_6() {
+    let mut lp = LocalPeer::new(1, 945, T0).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    let f1 = big_frontier(t, me, 1).to_value();
+    let size = osis_core::encode(&f1).len();
+    let same: Vec<Value> = (0..40u8).map(|i| tenure(Tid::from_bytes([i; 15]), Some(f1.clone()))).collect();
+    let c = raw_snapshot(&mut lp, t, same);
+    let check = |lp: &mut LocalPeer, c: CommitId, cap: usize| {
+        lp.peers[0].engine.core.frontiers.clear();
+        lp.peers[0].engine.run(|tx| {
+            let h = (*tx.core.commits.get(&c).unwrap().header).clone();
+            let parts = super::held_parts_at(tx, &c, &|_| true)?;
+            super::validity::linked_frontiers_capped(tx, &h, &parts, cap).map(|l| l.frontiers.len())
+        })
+    };
+    assert_eq!(check(&mut lp, c, size + 64).unwrap(), 1, "forty tenures, one frontier read");
+    let two = vec![tenure(Tid::from_bytes([1; 15]), Some(f1)), tenure(Tid::from_bytes([2; 15]), Some(big_frontier(t, me, 2).to_value()))];
+    let c2 = raw_snapshot(&mut lp, t, two);
+    assert!(matches!(check(&mut lp, c2, size + 64), Err(crate::Error::BadInput(_))));
+    assert_eq!(check(&mut lp, c2, 3 * size).unwrap(), 2);
+}
+
+// spec/permissions.md §6: a roster snapshot naming one member in two `/members` deltas is bad
+// input (which one counts would depend on the deltas a node holds).
+#[test]
+fn member_named_twice_spec_perm_6() {
+    let mut lp = LocalPeer::new(2, 946, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let x = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    edge(&mut lp, t, x, Some(Role::Read), None);
+    let c = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
+    let r = lp.peers[0].engine.run(|tx| {
+        let h = (*tx.core.commits.get(&c).unwrap().header).clone();
+        let mut parts = super::held_parts_at(tx, &c, &|_| true)?;
+        super::validity::check_roster_parts(&h, &parts)?;
+        let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "/members" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_members("/members", &d.fragment) == vec![x])).cloned().unwrap();
+        parts.push(named);
+        super::validity::check_roster_parts(&h, &parts)
+    });
+    assert!(matches!(r, Err(crate::Error::BadInput(_))));
+}
+
+// spec/permissions.md §4, §6: a roster snapshot certificate that cannot be read here is not
+// placed at all, never whole.
+#[test]
+fn unreadable_snapshot_certificate_fails_closed_spec_perm_6() {
+    let mut lp = LocalPeer::new(1, 947, T0).unwrap();
+    let rx = lp.peers[0].engine.subscribe();
+    let e = &mut lp.peers[0].engine;
+    let t = e.tid();
+    let parts = e.snapshot_parts(&CommitId([7; 32]), &BTreeSet::from([t]), &BTreeSet::from([t]));
+    assert!(parts.is_empty());
+    let mut diag = false;
+    while let Ok(ev) = rx.try_recv() {
+        diag |= matches!(ev, crate::Event::Diagnostic(_));
+    }
+    assert!(diag, "a diagnostic says why");
+}

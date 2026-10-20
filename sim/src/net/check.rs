@@ -36,13 +36,14 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
     no_ping_pong(sim)
 }
 
-/// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold (its commits' bytes and
-/// the live entries of its labels at an honest server), plus `STATE_PER_COMMIT` per commit,
-/// `STATE_PER_LABEL` per label and `STATE_BASE`. Calibrated on seeds 0..3 of every
-/// scenario: at most 0.42 of the bound, stored bytes at most 1.19x what a node must hold. Junk
+/// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold, plus `STATE_PER_ENTRY`
+/// per entry it must hold, `STATE_PER_LABEL` per label and `STATE_BASE`. What it must hold is
+/// taken from honest servers only (the live entries of its labels, the fullest server per
+/// label), never from its own holdings, so junk a peer made it keep (or pending commits) raises
+/// no bound. Calibrated on seeds 0..3 of every scenario (notes/testing.md, Simulator); junk
 /// kept, or state growing with time rather than with edits, breaks it.
 const STATE_FACTOR: u64 = 2;
-const STATE_PER_COMMIT: u64 = 1 << 10;
+const STATE_PER_ENTRY: u64 = 1 << 10;
 const STATE_PER_LABEL: u64 = 16 << 10;
 const STATE_BASE: u64 = 64 << 10;
 
@@ -59,14 +60,10 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
         }
         let stored: u64 = node.backend.dump().iter().map(|(k, v)| (k.len() + v.len()) as u64).sum();
         let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
-        let mut must = 0u64;
-        let commits = s.engine().commit_ids();
-        for c in &commits {
-            must += s.engine_mut().commit_bytes(c).ok().flatten().map_or(0, |b| b.len() as u64);
-        }
         let labels = s.labels();
+        let (mut must, mut entries) = (0u64, 0u64);
         for (_, gl) in &labels {
-            let mut most = 0u64;
+            let mut most = (0u64, 0u64);
             for a in &gl.servers {
                 let Some(i) = sim.servers.iter().position(|x| x.key == a.key) else { continue };
                 if sim.dishonest.contains(&i) {
@@ -74,16 +71,19 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
                 }
                 let Some(hub) = sim.servers.get(i).and_then(|x| x.hub.as_ref()) else { continue };
                 let st = hub.store();
-                let bytes: u64 = st.live_ids(&gl.id).unwrap_or_default().iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
-                most = most.max(bytes);
+                let ids = st.live_ids(&gl.id).unwrap_or_default();
+                let bytes: u64 = ids.iter().map(|b| st.blob(b).ok().flatten().map_or(0, |x| x.len() as u64)).sum();
+                most = most.max((bytes, ids.len() as u64));
             }
-            must += most;
+            must += most.0;
+            entries += most.1;
         }
-        let bound = STATE_FACTOR * must + STATE_PER_COMMIT * commits.len() as u64 + STATE_PER_LABEL * labels.len() as u64 + STATE_BASE;
-        lines.push(format!("node {n} stores {stored} B, must hold {must} B, {} commits, {} labels (bound {bound})", commits.len(), labels.len()));
+        let bound = STATE_FACTOR * must + STATE_PER_ENTRY * entries + STATE_PER_LABEL * labels.len() as u64 + STATE_BASE;
+        let what = format!("node {n} stores {stored} B; must hold {must} B in {entries} entries under {} labels (bound {bound} B)", labels.len());
         if stored > bound {
-            return Err(sim.fail(format!("node {n} stores {stored} B, over the bound {bound} B (must hold {must} B, {} commits, {} labels)", commits.len(), labels.len())));
+            return Err(sim.fail(format!("{what}: over the bound")));
         }
+        lines.push(what);
     }
     for l in lines {
         sim.note(l);

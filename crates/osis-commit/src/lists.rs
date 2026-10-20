@@ -8,7 +8,7 @@ use crate::tree::{self, LinkSource, TreeSink, node_plaintext};
 use crate::Error;
 use osis_core::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH};
 use osis_core::{BlobId, ChunkParams, Limits, Link, Value};
-use osis_crypto::{Secret32, link_hash, link_tree_hash};
+use osis_crypto::{Secret32, link_hash};
 use std::collections::HashMap;
 
 /// Writes one blob (osis-label frames, encrypts and stores it) and returns its ID and key.
@@ -63,9 +63,8 @@ impl TreeSink for ListSink<'_> {
     fn chunk(&mut self, bytes: &[u8]) -> Result<Link, Error> {
         self.put(link_hash(self.dedup, bytes), bytes)
     }
-    fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error> {
-        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-        self.put(link_tree_hash(self.dedup, level, &hashes), &node_plaintext(level, links)?)
+    fn node(&mut self, level: u64, kids: &[tree::Kid]) -> Result<Link, Error> {
+        self.put(tree::node_hash(self.dedup, level, kids), &node_plaintext(level, kids)?)
     }
 }
 

@@ -487,17 +487,15 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             if usize::from(reg.is_some()) + members.len() < 2 {
                 return Err(Error::Malformed("slots with fewer than two members"));
             }
-            // §7 Canonical form: no member is empty or adds nothing to the register's embedding
-            let empty_reg = reg.as_ref().is_some_and(|r| Fragment::Register(r.clone()).is_empty());
-            let below = |f: &Fragment, r: &Register| {
-                let mut f = f.clone();
-                f.prune(None, &mut crate::Changes::new());
-                f.is_empty() || crate::state::below_embedding(&f, r)
-            };
-            if empty_reg || members.values().any(|f| f.is_empty() || reg.as_ref().is_some_and(|r| below(f, r))) {
-                return Err(Error::Malformed("slots: a member empty or below the register's embedding"));
+            // §7 Canonical form (§3.3 rule 7): pruning changes nothing (every member holds the
+            // register's embedding, none is empty or adds nothing to it, nothing lies below the
+            // position's one reset), so readers of an unjoined fragment see what a join would
+            let pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
+            let f = Fragment::Slots(Slots { reg, members });
+            if pruned != f {
+                return Err(Error::Malformed("slots not canonical: pruning changes it"));
             }
-            Fragment::Slots(Slots { reg, members })
+            f
         }
         _ => return Err(Error::Malformed("fragment arity")),
     })

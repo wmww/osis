@@ -842,7 +842,7 @@ fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
 }
 
 /// Whether `f` adds nothing to the embedding of register `r` into its encoding: `f ⊔ embed(r) = embed(r)`.
-pub(crate) fn below_embedding(f: &Frag, r: &Frag) -> bool {
+fn below_embedding(f: &Frag, r: &Frag) -> bool {
     let Some(mut e) = crate::embed::embed(r, f.enc()) else { return false };
     e.prune(None);
     let mut j = f.clone().join_raw(e.clone());

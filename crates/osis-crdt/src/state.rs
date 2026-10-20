@@ -270,7 +270,7 @@ fn assemble(reg: Option<Register>, mut members: BTreeMap<Encoding, Fragment>) ->
 
 /// Whether member `f` adds nothing to the embedding of register `r`: `f ⊔ embed(r) = embed(r)`
 /// (§7 Canonical form).
-pub(crate) fn below_embedding(f: &Fragment, r: &Register) -> bool {
+fn below_embedding(f: &Fragment, r: &Register) -> bool {
     let Some(mut e) = embed(r, f.encoding()) else { return false };
     let mut ch = Changes::new();
     e.prune(None, &mut ch);
@@ -708,7 +708,7 @@ fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Chang
 
 /// Prunes a position's members under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
-fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     // every member holds the register's embedding, whatever path the members came by (a
     // received snapshot's `Slots` included)
     let mut members = members;

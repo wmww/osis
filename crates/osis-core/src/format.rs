@@ -70,6 +70,12 @@ pub const HEARTBEAT_MAX_LIFETIME_MS: u64 = 14 * DAY_MS;
 pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
 /// Most import resolution hops (spec/wire.md §2, spec/permissions.md §7). fixed.
 pub const RESOLUTION_HOPS: usize = 8;
+/// Most owner links from a thing up to its key actor (spec/wire.md §2, spec/permissions.md
+/// §1). fixed.
+pub const MAX_OWNER_DEPTH: usize = 64;
+/// Canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/wire.md
+/// §2, spec/permissions.md §6). fixed.
+pub const MAX_LINKED_FRONTIERS: usize = 64 * MIB;
 /// Core schema ID (spec/wire.md §2, spec/data-model.md §9). fixed.
 pub const CORE_SCHEMA_ID: SchemaId = SchemaId([0; 16]);
 /// Core schema revision of format version 1 (spec/wire.md §2). fixed.

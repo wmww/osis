@@ -55,12 +55,10 @@ impl NetSim {
         to.len()
     }
 
-    /// Commits signed by node `n`'s key that reuse its counters are an adversary's: the honest-node
-    /// counter check skips its author.
-    pub fn equivocator(&mut self, n: usize) -> Res<()> {
-        let t = self.tid(n)?;
-        self.check.equivocators.insert(t);
-        Ok(())
+    /// Commit `c` is an adversary's counter reuse under an honest node's key: the honest-node
+    /// counter check skips it.
+    pub fn equivocation(&mut self, c: osis_core::CommitId) {
+        self.check.equivocations.insert(c);
     }
 
     /// A hand-driven session of an adversary at server `s` (Hellos exchanged).

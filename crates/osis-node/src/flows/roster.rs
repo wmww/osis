@@ -1,9 +1,8 @@
 //! Roster snapshots (spec/permissions.md §6): by owner-chain authority, the roster with `since`
 //! and the tenure ledger as perm's timeline computes them (`Timeline::roster_state`); policy:
-//! due once the thing's held `/members` deltas pass `ROSTER_SNAPSHOT_AFTER`.
-//!
-//! Reading (issues/roster-snapshot-deltas.md): one reset-plus-full-state delta per aspect, not
-//! one per edge and ledger entry, so a certificate copy cannot yet be projected per edge.
+//! due once the thing's held `/members` deltas pass `ROSTER_SNAPSHOT_AFTER`. The writer splits
+//! the replace into one reset-plus-state delta per edge and per ledger entry (spec/commits.md
+//! §2) and links frontiers above `CHUNK_THRESHOLD`; certificate copies carry the chain's deltas.
 
 use super::{Done, ak};
 use crate::engine::Engine;
@@ -44,6 +43,10 @@ impl Engine {
         if !self.core.timelines.get(&t).is_some_and(|tl| tl.may_roster_snapshot(&who, &t, ts)) {
             return Err(Error::Permission { tid: t });
         }
+        // a ledger whose frontier is not known here would be written without it
+        if self.core.frontier_unknown.contains(&t) {
+            return Err(Error::Misuse("a roster snapshot of the thing has a linked frontier not held here"));
+        }
         // the snapshot compacts the edge history departures are read from: every one must be
         // covered first (rotated now where the author may; refused while any stays uncovered)
         let mut done = self.run(|tx| {
@@ -66,6 +69,19 @@ impl Engine {
                 .map(|x| ct::Tenure { member: x.member, role: x.role, since: x.since.map(key), until: key(x.until), frontier: x.frontier.as_deref().map(|f| Chunked::Inline(frontier(f))) })
                 .collect(),
         );
+        // receivers refuse more linked frontier bytes than this (spec/permissions.md §6)
+        let linked: std::collections::BTreeSet<Vec<u8>> = ledger
+            .0
+            .iter()
+            .filter_map(|x| match &x.frontier {
+                Some(Chunked::Inline(f)) => Some(osis_core::encode(&osis_schema::Codec::to_value(f))),
+                _ => None,
+            })
+            .filter(|b| b.len() > osis_core::format::CHUNK_THRESHOLD)
+            .collect();
+        if linked.iter().map(Vec::len).sum::<usize>() > osis_core::format::MAX_LINKED_FRONTIERS {
+            return Err(Error::Misuse("the ledger's frontiers exceed MAX_LINKED_FRONTIERS"));
+        }
         let mut m = Mutation::new();
         m.replace(t, &ct::MEMBERS, &roster)?;
         m.replace(t, &ct::TENURES, &ledger)?;

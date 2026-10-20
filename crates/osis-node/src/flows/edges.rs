@@ -153,7 +153,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     if leave {
         remove_edge(&mut m, target, who)?;
     }
-    put_secrets(&mut m, target, &boxes)?;
+    put_secrets(&mut m, target, &boxes, !admin)?;
     if let Some(s) = signer {
         m.sign_as(s);
     }

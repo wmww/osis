@@ -1,8 +1,8 @@
 //! Large values (notes/api.md Large values; spec/data-model.md §6): a string or blob read as a
 //! stream (`Read + Seek`, chunks fetched one at a time under the database lock, memory one chunk
-//! plus the tree path), its payload length, and `set_stream` writes. A seek backwards restarts
-//! from the first chunk and a seek forward reads through (tree nodes carry no lengths,
-//! issues/large-value-seek.md).
+//! plus the tree path), its payload length, and `set_stream` writes. A seek fetches nothing; the
+//! next read fetches only the tree path to the chunk holding the position (tree nodes carry
+//! lengths, spec/wire.md §6).
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
@@ -25,7 +25,9 @@ pub struct ValueStream {
 
 enum Src {
     Inline(Vec<u8>),
-    Tree { link: Link, reader: Box<osis_label::TreeReader>, buf: Vec<u8>, at: usize, head: usize },
+    /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
+    /// `start`; `head`: bytes of the string head.
+    Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -67,38 +69,25 @@ impl ValueStream {
             Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
             Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
             Value::Link(link) => {
-                let mut s = ValueStream { db: db.clone(), tid, len: 0, src: Src::Tree { link, reader: Box::new(tree_reader(link)), buf: Vec::new(), at: 0, head: 0 }, pos: 0 };
-                s.start()?;
-                Ok(s)
+                let mut reader = Box::new(tree_reader(link));
+                let mut first = Vec::new();
+                let (len, head) = loop {
+                    if let Some(h) = string_head(&first) {
+                        break h;
+                    }
+                    if first.len() > 9 {
+                        return Err(not_string());
+                    }
+                    match db.engine(|e| e.next_chunk(&tid, &mut reader))? {
+                        Some(c) => first.extend(c),
+                        None => return Err(not_string()),
+                    }
+                };
+                let src = Src::Tree { reader, buf: first, start: 0, at: head, head: head as u64 };
+                Ok(ValueStream { db: db.clone(), tid, len, src, pos: 0 })
             }
             _ => Err(not_string()),
         }
-    }
-
-    /// (Re)starts a tree from its first chunk and reads the string head.
-    fn start(&mut self) -> Result<()> {
-        let tid = self.tid;
-        let Src::Tree { link, reader, buf, at, head } = &mut self.src else { return Ok(()) };
-        **reader = tree_reader(*link);
-        let mut first = Vec::new();
-        let parsed = loop {
-            if let Some(h) = string_head(&first) {
-                break h;
-            }
-            if first.len() > 9 {
-                return Err(not_string());
-            }
-            match self.db.engine(|e| e.next_chunk(&tid, reader))? {
-                Some(c) => first.extend(c),
-                None => return Err(not_string()),
-            }
-        };
-        self.len = parsed.0;
-        *head = parsed.1;
-        *buf = first;
-        *at = parsed.1;
-        self.pos = 0;
-        Ok(())
     }
 
     /// Payload length in bytes.
@@ -124,10 +113,11 @@ impl ValueStream {
                 out.get_mut(..piece.len()).unwrap_or_default().copy_from_slice(piece);
                 piece.len()
             }
-            Src::Tree { reader, buf, at, .. } => {
+            Src::Tree { reader, buf, start, at, .. } => {
                 while *at >= buf.len() {
                     match self.db.engine(|e| e.next_chunk(&tid, reader))? {
                         Some(c) => {
+                            *start += buf.len() as u64;
                             *buf = c;
                             *at = 0;
                         }
@@ -165,20 +155,19 @@ impl Seek for ValueStream {
         }
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek before the start"))?;
         let target = target.min(self.len);
-        if target < self.pos {
-            match &mut self.src {
-                Src::Inline(_) => self.pos = 0,
-                Src::Tree { .. } => self.start().map_err(io)?,
+        if let Src::Tree { reader, buf, start, at, head } = &mut self.src {
+            let to = head.saturating_add(target);
+            // inside the chunk held: just move; else restart the tree walk there
+            if (*start..=*start + buf.len() as u64).contains(&to) {
+                *at = (to - *start) as usize;
+            } else {
+                reader.seek(to);
+                buf.clear();
+                *start = to;
+                *at = 0;
             }
         }
-        let mut scratch = vec![0u8; 64 << 10];
-        while self.pos < target {
-            let n = usize::try_from(target - self.pos).unwrap_or(usize::MAX).min(scratch.len());
-            let got = self.read_some(scratch.get_mut(..n).unwrap_or_default()).map_err(io)?;
-            if got == 0 {
-                break;
-            }
-        }
+        self.pos = target;
         Ok(self.pos)
     }
 }

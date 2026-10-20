@@ -310,6 +310,13 @@ pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Val
     Some(f)
 }
 
+/// `put_new(key, v)`: a new entry whatever is live (spec/crdt.md §5.6).
+pub fn map_put_new(w: &mut Writer, vt: &Ty, k: &Value, v: &Value) -> Frag {
+    let d = w.stamp().dot;
+    let entries = BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) })]);
+    Frag::Map { c: comp(None), entries }
+}
+
 pub fn map_remove(w: &mut Writer, state: Option<&Frag>, k: &Value) -> Option<Frag> {
     let Some(Frag::Map { entries: st, .. }) = state else { return None };
     let dots = live_entries(st).remove(k)?;

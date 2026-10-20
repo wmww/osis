@@ -97,21 +97,29 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m` (removed boxes reset; boxes and history boxes as remove +
-/// put, so a re-seal or grant re-writing an entry the member does not hold is a new entry there,
-/// not a write into one it never got, spec/crypto.md §4).
-pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Result<()> {
+/// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as remove +
+/// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
+/// member never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
+/// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
+/// fresh puts only (`Op::Put`), a second live entry where the key is live.
+pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, invite: bool) -> Result<()> {
+    let put = |m: &mut Mutation, field: u64, k: Value, v: Value| -> Result<()> {
+        if invite {
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field), PathSeg::Key(k)], op: Op::Put(v) })?;
+        } else {
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(k.clone()) })?;
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field), PathSeg::Key(k)], op: Op::Set(v) })?;
+        }
+        Ok(())
+    };
     for (k, b) in &w.boxes {
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) })?;
+        put(m, 0, k.to_value(), b.to_value())?;
     }
     for k in &w.removed {
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
     }
     for (k, h) in &w.history {
-        // remove + put: a put of an unchanged value writes nothing
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1)], op: Op::Remove(k.to_value()) })?;
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) })?;
+        put(m, 1, k.to_value(), Value::Bytes(h.clone()))?;
     }
     Ok(())
 }
@@ -281,8 +289,14 @@ pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
     Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
+/// `crate::engine::secrets::history_alts` of `actor`'s `/secrets` state.
+pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::HistoryAlts> {
+    Ok(tx.state(actor, &ak("/secrets")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
+}
+
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
+    tx.core.membership_changed();
     if let Some(e) = tx.core.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -311,8 +325,9 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             .collect();
         for a in actors {
             let s = secrets_in(tx, &a)?;
+            let alts = secrets_alts(tx, &a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s, true) {
+            if tx.core.ingest_secrets(&a, &s, None, &alts, None) {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }
@@ -329,8 +344,9 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         let mut any = false;
         for a in &actors {
             let s = secrets_in(tx, a)?;
+            let alts = secrets_alts(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s, true) {
+            if tx.core.ingest_secrets(a, &s, None, &alts, None) {
                 save_epochs(tx, a)?;
                 any = true;
             }
@@ -349,6 +365,7 @@ impl Engine {
         let id = Identity::from_seed(seed);
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
+        self.core.membership_changed();
         self.run(reopen_all)?;
         Ok(t)
     }
@@ -361,6 +378,7 @@ impl Engine {
     /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §9).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
+        self.core.membership_changed();
     }
 
     /// Commits `m` in a running transaction.

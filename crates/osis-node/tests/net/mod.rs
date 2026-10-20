@@ -87,6 +87,15 @@ impl Net {
         i
     }
 
+    /// Server `s` loses everything it stored (same key and address).
+    pub fn wipe_server(&mut self, s: usize) {
+        let backend = MemoryBackend::new();
+        let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(990 + s as u64)).unwrap();
+        let hub = Hub::new(store, server_key(s), Box::new(SeededRng::from_u64(995 + s as u64)));
+        let address = self.servers[s].address.clone();
+        self.servers[s] = Server { hub, backend, address };
+    }
+
     pub fn address(&self, s: usize) -> Address {
         self.servers[s].address.clone()
     }

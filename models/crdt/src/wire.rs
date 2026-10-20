@@ -817,10 +817,13 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
             return Err(Error::Bad("nested register reset"));
         }
     }
-    if let Frag::Slots { reg, slots } = &f {
-        // §7 canonical form: no empty member, none that adds nothing to the register's embedding
-        if reg.as_ref().map_or(false, |r| r.is_empty()) || slots.values().any(|m| m.is_empty() || reg.as_ref().map_or(false, |r| crate::state::below_embedding(m, r))) {
-            return Err(Error::Bad("non-canonical slots member"));
+    if let Frag::Slots { .. } = &f {
+        // §7 canonical form (§3.3 rule 7): pruning changes nothing (every member holds the register's embedding,
+        // none is empty or adds nothing to it, nothing lies below the position's one reset)
+        let mut c = f.clone();
+        c.prune(None);
+        if c != f {
+            return Err(Error::Bad("non-canonical slots"));
         }
     }
     Ok(f)

@@ -48,6 +48,8 @@ pub struct Mutation {
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (membership flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<osis_crdt::Dot>>,
+    /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
+    pub(crate) fresh: std::collections::BTreeSet<osis_core::BlobId>,
 }
 
 impl Default for Mutation {
@@ -62,7 +64,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new() }
+        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -218,6 +220,8 @@ pub(crate) struct Resolved {
     pub frontiers: Option<osis_crdt::Frontiers>,
     /// Chunk blobs of large values the delta introduces (ID, prefix salt).
     pub chunks: Vec<(osis_core::BlobId, [u8; 16])>,
+    /// Written as one delta per root map entry or set element (a roster snapshot).
+    pub split: bool,
 }
 
 /// Inputs of a commit other than its deltas.
@@ -272,23 +276,40 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         if expires.is_some() && !plan.purge.is_empty() {
             return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
         }
-        let mut nonce = [0u8; osis_crdt::NONCE_LEN];
-        tx.rng.fill_bytes(&mut nonce);
         let mut cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
         // own writes already carry the commit-form placeholder (`own_source`), so foreign dots
         // of this node's node-form writes stay node dots
         cx.own = own_source(plan.form, node);
-        let fragment = d.fragment;
+        // a roster snapshot: one delta per edge and per ledger entry (spec/commits.md §2)
+        let fragments = if d.split { d.fragment.split_entries() } else { vec![d.fragment] };
         let mut blobs = TxBlobs::new(&mut tx.txn);
-        let bytes = {
+        let mut bytes = Vec::with_capacity(fragments.len());
+        let mut frontiers = d.frontiers;
+        for fragment in fragments {
+            let mut nonce = [0u8; osis_crdt::NONCE_LEN];
+            tx.rng.fill_bytes(&mut nonce);
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-            match d.frontiers {
+            bytes.push(match frontiers.take() {
                 Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers }, &cx, Some(&mut bw))?,
                 None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
-            }
-        };
+            });
+        }
         let mut chunks = std::mem::take(&mut blobs.written);
-        chunks.extend(d.chunks);
+        // trees written for values the resolved delta does not hold (an edit's item paired
+        // with one deleted concurrently) are neither listed nor kept
+        let mut own = d.chunks;
+        if !own.is_empty() {
+            let mut linked = std::collections::BTreeSet::new();
+            for b in &bytes {
+                linked.extend(super::large::delta_links(tx, &framing.dedup, b)?);
+            }
+            let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|(id, _)| linked.contains(id));
+            for (id, _) in &drop {
+                tx.txn.delete_blob(id);
+            }
+            own = keep;
+        }
+        chunks.extend(own);
         if plan.form == Form::Node && plan.kind.has_own_writes() {
             let first = tx.txn.reserve_counters(&d.tid, &d.ak, d.hi.saturating_sub(d.lo))?;
             if first != d.lo {
@@ -296,7 +317,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             }
         }
         let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision));
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: vec![bytes], retention, expires, schema, chunks });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.aspects = writes;
@@ -390,7 +411,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let mut chunks = Vec::new();
         if kind == Kind::Content {
             let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing)?;
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing, &m.fresh)?;
+        } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
+            let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+            chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,
@@ -421,7 +445,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             tx.core.schemas.entry(s.id).or_insert_with(|| s.clone());
         }
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks });
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);

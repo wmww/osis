@@ -104,7 +104,16 @@ pub struct Large {
 pub fn large_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
     let mut out = Vec::new();
     let mut path = Vec::new();
-    large(schema, v, Some(ty), &mut path, &mut out);
+    large(schema, v, Some(ty), &mut path, &mut out, false);
+    out
+}
+
+/// The positions of a read value `v` of type `ty` that hold a link (a chunked large value),
+/// typed like `large_positions`.
+pub fn link_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
+    let mut out = Vec::new();
+    let mut path = Vec::new();
+    large(schema, v, Some(ty), &mut path, &mut out, true);
     out
 }
 
@@ -120,12 +129,14 @@ fn too_big(v: &Value) -> bool {
     }
 }
 
-fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, out: &mut Vec<Large>) {
+/// `links`: find positions holding a link instead of raw values above the threshold.
+fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, out: &mut Vec<Large>, links: bool) {
+    let too_big = |v: &Value| if links { matches!(v, Value::Link(_)) } else { too_big(v) };
     let t = ty.and_then(|t| schema.expand(t).ok());
     let t = t.as_deref();
     let at = |s: Step, x: &Value, ty: Option<&Type>, path: &mut Vec<Step>, out: &mut Vec<Large>| {
         path.push(s);
-        large(schema, x, ty, path, out);
+        large(schema, x, ty, path, out, links);
         path.pop();
     };
     let field_ty = |id: i64| match t {
@@ -134,7 +145,7 @@ fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, ou
     };
     match v {
         Value::Str(_) if matches!(t, Some(Type::Text)) => {}
-        Value::Str(_) | Value::Bytes(_) => {
+        Value::Str(_) | Value::Bytes(_) | Value::Link(_) => {
             if too_big(v) {
                 out.push(Large { path: Path(path.clone()), map_key: false });
             }

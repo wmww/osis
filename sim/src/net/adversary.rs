@@ -439,7 +439,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
         let (id, blob, bk) = seal(&mut sim, &p.plaintext)?;
         entries.push(stamped(&sim, &k, &id, blob, &bk)?);
     }
-    sim.equivocator(b)?;
+    sim.equivocation(c2);
     let mut r = sim.rogue(s)?;
     let up = sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
     sim.rogue_close(&mut r);
@@ -464,7 +464,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
 /// purge is applied and deleted at the server, the server re-announces the purged entry, blob,
 /// wrap and stamp as they were, to every node on its open connections. Expected: no node takes
 /// the body back (purged bodies at no honest node, the purged value stays gone), no node
-/// re-uploads it (the server's tombstone holds), everything converges.
+/// uploads or deposits it again (counted as nodes send, since the server's tombstone would refuse it), everything converges.
 pub fn tombstone_liar(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x7b);
     let mut sim = sim("tombstone_liar", seed, NetWeights::default());
@@ -505,6 +505,7 @@ pub fn tombstone_liar(seed: u64) -> Res<Report> {
     // the lie, at the label's real log head
     let (log_id, seq) = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().log_head(&label).map_err(|e| sim.fail(e.to_string()))?;
     let push = osis_proto::encode_frame(&osis_proto::Message::Push { label, events, cursor: osis_proto::Cursor { log_id, seq } }.encode());
+    sim.watched.extend(ids.iter().copied());
     let mut told = 0;
     for n in [a, b, c] {
         told += sim.server_says(s, n, &push);
@@ -527,9 +528,9 @@ pub fn tombstone_liar(seed: u64) -> Res<Report> {
             }
         }
     }
-    let live = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().live_ids(&label).unwrap_or_default();
-    if ids.iter().any(|id| live.contains(id)) {
-        return Err(sim.fail("a node re-uploaded the purged body"));
+    // the honest server would refuse a re-upload (tombstoned): count the attempts instead
+    if sim.sent_watched > 0 {
+        return Err(sim.fail(format!("nodes sent the purged body {} times after the lie", sim.sent_watched)));
     }
     sim.finish()
 }

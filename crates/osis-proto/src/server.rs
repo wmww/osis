@@ -658,6 +658,7 @@ impl ServerConnection {
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
         // An oversized blob never gets here: the message decoder refuses it (`field_sizes`).
+        debug_assert!(blob.len() <= osis_core::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
         let blob_id = osis_label::blob_id(blob);
         if let Some(stamp) = stamp {

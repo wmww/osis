@@ -18,7 +18,7 @@ fn too_deep(op: &PathOp) -> bool {
     let Some(room) = MAX_VALUE_DEPTH.checked_sub(op.path.len()) else { return true };
     let keys = op.path.iter().any(|s| matches!(s, PathSeg::Key(k) if k.deeper_than(MAX_VALUE_DEPTH)));
     keys || match &op.op {
-        Op::Set(v) | Op::Replace(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
+        Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
         Op::Edit { base, new } => base.deeper_than(room) || new.deeper_than(room),
         Op::Insert { items, .. } => items.iter().any(|v| v.deeper_than(room)),
         Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } => false,
@@ -128,7 +128,11 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         }
         PathSeg::Key(k) => {
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            match key_lookup(s, a, e.as_ref(), k) {
+            let put = match &op.op {
+                crate::ops::Op::Put(v) if rest.is_empty() => Some(v),
+                _ => None,
+            };
+            match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
                     resolve(w, ks.as_ref(), None, None, rest, op, &vview, false)?
@@ -136,7 +140,10 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                 }
                 None => {
                     // a key that is not live: only a put creates it
-                    let crate::ops::Op::Set(v) = &op.op else { return Err(Error::Mismatch("no live entry with that key")) };
+                    let v = match (&op.op, put) {
+                        (_, Some(v)) | (crate::ops::Op::Set(v), None) => v,
+                        _ => return Err(Error::Mismatch("no live entry with that key")),
+                    };
                     if !rest.is_empty() {
                         return Err(Error::Mismatch("no live entry with that key"));
                     }

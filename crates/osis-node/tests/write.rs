@@ -359,3 +359,71 @@ fn wide_struct_over_max_blob_refused_spec_commits_1() {
     let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };
     assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 63);
 }
+
+// spec/data-model.md §6: a list `edit` chunks the items it inserts as an insert does; base items
+// match the list's links by content hash (so the edit lands in place), and an item the list
+// holds already keeps its tree (nothing of it is written again).
+#[test]
+fn large_list_edit_chunked_spec_dm_6() {
+    let mut p = peer(14);
+    let me = p.engine.tid();
+    let (key, a) = (&common::LIST, ak("/t/list"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let big1 = Value::Str("first ".repeat(50_000));
+    m.set(t, key, &Value::List(vec![common::s("a"), big1.clone()])).unwrap();
+    let first = p.commit(m).unwrap().unwrap();
+    let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+    assert!(blobs(&mut p, first) > 300_000);
+    let big2 = Value::Str("second ".repeat(50_000));
+    let base = Value::List(vec![common::s("a"), big1.clone()]);
+    let new = Value::List(vec![common::s("a"), big1.clone(), big2.clone(), common::s("b")]);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new: new.clone() } }).unwrap();
+    let c = p.commit(m).unwrap().unwrap();
+    let Some(Value::List(l)) = p.engine.get(&t, &a).unwrap() else { panic!() };
+    assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Link(_), Value::Str(_)]), "{l:?}");
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(new.clone()));
+    // only big2's tree is new (350 000 bytes; with big1's it would be 650 000)
+    let wrote = blobs(&mut p, c);
+    assert!((350_000..430_000).contains(&wrote), "edit wrote {wrote} B");
+    // a new item twice: one tree
+    let big3 = Value::Str("third ".repeat(50_000));
+    let base = new.clone();
+    let Value::List(mut items) = new else { panic!() };
+    items.extend([big3.clone(), common::s("c"), big3]);
+    let new = Value::List(items);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new: new.clone() } }).unwrap();
+    let c = p.commit(m).unwrap().unwrap();
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(new));
+    let wrote = blobs(&mut p, c);
+    assert!((300_000..380_000).contains(&wrote), "duplicate items wrote {wrote} B");
+}
+
+// spec/commits.md §1 (the chunk list holds the blobs the deltas introduce): an edit replacing a
+// large item the list no longer holds (deleted concurrently) changes nothing there; the tree
+// written for the replacement is neither listed nor kept.
+#[test]
+fn edit_of_gone_item_lists_nothing_spec_commits_1() {
+    let mut p = peer(15);
+    let me = p.engine.tid();
+    let (key, a) = (&common::LIST, ak("/t/list"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, key, &Value::List(vec![common::s("a"), common::s("x"), common::s("b")])).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Delete { at: 1, len: 1 } }).unwrap();
+    p.commit(m).unwrap().unwrap();
+    // an editor that still sees "x" replaces it by a large item, and edits "b"
+    let base = Value::List(vec![common::s("a"), common::s("x"), common::s("b")]);
+    let new = Value::List(vec![common::s("a"), Value::Str("large ".repeat(50_000)), common::s("c")]);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new } }).unwrap();
+    let c = p.commit(m).unwrap();
+    let listed = c.map_or(0, |c| p.engine.package(&c).unwrap().unwrap().blobs.len());
+    let got = p.engine.get_full(&t, &a).unwrap();
+    let large = matches!(&got, Some(Value::List(l)) if l.iter().any(|v| matches!(v, Value::Str(s) if s.len() > 1000)));
+    assert!(large || listed == 0, "{listed} blobs listed for a value the list does not hold: {got:?}");
+}
