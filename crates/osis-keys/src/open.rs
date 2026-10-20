@@ -92,10 +92,14 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
     }
 }
 
+/// Ciphertexts of the live entries of a history key that holds several (puts by different
+/// writers): readers try each, not only the merged read (spec/crypto.md §4).
+pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
+
 /// Opens the history boxes of every epoch whose secret `epochs` holds, repeatedly, adding the
 /// earlier secrets and marking them superseded by the epoch whose history lists them (counted
-/// once that epoch is established).
-pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) -> Vec<(HistoryKey, Error)> {
+/// once that epoch is established). `alts`: each live entry of keys with several, tried too.
+pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs: &mut ActorEpochs) -> Vec<(HistoryKey, Error)> {
     let mut failed: BTreeMap<HistoryKey, Error> = BTreeMap::new();
     let mut done: std::collections::BTreeSet<HistoryKey> = std::collections::BTreeSet::new();
     loop {
@@ -119,11 +123,14 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
             // a reading-only epoch may hold several candidates: the one that opens the box counts
             let mut opened = Err(Error::Mismatch("history box"));
             let mut source = None;
-            for s in &candidates {
-                opened = open_history(s, actor, k.role, &e, ct).map_err(Error::from);
-                if opened.is_ok() {
-                    source = epochs.role(k.role).reading_source(&e, s);
-                    break;
+            let cts: Vec<&Vec<u8>> = std::iter::once(ct).chain(alts.get(k).into_iter().flatten()).collect();
+            'try_all: for s in &candidates {
+                for c in &cts {
+                    opened = open_history(s, actor, k.role, &e, c).map_err(Error::from);
+                    if opened.is_ok() {
+                        source = epochs.role(k.role).reading_source(&e, s);
+                        break 'try_all;
+                    }
                 }
             }
             match opened {
@@ -160,6 +167,11 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
 /// reading-only secrets); the source for boxes of a pending commit, whose secrets are kept for
 /// reading only and never replace one (spec/crypto.md §4). Returns what could not be opened.
 pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
+    ingest_with(actor, secrets, &HistoryAlts::new(), opener, epochs, unchecked)
+}
+
+/// `ingest` trying every live entry of the history keys in `alts`.
+pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &Opener, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
     observe_secrets(secrets, epochs)?;
     let (opened, failed) = open_boxes(actor, secrets, opener);
     for o in opened {
@@ -171,7 +183,7 @@ pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut Acto
         }
     }
     let mut errs: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();
-    errs.extend(open_histories(actor, secrets, epochs).into_iter().map(|(_, e)| e));
+    errs.extend(open_histories(actor, secrets, alts, epochs).into_iter().map(|(_, e)| e));
     Ok(errs)
 }
 

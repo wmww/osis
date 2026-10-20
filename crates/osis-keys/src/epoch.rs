@@ -90,6 +90,10 @@ pub struct Unchecked {
     pub commit: CommitId,
 }
 
+/// The author recorded for a candidate whose commit's author has no chain the node knows
+/// (throwaway identities share one budget).
+pub const UNKNOWN_AUTHOR: Tid = Tid::from_bytes([0; 15]);
+
 /// Most reading-only candidates per role of one actor, and per author node (local policy: a
 /// planted candidate costs a KEM or DH per open, claim and inbox blob).
 pub const MAX_READING: usize = 256;
@@ -139,9 +143,11 @@ impl RoleEpochs {
 
     /// Records a secret learned only from an unchecked box (spec/crypto.md §4): one more
     /// reading-only candidate when `e` holds no checked secret, `from`'s author has none for `e`
-    /// yet, and neither cap is reached.
+    /// yet (authors whose chain the node does not know share `UNKNOWN_AUTHOR`, one budget, any
+    /// number per epoch), and neither cap is reached.
     pub fn set_reading_secret(&mut self, e: Epoch, secret: Secret32, from: Unchecked) {
-        if self.map.get(&e).is_some_and(|i| i.secret.is_some() || i.reading.iter().any(|(s, u)| *s == secret || u.author == from.author)) {
+        let known = from.author != UNKNOWN_AUTHOR;
+        if self.map.get(&e).is_some_and(|i| i.secret.is_some() || i.reading.iter().any(|(s, u)| *s == secret || (known && u.author == from.author))) {
             return;
         }
         let all = self.map.values().flat_map(|i| i.reading.iter());
@@ -162,6 +168,15 @@ impl RoleEpochs {
             any |= i.reading.len() != n;
         }
         any
+    }
+
+    /// Drops the reading-only candidates of `e` that `keep` refuses (a published keyset of `e`
+    /// they do not derive). Returns whether any went.
+    pub fn retain_reading(&mut self, e: &Epoch, keep: impl Fn(&Secret32) -> bool) -> bool {
+        let Some(i) = self.map.get_mut(e) else { return false };
+        let n = i.reading.len();
+        i.reading.retain(|(s, _)| keep(s));
+        i.reading.len() != n
     }
 
     /// The source of `e`'s reading-only candidate `secret`.

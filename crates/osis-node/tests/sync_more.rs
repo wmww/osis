@@ -569,8 +569,9 @@ fn reencrypted_chunk_keeps_expiry_spec_sync_1() {
     assert!(w.iter().all(|e| *e == Some(at)), "{w:?}");
 }
 
-// spec/sync.md §1: a server deleting each fresh chunk again drives at most one repair per
-// back-off interval per aspect, not one per round.
+// spec/sync.md §1: a single hostile server (it alone decides what is gone) deleting each fresh
+// chunk again drives at most one repair per back-off interval per aspect, the interval doubling;
+// what the back-off holds back is retried when it passes.
 #[test]
 fn reencrypt_loop_bounded_spec_sync_1() {
     let (mut net, [a, b, _], t, doc, _) = reuse_race(None);
@@ -600,8 +601,12 @@ fn reencrypt_loop_bounded_spec_sync_1() {
     net.advance(2 * 3_600_000);
     net.run();
     assert_eq!(repairs(&mut net), first + 1, "after it: one");
-    for _ in 0..4 {
-        spam(&mut net);
-    }
+    // the interval doubled: held back at 1.5 h, done past 2 h
+    spam(&mut net);
+    net.advance(90 * 60_000);
+    net.run();
     assert_eq!(repairs(&mut net), first + 1, "the back-off doubled");
+    net.advance(45 * 60_000);
+    net.run();
+    assert_eq!(repairs(&mut net), first + 2);
 }

@@ -301,3 +301,62 @@ fn reading_candidates_bounded_spec_crypto_4() {
     assert!(a.drop_reading_from(&from(2).commit));
     assert_eq!(a.read.reading_secrets(&ep(1)).len(), 1);
 }
+
+// spec/crypto.md §3, §4: a published keyset names the KEM key derived from its epoch's genuine
+// secret, so a planted candidate for a published epoch goes (however many authors plant it).
+#[test]
+fn planted_candidate_against_published_keyset_spec_crypto_4() {
+    let f = forked();
+    let e = f.forks[0];
+    let genuine = f.view.read.secret(&e).unwrap().clone();
+    let mut a = ActorEpochs::default();
+    for n in 1..40 {
+        a.read.set_reading_secret(e, Secret32::from_bytes([n; 32]), from(n));
+    }
+    a.read.set_reading_secret(e, genuine.clone(), from(200));
+    let keys = osis_schema::core_types::Keys { read: Some(osis_keys::keyset(&e, &genuine)), ..Default::default() };
+    assert!(osis_keys::prune_reading(&mut a, &keys));
+    assert_eq!(a.read.reading_secrets(&e), vec![&genuine]);
+}
+
+// spec/crypto.md §4: authors whose chain the node does not know share one budget (throwaway
+// identities gain nothing), several candidates per epoch.
+#[test]
+fn unknown_authors_share_one_budget_spec_crypto_4() {
+    let ep = osis_crypto::Epoch::new(1, [1; 16]).unwrap();
+    let unknown = |n: u8| osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_core::CommitId([n; 32]) };
+    let mut a = ActorEpochs::default();
+    for n in 0..200u8 {
+        a.read.set_reading_secret(ep, Secret32::from_bytes([n; 32]), unknown(n));
+    }
+    assert_eq!(a.read.reading_secrets(&ep).len(), osis_keys::MAX_READING_PER_AUTHOR);
+    // a known author still has its own
+    a.read.set_reading_secret(ep, Secret32::from_bytes([0xaa; 32]), from(7));
+    assert_eq!(a.read.reading_secrets(&ep).len(), osis_keys::MAX_READING_PER_AUTHOR + 1);
+}
+
+// spec/crypto.md §4, spec/permissions.md §2: a history key may hold several live entries (an
+// invite holder's put next to the genuine one); a newer garbage entry wins the merged read, so
+// readers try each entry and still open the older epochs.
+#[test]
+fn history_alternatives_tried_spec_crypto_4() {
+    let f = forked();
+    let (g, ge) = (tid(5), person(0x50));
+    let w = box_member(&f.a, &f.view, &f.s, &actor_rcpt(g, Role::Read, &ge), &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();
+    let mut s = f.s.clone();
+    w.apply(&mut s);
+    let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
+    assert!(!older.is_empty());
+    let mut bad = s.clone();
+    let mut alts = osis_keys::HistoryAlts::new();
+    for (k, ct) in bad.history.iter_mut() {
+        alts.insert(k.clone(), vec![vec![0x5a; ct.len()], ct.clone()]);
+        *ct = vec![0x5a; ct.len()];
+    }
+    let mut plain = ActorEpochs::default();
+    osis_keys::ingest(&f.a, &bad, &Opener::Actor { member: g, epochs: &ge }, &mut plain, None).unwrap();
+    assert!(older.iter().all(|e| plain.read.secret(e).is_none()), "the merged read alone hides them");
+    let mut gv = ActorEpochs::default();
+    osis_keys::ingest_with(&f.a, &bad, &alts, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
+    assert!(older.iter().all(|e| gv.read.secret(e).is_some()), "each entry tried");
+}

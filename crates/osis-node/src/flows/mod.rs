@@ -289,6 +289,11 @@ pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
     Ok(tx.state(actor, &ak("/secrets")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
+/// `crate::engine::secrets::history_alts` of `actor`'s `/secrets` state.
+pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::HistoryAlts> {
+    Ok(tx.state(actor, &ak("/secrets")?)?.map(crate::engine::secrets::history_alts).unwrap_or_default())
+}
+
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     if let Some(e) = tx.core.secrets.get(actor) {
@@ -319,8 +324,9 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
             .collect();
         for a in actors {
             let s = secrets_in(tx, &a)?;
+            let alts = secrets_alts(tx, &a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s, None) {
+            if tx.core.ingest_secrets(&a, &s, None, &alts, None) {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }
@@ -337,8 +343,9 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         let mut any = false;
         for a in &actors {
             let s = secrets_in(tx, a)?;
+            let alts = secrets_alts(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s, None) {
+            if tx.core.ingest_secrets(a, &s, None, &alts, None) {
                 save_epochs(tx, a)?;
                 any = true;
             }

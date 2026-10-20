@@ -341,8 +341,11 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
-        let from = osis_keys::Unchecked { author: blob.header.author, commit: *id };
-        if tx.core.ingest_secrets(&a, &s, Some(from)) {
+        // an author whose chain is not known here shares one budget with every such author
+        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        let from = osis_keys::Unchecked { author, commit: *id };
+        let published = Core::keys_in(tx, &a)?;
+        if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new(), published.as_ref()) {
             crate::flows::save_epochs(tx, &a)?;
         }
     }
@@ -354,18 +357,20 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
 /// secrets of is left to the lost-access trigger, which drops them with what they read.
 pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let actors: Vec<Tid> = tx.core.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
+    let mut lost = Vec::new();
     for a in actors {
         let Some(mut e) = tx.core.secrets.get(&a).cloned() else { continue };
         e.drop_reading_from(id);
         // an actor left with no secret is the lost-access trigger's: it forgets what they read
         if ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty()) {
+            lost.push(a);
             continue;
         }
         tx.core.touch();
         tx.core.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
     }
-    Ok(())
+    crate::rotation::mark_lost_due(tx, lost)
 }
 
 /// The `/secrets` writes of a held, not applied membership commit, per actor, decoded
@@ -401,5 +406,66 @@ impl crate::engine::Engine {
             ep.role_mut(Role::Read).set_secret(e, secret);
             crate::flows::save_epochs(tx, &g)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::engine::secrets::MAX_READING_ACTORS;
+    use crate::local_peer::LocalPeer;
+    use crate::Mutation;
+    use osis_core::{CommitId, Role, Tid, Value, WallMs};
+    use osis_crypto::{Epoch, Secret32};
+    use osis_keys::{ActorEpochs, Unchecked};
+    use osis_schema::core_types as ct;
+
+    fn reading_only(n: u8, commit: CommitId) -> ActorEpochs {
+        let mut a = ActorEpochs::default();
+        a.read.set_reading_secret(Epoch::new(1, [n; 16]).unwrap(), Secret32::from_bytes([n; 32]), Unchecked { author: Tid::from_bytes([n; 15]), commit });
+        a
+    }
+
+    // spec/crypto.md §4: boxes of pending commits are read, but the node holds a bounded number
+    // of actors through reading-only secrets alone; past it a pending grant's boxes are not read.
+    #[test]
+    fn reading_only_actors_capped_spec_crypto_4() {
+        let mut lp = LocalPeer::new(3, 907, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+        let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
+        let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        for n in 0..MAX_READING_ACTORS {
+            let n = u8::try_from(n).unwrap();
+            lp.peers[1].engine.core.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
+        }
+        // pending (the thing's `/created` is not held): its boxes are read only under the cap
+        lp.deliver(1, &p1).unwrap();
+        lp.deliver(2, &p2).unwrap();
+        assert!(!lp.peers[2].engine.pending().is_empty());
+        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.secrets.get(&t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+        assert!(held(&lp, 2), "under the cap: read");
+        assert!(!held(&lp, 1), "at the cap: not read");
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped
+    // takes its reading-only candidates; an actor they were the only secrets of is handed to
+    // the lost-access trigger, which forgets it.
+    #[test]
+    fn applied_commit_hands_reading_only_actor_to_lost_trigger_spec_crypto_4() {
+        let mut lp = LocalPeer::new(1, 908, WallMs(1_700_000_000_000)).unwrap();
+        let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
+        lp.peers[0].engine.core.secrets.insert(x, reading_only(9, c));
+        lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
+        assert!(lp.peers[0].engine.core.lost_due.contains(&x));
+        lp.peers[0].engine.drop_lost_due().unwrap();
+        assert!(lp.peers[0].engine.core.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
     }
 }

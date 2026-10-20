@@ -298,76 +298,98 @@ impl Engine {
             if is_membership_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
                 continue;
             }
-            let own: Vec<CommitId> = self.core.by_aspect.get(&(tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.commits.get(c).is_some_and(|m| m.header.author == me && m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
-            let (k, held2) = ((tid, ak.clone()), held.clone());
-            let found = self.run(|tx| {
-                let Some(dedup) = tx.core.dedup(&k.0) else { return Ok(None) };
-                for c in own {
-                    let Some(ai) = tx.core.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)) else { continue };
-                    let mut roots = Vec::new();
-                    for d in crate::apply::held_parts(tx, &c, ai)? {
-                        let f = match &d {
-                            osis_commit::Decoded::Delta(x) => &x.fragment,
-                            osis_commit::Decoded::Snapshot(x) => &x.fragment,
-                        };
-                        if let Some(v) = f.read() {
-                            links_in(&v, &mut roots);
-                        }
-                    }
-                    if tree_blobs(tx, &dedup, &roots)?.is_some_and(|t| !t.is_disjoint(&held2)) {
-                        return Ok(Some((c, ai)));
-                    }
-                }
-                Ok(None)
-            })?;
-            let Some((c, ai)) = found else { continue };
-            let Some(a) = self.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { continue };
-            if a.expires.is_some_and(|t| t <= now) {
-                continue;
-            }
-            // the schema it was written with: an unregistered typed one cannot be written back
-            let schema: Option<Arc<Schema>> = match a.schema {
-                None => None,
-                Some(i) => match self.core.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
-                    Some(s) => Some(s.clone()),
-                    None => continue,
-                },
+            // one field failing (a blob not held, a value too large) leaves the others
+            let e = match self.relink_field(&tid, &ak, &held, me, now) {
+                Ok(Some(e)) => e,
+                Ok(None) => continue,
+                Err(e @ Error::Store(_)) => return Err(e),
+                Err(_) => continue,
             };
-            let Some(state) = self.state(&tid, &ak)? else { continue };
-            let Some(v) = state.read() else { continue };
-            let core = osis_schema::core_schema();
-            let (sc, ty): (&Schema, Type) = match schema.as_deref().and_then(|s| s.aspects.get(ak.as_str()).map(|d| (s, d.ty.clone()))) {
-                Some(x) => x,
-                None => (core, Type::Any),
-            };
-            let mut ops = Vec::new();
-            for l in osis_schema::link_positions(sc, &v, &ty) {
-                // set elements and map keys have no position to write
-                let Some(path) = segs(&l) else { continue };
-                let Some(link) = base_at(&state, &[], &l) else { continue };
-                let hit = self.run(|tx| {
-                    let Some(dedup) = tx.core.dedup(&tid) else { return Ok(false) };
-                    Ok(tree_blobs(tx, &dedup, &[link])?.is_some_and(|t| !t.is_disjoint(&held)))
-                })?;
-                if hit {
-                    let raw = self.read_large(&tid, &link)?;
-                    // written whole without a reset: other writes at and around it stay
-                    ops.push(PathOp { path, op: Op::Put(raw) });
-                }
+            if allow(&tid, &ak) {
+                m.aspects.insert((tid, ak), e);
             }
-            if ops.is_empty() || !allow(&tid, &ak) {
-                continue;
-            }
-            let e = m.aspects.entry((tid, ak)).or_default();
-            e.schema = schema;
-            e.retention = Some(a.retention);
-            e.expires = a.expires;
-            e.ops = ops;
         }
         if m.aspects.is_empty() {
             return Ok(None);
         }
         self.commit(m)
+    }
+
+    /// `relink` of one field: its ops, with the retention, expiry and schema of the newest held
+    /// commit whose delta links a `held` blob (the value rewritten), if a commit of `me` links one
+    /// too; `None` when there is nothing to do here.
+    fn relink_field(&mut self, tid: &Tid, ak: &Ak, held: &BTreeSet<BlobId>, me: Tid, now: u64) -> Result<Option<super::write::AspectMut>> {
+        let commits: Vec<CommitId> = self.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.commits.get(c).is_some_and(|m| m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
+        let (k, held2) = ((*tid, ak.clone()), held.clone());
+        // (newest linking commit and its aspect index, whether an own commit links one)
+        let found = self.run(|tx| {
+            let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
+            let mut newest = None;
+            for c in commits {
+                let Some((ai, mine)) = tx.core.commits.get(&c).and_then(|m| Some((m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)?, m.header.author == me))) else { continue };
+                if newest.is_some() && !mine {
+                    continue;
+                }
+                let mut roots = Vec::new();
+                for d in crate::apply::held_parts(tx, &c, ai)? {
+                    let f = match &d {
+                        osis_commit::Decoded::Delta(x) => &x.fragment,
+                        osis_commit::Decoded::Snapshot(x) => &x.fragment,
+                    };
+                    if let Some(v) = f.read() {
+                        links_in(&v, &mut roots);
+                    }
+                }
+                if !tree_blobs(tx, &dedup, &roots)?.is_some_and(|t| !t.is_disjoint(&held2)) {
+                    continue;
+                }
+                newest = newest.or(Some((c, ai)));
+                if mine {
+                    return Ok((newest, true));
+                }
+            }
+            Ok((newest, false))
+        })?;
+        let (Some((c, ai)), true) = found else { return Ok(None) };
+        let Some(a) = self.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { return Ok(None) };
+        if a.expires.is_some_and(|t| t <= now) {
+            return Ok(None);
+        }
+        // the schema it was written with: an unregistered typed one cannot be written back
+        let schema: Option<Arc<Schema>> = match a.schema {
+            None => None,
+            Some(i) => match self.core.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
+                Some(s) => Some(s.clone()),
+                None => return Ok(None),
+            },
+        };
+        let Some(state) = self.state(tid, ak)? else { return Ok(None) };
+        let Some(v) = state.read() else { return Ok(None) };
+        let core = osis_schema::core_schema();
+        let (sc, ty): (&Schema, Type) = match schema.as_deref().and_then(|s| s.aspects.get(ak.as_str()).map(|d| (s, d.ty.clone()))) {
+            Some(x) => x,
+            None => (core, Type::Any),
+        };
+        let mut ops = Vec::new();
+        for l in osis_schema::link_positions(sc, &v, &ty) {
+            // set elements and map keys have no register position to write
+            let Some(path) = segs(&l) else { continue };
+            let Some(link) = base_at(&state, &[], &l) else { continue };
+            let t = *tid;
+            let hit = self.run(|tx| {
+                let Some(dedup) = tx.core.dedup(&t) else { return Ok(false) };
+                Ok(tree_blobs(tx, &dedup, &[link])?.is_some_and(|x| !x.is_disjoint(held)))
+            })?;
+            if hit {
+                let raw = self.read_large(tid, &link)?;
+                // written whole without a reset: other writes at and around it stay
+                ops.push(PathOp { path, op: Op::Put(raw) });
+            }
+        }
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires: a.expires }))
     }
 
     /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes

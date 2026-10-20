@@ -29,6 +29,19 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
     Keyset { epoch: to_schema(epoch), kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()), suite: SUITE }
 }
 
+/// Drops reading-only candidates that contradict the actor's published keysets (`/keys`): the
+/// keyset of an epoch names the KEM key derived from its genuine secret (spec/crypto.md §3), so a
+/// planted secret for a published epoch never stays. Returns whether any went.
+pub fn prune_reading(epochs: &mut ActorEpochs, keys: &Keys) -> bool {
+    let mut any = false;
+    for r in crate::epoch::ROLES {
+        let Some(ks) = keyset_of(keys, r) else { continue };
+        let Ok(e) = from_schema(&ks.epoch) else { continue };
+        any |= epochs.role_mut(r).retain_reading(&e, |s| keyset(&e, s).kem_key == ks.kem_key);
+    }
+    any
+}
+
 /// A write to `/secrets`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecretsWrite {

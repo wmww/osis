@@ -7,7 +7,7 @@ use super::Core;
 use crate::error::{Error, Result};
 use osis_core::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{Epoch, Secret32, dedup_secret};
-use osis_keys::{ActorEpochs, Opener, Provenance, ROLES, Unchecked};
+use osis_keys::{ActorEpochs, HistoryAlts, Opener, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets};
 
@@ -65,19 +65,29 @@ impl Core {
     /// (spec/crypto.md §4). `unchecked`: `None` when `secrets` is the applied valid state; the
     /// source for the boxes of a pending commit, whose secrets are kept for reading only.
     /// Returns whether anything new was learned.
-    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>) -> bool {
+    /// `alts`: the live entries of history keys holding several (each tried). `published`: the
+    /// actor's `/keys`, against which unchecked candidates are checked.
+    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts, published: Option<&Keys>) -> bool {
         let before = self.secrets.get(actor).cloned();
+        // a bounded number of actors held through reading-only secrets alone
+        let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
+        if unchecked.is_some() && before.as_ref().is_none_or(|e| ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty())) && self.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
+            return false;
+        }
         let mut epochs = before.clone().unwrap_or_default();
         let seed = self.id.seed().clone();
         let me = self.id.tid();
         let mut openers: Vec<(Tid, ActorEpochs)> = self.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
         openers.sort_by_key(|x| x.0);
-        let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, unchecked);
+        let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
-            let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs, unchecked);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs, unchecked);
         }
         for (m, e) in &openers {
-            let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
+        }
+        if let Some(k) = published {
+            osis_keys::prune_reading(&mut epochs, k);
         }
         self.adopt_derived(actor, &mut epochs);
         let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
@@ -202,8 +212,35 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
     osis_core::encode(&Value::List(roles))
 }
 
+/// Most actors this node holds through reading-only secrets alone (local policy: pending
+/// commits naming made-up actors cannot grow it without bound).
+pub(crate) const MAX_READING_ACTORS: usize = 64;
+
+/// The live entries of history keys holding several in a `/secrets` state (puts of one key by
+/// different writers): readers try each, so a newer entry does not hide the genuine box.
+pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
+    use osis_crdt::{Encoding, Fragment, MemberRef};
+    let mut out = HistoryAlts::new();
+    let Some(MemberRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return out };
+    let Some(MemberRef::Frag(Fragment::Map(m))) = st.field(1).and_then(|x| x.slot(Encoding::Map)) else { return out };
+    let mut by_key: std::collections::BTreeMap<Value, Vec<Vec<u8>>> = std::collections::BTreeMap::new();
+    for (_, _, k, frag) in m.entries() {
+        if let (Some(k), Some(Value::Bytes(b))) = (k, frag.and_then(osis_crdt::Fragment::read)) {
+            by_key.entry(k.clone()).or_default().push(b);
+        }
+    }
+    for (k, v) in by_key {
+        if v.len() > 1
+            && let Ok(k) = <osis_schema::core_types::HistoryKey as osis_schema::Codec>::from_value(&k)
+        {
+            out.insert(k, v);
+        }
+    }
+    out
+}
+
 /// The source given a reading-only secret persisted before sources were kept.
-const OLD_SOURCE: Unchecked = Unchecked { author: Tid::from_bytes([0; 15]), commit: osis_core::CommitId([0; 32]) };
+const OLD_SOURCE: Unchecked = Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_core::CommitId([0; 32]) };
 
 pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
@@ -313,5 +350,27 @@ mod tests {
             assert_eq!(a.read.secret(&e).is_some(), !ro);
             assert_eq!(decode_epochs(&encode_epochs(&a)).unwrap(), a);
         }
+    }
+
+    // spec/crypto.md §4: every live entry of a history key with several (puts by different
+    // writers) is offered to readers, not only their merged read.
+    #[test]
+    fn history_alts_lists_live_entries() {
+        use osis_crdt::{Batch, Op, PathOp, PathSeg, Source, Writer};
+        use osis_schema::Codec;
+        let schema = osis_schema::core_schema();
+        let view = schema.view("/secrets").unwrap();
+        let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 16]).unwrap()) };
+        let mut st = osis_crdt::Fragment::default();
+        for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {
+            let ts = osis_core::Ts::make(osis_core::WallMs(u64::from(n) * 1000), 0).unwrap();
+            let mut batch = Batch::new(&st, Writer::new(ts, Source::node(Tid::from_bytes([n; 15])), 1));
+            batch.apply(&PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(vec![b; 8])) }, &view).unwrap();
+            st.join(batch.finish().unwrap().0);
+        }
+        let alts = history_alts(&st);
+        let mut got = alts.get(&k).cloned().unwrap();
+        got.sort();
+        assert_eq!(got, vec![vec![0x11; 8], vec![0x22; 8]]);
     }
 }

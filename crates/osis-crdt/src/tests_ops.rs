@@ -402,3 +402,18 @@ fn map_put_new_spec_5_6() {
     batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
     assert!(!batch.finish().unwrap().0.is_put_only_map(&|_| true));
 }
+
+/// §5.6 `put_new` away from a map key: a register is written again; a composite (it would merge
+/// with what is there) is refused.
+#[test]
+fn put_new_register_only_spec_5_6() {
+    let view = AnyView;
+    let a = Source::node(Tid::from_bytes([1; 15]));
+    let st = Fragment::default();
+    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), a.clone(), 1));
+    assert!(b.apply(&PathOp { path: vec![], op: Op::Put(Value::Int(3)) }, &view).is_ok());
+    for v in [Value::Set([Value::Int(1)].into_iter().collect()), Value::List(vec![Value::Int(1)]), Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect())] {
+        let mut b = Batch::new(&st, Writer::new(ts(2 << 16), a.clone(), 1));
+        assert!(b.apply(&PathOp { path: vec![], op: Op::Put(v) }, &view).is_err());
+    }
+}
