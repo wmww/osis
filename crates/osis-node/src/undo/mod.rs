@@ -10,9 +10,9 @@ use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Kind};
 use osis_core::{Ak, CommitId, Tid, Ts};
-use osis_crdt::{AnyView, CounterRange, Fragment, PathSeg, Source, UndoBuffer, Undone, View, Writer};
+use osis_crdt::{AnyView, CounterRange, Fragment, PathSeg, Source, Stamp, UndoBuffer, Undone, View, Writer};
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Local commits per aspect whose pre-commit state is kept.
 pub const UNDO_DEPTH: usize = 16;
@@ -71,6 +71,12 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
     }
     let node = tx.core.id.tid();
     let ts = tx.core.hlc.next();
+    let mut undoers: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
+    for (id, c) in &tx.core.commits {
+        if let Some(t) = c.header.undoes {
+            undoers.entry(t).or_default().push(*id);
+        }
+    }
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7)
@@ -83,7 +89,6 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
             Form::Node => Source::node(h.author),
             Form::Commit => Source::commit(target),
         };
-        let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
         let buffer = decode_buffer(&tx.unit(&a.tid, &a.ak)?.undo)?.into_iter().find(|x| x.0 == target).map(|x| x.1);
         let pre = match buffer {
             Some(b) if !b.is_empty() => Some(crate::engine::state::decode(&b)?),
@@ -120,6 +125,10 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
             Some(f) => f,
             None => &NoBuffer,
         };
+        // a write of an undo commit in effect: undo steps back through it (spec/crdt.md §4.6)
+        let core = &*tx.core;
+        let restored = |s: &Stamp| core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, &undoers, 0));
+        let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let out = match &view {
             Some(v) => undo_delta(&mut w, &undone, &state, buf, v)?,
             None => undo_delta(&mut w, &undone, &state, buf, &AnyView)?,
@@ -137,6 +146,12 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
     }
     let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid() };
     build_and_apply(tx, plan, deltas)
+}
+
+/// Whether commit `c` is in effect: no undo commit in effect undoes it (chains are finite:
+/// an undo names an older commit by hash; a pathological depth counts as in effect).
+fn in_effect(c: &CommitId, undoers: &BTreeMap<CommitId, Vec<CommitId>>, depth: usize) -> bool {
+    depth > 64 || !undoers.get(c).is_some_and(|us| us.iter().any(|u| in_effect(u, undoers, depth + 1)))
 }
 
 impl Engine {

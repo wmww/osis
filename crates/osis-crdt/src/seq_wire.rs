@@ -2,7 +2,9 @@
 
 use crate::error::Error;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, top2};
+use crate::seq_span::{nth, overlaps};
 use crate::stamp::{Dot, Stamp};
+use osis_core::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
 use osis_core::Value;
 use osis_core::format::MAX_DELTA_BARE;
@@ -22,30 +24,47 @@ fn carries(e: &SeqElem) -> bool {
     e.flag() || !matches!(e.content, SeqContent::None)
 }
 
-/// Maximal runs (rule 3) as `(start, n)` over the wire-ordered elements.
-fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
+/// A run element range: `(record dot, record, offset, length)`.
+type Piece<'a> = (&'a Dot, &'a SeqElem, u64, u64);
+
+/// Maximal runs (rule 3) over the wire-ordered records, as pieces of records (a range record's
+/// elements share every property the rule compares, and chain to each other).
+fn runs<'a>(text: bool, v: &[(&'a Dot, &'a SeqElem)]) -> Vec<Vec<Piece<'a>>> {
     let mut out = Vec::new();
-    let mut i = 0;
-    while let Some((d0, e0)) = v.get(i) {
-        let mut n = 1;
-        while (n as u64) < MAX_RUN {
-            let (Some((d, e)), Some((dp, _))) = (v.get(i + n), v.get(i + n - 1)) else { break };
-            let next = dp.ctr.checked_add(1);
-            if d.src != d0.src || Some(d.ctr) != next || carries(e) != carries(e0) || (!text && has_content(e) != has_content(e0)) {
+    let (mut i, mut off) = (0usize, 0u64);
+    while let Some((k0, e0)) = v.get(i).copied() {
+        let d0 = nth(k0, off);
+        let mut run: Vec<Piece<'a>> = Vec::new();
+        let (mut n, mut prev) = (0u64, d0.clone());
+        while let Some((k, e)) = v.get(i).copied() {
+            if n > 0 {
+                // a new record starts here (`off` is 0)
+                if k.src != d0.src || Some(k.ctr) != prev.ctr.checked_add(1) || carries(e) != carries(e0) || (!text && has_content(e) != has_content(e0)) {
+                    break;
+                }
+                let ok = if e0.created.is_some() {
+                    matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == prev)
+                } else {
+                    e.created.is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted
+                };
+                if !ok {
+                    break;
+                }
+            }
+            let take = (e.span - off).min(MAX_RUN - n);
+            run.push((k, e, off, take));
+            n += take;
+            prev = nth(k, off + take - 1);
+            off += take;
+            if off == e.span {
+                i += 1;
+                off = 0;
+            }
+            if n == MAX_RUN {
                 break;
             }
-            let ok = if e0.created.is_some() {
-                matches!(&e.created, Some((_, Anchor::Dot(a))) if a == *dp)
-            } else {
-                e.created.is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted
-            };
-            if !ok {
-                break;
-            }
-            n += 1;
         }
-        out.push((i, n));
-        i += n;
+        out.push(run);
     }
     out
 }
@@ -70,68 +89,70 @@ fn commit_index(v: &Value) -> u64 {
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
     let v = cx.sorted(&s.elems);
     let mut out = Vec::new();
-    for (start, n) in runs(s.text, &v) {
-        let run = v.get(start..start + n).unwrap_or_default();
-        let Some((d0, e0)) = run.first() else { continue };
-        let first = cx.dot(d0);
+    for run in runs(s.text, &v) {
+        let Some(&(k0, e0, off0, _)) = run.first() else { continue };
+        let n: u64 = run.iter().map(|p| p.3).sum();
+        let first = cx.dot(&nth(k0, off0));
         let creation = match &e0.created {
             None => Value::List(Vec::new()),
             Some((_, a)) => {
-                let a = anchor(cx, a);
+                let a = if off0 == 0 { anchor(cx, a) } else { anchor(cx, &Anchor::Dot(nth(k0, off0 - 1))) };
                 let mut segs: Vec<(u64, u64)> = Vec::new();
-                for (_, e) in run {
+                for &(k, e, off, len) in &run {
                     let Some((st, _)) = &e.created else { continue };
-                    let ci = commit_index(&cx.stamp(st));
+                    let ci = if off == 0 { commit_index(&cx.stamp(st)) } else { commit_index(&cx.stamp(&Stamp { ts: st.ts, dot: nth(k, off) })) };
                     match segs.last_mut() {
-                        Some((c, k)) if *c == ci => *k += 1,
-                        _ => segs.push((ci, 1)),
+                        Some((c, x)) if *c == ci => *x += len,
+                        _ => segs.push((ci, len)),
                     }
                 }
                 let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
                 Value::List(vec![a, Value::List(segs)])
             }
         };
-        let content = if !run.iter().any(|(_, e)| has_content(e)) {
+        // content and extra position writes sit only on single-element records
+        let content = if !run.iter().any(|p| has_content(p.1)) {
             Value::List(Vec::new())
         } else if s.text {
-            Value::Str(run.iter().filter(|(_, e)| has_content(e)).filter_map(|(_, e)| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect())
+            Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| if let SeqContent::Char(c) = p.1.content { Some(c) } else { None }).collect())
         } else {
             let mut fs = Vec::with_capacity(run.len());
-            for (_, e) in run {
-                if let SeqContent::Frag(f) = &e.content {
+            for p in &run {
+                if let SeqContent::Frag(f) = &p.1.content {
                     fs.push(cx.fragment(f)?);
                 }
             }
             Value::List(fs)
         };
         let mut posw = Vec::new();
-        for (k, (d, e)) in run.iter().enumerate() {
-            for (st, a) in e.pos.iter().filter(|p| p.0.dot != **d) {
-                let st = cx.stamp(st);
-                posw.push(Value::List(vec![uint(k as u64), st, anchor(cx, a)]));
+        let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
+        let mut idx = 0u64;
+        for &(k, e, _, len) in &run {
+            if e.span == 1 {
+                for (st, a) in e.pos.iter().filter(|p| p.0.dot != *k) {
+                    let st = cx.stamp(st);
+                    posw.push(Value::List(vec![uint(idx), st, anchor(cx, a)]));
+                }
             }
-        }
-        let mut flagw = Vec::new();
-        let mut k = 0;
-        while let Some((_, e)) = run.get(k) {
-            let Some((st, b)) = &e.deleted else {
-                k += 1;
-                continue;
-            };
-            let mut j = k;
-            while run.get(j + 1).is_some_and(|(_, x)| x.deleted.as_ref() == e.deleted.as_ref()) {
-                j += 1;
+            if let Some(dl) = &e.deleted {
+                match flagw.last_mut() {
+                    Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + len - 1,
+                    _ => flagw.push((idx, idx + len - 1, dl)),
+                }
             }
-            flagw.push(Value::List(vec![uint(k as u64), uint(j as u64), cx.stamp(st), Value::Bool(*b)]));
-            k = j + 1;
+            idx += len;
         }
-        out.push(Value::List(vec![first, uint(n as u64), creation, content, Value::List(posw), Value::List(flagw)]));
+        let mut fw = Vec::with_capacity(flagw.len());
+        for (i, j, (st, b)) in flagw {
+            fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
+        }
+        out.push(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]));
     }
     Ok(out)
 }
 
-fn index(v: &Value, n: usize) -> Result<usize, Error> {
-    usize::try_from(as_uint(v)?).ok().filter(|i| *i < n).ok_or(Error::Malformed("run index out of range"))
+fn index(v: &Value, n: u64) -> Result<u64, Error> {
+    Some(as_uint(v)?).filter(|i| *i < n).ok_or(Error::Malformed("run index out of range"))
 }
 
 fn dec_anchor(cx: &Dec, v: &Value) -> Result<Anchor, Error> {
@@ -139,6 +160,7 @@ fn dec_anchor(cx: &Dec, v: &Value) -> Result<Anchor, Error> {
 }
 
 /// Reads runs (one page or the whole array) into `s`; the canonical re-encode checks the rest.
+/// Allocates per run, not per element: uniform content-less stretches become range records.
 pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<(), Error> {
     let writer = cx.kind() == DeltaKind::Writer;
     for r in runs {
@@ -167,43 +189,41 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         if writer && own && last >= cx.range().hi {
             return Err(Error::Malformed("own dot above the counter range"));
         }
-        let n = usize::try_from(n).map_err(|_| Error::Malformed("run length"))?;
-        let dot = |i: usize| Dot::new(first.src.clone(), first.ctr + i as u64);
-        let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::bare()).collect();
+        // creation: the first anchor and segments `(offset, length, ts)`
+        let mut anchor0 = Anchor::Head;
+        let mut segs: Vec<(u64, u64, Ts)> = Vec::new();
         match as_array(creation)? {
             [] => {}
-            [a, segs] => {
+            [a, ss] => {
                 if writer && first.src.is_derived() {
                     return Err(Error::Malformed("embedded characters in a writer's delta"));
                 }
-                let mut prev = dec_anchor(cx, a)?;
-                let mut i = 0usize;
+                anchor0 = dec_anchor(cx, a)?;
+                let mut i = 0u64;
                 let mut last_ci = None;
-                for seg in as_array(segs)? {
+                for seg in as_array(ss)? {
                     let [ci, k] = as_array(seg)? else { return Err(Error::Malformed("segment")) };
-                    let k = usize::try_from(as_uint(k)?).map_err(|_| Error::Malformed("segment length"))?;
-                    if k == 0 || last_ci.as_ref() == Some(ci) {
+                    let k = as_uint(k)?;
+                    if k == 0 || last_ci == Some(ci) {
                         return Err(Error::Malformed("non-canonical segments"));
                     }
-                    last_ci = Some(ci.clone());
+                    last_ci = Some(ci);
                     let base = cx.stamp(ci)?;
                     if base.dot.src != first.src {
                         return Err(Error::Malformed("segment of another source"));
                     }
                     let end = i.checked_add(k).filter(|e| *e <= n).ok_or(Error::Malformed("segments exceed the run"))?;
-                    for j in i..end {
-                        let d = dot(j);
-                        if writer && own && !cx.range().contains(d.ctr) {
-                            return Err(Error::Malformed("own write outside the counter range"));
+                    if writer && own {
+                        // a writer's own counters: bounded by its header range and rule 7
+                        for j in i..end {
+                            let d = nth(&first, j);
+                            if !cx.range().contains(d.ctr) {
+                                return Err(Error::Malformed("own write outside the counter range"));
+                            }
+                            cx.claim(&d)?;
                         }
-                        cx.claim(&d)?;
-                        let st = Stamp { ts: base.ts, dot: d.clone() };
-                        if let Some(e) = elems.get_mut(j) {
-                            e.created = Some((st.clone(), prev.clone()));
-                            e.pos.push((st, prev));
-                        }
-                        prev = Anchor::Dot(d);
                     }
+                    segs.push((i, end - i, base.ts));
                     i = end;
                 }
                 if i != n {
@@ -212,16 +232,17 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             }
             _ => return Err(Error::Malformed("creation")),
         }
+        let mut pws: Vec<(u64, Stamp, Anchor)> = Vec::new();
         for p in as_array(posw)? {
             let [i, st, a] = as_array(p)? else { return Err(Error::Malformed("position write")) };
             let i = index(i, n)?;
             let st = cx.stamp(st)?;
             cx.claim(&st.dot)?;
             let a = dec_anchor(cx, a)?;
-            if let Some(e) = elems.get_mut(i) {
-                e.pos.push((st, a));
-            }
+            pws.push((i, st, a));
         }
+        pws.sort_by_key(|p| p.0);
+        let mut fws: Vec<(u64, u64, (Stamp, bool))> = Vec::new();
         for f in as_array(flagw)? {
             let [i, j, st, b] = as_array(f)? else { return Err(Error::Malformed("flag write")) };
             let (i, j) = (index(i, n)?, index(j, n)?);
@@ -237,41 +258,85 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             if !s.text && !b {
                 return Err(Error::Malformed("undelete of a list element"));
             }
-            for e in elems.get_mut(i..=j).unwrap_or_default() {
-                if e.deleted.as_ref().is_none_or(|x| st > x.0) {
-                    e.deleted = Some((st.clone(), *b));
-                }
+            // canonical flag writes are maximal ranges in order (rule 2), so never overlap
+            if fws.last().is_some_and(|x| i <= x.1) {
+                return Err(Error::Malformed("overlapping flag writes"));
             }
+            fws.push((i, j, (st, *b)));
         }
+        // content: one char per element not deleted (text), one fragment per element (list)
+        let mut chars: Option<std::str::Chars> = None;
+        let mut frags: Option<std::slice::Iter<Value>> = None;
         match (content, s.text) {
             (Value::List(v), _) if v.is_empty() => {}
-            (Value::Str(chars), true) => {
-                let mut cs = chars.chars();
-                for e in elems.iter_mut().filter(|e| !e.flag()) {
-                    e.content = SeqContent::Char(cs.next().ok_or(Error::Malformed("content shorter than the run"))?);
+            (Value::Str(cs), true) => {
+                let deleted: u64 = fws.iter().filter(|f| f.2.1).map(|f| f.1 - f.0 + 1).sum();
+                let want = usize::try_from(n - deleted).map_err(|_| Error::Malformed("run length"))?;
+                match cs.chars().count().cmp(&want) {
+                    std::cmp::Ordering::Less => return Err(Error::Malformed("content shorter than the run")),
+                    std::cmp::Ordering::Greater => return Err(Error::Malformed("content longer than the run")),
+                    std::cmp::Ordering::Equal => {}
                 }
-                if cs.next().is_some() {
-                    return Err(Error::Malformed("content longer than the run"));
-                }
+                chars = Some(cs.chars());
             }
             (Value::List(fs), false) => {
-                if fs.len() != n {
+                if fs.len() as u64 != n {
                     return Err(Error::Malformed("content length differs from the run"));
                 }
-                for (e, f) in elems.iter_mut().zip(fs) {
-                    let f = cx.fragment(f)?;
-                    if f.is_empty() {
-                        return Err(Error::Malformed("empty element fragment"));
-                    }
-                    e.content = SeqContent::Frag(Box::new(f));
-                }
+                frags = Some(fs.iter());
             }
             _ => return Err(Error::Malformed("content")),
         }
-        for (i, mut e) in elems.into_iter().enumerate() {
-            top2(&mut e.pos);
-            if s.elems.insert(dot(i), e).is_some() {
-                return Err(Error::Malformed("element in two runs"));
+        // records: cut wherever a property may change; elements with content stand alone
+        let mut cuts: Vec<u64> = vec![0, n];
+        cuts.extend(segs.iter().map(|x| x.0));
+        cuts.extend(pws.iter().flat_map(|x| [x.0, x.0 + 1]));
+        cuts.extend(fws.iter().flat_map(|x| [x.0, x.1 + 1]));
+        cuts.sort_unstable();
+        cuts.dedup();
+        let (mut si, mut pi, mut fi) = (0usize, 0usize, 0usize);
+        for w in cuts.windows(2) {
+            let [a, b] = *w else { continue };
+            while segs.get(si).is_some_and(|x| x.0 + x.1 <= a) {
+                si += 1;
+            }
+            while fws.get(fi).is_some_and(|x| x.1 < a) {
+                fi += 1;
+            }
+            let deleted = fws.get(fi).filter(|x| x.0 <= a).map(|x| x.2.clone());
+            let ts = segs.get(si).map(|x| x.2);
+            let flag = deleted.as_ref().is_some_and(|x| x.1);
+            let single = frags.is_some() || chars.is_some() && !flag;
+            let mut at = a;
+            while at < b {
+                let len = if single { 1 } else { b - at };
+                let dot = nth(&first, at);
+                let created = ts.map(|ts| (Stamp { ts, dot: dot.clone() }, if at == 0 { anchor0.clone() } else { Anchor::Dot(nth(&first, at - 1)) }));
+                let mut pos: Vec<(Stamp, Anchor)> = created.iter().cloned().collect();
+                while let Some((i, st, an)) = pws.get(pi) {
+                    if *i != at {
+                        break;
+                    }
+                    pos.push((st.clone(), an.clone()));
+                    pi += 1;
+                }
+                top2(&mut pos);
+                let content = if let Some(fs) = frags.as_mut() {
+                    let f = cx.fragment(fs.next().ok_or(Error::Malformed("content length differs from the run"))?)?;
+                    if f.is_empty() {
+                        return Err(Error::Malformed("empty element fragment"));
+                    }
+                    SeqContent::Frag(Box::new(f))
+                } else if let (Some(cs), false) = (chars.as_mut(), flag) {
+                    SeqContent::Char(cs.next().ok_or(Error::Malformed("content shorter than the run"))?)
+                } else {
+                    SeqContent::None
+                };
+                if overlaps(&s.elems, &dot, len) {
+                    return Err(Error::Malformed("element in two runs"));
+                }
+                s.elems.insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
+                at += len;
             }
         }
     }

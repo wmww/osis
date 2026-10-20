@@ -146,7 +146,7 @@ A delta is a state fragment, so a commit carries the **net effect** of the ops b
 ### 4.6 Undo (cancel per dot) and un-merge (by author)
 Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen per original write:
 - element creation (text/list insert, set add, map put, contribution): text → deleted-flag write `true` on the dot (keeps the anchor; §5.7); list/set/map/bag → element reset on that dot.
-- register write, case write, position write: write the previous value only if the undone write is still the current winner locally; otherwise no write.
+- register write, case write, position write: write the previous value if the undone write is still the current winner locally, or if the current winner was written by an undo commit in effect (one that no undo commit in effect undoes; spec/commits.md §7) and equals the undone write in value (the register value, case or anchor), so undo steps back through repeated edits of one position; otherwise no write. The previous value comes from the undo buffer (the state before the undone commit).
 - flag write, element reset (text delete, list delete, set remove, key remove): the inverse write (flag `false` for text, or a re-add with a fresh dot) carrying content from the undo buffer, at the undo commit's stamp.
 - fragment reset (remove_aspect, replace, enum case change): re-insert the pre-reset value from the undo buffer with fresh dots (`replace`); bags: §5.2.
 Originals whose body was dropped are not undoable. Redo = undo of the undo commit.

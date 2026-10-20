@@ -3,7 +3,12 @@
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::Fragment;
-use crate::seq::SeqContent;
+use crate::fragment::Meta;
+use crate::linearize::place;
+use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+use crate::seq_span::{expand, nth};
+use crate::stamp::{Dot, Stamp};
+use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
 use crate::testutil::{frag, history_with, mapply, source, ts};
 use crate::tests_join::lockstep;
@@ -155,7 +160,7 @@ fn cycle_breaking_is_linear_spec_6_2() {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, c);
-        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone())], deleted: None });
+        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone())], deleted: None, span: 1 });
         prev = Anchor::Dot(Dot::new(a.clone(), c));
     }
     let tail = prev;
@@ -165,8 +170,8 @@ fn cycle_breaking_is_linear_spec_6_2() {
         let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
         c += 2;
         m += 2;
-        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone())), (cx, tail.clone())], deleted: None });
-        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone())), (cy, tail.clone())], deleted: None });
+        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone())), (cx, tail.clone())], deleted: None, span: 1 });
+        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone())), (cy, tail.clone())], deleted: None, span: 1 });
     }
     let t = std::time::Instant::now();
     let p = crate::linearize::place_idx(&elems);
@@ -567,4 +572,133 @@ fn text_pages_spec_8() {
     let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages)).unwrap();
     assert_eq!(got.fragment, as_carried(&st));
     assert_eq!(got.fragment.read(), st.read());
+}
+
+// ---- range records (spec/requirements.md Scale: input never causes unbounded allocation)
+
+fn n(b: u8) -> crate::stamp::Source {
+    crate::stamp::Source::node(osis_core::Tid::from_bytes([b; 15]))
+}
+fn st(t: u64, b: u8, c: u64) -> Stamp {
+    Stamp::new(ts(t << 16), n(b), c)
+}
+fn seq_of(elems: BTreeMap<Dot, SeqElem>, reset: Option<Stamp>) -> Fragment {
+    Fragment::Seq(Seq { text: true, meta: Meta { reset, w: None }, elems })
+}
+fn one(d: Dot, e: SeqElem) -> Fragment {
+    seq_of(BTreeMap::from([(d, e)]), None)
+}
+/// `len` chars typed by node 1 at t = 1, chained from HEAD.
+fn long_text(len: u64) -> Fragment {
+    let mut elems = BTreeMap::new();
+    let mut prev = Anchor::Head;
+    for c in 1..=len {
+        let s = st(1, 1, c);
+        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev)], deleted: None, span: 1 });
+        prev = Anchor::Dot(s.dot);
+    }
+    seq_of(elems, None)
+}
+fn records(f: &Fragment) -> usize {
+    match f {
+        Fragment::Seq(s) => s.elems.len(),
+        _ => panic!("not a sequence"),
+    }
+}
+/// Every placed element in order.
+fn order(f: &Fragment) -> Vec<Dot> {
+    let Fragment::Seq(s) = f else { panic!("not a sequence") };
+    let p = place(&s.elems);
+    p.order.iter().zip(&p.span).flat_map(|(d, k)| (0..*k).map(move |i| nth(d, i))).collect()
+}
+fn expanded(f: &Fragment) -> Fragment {
+    let Fragment::Seq(s) = f else { panic!("not a sequence") };
+    Fragment::Seq(Seq { text: s.text, meta: s.meta.clone(), elems: expand(s.elems.clone()) })
+}
+fn snapshot_of(f: &Fragment) -> Vec<u8> {
+    encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
+}
+
+/// §3.2 Run, issue run amplification: a snapshot run of 2^16 - 1 bare anchors (a reset text)
+/// or deleted elements is a few bytes and decodes to one record, not one per element.
+#[test]
+fn snapshot_runs_decode_to_ranges_spec_3_2() {
+    let len = 65535;
+    let mut bare = long_text(len);
+    bare.join(seq_of(BTreeMap::new(), Some(st(2, 2, 1))));
+    let mut deleted = long_text(len);
+    deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
+    assert_eq!(records(&deleted), len as usize, "a range write splits nothing into a per-element state");
+    for (what, f) in [("bare", &bare), ("deleted", &deleted)] {
+        let bytes = snapshot_of(f);
+        assert!(bytes.len() < 100, "{what}: {} bytes", bytes.len());
+        let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+        assert_eq!(records(&back), 1, "{what}");
+        assert_eq!(back, as_carried(f), "{what}");
+        assert_eq!(back.read(), f.read(), "{what}");
+        assert_eq!(order(&back), order(f), "{what}");
+        assert_eq!(snapshot_of(&back), bytes, "{what}");
+    }
+    // the reset text's run is the attack shape: [Dot, n, [], [], [], []]
+    let v = osis_core::decode(&snapshot_of(&bare), &osis_core::Limits { max_depth: 16, max_bytes: 1 << 20 }).unwrap();
+    let Value::List(top) = v else { panic!("snapshot") };
+    let Value::List(f) = &top[3] else { panic!("fragment") };
+    assert_eq!(f[3], l(vec![run(l(vec![i(2), i(1)]), 65535, l(vec![]), l(vec![]), vec![], vec![])]));
+}
+
+/// §4.2, §5.7, §6: writes landing inside a range record (an insert anchored in it, a move and an
+/// undelete of one of its elements, a reset between its creations) split it only there, and
+/// give the same state, read and order as the per-element state.
+#[test]
+fn ranges_split_where_writes_land_spec_6() {
+    let len = 40_000;
+    let mut deleted = long_text(len);
+    deleted.join(one(Dot::new(n(1), 1), SeqElem { deleted: Some((st(2, 2, 1), true)), span: len, ..SeqElem::bare() }));
+    let ranged = decode_snapshot(&snapshot_of(&deleted), &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(records(&ranged), 1);
+    let flat = expanded(&ranged);
+    let x = st(3, 3, 1);
+    let at = Anchor::Dot(Dot::new(n(1), 1000));
+    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at)], deleted: None, span: 1 });
+    let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head)], ..SeqElem::bare() });
+    let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), content: SeqContent::Char('u'), ..SeqElem::bare() });
+    // creations of t = 1 below (1, node 1, 30000) go: a reset inside the chain
+    let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 30_000)));
+    let (mut a, mut b) = (ranged.clone(), flat.clone());
+    for (k, d) in [insert, mv, undelete, reset].into_iter().enumerate() {
+        if k == 3 {
+            assert_eq!(reads(&a).as_deref(), Some("xu"));
+        }
+        a.join(d.clone());
+        b.join(d);
+        assert_eq!(a, b);
+        assert_eq!(a.read(), b.read());
+        assert_eq!(order(&a), order(&b));
+        assert!(records(&a) <= 12, "{} records", records(&a));
+    }
+    // the reset pruned the undeleted char's creation, so only its flag revived (§5.7)
+    assert_eq!(reads(&a).as_deref(), Some("x"));
+    let bytes = snapshot_of(&a);
+    assert_eq!(bytes, snapshot_of(&b));
+    assert_eq!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment, as_carried(&a));
+}
+
+proptest! {
+    /// §6: range records place, read and encode like their elements (random histories, every
+    /// uniform stretch coalesced).
+    #[test]
+    fn ranges_place_like_elements_spec_6(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let commits = crate::testutil::history(&mut r, &[Ty::Text, Ty::List(Box::new(inner()))], 3, 6);
+        let mut state = None;
+        for c in &commits {
+            mapply(&mut state, c.delta.clone());
+            let f = frag(state.as_ref().unwrap());
+            let Fragment::Seq(_) = &f else { continue };
+            let flat = expanded(&f);
+            prop_assert_eq!(order(&f), order(&flat));
+            prop_assert_eq!(f.read(), flat.read());
+            prop_assert_eq!(snapshot_of(&f), snapshot_of(&flat));
+        }
+    }
 }

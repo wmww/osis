@@ -57,9 +57,17 @@ impl Replica {
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, None).unwrap();
         let back = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
         assert_eq!(back, d, "a writer's delta round-trips");
-        self.state.join(d.clone());
+        self.state.join(back);
         Some((d, self.src.clone(), range))
     }
+}
+
+/// `f` through a snapshot: deleted chars dropped, uniform stretches as range records (§3.3).
+fn rebooted(f: &Fragment) -> Fragment {
+    let cx = crate::tests_wire::snap_cx();
+    let snap = crate::wire::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default() };
+    let bytes = crate::encode_snapshot(&snap, &cx, None).unwrap();
+    crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
 }
 
 fn op(o: Op) -> PathOp {
@@ -85,7 +93,7 @@ fn random_text_op(r: &mut Rng, n: usize, st: &Fragment) -> Op {
             let Fragment::Seq(sq) = st else { return Op::Insert { at: 0, items: vec![s("a")] } };
             let mut runs: Vec<Vec<crate::Dot>> = vec![vec![]];
             for d in crate::linearize::place(&sq.elems).order {
-                let e = &sq.elems[&d];
+                let e = crate::seq_span::elem(&sq.elems, &d).unwrap();
                 match (e.flag(), &e.content) {
                     (true, crate::seq::SeqContent::Char(_)) => runs.last_mut().unwrap().push(d),
                     (true, _) => {}
@@ -140,6 +148,10 @@ proptest! {
             apply_text(&mut model, &o, &a.state);
             a.commit(k + 1, &[op(o.clone())], &text_view());
             prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>(), "after {:?}", o);
+            if r.chance(1, 3) {
+                // ops then meet range records
+                a.state = rebooted(&a.state);
+            }
         }
     }
 
@@ -220,7 +232,7 @@ proptest! {
             return Ok(());
         }
         let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
-        let u = Undone { delta: &d, source: &src, range };
+        let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
         if let Some(ud) = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap() {
             a.state.join(ud);
@@ -247,7 +259,7 @@ proptest! {
             return Ok(());
         }
         let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
-        let u = Undone { delta: &d, source: &src, range };
+        let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
         if let Some(ud) = undo(&mut w, &u, &a.state, &before, &view).unwrap() {
             a.state.join(ud);
@@ -450,7 +462,7 @@ fn paste_refuses_a_range_with_visible_text_spec_5_7() {
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     let mut d = crate::seq::Seq::empty(true);
     let st = crate::stamp::Stamp::new(ts(3 << 16), node(2), 1);
-    d.elems.insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None });
+    d.elems.insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), crate::seq::Anchor::Dot(dots[1].clone()))), content: crate::seq::SeqContent::Char('X'), pos: vec![(st, crate::seq::Anchor::Dot(dots[1].clone()))], deleted: None, span: 1 });
     b.state.join(Fragment::Seq(d));
     assert_eq!(read_str(&b.state), "aXef");
     let mut bt = Batch::new(&b.state, Writer::new(ts(5 << 16), node(2), 2));
@@ -480,7 +492,7 @@ fn move_undo_spec_5_7() {
     let before = a.state.clone();
     let (d, src, range) = a.commit(2, &[op(Op::Move { at: 0, len: 3, to: 3 })], &text_view()).unwrap();
     assert_eq!(read_str(&a.state), "BARFOO");
-    let u = Undone { delta: &d, source: &src, range };
+    let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
     let mut w = Writer::new(ts(3 << 16), node(1), a.lo);
     a.state.join(undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap());
     assert_eq!(read_str(&a.state), "FOOBAR");
@@ -649,4 +661,36 @@ fn derived_anchor_outlives_its_register_spec_7() {
     n2.join(q);
     n2.strip(&expired);
     assert_eq!(n2, p);
+}
+
+/// §4.6, §5.7 Undo: an element moved twice undoes twice: the second move's undo restores the
+/// first move's anchor, so the first move's undo (the winner is that restoring write) writes
+/// the anchor before it.
+#[test]
+fn move_undo_chain_spec_4_6() {
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s("FOOBAR")))], &text_view());
+    let s0 = a.state.clone();
+    let (m1, src, r1) = a.commit(2, &[op(Op::Move { at: 0, len: 1, to: 5 })], &text_view()).unwrap();
+    assert_eq!(read_str(&a.state), "OOBARF");
+    let s1 = a.state.clone();
+    let (m2, _, r2) = a.commit(3, &[op(Op::Move { at: 5, len: 1, to: 2 })], &text_view()).unwrap();
+    assert_eq!(read_str(&a.state), "OOFBAR");
+    let none = |_: &crate::Stamp| false;
+    let mut w = Writer::new(ts(4 << 16), node(1), a.lo);
+    let u2 = undo(&mut w, &Undone { delta: &m2, source: &src, range: r2, restored: &none }, &a.state, &s1, &text_view()).unwrap().unwrap();
+    a.lo = w.range().hi;
+    a.state.join(u2);
+    assert_eq!(read_str(&a.state), "OOBARF");
+    let restored = |x: &crate::Stamp| x.ts == ts(4 << 16);
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
+    assert!(undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, restored: &none }, &a.state, &s0, &text_view()).unwrap().is_none_or(|x| read_str(&{
+        let mut t = a.state.clone();
+        t.join(x);
+        t
+    }) != "FOOBAR"));
+    let mut w = Writer::new(ts(5 << 16), node(1), a.lo);
+    let u1 = undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, restored: &restored }, &a.state, &s0, &text_view()).unwrap().unwrap();
+    a.state.join(u1);
+    assert_eq!(read_str(&a.state), "FOOBAR");
 }

@@ -6,7 +6,7 @@ use crate::error::Error;
 use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
 use crate::ops::{PathSeg, Writer, create, present_slot, remove, replace};
 use crate::seq;
-use crate::stamp::{CounterRange, Dot, Source};
+use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
 use std::collections::BTreeMap;
 
@@ -44,11 +44,20 @@ pub struct Undone<'a> {
     /// The original writer's source and counter range: elements it created.
     pub source: &'a Source,
     pub range: CounterRange,
+    /// Whether the write stamped so was written by an undo commit in effect (one no undo
+    /// commit in effect undoes): a node's judgment from its commit headers (§4.6).
+    pub restored: &'a dyn Fn(&Stamp) -> bool,
 }
 
 impl Undone<'_> {
-    fn made(&self, d: &Dot) -> bool {
+    pub(crate) fn made(&self, d: &Dot) -> bool {
         d.src == *self.source && self.range.contains(d.ctr)
+    }
+    /// Whether undoing a register, case or position write `(stamp, value)` writes the previous
+    /// value against the current winner `cur` (§4.6): the undone write still wins, or an undo
+    /// in effect restored its value (so undo steps back through repeated edits of one register).
+    pub(crate) fn steps_back<T: PartialEq>(&self, undone: (&Stamp, &T), cur: Option<(&Stamp, &T)>) -> bool {
+        cur.is_some_and(|(s, v)| s == undone.0 || (v == undone.1 && (self.restored)(s)))
     }
 }
 
@@ -80,9 +89,13 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 return undo_reset(w, o, buffer, view, path);
             }
             let Some(ow) = &reg.write else { return Ok(None) };
-            // only if the undone write is still the winner locally
-            let winner = matches!(&slot, Some(Fragment::Register(x)) if x.write.as_ref().is_some_and(|x| x.stamp == ow.stamp));
-            if !winner {
+            // only if the undone write still wins, or an undo in effect restored its value
+            let cur = match &slot {
+                Some(Fragment::Register(x)) => x.write.as_ref().filter(|x| x.value.is_some()).map(|x| (&x.stamp, &x.value)),
+                _ => None,
+            };
+            let won = matches!(&slot, Some(Fragment::Register(x)) if x.write.as_ref().is_some_and(|x| x.stamp == ow.stamp));
+            if !won && (ow.value.is_none() || !u.steps_back((&ow.stamp, &ow.value), cur)) {
                 return Ok(None);
             }
             match before_read(buffer, path) {
@@ -255,7 +268,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 Some(ev) => undo_at(w, u, f, c, &Sub(pre), ev, &mut vec![], false),
                 None => Ok(None),
             };
-            return Ok(seq::undo(w, x, cur, before, &|d: &Dot| u.made(d), view, &mut nested)?.map(Fragment::Seq));
+            return Ok(seq::undo(w, x, cur, before, u, view, &mut nested)?.map(Fragment::Seq));
         }
         Fragment::Slots(_) => return Err(Error::Mismatch("slots in a writer's delta")),
     };

@@ -20,7 +20,8 @@ fn sub<T: Clone>(m: &BTreeMap<Dot, T>, lo: Option<&Dot>, hi: Option<&Dot>) -> BT
 }
 
 impl Fragment {
-    /// The number of root elements of a pageable collection; `None` for other encodings.
+    /// The number of root element records of a pageable collection (a sequence's range record
+    /// counts once); `None` for other encodings.
     pub fn elem_count(&self) -> Option<usize> {
         Some(match self {
             Fragment::Map(m) => m.entries.len(),
@@ -55,7 +56,9 @@ impl Fragment {
 
     /// What joining this delta can change in a pageable state of the same encoding: whether the
     /// own `W` (and so the meta) and which root elements by dot. `None` when it may change any
-    /// element (a reset at the root, another encoding).
+    /// element (a reset at the root, another encoding). For a sequence the dots come in pairs,
+    /// the first and last element of each delta record (a range record covers the elements
+    /// between); joining may split state records there and the records next to them.
     pub fn touched_elems(&self) -> Option<(bool, Vec<Dot>)> {
         let meta = self.meta()?;
         if meta.reset.is_some() {
@@ -65,7 +68,7 @@ impl Fragment {
         Some(match self {
             Fragment::Map(m) => (w, m.entries.keys().cloned().collect()),
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => (w, elems.keys().cloned().collect()),
-            Fragment::Seq(s) => (w, s.elems.keys().cloned().collect()),
+            Fragment::Seq(s) => (w, s.elems.iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
             _ => return None,
         })
     }
