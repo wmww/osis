@@ -472,3 +472,125 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let n = net.sync(a).entries(&l).len();
     assert!(n <= before + 9, "{n}");
 }
+
+/// A Push of `events` under `l` (a server's word).
+fn push(l: LabelId, events: Vec<osis_proto::Event>) -> Vec<u8> {
+    frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } })
+}
+
+/// The entries node `n` knows under `l` holding a commit that touches `t`.
+fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: osis_core::Tid) -> Vec<osis_core::BlobId> {
+    let all = net.sync(n).entries(l);
+    all.into_iter()
+        .filter_map(|(id, k)| match k {
+            osis_node::sync::EntryKind::Commit { commit, .. } => net.engine(n).header(&commit).filter(|h| h.aspects.iter().any(|a| a.tid == t)).map(|_| id),
+            _ => None,
+        })
+        .collect()
+}
+
+// spec/sync.md §5 (a wrap may be replaced by another holder's), spec/requirements.md ("nothing
+// trusts a server's word"): a server re-announcing a held entry with a wrap that opens under no
+// held read secret, or opens to another blob key, changes nothing; a wrap of the same key under
+// another held read secret is taken.
+#[test]
+fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let x = net.node(3, &[sv]);
+    let g = net.group(a, &[(r, Role::Read), (x, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(r);
+    // a rotation (x removed): r holds two read secrets
+    let (at, rt, xt) = (net.tid(a), net.tid(r), net.tid(x));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
+    remove_member(e, g, xt, &rs, 44);
+    net.run();
+    assert_eq!(net.read(r, t), Some(s("x")));
+    let secrets: Vec<Secret32> = net.engine(r).epochs(&g).unwrap().read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect();
+    assert!(secrets.len() >= 2, "{}", secrets.len());
+    let id = entries_of(&mut net, r, &l, t)[0];
+    let (wrap0, _) = net.sync(r).entry_meta(&l, &id).unwrap();
+    let (i, key) = osis_label::unwrap_any(secrets.iter(), &id, &wrap0).unwrap();
+    assert!(i > 0, "the item's entry is wrapped under the older epoch");
+    let conn = net.conn_to(r, sv).expect("connected");
+    let added = |wrap| vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: None }];
+    let other_key = osis_crypto::wrap(&secrets[0], &id, &Secret32::from_bytes([0x42; 32])).unwrap();
+    for w in [[0x13; 49], other_key] {
+        net.feed(r, Event::Bytes { conn, bytes: push(l, added(w)) });
+        net.settle(10_000);
+        assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, wrap0);
+    }
+    let rewrap = osis_crypto::wrap(&secrets[0], &id, &key).unwrap();
+    net.feed(r, Event::Bytes { conn, bytes: push(l, added(rewrap)) });
+    net.settle(10_000);
+    assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, rewrap, "a re-wrap of the known key is taken");
+}
+
+// spec/sync.md §5 (honest servers take stamps under the head's write key only; anyone may relay
+// a stamped entry), spec/requirements.md ("nothing trusts a server's word"): a reader keeps an
+// announced entry's stamp only when it verifies under the head's write key, so it never relays
+// a forged one as stamped.
+#[test]
+fn relayed_stamp_checked_against_head_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(r);
+    let w = net.engine(a).epochs(&g).unwrap().write.newest_held().unwrap().1.clone();
+    let head_write = label_role_key(LabelRole::Write, &w, 0);
+    let forger = label_role_key(LabelRole::Write, &Secret32::from_bytes([0x66; 32]), 0);
+    let conn = net.conn_to(r, sv).expect("connected");
+    let (forged, p) = junk(&l, 5, 1, Some(&forger));
+    net.feed(r, Event::Bytes { conn, bytes: frame(p) });
+    let (honest, p) = junk(&l, 6, 1, Some(&head_write));
+    net.feed(r, Event::Bytes { conn, bytes: frame(p) });
+    net.settle(10_000);
+    assert_eq!(net.sync(r).entry_meta(&l, &forged[0]).and_then(|m| m.1), None, "a stamp not under the head's key kept");
+    assert!(net.sync(r).entry_meta(&l, &honest[0]).and_then(|m| m.1).is_some(), "a head-key stamp dropped");
+}
+
+// spec/sync.md §2 (a replaced label's content entries are deleted by an admin), §6
+// (must-not-hold: outside the label's bodies; deletions wait while an entry that opens is not
+// applied, spec/sync.md §3: a receiver keeps what it cannot explain yet): after a label
+// replacement the item's content entries under the old label go only once the view is settled.
+#[test]
+fn outside_delete_waits_for_settled_view_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let old = net.label(a);
+    let ids = entries_of(&mut net, a, &old, t);
+    assert!(!ids.is_empty() && ids.iter().all(|i| net.server_ids(sv, &old).contains(i)));
+    // a server announces an entry that opens under the group's read secret, without its bytes
+    let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
+    let blocker = osis_core::BlobId([0x99; 32]);
+    let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32])).unwrap();
+    let conn = net.conn_to(a, sv).expect("connected");
+    net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]) });
+    net.settle(10_000);
+    let (new, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.server_ids(sv, &new).is_empty());
+    let key = net.address(sv).key;
+    let v = net.sync(a).verdicts(&key, &old).unwrap().unwrap();
+    assert!(v.unsettled.contains(&None), "{:?}", v.unsettled);
+    assert!(ids.iter().all(|i| net.server_ids(sv, &old).contains(i)), "deleted as outside on an unsettled view");
+    // the server drops the unexplained entry: the view settles and the content goes
+    net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Deleted(blocker)]) });
+    net.settle(10_000);
+    net.advance(61_000);
+    assert!(ids.iter().all(|i| !net.server_ids(sv, &old).contains(i)), "content kept under the replaced label on a settled view");
+}

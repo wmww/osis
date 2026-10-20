@@ -1014,6 +1014,11 @@ impl SyncEngine {
         self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.kind.clone())).collect()
     }
 
+    /// The wrap and stamp this node keeps for an entry (tests).
+    pub fn entry_meta(&self, l: &LabelId, b: &osis_core::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
+        self.state.entries.get(&(*l, *b)).map(|e| (e.wrap, e.stamp))
+    }
+
     /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body
     /// leaves neither).
     pub fn holds_blob(&mut self, b: &osis_core::BlobId) -> bool {
