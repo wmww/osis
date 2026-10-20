@@ -89,6 +89,8 @@ fuzz/README.md: running, the target table (live and planned per crate), crash ha
 - Pending budgets: roster snapshot of N members, membership boxes about 1.2 KB per member and role (notes/crypto.md); revoke frontier after a long tenure (osis-perm, osis-commit).
 - Benches: `crates/osis-bench/benches/<crate>.rs` with `harness = false`, calling `osis_bench::bench(name, bytes, f)` (prints median ns/iter and MB/s; `OSIS_BENCH_MS` sets the sample time). Run `cargo bench -p osis-bench`; nightly records the output as an artifact. Not gated. No criterion: a 40-line harness keeps the dependency tree and builds small.
 
+- Final TLC `run.sh small` (hardening step 3, rerun by the toplevel): every small instance passes (MC_drop_refresh is the expected failure); exit 0.
+
 ## Scale checks
 Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6).
 
