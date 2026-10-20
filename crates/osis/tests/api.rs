@@ -464,6 +464,13 @@ fn stream_len_set_stream_spec_data_model_6() {
     let mut rest = Vec::new();
     st.read_to_end(&mut rest).unwrap();
     assert_eq!(rest, data[299_997..]);
+    // backwards, and relative to the position
+    st.seek(SeekFrom::Start(5)).unwrap();
+    st.read_exact(&mut b).unwrap();
+    assert_eq!(&b[..], &data[5..15]);
+    assert_eq!(st.seek(SeekFrom::Current(200_000)).unwrap(), 200_015);
+    st.read_exact(&mut b).unwrap();
+    assert_eq!(&b[..], &data[200_015..200_025]);
     // a small value streams too; absent reads None; a non-string fails
     let small = ak("/t/small");
     db.write_with(|w| w.at(t, small.clone()).set(&s("hello"))).unwrap();

@@ -246,6 +246,9 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
+    /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
+    /// fetches those its server holds.
+    pub(crate) tree_wants: BTreeSet<osis_core::BlobId>,
     /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
     /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
     pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
@@ -327,6 +330,7 @@ impl SyncEngine {
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
+            tree_wants: BTreeSet::new(),
             sent: BTreeMap::new(),
             timed_sent: BTreeSet::new(),
             deleting: BTreeMap::new(),

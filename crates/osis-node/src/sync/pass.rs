@@ -114,6 +114,7 @@ impl SyncEngine {
         let bodies = self.bodies_under(&g, &l)?;
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
+        let mut trees_done = BTreeSet::new();
         self.refetch(conn, server, l, &g, out)?;
         self.check_linked_prefixes(l)?;
         let unsettled = self.unsettled(&l, &g)?;
@@ -142,7 +143,11 @@ impl SyncEngine {
             };
             sends.push(Out { prio, id });
             if keys.is_writer() {
-                for cb in self.chunk_blobs(&b.commit)? {
+                let mut linked = self.chunk_blobs(&b.commit)?;
+                if !b.membership {
+                    linked.extend(self.live_tree_blobs(&l, b, &mut trees_done)?);
+                }
+                for cb in linked {
                     if !self.state.entries.contains_key(&(l, cb)) {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
                         self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, kind: Kind::Unknown });
@@ -605,6 +610,26 @@ impl SyncEngine {
         Ok(self.engine.package(c)?.map(|p| p.blobs.into_iter().map(|(id, _)| id).collect()).unwrap_or_default())
     }
 
+    /// Tree blobs the live states of a body's things link, held here or already an entry
+    /// under `l`, once per thing per pass (`done`): reused chunks and a snapshot's values are
+    /// not in the linking commit's chunk list, yet belong to the closure (spec/sync.md §3), so
+    /// a reader under a new label (replacement, a thing moving between groups) gets them.
+    fn live_tree_blobs(&mut self, l: &LabelId, b: &Body, done: &mut BTreeSet<Tid>) -> Result<Vec<BlobId>> {
+        let things: BTreeSet<Tid> = self.engine.header(&b.commit).map(|h| b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai).map(|a| a.tid)).collect()).unwrap_or_default();
+        let mut out = Vec::new();
+        for t in things {
+            if !done.insert(t) {
+                continue;
+            }
+            for id in self.engine.live_trees(&t)?.blobs {
+                if self.state.entries.contains_key(&(*l, id)) || self.engine.has_blob(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
     /// encryption per label, placed once per commit.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
@@ -881,6 +906,16 @@ impl SyncEngine {
         // values; spec/sync.md §3: chunk blobs belong to the closure)
         let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
         let chunks = self.dropped_chunks(|b| present.contains(b))?;
+        let wants: Vec<BlobId> = std::mem::take(&mut self.tree_wants)
+            .into_iter()
+            .filter(|b| present.contains(b) && !self.missing.contains(&(conn, *b)) && !self.fetching.contains_key(b))
+            .collect();
+        if !wants.is_empty() {
+            for b in &wants {
+                self.fetching.insert(*b, conn);
+            }
+            self.command(conn, Command::Fetch { label: l, ids: wants }, out)?;
+        }
         for id in present {
             let Some((c, ch)) = chunks.get(&id) else { continue };
             if !self.state.entries.get(&(l, id)).is_some_and(|e| e.kind == Kind::Unknown) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
@@ -1033,9 +1068,11 @@ impl SyncEngine {
             }
         }
         for (t, bs) in by_thing {
-            // a tree not all held here may link any of them
+            // a tree not all held here may link any of them: its missing nodes are fetched
+            // (`tree_wants`) and the chunks judged once they are here
             let linked = self.engine.live_trees(&t)?;
-            out.retain(|b, _| !bs.contains(b) || linked.as_ref().is_some_and(|l| !l.contains(b)));
+            out.retain(|b, _| !bs.contains(b) || linked.missing.is_empty() && !linked.blobs.contains(b));
+            self.tree_wants.extend(linked.missing);
         }
         Ok(out)
     }

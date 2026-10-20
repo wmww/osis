@@ -317,3 +317,32 @@ fn large_list_insert_chunked_spec_dm_6() {
     assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Str(_)]), "{l:?}");
     assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::List(vec![common::s("a"), big, common::s("b")])));
 }
+
+// spec/data-model.md §6: a list `edit` chunks the items it inserts as an insert does; base items
+// match the list's links by content hash (so the edit lands in place), and an item the list
+// holds already keeps its tree (nothing of it is written again).
+#[test]
+fn large_list_edit_chunked_spec_dm_6() {
+    let mut p = peer(14);
+    let me = p.engine.tid();
+    let (key, a) = (&common::LIST, ak("/t/list"));
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    let big1 = Value::Str("first ".repeat(50_000));
+    m.set(t, key, &Value::List(vec![common::s("a"), big1.clone()])).unwrap();
+    let first = p.commit(m).unwrap().unwrap();
+    let blobs = |p: &mut Peer, c| p.engine.package(&c).unwrap().unwrap().blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+    assert!(blobs(&mut p, first) > 300_000);
+    let big2 = Value::Str("second ".repeat(50_000));
+    let base = Value::List(vec![common::s("a"), big1.clone()]);
+    let new = Value::List(vec![common::s("a"), big1.clone(), big2.clone(), common::s("b")]);
+    let mut m = Mutation::new();
+    m.op(t, key, PathOp { path: vec![], op: Op::Edit { base, new: new.clone() } }).unwrap();
+    let c = p.commit(m).unwrap().unwrap();
+    let Some(Value::List(l)) = p.engine.get(&t, &a).unwrap() else { panic!() };
+    assert!(matches!(l.as_slice(), [Value::Str(_), Value::Link(_), Value::Link(_), Value::Str(_)]), "{l:?}");
+    assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(new));
+    // only big2's tree is new (350 000 bytes; with big1's it would be 650 000)
+    let wrote = blobs(&mut p, c);
+    assert!((350_000..430_000).contains(&wrote), "edit wrote {wrote} B");
+}

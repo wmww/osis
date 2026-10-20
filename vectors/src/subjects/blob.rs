@@ -113,8 +113,8 @@ pub fn blobs() -> VecFile {
             .with("token-level", "1")
             .with("chunk-token-hash", hex(&hashes[0])),
     );
-    // Tree node over that chunk.
-    let node = node_plaintext(1, &[l1]).unwrap();
+    // Tree node over that chunk, with its length.
+    let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();
     let (r, _) = blob_case("tree node blob", "spec/wire.md §6", &p, &node, [0x29; 32], link_tree_hash(&dedup, 1, &[l1.hash]));
     cases.push(r.with("dedup", hex(dedup.expose())));
     // Page: the canonical array of its elements.

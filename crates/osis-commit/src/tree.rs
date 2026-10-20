@@ -2,7 +2,7 @@
 //! reader, used for header lists here (`lists.rs`) and for large values and pages by osis-label
 //! (which re-exports these items and adds blob framing). `TreeWriter` streams bytes into a tree
 //! through a `TreeSink`; `TreeReader` streams the chunks back through a `LinkSource`, verifying
-//! every content hash.
+//! every content hash and length, and seeks by the lengths the nodes carry.
 
 use crate::Error;
 use osis_core::cbor::{Limits, decode, encode};
@@ -10,10 +10,13 @@ use osis_core::format::{MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
 use osis_core::{BlobId, ChunkParams, Chunker, Link, Value};
 use osis_crypto::{SUITE_1, Secret32, link_hash, link_tree_hash};
 
+/// A child of a tree node: its link and the plaintext length of its subtree.
+pub type Kid = (Link, u64);
+
 /// Receives the pieces of a tree as `TreeWriter` closes them and returns their links.
 pub trait TreeSink {
     fn chunk(&mut self, bytes: &[u8]) -> Result<Link, Error>;
-    fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error>;
+    fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, Error>;
 }
 
 /// Returns a link's plaintext, decrypted but not yet hash-checked (the reader checks).
@@ -21,26 +24,45 @@ pub trait LinkSource {
     fn plaintext(&mut self, link: &Link) -> Result<Vec<u8>, Error>;
 }
 
-/// A tree node's plaintext `[level, [LINK+]]`.
-pub fn node_plaintext(level: u64, links: &[Link]) -> Result<Vec<u8>, Error> {
+/// A tree node's plaintext `[level, [LINK+], [len+]]`.
+pub fn node_plaintext(level: u64, kids: &[Kid]) -> Result<Vec<u8>, Error> {
     let level = i64::try_from(level).map_err(|_| Error::TooLarge("tree level"))?;
-    Ok(encode(&Value::List(vec![Value::Int(level), Value::List(links.iter().copied().map(Value::Link).collect())])))
+    let links = Value::List(kids.iter().map(|(l, _)| Value::Link(*l)).collect());
+    let lens = kids.iter().map(|(_, n)| i64::try_from(*n).map(Value::Int).map_err(|_| Error::TooLarge("tree length")));
+    Ok(encode(&Value::List(vec![Value::Int(level), links, Value::List(lens.collect::<Result<_, _>>()?)])))
 }
 
-/// Parses a tree node: level 1..=48, 1..=512 links.
-pub fn parse_node(plaintext: &[u8]) -> Result<(u64, Vec<Link>), Error> {
+/// Parses a tree node: level 1..=48, 1..=512 links, one length per link, the lengths' sum
+/// within u64.
+pub fn parse_node(plaintext: &[u8]) -> Result<(u64, Vec<Kid>), Error> {
     let v = decode(plaintext, &Limits { max_depth: 4, max_bytes: MAX_BLOB })?;
     let Value::List(items) = v else { return Err(Error::Malformed("tree node")) };
-    let [Value::Int(level), Value::List(links)] = items.as_slice() else { return Err(Error::Malformed("tree node")) };
+    let [Value::Int(level), Value::List(links), Value::List(lens)] = items.as_slice() else { return Err(Error::Malformed("tree node")) };
     let level = u64::try_from(*level).map_err(|_| Error::Malformed("tree level"))?;
-    if !(1..=TREE_MAX_LEVEL).contains(&level) || links.is_empty() || links.len() > TREE_FANOUT {
+    if !(1..=TREE_MAX_LEVEL).contains(&level) || links.is_empty() || links.len() > TREE_FANOUT || lens.len() != links.len() {
         return Err(Error::Malformed("tree node bounds"));
     }
-    let links = links.iter().map(|l| match l {
-        Value::Link(l) => Ok(*l),
-        _ => Err(Error::Malformed("tree node link")),
-    });
-    Ok((level, links.collect::<Result<_, _>>()?))
+    let mut sum = 0u64;
+    let mut kids = Vec::with_capacity(links.len());
+    for (l, n) in links.iter().zip(lens) {
+        let (Value::Link(l), Value::Int(n)) = (l, n) else { return Err(Error::Malformed("tree node link")) };
+        let n = u64::try_from(*n).map_err(|_| Error::Malformed("tree length"))?;
+        sum = sum.checked_add(n).ok_or(Error::Malformed("tree length"))?;
+        kids.push((*l, n));
+    }
+    Ok((level, kids))
+}
+
+/// Plaintext length under a node (lengths parsed by `parse_node` sum within u64).
+pub fn kids_len(kids: &[Kid]) -> u64 {
+    kids.iter().fold(0u64, |a, (_, n)| a.saturating_add(*n))
+}
+
+/// A tree node's content hash: over its level and its children's hashes (spec/wire.md §6; the
+/// lengths are not covered).
+pub fn node_hash(dedup: &Secret32, level: u64, kids: &[Kid]) -> [u8; 32] {
+    let hashes: Vec<[u8; 32]> = kids.iter().map(|(l, _)| l.hash).collect();
+    link_tree_hash(dedup, level, &hashes)
 }
 
 /// Streaming chunk-tree builder (spec/wire.md §6). Holds the current chunk and one open node per
@@ -54,7 +76,7 @@ pub struct TreeWriter {
 
 #[derive(Default)]
 struct OpenLevel {
-    links: Vec<Link>,
+    kids: Vec<Kid>,
     closed: u64,
 }
 
@@ -77,20 +99,21 @@ impl TreeWriter {
 
     fn emit_chunk(&mut self, sink: &mut dyn TreeSink) -> Result<(), Error> {
         let link = sink.chunk(&self.buf)?;
+        let len = u64::try_from(self.buf.len()).map_err(|_| Error::TooLarge("chunk"))?;
         self.buf.clear();
         self.chunks += 1;
-        self.push(sink, 0, link)
+        self.push(sink, 0, (link, len))
     }
 
-    /// Adds a link to the open node of level `li + 1`, closing it by the node rule.
-    fn push(&mut self, sink: &mut dyn TreeSink, li: usize, link: Link) -> Result<(), Error> {
+    /// Adds a child to the open node of level `li + 1`, closing it by the node rule.
+    fn push(&mut self, sink: &mut dyn TreeSink, li: usize, kid: Kid) -> Result<(), Error> {
         if self.levels.len() <= li {
             self.levels.resize_with(li + 1, OpenLevel::default);
         }
         let open = self.levels.get_mut(li).ok_or(Error::Malformed("tree level"))?;
-        let zero = link.hash[0] == 0;
-        open.links.push(link);
-        let n = open.links.len();
+        let zero = kid.0.hash[0] == 0;
+        open.kids.push(kid);
+        let n = open.kids.len();
         if n >= TREE_FANOUT || (n >= 2 && zero) {
             self.close(sink, li)?;
         }
@@ -103,15 +126,15 @@ impl TreeWriter {
             return Err(Error::TooLarge("tree level"));
         }
         let open = self.levels.get_mut(li).ok_or(Error::Malformed("tree level"))?;
-        let links = std::mem::take(&mut open.links);
+        let kids = std::mem::take(&mut open.kids);
         open.closed += 1;
-        let link = sink.node(level, &links)?;
-        self.push(sink, li + 1, link)
+        let link = sink.node(level, &kids)?;
+        self.push(sink, li + 1, (link, kids_len(&kids)))
     }
 
-    /// Bytes held: the open chunk and the links of the open nodes.
+    /// Bytes held: the open chunk and the children of the open nodes.
     pub fn buffered(&self) -> usize {
-        self.buf.len() + self.levels.iter().map(|l| l.links.len()).sum::<usize>() * std::mem::size_of::<Link>()
+        self.buf.len() + self.levels.iter().map(|l| l.kids.len()).sum::<usize>() * std::mem::size_of::<Kid>()
     }
 
     /// Closes every open node and returns the root link (always an interior node; an empty value
@@ -122,13 +145,13 @@ impl TreeWriter {
         }
         let mut li = 0;
         loop {
-            if self.levels.get(li).is_some_and(|l| !l.links.is_empty()) {
+            if self.levels.get(li).is_some_and(|l| !l.kids.is_empty()) {
                 self.close(sink, li)?;
             }
             if self.levels.get(li).is_some_and(|l| l.closed == 1) {
                 let up = self.levels.get_mut(li + 1).ok_or(Error::Malformed("tree root"))?;
-                return match (up.links.pop(), up.links.is_empty(), up.closed) {
-                    (Some(root), true, 0) => Ok(root),
+                return match (up.kids.pop(), up.kids.is_empty(), up.closed) {
+                    (Some((root, _)), true, 0) => Ok(root),
                     _ => Err(Error::Malformed("tree root")),
                 };
             }
@@ -148,16 +171,24 @@ pub fn write_tree(sink: &mut dyn TreeSink, params: ChunkParams, data: &[u8]) -> 
 }
 
 /// Streaming reader: yields the chunks in order, holding one node per level (memory: one chunk
-/// plus the path). Verifies every content hash and level (`Corrupt`) and the node bounds. Work
-/// is bounded by the value size: a chunk other than the last shorter than `min_chunk` (or empty)
-/// is bad input, and at most `max_len / min_chunk + 1` chunks are visited (`TooLarge` beyond;
-/// repeated links are legal: identical chunks share a blob). An error leaves the reader where it
-/// was, so a `Missing` blob can be fetched and the call retried (lazy fetch, spec/sync.md §6).
+/// plus the path). Verifies every content hash and level (`Corrupt`), the node bounds, and every
+/// length it passes or reads: a node's lengths sum to its parent's claim, a chunk is as long as
+/// claimed (`Malformed`). `seek` positions it by the lengths alone, so it fetches only the nodes
+/// on the path to the target chunk. Work is bounded by the value size: a chunk other than the
+/// last shorter than `min_chunk` (or empty) is bad input, and at most `max_len / min_chunk + 1`
+/// chunks are visited per pass (`TooLarge` beyond; repeated links are legal: identical chunks
+/// share a blob). An error leaves the reader where it was, so a `Missing` blob can be fetched and
+/// the call retried (lazy fetch, spec/sync.md §6).
 pub struct TreeReader {
-    root: Option<Link>,
-    /// Per open node: its level and the links not yet visited, reversed.
-    stack: Vec<(u64, Vec<Link>)>,
+    root: Link,
+    opened: bool,
+    total: Option<u64>,
+    /// Per open node: its level and the children not yet passed, reversed.
+    stack: Vec<(u64, Vec<Kid>)>,
+    /// Bytes to pass, without fetching, before the next chunk returned (`seek`).
+    skip: u64,
     min_chunk: usize,
+    budget: usize,
     chunks_left: usize,
 }
 
@@ -166,43 +197,64 @@ impl TreeReader {
     /// caller accepts.
     pub fn new(root: Link, min_chunk: usize, max_len: usize) -> TreeReader {
         let min_chunk = min_chunk.max(1);
-        TreeReader { root: Some(root), stack: Vec::new(), min_chunk, chunks_left: (max_len / min_chunk).saturating_add(1) }
+        let budget = (max_len / min_chunk).saturating_add(1);
+        TreeReader { root, opened: false, total: None, stack: Vec::new(), skip: 0, min_chunk, budget, chunks_left: budget }
     }
 
-    /// Links held on the open path.
+    /// Children held on the open path.
     pub fn path_links(&self) -> usize {
         self.stack.iter().map(|(_, l)| l.len()).sum()
     }
 
-    fn node(dedup: &Secret32, src: &mut dyn LinkSource, link: &Link, expect: Option<u64>) -> Result<(u64, Vec<Link>), Error> {
-        let (level, mut links) = parse_node(&src.plaintext(link)?)?;
-        if expect.is_some_and(|e| e != level) {
-            return Err(Error::Corrupt);
-        }
-        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-        if link_tree_hash(dedup, level, &hashes) != link.hash {
-            return Err(Error::Corrupt);
-        }
-        links.reverse();
-        Ok((level, links))
+    /// The tree's plaintext length as its root claims, once the root was read.
+    pub fn total(&self) -> Option<u64> {
+        self.total
     }
 
-    /// The next chunk, or `None` at the end.
+    /// Restarts at byte `offset` of the plaintext: the next chunk returned starts there (`None`
+    /// at or past the end). Fetches nothing; the next `next_chunk` fetches the root and the
+    /// nodes on the path to the chunk holding `offset`, and that chunk.
+    pub fn seek(&mut self, offset: u64) {
+        self.opened = false;
+        self.stack.clear();
+        self.skip = offset;
+        self.chunks_left = self.budget;
+    }
+
+    fn node(dedup: &Secret32, src: &mut dyn LinkSource, link: &Link, expect: Option<(u64, u64)>) -> Result<(u64, Vec<Kid>), Error> {
+        let (level, mut kids) = parse_node(&src.plaintext(link)?)?;
+        if expect.is_some_and(|(l, _)| l != level) || node_hash(dedup, level, &kids) != link.hash {
+            return Err(Error::Corrupt);
+        }
+        if expect.is_some_and(|(_, n)| n != kids_len(&kids)) {
+            return Err(Error::Malformed("tree length"));
+        }
+        kids.reverse();
+        Ok((level, kids))
+    }
+
+    /// The next chunk (from the seek offset on, after a `seek`), or `None` at the end.
     pub fn next_chunk(&mut self, dedup: &Secret32, src: &mut dyn LinkSource) -> Result<Option<Vec<u8>>, Error> {
-        if let Some(root) = self.root {
-            let node = Self::node(dedup, src, &root, None)?;
-            self.root = None;
+        if !self.opened {
+            let node = Self::node(dedup, src, &self.root, None)?;
+            self.total = Some(kids_len(&node.1));
+            self.opened = true;
             self.stack.push(node);
         }
         loop {
-            let Some((level, links)) = self.stack.last() else { return Ok(None) };
+            let Some((level, kids)) = self.stack.last() else { return Ok(None) };
             let level = *level;
-            let Some(link) = links.last().copied() else {
+            let Some((link, len)) = kids.last().copied() else {
                 self.stack.pop();
                 continue;
             };
+            if self.skip > 0 && self.skip >= len {
+                self.skip -= len;
+                self.pop_link();
+                continue;
+            }
             if level > 1 {
-                let node = Self::node(dedup, src, &link, Some(level - 1))?;
+                let node = Self::node(dedup, src, &link, Some((level - 1, len)))?;
                 self.pop_link();
                 self.stack.push(node);
                 continue;
@@ -212,15 +264,20 @@ impl TreeReader {
             }
             let n = self.stack.len();
             let last = self.stack.iter().enumerate().all(|(i, (_, l))| l.len() <= usize::from(i + 1 == n));
-            let chunk = src.plaintext(&link)?;
+            let mut chunk = src.plaintext(&link)?;
             if link_hash(dedup, &chunk) != link.hash {
                 return Err(Error::Corrupt);
+            }
+            if u64::try_from(chunk.len()).ok() != Some(len) {
+                return Err(Error::Malformed("tree length"));
             }
             if !last && chunk.len() < self.min_chunk {
                 return Err(Error::Malformed("chunk below the minimum before the last"));
             }
             self.pop_link();
             self.chunks_left -= 1;
+            // skip < len = chunk.len()
+            chunk.drain(..usize::try_from(std::mem::take(&mut self.skip)).unwrap_or(usize::MAX).min(chunk.len()));
             return Ok(Some(chunk));
         }
     }
@@ -268,10 +325,9 @@ impl TreeSink for HashSink {
         self.chunks += 1;
         Ok(hash_link(link_hash(&self.dedup, bytes)))
     }
-    fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error> {
-        self.nodes.push((level, links.len()));
-        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-        Ok(hash_link(link_tree_hash(&self.dedup, level, &hashes)))
+    fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, Error> {
+        self.nodes.push((level, kids.len()));
+        Ok(hash_link(node_hash(&self.dedup, level, kids)))
     }
 }
 
@@ -325,9 +381,9 @@ mod tests {
                 self.0 += 1;
                 Ok(hash_link([1; 32]))
             }
-            fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, Error> {
-                assert!(links.len() <= 512);
-                if level == 1 && links.len() < 512 {
+            fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, Error> {
+                assert!(kids.len() <= 512);
+                if level == 1 && kids.len() < 512 {
                     assert_eq!(self.0, 1100);
                 }
                 Ok(hash_link([2; 32]))
@@ -346,34 +402,102 @@ mod tests {
             self.0.get(&link.hash).cloned().ok_or(Error::Missing)
         }
     }
+    impl TreeSink for ByHash {
+        fn chunk(&mut self, bytes: &[u8]) -> Result<Link, Error> {
+            let h = link_hash(&Secret32::from_bytes([7; 32]), bytes);
+            self.0.insert(h, bytes.to_vec());
+            Ok(hash_link(h))
+        }
+        fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, Error> {
+            let h = node_hash(&Secret32::from_bytes([7; 32]), level, kids);
+            self.0.insert(h, node_plaintext(level, kids)?);
+            Ok(hash_link(h))
+        }
+    }
+
+    /// A hand-built node over `kids` in `src`.
+    fn put_node(src: &mut ByHash, d: &Secret32, level: u64, kids: &[Kid]) -> Link {
+        let hash = node_hash(d, level, kids);
+        src.0.insert(hash, node_plaintext(level, kids).unwrap());
+        hash_link(hash)
+    }
 
     // spec/wire.md §6 (issues/tree-reader-bounds.md): reader work is bounded by the value size:
     // an empty or short chunk before the last is bad input; repeated links (legal: identical
     // chunks share a blob) cost at most max_len / min + 1 chunk fetches.
     #[test]
-    fn reader_bounds() {
+    fn reader_bounds_spec_wire_6() {
         let d = Secret32::from_bytes([7; 32]);
         let mut src = ByHash::default();
-        let node = |src: &mut ByHash, level: u64, child: Link| {
-            let links = vec![child; TREE_FANOUT];
-            let hash = link_tree_hash(&d, level, &vec![child.hash; TREE_FANOUT]);
-            src.0.insert(hash, node_plaintext(level, &links).unwrap());
-            hash_link(hash)
-        };
+        let node = |src: &mut ByHash, level: u64, child: Kid| put_node(src, &d, level, &vec![child; TREE_FANOUT]);
         let empty = hash_link(link_hash(&d, b""));
         src.0.insert(empty.hash, vec![]);
-        let n1 = node(&mut src, 1, empty);
-        let root = node(&mut src, 2, n1);
+        let n1 = node(&mut src, 1, (empty, 0));
+        let root = node(&mut src, 2, (n1, 0));
         assert!(matches!(read_tree(&root, &d, &mut src, SMALL, usize::MAX), Err(Error::Malformed("chunk below the minimum before the last"))));
         assert!(src.1 < 5);
         let full = vec![9u8; SMALL.min];
         let c = hash_link(link_hash(&d, &full));
         src.0.insert(c.hash, full);
-        let n1 = node(&mut src, 1, c);
-        let n2 = node(&mut src, 2, n1);
-        let root = node(&mut src, 3, n2);
+        let n = SMALL.min as u64;
+        let n1 = node(&mut src, 1, (c, n));
+        let n2 = node(&mut src, 2, (n1, n * 512));
+        let root = node(&mut src, 3, (n2, n * 512 * 512));
         src.1 = 0;
         assert!(matches!(read_tree(&root, &d, &mut src, SMALL, 10 * SMALL.min), Err(Error::TooLarge("value"))));
         assert!(src.1 <= 11 + 3, "{}", src.1);
+    }
+
+    // spec/wire.md §6: lengths a node carries must match what they describe: a chunk shorter or
+    // longer than its claim, or a node whose lengths do not sum to its parent's claim, is bad
+    // input; a node with a length count other than its link count does not parse.
+    #[test]
+    fn lengths_checked_spec_wire_6() {
+        let d = Secret32::from_bytes([7; 32]);
+        let mut src = ByHash::default();
+        let a = vec![1u8; 20];
+        let ca = hash_link(link_hash(&d, &a));
+        src.0.insert(ca.hash, a);
+        let bad = put_node(&mut src, &d, 1, &[(ca, 21)]);
+        assert!(matches!(read_tree(&bad, &d, &mut src, SMALL, usize::MAX), Err(Error::Malformed("tree length"))));
+        let ok = put_node(&mut src, &d, 1, &[(ca, 20), (ca, 20)]);
+        assert_eq!(read_tree(&ok, &d, &mut src, SMALL, usize::MAX).unwrap().len(), 40);
+        let top = put_node(&mut src, &d, 2, &[(ok, 39)]);
+        assert!(matches!(read_tree(&top, &d, &mut src, SMALL, usize::MAX), Err(Error::Malformed("tree length"))));
+        let two = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca); 2]), Value::List(vec![Value::Int(20)])]));
+        assert!(parse_node(&two).is_err());
+        let neg = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca)]), Value::List(vec![Value::Int(-1)])]));
+        assert!(parse_node(&neg).is_err());
+        let over = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca); 3]), Value::List(vec![Value::Int(i64::MAX); 3])]));
+        assert!(parse_node(&over).is_err());
+    }
+
+    // spec/wire.md §6: a seek fetches the root and the nodes on the path to the target chunk,
+    // and that chunk only; the bytes from there on equal a full read's.
+    #[test]
+    fn seek_fetches_the_path_spec_wire_6() {
+        let d = Secret32::from_bytes([7; 32]);
+        let p = ChunkParams { min: 16, max: 32, mask_bits: 63 };
+        let bytes = data(32 * 3000, 2);
+        let mut src = ByHash::default();
+        let root = write_tree(&mut src, p, &bytes).unwrap();
+        let mut r = TreeReader::new(root, p.min, usize::MAX);
+        let (top, _) = parse_node(&src.0[&root.hash]).unwrap();
+        assert!(top >= 2);
+        for at in [0u64, 1, 31, 32, 50_000, 95_999, 96_000, 1 << 40] {
+            r.seek(at);
+            src.1 = 0;
+            let got = r.next_chunk(&d, &mut src).unwrap();
+            let want = bytes.get(at as usize..).filter(|b| !b.is_empty()).map(|b| b[..b.len().min(32 - at as usize % 32)].to_vec());
+            assert_eq!(got, want, "{at}");
+            assert!(src.1 <= top as usize + 1, "{at}: {} fetches", src.1);
+            assert_eq!(r.total(), Some(bytes.len() as u64));
+        }
+        r.seek(95_990);
+        let mut rest = Vec::new();
+        while let Some(c) = r.next_chunk(&d, &mut src).unwrap() {
+            rest.extend(c);
+        }
+        assert_eq!(rest, bytes[95_990..]);
     }
 }
