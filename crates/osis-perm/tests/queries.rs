@@ -350,9 +350,17 @@ fn patched_view_equals_cloned_edges() {
         let at = (rng.below(2) == 0).then(|| ts(rng.below(10) as u64));
         let a = View::new(&o, &edges, at).patched(m, t, patch);
         let b = View::new(&o, &cloned, at);
+        // the patch at least as wide as the edge it replaces: raising the old roles is exact
+        let alive = |e: Option<Edge>| e.filter(|e| e.alive_at(at));
+        let wider = alive(patch).is_some() && alive(edges.get(&m, &t).copied()).is_none_or(|o| Some(o.role) <= patch.map(|p| p.role));
         for x in &ents {
             let (ra, rb) = (a.roles_from(x), b.roles_from(x));
             assert_eq!(ra, rb);
+            if wider {
+                let mut r = View::new(&o, &edges, at).roles_from(x);
+                r.extend(a.roles_raised(&r, &[m]));
+                assert_eq!(r, rb);
+            }
             assert_eq!(a.reach_forward(x), b.reach_forward(x));
             assert_eq!(a.reach_backward(x), b.reach_backward(x));
             assert_eq!(a.admin_reaching(x), b.admin_reaching(x));

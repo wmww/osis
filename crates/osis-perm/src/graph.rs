@@ -4,7 +4,7 @@
 use crate::held::HeldSet;
 use crate::types::Edge;
 use osis_core::format::MAX_OWNER_DEPTH;
-use osis_core::{CreationRecord, Role, Tid, Ts};
+use osis_core::{CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A thing's owner link, from its verified `/created` record.
@@ -206,6 +206,13 @@ impl<'a> View<'a> {
     /// over paths of the minimum role along the path; `x` is admin of itself, an owner of what
     /// it owns.
     pub fn roles_from(&self, x: &Tid) -> BTreeMap<Tid, Role> {
+        self.roles_expiring(x).0
+    }
+
+    /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
+    /// later ts before that, while no edge of a node it reaches changes.
+    pub fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in [Role::Admin, Role::Write, Role::Read] {
             let mut stack: Vec<Tid> = best.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
@@ -223,12 +230,41 @@ impl<'a> View<'a> {
                 }
                 self.each_target(&e, |t, edge| {
                     if edge.alive_at(self.ts) {
+                        if let Some(u) = edge.until {
+                            expires = Some(expires.map_or(u, |e| e.min(u)));
+                        }
                         relax(*t, level.min(edge.role), &mut stack);
                     }
                 });
             }
         }
-        best
+        (best, expires)
+    }
+
+    /// What `x`'s roles gain over `best`, its roles over edges this view dominates (every
+    /// edge here at least as wide, alive at `ts`), where only edges out of `seeds` may be
+    /// wider: the raised entries. `best` with them equals `roles_from` on this view.
+    pub fn roles_raised(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> BTreeMap<Tid, Role> {
+        let mut raised: BTreeMap<Tid, Role> = BTreeMap::new();
+        let mut stack: Vec<Tid> = seeds.iter().filter(|s| best.contains_key(s)).copied().collect();
+        while let Some(e) = stack.pop() {
+            let Some(level) = raised.get(&e).or_else(|| best.get(&e)).copied() else { continue };
+            let mut raise = |y: Tid, v: Role, stack: &mut Vec<Tid>| {
+                if raised.get(&y).or_else(|| best.get(&y)).is_none_or(|&b| v > b) {
+                    raised.insert(y, v);
+                    stack.push(y);
+                }
+            };
+            for &y in self.owners.owned(&e) {
+                raise(y, level, &mut stack);
+            }
+            self.each_target(&e, |t, edge| {
+                if edge.alive_at(self.ts) {
+                    raise(*t, level.min(edge.role), &mut stack);
+                }
+            });
+        }
+        raised
     }
 
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).

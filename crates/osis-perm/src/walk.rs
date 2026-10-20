@@ -23,7 +23,7 @@ use crate::content::{overlapping, Range};
 use crate::graph::{Class, Edges, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{lowers, Dots, Edge, EdgeKey, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
-use osis_core::{CommitId, Role, Tid, Ts};
+use osis_core::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -185,7 +185,7 @@ pub(crate) struct Outcome {
 pub(crate) fn extend(input: &Input, epoch: &BTreeMap<Tid, CommitId>, dropped: &mut BTreeMap<WriteId, Point>, walked: Walked, added: &[Arc<MembershipCommit>]) -> Option<Walked> {
     let Walked { initial, history, edges, applied, demotions, rest } = walked;
     let Rest { prior, dead, prior_node, by_author_target, setter } = rest;
-    let mut p = Pass { input, epoch, dropped, edges, initial, prior, dead, prior_node, applied, by_author_target, setter, history, demotions };
+    let mut p = Pass { input, epoch, dropped, edges, initial, prior, dead, prior_node, applied, by_author_target, setter, history, demotions, roles: BTreeMap::new() };
     for c in added {
         if p.commit(c) {
             return None;
@@ -304,6 +304,18 @@ fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
     }
 }
 
+/// Could setting edge `(member, target)` from `old` to `new` at `ts` change the widest-path
+/// roles `best` (§1)? Only if `best` reaches the member and the edge, alive, is wider than
+/// `best` on the target now, or was as wide (it may have been the only such path), or the new
+/// value expires (`best`'s expiry does not know its `until`).
+fn widest_changes(best: &BTreeMap<Tid, Role>, (member, target): (Tid, Tid), old: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
+    let Some(&rm) = best.get(&member) else { return false };
+    let alive = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts)));
+    let (o, n) = (alive(old).map(|e| rm.min(e.role)), alive(new).map(|e| rm.min(e.role)));
+    let cur = best.get(&target).copied();
+    alive(new).is_some_and(|e| e.until.is_some()) || (o != n && (n > cur || (o.is_some() && o == cur)))
+}
+
 enum PassResult {
     Done(Box<Walked>),
     Restart,
@@ -328,9 +340,28 @@ struct Pass<'a> {
     setter: BTreeMap<(Tid, Tid), WriteId>,
     history: Vec<Change>,
     demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
+    /// `roles_from` per node over the current edges: the answer, the ts it was computed at
+    /// and the earliest `until` it followed. Dropped when an edge of a node it reaches changes.
+    roles: BTreeMap<Tid, Roles>,
 }
 
+type Roles = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
+
 impl Pass<'_> {
+    /// `x`'s roles over the current edges at `ts` (cached: the walk's ts never decreases).
+    fn roles(&mut self, x: Tid, ts: Ts) -> Arc<BTreeMap<Tid, Role>> {
+        if let Some((b, at, exp)) = self.roles.get(&x)
+            && *at <= ts
+            && exp.is_none_or(|u| ts.wall_ms() < u)
+        {
+            return b.clone();
+        }
+        let (b, exp) = self.view(ts).roles_expiring(&x);
+        let b = Arc::new(b);
+        self.roles.insert(x, (b.clone(), ts, exp));
+        b
+    }
+
     fn finish(self) -> Walked {
         let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter };
         Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, rest }
@@ -358,6 +389,8 @@ impl Pass<'_> {
         }
         // Before the change: does the author reach the member (a demotion of itself)?
         let own = auditor.and_then(|a| a.author).filter(|a| self.view(point.ts).reach_backward(&member).contains(a));
+        let was = self.edges.get(&member, &target).copied();
+        self.roles.retain(|_, (b, _, _)| !widest_changes(b, (member, target), was, edge, point.ts));
         self.edges.set(member, target, edge);
         match by {
             Some(w) => self.setter.insert(key, w),
@@ -438,16 +471,40 @@ impl Pass<'_> {
         let xs: Vec<Tid> = view.reach_backward(&member).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
         let ns = view.reach_forward(&target);
         let mut grew = false;
+        let cur = self.edges.get(&member, &target).copied().filter(|e| e.alive_at(Some(ts)));
         for x in xs {
             let restored = match (base, mine.get(&x)) {
                 (b, Some(m)) => join(b, *m),
                 (Some(b), None) => Edge { until: None, since: None, ..b },
                 (None, None) => continue,
             };
+            let best = self.roles(x, ts);
+            // An edge x does not reach (alive) confers nothing on x either way.
+            if !best.contains_key(&member) {
+                continue;
+            }
             let view = self.view(ts);
             let before = self.view(ts).patched(member, target, Some(restored));
-            let (best, best_was) = (view.roles_from(&x), before.roles_from(&x));
-            let pairs: Vec<(Tid, Standing, Standing)> = ns.iter().map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect();
+            // The restored edge (alive) is usually at least as wide as the current one: raise
+            // x's roles from it instead of searching again.
+            // When that raises nothing, only the invite on the target can differ.
+            let (best_was, only_target) = if cur.is_none_or(|c| c.role <= restored.role) {
+                let raised = before.roles_raised(&best, &[member]);
+                if raised.is_empty() {
+                    (best.clone(), true)
+                } else {
+                    let mut b = (*best).clone();
+                    b.extend(raised);
+                    (Arc::new(b), false)
+                }
+            } else {
+                (Arc::new(before.roles_from(&x)), false)
+            };
+            let pairs: Vec<(Tid, Standing, Standing)> = ns
+                .iter()
+                .filter(|n| !only_target || **n == target)
+                .map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n)))
+                .collect();
             for (n, now, held) in pairs {
                 for below in [Role::Write, Role::Admin] {
                     if held.role >= Some(below) && now.role < Some(below) {
@@ -521,7 +578,7 @@ impl Pass<'_> {
 
     fn commit(&mut self, c: &MembershipCommit) -> bool {
         let point = c.point();
-        let best = self.view(c.ts).roles_from(&c.author);
+        let best = self.roles(c.author, c.ts);
         let mut judged = Vec::new();
         for (k, op) in c.ops.iter().enumerate() {
             let Ok(k32) = u32::try_from(k) else { continue };
@@ -565,9 +622,8 @@ impl Pass<'_> {
         if self.dropped.contains_key(&id) || rejected.contains(&s.id) {
             return Ok(());
         }
-        let view = self.view(s.ts);
-        let best = view.roles_from(&s.author);
-        let chain = view.standing(&s.author, &best, &s.thing).class == Class::Chain;
+        let best = self.roles(s.author, s.ts);
+        let chain = self.view(s.ts).standing(&s.author, &best, &s.thing).class == Class::Chain;
         match self.start_of(&s.thing).map(|e| (e.id, e.point())) {
             Some((e, _)) if e == s.id => {
                 if !chain {
@@ -607,15 +663,16 @@ impl Pass<'_> {
     }
 
     fn virtual_write(&mut self, v: &Virtual) -> bool {
-        let auditor = v.audit.as_ref().map(|(node, f)| Auditor {
+        let chain = v.audit.as_ref().map(|(node, _)| {
+            let best = self.roles(*node, v.point.ts);
+            self.chain_writes(&best, &v.thing, v.point.ts)
+        });
+        let auditor = v.audit.as_ref().zip(chain).map(|((node, f), chain)| Auditor {
             // A ledger entry with a frontier counts as an explicit demotion by its key's node
             // (§6): that node is exempt as from its own write, and its chain writes count.
             author: Some(*node),
             frontier: Some(f.as_ref()),
-            chain: {
-                let best = self.view(v.point.ts).roles_from(node);
-                self.chain_writes(&best, &v.thing, v.point.ts)
-            },
+            chain,
             commit: None,
             point: v.point,
             ledger: true,
@@ -737,6 +794,7 @@ fn pass(
         setter: BTreeMap::new(),
         history: Vec::new(),
         demotions: BTreeMap::new(),
+        roles: BTreeMap::new(),
     };
     for (_, _, _, _, item) in &items {
         let restart = match item {
