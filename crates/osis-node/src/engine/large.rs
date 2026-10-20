@@ -254,21 +254,29 @@ impl Engine {
         Ok(r)
     }
 
-    /// A chunk or tree node `lost` that a live value links was deleted at a server: a purger
-    /// that had not seen a concurrent reuse of it judged it dead (spec/sync.md §1). Writes each
-    /// aspect of a commit listing it whose state links it again (replace with its value read
-    /// whole, every large value re-chunked against its current tree) with `lost` re-encrypted,
-    /// where this node holds the value, may write the thing and knows the aspect's schema.
-    /// Returns the commit, if one was written.
-    pub fn relink(&mut self, lost: &BlobId) -> Result<Option<CommitId>> {
-        let id = *lost;
-        if !self.run(|tx| Ok(tx.txn.get_blob(&id)?.is_some()))? {
+    /// Chunks or tree nodes `lost` that live values link were deleted at a server: a purger
+    /// that had not seen a concurrent reuse judged them dead (spec/sync.md §1). Writes each
+    /// aspect of a commit listing one whose state links one again (replace with its value read
+    /// whole, every large value re-chunked against its current tree) with those held here
+    /// re-encrypted, where this node may write the thing and knows the aspect's schema. One
+    /// commit; returns it, if one was written.
+    pub fn relink(&mut self, lost: &BTreeSet<BlobId>) -> Result<Option<CommitId>> {
+        let held: BTreeSet<BlobId> = self.run(|tx| {
+            let mut out = BTreeSet::new();
+            for b in lost {
+                if tx.txn.get_blob(b)?.is_some() {
+                    out.insert(*b);
+                }
+            }
+            Ok(out)
+        })?;
+        if held.is_empty() {
             return Ok(None);
         }
         // reuse links within one position of one aspect: the aspects of the commits listing it
         // the schema each was written with: `Some(None)` untyped, `None` not registered here
         let mut aspects: BTreeMap<(Tid, Ak), Option<Option<Arc<Schema>>>> = BTreeMap::new();
-        for m in self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| c.blob == id)) {
+        for m in self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| held.contains(&c.blob))) {
             let h = &m.header;
             for a in &h.aspects {
                 let schema = match a.schema {
@@ -279,7 +287,7 @@ impl Engine {
             }
         }
         let mut m = super::Mutation::new();
-        m.fresh.insert(id);
+        m.fresh.clone_from(&held);
         for ((tid, ak), schema) in aspects {
             // an unknown schema: a typed value cannot be written back safely
             let Some(schema) = schema else { continue };
@@ -294,7 +302,7 @@ impl Engine {
                 }
                 tree_blobs(tx, &dedup, &roots)
             })?;
-            if !linked.is_some_and(|s| s.contains(&id)) {
+            if !linked.is_some_and(|s| !s.is_disjoint(&held)) {
                 continue;
             }
             let Ok(Some(v)) = self.get_full(&tid, &ak) else { continue };

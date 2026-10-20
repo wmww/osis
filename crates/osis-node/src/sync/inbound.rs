@@ -79,6 +79,8 @@ impl SyncEngine {
                 }
             }
         }
+        // deleted blobs that are no commit blob: chunks a live value may still link
+        let mut lost = BTreeSet::new();
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
@@ -141,14 +143,8 @@ impl SyncEngine {
                     if let Some(s) = server {
                         self.state.set_present(s, l, b, false);
                     }
-                    // a chunk a live value here links, deleted by a purger that had not seen its
-                    // reuse: written again re-encrypted (spec/sync.md §1)
                     if !self.state.blobs.contains_key(&b) {
-                        match self.engine.relink(&b) {
-                            Err(e @ crate::Error::Store(_)) => return Err(e),
-                            Err(e) => self.diag(format!("re-encrypting a deleted chunk: {e}")),
-                            Ok(_) => {}
-                        }
+                        lost.insert(b);
                     }
                     if !self.state.present_anywhere(&l, &b) {
                         self.state.remove_entry(l, b);
@@ -162,6 +158,15 @@ impl SyncEngine {
                         self.new_head(c, l, step, out)?;
                     }
                 }
+            }
+        }
+        // a chunk a live value here links, deleted by a purger that had not seen its reuse:
+        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
+        if !lost.is_empty() {
+            match self.engine.relink(&lost) {
+                Err(e @ crate::Error::Store(_)) => return Err(e),
+                Err(e) => self.diag(format!("re-encrypting deleted chunks: {e}")),
+                Ok(_) => {}
             }
         }
         if let (Some(s), Some(c)) = (server, cursor) {

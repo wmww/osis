@@ -1345,7 +1345,7 @@ fn stale_key_actor_box_after_until_spec_crypto_4() {
     lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
-    assert!(lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r0).is_empty() == false, "the key actor holds the read epoch");
+    assert!(!lp.peers[3].engine.epochs(&t).unwrap().read.reading_secrets(&r0).is_empty(), "the key actor holds the read epoch");
     lp.advance(2 * 3_600_000);
     let (done, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
     assert!(still.is_empty());
