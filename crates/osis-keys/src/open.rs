@@ -109,7 +109,9 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
                 done.insert(k.clone());
                 continue;
             };
-            let Some(s) = epochs.role(k.role).secret(&e).cloned() else { continue };
+            let Some(s) = epochs.role(k.role).reading_secret(&e).cloned() else { continue };
+            // what a reading-only secret opens is reading-only too
+            let unchecked = epochs.role(k.role).is_reading_only(&e);
             done.insert(k.clone());
             progress = true;
             match open_history(&s, actor, k.role, &e, ct) {
@@ -117,7 +119,9 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
                     let re = epochs.role_mut(k.role);
                     re.rotation(e, earlier.iter().map(|(x, _)| *x));
                     for (x, sx) in earlier {
-                        if re.secret(&x).is_none() {
+                        if unchecked {
+                            re.set_reading_secret(x, sx);
+                        } else if re.reading_secret(&x).is_none() || re.is_reading_only(&x) {
                             re.set_secret(x, sx);
                         }
                     }
@@ -137,13 +141,17 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
 /// Everything a node learns from `actor`'s `/secrets`: the epochs named, its boxes' secrets,
 /// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
 /// `SecretsWrite::applied` per applied rotation commit and `snapshot_keyed` per held snapshot.
-/// Returns what could not be opened.
-pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs) -> Result<Vec<Error>, Error> {
+/// `checked`: `secrets` is the applied valid state (its boxes replace reading-only secrets);
+/// false for boxes of a pending or invalid commit, whose secrets are kept for reading only and
+/// never replace one (spec/crypto.md §4). Returns what could not be opened.
+pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs, checked: bool) -> Result<Vec<Error>, Error> {
     observe_secrets(secrets, epochs)?;
     let (opened, failed) = open_boxes(actor, secrets, opener);
     for o in opened {
         let re = epochs.role_mut(o.role);
-        if re.secret(&o.epoch).is_none() {
+        if !checked {
+            re.set_reading_secret(o.epoch, o.secret);
+        } else if re.reading_secret(&o.epoch).is_none() || re.is_reading_only(&o.epoch) {
             re.set_secret(o.epoch, o.secret);
         }
     }
