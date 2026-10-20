@@ -13,18 +13,35 @@ pub fn encode_frame(body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A Hello is at most about 200 bytes (spec/wire.md §11.1: 16 versions); a first frame above
+/// this is malformed.
+pub const MAX_HELLO_BYTES: usize = 256;
+
 /// Incremental frame splitter. Holds at most one frame plus the last pushed chunk.
-#[derive(Default)]
 pub struct FrameDecoder {
     buf: Vec<u8>,
     /// Bytes of `buf` already handed out.
     start: usize,
     failed: Option<u64>,
+    /// Largest frame body accepted.
+    max: usize,
+}
+
+impl Default for FrameDecoder {
+    fn default() -> FrameDecoder {
+        FrameDecoder { buf: Vec::new(), start: 0, failed: None, max: MAX_MESSAGE }
+    }
 }
 
 impl FrameDecoder {
     pub fn new() -> FrameDecoder {
         FrameDecoder::default()
+    }
+
+    /// Accepts frame bodies up to `max` (at most `MAX_MESSAGE`) from now on: a peer's first
+    /// frame is its Hello (`MAX_HELLO_BYTES`).
+    pub fn set_max(&mut self, max: usize) {
+        self.max = max.min(MAX_MESSAGE);
     }
 
     /// Appends received stream bytes.
@@ -45,7 +62,7 @@ impl FrameDecoder {
         let rest = self.buf.get(self.start..).unwrap_or(&[]);
         let Some(head) = rest.first_chunk::<4>() else { return Ok(None) };
         let len = u32::from_be_bytes(*head) as usize;
-        if len == 0 || len > MAX_MESSAGE {
+        if len == 0 || len > self.max {
             self.failed = Some(len as u64);
             return Err(Error::FrameLength(len as u64));
         }
@@ -80,6 +97,20 @@ mod tests {
         assert_eq!(d.next_frame(), Ok(Some(vec![0x82, 1, 2])));
         assert_eq!(d.next_frame(), Ok(None));
         assert_eq!(d.pending(), 0);
+    }
+
+    // spec/wire.md §11.1 (Hello: at most 16 versions, so a small first frame), spec/requirements.md
+    // (no unbounded allocation): a declared length above the cap fails before any body arrives
+    #[test]
+    fn capped_first_frame() {
+        let mut d = FrameDecoder::new();
+        d.set_max(MAX_HELLO_BYTES);
+        d.push(&((MAX_HELLO_BYTES + 1) as u32).to_be_bytes());
+        assert!(d.next_frame().is_err());
+        let mut d = FrameDecoder::new();
+        d.set_max(MAX_HELLO_BYTES);
+        d.push(&encode_frame(&[0x80; MAX_HELLO_BYTES]));
+        assert_eq!(d.next_frame().map(|f| f.map(|b| b.len())), Ok(Some(MAX_HELLO_BYTES)));
     }
 
     // spec/wire.md §11.1: 1 <= len <= MAX_MESSAGE

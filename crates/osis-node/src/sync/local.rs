@@ -167,9 +167,6 @@ impl SyncEngine {
     }
 
     pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<()> {
-        if self.state.inbox_only.contains(c) {
-            return Ok(());
-        }
         let labels: Vec<LabelId> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id).collect();
         if labels.is_empty() {
             return Ok(());

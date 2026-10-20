@@ -48,9 +48,6 @@ impl SyncEngine {
     }
 
     fn take_deliveries(&mut self, done: Done) -> Result<()> {
-        for c in done.inbox_only {
-            self.state.set_inbox_only(c);
-        }
         for d in done.deliveries {
             match d {
                 Delivery::Inbox { to, inbox, blob } => {

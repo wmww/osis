@@ -35,6 +35,36 @@ fn connection_cap_and_hello_deadline() {
     assert_eq!(w.hubs[h].connections(), 1);
 }
 
+// spec/wire.md §11.1 (a Hello lists at most 16 versions), spec/requirements.md (peer input never
+// causes unbounded allocation): a first frame above a Hello's size is refused before its body
+// arrives; partial frames over all connections stay under `max_buffered_bytes`, the connection
+// holding the largest closed first.
+#[test]
+fn partial_frames_bounded() {
+    let mut w = World::new();
+    let budget = 20 << 20;
+    let h = w.add_hub(Policy { max_buffered_bytes: budget, ..Policy::default() });
+    let now = w.now();
+    let hub = &mut w.hubs[h];
+    // before Hello: a frame header of MAX_MESSAGE closes at once
+    hub.accept(now, 1, [1; 32]);
+    let out = hub.input(now, 1, (osis_core::format::MAX_MESSAGE as u32).to_be_bytes().to_vec());
+    assert!(out.contains(&HubOutput::Close(1)), "{out:?}");
+    assert_eq!(hub.buffered(), 0);
+    // after Hello: each connection starts a MAX_MESSAGE frame and sends 8 MiB of it
+    let mut closed = 0;
+    for id in 10..14u64 {
+        hub.accept(now, id, [id as u8; 32]);
+        hub.input(now, id, encode_frame(&Hello::new(now, [2; 32]).encode()));
+        let mut bytes = (osis_core::format::MAX_MESSAGE as u32).to_be_bytes().to_vec();
+        bytes.extend(vec![0u8; 8 << 20]);
+        let out = hub.input(now, id, bytes);
+        closed += out.iter().filter(|o| matches!(o, HubOutput::Close(_))).count();
+        assert!(hub.buffered() <= budget, "{} buffered", hub.buffered());
+    }
+    assert_eq!(closed, 2, "two of four over the budget");
+}
+
 // spec/wire.md §11.2 Register, spec/sync.md §5: node-wide caps refuse new labels (Error 12) and new entries (code 12)
 #[test]
 fn node_wide_caps() {

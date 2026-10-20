@@ -26,7 +26,6 @@ const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
 const HINT: &[u8] = b"y/i";
 const TIMED: &[u8] = b"y/d";
-const INBOX_ONLY: &[u8] = b"y/n";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
 const TOMB: &[u8] = b"y/x";
@@ -103,8 +102,6 @@ pub struct State {
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes sent (spec/sync.md §5).
     pub timed: BTreeSet<(ServerKey, LabelId, BlobId)>,
-    /// Commits that travel by inbox only (re-seals): never placed under a label.
-    pub inbox_only: BTreeSet<CommitId>,
     /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
     /// (spec/sync.md §7).
     pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
@@ -262,9 +259,6 @@ impl State {
                     let blob = x.bytes()?.to_vec();
                     s.outbox.insert(k, OutRec { label, server, owner, blob });
                 }
-                b"n" => {
-                    s.inbox_only.insert(CommitId(r.arr()?));
-                }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
@@ -335,6 +329,14 @@ impl State {
             self.feed.deleted(l, b);
             self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
             self.tombs.insert((l, b), self.now);
+        }
+    }
+
+    /// Forgets an entry that never counted (junk a server announced): no tombstone.
+    pub fn drop_entry(&mut self, l: LabelId, b: BlobId) {
+        if self.entries.remove(&(l, b)).is_some() {
+            self.del(key(ENTRY, &[&l.0, &b.0]));
+            self.feed.deleted(l, b);
         }
     }
 
@@ -456,12 +458,6 @@ impl State {
         }
         let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
         self.put(key(CARRIER, &[&body.0]), v);
-    }
-
-    pub fn set_inbox_only(&mut self, c: CommitId) {
-        if self.inbox_only.insert(c) {
-            self.put(key(INBOX_ONLY, &[&c.0]), Vec::new());
-        }
     }
 
     pub fn set_timed(&mut self, s: ServerKey, l: LabelId, b: BlobId) {

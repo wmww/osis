@@ -89,6 +89,21 @@ fn disk_loss() {
     ok("disk_loss", 1);
 }
 
+// spec/permissions.md §4 (chain certificates, placed whenever they change): sweep seed 3, the
+// lost device's copy of the card key's `/created` never reached the server and the remaining
+// device's placed copy lacked it, so the recovering device could not verify the person.
+#[test]
+fn disk_loss_seed_3() {
+    ok("disk_loss", 3);
+}
+
+// spec/sync.md §6, §8: sweep seed 11, a push during a replay moved the cursor past entries the
+// replay had not delivered; a crash then lost them for good.
+#[test]
+fn two_devices_server_seed_11() {
+    ok("two_devices_server", 11);
+}
+
 // spec/sync.md §3, §5: a grant's inbox deposit survives a crash of the granting device.
 #[test]
 fn grant_lost_on_crash() {

@@ -676,3 +676,24 @@ fn unanswered_request_times_out() {
     assert!(late.iter().any(|o| matches!(o, ClientOutput::Close)), "{late:?}");
     assert!(c.is_closed());
 }
+
+// spec/sync.md §6 (a replay's pages bring the live entries, the last page the log cursor), §8
+// (pushes carry cursors): a Push arriving while a Sync of its label runs gives no cursor to keep,
+// so a connection lost before the Sync ends never skips the entries its later pages held
+#[test]
+fn push_during_sync_keeps_no_cursor() {
+    let mut c = ClientSession::new(ClientConfig { peer_static_key: [1; 32], challenge: [2; 32] });
+    c.handle(T0, ClientInput::Start);
+    c.handle(T0, ClientInput::Bytes(encode_frame(&Hello::new(T0, [3; 32]).encode())));
+    let l = LabelId([7; 16]);
+    let out = c.handle(T0, ClientInput::Command(sync(l, None, vec![], vec![])));
+    let id = out.iter().find_map(|o| if let ClientOutput::Send(f) = o { if let Ok(Message::Sync { id, .. }) = Message::decode(&f[4..]) { Some(id) } else { None } } else { None }).unwrap();
+    let head = Cursor { log_id: [1; 16], seq: 9 };
+    let push = |c: &mut ClientSession| {
+        let out = c.handle(T0, ClientInput::Bytes(encode_frame(&Message::Push { label: l, events: vec![Event::Deleted(bid(1))], cursor: head }.encode())));
+        out.into_iter().find_map(|o| if let ClientOutput::Event(ClientEvent::Events { cursor, .. }) = o { Some(cursor) } else { None }).unwrap()
+    };
+    assert_eq!(push(&mut c), None, "no cursor while the replay runs");
+    c.handle(T0, ClientInput::Bytes(encode_frame(&Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor: Cursor { log_id: [1; 16], seq: 8 }, more: false }.encode())));
+    assert_eq!(push(&mut c), Some(head), "kept once it ended");
+}

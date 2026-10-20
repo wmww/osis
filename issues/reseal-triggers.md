@@ -19,3 +19,6 @@ Recommendation: (a) now; (b) is the right mechanism if stranded members turn out
 
 ## Conservative reading meanwhile
 Implement the spec as edited. Clients: offer "re-share with M" by hand to any member that may rotate (`Engine::reshare`); do not refresh the deposit seed on rotation by default (`Engine::refresh_deposit_seed` is explicit only). notes/sync.md Limits records it.
+
+## Residue: extra re-seals of key-actor members
+The "seen without a box" trigger (`reseal_due`, wired at the end of a complete pass) fires once per new read or write epoch for a key-actor member (a node) boxed only by a box keyed at a higher role: `carries` finds no commit introducing the epoch when no box is keyed at it, so it cannot tell that the higher box carries it. The re-seal adds an exact box, so it stops there; cost one membership commit per such member per rotation. A fix would find the introducing commit from the rotated `/keys` keysets.
