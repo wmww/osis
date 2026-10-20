@@ -587,6 +587,13 @@ impl SyncEngine {
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
             for l in self.engine.group_labels(&g).unwrap_or_default() {
+                if l.replaced && admin && !self.state.retired.contains(&l.id) {
+                    // a server where the label was lost may never settle a pass: a bound
+                    let now = self.now();
+                    if self.state.replaced_seen(l.id, now).saturating_add(osis_core::format::MEMBERSHIP_KEEP_MS) <= now {
+                        self.state.retire(l.id);
+                    }
+                }
                 if !l.replaced || admin && !self.state.retired.contains(&l.id) {
                     out.push((g, l));
                 }

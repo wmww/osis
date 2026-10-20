@@ -62,6 +62,10 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
             let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
             out.extend(Departure::of_change(op.member, old, new));
         }
+        // a roster snapshot ahead of the clock changes the roster when its `ts` passes
+        for sn in tx.core.held.snapshots.get(a).into_iter().flatten() {
+            later(sn.ts.wall_ms());
+        }
         for (m, e) in tl.edges_at(None).members(a) {
             if let Some(u) = e.until {
                 later(u);
@@ -486,8 +490,11 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
 }
 
 /// Whether the commit that wrote a key actor's box keyed at a higher role knew epoch `e` of
-/// role `r` (osis-keys `Carries`): its newest write is ordered at or after the commit that
+/// role `r` (osis-keys `Carries`): its first write is ordered at or after the commit that
 /// introduced `e` (found by its boxes or, for an epoch boxed to key actors only, its keyset).
+/// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
+/// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
+/// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
 /// Unknown: no (a re-seal to a current member costs a box, never a leak).
 fn carries_fn<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
     let a = *a;

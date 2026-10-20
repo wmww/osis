@@ -386,7 +386,7 @@ fn split_entries_join_back_spec_commits_2() {
         let mut w = crate::ops::Writer::new(ts(70 << 16), node.clone(), 1);
         let whole = crate::ops::replace(&mut w, &AnyView, &v).unwrap();
         let parts = whole.clone().split_entries();
-        assert_eq!(parts.len(), 3);
+        assert_eq!(parts.len(), 4, "the reset alone, then one per entry");
         let cx = DeltaCtx { ts: ts(70 << 16), own: node.clone(), range: w.range(), kind: DeltaKind::Writer };
         let mut joined = Fragment::empty(whole.encoding()).unwrap();
         for p in parts {

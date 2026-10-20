@@ -1466,7 +1466,7 @@ fn roster_snapshot_one_delta_per_edge_spec_perm_6() {
     let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
     let c = *done.commits.last().unwrap();
     let members = aspect_deltas(&mut lp.peers[0].engine, &c, t, "/members");
-    assert_eq!(members.len(), n, "one delta per edge");
+    assert_eq!(members.len(), n + 1, "the reset alone, then one delta per edge");
     assert!(members.iter().all(|d| d.len() < 300), "{:?}", members.iter().map(Vec::len).max());
     assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &c, t, "/tenures").len(), 1, "an empty ledger: the reset alone");
     // a receiver joins the deltas back into the whole roster
@@ -1496,12 +1496,12 @@ fn roster_snapshot_certificate_projected_spec_perm_6() {
     let r = lp.peers[0].engine.hold_key_actor(p.card.seed.clone()).unwrap();
     let done = lp.peers[0].engine.roster_snapshot(&p.person, Some(&r)).unwrap();
     let s = *done.commits.last().unwrap();
-    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &s, p.person, "/members").len(), 2, "both devices");
+    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &s, p.person, "/members").len(), 3, "the reset, both devices");
     let certs = lp.peers[0].engine.certificates(&g);
     let parts = certs.get(&s).expect("the snapshot is a chain certificate");
     let h = lp.peers[0].engine.header(&s).unwrap();
     let members_ai = h.aspects.iter().position(|a| a.ak.as_str() == "/members").unwrap();
-    assert_eq!(parts.iter().filter(|(ai, _)| *ai == members_ai).count(), 1, "one edge: {parts:?}");
+    assert_eq!(parts.iter().filter(|(ai, _)| *ai == members_ai).count(), 2, "the reset and one edge: {parts:?}");
     let bodies = lp.peers[0].engine.part_bodies(&s, parts).unwrap();
     let carried: BTreeSet<(usize, usize)> = bodies.iter().flat_map(|b| b.parts.iter().copied()).collect();
     assert_eq!(&carried, parts);

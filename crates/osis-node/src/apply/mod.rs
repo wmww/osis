@@ -7,6 +7,8 @@ mod atomic;
 pub(crate) mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
+#[cfg(test)]
+mod tests_linked;
 
 pub(crate) use atomic::{apply_verified, rebuild, strip_valueless};
 
@@ -207,8 +209,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
     }
     // a roster snapshot's tenures are judged by their frontiers: linked ones are fetched first
-    if validity::linked_frontiers(tx, &h, &out)?.is_none() {
-        return Ok(Exam::Pending(Reason::WaitBlobs));
+    // (tests let a local writer break these rules, to test receivers)
+    if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
+        validity::check_roster_parts(&h, &out)?;
+        if !validity::linked_frontiers(tx, &h, &out)?.waiting.is_empty() {
+            return Ok(Exam::Pending(Reason::WaitBlobs));
+        }
     }
     Ok(Exam::Ready(out))
 }

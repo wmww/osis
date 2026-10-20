@@ -137,6 +137,27 @@ fn tenures(f: &Fragment) -> Vec<ct::Tenure> {
 /// A roster snapshot's parts on one thing: roster, ledger, `/members` dots.
 type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>, Dots);
 
+/// A roster snapshot naming one member in two `/members` deltas of a thing is bad input
+/// (spec/permissions.md §6): which one counts would depend on the deltas a node holds.
+pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    if h.kind != Kind::RosterSnapshot {
+        return Ok(());
+    }
+    let mut seen: BTreeSet<(Tid, Tid)> = BTreeSet::new();
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() != "/members" {
+            continue;
+        }
+        for m in named_members("/members", fragment(d)) {
+            if !seen.insert((a.tid, m)) {
+                return Err(Error::BadInput("a roster snapshot names a member twice"));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Links of the frontiers a `/tenures` delta's tenures carry by link.
 fn tenure_links(f: &Fragment) -> Vec<osis_core::Link> {
     tenures(f)
@@ -148,55 +169,142 @@ fn tenure_links(f: &Fragment) -> Vec<osis_core::Link> {
         .collect()
 }
 
-/// A tenure's frontier held by link (spec/permissions.md §6), read from its chunk tree under
-/// thing `tid`'s dedup secret; `None` while a blob of it is not held.
-fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link) -> Result<Option<Frontier>> {
-    let Some(dedup) = tx.core.dedup(tid) else { return Ok(None) };
-    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
-    let mut r = osis_label::BlobReader::new(&dedup, &mut blobs);
-    match osis_label::read_value(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, osis_commit::MAX_LIST_BYTES) {
-        Ok(v) => {
-            let f = typed(&v, "frontier").and_then(|v| ct::Frontier::from_value(&v).ok()).ok_or(Error::BadInput("a linked frontier is not a frontier"))?;
-            Ok(Some(frontier_of(f)))
+/// Local records of linked frontiers read once (`n/` + link content hash -> the frontier's
+/// canonical bytes), so judging never depends on the tree blobs staying held.
+const FRONTIERS: &[u8] = b"n/";
+
+/// Blob reads restricted to a commit's chunk list (spec/permissions.md §6: a linked frontier's
+/// tree blobs are listed); an unlisted blob is bad input, never waited for.
+struct Listed<'t, 'a, 'l> {
+    blobs: crate::engine::blobs::TxBlobs<'t, 'a>,
+    listed: &'l BTreeSet<osis_core::BlobId>,
+}
+
+impl osis_label::BlobFetch for Listed<'_, '_, '_> {
+    fn fetch(&mut self, id: &osis_core::BlobId) -> std::result::Result<Vec<u8>, osis_label::Error> {
+        if !self.listed.contains(id) {
+            return Err(osis_label::Error::Verify("a linked frontier blob outside the commit's chunk list"));
         }
-        Err(osis_label::Error::Missing) => Ok(None),
-        Err(e) => Err(e.into()),
+        self.blobs.fetch(id)
     }
 }
 
-/// The linked frontiers of a roster snapshot's `/tenures` parts, by link content hash; `None`
-/// while a blob of one is not held (the commit waits for it, spec/commits.md §4).
-pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<Option<BTreeMap<[u8; 32], Arc<Frontier>>>> {
-    let mut out = BTreeMap::new();
-    if h.kind != Kind::RosterSnapshot {
-        return Ok(Some(out));
+/// What a roster snapshot's linked tenure frontiers resolve to here.
+#[derive(Default)]
+pub(crate) struct Linked {
+    /// By link content hash.
+    pub frontiers: BTreeMap<[u8; 32], Arc<Frontier>>,
+    /// Things with a linked frontier whose blobs are not held (the commit waits, spec/commits.md
+    /// §4; already applied: kept out of perm).
+    pub waiting: BTreeSet<Tid>,
+    /// Things with a linked frontier not held whose later epoch start is applied: no wait, kept
+    /// out of perm.
+    pub superseded: BTreeSet<Tid>,
+}
+
+/// One linked frontier: from the in-memory cache, the local record, or its tree (recorded then).
+/// `Ok(None)` while a listed blob is not held. Charges its canonical bytes to `budget`.
+fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &BTreeSet<osis_core::BlobId>, budget: &mut usize) -> Result<Option<Arc<Frontier>>> {
+    let charge = |budget: &mut usize, n: usize| -> Result<()> {
+        *budget = budget.checked_sub(n).ok_or(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS"))?;
+        Ok(())
+    };
+    if let Some((f, n)) = tx.core.frontiers.get(&link.hash).cloned() {
+        charge(budget, n)?;
+        return Ok(Some(f));
     }
+    let key = [FRONTIERS, &link.hash[..]].concat();
+    let bytes = match tx.txn.get_local(&key)? {
+        Some(b) => b,
+        None => {
+            let Some(dedup) = tx.core.dedup(tid) else { return Ok(None) };
+            let mut src = Listed { blobs: crate::engine::blobs::TxBlobs::new(&mut tx.txn), listed };
+            let mut r = osis_label::BlobReader::new(&dedup, &mut src);
+            let v = match osis_label::read_value(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, *budget) {
+                Ok(v) => v,
+                Err(osis_label::Error::Missing) => return Ok(None),
+                Err(osis_label::Error::TooLarge(_)) => return Err(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS")),
+                Err(_) => return Err(Error::BadInput("a linked frontier does not read")),
+            };
+            let b = osis_core::encode(&v);
+            tx.txn.put_local(&key, &b, osis_store::Shred::No)?;
+            b
+        }
+    };
+    charge(budget, bytes.len())?;
+    let v = osis_core::decode(&bytes, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() }).map_err(|_| Error::BadInput("a linked frontier is not canonical"))?;
+    let f = typed(&v, "frontier").and_then(|v| ct::Frontier::from_value(&v).ok()).ok_or(Error::BadInput("a linked frontier is not a frontier"))?;
+    let f = Arc::new(frontier_of(f));
+    tx.core.frontiers.insert(link.hash, (f.clone(), bytes.len()));
+    Ok(Some(f))
+}
+
+/// Resolves the linked frontiers of a roster snapshot's `/tenures` parts (spec/permissions.md
+/// §6): each distinct link (by content hash) read once, within `MAX_LINKED_FRONTIERS`.
+pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<Linked> {
+    linked_frontiers_capped(tx, h, parts, osis_core::format::MAX_LINKED_FRONTIERS)
+}
+
+pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], cap: usize) -> Result<Linked> {
+    let mut out = Linked::default();
+    if h.kind != Kind::RosterSnapshot {
+        return Ok(out);
+    }
+    let mut links: BTreeMap<[u8; 32], (Tid, osis_core::Link)> = BTreeMap::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "/tenures" {
-            continue;
-        }
-        for l in tenure_links(fragment(d)) {
-            match linked_frontier(tx, &a.tid, &l)? {
-                Some(f) => {
-                    out.insert(l.hash, Arc::new(f));
-                }
-                None => return Ok(None),
+        if a.ak.as_str() == "/tenures" {
+            for l in tenure_links(fragment(d)) {
+                links.entry(l.hash).or_insert((a.tid, l));
             }
         }
     }
-    Ok(Some(out))
+    if links.is_empty() {
+        return Ok(out);
+    }
+    let listed: BTreeSet<osis_core::BlobId> = h.chunks.iter().map(|c| c.blob).collect();
+    let mut budget = cap;
+    for (hash, (tid, l)) in links {
+        if !listed.contains(&l.blob) {
+            return Err(Error::BadInput("a linked frontier outside the commit's chunk list"));
+        }
+        match linked_frontier(tx, &tid, &l, &listed, &mut budget)? {
+            Some(f) => {
+                out.frontiers.insert(hash, f);
+            }
+            None => {
+                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.commits.get(&c)).is_some_and(|m| m.header.ts > h.ts);
+                if later {
+                    out.superseded.insert(tid);
+                } else {
+                    out.waiting.insert(tid);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A linked
-/// tenure frontier not held here (a part kept from before) audits as empty.
+/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A roster
+/// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
+/// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
+/// `roster_snapshot` refuses it (`Core::frontier_unknown`).
 pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
-    let linked = linked_frontiers(tx, h, parts)?.unwrap_or_default();
+    let linked = match linked_frontiers(tx, h, parts) {
+        Ok(l) => l,
+        Err(_) if tx.core.skip_writer_rules && h.author == tx.core.id.tid() => Linked::default(),
+        Err(e) => return Err(e),
+    };
+    if !linked.waiting.is_empty() {
+        let now = tx.now();
+        tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
+        tx.core.frontier_unknown.extend(linked.waiting.iter().copied());
+    }
     add_membership_in(tx.core, h, id, parts, &linked);
     Ok(())
 }
 
-fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], linked: &BTreeMap<[u8; 32], Arc<Frontier>>) {
+fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], linked: &Linked) {
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && a.ak.as_str() == "/members"
@@ -243,7 +351,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize
                         for t in tenures(fragment(d)) {
                             let frontier = match t.frontier {
                                 Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
-                                Some(osis_schema::Chunked::Link(l)) => Some(linked.get(&l.hash).cloned().unwrap_or_default()),
+                                Some(osis_schema::Chunked::Link(l)) => linked.frontiers.get(&l.hash).cloned(),
                                 None => None,
                             };
                             e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
@@ -253,6 +361,9 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
+                if linked.waiting.contains(&thing) || linked.superseded.contains(&thing) {
+                    continue;
+                }
                 core.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
             }
         }
@@ -468,6 +579,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
+    let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
     let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
@@ -484,6 +596,9 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                     if x.ak.as_str() == "/secrets" {
                         secrets_flips.push((id, ai, *b));
                     }
+                    if matches!(x.ak.as_str(), "/secrets" | "/keys") {
+                        intro_flips.insert(x.tid);
+                    }
                 }
             }
             m.valid = now;
@@ -495,6 +610,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             super::rebuild(tx, tid, ak)?;
         }
     }
+    super::keys::rebuild_intro(tx, &intro_flips)?;
     for (c, ai, now_valid) in secrets_flips {
         if now_valid {
             super::keys::revalidated(tx, &c, ai)?;

@@ -250,19 +250,23 @@ impl Fragment {
         }
     }
 
-    /// Splits a root map or set delta into one delta per entry or element, each carrying the
-    /// root's reset and presence write (spec/commits.md §2: several deltas of one aspect share
-    /// the commit-level stamp); their join is `self`. Anything else, or a collection of at most
-    /// one entry: `self` alone.
+    /// Splits a root map or set delta into a delta carrying the root's reset and presence write
+    /// alone, then one delta per entry or element carrying them too (spec/commits.md §2: several
+    /// deltas of one aspect share the commit-level stamp); their join is `self`. Anything else,
+    /// or an empty collection: `self` alone.
     pub fn split_entries(self) -> Vec<Fragment> {
         match self {
-            Fragment::Map(m) if m.entries.len() > 1 => {
+            Fragment::Map(m) if !m.entries.is_empty() => {
                 let Map { meta, entries, .. } = m;
-                entries.into_iter().map(|(d, e)| Fragment::Map(Map::new(meta.clone(), BTreeMap::from([(d, e)])))).collect()
+                let mut out = vec![Fragment::Map(Map::new(meta.clone(), BTreeMap::new()))];
+                out.extend(entries.into_iter().map(|(d, e)| Fragment::Map(Map::new(meta.clone(), BTreeMap::from([(d, e)])))));
+                out
             }
-            Fragment::Set(s) if s.elems.len() > 1 => {
+            Fragment::Set(s) if !s.elems.is_empty() => {
                 let Set { meta, elems } = s;
-                elems.into_iter().map(|(d, e)| Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::from([(d, e)]) })).collect()
+                let mut out = vec![Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::new() })];
+                out.extend(elems.into_iter().map(|(d, e)| Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::from([(d, e)]) })));
+                out
             }
             f => vec![f],
         }

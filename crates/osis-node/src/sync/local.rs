@@ -198,7 +198,8 @@ impl SyncEngine {
     /// After a settled pass of replaced label `l` of `g` at `server` that had nothing left to
     /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
     /// membership-class commits, the replacement's `/label` among them, and certificates stay);
-    /// once done at every server of the label, this admin stops syncing it for good.
+    /// once done at every server of the label (or no key opens it there), this admin stops
+    /// syncing it for good; `labels` retires it after `MEMBERSHIP_KEEP` whatever.
     pub(crate) fn retire_at(&mut self, server: super::state::ServerKey, g: &Tid, l: LabelId) -> Result<()> {
         let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
         for b in self.state.present_at(&server, &l) {
@@ -210,7 +211,9 @@ impl SyncEngine {
         }
         self.retired_at.insert((server, l));
         let servers: Vec<_> = self.engine.group_labels(g)?.into_iter().find(|x| x.id == l).map(|x| x.servers).unwrap_or_default();
-        if servers.iter().all(|a| self.retired_at.contains(&(a.key, l))) {
+        // a server where no key opens the label (taken by whoever replaced it) counts as done
+        let failed = |k: &super::state::ServerKey| self.conns.values().any(|c| c.server == *k && c.labels.get(&l).is_some_and(|x| x.phase == Phase::Failed));
+        if servers.iter().all(|a| self.retired_at.contains(&(a.key, l)) || failed(&a.key)) {
             self.state.retire(l);
         }
         Ok(())

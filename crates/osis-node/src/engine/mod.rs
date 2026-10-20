@@ -135,8 +135,14 @@ pub(crate) struct Core {
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
-    /// The newest noted commit writing a box: (actor, box key) -> its `ts`.
+    /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
+    /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
+    /// addressed, so never stale.
+    pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
+    /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
+    /// here (`validity::add_membership`): no roster snapshot of them is written.
+    pub frontier_unknown: BTreeSet<Tid>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
     /// write's future `ts`); cleared by `membership_changed`. Not backed up: a rollback clears it.
     pub departures: BTreeMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
@@ -309,6 +315,8 @@ impl Core {
             epoch_intro: BTreeMap::new(),
             box_written: BTreeMap::new(),
             departures: BTreeMap::new(),
+            frontiers: BTreeMap::new(),
+            frontier_unknown: BTreeSet::new(),
             secrets_unresolved: BTreeMap::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),

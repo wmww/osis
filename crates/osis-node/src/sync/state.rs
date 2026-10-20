@@ -124,6 +124,9 @@ pub struct State {
     pub forget: BTreeSet<Tid>,
     /// Replaced labels this admin no longer syncs (`y/q`, spec/sync.md §2).
     pub retired: BTreeSet<LabelId>,
+    /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
+    /// with a time): retired after `MEMBERSHIP_KEEP` whatever its servers say.
+    pub replaced_seen: BTreeMap<LabelId, u64>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -268,7 +271,12 @@ impl State {
                     s.outbox.insert(k, OutRec { label, server, owner, blob });
                 }
                 b"q" => {
-                    s.retired.insert(LabelId(r.arr()?));
+                    let l = LabelId(r.arr()?);
+                    if v.is_empty() {
+                        s.retired.insert(l);
+                    } else {
+                        s.replaced_seen.insert(l, Rd::new(&v).u64()?);
+                    }
                 }
                 b"f" => {
                     s.forget.insert(r.tid()?);
@@ -444,9 +452,20 @@ impl State {
     }
 
     pub fn retire(&mut self, l: LabelId) {
+        self.replaced_seen.remove(&l);
         if self.retired.insert(l) {
             self.put(key(RETIRED, &[&l.0]), Vec::new());
         }
+    }
+
+    /// When a replaced label was first seen (recorded now if not yet).
+    pub fn replaced_seen(&mut self, l: LabelId, now: u64) -> u64 {
+        if let Some(t) = self.replaced_seen.get(&l) {
+            return *t;
+        }
+        self.replaced_seen.insert(l, now);
+        self.put(key(RETIRED, &[&l.0]), Wr::new().u64(now).take());
+        now
     }
 
     pub fn add_cert(&mut self, l: LabelId, c: CommitId) {

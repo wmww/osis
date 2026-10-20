@@ -36,14 +36,21 @@ impl Engine {
     }
 
     /// The deltas of roster snapshot `c` on `things` a chain needs (spec/permissions.md §6):
-    /// those naming one of `members`, and those naming nobody (a reset alone). Every delta of
-    /// those aspects when the commit cannot be read here.
-    fn snapshot_parts(&mut self, c: &CommitId, things: &BTreeSet<Tid>, members: &BTreeSet<Tid>) -> Parts {
+    /// those naming one of `members`, and those naming nobody (the reset alone). None when the
+    /// commit cannot be read here (diagnostic): never the whole roster.
+    pub(crate) fn snapshot_parts(&mut self, c: &CommitId, things: &BTreeSet<Tid>, members: &BTreeSet<Tid>) -> Parts {
         let all = self.parts_of(c, things, &["/members", "/tenures"]);
         let ais: BTreeSet<usize> = all.iter().map(|x| x.0).collect();
-        let Some(h) = self.header(c) else { return all };
         let id = *c;
-        let Ok(parts) = self.run(|tx| crate::apply::held_parts_at(tx, &id, &|ai| ais.contains(&ai))) else { return all };
+        let read = match self.header(c) {
+            Some(h) => self.run(|tx| crate::apply::held_parts_at(tx, &id, &|ai| ais.contains(&ai))).ok().map(|p| (h, p)),
+            None => None,
+        };
+        let Some((h, parts)) = read else {
+            let now = self.now();
+            self.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: things.iter().copied().collect(), commit: Some(id), peer: None, detail: "a roster snapshot certificate does not read: not placed".into() }, now);
+            return Parts::new();
+        };
         let mut out = Parts::new();
         for (ai, di, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
