@@ -123,6 +123,23 @@ fn sequences_converge_spec_crdt_5_7() {
     assert_eq!(tx.2, Some(s(">hello world")));
 }
 
+// spec/crdt.md §3.3 rule 3, §8; spec/commits.md §1: 65 inline values of 128 KiB inserted in
+// one commit (over 8 MiB of content) split into runs that page within blobs; the commit applies,
+// travels and reads back.
+#[test]
+fn big_list_insert_fits_blobs_spec_crdt_3_3() {
+    let mut lp = net(2, 15);
+    let t = new_thing(&mut lp, 0);
+    let n = osis_core::format::CHUNK_THRESHOLD - 8;
+    let items: Vec<Value> = (0..65).map(|i| s(&format!("{i:03}{}", "z".repeat(n - 3)))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &LIST, &Value::List(items.clone())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/list")).unwrap(), Some(Value::List(items.clone())));
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/list")).unwrap(), Some(Value::List(items)));
+}
+
 // spec/data-model.md §6: a large atomic value is a link to a chunk tree; its chunks travel as
 // blobs and read back whole; an equal rewrite changes nothing.
 #[test]

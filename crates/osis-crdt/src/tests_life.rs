@@ -415,3 +415,64 @@ fn value_less_embedding_spec_7() {
     b.strip(&all);
     assert_eq!(a, b);
 }
+
+/// §3.3 rule 3: a list run closes once its content reaches `CHUNK_MAX` bytes, so 65 values of
+/// 128 KiB inserted at once make several runs: the model's bytes unpaged, and paged every page
+/// within `CHUNK_MAX` plus one element; it round-trips.
+#[test]
+fn list_run_closes_at_chunk_max_spec_3_3() {
+    use crdt_model::value::Value as MV;
+    let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
+    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(1), 5 << 16, 1);
+    let big = |i: usize| MV::Str(format!("{i:03}{}", "x".repeat(128 * 1024 - 16)));
+    let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..65).map(big).collect()));
+    let mbytes = crdt_model::wire::encode_delta(&delta, [7; 16], &mut crdt_model::wire::Ctx::new(w.ts, w.source.clone(), w.lo));
+    let cx = crate::tests_wire::writer_cx(&w);
+    let d = Delta { nonce: [7; 16], fragment: crate::testutil::frag(&delta) };
+    let mut flat = MemoryPages::with_params(PageParams { target: usize::MAX, ..PageParams::FORMAT });
+    let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
+    assert_eq!(bytes, mbytes, "the model's bytes");
+    let top = osis_core::decode(&bytes, &osis_core::Limits { max_bytes: usize::MAX, ..osis_core::Limits::DEFAULT }).unwrap();
+    let Value::List(a) = top else { panic!() };
+    let Some(Value::List(f)) = a.get(3) else { panic!() };
+    let Some(Value::List(runs)) = f.get(3) else { panic!() };
+    // two elements stay just below 256 KiB, three reach it: 21 runs of 3, one of 2
+    assert_eq!(runs.len(), 22);
+    let mut rec = Recording { inner: MemoryPages::new(), pages: Vec::new() };
+    let paged = encode_delta(&d, &cx, Some(&mut rec)).unwrap();
+    assert!(rec.pages.iter().all(|p| p.len() < osis_core::format::CHUNK_MAX + 3 * 128 * 1024), "pages {:?}", rec.pages.iter().map(Vec::len).collect::<Vec<_>>());
+    assert_eq!(decode_delta(&paged, &cx, &mut Interner::new(), Some(&mut rec.inner)).unwrap().fragment, d.fragment);
+}
+
+/// §3.3 rule 7: a list run whose content goes on past `CHUNK_MAX` bytes is rejected.
+#[test]
+fn rejects_list_run_past_chunk_max_spec_3_3() {
+    use crdt_model::value::Value as MV;
+    let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
+    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(1), 5 << 16, 1);
+    let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..6).map(|i| MV::Str(format!("{i}{}", "x".repeat(128 * 1024)))).collect()));
+    let cx = crate::tests_wire::writer_cx(&w);
+    let d = Delta { nonce: [7; 16], fragment: crate::testutil::frag(&delta) };
+    let mut flat = MemoryPages::with_params(PageParams { target: usize::MAX, ..PageParams::FORMAT });
+    let bytes = encode_delta(&d, &cx, Some(&mut flat)).unwrap();
+    assert!(decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut flat)).is_ok());
+    // join the runs of 2 into one run of 6
+    let Value::List(mut a) = osis_core::decode(&bytes, &osis_core::Limits::DEFAULT).unwrap() else { panic!() };
+    let Some(Value::List(f)) = a.get_mut(3) else { panic!() };
+    let Some(Value::List(runs)) = f.get_mut(3) else { panic!() };
+    assert_eq!(runs.len(), 3);
+    let mut all = Vec::new();
+    for r in runs.iter() {
+        let Value::List(r) = r else { panic!() };
+        let Some(Value::List(c)) = r.get(3) else { panic!() };
+        all.extend(c.iter().cloned());
+    }
+    let Some(Value::List(r0)) = runs.first_mut() else { panic!() };
+    r0[1] = Value::Int(6);
+    r0[2] = Value::List(vec![Value::Int(0), Value::List(vec![Value::List(vec![Value::Int(0), Value::Int(6)])])]);
+    r0[3] = Value::List(all);
+    runs.truncate(1);
+    let bad = osis_core::encode(&Value::List(a));
+    let e = decode_delta(&bad, &cx, &mut Interner::new(), Some(&mut flat)).unwrap_err();
+    assert!(e.to_string().contains("not canonical"), "{e}");
+}
