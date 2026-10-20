@@ -32,14 +32,82 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records the box keys of keyed `/secrets` entries (a removal names only the entry's dot).
-pub(crate) fn note_box_keys(core: &mut Core, actor: &Tid, delta: &Fragment) {
+/// Records the box keys of keyed `/secrets` entries (a removal names only the entry's dot), and
+/// for each box written the commit's time: the earliest write of the box, and the earliest of
+/// its epoch (`Core::epoch_intro`).
+pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     if let Some(m) = map(field(delta, 0)) {
-        for (d, _, k, _) in m.entries() {
-            if let Some(k) = k {
-                core.box_keys.entry((*actor, d.clone())).or_insert_with(|| k.clone());
+        for (d, _, k, f) in m.entries() {
+            let Some(k) = k else { continue };
+            core.box_keys.entry((*actor, d.clone())).or_insert_with(|| k.clone());
+            if f.is_none() {
+                continue;
+            }
+            let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
+            if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
+                note_intro(core, h, actor, bk.role, e);
+            }
+            let w = core.box_written.entry((*actor, bk)).or_insert(h.ts);
+            *w = (*w).min(h.ts);
+        }
+    }
+}
+
+/// Records for each keyset a `/keys` delta writes the commit's time as the epoch's introduction
+/// if earliest (a rotation writes the rotated roles' keysets: an epoch boxed only to key actors,
+/// keyed at a higher role, is found by it).
+pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
+    for (r, ks) in keys_write(delta).keysets {
+        if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
+            note_intro(core, h, actor, r, e);
+        }
+    }
+}
+
+/// Re-derives `epoch_intro` and `box_written` of `actors` from their valid membership-kind
+/// `/secrets` and `/keys` parts (after validity flips, and at load once validity is judged):
+/// an invalid write (a removed admin's backdated rotation) never introduces an epoch.
+pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
+    if actors.is_empty() {
+        return Ok(());
+    }
+    tx.core.touch();
+    tx.core.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
+    tx.core.box_written.retain(|(a, _), _| !actors.contains(a));
+    for a in actors {
+        for ak in ["/secrets", "/keys"] {
+            let ak = osis_core::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
+            let ids: Vec<CommitId> = tx.core.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            for id in ids {
+                let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
+                if m.header.kind != Kind::Membership {
+                    continue;
+                }
+                let Some(ai) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak == ak) else { continue };
+                if !m.valid.get(ai).copied().unwrap_or(false) {
+                    continue;
+                }
+                for d in super::held_parts(tx, &id, ai)? {
+                    if let Decoded::Delta(d) = d {
+                        if ak.as_str() == "/keys" {
+                            note_keysets(tx.core, &m.header, a, &d.fragment);
+                        } else {
+                            note_box_keys(tx.core, &m.header, a, &d.fragment);
+                        }
+                    }
+                }
             }
         }
+    }
+    tx.core.membership_changed();
+    Ok(())
+}
+
+fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
+    let v = (h.ts, h.author, h.actor);
+    let slot = core.epoch_intro.entry((*actor, r, e)).or_insert(v);
+    if v < *slot {
+        *slot = v;
     }
 }
 
@@ -122,11 +190,14 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
+        if let (Decoded::Delta(d), "/keys", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
+            note_keysets(tx.core, h, &a.tid, &d.fragment);
+        }
         if a.ak.as_str() != "/secrets" || !valid.get(*ai).copied().unwrap_or(false) {
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
-        note_box_keys(tx.core, &a.tid, &d.fragment);
+        note_box_keys(tx.core, h, &a.tid, &d.fragment);
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
@@ -142,6 +213,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
 }
 
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
+    tx.core.membership_changed();
     if let Some(e) = tx.core.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;

@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, now_ts, put_keysets, put_secrets, recipient, save_epochs, secrets_in};
 use crate::Mutation;
 use crate::retention::forget::Forgotten;
-use osis_core::{Role, Tid, Ts};
+use osis_core::{Role, Tid, Ts, WallMs};
 use osis_crypto::Epoch;
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
 use osis_perm::{At, WriteId};
@@ -36,10 +36,16 @@ fn above_role(cur: Option<Role>) -> Option<Role> {
 
 /// Departures from `a` itself: lowered edges whose member holds less now than before, edges
 /// past their `until`, and box holders at a current epoch of a role they no longer hold
-/// (spec/crypto.md §4). The owner never departs.
-pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
+/// (spec/crypto.md §4). The owner never departs. `horizon`: lowered to the next time the answer
+/// may change by the clock alone (an edge's `until`, a write's `ts` ahead of now).
+pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>) -> Result<BTreeSet<Departure>> {
     let mut out = BTreeSet::new();
     let now = now_ts(tx.core);
+    let mut later = |t: WallMs| {
+        if t > now.wall_ms() && horizon.is_none_or(|h| t < h) {
+            *horizon = Some(t);
+        }
+    };
     let owner = tx.core.owner(a);
     let current: BTreeMap<Tid, Role> = tx.core.timelines.get(a).map(|tl| tl.roster(a, At::now(now)).into_iter().map(|(m, e)| (m, e.role)).collect()).unwrap_or_default();
     if let Some(tl) = tx.core.timelines.get(a) {
@@ -50,12 +56,20 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Dep
             if op.target != *a {
                 continue;
             }
+            later(mc.ts.wall_ms());
             // an edge past its `until` still counts: its departure is the `until`'s
             let old = tl.edges_at(Some(mc.point())).get(&op.member, a).map(|e| e.role);
             let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
             out.extend(Departure::of_change(op.member, old, new));
         }
+        // a roster snapshot ahead of the clock changes the roster when its `ts` passes
+        for sn in tx.core.held.snapshots.get(a).into_iter().flatten() {
+            later(sn.ts.wall_ms());
+        }
         for (m, e) in tl.edges_at(None).members(a) {
+            if let Some(u) = e.until {
+                later(u);
+            }
             if !e.alive_at(Some(now)) {
                 out.insert(Departure::member(*m, Role::Read));
             }
@@ -82,26 +96,36 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Dep
 }
 
 /// Every departure `a`'s epochs must cover: its own, and inside each member or owner actor
-/// with secrets of its own, recursively.
+/// with secrets of its own, recursively. Cached per actor (`Core::departures`) until a roster,
+/// `/secrets` or held epochs change, or the clock reaches the next time the answer may change.
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
+    let now = tx.core.now();
+    if let Some((d, until)) = tx.core.departures.get(a)
+        && until.is_none_or(|u| now < u)
+    {
+        return Ok(d.clone());
+    }
     let mut out = BTreeSet::new();
-    collect(tx, a, &mut Vec::new(), &mut out)?;
-    Ok(out.into_iter().collect())
+    let mut horizon = None;
+    collect(tx, a, &mut Vec::new(), &mut out, &mut horizon)?;
+    let out: Vec<Departure> = out.into_iter().collect();
+    tx.core.departures.insert(*a, (out.clone(), horizon));
+    Ok(out)
 }
 
-fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Departure>) -> Result<()> {
+fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Departure>, horizon: &mut Option<WallMs>) -> Result<()> {
     if path.len() >= MAX_DEPTH || path.contains(a) {
         return Ok(());
     }
     let base = path.len();
-    let mut mine = direct_departures(tx, a)?;
+    let mut mine = direct_departures(tx, a, horizon)?;
     path.push(*a);
     for (x, _, _) in tx.core.current_members(a) {
         if x == *a || !tx.core.has_own_secrets(&x) {
             continue;
         }
         let mut inner = BTreeSet::new();
-        collect(tx, &x, path, &mut inner)?;
+        collect(tx, &x, path, &mut inner, horizon)?;
         for d in inner {
             if !d.via.contains(a) && d.member != *a {
                 mine.insert(Departure::inside(x, &d));
@@ -167,16 +191,9 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
 fn box_knew<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
     let a = *a;
     move |k: &BoxKey, r: Role, e: &Epoch| {
-        let Ok(secrets_ak) = flows::ak("/secrets") else { return true };
-        let boxed = core
-            .box_keys
-            .iter()
-            .filter(|((t, _), v)| *t == a && osis_schema::Codec::from_value(v).ok().is_some_and(|bk: BoxKey| bk == *k))
-            .filter_map(|((t, d), _)| core.commit_of(t, &secrets_ak, d))
-            .filter_map(|c| core.commits.get(&c).map(|m| m.header.ts))
-            .min();
+        let boxed = core.box_written.get(&(a, k.clone()));
         let introduced = introduced_by(core, &a, r, e).map(|x| x.2);
-        !matches!((boxed, introduced), (Some(b), Some(i)) if b < i)
+        !matches!((boxed, introduced), (Some(b), Some(i)) if *b < i)
     }
 }
 
@@ -186,18 +203,10 @@ pub(crate) fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     core.timelines.get(a).map(|tl| tl.may_rotate(who, a, At::now(now_ts(core))).into_iter().collect()).unwrap_or_default()
 }
 
-/// The commit that introduced epoch `e` of role `r` of `a` (the earliest commit boxing it):
-/// its author node, actor and `ts`.
+/// The commit that introduced epoch `e` of role `r` of `a` (the earliest commit boxing it or
+/// writing its keyset in `/keys`): its author node, actor and `ts`.
 fn introduced_by(core: &Core, a: &Tid, r: Role, e: &Epoch) -> Option<(Tid, Tid, Ts)> {
-    let secrets_ak = flows::ak("/secrets").ok()?;
-    core.box_keys
-        .iter()
-        .filter(|((t, _), _)| t == a)
-        .filter(|(_, v)| osis_schema::Codec::from_value(v).ok().is_some_and(|bk: BoxKey| bk.role == r && osis_keys::aspects::from_schema(&bk.epoch).is_ok_and(|x| x == *e)))
-        .filter_map(|((t, d), _)| core.commit_of(t, &secrets_ak, d))
-        .filter_map(|c| core.commits.get(&c).map(|m| (m.header.ts, m.header.author, m.header.actor)))
-        .min()
-        .map(|(ts, au, ac)| (au, ac, ts))
+    core.epoch_intro.get(&(*a, r, *e)).map(|(ts, au, ac)| (*au, *ac, *ts))
 }
 
 /// Whether the commit by `author` acting for `actor` at `ts` was written by departed party `m`
@@ -481,21 +490,18 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
 }
 
 /// Whether the commit that wrote a key actor's box keyed at a higher role knew epoch `e` of
-/// role `r` (osis-keys `Carries`): it is ordered at or after the commit that introduced `e`.
+/// role `r` (osis-keys `Carries`): its first write is ordered at or after the commit that
+/// introduced `e` (found by its boxes or, for an epoch boxed to key actors only, its keyset).
+/// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
+/// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
+/// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
 /// Unknown: no (a re-seal to a current member costs a box, never a leak).
 fn carries_fn<'c>(core: &'c Core, a: &Tid) -> impl Fn(&BoxKey, Role, &Epoch) -> bool + 'c {
     let a = *a;
     move |k: &BoxKey, r: Role, e: &Epoch| {
-        let Ok(secrets_ak) = flows::ak("/secrets") else { return false };
-        let boxed = core
-            .box_keys
-            .iter()
-            .filter(|((t, _), v)| *t == a && osis_schema::Codec::from_value(v).ok().is_some_and(|bk: BoxKey| bk == *k))
-            .filter_map(|((t, d), _)| core.commit_of(t, &secrets_ak, d))
-            .filter_map(|c| core.commits.get(&c).map(|m| m.header.ts))
-            .min();
+        let boxed = core.box_written.get(&(a, k.clone()));
         let introduced = introduced_by(core, &a, r, e).map(|x| x.2);
-        matches!((boxed, introduced), (Some(b), Some(i)) if b >= i)
+        matches!((boxed, introduced), (Some(b), Some(i)) if *b >= i)
     }
 }
 
@@ -630,6 +636,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
     tx.core.touch();
     for a in &lost {
         tx.core.secrets.remove(a);
+        tx.core.membership_changed();
         tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: "lost read access: secrets and what only they read dropped".into() }, now);

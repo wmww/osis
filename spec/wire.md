@@ -30,6 +30,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `RESOLUTION_HOPS` | 8 (spec/permissions.md §7) |
 | `MAX_OWNER_DEPTH` | 64 owner links from a thing to its key actor (spec/permissions.md §1) |
+| `MAX_LINKED_FRONTIERS` | 64 MiB (67 108 864 bytes): canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/permissions.md §6) |
 | core schema ID | 16 zero bytes, revision 1 (spec/data-model.md §9) |
 
 Blind-node policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget spec/sync.md §5. Node-to-node protocol limits (version 1, not format constants): §11.

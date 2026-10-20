@@ -714,6 +714,13 @@ impl SyncEngine {
                 c => self.diag(format!("delete refused: code {}", c.0)),
             }
         }
+        // a replaced label is judged done after its deletions (`retire_at`): pass again
+        if let Some(g) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|x| x.group)
+            && self.is_replaced(&g, &l)
+            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+        {
+            lc.dirty = true;
+        }
         if stale && let Some(h) = head {
             self.new_head(conn, l, h, out)?;
         }

@@ -146,11 +146,12 @@ fn with_w(w: &Writer, empty: bool) -> Meta {
 }
 
 /// The writes creating `v` from nothing (§9 "absent S"): composites without content get an
-/// explicit `W`.
+/// explicit `W`. A link at a struct position is a register (a roster snapshot's linked tenure
+/// frontier, spec/permissions.md §6); anywhere else a link fits only a register.
 pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, Error> {
     let enc = encoding_for(view, v);
     Ok(match (enc, v) {
-        (Encoding::Register, v) => reg(w, v.clone()),
+        (Encoding::Register, v) | (Encoding::Struct, v @ Value::Link(_)) => reg(w, v.clone()),
         (Encoding::Counter | Encoding::Max | Encoding::Min, v) => {
             number(v)?;
             contribution(w, enc.bag_kind().ok_or(Error::Mismatch("bag"))?, v.clone())

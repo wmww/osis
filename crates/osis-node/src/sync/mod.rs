@@ -277,6 +277,8 @@ pub struct SyncEngine {
     /// Deleted chunks an aspect's back-off holds back, and when to try them again (memory only).
     pub(crate) relink_pending: BTreeSet<osis_core::BlobId>,
     pub(crate) relink_at: u64,
+    /// Servers where a replaced label is done with (`retire_at`).
+    pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
@@ -357,6 +359,7 @@ impl SyncEngine {
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
             relink_at: 0,
+            retired_at: BTreeSet::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
@@ -588,9 +591,9 @@ impl SyncEngine {
     }
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
-    /// secrets of; an admin also keeps its replaced labels (spec/sync.md §2: it places the
-    /// membership-class commits there, the replacement's `/label` among them, and deletes the
-    /// content entries).
+    /// secrets of; an admin also keeps its replaced labels until done with them at every server
+    /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
+    /// `/label` among them, and deletes the content entries; `retire_at`).
     pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
@@ -599,7 +602,14 @@ impl SyncEngine {
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
             for l in self.engine.group_labels(&g).unwrap_or_default() {
-                if !l.replaced || admin {
+                if l.replaced && admin && !self.state.retired.contains(&l.id) {
+                    // a server where the label was lost may never settle a pass: a bound
+                    let now = self.now();
+                    if self.state.replaced_seen(l.id, now).saturating_add(osis_core::format::MEMBERSHIP_KEEP_MS) <= now {
+                        self.state.retire(l.id);
+                    }
+                }
+                if !l.replaced || admin && !self.state.retired.contains(&l.id) {
                     out.push((g, l));
                 }
             }

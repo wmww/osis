@@ -7,6 +7,8 @@ mod atomic;
 pub(crate) mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
+#[cfg(test)]
+mod tests_linked;
 
 pub(crate) use atomic::{apply_verified, rebuild, strip_valueless};
 
@@ -206,6 +208,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Err(e) if e.class() == ErrorClass::Parked => return Ok(Exam::Parked),
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
             Err(e) => return Err(e.into()),
+        }
+    }
+    // a roster snapshot's tenures are judged by their frontiers: linked ones are fetched first
+    // (tests let a local writer break these rules, to test receivers)
+    if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
+        validity::check_roster_parts(&h, &out)?;
+        if !validity::linked_frontiers(tx, &h, &out)?.waiting.is_empty() {
+            return Ok(Exam::Pending(Reason::WaitBlobs));
         }
     }
     Ok(Exam::Ready(out))
@@ -546,16 +556,18 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
             validity::note_required(tx.core, &b.header, &id, &parts);
             for (ai, _, d) in &parts {
-                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d)
-                    && a.ak.as_str() == "/secrets"
-                {
-                    keys::note_box_keys(tx.core, &a.tid, &d.fragment);
+                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
+                    match a.ak.as_str() {
+                        "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
+                        "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
+                        _ => {}
+                    }
                 }
             }
-            validity::add_membership(tx.core, &b.header, &id, &parts);
+            validity::add_membership(tx, &b.header, &id, &parts)?;
         }
     }
-    tx.core.timelines.update(&tx.core.held);
+    tx.core.update_timelines();
     keys::load_unresolved(tx)?;
     crate::rotation::load_lost_due(tx)?;
     let mut pend = Vec::new();
@@ -606,13 +618,18 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
 
 /// Decoded parts of a held commit on aspect `ai`.
 pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<Decoded>> {
+    Ok(held_parts_at(tx, id, &|x| x == ai)?.into_iter().map(|x| x.2).collect())
+}
+
+/// Decoded parts of a held commit on the aspects `keep` selects, with their indexes.
+pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, usize, Decoded)>> {
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
     if let Some(m) = tx.core.commits.get(id) {
         blob.header = (*m.header).clone();
     }
-    blob.parts.retain(|p| p.ai == ai);
+    blob.parts.retain(|p| keep(p.ai));
     match examine_stored(tx, &mut blob, id)? {
-        Exam::Ready(v) => Ok(v.into_iter().map(|x| x.2).collect()),
+        Exam::Ready(v) => Ok(v),
         _ => Ok(Vec::new()),
     }
 }
