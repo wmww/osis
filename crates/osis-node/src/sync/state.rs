@@ -105,8 +105,9 @@ pub struct State {
     pub timed: BTreeSet<(ServerKey, LabelId, BlobId)>,
     /// Commits that travel by inbox only (re-seals): never placed under a label.
     pub inbox_only: BTreeSet<CommitId>,
-    /// The snapshot carrying a body's live writes once it was dropped (spec/sync.md §7).
-    pub carriers: BTreeMap<CommitId, CommitId>,
+    /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
+    /// (spec/sync.md §7).
+    pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
     /// The label logs member-peer sessions see (in memory).
@@ -239,7 +240,13 @@ impl State {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
                 b"s" => {
-                    s.carriers.insert(CommitId(r.arr()?), CommitId(Rd::new(&v).arr()?));
+                    let body = CommitId(r.arr()?);
+                    let mut x = Rd::new(&v);
+                    let mut list = Vec::new();
+                    while !x.is_empty() {
+                        list.push(CommitId(x.arr()?));
+                    }
+                    s.carriers.insert(body, list);
                 }
                 b"x" => {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
@@ -441,9 +448,14 @@ impl State {
         self.gone.iter().any(|(_, x, y)| x == l && y == b)
     }
 
+    /// Adds a carrier of `body` (a snapshot of one of its aspects).
     pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
-        self.put(key(CARRIER, &[&body.0]), snapshot.0.to_vec());
-        self.carriers.insert(body, snapshot);
+        let list = self.carriers.entry(body).or_default();
+        if !list.contains(&snapshot) {
+            list.push(snapshot);
+        }
+        let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
+        self.put(key(CARRIER, &[&body.0]), v);
     }
 
     pub fn set_inbox_only(&mut self, c: CommitId) {
@@ -484,11 +496,6 @@ impl State {
         if self.hints.remove(l).is_some() {
             self.del(key(HINT, &[&l.0]));
         }
-    }
-
-    /// Whether an entry under `l` holds at least these parts of commit `c`.
-    pub fn held_under(&self, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        self.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).any(|(_, e)| matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))))
     }
 
     /// The blob this node holds for exactly these parts of a commit (not a certificate

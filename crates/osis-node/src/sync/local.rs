@@ -171,7 +171,14 @@ impl SyncEngine {
             return Ok(());
         }
         let labels: Vec<LabelId> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id).collect();
-        if labels.is_empty() || self.uncovered(g)?.contains(&Role::Read) {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        // placing never rotates (a rotation's own copies placed here recursed into rotations):
+        // under an epoch that does not cover a known departure it waits for the next pass,
+        // which rotates first
+        if self.uncovered_now(g)?.contains(&Role::Read) {
+            self.deferred.push((*g, *c, aspects.clone()));
             return Ok(());
         }
         for l in labels {
@@ -179,11 +186,6 @@ impl SyncEngine {
                 continue;
             }
             for b in self.engine.partial_bodies(c, aspects)? {
-                // a blob of the commit holding these deltas is there already: a copy would be
-                // a must-not-hold strict subset (spec/sync.md §6)
-                if self.state.held_under(&l, &b.commit, &b.parts) {
-                    continue;
-                }
                 // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
                 // members take it as the body's entry
                 let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };

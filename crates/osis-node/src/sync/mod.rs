@@ -38,6 +38,15 @@ use std::sync::mpsc::Receiver;
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
+/// An upload, deposit or delete not answered this long goes again at the next pass (ms): a
+/// reply lost on a live connection must not keep it back for good.
+const RESEND_MS: u64 = 30_000;
+
+/// Whether a request for `k` went out less than `RESEND_MS` before `now`.
+fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>, k: &(ConnId, LabelId, osis_core::BlobId), now: u64) -> bool {
+    m.get(k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
+}
+
 /// The earliest Tick asked for after any event (ms).
 const MIN_WAKE_MS: u64 = 1_000;
 
@@ -229,19 +238,23 @@ pub struct SyncEngine {
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
-    /// Entries uploaded or deposited on a connection and not answered yet: later passes skip
-    /// them (a burst of passes sent them all again each time).
-    pub(crate) sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
+    /// Entries uploaded or deposited on a connection and not answered yet, with when (raw ms):
+    /// passes within `RESEND_MS` skip them (a burst of passes sent them all again each time).
+    pub(crate) sent: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
     /// Blobs a connection's server did not deliver when fetched.
     pub(crate) missing: BTreeSet<(ConnId, osis_core::BlobId)>,
     /// Deletes sent and not answered yet: later passes skip them.
-    pub(crate) deleting: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
+    pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
     /// Timed deletes sent and not answered yet: recorded once the server says OK.
     pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
     /// When a stranded heartbeat last went under each label.
     pub(crate) stranded_at: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (`take_direct`).
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
+    /// Certificate copies waiting for a rotation (group, commit, aspects).
+    pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    /// Stranded heartbeats already answered by a re-seal.
+    pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_core::CommitId>,
     /// Things this node removed itself from (a self-removal not yet uploaded): its own departure
@@ -301,13 +314,15 @@ impl SyncEngine {
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
-            sent: BTreeSet::new(),
+            sent: BTreeMap::new(),
             timed_sent: BTreeSet::new(),
-            deleting: BTreeSet::new(),
+            deleting: BTreeMap::new(),
             missing: BTreeSet::new(),
             stranded_at: BTreeMap::new(),
             direct: Vec::new(),
             first: BTreeSet::new(),
+            deferred: Vec::new(),
+            resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
             served: BTreeMap::new(),
@@ -437,9 +452,9 @@ impl SyncEngine {
     /// A dialed connection ended: redial after the retry pause.
     fn lost(&mut self, conn: ConnId) {
         // requests not answered go again on the next connection
-        self.sent.retain(|(c, _, _)| *c != conn);
+        self.sent.retain(|(c, _, _), _| *c != conn);
         self.timed_sent.retain(|(c, _, _)| *c != conn);
-        self.deleting.retain(|(c, _, _)| *c != conn);
+        self.deleting.retain(|(c, _, _), _| *c != conn);
         self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
             // deposits not answered go out again on the next connection
@@ -595,6 +610,15 @@ impl SyncEngine {
         let (done, still) = self.engine.ensure_rotated(&a)?;
         self.take_done(done)?;
         Ok(still)
+    }
+
+    /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
+    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
+        if self.engine.core.is_key_actor(&a) || self.leaving.contains(&a) || self.leaving.contains(g) {
+            return Ok(Default::default());
+        }
+        self.engine.run(|tx| crate::rotation::uncovered_roles(tx, &a))
     }
 
     /// The servers and co-reader nodes to keep connections to (true: a node).

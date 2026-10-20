@@ -181,6 +181,9 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
     // no body of a commit made after its removal
     let secrets: Vec<osis_crypto::Secret32> = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| x.1.clone()).collect()).unwrap_or_default();
     let mt = sim.tid(m)?;
+    let me = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
+    let ae = sim.engine(a)?.epochs(&g).map(|e| e.read.held().map(|x| format!("{:?}", x.0).chars().take(14).collect::<String>()).collect::<Vec<_>>());
+    let (ta, tb) = (sim.tid(a)?, sim.tid(b)?);
     let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
     let mut checked = 0;
     for id in hub.store().live_ids(&old.label).unwrap_or_default() {
@@ -192,7 +195,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
             checked += 1;
             if osis_label::unwrap_any(secrets.iter(), &id, &e.wrap).is_some() {
                 let h = sim.nodes.get(a).and_then(|x| x.sync.as_ref()).and_then(|x| x.engine().header(c)).map(|h| format!("author {} kind {:?} ts {} (removal {}) aspects {:?}", h.author, h.kind, h.ts.wall_ms().0, removed_at.0, h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>()));
-                return Err(sim.fail(format!("the removed member's secrets open {id:?} of {c:?}, made after its removal: {h:?}")));
+                return Err(sim.fail(format!("the removed member's secrets open {id:?} of {c:?}, made after its removal: {h:?}; M epochs {me:?} A epochs {ae:?} a {ta} b {tb} m {mt}")));
             }
         }
     }

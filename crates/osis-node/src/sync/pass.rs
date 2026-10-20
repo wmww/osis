@@ -74,6 +74,14 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.keys = keys.clone();
         }
+        // certificate copies that waited for the rotation just run
+        if read_ok {
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|(x, _, _)| *x == g);
+            self.deferred = later;
+            for (x, c, ais) in now {
+                self.place_certificate_in(&x, &c, &ais)?;
+            }
+        }
         // a complete pass and still no secret of the head's read epoch: stranded
         if keys.epochs[0].is_none() {
             return self.stranded(conn, g, l, out);
@@ -173,11 +181,12 @@ impl SyncEngine {
             sends.push(Out { prio, id });
         }
         sends.sort_by_key(|o| o.prio);
+        let raw = self.raw_now();
         let mut seen = BTreeSet::new();
         let mut uploads = Vec::new();
         let mut deposits = Vec::new();
         for o in sends {
-            if !seen.insert(o.id) || self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)) || self.sent.contains(&(conn, l, o.id)) {
+            if !seen.insert(o.id) || self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)) || super::in_flight(&self.sent, &(conn, l, o.id), raw) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
@@ -202,15 +211,65 @@ impl SyncEngine {
             self.promote(server, l, w, &mut uploads)?;
         }
         if !uploads.is_empty() {
-            self.sent.extend(uploads.iter().map(|u| (conn, l, osis_label::blob_id(&u.blob))));
+            self.sent.extend(uploads.iter().map(|u| ((conn, l, osis_label::blob_id(&u.blob)), raw)));
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
         for (blob, wrap, sig) in deposits {
-            self.sent.insert((conn, l, osis_label::blob_id(&blob)));
+            self.sent.insert((conn, l, osis_label::blob_id(&blob)), raw);
             self.command(conn, Command::Deposit { label: l, blob, wrap, sig }, out)?;
         }
         let settled = unsettled.is_empty();
-        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)
+        self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, out)?;
+        self.reseal(&g, l)?;
+        Ok(())
+    }
+
+    /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
+    /// §3) for members whose node's heartbeat under the label reports it stranded (§4); delivered
+    /// by inbox. The other trigger (a member seen without a box, `Engine::reseal_due`) is not
+    /// wired: issues/reseal-inbox-only-dots.md.
+    fn reseal(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
+        if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
+            return Ok(());
+        }
+        // the newest heartbeat of each node under the label, when it reports it stranded
+        let me = self.engine.tid();
+        let mut beats: BTreeMap<Tid, (osis_core::Ts, CommitId)> = BTreeMap::new();
+        for ((_, _), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+            let Kind::Commit { commit, .. } = &e.kind else { continue };
+            let Some(h) = self.engine.header(commit) else { continue };
+            if h.author == me || !h.aspects.iter().any(|x| x.ak.as_str() == "/seen" && x.tid == h.author) {
+                continue;
+            }
+            if beats.get(&h.author).is_none_or(|(ts, _)| *ts < h.ts) {
+                beats.insert(h.author, (h.ts, *commit));
+            }
+        }
+        for (node, (_, c)) in beats {
+            if self.resealed.contains(&c) || !self.engine.get_typed(&node, &ct::SEEN)?.is_some_and(|s| s.stranded) {
+                continue;
+            }
+            self.resealed.insert(c);
+            // the member of the actor the node reads through: itself or up its owner chain
+            let members: BTreeSet<Tid> = self.engine.core.current_members(&a).into_iter().map(|x| x.0).collect();
+            let mut cur = Some(node);
+            for _ in 0..16 {
+                let Some(t) = cur else { break };
+                if members.contains(&t) {
+                    // a node that may not re-seal that member leaves it to one that may
+                    if let Ok(done) = self.engine.reshare(&a, &t) {
+                        self.take_done(done)?;
+                    }
+                    break;
+                }
+                cur = match self.engine.core.created(&t) {
+                    Some(osis_core::CreationRecord::Thing { owner, .. }) => Some(*owner),
+                    _ => None,
+                };
+            }
+        }
+        Ok(())
     }
 
     /// This node's verdicts on label `l` at `server` under the keys its last pass there used
@@ -508,10 +567,7 @@ impl SyncEngine {
                 .collect();
             if placed.is_empty() && !self.state.certs.contains(&(l, c)) {
                 for b in self.engine.partial_bodies(&c, &ais)? {
-                    // another node's blob of the commit holding these deltas serves as well
-                    if !self.state.held_under(&l, &b.commit, &b.parts) {
-                        self.place(g, l, &b, true)?;
-                    }
+                    self.place(g, l, &b, true)?;
                 }
                 self.state.add_cert(l, c);
             }
@@ -749,11 +805,12 @@ impl SyncEngine {
                 }
                 continue;
             }
-            if self.deleting.contains(&(conn, l, id)) {
+            if super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
                 continue;
             }
             if let Some(item) = self.delete_for(keys, &l, &id, &e, None)? {
-                self.deleting.insert((conn, l, id));
+                let raw = self.raw_now();
+                self.deleting.insert((conn, l, id), raw);
                 items.push(item);
             }
         }
@@ -831,6 +888,9 @@ impl SyncEngine {
             if is_membership(a) || self.engine.role_on(t) < Some(Role::Write) {
                 continue;
             }
+            if self.carrier_of(body, t, a).is_some() {
+                continue;
+            }
             // a snapshot from this node's whole state covers every body of the aspect it applied
             if let Some(s) = self.engine.snapshot(t, a)? {
                 self.state.set_carrier(*body, s);
@@ -843,12 +903,13 @@ impl SyncEngine {
     /// dropped in turn to one whose body this node still holds (a carrier dropped before it went
     /// up carries nothing: its writes moved to a later snapshot, or a new one is due).
     fn carrier_of(&self, body: &CommitId, t: &Tid, a: &Ak) -> Option<CommitId> {
-        let mut c = *self.state.carriers.get(body)?;
+        let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a));
+        let mut c = *self.state.carriers.get(body)?.iter().rev().find(|c| on(c))?;
         for _ in 0..64 {
             if self.engine.holds_body(&c, t, a) {
                 return Some(c);
             }
-            c = *self.state.carriers.get(&c)?;
+            c = *self.state.carriers.get(&c)?.iter().rev().find(|c| on(c))?;
         }
         None
     }
