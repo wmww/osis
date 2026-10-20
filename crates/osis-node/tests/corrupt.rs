@@ -49,7 +49,7 @@ fn bit_flips_error_never_panic() {
             root.key = osis_crypto::Secret32::from_bytes(k);
         } else {
             let (k, v) = &mut rows[which];
-            let target = if rng.next_u32() % 4 == 0 { k } else { v };
+            let target = if rng.next_u32().is_multiple_of(4) { k } else { v };
             if target.is_empty() {
                 continue;
             }
