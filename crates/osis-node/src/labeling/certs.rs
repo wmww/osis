@@ -159,11 +159,9 @@ impl Engine {
                     crate::engine::large::links_in(&v, &mut roots);
                 }
                 let Some(dedup) = tx.core.dedup(&a.tid) else { continue };
-                if !roots.is_empty()
-                    && let Some(ids) = crate::engine::large::tree_blobs(tx, &dedup, &roots)?
-                {
-                    found.extend(ids);
-                }
+                let mut trees = crate::engine::large::LiveTrees::default();
+                crate::engine::large::tree_blobs(tx, &dedup, &roots, &mut trees)?;
+                found.extend(trees.blobs);
             }
             Ok(found)
         })?;

@@ -4,13 +4,13 @@
 //! blob-backed `TreeSink` and `LinkSource`, and implement osis-crdt's `PageSink`/`PageSource` for
 //! pages and link pages.
 
-pub use osis_commit::tree::{HashSink, LinkSource, TreeReader, TreeSink, TreeWriter, node_plaintext, parse_node, read_tree, write_tree};
+pub use osis_commit::tree::{HashSink, Kid, LinkSource, TreeReader, TreeSink, TreeWriter, kids_len, node_hash, node_plaintext, parse_node, read_tree, write_tree};
 
 use crate::blob::{Level, Prefix, frame, open};
 use crate::Error;
 use osis_core::{BlobId, ChunkParams, Link, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
-use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, commitment, delete_token, link_hash, link_tree_hash, token_hash};
+use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, commitment, delete_token, link_hash, token_hash};
 use std::collections::{BTreeSet, HashMap};
 
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
@@ -176,17 +176,16 @@ impl TreeSink for BlobWriter<'_> {
         }
         Ok(self.put_blob(hash, bytes)?)
     }
-    fn node(&mut self, level: u64, links: &[Link]) -> Result<Link, osis_commit::Error> {
-        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-        let hash = link_tree_hash(&self.framing.dedup, level, &hashes);
+    fn node(&mut self, level: u64, kids: &[Kid]) -> Result<Link, osis_commit::Error> {
+        let hash = node_hash(&self.framing.dedup, level, kids);
         if let Some((old, children)) = self.reuse.and_then(|r| r.nodes.get(&hash))
-            && *children == links_digest(links)
+            && *children == kids_digest(kids)
         {
             let old = *old;
             self.reused += 1;
             return Ok(old);
         }
-        Ok(self.put_blob(hash, &node_plaintext(level, links)?)?)
+        Ok(self.put_blob(hash, &node_plaintext(level, kids)?)?)
     }
 }
 
@@ -200,10 +199,11 @@ impl PageSink for BlobWriter<'_> {
     }
 }
 
-/// Digest of a node's exact links (a node is reused only over the very blobs it links).
-fn links_digest(links: &[Link]) -> [u8; 32] {
+/// Digest of a node's exact links (a node is reused only over the very blobs it links; its
+/// content hash covers the lengths).
+fn kids_digest(kids: &[Kid]) -> [u8; 32] {
     let mut h = osis_core::hash::Hasher::new();
-    for l in links {
+    for (l, _) in kids {
         h.update(&l.hash).update(&l.blob.0).update(&[l.suite]).update(&l.key);
     }
     h.finalize()
@@ -234,11 +234,11 @@ impl Reuse {
             if !seen.insert(link.hash) {
                 continue;
             }
-            let Some((prefix, level, links)) = Self::node(framing, fetch, &link, expect)? else { continue };
+            let Some((prefix, level, kids)) = Self::node(framing, fetch, &link, expect)? else { continue };
             if framing.keeps(&prefix) {
-                r.nodes.insert(link.hash, (link, links_digest(&links)));
+                r.nodes.insert(link.hash, (link, kids_digest(&kids)));
             }
-            for l in links.into_iter().rev() {
+            for (l, _) in kids.into_iter().rev() {
                 if level > 1 {
                     stack.push((l, Some(level - 1)));
                     continue;
@@ -253,7 +253,7 @@ impl Reuse {
         Ok(r)
     }
 
-    fn node(framing: &Framing, fetch: &mut dyn BlobFetch, link: &Link, expect: Option<u64>) -> Result<Option<(Prefix, u64, Vec<Link>)>, Error> {
+    fn node(framing: &Framing, fetch: &mut dyn BlobFetch, link: &Link, expect: Option<u64>) -> Result<Option<(Prefix, u64, Vec<Kid>)>, Error> {
         let blob = match fetch.fetch(&link.blob) {
             Ok(b) => b,
             Err(Error::Storage) => return Err(Error::Storage),
@@ -263,12 +263,11 @@ impl Reuse {
             return Ok(None);
         }
         let Ok((prefix, pt)) = open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
-        let Ok((level, links)) = parse_node(&pt) else { return Ok(None) };
-        let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-        if expect.is_some_and(|e| e != level) || link_tree_hash(&framing.dedup, level, &hashes) != link.hash {
+        let Ok((level, kids)) = parse_node(&pt) else { return Ok(None) };
+        if expect.is_some_and(|e| e != level) || node_hash(&framing.dedup, level, &kids) != link.hash {
             return Ok(None);
         }
-        Ok(Some((prefix, level, links)))
+        Ok(Some((prefix, level, kids)))
     }
 
     /// Chunk links indexed.
@@ -399,9 +398,11 @@ mod tests {
         store.0.insert(ids[0], swapped);
         assert!(read_tree(&root, &dedup, &mut BlobReader::new(&dedup, &mut store), SMALL, usize::MAX).is_err());
         // A level-2 root claimed over chunk links fails its level check.
-        assert!(parse_node(&node_plaintext(49, &[root]).unwrap()).is_err());
+        assert!(parse_node(&node_plaintext(49, &[(root, 1)]).unwrap()).is_err());
         assert!(parse_node(&node_plaintext(1, &[]).unwrap()).is_err());
-        assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(0)])]))).is_err());
+        assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(0)]), Value::List(vec![Value::Int(0)])]))).is_err());
+        // The old two-item layout does not parse.
+        assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(root)])]))).is_err());
     }
 
     // spec/crdt.md §8, spec/wire.md §6: pages go through PageSink/PageSource as blobs with

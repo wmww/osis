@@ -1,6 +1,6 @@
 //! Large atomic values (spec/data-model.md §6): before an op's value is resolved, every
 //! position that must be chunked (blobs, register strings, set elements and map keys above
-//! `CHUNK_THRESHOLD`, in `set`/`replace`/`add` values and list `insert` items) becomes a link to
+//! `CHUNK_THRESHOLD`, in `set`/`replace`/`add` values and list `insert` and `edit` items) becomes a link to
 //! a chunk tree written as blob ciphertexts in the store, framed like the delta's pages. A
 //! position holding a large value now reuses that tree (spec/sync.md §1): unchanged chunks keep
 //! their blob and key and are not introduced again, so an edit writes and uploads O(change).
@@ -13,9 +13,9 @@ use crate::error::{Error, Result};
 use osis_core::{Ak, BlobId, ChunkParams, Link, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
-use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, LargeParams, Reuse};
+use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// Upper bound on a large value read back whole (local policy; streams read beyond it).
 pub const MAX_READ: usize = 1 << 30;
@@ -114,9 +114,21 @@ fn schema_path(p: &[PathSeg]) -> Path {
     )
 }
 
+/// The root links the state holds under `path`, by content hash.
+fn held_links(state: Option<&Fragment>, path: &[PathSeg]) -> HashMap<[u8; 32], Link> {
+    let mut out = Vec::new();
+    if let Some(v) = state.and_then(|f| f.at(path)).filter(|f| f.present()).and_then(|f| f.read()) {
+        links_in(&v, &mut out);
+    }
+    out.into_iter().map(|l| (l.hash, l)).collect()
+}
+
 /// Chunks the large positions of an op's value (untyped writes are classified as `any`);
-/// large values `state` holds at the positions a `set`/`replace` overwrites are reused.
-pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state: Option<&Fragment>, put: &mut Put<'_>) -> Result<()> {
+/// large values `state` holds at the positions a `set`/`replace` overwrites are reused. A list
+/// `edit` chunks `new`'s items as an insert's, except that an item the list holds already (by
+/// content hash) keeps its link, and `base`'s items become links by content hash (`hash`: the
+/// value's place without writing blobs) so they match the list's read.
+pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state: Option<&Fragment>, put: &mut Put<'_>, hash: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<()> {
     let core = osis_schema::core_schema();
     let (s, root): (&Schema, Type) = match schema.and_then(|s| s.aspects.get(ak).map(|a| (s, a.ty.clone()))) {
         Some(x) => x,
@@ -124,11 +136,37 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
     };
     let PathOp { path, op } = op;
     let ty = if path.is_empty() { root } else { type_at(s, &root, &schema_path(path)).map(|x| x.0).unwrap_or(Type::Any) };
+    let text = matches!(s.expand(&ty).as_deref(), Ok(Type::Text));
     match op {
         Op::Set(v) | Op::Replace(v) => chunk_value(v, s, &ty, state.map(|f| (&path[..], f)), put),
         Op::Add(v) => chunk_value(v, s, &ty, None, put),
+        // a list's (a text's edit holds strings)
+        Op::Edit { base, new } if !text && matches!(new, Value::List(_)) => {
+            let held = held_links(state, path);
+            chunk_value(base, s, &ty, None, &mut |v, _| match hash(v)? {
+                Value::Link(l) => Ok(Value::Link(held.get(&l.hash).copied().unwrap_or(l))),
+                small => Ok(small),
+            })?;
+            // an item twice in `new` gets one tree; hashing first costs one more pass over the
+            // items not held, and spares writing the (usually many) unchanged ones
+            let mut made: HashMap<[u8; 32], Value> = HashMap::new();
+            chunk_value(new, s, &ty, None, &mut |v, _| match hash(v)? {
+                Value::Link(l) => match held.get(&l.hash) {
+                    Some(x) => Ok(Value::Link(*x)),
+                    None => {
+                        if let Some(x) = made.get(&l.hash) {
+                            return Ok(x.clone());
+                        }
+                        let x = put(v, None)?;
+                        made.insert(l.hash, x.clone());
+                        Ok(x)
+                    }
+                },
+                small => Ok(small),
+            })
+        }
         // list items (a text's are characters: never chunked)
-        Op::Insert { items, .. } if !matches!(s.expand(&ty).as_deref(), Ok(Type::Text)) => {
+        Op::Insert { items, .. } if !text => {
             let mut list = Value::List(std::mem::take(items));
             let r = chunk_value(&mut list, s, &ty, None, put);
             if let Value::List(x) = list {
@@ -161,8 +199,9 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
         };
         Ok(osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?)
     };
+    let mut hash = |v: &Value| -> Result<Value> { Ok(osis_label::chunk_value(&mut HashSink::new(framing.dedup.clone()), LargeParams::FORMAT, v)?) };
     for op in ops.iter_mut() {
-        chunk_op(op, schema, ak.as_str(), state, &mut put)?;
+        chunk_op(op, schema, ak.as_str(), state, &mut put, &mut hash)?;
     }
     Ok(blobs.written)
 }
@@ -195,6 +234,17 @@ pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Fra
     Ok(blobs.written)
 }
 
+/// Blob IDs a delta's canonical bytes link (its values' trees, its pages), through the held
+/// node and page blobs.
+pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
+    let mut out = LiveTrees::default();
+    let Ok(v) = osis_core::decode(delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) else { return Ok(out.blobs) };
+    let mut roots = Vec::new();
+    links_in(&v, &mut roots);
+    tree_blobs(tx, dedup, &roots, &mut out)?;
+    Ok(out.blobs)
+}
+
 /// Every link inside `v` (the root links of its large values).
 pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     match v {
@@ -210,39 +260,59 @@ pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     }
 }
 
-/// Level and links of a tree node blob, if `link` names one (`Ok(None)`: a chunk);
+/// What a link reaches one step down: a tree node's children (with whether they are chunks),
+/// or the links inside a page or link page; `Ok(None)` for anything else (a chunk);
 /// `Err(Missing)` when the blob is not held.
-fn node_links(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(u64, Vec<Link>)>> {
+fn below(blobs: &mut TxBlobs<'_, '_>, dedup: &Secret32, link: &Link) -> Result<Option<(bool, Vec<Link>)>> {
     let blob = blobs.fetch(&link.blob)?;
     if osis_label::blob_id(&blob) != link.blob {
         return Ok(None);
     }
     let Ok((_, pt)) = osis_label::open(&blob, &Secret32::from_bytes(link.key)) else { return Ok(None) };
-    let Ok((level, links)) = osis_label::tree::parse_node(&pt) else { return Ok(None) };
-    let hashes: Vec<[u8; 32]> = links.iter().map(|l| l.hash).collect();
-    Ok((osis_crypto::link_tree_hash(dedup, level, &hashes) == link.hash).then_some((level, links)))
+    if let Ok((level, kids)) = osis_label::tree::parse_node(&pt)
+        && osis_label::tree::node_hash(dedup, level, &kids) == link.hash
+    {
+        return Ok(Some((level <= 1, kids.into_iter().map(|(l, _)| l).collect())));
+    }
+    if osis_crypto::link_hash(dedup, &pt) != link.hash {
+        return Ok(None);
+    }
+    let Ok(v) = osis_core::decode(&pt, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: pt.len() }) else { return Ok(None) };
+    let mut out = Vec::new();
+    links_in(&v, &mut out);
+    Ok(Some((false, out)))
 }
 
-/// Blob IDs of the trees under `roots` (nodes and chunks), through the node blobs this node
-/// holds; `None` when one is not held (what lies below it is unknown).
-pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link]) -> Result<Option<BTreeSet<BlobId>>> {
-    let mut out = BTreeSet::new();
+/// Blob IDs of the trees a thing's live states link (`Engine::live_trees`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LiveTrees {
+    /// Nodes and chunks reached through the node blobs held, and the roots.
+    pub blobs: BTreeSet<BlobId>,
+    /// Node blobs linked and not held: what lies below them is unknown until they are fetched.
+    pub missing: BTreeSet<BlobId>,
+}
+
+/// The trees (and pages) under `roots`, through the node and page blobs this node holds,
+/// added to `out`.
+pub(crate) fn tree_blobs(tx: &mut Tx<'_>, dedup: &Secret32, roots: &[Link], out: &mut LiveTrees) -> Result<()> {
     // (link, whether it is known to be a chunk)
     let mut stack: Vec<(Link, bool)> = roots.iter().map(|l| (*l, false)).collect();
     let mut blobs = TxBlobs::new(&mut tx.txn);
     while let Some((l, leaf)) = stack.pop() {
-        if !out.insert(l.blob) || leaf {
+        if !out.blobs.insert(l.blob) || leaf {
             continue;
         }
-        match node_links(&mut blobs, dedup, &l) {
+        match below(&mut blobs, dedup, &l) {
             // children of a level-1 node are chunks: not fetched
-            Ok(Some((level, kids))) => stack.extend(kids.into_iter().map(|k| (k, level <= 1))),
+            Ok(Some((chunks, kids))) => stack.extend(kids.into_iter().map(|k| (k, chunks))),
             Ok(None) => {}
-            Err(Error::Label(osis_label::Error::Missing)) => return Ok(None),
+            Err(Error::Label(osis_label::Error::Missing)) => {
+                out.missing.insert(l.blob);
+            }
             Err(e) => return Err(e),
         }
     }
-    Ok(Some(out))
+    Ok(())
 }
 
 impl Engine {
@@ -251,28 +321,49 @@ impl Engine {
         self.read_large_max(tid, link, MAX_READ)
     }
 
-    /// Blob IDs of the chunk trees the live states of `tid`'s aspects link (spec/sync.md §7:
-    /// chunk blobs still linked from a retained version are kept; a reused chunk is not in the
-    /// reusing commit's chunk list). `None` when a node blob below is not held. Cached until the
-    /// next change.
-    pub fn live_trees(&mut self, tid: &Tid) -> Result<Option<BTreeSet<BlobId>>> {
+    /// The chunk trees the live states of `tid`'s aspects link (spec/sync.md §3, §7: chunk
+    /// blobs still linked from a retained version are kept and belong to the closure; a reused
+    /// chunk is not in the reusing commit's chunk list). Complete when no node blob is
+    /// `missing`. Cached until the next change or blob arrival.
+    pub fn live_trees(&mut self, tid: &Tid) -> Result<LiveTrees> {
         if let Some(x) = self.core.live_trees.get(tid) {
             return Ok(x.clone());
         }
         let aks = self.aspects(tid)?;
         let tid = *tid;
         let r = self.run(|tx| {
-            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(Some(BTreeSet::new())) };
+            let mut out = LiveTrees::default();
+            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(out) };
             let mut roots = Vec::new();
             for ak in &aks {
                 if let Some(v) = tx.state(&tid, ak)?.and_then(Fragment::read) {
                     links_in(&v, &mut roots);
                 }
             }
-            tree_blobs(tx, &dedup, &roots)
+            tree_blobs(tx, &dedup, &roots, &mut out)?;
+            Ok(out)
         })?;
         self.core.live_trees.insert(tid, r.clone());
         Ok(r)
+    }
+
+    /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
+    /// held node and page blobs: the trees of its values and the pages of its fragments, listed
+    /// by its commit or not (spec/sync.md §3 closure). Complete when nothing is `missing`.
+    pub fn body_links(&mut self, plaintext: &[u8]) -> Result<LiveTrees> {
+        let Ok(cb) = osis_commit::CommitBlob::decode(plaintext) else { return Ok(LiveTrees::default()) };
+        let Some(h) = self.header(&cb.id()) else { return Ok(LiveTrees::default()) };
+        self.run(|tx| {
+            let mut out = LiveTrees::default();
+            for p in &cb.parts {
+                let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
+                let Ok(v) = osis_core::decode(&p.delta, &osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: p.delta.len() }) else { continue };
+                let mut roots = Vec::new();
+                links_in(&v, &mut roots);
+                tree_blobs(tx, &dedup, &roots, &mut out)?;
+            }
+            Ok(out)
+        })
     }
 
     /// `read_large` failing with `osis_label::Error::TooLarge` past `max_len` canonical bytes

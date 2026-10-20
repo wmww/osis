@@ -55,12 +55,14 @@ pub fn link_hash(dedup: &Secret32, bytes: &[u8]) -> [u8; 32] {
     *kdf(kdf::LINK, dedup.expose(), bytes).expose()
 }
 
-/// Link content hash of a tree node: `kdf("link tree", d, le64(level) || child hashes)`.
-pub fn link_tree_hash(dedup: &Secret32, level: u64, children: &[[u8; 32]]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(8 + 32 * children.len());
+/// Link content hash of a tree node: `kdf("link tree", d, le64(level) || for each child:
+/// hash || le64(len))`, `len` the plaintext length under the child (spec/wire.md §6).
+pub fn link_tree_hash(dedup: &Secret32, level: u64, children: &[([u8; 32], u64)]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(8 + 40 * children.len());
     input.extend_from_slice(&level.to_le_bytes());
-    for c in children {
-        input.extend_from_slice(c);
+    for (h, len) in children {
+        input.extend_from_slice(h);
+        input.extend_from_slice(&len.to_le_bytes());
     }
     *kdf(kdf::LINK_TREE, dedup.expose(), &input).expose()
 }
@@ -99,13 +101,15 @@ mod tests {
         assert_ne!(creation_nonce(&seed), *dedup_secret(&creation_nonce(&seed)).expose());
     }
 
-    // spec/wire.md §6: tree-node hashes cover the level and the children's hashes in order.
+    // spec/wire.md §6: tree-node hashes cover the level and the children's hashes and lengths
+    // in order.
     #[test]
     fn content_hashes() {
         let d = Secret32::from_bytes([7; 32]);
-        let (a, b) = (link_hash(&d, b"a"), link_hash(&d, b"b"));
+        let (a, b) = ((link_hash(&d, b"a"), 1), (link_hash(&d, b"b"), 1));
         assert_ne!(link_tree_hash(&d, 1, &[a, b]), link_tree_hash(&d, 1, &[b, a]));
         assert_ne!(link_tree_hash(&d, 1, &[a, b]), link_tree_hash(&d, 2, &[a, b]));
+        assert_ne!(link_tree_hash(&d, 1, &[a, b]), link_tree_hash(&d, 1, &[(a.0, 2), (b.0, 0)]));
         assert_ne!(link_hash(&d, b"a"), delta_hash(&d, b"a"));
         assert_ne!(link_hash(&d, b"a"), link_hash(&Secret32::from_bytes([8; 32]), b"a"));
         let s = Secret32::from_bytes([1; 32]);
