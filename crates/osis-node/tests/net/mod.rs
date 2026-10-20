@@ -57,6 +57,11 @@ pub struct Net {
     plinks: BTreeMap<(usize, ConnId), (usize, ConnId)>,
     /// (node, node) pairs that cannot connect.
     pub blocked_peers: BTreeSet<(usize, usize)>,
+    /// LAN transport keys nodes listen with (peer dials to them reach that node).
+    pub lan_keys: BTreeMap<[u8; 32], usize>,
+    /// (from node, to node): peer bytes held back until `release`.
+    pub held: BTreeSet<(usize, usize)>,
+    held_msgs: Vec<Msg>,
     /// Message kinds nodes sent to servers, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
 }
@@ -67,7 +72,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), sent_kinds: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -186,19 +191,22 @@ impl Net {
                 eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
             }
             match a {
-                Action::Dial { conn, address } if address.url.starts_with("peer://") => {
-                    let target = (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key));
+                Action::Dial { conn, address, as_node } if address.url.starts_with("peer://") => {
+                    // by dialable key, or by a LAN transport key a node listens with
+                    let lan = self.lan_keys.get(&address.key).copied();
+                    let target = lan.filter(|m| self.nodes[*m].online).or_else(|| (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key)));
                     let Some(m) = target.filter(|m| !self.blocked_peers.contains(&(n, *m)) && !self.blocked_peers.contains(&(*m, n))) else {
                         self.queue.push_back(Msg::Close(n, conn));
                         continue;
                     };
-                    let (pc, acts) = self.sync(m).accept(address.key, [0xd0 + n as u8; 32]);
+                    let me = if as_node { self.sync(n).own_reach().map(|r| r.dialable) } else { None };
+                    let (pc, acts) = self.sync(m).accept(address.key, me.unwrap_or([0xd0 + n as u8; 32]));
                     self.plinks.insert((n, conn), (m, pc));
                     self.plinks.insert((m, pc), (n, conn));
                     self.queue.push_back(Msg::Up(n, conn));
                     self.actions(m, acts);
                 }
-                Action::Dial { conn, address } => {
+                Action::Dial { conn, address, .. } => {
                     let Some(s) = self.servers.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
                         self.queue.push_back(Msg::Close(n, conn));
                         continue;
@@ -213,7 +221,11 @@ impl Net {
                 }
                 Action::Send { conn, bytes } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks[&(n, conn)];
-                    self.queue.push_back(Msg::ToNode(m, pc, bytes));
+                    if self.held.contains(&(n, m)) {
+                        self.held_msgs.push(Msg::ToNode(m, pc, bytes));
+                    } else {
+                        self.queue.push_back(Msg::ToNode(m, pc, bytes));
+                    }
                 }
                 Action::Close { conn } if self.plinks.contains_key(&(n, conn)) => {
                     let (m, pc) = self.plinks.remove(&(n, conn)).unwrap();
@@ -259,6 +271,12 @@ impl Net {
                 HubOutput::Diagnostic(_) => {}
             }
         }
+    }
+
+    /// Delivers the peer bytes held back (`held` is cleared).
+    pub fn release(&mut self) {
+        self.held.clear();
+        self.queue.extend(self.held_msgs.drain(..));
     }
 
     /// Delivers queued messages until none are left (at most `max`).

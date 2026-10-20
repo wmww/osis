@@ -172,6 +172,9 @@ pub(crate) struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
+    /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
+    /// derived from them (the sync engine's co-readers) compare it.
+    pub generation: u64,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -218,6 +221,7 @@ impl Core {
     /// Saves the indexes before the running transaction's first change to them.
     pub fn touch(&mut self) {
         self.live_trees.clear();
+        self.generation += 1;
         if self.backup.is_some() {
             return;
         }
@@ -251,6 +255,7 @@ impl Core {
     /// Undoes the aborted transaction's changes to the caches.
     fn rollback(&mut self) {
         self.live_trees.clear();
+        self.generation += 1;
         self.membership_changed();
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
@@ -326,6 +331,7 @@ impl Core {
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
+            generation: 0,
         }
     }
 

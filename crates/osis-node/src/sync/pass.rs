@@ -636,7 +636,7 @@ impl SyncEngine {
     /// encryption per label, placed once per commit.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let closure = self.engine.closure(g);
-        for (c, want) in self.engine.certificates(g) {
+        for (c, want) in self.card_certificates(g) {
             // the parts this node's copies or any present blob of the commit under the label
             // carry (a copy of carried parts is a strict subset or duplicate others delete, and
             // placing it again churns, spec/sync.md §7): a chain grown since (an owner's

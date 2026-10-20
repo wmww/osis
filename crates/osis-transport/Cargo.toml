@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 osis-core.workspace = true
 zeroize.workspace = true
+# InProcess keys are Ed25519 like every transport's (a dialable key verifies LAN announcements).
+ed25519-dalek.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 ring = { version = "0.17", optional = true }

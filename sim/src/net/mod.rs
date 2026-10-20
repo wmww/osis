@@ -486,7 +486,7 @@ impl NetSim {
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         for a in acts {
             match a {
-                Action::Dial { conn, address } => self.dial(n, conn, &address)?,
+                Action::Dial { conn, address, .. } => self.dial(n, conn, &address)?,
                 Action::Send { conn, bytes } => {
                     if let Some(x) = self.nodes.get_mut(n) {
                         x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);

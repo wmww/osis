@@ -193,34 +193,172 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("before")));
 }
 
-// spec/sync.md §10: a LAN announcement only proposes an address; a candidate that fails is
-// backed off without pausing the peer, which is reached by its `peer://` route at once.
+fn reach_ed(net: &mut Net, n: usize) -> [u8; 32] {
+    let secret = net.sync(n).dialable_secret();
+    let k = SigningSecret::from_seed(&secret).verifying_key().to_bytes();
+    let acts = net.sync(n).publish_reach(k, vec![]).unwrap();
+    net.actions(n, acts);
+    k
+}
+
+fn dials(acts: &[Action]) -> Vec<Address> {
+    acts.iter().filter_map(|x| if let Action::Dial { address, .. } = x { Some(address.clone()) } else { None }).collect()
+}
+
+const IP: &str = "192.168.7.7";
+
+// spec/sync.md §10: a LAN address is only a candidate; one whose connection fails before coming
+// up is backed off without pausing the peer, which is reached by its `peer://` route at once,
+// and a repeat of its announcement is not dialed while backed off.
 #[test]
 fn lan_candidate_failure_keeps_route_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
-    reach(&mut net, a, 0xa1);
-    reach(&mut net, b, 0xb1);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
     net.blocked_peers.insert((a, b));
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     net.run();
     net.blocked_peers.clear();
-    let lan = net.sync(b).own_reach().unwrap().lan_secret;
-    let now = net.now();
-    let bogus = Address { url: "mem://nowhere".into(), key: [0x77; 32] };
-    let (hit, acts) = net.sync(a).lan_seen(osis_node::sync::peers::lan_tag(&lan, now), bogus.clone());
-    assert_eq!(hit, Some([0xb1; 32]));
-    assert!(acts.iter().any(|x| matches!(x, Action::Dial { address, .. } if *address == bogus)));
+    net.clock.advance(60_001);
+    // b announces a key nobody listens with
+    let ann = net.sync(b).lan_announcement([0x77; 32], 9).unwrap();
+    let (hit, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    assert_eq!(hit, Some(kb));
+    let bogus = Address { url: format!("peer://{IP}:9"), key: [0x77; 32] };
+    assert_eq!(dials(&acts), vec![bogus.clone()]);
     net.actions(a, acts);
     net.settle(100_000);
-    // the candidate failed: the peer:// route is dialed without waiting for the peer pause
     let t = net.item(a, g, g, "via peer route");
     net.run();
     assert_eq!(net.read(b, t), Some(s("via peer route")));
-    // the failed address is not dialed again while backed off
-    let (_, acts) = net.sync(a).lan_seen(osis_node::sync::peers::lan_tag(&lan, now), bogus.clone());
-    assert!(!acts.iter().any(|x| matches!(x, Action::Dial { address, .. } if *address == bogus)));
+    let (_, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    assert!(dials(&acts).is_empty());
+}
+
+// spec/sync.md §10: a connection through a LAN address that comes up proves the route (the
+// signature bound the key to the node): it is dialed first from then on; a newer candidate
+// does not displace a running connection.
+#[test]
+fn lan_route_proven_by_up_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    net.blocked_peers.insert((a, b));
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    net.blocked_peers.clear();
+    net.clock.advance(60_001);
+    // b listens on the LAN with a fresh key
+    let lk = SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
+    net.lan_keys.insert(lk, b);
+    let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
+    let (_, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    let route = Address { url: format!("peer://{IP}:5000"), key: lk };
+    assert_eq!(dials(&acts), vec![route.clone()]);
+    net.actions(a, acts);
+    net.settle(100_000);
+    let t = net.item(a, g, g, "over the LAN");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("over the LAN")));
+    // another address while connected: no dial
+    let (_, acts) = net.sync(a).lan_seen(&ann, "192.168.7.8".parse().unwrap());
+    assert!(dials(&acts).is_empty(), "{acts:?}");
+    // the connection drops: after the pause the proven route is dialed, not the candidate
+    net.set_online(b, false);
+    net.set_online(b, true);
+    net.advance(61_000);
+    let acts = net.sync(a).handle(Event::Tick);
+    assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
+}
+
+// spec/sync.md §5 (member peer): a peer authenticated with the dialable key of a node that
+// currently reads the label opens it whatever its proof; another key is refused.
+#[test]
+fn member_node_opens_without_proof_spec_sync_5() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    net.group_at(a, &[(b, Role::Read)], vec![]);
+    net.run();
+    let l: LabelId = net.label(a);
+    let key = || SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
+    let (conn, acts) = net.sync(a).accept(LOCAL, kb);
+    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
+    let now = net.now();
+    let outs = p.cs.handle(now, ClientInput::Start);
+    exchange(&mut net, a, &mut p, acts, outs);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Sync(key()) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { entry_box: None, .. })), "{evs:?}");
+    let (mut q, _) = dial_in(&mut net, a);
+    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync(key()) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
+}
+
+// spec/sync.md §5: a served session that opens nothing is closed after `serve_open_ms`, even
+// while it keeps sending.
+#[test]
+fn silent_session_closed_spec_sync_5() {
+    let mut net = Net::new();
+    let cfg = SyncConfig { serve_open_ms: 1_000, ..SyncConfig::default() };
+    let b = net.add_node(2, cfg);
+    let (mut p, _) = dial_in(&mut net, b);
+    net.clock.advance(1_001);
+    let now = net.now();
+    let outs = p.cs.handle(now, ClientInput::Command(Command::Open { label: LabelId([1; 16]), key: OpenKey::Sync(SigningSecret::from_seed(&Secret32::from_bytes([3; 32]))) }));
+    exchange(&mut net, b, &mut p, Vec::new(), outs);
+    let acts = net.sync(b).handle(Event::Tick);
+    assert!(acts.contains(&Action::Close { conn: p.conn }), "{acts:?}");
+}
+
+// spec/permissions.md §3: a complete pass also waits for every co-reader the node received the
+// label from and can reach: with that peer's replies held back, the server's pass alone is not
+// enough.
+#[test]
+fn complete_pass_counts_peers_spec_permissions_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
+    net.item(b, g, g, "from b");
+    net.run();
+    assert!(net.sync(a).complete_pass(&g));
+    net.held.insert((b, a));
+    let (tb, tc) = (net.tid(b), net.tid(c));
+    let e = net.engine(b);
+    let rec = recipients_of(e, &[(tb, Role::Admin)]);
+    remove_member(e, g, tc, &rec, 78);
+    net.run();
+    assert!(!net.sync(a).complete_pass(&g), "b's pass is held back");
+    net.release();
+    net.run();
+    assert!(net.sync(a).complete_pass(&g));
+}
+
+// spec/permissions.md §4: `/reach` goes under every label except those of groups the app
+// excludes (open audiences): a co-reader learns the dialable key only through the others.
+#[test]
+fn reach_excluded_per_label_spec_permissions_4() {
+    for excluded in [false, true] {
+        let mut net = Net::new();
+        let sv = net.add_server();
+        let a = net.node(1, &[sv]);
+        let b = net.node(2, &[sv]);
+        let g = net.group(a, &[(b, Role::Read)], &[sv]);
+        net.sync(a).set_no_reach(g, excluded);
+        let ka = reach_ed(&mut net, a);
+        net.run();
+        assert_eq!(net.sync(b).peers().contains_key(&ka), !excluded, "excluded: {excluded}");
+    }
 }
 
 // spec/sync.md §5: co-readers dialed per label are capped.

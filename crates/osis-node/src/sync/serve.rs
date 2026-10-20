@@ -9,7 +9,8 @@
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
 //! deposit is charged to the uploading peer key and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a server or is dropped; past either,
-//! uploads get code 12 and deposits code 5.
+//! uploads get code 12 and deposits code 5. A peer whose key is the dialable key of a node that
+//! currently reads a label opens it without a proof (spec/sync.md §5, member peer).
 
 use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
@@ -123,15 +124,16 @@ impl Feed {
     }
 }
 
-/// A served label: its path to the head and the claim sets held.
+/// A served label: its group, its path to the head and the claim sets held.
 pub struct ServedLabel {
+    group: osis_core::Tid,
     path: Vec<Step>,
     claims: BTreeMap<StepId, Arc<ClaimSet>>,
 }
 
 impl ServedLabel {
     /// The path to the deepest step of `steps` (the lowest ID among equals).
-    pub(crate) fn new(steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
+    pub(crate) fn new(group: osis_core::Tid, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
         let depth = |id: &StepId| {
             let mut n = 0usize;
             let mut cur = Some(*id);
@@ -155,7 +157,7 @@ impl ServedLabel {
         }
         path.reverse();
         let claims = steps.iter().filter_map(|(id, (_, c))| c.clone().map(|c| (*id, Arc::new(c)))).collect();
-        Some(ServedLabel { path, claims })
+        Some(ServedLabel { group, path, claims })
     }
 }
 
@@ -166,6 +168,8 @@ pub(crate) struct Served {
     peer: [u8; 32],
     /// Raw ms of the last bytes received (idle sessions are closed).
     pub last: u64,
+    /// Raw ms the session started (one that opens nothing is closed).
+    since: u64,
 }
 
 /// What a served request accepted, carried out after the server engine returns.
@@ -175,6 +179,8 @@ struct Accepted {
     steps: Vec<(LabelId, Step, Option<ClaimSet>)>,
     /// Bytes charged per accepted entry.
     charges: Vec<(LabelId, BlobId, u64)>,
+    /// A put was refused for the budget.
+    full: bool,
 }
 
 /// The `LabelStore` a member peer serves from.
@@ -184,6 +190,10 @@ struct PeerStore<'a> {
     tombs: &'a BTreeMap<(LabelId, BlobId), u64>,
     feed: &'a mut Feed,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
+    /// The node thing whose dialable key the peer authenticated with, if any.
+    member: Option<osis_core::Tid>,
+    /// Blob sizes seen (`live` reads a blob only once).
+    sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
     now: u64,
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
@@ -198,8 +208,15 @@ fn local(e: crate::Error) -> StoreError {
 }
 
 impl PeerStore<'_> {
-    fn blob_len(&self, b: &BlobId) -> std::result::Result<Option<usize>, StoreError> {
-        Ok(self.engine.borrow_mut().blob(b).map_err(local)?.map(|x| x.len()))
+    fn blob_len(&self, b: &BlobId) -> std::result::Result<Option<u64>, StoreError> {
+        if let Some(n) = self.sizes.borrow().get(b) {
+            return Ok(Some(*n));
+        }
+        let n = self.engine.borrow_mut().blob(b).map_err(local)?.map(|x| x.len() as u64);
+        if let Some(n) = n {
+            self.sizes.borrow_mut().insert(*b, n);
+        }
+        Ok(n)
     }
 
     fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
@@ -212,7 +229,7 @@ impl PeerStore<'_> {
         Ok(Some(EntryMeta {
             wrap: e.wrap,
             stamp: e.stamp,
-            size: size as u64,
+            size,
             add_seq: log.and_then(|x| x.adds.get(b)).copied().unwrap_or(0),
             pending_delete: log.and_then(|x| x.pending.get(b)).copied(),
         }))
@@ -220,6 +237,12 @@ impl PeerStore<'_> {
 }
 
 impl LabelStore for PeerStore<'_> {
+    /// A node of a current reader of the label (spec/sync.md §5).
+    fn member_open(&self, label: &LabelId) -> std::result::Result<bool, StoreError> {
+        let Some(n) = self.member else { return Ok(false) };
+        Ok(self.labels.get(label).is_some_and(|s| self.engine.borrow().may_read(&n, &s.group)))
+    }
+
     fn head(&self, label: &LabelId) -> std::result::Result<Option<StepId>, StoreError> {
         Ok(self.labels.get(label).and_then(|s| s.path.last()).map(|s| s.id()))
     }
@@ -269,6 +292,7 @@ impl LabelStore for PeerStore<'_> {
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
             if size > self.peer_left || size > self.total_left {
+                self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
             }
             self.peer_left -= size;
@@ -359,8 +383,8 @@ impl SyncEngine {
     /// `peer` the key the transport authenticated for the dialer (budgets are charged to it).
     /// Returns the session's handle (its bytes come as `Event::Bytes`, its end as `Event::Down`)
     /// and the actions (the Hello; a Close when `SyncConfig.max_served` sessions are running).
-    /// Opens are checked as a blind node checks them; serving an authenticated node of a current
-    /// member without an open (spec/sync.md §5) is not done yet (issues/p2p-deferred.md).
+    /// Opens are checked as a blind node checks them; a `peer` that is the dialable key of a node
+    /// thing currently reading a label opens it whatever its proof (spec/sync.md §5).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
         let conn = self.next_conn;
         self.next_conn += 1;
@@ -373,7 +397,7 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServerConnection::new(ServerConfig { static_key: local, challenge }), peer, last });
+        self.served.insert(conn, Served { conn: ServerConnection::new(ServerConfig { static_key: local, challenge }), peer, last, since: last });
         if let Err(e) = self.serve(conn, ServerInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -398,7 +422,7 @@ impl SyncEngine {
             for (s, c) in self.peer_steps.get(&gl.id).into_iter().flatten() {
                 gl.steps.entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
             }
-            if let Some(s) = ServedLabel::new(&gl.steps) {
+            if let Some(s) = ServedLabel::new(gl.group, &gl.steps) {
                 m.insert(gl.id, s);
             }
         }
@@ -407,19 +431,28 @@ impl SyncEngine {
         m
     }
 
-    /// Bytes peers have charged that still count, per peer key and in total: entries accepted
-    /// from peers that are still held, not opened (or not interpretable) and not present at any
-    /// server.
-    fn charged(&mut self) -> (BTreeMap<[u8; 32], u64>, u64) {
+    /// Drops charges that no longer count: entries no longer held, opened since, or present at
+    /// a server or peer.
+    pub(crate) fn prune_charges(&mut self) {
         let st = &self.state;
-        self.charges.retain(|(l, b), _| st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b));
-        let mut per: BTreeMap<[u8; 32], u64> = BTreeMap::new();
-        let mut total = 0u64;
-        for (p, n) in self.charges.values() {
-            *per.entry(*p).or_default() += n;
-            total = total.saturating_add(*n);
+        let stale: Vec<(LabelId, BlobId)> = self.charges.keys().filter(|(l, b)| !(st.entries.get(&(*l, *b)).is_some_and(|e| matches!(e.kind, super::state::Kind::Unknown | super::state::Kind::Bad | super::state::Kind::Parked(_))) && !st.present_anywhere(l, b))).copied().collect();
+        for k in stale {
+            if let Some((p, n)) = self.charges.remove(&k) {
+                self.uncharge(p, n);
+            }
         }
-        (per, total)
+        self.charges_pruned = self.raw_now();
+        self.charges_full = false;
+    }
+
+    fn uncharge(&mut self, p: [u8; 32], n: u64) {
+        self.charged_total = self.charged_total.saturating_sub(n);
+        if let Some(x) = self.charged_per.get_mut(&p) {
+            *x = x.saturating_sub(n);
+            if *x == 0 {
+                self.charged_per.remove(&p);
+            }
+        }
     }
 
     /// Feeds one input to a served session.
@@ -432,11 +465,16 @@ impl SyncEngine {
         if !self.served.contains_key(&conn) {
             return Ok(());
         }
-        let (per, total) = self.charged();
-        let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
-        let used = per.get(&s.peer).copied().unwrap_or(0);
-        self.state.feed.heads(labels);
         let now = self.raw_now();
+        // a budget was reached: charges that no longer count go first (at most once a second)
+        if self.charges_full && now >= self.charges_pruned.saturating_add(1000) {
+            self.prune_charges();
+        }
+        let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
+        let used = self.charged_per.get(&s.peer).copied().unwrap_or(0);
+        let total = self.charged_total;
+        let member = self.reach_nodes().get(&s.peer).copied();
+        self.state.feed.heads(labels);
         if matches!(input, ServerInput::Bytes(_)) {
             s.last = now;
         }
@@ -448,6 +486,8 @@ impl SyncEngine {
                 tombs: &self.state.tombs,
                 feed: &mut self.state.feed,
                 labels,
+                member,
+                sizes: RefCell::new(&mut self.blob_sizes),
                 now,
                 wall,
                 peer_left: self.cfg.peer_bytes.saturating_sub(used),
@@ -461,8 +501,18 @@ impl SyncEngine {
         if !s.conn.is_closed() {
             self.served.insert(conn, s);
         }
+        self.charges_full |= acc.full;
         for (l, b, n) in acc.charges {
-            self.charges.insert((l, b), (peer, n));
+            if let Some((p, old)) = self.charges.insert((l, b), (peer, n)) {
+                self.uncharge(p, old);
+            }
+            *self.charged_per.entry(peer).or_default() += n;
+            self.charged_total = self.charged_total.saturating_add(n);
+        }
+        if !acc.entries.is_empty() && self.reach_nodes().contains_key(&peer) {
+            for (l, _) in &acc.entries {
+                self.peer_received.entry(*l).or_default().insert(peer);
+            }
         }
         for (l, step, cs) in acc.steps {
             let v = self.peer_steps.entry(l).or_default();
@@ -527,12 +577,13 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms`; expires peer
-    /// deletions and this node's tombstones.
+    /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms`, and those that
+    /// opened no label within `serve_open_ms`; expires peer deletions and this node's
+    /// tombstones; prunes charges and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
-        let idle = self.cfg.serve_idle_ms;
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now).map(|(c, _)| *c).collect();
+        let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
+        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now || s.conn.opened().is_empty() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
         for c in stale {
             self.served.remove(&c);
             out.push(Action::Close { conn: c });
@@ -540,10 +591,15 @@ impl SyncEngine {
         let wall = self.state.now;
         self.state.feed.expire(wall);
         self.state.expire_tombs(wall);
+        self.prune_charges();
+        if self.blob_sizes.len() > self.state.entries.len() {
+            let held: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).collect();
+            self.blob_sizes.retain(|b, _| held.contains(b));
+        }
     }
 
     /// When the next served session goes idle.
     pub(crate) fn serve_wake(&self) -> Option<u64> {
-        self.served.values().map(|s| s.last.saturating_add(self.cfg.serve_idle_ms)).min()
+        self.served.values().map(|s| if s.conn.opened().is_empty() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).min()
     }
 }

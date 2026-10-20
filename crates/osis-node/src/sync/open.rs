@@ -32,6 +32,10 @@ pub(crate) enum Try {
     /// A key actor this node holds (a recovery or link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
+    /// Last on a co-reader connection: a fresh key proving nothing, which a peer that
+    /// authenticated this node as a node of a current reader opens all the same (spec/sync.md
+    /// §5, member peer).
+    Member { key: SigningSecret },
 }
 
 impl Try {
@@ -40,13 +44,14 @@ impl Try {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
+            Try::Member { key } => OpenKey::Sync(key.clone()),
         }
     }
     fn step(&self) -> Option<&Step> {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
-            Try::Static { .. } => None,
+            Try::Static { .. } | Try::Member { .. } => None,
         }
     }
 }
@@ -156,8 +161,13 @@ impl SyncEngine {
     }
 
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        let (index, tries) = self.tries(&server, &g, &l);
+        let Some((server, peer)) = self.conns.get(&conn).map(|c| (c.server, c.peer)) else { return Ok(()) };
+        let (index, mut tries) = self.tries(&server, &g, &l);
+        if peer {
+            let mut b = [0u8; 32];
+            self.rng.fill_bytes(&mut b);
+            tries.push(Try::Member { key: SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes(b)) });
+        }
         let lc = LConn {
             group: g,
             index,

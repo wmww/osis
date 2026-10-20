@@ -116,7 +116,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), 22 + 5 + 8);
+        assert_eq!(all.len(), 22 + 5 + 9);
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).
