@@ -101,7 +101,7 @@ impl SyncEngine {
                     v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
                 }
             }
-            v.extend(self.static_tries());
+            v.extend(self.static_tries().into_iter().map(|(_, x)| x));
             return (None, v);
         };
         let index = gl.index;
@@ -131,13 +131,16 @@ impl SyncEngine {
                 }
             }
         }
-        v.extend(self.static_tries());
+        // a key actor's signing key goes only where it is listed: elsewhere it would link labels
+        // and name the key to the server
+        let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        v.extend(self.static_tries().into_iter().filter(|(t, _)| members.contains_key(t)).map(|(_, x)| x));
         (Some(index), v)
     }
 
-    /// Static-entry opens for the key actors this node holds that are not nodes.
-    fn static_tries(&self) -> Vec<Try> {
-        self.engine.core.key_actors.values().map(|id| Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() }).collect()
+    /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
+    fn static_tries(&self) -> Vec<(Tid, Try)> {
+        self.engine.core.key_actors.iter().map(|(t, id)| (*t, Try::Static { kem: id.keys().kem.clone(), key: id.keys().signing.clone() })).collect()
     }
 
     /// Follows a label known only by ID and servers (a recovery card's home label, a link's

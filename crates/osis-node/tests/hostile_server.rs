@@ -112,3 +112,39 @@ fn replayed_signal_dropped_spec_sync_9() {
     net.feed(b, Event::Bytes { conn: conn_b, bytes: frame(captured) });
     assert!(net.sync(b).take_signals().is_empty(), "a stale replay fires nothing");
 }
+
+// spec/requirements.md (blind nodes must not learn device identities; groups unlinkable beyond
+// their overlap), spec/sync.md §2 (a key actor reads a label as a listed reader): a node holding a
+// key actor (a link or recovery key) never presents its signing key at a label whose group does
+// not list it, however its other opens fare.
+#[test]
+fn key_actor_not_presented_elsewhere_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let _g = net.group(a, &[], &[sv]);
+    let ka = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3c; 32])).unwrap();
+    assert!(net.engine(a).held_key_actors() > 0, "{ka}");
+    let signing = osis_crypto::KeyActorKeys::from_seed(&Secret32::from_bytes([0x3c; 32])).signing.verifying_key();
+    let mut se: SyncEngine = net.take(a);
+    let acts = se.handle(Event::Local);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    // every open refused: the node goes through all its tries
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { .. })).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            if let osis_label::Proof::Static { signing: pk, .. } = proof {
+                assert_ne!(pk, signing, "the key actor's signing key went to a label it does not read");
+            }
+            next.extend(se.handle(Event::Bytes { conn, bytes: frame(Message::Error { id, code: osis_proto::Code::REFUSED }) }));
+        }
+        acts = next;
+    }
+}
