@@ -290,7 +290,18 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             }
         };
         let mut chunks = std::mem::take(&mut blobs.written);
-        chunks.extend(d.chunks);
+        // trees written for values the resolved delta does not hold (an edit's item paired
+        // with one deleted concurrently) are neither listed nor kept
+        let mut own = d.chunks;
+        if !own.is_empty() {
+            let linked = super::large::delta_links(tx, &framing.dedup, &bytes)?;
+            let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|(id, _)| linked.contains(id));
+            for (id, _) in &drop {
+                tx.txn.delete_blob(id);
+            }
+            own = keep;
+        }
+        chunks.extend(own);
         if plan.form == Form::Node && plan.kind.has_own_writes() {
             let first = tx.txn.reserve_counters(&d.tid, &d.ak, d.hi.saturating_sub(d.lo))?;
             if first != d.lo {

@@ -98,7 +98,8 @@ pub fn frag(f: &m::Frag) -> Fragment {
         m::Frag::Seq { text, c, elems } => Fragment::Seq(Seq {
             text: *text,
             meta: meta(c),
-            elems: elems
+            // uniform stretches as range records, so every test meets them
+            elems: crate::seq_span::coalesce(elems
                 .iter()
                 .map(|(d, e)| {
                     let content = match &e.content {
@@ -111,10 +112,11 @@ pub fn frag(f: &m::Frag) -> Fragment {
                         content,
                         pos: e.pos.iter().map(|(s, a)| (stamp(s), anchor(a))).collect(),
                         deleted: e.deleted.as_ref().map(|(s, b)| (stamp(s), *b)),
+                        span: 1,
                     };
                     (dot(d), el)
                 })
-                .collect(),
+                .collect()),
         }),
         m::Frag::Slots { reg, slots } => Fragment::Slots(Slots {
             reg: reg.as_ref().map(|r| match frag(r) {

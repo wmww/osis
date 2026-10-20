@@ -41,7 +41,7 @@
 - **Signal envelope**: encrypted and wrapped like a blob, signed under `"osis v1 signal"` (spec/wire.md §9).
 
 ## 6. Hashes and links
-- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, chunk or page bytes)`, for a tree node `kdf("link tree", dedup secret, ...)` over its children's hashes (spec/wire.md §6).
+- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, chunk or page bytes)`, for a tree node `kdf("link tree", dedup secret, le64(level) || for each child in order: content hash || le64(len))`, `len` the plaintext length under the child (spec/wire.md §6).
 - Unkeyed BLAKE3: tids, commit IDs, blob IDs.
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
 

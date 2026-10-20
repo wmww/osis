@@ -286,7 +286,19 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
 /// a page grown past twice `PAGE_BYTES`, drops an emptied one.
 #[allow(clippy::too_many_arguments)]
 fn rewrite_set(txn: &mut Transaction<'_>, t: Table, slot: Slot, set: &mut PageSet, c: &Fragment, first: bool, dots: &[Dot], shred: Shred) -> Result<()> {
-    let mut dirty: BTreeSet<Option<Dot>> = dots.iter().map(|d| set.page_of(d)).collect();
+    let mut dirty: BTreeSet<Option<Dot>> = BTreeSet::new();
+    if matches!(set.enc, Encoding::List | Encoding::Text) {
+        // (first, last) per delta record: a range record touches every page between
+        for pair in dots.chunks(2) {
+            let (Some(a), Some(b)) = (pair.first(), pair.last()) else { continue };
+            let (pa, pb) = (set.page_of(a), set.page_of(b));
+            if pa <= pb {
+                dirty.extend(set.pages.range(pa..=pb).map(|(k, _)| k.clone()));
+            }
+        }
+    } else {
+        dirty = dots.iter().map(|d| set.page_of(d)).collect();
+    }
     if first {
         dirty.insert(None);
     }

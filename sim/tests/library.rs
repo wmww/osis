@@ -84,6 +84,34 @@ fn link_race_seed_6() {
     ok("link_race", 6);
 }
 
+// spec/permissions.md §9, spec/sync.md §7: sweep seed 91, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_91() {
+    ok("link_race", 91);
+}
+
+// spec/permissions.md §9, spec/sync.md §7: sweep seed 119, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_119() {
+    ok("link_race", 119);
+}
+
+// spec/permissions.md §9, spec/sync.md §7: sweep seed 164, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_164() {
+    ok("link_race", 164);
+}
+
+// spec/permissions.md §9, spec/sync.md §7: sweep seed 191, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_191() {
+    ok("link_race", 191);
+}
+
 // spec/permissions.md §7: move with import and re-grant.
 #[test]
 #[ignore = "tier 2"]
@@ -180,6 +208,13 @@ fn revocation_bob_seed_28() {
 #[ignore = "tier 2"]
 fn evil_server() {
     ok("evil_server", 1);
+}
+
+// spec/sync.md §6: sweep seed 134, the sim spun on a message sent after its stream's cut.
+#[test]
+#[ignore = "tier 2"]
+fn evil_server_seed_134() {
+    ok("evil_server", 134);
 }
 
 // spec/sync.md §6: a dishonest server that also drops replies on open streams.

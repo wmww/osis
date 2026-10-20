@@ -828,18 +828,20 @@ impl NetSim {
     // ---- delivery
 
     /// Delivers one due message (the earliest, or under reorder any due stream head); waits for
-    /// the earliest when none is due. False when nothing is queued.
+    /// the earliest stream head when none is due (a message sent on a stream after its cut may
+    /// be due before its predecessors). False when nothing is queued.
     fn deliver_next(&mut self) -> Res<bool> {
-        let Some(first) = self.queue.iter().map(|m| m.at).min() else { return Ok(false) };
-        if first > self.elapsed {
-            self.advance(first - self.elapsed)?;
-        }
         let heads: Vec<usize> = (0..self.queue.len())
             .filter(|k| {
                 let Some(m) = self.queue.get(*k) else { return false };
-                m.at <= self.elapsed && !self.queue.iter().any(|o| o.link == m.link && o.link != 0 && o.to == m.to && o.seq < m.seq)
+                !self.queue.iter().any(|o| o.link == m.link && o.link != 0 && o.to == m.to && o.seq < m.seq)
             })
             .collect();
+        let Some(first) = heads.iter().filter_map(|k| self.queue.get(*k)).map(|m| m.at).min() else { return Ok(false) };
+        if first > self.elapsed {
+            self.advance(first - self.elapsed)?;
+        }
+        let heads: Vec<usize> = heads.into_iter().filter(|k| self.queue.get(*k).is_some_and(|m| m.at <= self.elapsed)).collect();
         let pick = if self.cfg.faults.reorder && !self.calm {
             self.dice.pick(&heads).copied()
         } else {
@@ -1376,5 +1378,24 @@ impl NetSim {
         self.report.commits = commits.len();
         self.report.digest = h.finalize();
         Ok(self.report.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due
+    // before its predecessors; delivery waits for the stream's head instead of spinning
+    // (evil_server sweep seed 134 reported this as a message storm).
+    #[test]
+    fn stream_head_due_after_successor_spec_sync_6() {
+        let mut sim = NetSim::new("t", 1, NetConfig::default());
+        sim.push(7, End::Node(0, 1), 500, Payload::Bytes(vec![1]));
+        sim.push(7, End::Node(0, 1), 10, Payload::Bytes(vec![2]));
+        sim.drain_queue().unwrap();
+        assert!(sim.queue.is_empty());
+        assert_eq!(sim.elapsed, 500);
     }
 }

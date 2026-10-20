@@ -160,7 +160,7 @@ fn insert_runs(w: &mut Writer, out: &mut Seq, steps: &[Step], anchor_of: &dyn Fn
         for c in cs {
             let st = w.fresh();
             let d = st.dot.clone();
-            out.elems.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None });
+            out.elems.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
             prev = Anchor::Dot(d);
         }
     }

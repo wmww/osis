@@ -6,17 +6,19 @@ use common::*;
 use osis::{DropReason, EntryState, Error, HistoryQuery, Place, UndoScope, Value};
 
 // spec/commits.md §7, notes/api.md Undo: undo and redo walk this actor's own changes in
-// scope; redo is an undo of the undo; a new undo after a redo undoes the redone change.
+// scope; redo is an undo of the undo; a new undo after a redo undoes the redone change. A
+// register edited twice undoes twice (spec/crdt.md §4.6: the second undo steps back through
+// the first undo's restoring write), then redoes twice.
 #[test]
 fn undo_redo_cycle_spec_commits_7() {
     let db = db(1);
     let k = ak("/t/x");
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
-    w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
     db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
-    let scope = UndoScope::Thing(t);
+    let scope = UndoScope::Aspects(vec![(t, k.clone())]);
     let get = || db.get(t, k.clone()).unwrap();
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(1)));
@@ -24,15 +26,23 @@ fn undo_redo_cycle_spec_commits_7() {
     assert_eq!(get(), Some(Value::Int(2)));
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(1)));
-    // spec/crdt.md §4.6: the first write is no longer the register's winner (the undo's
-    // restoring write is), so its undo is reported blocked, never skipped
-    // (issues/undo-chain-register.md)
-    let first = db.history(&scope, HistoryQuery::default()).unwrap().last().unwrap().commit;
-    assert_eq!(db.undo(&scope), Err(Error::NotUndoable { commit: first, reason: DropReason::Superseded }));
+    db.undo(&scope).unwrap().unwrap();
+    assert_eq!(get(), None);
+    assert_eq!(db.undo(&scope).unwrap(), None);
+    db.redo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(1)));
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(2)));
+    assert_eq!(db.redo(&scope).unwrap(), None);
+    // and back again through the redone changes
+    db.undo(&scope).unwrap().unwrap();
+    assert_eq!(get(), Some(Value::Int(1)));
+    db.undo(&scope).unwrap().unwrap();
+    assert_eq!(get(), None);
+    db.redo(&scope).unwrap().unwrap();
+    assert_eq!(get(), Some(Value::Int(1)));
     // separate aspects undo step by step
+    let scope = UndoScope::Thing(t);
     let (a, b) = (ak("/t/a"), ak("/t/b"));
     db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
     db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
@@ -129,4 +139,24 @@ fn history_states_spec_crdt_4_6() {
     let h = db.history(&UndoScope::Aspects(vec![(t, k.clone())]), HistoryQuery::default()).unwrap();
     assert_eq!(h.iter().find(|e| e.commit == c1.commit).map(|e| e.state), Some(EntryState::Dropped(DropReason::Compacted)));
     assert!(db.undo_commit(osis::CommitId([7; 32])).is_err());
+}
+
+// spec/crdt.md §4.6: undo never steps back over a live later change: x = 1, 2, 1, 5; undoing
+// the 5 restores 1, and a selective undo of the first write is then superseded (the later
+// writes are still in effect), so x stays 1.
+#[test]
+fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
+    let db = db(1);
+    let k = ak("/t/x");
+    let mut w = db.write();
+    let t = w.create(db.me(), Place::Unsynced).unwrap();
+    w.commit().unwrap();
+    let c1 = db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap().unwrap();
+    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(5))).unwrap().unwrap();
+    db.undo(&UndoScope::Thing(t)).unwrap().unwrap();
+    assert_eq!(db.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.undo_commit(c1.commit), Err(Error::NotUndoable { commit: c1.commit, reason: DropReason::Superseded }));
+    assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
 }

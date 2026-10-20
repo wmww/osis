@@ -33,25 +33,19 @@ One line per subsystem, with what proves it (crate tests unless named otherwise)
 ## Deviations
 Each is a requirement of spec/requirements.md not fully met, with the issue (or accepted limit) behind it.
 - **Large values**: an edit uploads the changed chunks plus the root node (met since; notes/testing.md, Scale checks), but range reads fetch every chunk before the offset: issues/large-value-seek.md; residues issues/large-value-residues.md.
-- **Some operations are O(state) or O(history)** (Scale): the perm walk from scratch (10^4 edge writes 4.3 s, at open and on out-of-order arrivals): issues/perm-eval-cost.md; deep collections, a sequence's undo buffer, first load per session, `/secrets` ingestion: issues/node-state-not-paged.md; sequence reads and ops place every element: issues/crdt-seq-linearization-cost.md; open replays every commit record, sync passes recompute every body: issues/node-core-gaps.md, issues/node-sync-gaps.md.
+- **Some operations are O(state) or O(history)** (Scale): the perm walk from scratch (10^4 edge writes 4.3 s, at open and on out-of-order arrivals; owner chains uncapped): issues/perm-eval-cost.md; deep collections, a sequence's undo buffer, first load per session, `/secrets` ingestion: issues/node-state-not-paged.md; sequence reads and ops place every element: issues/crdt-seq-linearization-cost.md; open replays every commit record, sync passes recompute every body: issues/node-core-gaps.md, issues/node-sync-gaps.md.
 - **Peer input bounds** (Scale: "never causes unbounded allocation"): a tiny sequence snapshot run expands to 2^16 records: issues/crdt-run-amplification.md.
+- **Determinism** (Decentralization: "never of arrival order"): an invite grant's `/secrets` resets of entries the node has not seen pass, so validity depends on arrival order: issues/invite-grant-secrets.md.
 - **Chat costs** (Cost goal): last measured (`costs_join_message_removal`, chat of 4, wave 5) join 63 KB, removal 85 KB from the moderator plus 68 KB from the others, message about 2.5 KB (the tier-2 test fails its budgets); the corrected design cost (spec as written, engine waste removed) is join ≈ 38 KB, message ≈ 2.1 KB, removal ≈ 79 KB (≈ 45 KB with one rotation). The gap is not attributed yet; the design knobs (header once per commit, one KEM key per keyset, one sealed box per member, one rotation per link removal, no home-label copy) are listed in issues/chat-costs.md.
 - **LAN** (Offline and network: "works over LAN"): the LAN announcement datagram is in spec/sync.md §10 as provisional with the conservative candidate-route rule; the LAN loop, one driver for servers and peers, and the key binding are not built (owner: bind the key when the loop is built). issues/p2p-deferred.md.
 - **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/header-list-commitments.md (header-list chunk commitments capped at 16, arbitrary cutoff), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
-- **Undo steps back once per register** (API: plain undo): issues/undo-chain-register.md (owner-call, option 1 recommended).
 - **One delta must fit a blob**: a struct of many near-threshold registers is refused by the writer (Decentralization: "no size limit"): issues/struct-delta-size.md.
 - **Not checked**: "Runs in browsers" (no wasm build; the lower crates are sans-I/O and take rng and clock as parameters); "pushed, not polled" holds for connected nodes, push wake-ups for sleeping devices are a proposal (notes/networking.md).
 - **API conveniences not built** (no wire impact): queries and backlinks, `undelete`, `sync_policy`, bearer `open_link`, server-list changes: issues/api-deferred.md, issues/api-app-frictions.md.
 
 ## Open issues by tag
-27 issues. Counts by tag: security 4, post-mvp 3, owner-call 1, performance 7, tests 4; components: node 11, sync 7, storage 7, permissions 7, data-model 4, crdt 4, api 4, crypto 2, commit 2, sim 1, server 1, networking 1.
-- **security**: crdt-run-amplification (tiny snapshot run expands to 2^16 records), perm-eval-cost (walk cost; owner chains now capped at `MAX_OWNER_DEPTH`). Fixed since: invite-grant-secrets (puts only, judged from the delta), rereview-residues (all five).
-- **post-mvp** (accepted): token-admin-secret, header-list-commitments, reseal-triggers.
-- **owner-call**: undo-chain-register.
-- **performance**: large-value-residues, perm-eval-cost, node-state-not-paged, crdt-seq-linearization-cost, chat-costs, large-value-seek, store-concurrent-readers.
-- **tests**: tests-spec-gaps (removal placement untested, three partial rules), tests-unbuilt (two sim adversaries, state-size invariant, 10^4-seed sweep, model refactors, TLA+ walk), store-shape-reduced-arity (tier-2 test fails, likely the test), chat-costs (tier-2 budget test).
-- **other** (component gaps): node-core-gaps (snapshot imports and judging, linked frontiers, open cost), node-sync-gaps (replaced labels, inbox re-send, hinted labels via links, revokes about seen authors, pass cost), flows-gaps (label replacement, large frontiers, contact cards), p2p-deferred (LAN loop, one driver), roster-snapshot-deltas (roster snapshots not per edge), ledger-late-audit (re-snapshot changes about 1 in 10^3 answers), struct-delta-size, tree-reader-bounds (reader bounds the spec could state), api-deferred, api-app-frictions.
+At the end of the run: 27 issues (security 4, post-mvp 3, owner-call 1, performance 7, tests 4). The current set changes as issues are solved: see `grep -h '^> Summary\|^> Tags' issues/*.md`.
 
 ## Spec edits made during the run
 Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*/AMBIGUITIES.md.
@@ -78,8 +72,8 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
 - Chat cost knobs (issues/chat-costs.md (b)) and attribution of the measured gap.
 - Large-value seeking and residues (issues/large-value-seek.md, large-value-residues.md).
-- Node-state paging remainder (issues/node-state-not-paged.md) and the perm walk cost (issues/perm-eval-cost.md).
-- Security residues: crdt-run-amplification.
+- Node-state paging remainder (issues/node-state-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).
+- Security residues: invite-grant-secrets, crdt-run-amplification, rereview-residues.
 - TLA+ target 3 (membership walk) when spec/permissions.md §5–§6 next changes; the rest of issues/tests-unbuilt.md.
 
 ## Late additions
