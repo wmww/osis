@@ -193,6 +193,7 @@ fn paged_struct_field_converges() {
 // received delete arrives as one range record spanning many pages of a paged text; every page
 // it covers is rewritten, so the state survives a restart.
 #[test]
+#[ignore = "tier 2: ~20 s"]
 fn range_delta_rewrites_its_pages_spec_crdt_8() {
     let mut lp = net(2, 14);
     let t = new_thing(&mut lp, 0);
