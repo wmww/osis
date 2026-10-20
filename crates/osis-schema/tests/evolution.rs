@@ -107,6 +107,7 @@ fn additive_changes_pass_spec_versioning_4() {
     assert_eq!(check(&schema(ID, 1, BASE), &schema(ID, 1, BASE)), vec![]);
 }
 
+// spec/versioning.md §4 (additive revision)
 #[test]
 fn each_rule_is_enforced_spec_versioning_4() {
     use Rule::*;

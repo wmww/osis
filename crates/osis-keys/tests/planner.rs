@@ -83,6 +83,7 @@ fn demotion_scope() {
 
 // spec/permissions.md §3: cycles of membership terminate; a node that lost read access drops the
 // actor and what it reads by no other path.
+// spec/permissions.md §3 (drop lost secrets)
 #[test]
 fn cycles_and_lost_access() {
     let mut g = MemoryGraph::default();

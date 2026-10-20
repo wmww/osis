@@ -41,6 +41,7 @@ fn register_open_sync_download() {
 }
 
 // spec/sync.md §5: a claim set must hash to the step's; claims and static entries open at the head
+// spec/sync.md §5 (claim set hash)
 #[test]
 fn claims_and_static_entries() {
     let mut w = World::new();
@@ -59,6 +60,7 @@ fn claims_and_static_entries() {
 }
 
 // spec/sync.md §5: deposits by the deposit key within the budget, reported in the reply; refused under another key or when full; deposited entries are flagged
+// spec/sync.md §5 (deposit refusals)
 #[test]
 fn deposits_and_budget() {
     let mut w = World::new();
@@ -87,6 +89,7 @@ fn deposits_and_budget() {
 }
 
 // spec/sync.md §5, spec/crypto.md §7: deletes by the delete key and by token (level 3: write key, levels 1-2: sync key); tombstones refuse the identical blob for TOMBSTONE_LIFETIME
+// spec/sync.md §5 (delete keys)
 #[test]
 fn deletes_and_tombstones() {
     let mut w = World::new();

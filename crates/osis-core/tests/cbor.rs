@@ -266,6 +266,7 @@ fn links_sort_by_bytes() {
 }
 
 // §5: every rejection rule.
+// spec/data-model.md §5 (cbor profile)
 #[test]
 fn rejections() {
     use DecodeError::*;
@@ -375,6 +376,7 @@ fn floats_identity() {
 }
 
 // §5: Unknown never holds a known tag.
+// spec/data-model.md §5 (cbor profile)
 #[test]
 fn unknown_rejects_known_tags() {
     let c = CanonicalBytes::from_value(&Value::Int(0));

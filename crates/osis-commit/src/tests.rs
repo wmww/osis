@@ -76,6 +76,7 @@ fn sign_verify() {
 }
 
 // spec/versioning.md §2: an unknown (higher) format version parks; version 0 is malformed.
+// spec/versioning.md §2 (park unknown), §2 (reject malformed)
 #[test]
 fn version_parks() {
     use osis_core::{Classified, ErrorClass};
@@ -93,6 +94,7 @@ fn version_parks() {
 }
 
 // spec/wire.md §1, §4: wrong arity, wrong types and out-of-range items are rejected.
+// spec/versioning.md §2 (reject malformed)
 #[test]
 fn header_rejects_malformed() {
     let good = sample_header().to_value();

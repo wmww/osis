@@ -201,6 +201,7 @@ fn purge_rights() {
 }
 
 /// §3: write or above rotates its roles and below; readers rotate nothing.
+// spec/permissions.md §1 (membership-class by admins)
 #[test]
 fn rotation_rights() {
     let mut w = World::new();

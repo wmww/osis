@@ -237,6 +237,7 @@ fn rejects_bad_slots_spec_3_3() {
     rejects(&ok(l(vec![set.clone(), set.clone()]), l(vec![reg.clone()])), &scx, ErrorClass::BadInput);
 }
 
+// spec/versioning.md §2 (park unknown)
 #[test]
 fn parks_unknown_encoding_spec_3_1() {
     rejects(&delta(vec![], vec![], l(vec![i(42), l(vec![])])), &wcx(), ErrorClass::Parked);

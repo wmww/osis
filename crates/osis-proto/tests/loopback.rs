@@ -376,6 +376,7 @@ fn oversized_gained_list_reconciles() {
 }
 
 // spec/sync.md §5: a superseded sync key gets the child step and nothing else; the child verifies under its parent's delete key
+// spec/sync.md §5 (stale sync key), §5 (register)
 #[test]
 fn stale_sync_key_gets_one_signed_step() {
     let mut net = Net::new(1, 0);
@@ -407,6 +408,7 @@ fn stale_sync_key_gets_one_signed_step() {
 }
 
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
+// spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]
 fn claim_and_static_opens() {
     let mut net = Net::new(1, 0);
@@ -434,6 +436,7 @@ fn claim_and_static_opens() {
 }
 
 // spec/sync.md §5: stamps under the head's write key; an old key gets 9 with the head; expiry, tombstone, unknown label; identical re-uploads log nothing
+// spec/sync.md §5 (upload refusals): bad stamp, expired, tombstoned
 #[test]
 fn upload_rules() {
     let mut net = Net::new(1, 0);

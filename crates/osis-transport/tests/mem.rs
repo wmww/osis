@@ -98,6 +98,7 @@ fn ephemeral_client_keys_differ() {
 }
 
 // spec/sync.md §10: a client MUST check the server's key against the address.
+// spec/sync.md §10 (server key check)
 #[test]
 fn pinned_key_mismatch_refused() {
     let net = Net::new(3);

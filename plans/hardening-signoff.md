@@ -15,7 +15,7 @@ Reference: plans/testing.md §6, notes/testing.md (budgets, spec map), notes/syn
 - Final report (in notes/mvp-progress.md and to the owner): what works to spec, deviations with the requirement limit or issue that justifies each, open issues by tag, spec edits made during the run, suggested next plans (query design pass, push wake-ups, BLE, browser build).
 
 ## Steps
-- [ ] Map + gaps; negative and metadata tests.
+- [x] Map + gaps; negative and metadata tests.
 - [ ] Review passes and fixes; scale checks; panic and dependency audit.
 - [ ] Notes, deletions, report.
 
@@ -23,3 +23,4 @@ Reference: plans/testing.md §6, notes/testing.md (budgets, spec map), notes/syn
 The report is written, the owner can read notes/overview.md and know the state, and `plans/` holds only plans for future work the owner has not asked for yet. Delete this plan last.
 
 ## Progress
+- Step 1 done: tools/spec_map.py rule checklist (46 rules: 42 tested, 1 issued, 3 vacuous; `--gaps` in CI), anchors cited on existing tests, new negative tests (perm owner and edge writes, link commit form, edge change/removal inbox, keep at least, QUIC auth and 0-RTT) and metadata tests (osis-node metadata.rs); no security bug found; issues/tests-spec-gaps.md.
