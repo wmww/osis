@@ -63,6 +63,8 @@ impl SyncEngine {
         let mut blobs = Vec::new();
         let mut touched = Vec::new();
         let mut fetch = Vec::new();
+        // entries new here that no writer vouched for (a deposit, or a server's junk)
+        let mut unvouched = Vec::new();
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
@@ -78,7 +80,14 @@ impl SyncEngine {
                         None => conn.is_none(),
                     });
                     match self.state.entries.get(&(l, blob_id)).cloned() {
-                        None => self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown }),
+                        None => {
+                            if server.is_some() && stamp.is_none() {
+                                // bytes held before (another label's entry) stay whatever happens
+                                let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
+                                unvouched.push((blob_id, fresh));
+                            }
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown })
+                        }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             // another wrap only if it opens to the blob key this node knows
                             let known = self.state.blobs.get(&blob_id).map(|r| r.key.clone());
@@ -140,6 +149,9 @@ impl SyncEngine {
         }
         self.engine.put_blobs(blobs)?;
         self.open_entries(l, &touched)?;
+        if let Some(s) = server {
+            self.drop_unvouched(s, l, &unvouched)?;
+        }
         // commit blobs announced without bytes are fetched now; the rest (chunks) lazily
         if let Some(c) = conn {
             let g = self.group_of(&l);
@@ -156,7 +168,39 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Held read secrets of a group, newest first.
+    /// Forgets new unstamped entries that neither opened nor unwrap under a held read secret:
+    /// a server can make up any number of them, so nothing of them is kept (spec/requirements.md:
+    /// peer input never causes unbounded storage). A real deposit under an epoch not held yet
+    /// comes back stamped once a writer promotes it, or with the next replay.
+    fn drop_unvouched(&mut self, server: ServerKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+        let mut gone = Vec::new();
+        for (b, fresh) in ids {
+            let junk = self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none() && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_none());
+            if !junk {
+                continue;
+            }
+            self.state.set_present(server, l, *b, false);
+            self.state.drop_entry(l, *b);
+            self.fetching.remove(b);
+            if *fresh && !self.state.blobs.contains_key(b) {
+                gone.push(*b);
+            }
+        }
+        if !gone.is_empty() {
+            self.engine.run(|tx| {
+                for b in &gone {
+                    tx.txn.delete_blob(b);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// Held read secrets of a group, newest first; then those derived from its owner's (a
     /// thing that got secrets of its own, or one owned by a key actor this node holds: the
     /// rotation that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).

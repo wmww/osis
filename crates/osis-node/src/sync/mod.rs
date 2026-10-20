@@ -175,6 +175,8 @@ pub(crate) struct LConn {
     pub path: Vec<Step>,
     /// A hinted open walked to an unverified step: the server's path is checked after the open.
     pub walk: Option<Step>,
+    /// A static-entry open's entry box, opened once the server's path verified the head.
+    pub entry_box: Option<osis_schema::core_types::SecretBox>,
 }
 
 pub(crate) struct Conn {

@@ -150,6 +150,86 @@ fn key_actor_not_presented_elsewhere_spec_sync_5() {
     }
 }
 
+// spec/requirements.md (peer input never causes unbounded storage), spec/sync.md §3 (only writers
+// add stamped entries; deposits are readable by co-readers): a server's made-up unstamped
+// entries under an opened label that open under nothing held leave no entry and no blob.
+#[test]
+fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let before = net.sync(a).entries(&l).len();
+    let conn = net.conn_to(a, sv).expect("connected");
+    let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 4096]).collect();
+    let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
+    net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
+    net.settle(10_000);
+    assert_eq!(net.sync(a).entries(&l).len(), before, "no junk entry kept");
+    for b in &blobs {
+        assert!(!net.sync(a).holds_blob(&osis_label::blob_id(b)), "no junk blob kept");
+    }
+}
+
+// spec/sync.md §2, §5 (a key actor claims the current step by its static entry; the step's entry
+// box carries the read secret; walks verify each step under its parent, the genesis against the
+// label ID), spec/crypto.md §4 (sealed boxes are unauthenticated): a server's forged head and
+// entry box teach the key actor no secret.
+#[test]
+fn forged_entry_box_teaches_nothing_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let seed = Secret32::from_bytes([0x3c; 32]);
+    let ka = net.engine(a).hold_key_actor(seed.clone()).unwrap();
+    let held = |se: &SyncEngine| se.engine().epochs(&ka).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
+    let keys = osis_crypto::KeyActorKeys::from_seed(&seed);
+    // the server's own label, its genesis boxing a secret of its choice to the key actor
+    let b = 0x60u8;
+    let (read, write, admin, dep) = (Secret32::from_bytes([b; 32]), Secret32::from_bytes([b + 1; 32]), Secret32::from_bytes([b + 2; 32]), Secret32::from_bytes([b + 3; 32]));
+    let skeys = StepKeys::derive(&read, &write, &admin, 0, &dep, &genesis_label(&admin, 0));
+    let delete = label_role_key(LabelRole::Delete, &admin, 0);
+    let reader = osis_label::Reader::Static { signing: keys.signing.verifying_key(), entry: osis_label::EntryTo::Sealed(keys.kem.public()) };
+    let (fake, set) = register(Parent::Genesis(&delete), skeys, &[reader], (Epoch::new(0, [0; 16]).unwrap(), &read), &mut SeededRng::from_u64(9)).unwrap();
+    let entry_box = set.entry_box(&fake.label, &keys.signing.verifying_key()).cloned().expect("entry box");
+    let target = LabelId([0x42; 16]);
+    let addr = net.address(sv);
+    let mut se: SyncEngine = net.take(a);
+    let before = held(&se);
+    let acts = se.follow(ka, target, vec![addr]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    let mut path = None;
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            let reply = match proof {
+                osis_label::Proof::Static { .. } => Message::Opened { id, head: fake.clone(), entry_box: Some(entry_box.clone()) },
+                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
+            };
+            let r = se.handle(Event::Bytes { conn, bytes: frame(reply) });
+            path = path.or_else(|| sent(&r, conn).into_iter().find_map(|m| if let Message::Path { id, label, .. } = m { (label == target).then_some(id) } else { None }));
+            next.extend(r);
+        }
+        acts = next;
+    }
+    assert_eq!(held(&se), before, "nothing learned before the path verified");
+    let pid = path.expect("the head's path is asked for");
+    se.take_diagnostics();
+    se.handle(Event::Bytes { conn, bytes: frame(Message::PathReply { id: pid, steps: vec![fake.clone()], more: false }) });
+    assert!(se.take_diagnostics().iter().any(|x| x.contains("server path does not verify")));
+    assert_eq!(held(&se), before, "a forged head's box teaches nothing");
+}
+
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
 // chunks]" at untrusted nodes), spec/sync.md §5 (token holders delete must-not-hold bodies): a
 // purged large value's chunk blobs leave the server.

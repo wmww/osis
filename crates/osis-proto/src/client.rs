@@ -26,6 +26,13 @@ const MAX_SAMPLES: usize = 9;
 const MIN_PONGS: usize = 3;
 /// Reconcile messages one reconciliation may send before it is abandoned (a misbehaving peer).
 pub const MAX_RECONCILE_MESSAGES: usize = 4096;
+/// IDs one reconciliation may find missing on either side, and ranges it may have queued, before
+/// it is abandoned (a responder splitting without end; about 64 MB and 13 MB at most).
+pub const MAX_RECONCILE_IDS: usize = 1 << 21;
+pub const MAX_RECONCILE_QUEUED: usize = 1 << 17;
+/// Sync pages in a row without events before the exchange is abandoned (a peer handing out
+/// fresh cursors and nothing else).
+pub const MAX_EMPTY_PAGES: u32 = 16;
 
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
@@ -65,6 +72,8 @@ pub enum Command {
     Subscribe { labels: Vec<LabelId> },
     Unsubscribe { labels: Vec<LabelId> },
     Signal { label: LabelId, blob: Vec<u8>, wrap: Wrap, auth: PublishAuth },
+    /// Stop following a label's Path pages (the node no longer wants them).
+    StopPath { label: LabelId },
     Close,
 }
 
@@ -142,10 +151,14 @@ enum Pending {
     Open(LabelId),
     Register(LabelId),
     Path(LabelId),
+    /// A Path exchange the node stopped: its reply is dropped.
+    PathStopped(LabelId),
     Upload(LabelId, Vec<BlobId>),
     Deposit(LabelId, BlobId),
     Delete(LabelId, Vec<BlobId>),
-    Sync { label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, inline_limit: u64 },
+    /// `gained`: the IDs the request listed (a Want may name only those); `empty`: pages in a
+    /// row without events before this one.
+    Sync { label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, inline_limit: u64, gained: Vec<BlobId>, empty: u32 },
     Reconcile(LabelId, u64),
     Fetch(LabelId, Vec<BlobId>),
     Subscribe(Vec<LabelId>),
@@ -155,7 +168,7 @@ enum Pending {
 impl Pending {
     fn label(&self) -> Option<LabelId> {
         match self {
-            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, _) => Some(*l),
+            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, _) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
             Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe => None,
         }
@@ -166,7 +179,7 @@ impl Pending {
             Pending::Ping { .. } => 2,
             Pending::Open(_) => 4,
             Pending::Register(_) => 7,
-            Pending::Path(_) => 8,
+            Pending::Path(_) | Pending::PathStopped(_) => 8,
             Pending::Upload(..) => 10,
             Pending::Deposit(..) => 12,
             Pending::Delete(..) => 14,
@@ -358,7 +371,7 @@ impl ClientSession {
                         rest.push(e);
                     }
                 }
-                let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit };
+                let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit, gained: gained.clone(), empty: 0 };
                 self.request(out, |id| Message::Sync { id, label, cursor, inline_limit, entries: inline, gained }, pending);
                 self.upload(label, rest, out);
             }
@@ -400,6 +413,13 @@ impl ClientSession {
                 }
             }
             Command::Signal { label, blob, wrap, auth } => send(out, Message::Signal { label, blob, wrap, auth }),
+            Command::StopPath { label } => {
+                for p in self.pending.values_mut() {
+                    if matches!(p, Pending::Path(l) if *l == label) {
+                        *p = Pending::PathStopped(label);
+                    }
+                }
+            }
             Command::Close => self.close(out),
         }
     }
@@ -434,7 +454,8 @@ impl ClientSession {
             batches.push(b);
         }
         rec.sent += batches.len();
-        if rec.sent > MAX_RECONCILE_MESSAGES {
+        let found = rec.r.need.len().saturating_add(rec.r.have.len());
+        if rec.sent > MAX_RECONCILE_MESSAGES || found > MAX_RECONCILE_IDS || rec.r.queued() > MAX_RECONCILE_QUEUED {
             self.recs.remove(&label);
             event(out, ClientEvent::Refused { label: Some(label), kind: 17, code: Code::REFUSED });
             return;
@@ -533,6 +554,7 @@ impl ClientSession {
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
             (Pending::Register(label), M::Ok { .. }) => event(out, E::Registered { label }),
             (Pending::Register(label), M::Step { step, .. }) => event(out, E::Head { label, head: step }),
+            (Pending::PathStopped(_), M::PathReply { .. }) => {}
             (Pending::Path(label), M::PathReply { steps, more, .. }) => {
                 let last = steps.last().map(Step::id);
                 event(out, E::PathSteps { label, steps, more });
@@ -547,13 +569,21 @@ impl ClientSession {
             (Pending::Subscribe(labels), M::Status { codes, .. }) if codes.len() == labels.len() => event(out, E::Subscribed { labels, codes }),
             (Pending::Unsubscribe, M::Ok { .. }) => {}
             (Pending::Deposit(label, blob_id), M::Budget { code, entries_left, bytes_left, head, .. }) => event(out, E::Budget { label, blob_id, code, entries_left, bytes_left, head }),
-            (Pending::Sync { label, cursor: asked, entries, inline_limit }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
+            (Pending::Sync { label, cursor: asked, entries, inline_limit, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
                 if !entries.is_empty() {
                     let blob_ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
                     event(out, E::EntryStatus { label, blob_ids, codes, head: None });
                 }
-                let stuck = more && events.is_empty() && asked == Some(cursor);
+                let empty = if events.is_empty() { empty.saturating_add(1) } else { 0 };
+                let stuck = more && events.is_empty() && (asked == Some(cursor) || empty >= MAX_EMPTY_PAGES);
                 event(out, E::Events { label, events, cursor: Some(cursor) });
+                // a Want answers the gained IDs this Sync listed, nothing else (spec/wire.md §11.2)
+                let asked_for: std::collections::BTreeSet<BlobId> = gained.into_iter().collect();
+                let n = want.len();
+                let want: Vec<BlobId> = want.into_iter().filter(|b| asked_for.contains(b)).collect();
+                if want.len() < n {
+                    event(out, E::PeerError(Error::Malformed("want names an ID the sync did not list")));
+                }
                 if !want.is_empty() {
                     event(out, E::Want { label, ids: want });
                 }
@@ -561,7 +591,7 @@ impl ClientSession {
                     event(out, E::PeerError(Error::Malformed("sync page without progress")));
                 } else if more {
                     let next = |id| Message::Sync { id, label, cursor: Some(cursor), inline_limit, entries: vec![], gained: vec![] };
-                    self.request(out, next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit });
+                    self.request(out, next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, gained: vec![], empty });
                 } else {
                     event(out, E::Synced { label });
                 }

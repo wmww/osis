@@ -169,6 +169,7 @@ impl SyncEngine {
             last_sync: 0,
             path: Vec::new(),
             walk: None,
+            entry_box: None,
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);
@@ -209,14 +210,17 @@ impl SyncEngine {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
         let g = lc.group;
         let tried = lc.tries.first().cloned();
-        // a static entry: the head's entry box carries the read secret of the registered epoch
-        if let (Some(Try::Static { kem, .. }), Some(b)) = (&tried, &entry_box) {
-            match osis_label::open_entry_box(b, &head, osis_label::EntryKey::Kem(kem)) {
-                Ok((Some(e), secret)) => self.engine.learn_read_secret(&g, e, secret)?,
-                Ok((None, _)) => self.diag("entry box without its epoch".into()),
-                Err(e) => self.diag(format!("entry box: {e}")),
-            }
-            return self.accept_head(conn, l, head, out);
+        // a static entry: the head's entry box carries the read secret of the registered epoch;
+        // a sealed box is unauthenticated, so the head's path is verified first and the secret
+        // must derive the head's sync key (`path_steps`, `static_secret`)
+        if let (Some(Try::Static { .. }), Some(b)) = (&tried, entry_box)
+            && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
+        {
+            lc.entry_box = Some(b);
+            lc.phase = Phase::Verifying;
+            lc.head = Some(head);
+            lc.path.clear();
+            return self.command(conn, Command::Path { label: l, after: None }, out);
         }
         if let Some(Try::Sync { step: None, index, .. }) = &tried
             && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l))
@@ -240,18 +244,23 @@ impl SyncEngine {
 
     pub(crate) fn path_steps(&mut self, conn: ConnId, l: LabelId, steps: Vec<Step>, more: bool, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) else { return Ok(()) };
-        // an opened head confirmed: steps registered since the Open reply move it on
+        // an opened head confirmed: steps registered since the Open reply move it on (the
+        // session follows `more`)
         if lc.phase == Phase::Open {
             for s in steps {
                 self.new_head(conn, l, s, out)?;
             }
-            let head = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).filter(|x| x.phase == Phase::Open).and_then(|x| x.head.as_ref().map(Step::id));
-            if more && let Some(h) = head {
-                self.command(conn, Command::Path { label: l, after: Some(h) }, out)?;
+            let open = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.phase == Phase::Open);
+            if more && !open {
+                self.command(conn, Command::StopPath { label: l }, out)?;
             }
             return Ok(());
         }
         if lc.phase != Phase::Verifying {
+            // pages nobody waits for any more: stop following them
+            if more {
+                self.command(conn, Command::StopPath { label: l }, out)?;
+            }
             return Ok(());
         }
         // each page verified as it comes, so a server's bad path is never buffered (spec/sync.md
@@ -274,13 +283,22 @@ impl SyncEngine {
         let head = lc.head.take();
         let g = lc.group;
         lc.walk = None;
+        let entry_box = lc.entry_box.take();
         match (ok, head) {
             (true, Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;
+                if let Some(b) = entry_box
+                    && !self.static_secret(conn, l, &g, &h, &b)?
+                {
+                    return self.drop_try(conn, l, out);
+                }
                 self.accept_head(conn, l, h, out)
             }
             _ => {
                 self.diag("server path does not verify".into());
+                if more {
+                    self.command(conn, Command::StopPath { label: l }, out)?;
+                }
                 let now = self.raw_now();
                 if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
                     lc.phase = Phase::Failed;
@@ -289,6 +307,38 @@ impl SyncEngine {
                 Ok(())
             }
         }
+    }
+
+    /// Learns the read secret a verified head's entry box carries for the static entry tried,
+    /// when it derives the head's sync key (spec/sync.md §2: the step boxes the read secret of
+    /// its epoch; anything else is a forged box). False when it does not.
+    fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
+        let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
+        let index = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.index);
+        let (e, secret) = match osis_label::open_entry_box(b, head, osis_label::EntryKey::Kem(&kem)) {
+            Ok((Some(e), secret)) => (e, secret),
+            Ok((None, _)) => {
+                self.diag("entry box without its epoch".into());
+                return Ok(false);
+            }
+            Err(e) => {
+                self.diag(format!("entry box: {e}"));
+                return Ok(false);
+            }
+        };
+        let indexes: Vec<u64> = match index {
+            Some(i) => vec![i],
+            None => (0..HINT_INDEXES).collect(),
+        };
+        let Some(i) = indexes.into_iter().find(|i| osis_label::match_secret(&head.keys.sync, LabelRole::Sync, *i, [&secret]).is_some()) else {
+            self.diag("entry box secret does not derive the head's sync key".into());
+            return Ok(false);
+        };
+        if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
+            lc.index = Some(i);
+        }
+        self.engine.learn_read_secret(g, e, secret)?;
+        Ok(true)
     }
 
     /// The head is good: derive its keys, subscribe, sync.

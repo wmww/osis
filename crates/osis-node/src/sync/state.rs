@@ -338,6 +338,14 @@ impl State {
         }
     }
 
+    /// Forgets an entry that never counted (junk a server announced): no tombstone.
+    pub fn drop_entry(&mut self, l: LabelId, b: BlobId) {
+        if self.entries.remove(&(l, b)).is_some() {
+            self.del(key(ENTRY, &[&l.0, &b.0]));
+            self.feed.deleted(l, b);
+        }
+    }
+
     /// Forgets tombstones past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
         let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_core::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
