@@ -106,7 +106,7 @@ proptest! {
         let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
         let mut boot = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
         let Fragment::Seq(sq) = &full else { return Ok(()) };
-        let dead: Vec<crate::stamp::Dot> = sq.elems.iter().filter(|(_, e)| e.flag() && matches!(e.content, SeqContent::Char(_))).map(|(d, _)| d.clone()).filter(|_| r.chance(1, 2)).collect();
+        let dead: Vec<crate::stamp::Dot> = sq.elems().iter().filter(|(_, e)| e.flag() && matches!(e.content, SeqContent::Char(_))).map(|(d, _)| d.clone()).filter(|_| r.chance(1, 2)).collect();
         if dead.is_empty() {
             return Ok(());
         }
@@ -116,8 +116,8 @@ proptest! {
         for x in &dead {
             let mut e = crate::seq::SeqElem::bare();
             e.deleted = Some((st.clone(), false));
-            e.content = sq.elems[x].content.clone();
-            d.elems.insert(x.clone(), e);
+            e.content = sq.elems()[x].content.clone();
+            d.elems_mut().insert(x.clone(), e);
         }
         let cx = DeltaCtx { ts: ts(1 << 30), own: src, range: CounterRange { lo: 1, hi: 2 }, kind: DeltaKind::Writer };
         let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: Fragment::Seq(d) }, &cx, None).unwrap();
@@ -203,7 +203,7 @@ fn as_carried(f: &Fragment) -> Fragment {
 fn drop_deleted_chars(f: &mut Fragment) {
     match f {
         Fragment::Seq(s) => {
-            for e in s.elems.values_mut() {
+            for e in s.elems_mut().values_mut() {
                 match &mut e.content {
                     SeqContent::Char(_) if e.deleted.as_ref().is_some_and(|d| d.1) => e.content = SeqContent::None,
                     SeqContent::Frag(x) => drop_deleted_chars(x),
@@ -562,7 +562,7 @@ fn text_pages_spec_8() {
     // every third char deleted by its own commit: one run per char
     let Fragment::Seq(s) = &mut st else { panic!() };
     let b = crate::stamp::Source::node(osis_core::Tid::from_bytes([2; 15]));
-    for (k, e) in s.elems.values_mut().enumerate().filter(|(k, _)| k % 3 == 0) {
+    for (k, e) in s.elems_mut().values_mut().enumerate().filter(|(k, _)| k % 3 == 0) {
         e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
     }
     let mut pages = MemoryPages::with_params(params);
@@ -583,7 +583,7 @@ fn st(t: u64, b: u8, c: u64) -> Stamp {
     Stamp::new(ts(t << 16), n(b), c)
 }
 fn seq_of(elems: BTreeMap<Dot, SeqElem>, reset: Option<Stamp>) -> Fragment {
-    Fragment::Seq(Seq { text: true, meta: Meta { reset, w: None }, elems })
+    Fragment::Seq(Seq::new(true, Meta { reset, w: None }, elems))
 }
 fn one(d: Dot, e: SeqElem) -> Fragment {
     seq_of(BTreeMap::from([(d, e)]), None)
@@ -601,19 +601,19 @@ fn long_text(len: u64) -> Fragment {
 }
 fn records(f: &Fragment) -> usize {
     match f {
-        Fragment::Seq(s) => s.elems.len(),
+        Fragment::Seq(s) => s.elems().len(),
         _ => panic!("not a sequence"),
     }
 }
 /// Every placed element in order.
 fn order(f: &Fragment) -> Vec<Dot> {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
-    let p = place(&s.elems);
-    p.order.iter().zip(&p.span).flat_map(|(d, k)| (0..*k).map(move |i| nth(d, i))).collect()
+    let p = place(s.elems(), s.text);
+    p.rows.iter().flat_map(|r| (0..r.span).map(move |i| nth(&r.dot, i))).collect()
 }
 fn expanded(f: &Fragment) -> Fragment {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
-    Fragment::Seq(Seq { text: s.text, meta: s.meta.clone(), elems: expand(s.elems.clone()) })
+    Fragment::Seq(Seq::new(s.text, s.meta.clone(), expand(s.elems().clone())))
 }
 fn snapshot_of(f: &Fragment) -> Vec<u8> {
     encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()

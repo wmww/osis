@@ -179,8 +179,7 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
 }
 
 // spec/sync.md §3: a class above MAX_BLOB splits greedily in aspect-list order; spec/commits.md
-// §1: one delta that cannot fit a blob is refused by the writer.
-// spec/commits.md §1 (delta fits a blob): a single delta over MAX_BLOB is refused
+// §1 (delta fits a blob): a delta over MAX_BLOB (a caller's mistake: a value left unchunked) is refused.
 #[test]
 fn projection_splits_by_size() {
     let at = ts(1_000_000);
@@ -197,6 +196,63 @@ fn projection_splits_by_size() {
     let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
     huge.aspects.push(AspectWrite::new(t(3), Ak::new("/app/f").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
     assert!(matches!(build(huge, &mut MemoryBlobs::default()), Err(Error::Build(_))));
+}
+
+/// A struct of string registers (spec/crdt.md §3.1).
+struct Wide(bool);
+
+impl osis_crdt::View for Wide {
+    fn encoding(&self) -> Option<osis_crdt::Encoding> {
+        Some(if self.0 { osis_crdt::Encoding::Struct } else { osis_crdt::Encoding::Register })
+    }
+    fn project<'a>(&self, v: &'a Value) -> Option<std::borrow::Cow<'a, Value>> {
+        Some(std::borrow::Cow::Borrowed(v))
+    }
+    fn field(&self, _: u64) -> Option<Wide> {
+        self.0.then_some(Wide(false))
+    }
+    fn field_default(&self, _: u64) -> Option<Value> {
+        None
+    }
+    fn case(&self, _: u64) -> Option<Wide> {
+        None
+    }
+    fn element(&self) -> Option<Wide> {
+        None
+    }
+    fn key(&self) -> Option<Wide> {
+        None
+    }
+}
+
+// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many registers just
+// under the chunk threshold pages its field map, so its delta fits a blob; left unpaged it would
+// not and is refused. A small blob bound and page parameters stand in for the format's (65
+// fields, MAX_BLOB / 64 each).
+#[test]
+fn wide_struct_delta_fits_spec_commits_1() {
+    use osis_crdt::{MemoryPages, PageParams};
+    let at = ts(1_000_000);
+    let max_blob = 64 << 10;
+    let v = Value::Map((0..65).map(|i| (Value::Int(i), Value::Str("w".repeat(max_blob / 64 - 16)))).collect());
+    let mut w = Writer::new(at, Source::node(t(1)), 1);
+    let fragment = create(&mut w, &Wide(true), &v).unwrap();
+    let hi = w.range().hi;
+    let small = PageParams { target: 4096, cut: osis_core::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8 };
+    let enc = |params: PageParams| {
+        let mut pages = MemoryPages::with_params(params);
+        encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()
+    };
+    let attempt = |delta: Vec<u8>| {
+        let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+        b.max_blob = max_blob;
+        b.aspects.push(AspectWrite::new(t(3), Ak::new("/app/w").unwrap(), 1, hi, delta));
+        build(b, &mut MemoryBlobs::default())
+    };
+    let paged = enc(small);
+    assert!(paged.len() <= small.target);
+    attempt(paged).unwrap();
+    assert!(matches!(attempt(enc(PageParams { target: usize::MAX, ..small })), Err(Error::Build(_))));
 }
 
 // spec/commits.md §5: a purge rewrite keeps header and commit ID, drops bodies, may be

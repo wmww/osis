@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Runs never exceed this many elements (§3.3 rule 3).
 pub const MAX_RUN: usize = 1 << 16;
+/// A list run closes once its content reaches this many bytes (§3.3 rule 3; spec/wire.md `CHUNK_MAX`).
+pub const CHUNK_MAX: usize = 256 * 1024;
 
 /// What the commit header provides (§2.4) plus the delta's own tables (§3.2).
 #[derive(Clone, Debug)]
@@ -590,8 +592,31 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
 fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
     let v: Vec<(&Dot, &SeqElem)> = wire_sorted(elems, &cx.own);
     let mut out = Vec::new();
+    let mut cut: Vec<(&[(&Dot, &SeqElem)], Option<Vec<Item>>)> = Vec::new();
     for (start, n) in runs(text, &v) {
         let run = &v[start..start + n];
+        if text || !run.iter().any(|(_, e)| has_content(e)) {
+            cut.push((run, None));
+            continue;
+        }
+        // a list run also closes once its content reaches CHUNK_MAX bytes (§3.3 rule 3)
+        let (mut from, mut size, mut fs) = (0, 0, Vec::new());
+        for (j, (_, e)) in run.iter().enumerate() {
+            let it = match &e.content {
+                Content::Frag(f) => encode(f, cx),
+                _ => unreachable!("list runs are uniform in content"),
+            };
+            size += cbor::encode(&it).len();
+            fs.push(it);
+            if size >= CHUNK_MAX || j + 1 == run.len() {
+                cut.push((&run[from..=j], Some(std::mem::take(&mut fs))));
+                from = j + 1;
+                size = 0;
+            }
+        }
+    }
+    for (run, fs) in cut {
+        let n = run.len();
         let (d0, e0) = run[0];
         let first = enc_dot(d0, cx);
         let creation_i = match &e0.created {
@@ -610,7 +635,9 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                 Item::Array(vec![enc_anchor(a, cx), Item::Array(segs.into_iter().map(|(c, k)| Item::Array(vec![u(c), u(k)])).collect())])
             }
         };
-        let content = if !run.iter().any(|(_, e)| has_content(e)) {
+        let content = if let Some(fs) = fs {
+            Item::Array(fs)
+        } else if !run.iter().any(|(_, e)| has_content(e)) {
             Item::Array(vec![])
         } else if text {
             Item::Text(run.iter().filter(|(_, e)| has_content(e)).map(|(_, e)| match &e.content {
@@ -618,10 +645,7 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                 _ => unreachable!(),
             }).collect())
         } else {
-            Item::Array(run.iter().map(|(_, e)| match &e.content {
-                Content::Frag(f) => encode(f, cx),
-                _ => unreachable!("list runs are uniform in content"),
-            }).collect())
+            unreachable!("list content is encoded above")
         };
         let mut posw = Vec::new();
         for (k, (d, e)) in run.iter().enumerate() {

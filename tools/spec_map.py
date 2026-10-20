@@ -103,7 +103,7 @@ def spec_sections():
 # (file, section, anchor, a substring of the rule's sentence). Every MUST sentence matches one;
 # the others are refusal rules ("cannot", "refused", "only") checked by negative tests.
 RULES = [
-    ("spec/commits.md", "1", "delta fits a blob", "One delta MUST fit a blob"),
+    ("spec/commits.md", "1", "delta fits a blob", "Paging and chunking keep every delta and page within a blob"),
     ("spec/commits.md", "2", "membership no expires", "Membership commits MUST NOT carry `expires`"),
     ("spec/commits.md", "3", "shared key commit form", "(link key, recovery key) MUST use it"),
     ("spec/commits.md", "4", "signature", "signature MUST verify"),

@@ -18,6 +18,7 @@ mod remap;
 mod seq;
 mod shape;
 mod seq_diff;
+mod seq_lin;
 mod seq_ops;
 mod seq_span;
 mod seq_wire;

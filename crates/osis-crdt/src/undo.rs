@@ -85,6 +85,7 @@ fn undo_reset<V: View>(w: &mut Writer, o: &Fragment, buffer: &dyn UndoBuffer, vi
 fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn UndoBuffer, view: &V, path: &mut Vec<PathSeg>, root: bool) -> Result<Option<Fragment>, Error> {
     let r = w.delta_stamp();
     let slot = present_slot(s, o.encoding());
+    let slot = slot.as_deref();
     let out = match o {
         Fragment::Register(reg) => {
             if reg.reset.is_some() {
@@ -185,6 +186,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 _ => None,
             };
             let mut entries = BTreeMap::new();
+            // removed entries, joined per key: a key held by several entries comes back as one
+            // (re-adding each at the undo's one stamp would tie their registers)
+            let mut removed: BTreeMap<osis_core::Value, Fragment> = BTreeMap::new();
             for (d, e) in &m.entries {
                 if e.frag.is_some() && u.made(d) {
                     entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None });
@@ -192,22 +196,29 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
                     let sub = cur.and_then(|c| c.entries.get(d)).and_then(|x| x.frag.as_deref());
-                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d)));
+                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, d, k)));
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();
                     if let Some(c) = res? {
                         entries.insert(d.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) });
                     }
-                } else if e.reset.is_some() {
-                    let kv = prev.as_ref().and_then(|p| match p {
-                        Fragment::Map(p) => p.entries.get(d).and_then(|x| Some((x.key.clone()?, x.frag.as_ref()?.read()?))),
-                        _ => None,
-                    });
-                    if let Some((k, v)) = kv {
-                        let nd = w.fresh().dot;
-                        entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)) });
+                } else if e.reset.is_some()
+                    && let Some(Fragment::Map(p)) = &prev
+                    && let Some(x) = p.entries.get(d)
+                    && let (Some(k), Some(f)) = (&x.key, &x.frag)
+                {
+                    match removed.get_mut(k) {
+                        Some(acc) => acc.join_into((**f).clone(), None, &mut crate::changes::Changes::new()),
+                        None => {
+                            removed.insert(k.clone(), (**f).clone());
+                        }
                     }
                 }
+            }
+            for (k, f) in removed {
+                let Some(v) = f.read() else { continue };
+                let nd = w.fresh().dot;
+                entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)) });
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }
@@ -277,11 +288,18 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
     Ok((!out.is_empty()).then_some(out))
 }
 
-fn entry_frag(p: &Fragment, d: &Dot) -> Option<Fragment> {
-    match p {
-        Fragment::Map(m) => m.entries.get(d).and_then(|e| e.frag.as_deref().cloned()),
-        _ => None,
+/// What a nested edit into entry `d` of key `k` saw before the commit: the join of the key's
+/// live entries (§5.6 path ops), or the entry alone if none is live.
+fn entry_frag(p: &Fragment, d: &Dot, k: &osis_core::Value) -> Option<Fragment> {
+    let Fragment::Map(m) = p else { return None };
+    let mut acc: Option<Fragment> = None;
+    for f in m.live_dots(k).into_iter().filter_map(|x| m.entries.get(x)?.frag.as_deref()) {
+        match &mut acc {
+            Some(a) => a.join_into(f.clone(), None, &mut crate::changes::Changes::new()),
+            None => acc = Some(f.clone()),
+        }
     }
+    acc.or_else(|| m.entries.get(d).and_then(|e| e.frag.as_deref().cloned()))
 }
 
 /// The buffer below a map entry: paths are relative to the entry the undone write edited.
@@ -297,7 +315,7 @@ impl Fragment {
     /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
     /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
     /// writes, and of a map, set or bag the delta does not reset only the elements it writes
-    /// (a key's lowest live entry is the one a local write went into, §5.6). Everything else,
+    /// (of a map also every live entry of a key it edits into: undo reads their join, §5.6). Everything else,
     /// sequences included (their undo reads by position), is kept whole.
     pub fn footprint(&self, delta: &Fragment) -> Fragment {
         if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
@@ -309,7 +327,13 @@ impl Fragment {
                 fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.footprint(df)))).collect(),
             }),
             (Fragment::Map(s), Fragment::Map(d)) => {
-                Fragment::Map(Map::new(s.meta.clone(), d.entries.keys().filter_map(|k| Some((k.clone(), s.entries.get(k)?.clone()))).collect()))
+                let mut keep: std::collections::BTreeSet<&Dot> = d.entries.keys().collect();
+                for e in d.entries.values() {
+                    if let (Some(_), Some(k)) = (&e.frag, &e.key) {
+                        keep.extend(s.live_dots(k));
+                    }
+                }
+                Fragment::Map(Map::new(s.meta.clone(), keep.into_iter().filter_map(|k| Some((k.clone(), s.entries.get(k)?.clone()))).collect()))
             }
             (Fragment::Set(s), Fragment::Set(d)) => {
                 Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })

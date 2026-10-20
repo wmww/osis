@@ -34,7 +34,7 @@
 - Core schema ID is 16 zero bytes: well known, and no randomly minted ID collides with it.
 - The creation record is a struct value so `/created` stores exactly the hashed bytes. Link and recovery keys derive their nonce from the seed, so the link or card alone names the key actor's tid.
 - Tree-node content hashes cover their children's hashes, not the bytes below: an edit rehashes one path (O(change)), while covered-bytes hashing rehashes up to the whole value per level. The root stays a function of the value's bytes, so equality by content holds. Nodes close on a content-hash byte (prolly-tree style) so an insert does not shift every later node.
-- `MAX_BLOB / CHUNK_THRESHOLD = 64` (issues/struct-delta-size.md): 128 KiB keeps ordinary documents inline; 8 MiB blobs fit one protocol message and browser memory.
+- `MAX_BLOB / CHUNK_THRESHOLD = 64`: 128 KiB keeps ordinary documents inline; 8 MiB blobs fit one protocol message and browser memory.
 - Value depth 64, any object 512: bounds decoder recursion; deeper app values are refused at write.
 
 ## AK namespaces

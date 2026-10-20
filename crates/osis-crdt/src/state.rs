@@ -293,8 +293,8 @@ pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
             }
             Fragment::Bag(Bag { kind: target.bag_kind()?, meta, elems })
         }
-        Encoding::Text => Fragment::Seq(Seq { text: true, meta, elems: seq::embed_text(r) }),
-        Encoding::List => Fragment::Seq(Seq { text: false, meta, elems: BTreeMap::new() }),
+        Encoding::Text => Fragment::Seq(Seq::new(true, meta, seq::embed_text(r))),
+        Encoding::List => Fragment::Seq(Seq::new(false, meta, BTreeMap::new())),
         Encoding::Struct => Fragment::Struct(Struct { meta, fields: BTreeMap::new() }),
         Encoding::Enum => Fragment::Enum(Enum { meta, case: None, payloads: BTreeMap::new() }),
         Encoding::Set => Fragment::Set(Set { meta, elems: BTreeMap::new() }),
