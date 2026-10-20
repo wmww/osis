@@ -27,10 +27,10 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `chunker` | chunker bounds, incremental = one-shot | osis-core | live |
 | `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | live |
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
-| `delta` | delta and snapshot decoders per encoding | osis-crdt | planned |
+| `delta` | delta and snapshot decoders (writer, snapshot, import forms), read and join of what decodes | osis-crdt | live |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |
 | `page` | page and link page | osis-crdt, osis-label | planned |
-| `box` | sealed box, `/secrets` box, history box, wrap | osis-crypto, osis-keys | planned |
+| `box` | sealed, `/secrets`, symmetric and history box openers, wrap, blob decrypt, unpad (fixed keys); `/secrets` and `/keys` value decoders | osis-crypto, osis-schema | live |
 | `step` | step, claim set | osis-label | live |
 | `inbox`, `signal` | inbox payload, signal envelope | osis-label | live |
 | `link_card` | link and card, text forms | osis-label | live |

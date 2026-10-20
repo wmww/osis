@@ -20,6 +20,7 @@ osis-commit = { path = "../crates/osis-commit" }
 osis-crypto = { path = "../crates/osis-crypto" }
 osis-label = { path = "../crates/osis-label" }
 osis-proto = { path = "../crates/osis-proto" }
+osis-crdt = { path = "../crates/osis-crdt" }
 
 [profile.release]
 debug = 1
@@ -111,6 +112,20 @@ bench = false
 [[bin]]
 name = "proto_frame"
 path = "fuzz_targets/proto_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "delta"
+path = "fuzz_targets/delta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "box"
+path = "fuzz_targets/box.rs"
 test = false
 doc = false
 bench = false
