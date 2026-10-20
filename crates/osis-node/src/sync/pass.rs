@@ -226,13 +226,24 @@ impl SyncEngine {
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
-    /// §3) for members whose node's heartbeat under the label reports it stranded (§4); delivered
-    /// by inbox. The other trigger (a member seen without a box, `Engine::reseal_due`) is not
-    /// wired: issues/reseal-inbox-only-dots.md.
+    /// §3): members seen without a box at a current epoch (`Engine::reseal_due`) and members
+    /// whose node's heartbeat under the label reports it stranded (§4); delivered by inbox and
+    /// placed under the actor's labels like any membership commit.
     fn reseal(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
         if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
             return Ok(());
+        }
+        // the complete pass was checked just above
+        struct Passed;
+        impl crate::flows::SyncState for Passed {
+            fn complete_pass(&self, _: &Tid) -> bool {
+                true
+            }
+        }
+        match self.engine.reseal_due(&a, &Passed) {
+            Ok(done) => self.take_done(done)?,
+            Err(e) => self.diag(format!("re-seal of {a}: {e}")),
         }
         // the newest heartbeat of each node under the label, when it reports it stranded
         let me = self.engine.tid();
@@ -304,11 +315,10 @@ impl SyncEngine {
         Ok(Some(v))
     }
 
-    /// The bodies label `l` of `g` should hold: the closure's, never inbox-only ones; under a
-    /// replaced label membership-class ones only (spec/sync.md §2: its content entries go).
+    /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
+    /// membership-class ones only (spec/sync.md §2: its content entries go).
     fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
         let mut bodies = self.engine.label_bodies(g)?;
-        bodies.retain(|b| !self.state.inbox_only.contains(&b.commit));
         if self.is_replaced(g, l) {
             bodies.retain(|b| b.membership);
         }
@@ -599,9 +609,6 @@ impl SyncEngine {
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let closure = self.engine.closure(g);
         for (c, ais) in self.engine.certificates(g) {
-            if self.state.inbox_only.contains(&c) {
-                continue;
-            }
             // the aspects this node's copies under the label carry: a chain grown since (an
             // owner's `/created` this node learned later) places the rest
             let placed: BTreeSet<usize> = self
@@ -710,7 +717,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
-        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(id, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a) && !self.state.inbox_only.contains(id)).map(|(id, _)| *id).collect();
+        let ids: Vec<CommitId> = self.engine.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership() && m.header.aspects.iter().any(|x| x.tid == a)).map(|(id, _)| *id).collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {

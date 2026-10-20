@@ -72,9 +72,6 @@ pub trait SyncState {
 pub struct Done {
     pub commits: Vec<CommitId>,
     pub deliveries: Vec<Delivery>,
-    /// Commits never uploaded under labels: re-seals travel by inbox only (spec/permissions.md
-    /// §3); node-sync honours it.
-    pub inbox_only: Vec<CommitId>,
     /// A self-removal: drop the secrets this node lost (`Engine::drop_lost_secrets`) once the
     /// commit is placed (node-sync's `carry_out` does).
     pub drop_lost: bool,
@@ -91,7 +88,6 @@ impl Done {
     pub(crate) fn extend(&mut self, o: Done) {
         self.commits.extend(o.commits);
         self.deliveries.extend(o.deliveries);
-        self.inbox_only.extend(o.inbox_only);
         self.drop_lost |= o.drop_lost;
         self.departed.extend(o.departed);
     }
