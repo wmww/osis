@@ -2,7 +2,7 @@
 //! epochs through history boxes; `SecretStore` persists what a node holds.
 
 use crate::aspects::{from_schema, history_key, observe_secrets};
-use crate::epoch::ActorEpochs;
+use crate::epoch::{ActorEpochs, Unchecked};
 use crate::Error;
 use osis_core::{Role, Tid};
 use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
@@ -110,18 +110,19 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
                 continue;
             };
             let candidates: Vec<Secret32> = epochs.role(k.role).reading_secrets(&e).into_iter().cloned().collect();
+            let unchecked = epochs.role(k.role).is_reading_only(&e);
             if candidates.is_empty() {
                 continue;
             }
-            // what a reading-only secret opens is reading-only too
-            let unchecked = epochs.role(k.role).is_reading_only(&e);
             done.insert(k.clone());
             progress = true;
             // a reading-only epoch may hold several candidates: the one that opens the box counts
             let mut opened = Err(Error::Mismatch("history box"));
+            let mut source = None;
             for s in &candidates {
                 opened = open_history(s, actor, k.role, &e, ct).map_err(Error::from);
                 if opened.is_ok() {
+                    source = epochs.role(k.role).reading_source(&e, s);
                     break;
                 }
             }
@@ -130,8 +131,11 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
                     let re = epochs.role_mut(k.role);
                     re.rotation(e, earlier.iter().map(|(x, _)| *x));
                     for (x, sx) in earlier {
+                        // what a reading-only secret opens is reading-only too, from its source
                         if unchecked {
-                            re.set_reading_secret(x, sx);
+                            if let Some(u) = source {
+                                re.set_reading_secret(x, sx, u);
+                            }
                         } else if re.secret(&x).is_none() {
                             re.set_secret(x, sx);
                         }
@@ -152,16 +156,16 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, epochs: &mut ActorEpochs) 
 /// Everything a node learns from `actor`'s `/secrets`: the epochs named, its boxes' secrets,
 /// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
 /// `SecretsWrite::applied` per applied rotation commit and `snapshot_keyed` per held snapshot.
-/// `checked`: `secrets` is the applied valid state (its boxes replace reading-only secrets);
-/// false for boxes of a pending or invalid commit, whose secrets are kept for reading only and
-/// never replace one (spec/crypto.md §4). Returns what could not be opened.
-pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs, checked: bool) -> Result<Vec<Error>, Error> {
+/// `unchecked`: `None` when `secrets` is the applied valid state (its boxes replace
+/// reading-only secrets); the source for boxes of a pending commit, whose secrets are kept for
+/// reading only and never replace one (spec/crypto.md §4). Returns what could not be opened.
+pub fn ingest(actor: &Tid, secrets: &Secrets, opener: &Opener, epochs: &mut ActorEpochs, unchecked: Option<Unchecked>) -> Result<Vec<Error>, Error> {
     observe_secrets(secrets, epochs)?;
     let (opened, failed) = open_boxes(actor, secrets, opener);
     for o in opened {
         let re = epochs.role_mut(o.role);
-        if !checked {
-            re.set_reading_secret(o.epoch, o.secret);
+        if let Some(u) = unchecked {
+            re.set_reading_secret(o.epoch, o.secret, u);
         } else if re.secret(&o.epoch).is_none() {
             re.set_secret(o.epoch, o.secret);
         }

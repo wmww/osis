@@ -182,8 +182,6 @@ fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_sto
             #[cfg(unix)]
             std::os::unix::fs::DirBuilderExt::mode(&mut d, 0o700);
             d.create(p).map_err(|e| Error::Storage(e.to_string()))?;
-            // a directory made before stores were created owner-only keeps its mode otherwise
-            osis_store::restrict_to_owner(p).map_err(|e| Error::Storage(e.to_string()))?;
             let b = osis_store::RedbBackend::open(&p.join("db.redb")).map_err(|e| Error::Storage(e.to_string()))?;
             Ok((Box::new(b), Box::new(osis_store::FileRoot::new(p.join("root")))))
         }
@@ -283,6 +281,16 @@ impl Osis {
     }
 
     pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
+        // a store made before its files were created owner-only: tightened where possible
+        // (best effort), else reported
+        #[cfg(feature = "file-store")]
+        if let StoreAt::Dir(p) = &cfg.store {
+            for f in [p.clone(), p.join("db.redb"), p.join("root")] {
+                if let Some(why) = osis_store::restrict_to_owner(&f) {
+                    sync.engine_mut().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: why });
+                }
+            }
+        }
         let node = sync.engine().tid();
         let events = sync.engine_mut().subscribe();
         let (dispatch, queue) = Dispatch::new();

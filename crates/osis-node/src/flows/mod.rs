@@ -97,19 +97,29 @@ pub(crate) fn ak(s: &str) -> Result<Ak> {
     Ak::new(s).map_err(|_| Error::Misuse("ak"))
 }
 
-/// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as new
-/// entries whatever is live (`Op::Put`), so a re-seal or grant re-writing an entry is carried
-/// whole, not a write into one the member never got or nothing for an unchanged value
-/// (spec/crypto.md §4), and a grant resets nothing (spec/permissions.md §2).
-pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite) -> Result<()> {
+/// Writes a `/secrets` write into `m`: removed boxes reset; boxes and history boxes as remove +
+/// put, so a re-seal or grant re-writing an entry is a new entry there, not a write into one the
+/// member never got or nothing for an unchanged value (spec/crypto.md §4), and one live entry
+/// per key stays. `invite`: an invite grant, which may reset nothing (spec/permissions.md §2):
+/// fresh puts only (`Op::Put`), a second live entry where the key is live.
+pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, invite: bool) -> Result<()> {
+    let put = |m: &mut Mutation, field: u64, k: Value, v: Value| -> Result<()> {
+        if invite {
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field), PathSeg::Key(k)], op: Op::Put(v) })?;
+        } else {
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(k.clone()) })?;
+            m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(field), PathSeg::Key(k)], op: Op::Set(v) })?;
+        }
+        Ok(())
+    };
     for (k, b) in &w.boxes {
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Put(b.to_value()) })?;
+        put(m, 0, k.to_value(), b.to_value())?;
     }
     for k in &w.removed {
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
     }
     for (k, h) in &w.history {
-        m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(h.clone())) })?;
+        put(m, 1, k.to_value(), Value::Bytes(h.clone()))?;
     }
     Ok(())
 }
@@ -310,7 +320,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         for a in actors {
             let s = secrets_in(tx, &a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s, true) {
+            if tx.core.ingest_secrets(&a, &s, None) {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }
@@ -328,7 +338,7 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
         for a in &actors {
             let s = secrets_in(tx, a)?;
             tx.core.touch();
-            if tx.core.ingest_secrets(a, &s, true) {
+            if tx.core.ingest_secrets(a, &s, None) {
                 save_epochs(tx, a)?;
                 any = true;
             }

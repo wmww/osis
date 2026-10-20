@@ -136,10 +136,18 @@ mod file {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         drop(RedbBackend::open(&dir.join("db")).unwrap());
         assert!(FileRoot::new(dir.join("root")).load().unwrap().is_some());
-        osis_store::restrict_to_owner(&dir).unwrap();
+        assert_eq!(osis_store::restrict_to_owner(&dir), None);
         assert_eq!(mode(&dir.join("db")), 0o600);
         assert_eq!(mode(&dir.join("root")), 0o600);
         assert_eq!(mode(&dir), 0o700);
+        // a symlink is never followed; a missing file is no error
+        let other = dir.join("other");
+        std::fs::write(&other, b"x").unwrap();
+        open(&other);
+        std::os::unix::fs::symlink(&other, dir.join("link")).unwrap();
+        assert_eq!(osis_store::restrict_to_owner(&dir.join("link")), None);
+        assert_eq!(mode(&other), 0o644);
+        assert_eq!(osis_store::restrict_to_owner(&dir.join("missing")), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

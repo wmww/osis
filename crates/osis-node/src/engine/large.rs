@@ -16,7 +16,7 @@ use osis_crypto::Secret32;
 use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, LargeParams, Reuse};
 use osis_schema::{Large, Path, Schema, Step, Type, large_positions, type_at};
 use osis_schema::core_types::is_membership_class;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Upper bound on a large value read back whole (local policy; streams read beyond it).
@@ -69,6 +69,20 @@ fn chunk_one(v: &mut Value, l: &Large, base: Option<&Link>, put: &mut Put<'_>) -
         }
     }
     Ok(())
+}
+
+/// `l`'s path as op path segments; `None` for a set element or a map key.
+fn segs(l: &Large) -> Option<Vec<PathSeg>> {
+    if l.map_key {
+        return None;
+    }
+    l.path.0.iter().map(|s| match s {
+        Step::Field(i) => Some(PathSeg::Field(*i)),
+        Step::Key(k) => Some(PathSeg::Key(k.clone())),
+        Step::Case(c) => Some(PathSeg::Case(*c)),
+        Step::Index(i) => Some(PathSeg::Index(*i)),
+        Step::Elem(_) => None,
+    }).collect()
 }
 
 /// The root link the state holds at `prefix` + `l`'s path now.
@@ -127,7 +141,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
     let PathOp { path, op } = op;
     let ty = if path.is_empty() { root } else { type_at(s, &root, &schema_path(path)).map(|x| x.0).unwrap_or(Type::Any) };
     match op {
-        Op::Set(v) | Op::Replace(v) => chunk_value(v, s, &ty, state.map(|f| (&path[..], f)), put),
+        Op::Set(v) | Op::Replace(v) | Op::Put(v) => chunk_value(v, s, &ty, state.map(|f| (&path[..], f)), put),
         Op::Add(v) => chunk_value(v, s, &ty, None, put),
         // list items (a text's are characters: never chunked)
         Op::Insert { items, .. } if !matches!(s.expand(&ty).as_deref(), Ok(Type::Text)) => {
@@ -254,17 +268,18 @@ impl Engine {
         Ok(r)
     }
 
-    /// Chunks or tree nodes `lost` that live values link were deleted at a server: a purger
-    /// that had not seen a concurrent reuse judged them dead (spec/sync.md §1). Writes each
-    /// aspect of a commit listing one whose state links one again (replace with its value read
-    /// whole, every large value re-chunked against its current tree) with those held here
-    /// re-encrypted, where this node may write the thing and knows the aspect's schema. One
-    /// commit; returns it, if one was written.
-    pub fn relink(&mut self, lost: &BTreeSet<BlobId>) -> Result<Option<CommitId>> {
+    /// Chunks or tree nodes `lost`, gone from every server of a label, that this node's own
+    /// commit links (spec/sync.md §1: a purger that had not seen this node's reuse judged them
+    /// dead). For each aspect whose newest own commit linking one is held: every large position
+    /// of the current value whose tree holds one is written again (`Op::Put` at that position:
+    /// no reset, so every other write stays), with the lost blobs re-encrypted and the own
+    /// commit's retention and expiry. `allow` gates each aspect (the caller's back-off). Needs
+    /// write on the thing and the aspect's schema registered here. One commit, if any.
+    pub fn relink(&mut self, lost: &BTreeSet<BlobId>, allow: &mut dyn FnMut(&Tid, &Ak) -> bool) -> Result<Option<CommitId>> {
         let held: BTreeSet<BlobId> = self.run(|tx| {
             let mut out = BTreeSet::new();
             for b in lost {
-                if tx.txn.get_blob(b)?.is_some() {
+                if tx.txn.read_blob(b, 0, 0)?.is_some() {
                     out.insert(*b);
                 }
             }
@@ -273,42 +288,81 @@ impl Engine {
         if held.is_empty() {
             return Ok(None);
         }
+        let me = self.tid();
         // reuse links within one position of one aspect: the aspects of the commits listing it
-        // the schema each was written with: `Some(None)` untyped, `None` not registered here
-        let mut aspects: BTreeMap<(Tid, Ak), Option<Option<Arc<Schema>>>> = BTreeMap::new();
-        for m in self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| held.contains(&c.blob))) {
-            let h = &m.header;
-            for a in &h.aspects {
-                let schema = match a.schema {
-                    None => Some(None),
-                    Some(i) => h.schemas.get(i).and_then(|(s, _)| self.core.schemas.get(s)).map(|s| Some(s.clone())),
-                };
-                aspects.entry((a.tid, a.ak.clone())).or_insert(schema);
-            }
-        }
+        let cands: BTreeSet<(Tid, Ak)> = self.core.commits.values().filter(|m| m.header.chunks.iter().any(|c| held.contains(&c.blob))).flat_map(|m| m.header.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+        let now = self.now().0;
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);
-        for ((tid, ak), schema) in aspects {
-            // an unknown schema: a typed value cannot be written back safely
-            let Some(schema) = schema else { continue };
+        for (tid, ak) in cands {
             if is_membership_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
                 continue;
             }
-            let linked = self.run(|tx| {
-                let Some(dedup) = tx.core.dedup(&tid) else { return Ok(None) };
-                let mut roots = Vec::new();
-                if let Some(v) = tx.state(&tid, &ak)?.and_then(Fragment::read) {
-                    links_in(&v, &mut roots);
+            let own: Vec<CommitId> = self.core.by_aspect.get(&(tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.commits.get(c).is_some_and(|m| m.header.author == me && m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
+            let (k, held2) = ((tid, ak.clone()), held.clone());
+            let found = self.run(|tx| {
+                let Some(dedup) = tx.core.dedup(&k.0) else { return Ok(None) };
+                for c in own {
+                    let Some(ai) = tx.core.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)) else { continue };
+                    let mut roots = Vec::new();
+                    for d in crate::apply::held_parts(tx, &c, ai)? {
+                        let f = match &d {
+                            osis_commit::Decoded::Delta(x) => &x.fragment,
+                            osis_commit::Decoded::Snapshot(x) => &x.fragment,
+                        };
+                        if let Some(v) = f.read() {
+                            links_in(&v, &mut roots);
+                        }
+                    }
+                    if tree_blobs(tx, &dedup, &roots)?.is_some_and(|t| !t.is_disjoint(&held2)) {
+                        return Ok(Some((c, ai)));
+                    }
                 }
-                tree_blobs(tx, &dedup, &roots)
+                Ok(None)
             })?;
-            if !linked.is_some_and(|s| !s.is_disjoint(&held)) {
+            let Some((c, ai)) = found else { continue };
+            let Some(a) = self.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { continue };
+            if a.expires.is_some_and(|t| t <= now) {
                 continue;
             }
-            let Ok(Some(v)) = self.get_full(&tid, &ak) else { continue };
+            // the schema it was written with: an unregistered typed one cannot be written back
+            let schema: Option<Arc<Schema>> = match a.schema {
+                None => None,
+                Some(i) => match self.core.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
+                    Some(s) => Some(s.clone()),
+                    None => continue,
+                },
+            };
+            let Some(state) = self.state(&tid, &ak)? else { continue };
+            let Some(v) = state.read() else { continue };
+            let core = osis_schema::core_schema();
+            let (sc, ty): (&Schema, Type) = match schema.as_deref().and_then(|s| s.aspects.get(ak.as_str()).map(|d| (s, d.ty.clone()))) {
+                Some(x) => x,
+                None => (core, Type::Any),
+            };
+            let mut ops = Vec::new();
+            for l in osis_schema::link_positions(sc, &v, &ty) {
+                // set elements and map keys have no position to write
+                let Some(path) = segs(&l) else { continue };
+                let Some(link) = base_at(&state, &[], &l) else { continue };
+                let hit = self.run(|tx| {
+                    let Some(dedup) = tx.core.dedup(&tid) else { return Ok(false) };
+                    Ok(tree_blobs(tx, &dedup, &[link])?.is_some_and(|t| !t.is_disjoint(&held)))
+                })?;
+                if hit {
+                    let raw = self.read_large(&tid, &link)?;
+                    // written whole without a reset: other writes at and around it stay
+                    ops.push(PathOp { path, op: Op::Put(raw) });
+                }
+            }
+            if ops.is_empty() || !allow(&tid, &ak) {
+                continue;
+            }
             let e = m.aspects.entry((tid, ak)).or_default();
             e.schema = schema;
-            e.ops.push(PathOp { path: Vec::new(), op: Op::Replace(v) });
+            e.retention = Some(a.retention);
+            e.expires = a.expires;
+            e.ops = ops;
         }
         if m.aspects.is_empty() {
             return Ok(None);

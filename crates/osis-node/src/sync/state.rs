@@ -490,7 +490,12 @@ impl State {
         }
     }
 
-    pub fn add_hint(&mut self, l: LabelId, h: Hint) {
+    /// Records a hint; a hint naming no key actor keeps the one an earlier hint followed for (an
+    /// inbox payload naming a followed label must not stall the follow).
+    pub fn add_hint(&mut self, l: LabelId, mut h: Hint) {
+        if h.via.is_none() {
+            h.via = self.hints.get(&l).and_then(|x| x.via);
+        }
         let mut w = Wr::new().raw(h.thing.as_bytes()).u32(h.servers.len() as u32);
         for a in &h.servers {
             w = w.bytes(a.url.as_bytes()).raw(&a.key);
@@ -593,4 +598,21 @@ pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things
         tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;
     }
     Ok(freed.difference(&kept).copied().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
+    // payload names the same label first (its static entry is still tried).
+    #[test]
+    fn inbox_hint_keeps_followed_key_actor_spec_sync_5() {
+        let mut s = State::default();
+        let (l, t, k) = (LabelId([1; 16]), Tid::from_bytes([2; 15]), Tid::from_bytes([3; 15]));
+        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: Some(k) });
+        s.add_hint(l, Hint { thing: t, servers: Vec::new(), via: None });
+        assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
+    }
 }

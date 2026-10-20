@@ -10,6 +10,11 @@ use osis_keys::{ActorEpochs, Error, MemberKeys, Opener, Recipient, ROLES, box_me
 use osis_schema::core_types::{Sealed, SealedBox, SecretBox, Secrets};
 use std::collections::BTreeSet;
 
+/// An unchecked source: a pending commit by node `n`.
+fn from(n: u8) -> osis_keys::Unchecked {
+    osis_keys::Unchecked { author: osis_core::Tid::from_bytes([n; 15]), commit: osis_core::CommitId([n; 32]) }
+}
+
 struct Forked {
     a: osis_core::Tid,
     view: ActorEpochs,
@@ -56,7 +61,7 @@ fn grant_boxes_every_current_epoch() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
-    assert!(ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap().is_empty());
+    assert!(ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap().is_empty());
     for (e, _) in f.view.read.held() {
         assert!(gv.read.secret(&e).is_some(), "{e:?}");
     }
@@ -75,7 +80,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, None).unwrap();
     // Establishment from the state as a snapshot (the grantee's commits elided).
     osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
     assert_eq!(kv.read.newest_held().map(|x| x.0), f.view.read.newest());
@@ -88,7 +93,7 @@ fn grant_to_key_actor() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, true).unwrap();
+    ingest(&f.a, &s, &Opener::KeyActor { member: k, seed: &seed }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()));
 }
 
@@ -189,7 +194,7 @@ fn unchecked_boxes_are_reading_only() {
     let mut s_fake = f.s.clone();
     fake.apply(&mut s_fake);
     let mut gv = ActorEpochs::default();
-    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, Some(from(1))).unwrap();
     for e in f.forks {
         assert_eq!(gv.read.reading_secrets(&e), vec![&Secret32::from_bytes([0xee; 32])]);
         assert!(gv.read.secret(&e).is_none() && gv.read.is_reading_only(&e));
@@ -202,13 +207,13 @@ fn unchecked_boxes_are_reading_only() {
     let real = box_member(&f.a, &f.view, &f.s, &rcpt, &read, &mut rng(9)).unwrap().unwrap();
     let mut s = f.s.clone();
     real.apply(&mut s);
-    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
     for e in f.forks {
         assert_eq!(gv.read.secret(&e), f.view.read.secret(&e));
     }
     assert_eq!(gv.read.newest_held().map(|x| x.0), f.view.read.newest());
     // an unchecked box arriving later changes nothing
-    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, Some(from(1))).unwrap();
     for e in f.forks {
         assert_eq!(gv.read.secret(&e), f.view.read.secret(&e));
     }
@@ -224,11 +229,11 @@ fn reading_only_through_history() {
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
-    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, Some(from(2))).unwrap();
     let older: Vec<_> = gv.read.held_newest_first().into_iter().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
     assert!(!older.is_empty());
     assert!(older.iter().all(|e| gv.read.is_reading_only(e)));
-    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, true).unwrap();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(older.iter().all(|e| !gv.read.is_reading_only(e) && gv.read.secret(e).is_some()));
 }
 
@@ -252,8 +257,8 @@ fn planted_reading_secret_does_not_hide_genuine_spec_crypto_4() {
     let mut s = f.s.clone();
     real.apply(&mut s);
     let mut gv = ActorEpochs::default();
-    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
-    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, false).unwrap();
+    ingest(&f.a, &s_fake, &Opener::Actor { member: g, epochs: &ge }, &mut gv, Some(from(1))).unwrap();
+    ingest(&f.a, &s, &Opener::Actor { member: g, epochs: &ge }, &mut gv, Some(from(2))).unwrap();
     for e in f.forks {
         let genuine = f.view.read.secret(&e).unwrap();
         assert_eq!(gv.read.reading_secrets(&e).len(), 2);
@@ -264,4 +269,35 @@ fn planted_reading_secret_does_not_hide_genuine_spec_crypto_4() {
     let older: Vec<_> = f.view.read.held().map(|x| x.0).filter(|e| !f.forks.contains(e)).collect();
     assert!(!older.is_empty());
     assert!(older.iter().all(|e| gv.read.reading_secrets(e) == vec![f.view.read.secret(e).unwrap()]), "history opened with the genuine one");
+}
+
+// spec/crypto.md §4: reading-only candidates are bounded: one per author node and epoch, at most
+// `MAX_READING_PER_AUTHOR` per author and `MAX_READING` per role; a source commit that applies or
+// is dropped takes its candidates with it.
+#[test]
+fn reading_candidates_bounded_spec_crypto_4() {
+    let ep = |n: u64| osis_crypto::Epoch::new(n, [n as u8; 16]).unwrap();
+    let mut a = ActorEpochs::default();
+    // one author: one candidate per epoch, then its cap
+    a.read.set_reading_secret(ep(1), Secret32::from_bytes([1; 32]), from(1));
+    a.read.set_reading_secret(ep(1), Secret32::from_bytes([2; 32]), from(1));
+    assert_eq!(a.read.reading_secrets(&ep(1)).len(), 1);
+    for n in 2..200 {
+        a.read.set_reading_secret(ep(n), Secret32::from_bytes([3; 32]), from(1));
+    }
+    let count = |a: &ActorEpochs| a.read.held_newest_first().len();
+    assert_eq!(count(&a), osis_keys::MAX_READING_PER_AUTHOR);
+    // another author still gets its candidate at a planted epoch
+    a.read.set_reading_secret(ep(1), Secret32::from_bytes([9; 32]), from(2));
+    assert_eq!(a.read.reading_secrets(&ep(1)).len(), 2);
+    // a total cap over authors
+    for n in 10..40u8 {
+        for e in 0..64 {
+            a.read.set_reading_secret(ep(1000 + e), Secret32::from_bytes([n; 32]), from(n));
+        }
+    }
+    assert_eq!(count(&a), osis_keys::MAX_READING);
+    // the source commit goes: its candidates too
+    assert!(a.drop_reading_from(&from(2).commit));
+    assert_eq!(a.read.reading_secrets(&ep(1)).len(), 1);
 }

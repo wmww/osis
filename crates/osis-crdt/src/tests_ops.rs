@@ -3,7 +3,7 @@
 use crate::batch::Batch;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
-use crate::stamp::{CounterRange, Source};
+use crate::stamp::{CounterRange, Dot, Source};
 use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
@@ -372,7 +372,8 @@ proptest! {
 }
 
 /// §5.6 `put_new`: a new entry whatever is live, carrying the value whole (an unchanged value
-/// too) and resetting nothing; the key reads as the join of its live entries.
+/// too) and resetting nothing; the key reads as the join of its live entries. A set into a live
+/// key is no put (its entry is not the delta's own).
 #[test]
 fn map_put_new_spec_5_6() {
     let view = AnyView;
@@ -383,8 +384,15 @@ fn map_put_new_spec_5_6() {
     for (t, v) in [(2u64, 1i64), (3, 7)] {
         let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
         batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Put(Value::Int(v)) }, &view).unwrap();
-        let (d, _) = batch.finish().unwrap();
-        assert!(d.is_put_only_map());
+        let (d, range) = batch.finish().unwrap();
+        let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
+        assert!(d.is_put_only_map(&own));
+        // a set into the live key writes into an existing entry: not a put
+        let mut batch = Batch::new(&st, Writer::new(ts(t << 16), a.clone(), t));
+        batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Set(Value::Int(v + 100)) }, &view).unwrap();
+        let (s, range) = batch.finish().unwrap();
+        let own = |x: &Dot| x.src == a && range.lo <= x.ctr && x.ctr < range.hi;
+        assert!(!s.is_put_only_map(&own));
         st.join(d);
         assert_eq!(st.read(), Some(one(v)));
     }
@@ -392,5 +400,5 @@ fn map_put_new_spec_5_6() {
     assert_eq!(m.entries.len(), 3);
     let mut batch = Batch::new(&st, Writer::new(ts(4 << 16), a, 4));
     batch.apply(&PathOp { path: vec![], op: Op::Remove(Value::Int(0)) }, &view).unwrap();
-    assert!(!batch.finish().unwrap().0.is_put_only_map());
+    assert!(!batch.finish().unwrap().0.is_put_only_map(&|_| true));
 }

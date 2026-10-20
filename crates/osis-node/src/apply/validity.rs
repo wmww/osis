@@ -9,7 +9,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
-use osis_core::{Ak, CommitId, Role, Tid, Value};
+use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::{At, Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
@@ -288,17 +288,25 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !grantee_boxes_only(&a.tid, fragment(d), &granted) {
+        if a.ak.as_str() == "/secrets" && !crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
             core.grant_overreach.insert((*id, *ai));
+        }
+    }
+    // one delta per `/secrets` aspect, known from the signed header: a node that never holds a
+    // part (dropped by expiry or purge) judges the others as one that held it does
+    for (ai, a) in h.aspects.iter().enumerate() {
+        if a.ak.as_str() == "/secrets" && a.hashes.len() != 1 {
+            core.grant_overreach.insert((*id, ai));
         }
     }
 }
 
 /// Whether a `/secrets` delta writes only the boxes of the members `granted` puts on `actor`, at
 /// or below each one's role, and history boxes at or below the highest granted role, as puts
-/// only: no reset of the value, a field, a map or any entry (spec/permissions.md §2). Judged from
+/// only: entries this delta creates (`own` dots), no reset of the value, a field, a map or any
+/// entry (spec/permissions.md §2). Judged from
 /// the delta alone, so every node judges it alike whatever it holds.
-fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
+fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>, own: &crate::engine::Owned) -> bool {
     // a write or reset of the whole value removes every box
     if !f.is_plain_struct() {
         return false;
@@ -308,7 +316,8 @@ fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), 
     let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.member)).is_some_and(|r| k.role <= *r);
     for id in [0, 1] {
         let Some(field) = st.field(id) else { continue };
-        if !field.is_put_only_map() {
+        // every entry new: created by this delta (its own dots), never a write into another's
+        if !field.is_put_only_map(&|d| own.owns(d)) {
             return false;
         }
         let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map) else { return false };
@@ -346,6 +355,19 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     Ok(any)
 }
 
+/// Whether `t`'s owner chain, as far as the held creation records go, has more than
+/// `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1). O(`MAX_OWNER_DEPTH`).
+pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
+    let mut cur = *t;
+    for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+        match core.created(&cur) {
+            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
 pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> bool {
     if core.void.contains(id) {
@@ -353,6 +375,11 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     }
     let Some(a) = h.aspects.get(ai) else { return false };
     let ak = a.ak.as_str();
+    // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
+    // it applies (spec/permissions.md §1); judged per delta from creation records alone
+    if ak != "/created" && too_deep(core, &a.tid) {
+        return false;
+    }
     // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline);
     // a compaction snapshot's writes are judged as their authors' when bodies are rebuilt
     if ak == "/created" || ak == "/members" || ak == "/tenures" || super::is_kind_snapshot(h.kind) {
@@ -535,14 +562,15 @@ mod tests {
         let grant = *done.commits.last().unwrap();
         let h = lp.peers[0].engine.header(&grant).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
-        assert!(!lp.peers[0].engine.core.grant_overreach.contains(&(grant, ai)), "an honest grant");
+        // an admin's grant writes remove + put (no exemption needed): valid as the admin's
+        assert!(lp.peers[0].engine.core.commits.get(&grant).unwrap().valid[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (bk, bx) = s.boxes.iter().find(|(k, _)| k.member == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
-        crate::flows::put_secrets(&mut m, t, &w).unwrap();
+        crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let h = lp.peers[0].engine.header(&id).unwrap();
@@ -596,6 +624,113 @@ mod tests {
             assert_eq!(lp.peers[r].engine.roster(&t).get(&c).map(|x| x.role), Some(Role::Read), "the edge itself is a valid invite grant");
             assert_eq!(lp.peers[r].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "receiver {r}");
         }
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` entries are new, created by its own
+    // delta. A record claiming the grantee's key at another member's entry dot would merge into
+    // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
+    #[test]
+    fn invite_grant_foreign_entry_dot_rejected_spec_perm_2() {
+        use osis_crdt::{Batch, Dot, Encoding, MemberRef, Op, PathOp, PathSeg, Source, Writer};
+        use osis_schema::Codec;
+        fn box_entries(f: &osis_crdt::Fragment) -> Vec<(Dot, Option<Value>)> {
+            let Some(MemberRef::Frag(osis_crdt::Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return Vec::new() };
+            let Some(MemberRef::Frag(osis_crdt::Fragment::Map(m))) = st.field(0).and_then(|x| x.slot(Encoding::Map)) else { return Vec::new() };
+            m.entries().map(|(d, _, k, _)| (d.clone(), k.cloned())).collect()
+        }
+        let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b, g) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None };
+        lp.peers[0].engine.grant(&t, &b, &read).unwrap();
+        let ak = osis_core::Ak::new("/secrets").unwrap();
+        let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
+        let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        // the admin's own box entry
+        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.member == a)?))).unwrap();
+        let bx = s.boxes.get(&a_key).unwrap().clone();
+        let g_key = ct::BoxKey { member: g, role: Role::Read, epoch: a_key.epoch.clone() };
+        let schema = osis_schema::core_schema();
+        let view = schema.view("/secrets").unwrap();
+        let ts = osis_core::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
+        let mut batch = Batch::new(&st, Writer::new(ts, Source::node(b), 1));
+        batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
+        let (d, range) = batch.finish().unwrap();
+        let own = crate::engine::Owned::Node { node: b, lo: range.lo, hi: range.hi };
+        let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
+        assert!(super::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
+        let (g_dot, _) = box_entries(&d).remove(0);
+        let mut forged = d.clone();
+        forged.map_dots(&|x| (*x == g_dot).then(|| a_dot.clone()));
+        assert_eq!(box_entries(&forged).remove(0).0, a_dot);
+        assert!(!super::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
+    }
+    // spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
+    // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at
+    // every node alike. The writer refuses such a commit.
+    #[test]
+    fn owner_chain_deeper_than_cap_invalid_spec_permissions_1() {
+        use osis_core::format::MAX_OWNER_DEPTH;
+        let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let x = osis_core::Ak::new("/x/a").unwrap();
+        let mut owner = lp.peers[0].engine.tid();
+        let mut shallow = owner;
+        for i in 0..MAX_OWNER_DEPTH {
+            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, owner);
+            m.set(t, &x, &Value::Int(1)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            if i == 0 {
+                shallow = t;
+            }
+            owner = t;
+        }
+        let at_cap = owner;
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&at_cap, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
+        // one commit writing a shallow thing and a thing one link too deep
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, owner);
+        m.set(d, &x, &Value::Int(9)).unwrap();
+        m.set(shallow, &x, &Value::Int(2)).unwrap();
+        assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        for r in [0, 1, 2] {
+            if r > 0 {
+                lp.deliver(r, &pk).unwrap();
+            }
+            assert_eq!(lp.peers[r].engine.get(&shallow, &x).unwrap(), Some(Value::Int(2)), "peer {r}");
+            assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
+        }
+    }
+    // spec/permissions.md §2: an invite grant's `/secrets` aspect is one delta (the header
+    // says so to every node), so validity never depends on which of several parts a node holds.
+    #[test]
+    fn invite_grant_secrets_one_delta_spec_perm_2() {
+        let mut lp = LocalPeer::new(2, 906, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let done = lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap();
+        let grant = *done.commits.last().unwrap();
+        let mut h = (*lp.peers[0].engine.header(&grant).unwrap()).clone();
+        let ai = h.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
+        let core = &mut lp.peers[0].engine.core;
+        let fake = osis_core::CommitId([0xfe; 32]);
+        super::note_required(core, &h, &fake, &[]);
+        assert!(!core.grant_overreach.contains(&(fake, ai)));
+        h.aspects[ai].hashes.push([0; 32]);
+        super::note_required(core, &h, &fake, &[]);
+        assert!(core.grant_overreach.contains(&(fake, ai)), "two deltas: no exemption whatever is held");
     }
 }
 

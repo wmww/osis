@@ -299,7 +299,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     let actors = held_actors(tx)?;
     let may_carry = |r: Role, e: &Epoch| uncovered(&secrets, held, r, e, &deps, &actors).is_empty();
     let rot = rotate(&a, roles, held, &secrets, members, &may_carry, &mut *tx.rng)?;
-    put_secrets(m, a, &rot.secrets)?;
+    put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
 }
@@ -516,7 +516,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, member: Tid, roles: &BTreeSet<
         return Err(Error::Misuse("the member's keyset is unknown"));
     };
     let mut m = Mutation::new();
-    put_secrets(&mut m, a, &w)?;
+    put_secrets(&mut m, a, &w, false)?;
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {

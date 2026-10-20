@@ -101,10 +101,12 @@ impl SyncEngine {
                     v.push(Try::Sync { step: None, index, key: label_role_key(LabelRole::Sync, s, index) });
                 }
             }
-            // only the key actor the hint follows for: presenting every held one would link their
-            // labels at this server (spec/requirements.md, blind nodes)
+            // only the key actor the hint follows for and those the thing's held `/members` lists
+            // (spec/sync.md §5): presenting every held one would link their labels at this server
+            // (spec/requirements.md, blind nodes)
             let via = self.state.hints.get(l).and_then(|h| h.via);
-            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via).map(|(_, x)| x));
+            let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || members.contains_key(t)).map(|(_, x)| x));
             return (None, v);
         };
         let index = gl.index;

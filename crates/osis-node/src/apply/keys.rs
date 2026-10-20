@@ -9,7 +9,7 @@ use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
 use osis_core::{CommitId, Role, Tid, Value};
 use osis_crdt::{Encoding, Fragment, MemberRef};
-use osis_keys::{KeysWrite, SecretsWrite};
+use osis_keys::{KeysWrite, ROLES, SecretsWrite};
 use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, Keys, SecretBox};
 use osis_schema::{AspectKey, Codec, Type, typed_read};
 use osis_store::Shred;
@@ -341,9 +341,29 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
-        if tx.core.ingest_secrets(&a, &s, false) {
+        let from = osis_keys::Unchecked { author: blob.header.author, commit: *id };
+        if tx.core.ingest_secrets(&a, &s, Some(from)) {
             crate::flows::save_epochs(tx, &a)?;
         }
+    }
+    Ok(())
+}
+
+/// Drops the reading-only secrets pending commit `id` gave: it applied (its boxes are checked
+/// now, or stripped as invalid) or was dropped (spec/crypto.md §4). An actor they were the only
+/// secrets of is left to the lost-access trigger, which drops them with what they read.
+pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let actors: Vec<Tid> = tx.core.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
+    for a in actors {
+        let Some(mut e) = tx.core.secrets.get(&a).cloned() else { continue };
+        e.drop_reading_from(id);
+        // an actor left with no secret is the lost-access trigger's: it forgets what they read
+        if ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty()) {
+            continue;
+        }
+        tx.core.touch();
+        tx.core.secrets.insert(a, e);
+        crate::flows::save_epochs(tx, &a)?;
     }
     Ok(())
 }

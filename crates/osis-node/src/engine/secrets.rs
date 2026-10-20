@@ -7,7 +7,7 @@ use super::Core;
 use crate::error::{Error, Result};
 use osis_core::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{Epoch, Secret32, dedup_secret};
-use osis_keys::{ActorEpochs, Opener, Provenance, ROLES};
+use osis_keys::{ActorEpochs, Opener, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets};
 
@@ -62,22 +62,22 @@ impl Core {
     }
 
     /// Opens what `/secrets` of `actor` holds for this node or for actors it holds secrets of
-    /// (spec/crypto.md §4). `checked`: `secrets` is the applied valid state; false for the boxes
-    /// of a pending commit, whose secrets are kept for reading only. Returns whether anything new
-    /// was learned.
-    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, checked: bool) -> bool {
+    /// (spec/crypto.md §4). `unchecked`: `None` when `secrets` is the applied valid state; the
+    /// source for the boxes of a pending commit, whose secrets are kept for reading only.
+    /// Returns whether anything new was learned.
+    pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>) -> bool {
         let before = self.secrets.get(actor).cloned();
         let mut epochs = before.clone().unwrap_or_default();
         let seed = self.id.seed().clone();
         let me = self.id.tid();
         let mut openers: Vec<(Tid, ActorEpochs)> = self.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
         openers.sort_by_key(|x| x.0);
-        let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, checked);
+        let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
-            let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs, checked);
+            let _ = osis_keys::ingest(actor, secrets, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs, unchecked);
         }
         for (m, e) in &openers {
-            let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs, checked);
+            let _ = osis_keys::ingest(actor, secrets, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
         }
         self.adopt_derived(actor, &mut epochs);
         let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
@@ -192,7 +192,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                             Value::List(i.established.iter().map(|p| uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
-                            Value::List(i.reading.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
+                            Value::List(i.reading.iter().map(|(s, u)| Value::List(vec![Value::Bytes(s.expose().to_vec()), Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
                         ])
                     })
                     .collect(),
@@ -201,6 +201,9 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
         .collect();
     osis_core::encode(&Value::List(roles))
 }
+
+/// The source given a reading-only secret persisted before sources were kept.
+const OLD_SOURCE: Unchecked = Unchecked { author: Tid::from_bytes([0; 15]), commit: osis_core::CommitId([0; 32]) };
 
 pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
@@ -238,13 +241,18 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
             };
             if let [s] = sec.as_slice() {
                 if old_ro {
-                    info.reading.push(secret(s)?);
+                    // source unknown in that layout: kept until a checked secret replaces it
+                    info.reading.push((secret(s)?, OLD_SOURCE));
                 } else {
                     info.secret = Some(secret(s)?);
                 }
             }
-            for s in reading {
-                info.reading.push(secret(s)?);
+            for c in reading {
+                let Value::List(c) = c else { return Err(bad()) };
+                let [s, Value::Bytes(author), Value::Bytes(commit)] = c.as_slice() else { return Err(bad()) };
+                let author = Tid::from_bytes(author.as_slice().try_into().map_err(|_| bad())?);
+                let commit = osis_core::CommitId(commit.as_slice().try_into().map_err(|_| bad())?);
+                info.reading.push((secret(s)?, Unchecked { author, commit }));
             }
         }
     }
@@ -281,12 +289,29 @@ mod tests {
         let (e1, e2) = (Epoch::new(1, [1; 16]).unwrap(), Epoch::new(2, [2; 16]).unwrap());
         a.read.set_secret(e1, Secret32::from_bytes([1; 32]));
         a.read.set_established(e1, Provenance::Own);
-        a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]));
-        a.read.set_reading_secret(e2, Secret32::from_bytes([3; 32]));
+        let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_core::CommitId([n; 32]) };
+        a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
+        a.read.set_reading_secret(e2, Secret32::from_bytes([3; 32]), from(2));
         a.read.set_established(e2, Provenance::Chain);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
         assert_eq!(b.read.newest_held().map(|x| x.0), Some(e1));
+    }
+
+    // spec/crypto.md §4: a store written before candidates kept their source (an 8th `Bool`
+    // field marking the secret reading-only) still loads it as reading-only.
+    #[test]
+    fn old_reading_only_layout_decodes() {
+        let e = Epoch::new(2, [2; 16]).unwrap();
+        let item = |ro: bool| Value::List(vec![e.to_wire(), Value::Int(1), Value::List(vec![]), Value::Bool(false), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Bytes(vec![7; 32])]), Value::Bool(ro)]);
+        for ro in [true, false] {
+            let b = osis_core::encode(&Value::List(vec![Value::List(vec![item(ro)]), Value::List(vec![]), Value::List(vec![])]));
+            let a = decode_epochs(&b).unwrap();
+            assert_eq!(a.read.is_reading_only(&e), ro);
+            assert_eq!(a.read.reading_secrets(&e), vec![&Secret32::from_bytes([7; 32])]);
+            assert_eq!(a.read.secret(&e).is_some(), !ro);
+            assert_eq!(decode_epochs(&encode_epochs(&a)).unwrap(), a);
+        }
     }
 }

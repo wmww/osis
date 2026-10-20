@@ -187,6 +187,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
         (Ty::Map(kt, vt), Frag::Map { entries, .. }) => {
             let k = random_value(r, kt, 1);
             match r.below(3) {
+                0 if r.chance(1, 4) => Some(ops::map_put_new(w, vt, &k, &random_value(r, vt, 1))),
                 0 => ops::map_put(w, Some(st), vt, &k, &random_value(r, vt, 1)),
                 1 => ops::map_remove(w, Some(st), &k),
                 _ => {

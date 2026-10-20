@@ -134,7 +134,7 @@ mod file {
             match File::open(&self.path) {
                 Ok(mut f) => {
                     // a root file made before files were created owner-only becomes so
-                    crate::backend::restrict_to_owner(&self.path).map_err(io)?;
+                    let _ = crate::backend::restrict_to_owner(&self.path);
                     f.read_to_end(&mut buf).map_err(io)?;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

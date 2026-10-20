@@ -327,32 +327,3 @@ fn random_delivery_converges_spec_crdt_4_1() {
         }
     }
 }
-
-
-// spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
-// links; a commit on a thing deeper is bad input (the writer's own commit goes through the same
-// examination as a received one), one at the cap applies everywhere.
-#[test]
-fn owner_chain_deeper_than_cap_rejected_spec_permissions_1() {
-    use osis_core::format::MAX_OWNER_DEPTH;
-    let mut lp = net(2, 23);
-    lp.sync_all().unwrap();
-    let mut owner = lp.peers[0].engine.tid();
-    for depth in 1..=MAX_OWNER_DEPTH + 1 {
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, owner);
-        m.set(t, &REG, &s("deep")).unwrap();
-        let r = lp.peers[0].commit(m);
-        if depth > MAX_OWNER_DEPTH {
-            assert_eq!(r.unwrap_err().class(), osis_core::ErrorClass::BadInput);
-            assert!(!lp.peers[0].engine.knows(&t));
-        } else {
-            r.unwrap();
-            owner = t;
-        }
-    }
-    lp.sync_all().unwrap();
-    let got = lp.peers[1].engine.get_typed(&owner, &REG).unwrap();
-    assert!(got.is_some(), "a thing at the cap applies at a receiver");
-    assert_eq!(got, lp.peers[0].engine.get_typed(&owner, &REG).unwrap());
-}

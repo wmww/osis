@@ -131,25 +131,19 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             return Ok(Exam::Pending(Reason::UnknownCreated(a.tid)));
         }
         // the owner chain up to a key actor (spec/permissions.md §4)
+        // a chain deeper than `MAX_OWNER_DEPTH` is not waited for further: its deltas are
+        // invalid (`validity::too_deep`, spec/permissions.md §1)
         let mut cur = a.tid;
         let mut chain = vec![cur];
-        let mut top = false;
         for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
             match chain_rec(&cur, tx.core) {
                 Some(CreationRecord::Thing { owner, .. }) => {
                     cur = owner;
                     chain.push(cur);
                 }
-                Some(CreationRecord::KeyActor { .. }) => {
-                    top = true;
-                    break;
-                }
+                Some(CreationRecord::KeyActor { .. }) => break,
                 None => return Ok(Exam::Pending(Reason::MissingChain(cur))),
             }
-        }
-        // creation records are immutable: every node judges this alike (spec/permissions.md §1)
-        if !top {
-            return Err(Error::BadInput("owner chain deeper than MAX_OWNER_DEPTH"));
         }
         // the author's chain certificates: it is on the owner chain, or held edge writes lead
         // from it to the chain (a revoked author keeps its certificates and still applies,
@@ -233,10 +227,14 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
             tx.core.touch();
-            if tx.core.pending.remove(&id).is_some() {
+            let was_pending = tx.core.pending.remove(&id).is_some();
+            if was_pending {
                 tx.txn.remove_pending(&id, Shred::Yes)?;
             }
             apply_verified(tx, &blob, parts, origin, received)?;
+            if was_pending {
+                keys::forget_unchecked(tx, &id)?;
+            }
             Ok(Ingested::Applied(id))
         }
         Exam::Pending(r) => {
@@ -400,6 +398,7 @@ impl Engine {
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
                             tx.core.pending.remove(&id);
+                            keys::forget_unchecked(tx, &id)?;
                             // secrets read from its boxes go unless something else reads them
                             crate::rotation::mark_lost_due(tx, things)?;
                             let now = tx.now();

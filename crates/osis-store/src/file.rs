@@ -21,7 +21,8 @@ impl RedbBackend {
     /// Opens or creates the database at `path` (owner-only, an existing file made so).
     pub fn open(path: &Path) -> Result<RedbBackend, BackendError> {
         crate::backend::owner_only().create(true).truncate(false).write(true).open(path).map_err(io)?;
-        crate::backend::restrict_to_owner(path).map_err(io)?;
+        // best effort; the `osis` handle reports what it could not tighten
+        let _ = crate::backend::restrict_to_owner(path);
         let db = Database::create(path).map_err(io)?;
         let w = db.begin_write().map_err(io)?;
         w.open_table(KV).map_err(io)?;
