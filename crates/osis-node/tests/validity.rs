@@ -236,7 +236,7 @@ fn commit_form_order_spec_crdt_3_3() {
     }
 }
 
-// spec/requirements.md, Authorship: every write is attributable and verifiable. A node cannot
+// spec/wire.md §4: spec/requirements.md, Authorship: every write is attributable and verifiable. A node cannot
 // sign a write claiming an actor whose write secret it does not hold (the author chain).
 #[test]
 fn foreign_actor_claim_refused_spec_wire_4() {

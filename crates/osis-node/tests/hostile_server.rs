@@ -415,7 +415,7 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
     (ids, Message::Push { label: *l, events, cursor: Cursor { log_id: [tag; 16], seq: 1 << 40 } })
 }
 
-// spec/requirements.md ("nothing trusts a server's word"; peer input never causes unbounded
+// spec/sync.md §3 (unvouched entries); spec/requirements.md ("nothing trusts a server's word"; peer input never causes unbounded
 // storage): the cap on unvouched entries counts per server, so one server's junk does not evict
 // what another server announces
 #[test]
