@@ -235,3 +235,19 @@ fn commit_form_order_spec_crdt_3_3() {
         lp.peers[0].commit(m).unwrap_or_else(|e| panic!("seed {seed}: {e}")).unwrap();
     }
 }
+
+// spec/requirements.md, Authorship: every write is attributable and verifiable. A node cannot
+// sign a write claiming an actor whose write secret it does not hold (the author chain).
+#[test]
+fn foreign_actor_claim_refused_spec_wire_4() {
+    let mut lp = net(3, 77);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("forged")).unwrap();
+    m.act_as(c);
+    assert!(lp.peers[1].engine.commit(m).is_err(), "a write claiming an actor the node does not act for was signed");
+}

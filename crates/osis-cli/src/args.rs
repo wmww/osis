@@ -102,6 +102,7 @@ pub enum Cmd {
     },
     /// Restore a person on a fresh store from its recovery card
     Restore {
+        /// The card, `@FILE` or `-` (stdin)
         card: String,
         #[arg(long, value_name = "ADDR")]
         server: Vec<String>,

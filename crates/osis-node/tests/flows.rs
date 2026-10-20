@@ -240,6 +240,28 @@ fn removal_rotates_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
 }
 
+// spec/permissions.md §3: a node that learns it lost read access to an actor MUST drop those
+// role secrets and every local unit it can no longer read by another path; spec/requirements.md,
+// Deletion: a node that lost access to data yields nothing it can no longer read.
+// Open: issues/lost-access-erasure.md (only the secrets are dropped).
+#[test]
+#[ignore]
+fn removal_erases_lost_content_spec_perm_3() {
+    let (mut lp, ps) = people(2, 509);
+    let (pa, pb) = (ps[0], ps[1]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("LOST-MARK")).unwrap();
+    lp.peers[0].engine.commit(m).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.get(&d, &ak("/t/reg")).unwrap(), Some(s("LOST-MARK")));
+    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&d));
+    assert_eq!(lp.peers[1].engine.get(&d, &ak("/t/reg")).unwrap(), None, "lost content kept");
+}
+
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot
 // change or remove anyone else; a member leaves by self-removal.
 // spec/permissions.md §2 (invite scope)

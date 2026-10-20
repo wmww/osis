@@ -18,8 +18,9 @@ pub struct RedbBackend {
 }
 
 impl RedbBackend {
-    /// Opens or creates the database at `path`.
+    /// Opens or creates the database at `path` (created owner-only).
     pub fn open(path: &Path) -> Result<RedbBackend, BackendError> {
+        crate::backend::owner_only().create(true).truncate(false).write(true).open(path).map_err(io)?;
         let db = Database::create(path).map_err(io)?;
         let w = db.begin_write().map_err(io)?;
         w.open_table(KV).map_err(io)?;

@@ -99,6 +99,21 @@ impl Value {
             Value::Unknown(u) => 1 + u.content.depth(),
         }
     }
+
+    /// `self.depth() > max`, recursing at most `max` levels (safe on untrusted nesting).
+    pub fn deeper_than(&self, max: usize) -> bool {
+        let below = |v: &Value, by: usize| max.checked_sub(by).is_none_or(|m| v.deeper_than(m));
+        match self {
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Bytes(_) => false,
+            Value::Tid(_) => max < 1,
+            Value::Enum(_, None) | Value::Link(_) => max < 2,
+            Value::Enum(_, Some(p)) => below(p, 2),
+            Value::List(l) => max < 1 || l.iter().any(|v| below(v, 1)),
+            Value::Map(m) => max < 1 || m.iter().any(|(k, v)| below(k, 1) || below(v, 1)),
+            Value::Set(s) => max < 2 || s.iter().any(|v| below(v, 2)),
+            Value::Unknown(u) => u.content.depth() >= max,
+        }
+    }
 }
 
 /// Position of a value's first encoded byte group, for ordering across kinds: major type, then

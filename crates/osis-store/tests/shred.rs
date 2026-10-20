@@ -194,6 +194,40 @@ fn unshredded_overwrite_is_recoverable_until_a_later_shred() {
     assert!(!recoverable(&mut s, &dev, b"old-MARK"));
 }
 
+// notes/local-store.md, Key tree: the same contract for a value above a quarter page (its own
+// unit): a later shred of the key reaches every earlier unshredded version, though each lived
+// in a unit of its own (spec/commits.md §5: dropping destroys every local copy).
+#[test]
+fn unshredded_large_overwrite_is_unrecoverable_after_a_later_shred() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(5);
+    let mut s = create(&dev, &mut rng);
+    let big = |m: &[u8]| [m, &[7u8; 300][..]].concat();
+    // Other units around the old value, so its leaf of the key tree holds only units the later
+    // writes leave alone.
+    let fill = |s: &mut Store, rng: &mut SeededRng, tag: &str| {
+        let mut t = s.transaction(rng).unwrap();
+        for i in 0..64u32 {
+            t.put_local(format!("{tag}{i:03}").as_bytes(), &big(b"filler"), Shred::No).unwrap();
+        }
+        t.commit().unwrap();
+    };
+    fill(&mut s, &mut rng, "a");
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_local(b"k", &big(b"old-BIG-MARK"), Shred::No).unwrap();
+    t.commit().unwrap();
+    fill(&mut s, &mut rng, "z");
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_local(b"k", &big(b"new"), Shred::No).unwrap();
+    t.commit().unwrap();
+    assert!(recoverable(&mut s, &dev, b"old-BIG-MARK"));
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_local(b"k", &big(b"newer"), Shred::Yes).unwrap();
+    t.commit().unwrap();
+    assert!(!recoverable(&mut s, &dev, b"old-BIG-MARK"), "an earlier version of a large value survived the shred");
+}
+
 // spec/requirements.md, Deletion: the file backend holds ciphertext only.
 #[cfg(feature = "file-backend")]
 #[test]
@@ -205,6 +239,9 @@ fn file_backend_holds_no_plaintext() {
     shred_all(&mut s, &mut rng);
     drop(s);
     let raw = std::fs::read(dev.dir.join("db")).unwrap();
+    // Store files are readable by their owner only.
+    #[cfg(unix)]
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(dev.dir.join("db")).unwrap().permissions()) & 0o077, 0);
     assert!(!contains(&raw, b"MARKER-file"));
     assert!(!contains(&raw, b"element 1"));
     let mut s = reopen(&dev);
