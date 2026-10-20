@@ -247,7 +247,8 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     Some(top.unwrap_or(Role::Write).max(Role::Write))
 }
 
-/// Records the roles `/secrets` and `/keys` deltas of a commit need.
+/// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
+/// of a membership commit that write beyond its grantees' boxes.
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
@@ -257,6 +258,67 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
             *e = (*e).max(r);
         }
     }
+    if h.kind != Kind::Membership {
+        return;
+    }
+    // the edges this commit puts, per target: what an invite grant may box
+    let mut granted: BTreeMap<(Tid, Tid), Role> = BTreeMap::new();
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() == "/members" {
+            for (_, k, frag) in entries(fragment(d)) {
+                if let (Some(Value::Tid(m)), Some(e)) = (k, frag.and_then(|f| f.read()).as_ref().and_then(edge_of)) {
+                    granted.insert((a.tid, m), e.role);
+                }
+            }
+        }
+    }
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai) else { continue };
+        if a.ak.as_str() == "/secrets" && !grantee_boxes_only(core, &a.tid, fragment(d), &granted) {
+            core.grant_overreach.insert((*id, *ai));
+        }
+    }
+}
+
+/// Whether a `/secrets` delta writes only the boxes of the members `granted` puts on `actor`, at
+/// or below each one's role, and history boxes at or below the highest granted role
+/// (spec/permissions.md §2: an invite grant carries the grantee's boxes for those roles). A
+/// reset of a box entry must be of a grantee's box this node knows (a remove + put); resets of
+/// unknown entries and of history entries pass (issues/invite-grant-secrets.md).
+fn grantee_boxes_only(core: &Core, actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
+    let Some(v) = f.slot(osis_crdt::Encoding::Struct) else { return true };
+    let osis_crdt::MemberRef::Frag(Fragment::Struct(st)) = v else { return true };
+    let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
+    let map_of = |id: u64| match st.field(id).and_then(|x| x.slot(osis_crdt::Encoding::Map)) {
+        Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) => Some(m.clone()),
+        _ => None,
+    };
+    let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.member)).is_some_and(|r| k.role <= *r);
+    if let Some(m) = map_of(0) {
+        for (d, _, k, _) in m.entries() {
+            let key = match k {
+                Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
+                None => match core.box_keys.get(&(*actor, d.clone())) {
+                    Some(k) => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()),
+                    None => continue,
+                },
+            };
+            if !key.is_some_and(|k| fits(&k)) {
+                return false;
+            }
+        }
+    }
+    if let Some(m) = map_of(1) {
+        for (_, _, k, _) in m.entries() {
+            let Some(k) = k else { continue };
+            let ok = typed(k, "history_key").and_then(|k| ct::HistoryKey::from_value(&k).ok()).is_some_and(|k| top.is_some_and(|t| k.role <= t));
+            if !ok {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.
@@ -297,6 +359,7 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     if ak == "/secrets"
         && let Some(c) = tl.membership_commit(id)
         && c.ops.iter().enumerate().any(|(i, o)| o.target == a.tid && tl.is_applied(&WriteId::Op(*id, i as u32)))
+        && !core.grant_overreach.contains(&(*id, ai))
     {
         return true;
     }
@@ -438,4 +501,46 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::local_peer::LocalPeer;
+    use crate::Mutation;
+    use osis_core::{Role, Value, WallMs};
+    use osis_schema::core_types as ct;
+
+    // spec/permissions.md §1, §2: the membership-class aspects are written only by admins, except
+    // invite grants, which "carry the grantee's boxes for those roles". A grant's `/secrets` part
+    // that writes another member's box is not the grantee's: it gets no invite exemption.
+    #[test]
+    fn invite_grant_secrets_limited_to_grantee_spec_perm_2() {
+        let mut lp = LocalPeer::new(3, 901, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let done = lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        let grant = *done.commits.last().unwrap();
+        let h = lp.peers[0].engine.header(&grant).unwrap();
+        let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
+        assert!(!lp.peers[0].engine.core.grant_overreach.contains(&(grant, ai)), "an honest grant");
+        // a grant of c that also writes a box keyed to b
+        let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let (bk, bx) = s.boxes.iter().find(|(k, _)| k.member == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
+        let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
+        crate::flows::put_secrets(&mut m, t, &w).unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let h = lp.peers[0].engine.header(&id).unwrap();
+        let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
+        assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
 }
