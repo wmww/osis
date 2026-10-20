@@ -135,14 +135,14 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                         .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
-                    // a key that is not live: only a put creates it
-                    let crate::ops::Op::Set(v) = &op.op else { return Err(Error::Mismatch("no live entry with that key")) };
-                    if !rest.is_empty() {
-                        return Err(Error::Mismatch("no live entry with that key"));
-                    }
+                    // a key that is not live: a new entry holding the op's writes against an
+                    // absent value (§5.6); an op that writes nothing creates nothing
                     let d = w.fresh().dot;
-                    let c = crate::ops::create(w, &vview, v)?;
-                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
+                    let c = match (&op.op, rest.is_empty()) {
+                        (crate::ops::Op::Set(v), true) => Some(crate::ops::create(w, &vview, v)?),
+                        _ => resolve(w, None, None, None, rest, op, &vview, false)?,
+                    };
+                    c.map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
             }
         }
