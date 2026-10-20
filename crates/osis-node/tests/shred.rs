@@ -40,12 +40,17 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 /// Whether an attacker decrypts `marker` from the rows ever written, starting from the keys the
 /// current tree yields and harvesting keys from opened tree nodes.
 fn recoverable(p: &mut Peer, marker: &[u8]) -> bool {
+    plaintexts(p).iter().any(|x| contains(x, marker))
+}
+
+/// Every row plaintext an attacker recovers.
+fn plaintexts(p: &mut Peer) -> Vec<Vec<u8>> {
     let history = p.backend.history();
     let mut keys = p.engine.forensic_keys().unwrap();
     let mut known: HashSet<[u8; 32]> = keys.iter().copied().collect();
     let mut opened = vec![false; history.len()];
     let mut tried = 0;
-    let mut found = false;
+    let mut found = Vec::new();
     while tried < keys.len() {
         let batch: Vec<[u8; 32]> = keys[tried..].to_vec();
         tried = keys.len();
@@ -60,7 +65,7 @@ fn recoverable(p: &mut Peer, marker: &[u8]) -> bool {
                             keys.push(nk);
                         }
                     }
-                    found |= contains(&plain, marker);
+                    found.push(plain);
                     opened[i] = true;
                     break;
                 }
@@ -160,4 +165,62 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
     set(&mut lp, 0, t, &GONE, "final");
     assert!(!lp.peers[0].engine.holds_body(&c, &t, &ak("/t/gone")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
+}
+
+// spec/commits.md §5: shredding a version covers every chunk only it reached (chunk keys live in
+// links inside the dropped body); a purged large value's chunks stay unopenable from what the
+// device still yields, though their ciphertext may linger in freed storage
+#[test]
+fn purged_large_value_unrecoverable_spec_commits_5() {
+    let mut lp = net2(75);
+    let t = new_thing(&mut lp, 0);
+    let marker = b"LARGE-MARK-c4f2";
+    let mut v = vec![0u8; 300 * 1024];
+    let mut r = SeededRng::from_u64(9);
+    osis_crypto::RngCore::fill_bytes(&mut r, &mut v);
+    v[150_000..150_000 + marker.len()].copy_from_slice(marker);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
+    let secret = lp.peers[0].commit(m).unwrap().unwrap();
+    let chunks: Vec<Vec<u8>> = lp.peers[0].engine.package(&secret).unwrap().unwrap().blobs.into_iter().map(|(_, b)| b).collect();
+    assert!(!chunks.is_empty(), "the value is chunked");
+    // the attack opens blobs (tree nodes, chunks) with any 32-byte CBOR byte string (a link
+    // key) it recovers, from rows and from blobs it opened
+    let cbor_keys = |x: &[u8]| -> Vec<[u8; 32]> {
+        let plain = x.windows(34).filter(|w| w[0] == 0x58 && w[1] == 32).map(|w| w[2..].try_into().unwrap());
+        let link = x.windows(35).filter(|w| w[0] == 0x58 && w[1] == 33).map(|w| w[3..].try_into().unwrap());
+        plain.chain(link).collect()
+    };
+    let opens = |p: &mut Peer| -> bool {
+        let mut keys: HashSet<[u8; 32]> = plaintexts(p).iter().flat_map(|x| cbor_keys(x)).collect();
+        let mut opened = vec![false; chunks.len()];
+        loop {
+            let mut new = Vec::new();
+            for (i, c) in chunks.iter().enumerate() {
+                if opened[i] {
+                    continue;
+                }
+                if let Some(pt) = keys.iter().find_map(|k| osis_label::open(c, &osis_crypto::Secret32::from_bytes(*k)).ok().map(|x| x.1)) {
+                    if contains(&pt, marker) {
+                        return true;
+                    }
+                    opened[i] = true;
+                    new.extend(cbor_keys(&pt));
+                }
+            }
+            if new.is_empty() {
+                return false;
+            }
+            keys.extend(new);
+        }
+    };
+    assert!(opens(&mut lp.peers[0]), "the attack opens live chunks");
+    filler(&mut lp, 0, 6);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(b"small".to_vec())).unwrap();
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/blob") });
+    lp.peers[0].commit(m).unwrap();
+    assert!(!lp.peers[0].engine.holds_body(&secret, &t, &ak("/t/blob")));
+    assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
