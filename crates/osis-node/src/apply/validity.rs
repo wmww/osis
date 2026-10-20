@@ -220,8 +220,12 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
 }
 
 /// The role a `/secrets` or `/keys` delta needs (spec/permissions.md §3): a writer rotates
-/// read and write, only an admin the admin role; at least write.
+/// read and write, only an admin the admin role; at least write. A delta that is not a plain
+/// struct (a write or reset of the whole value) replaces every field: admin.
 fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
+    if (ak == "/keys" || ak == "/secrets") && !f.is_plain_struct() {
+        return Some(Role::Admin);
+    }
     let role_of = |v: &Value| match v {
         Value::Enum(c, _) => [Role::Read, Role::Write, Role::Admin].get(usize::try_from(*c).ok()?).copied(),
         _ => None,
@@ -296,8 +300,11 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
 /// reset of a box entry must be of a grantee's box this node knows (a remove + put); resets of
 /// unknown entries and of history entries pass (issues/invite-grant-secrets.md).
 fn grantee_boxes_only(core: &Core, actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), Role>) -> bool {
-    let Some(v) = f.slot(osis_crdt::Encoding::Struct) else { return true };
-    let osis_crdt::MemberRef::Frag(Fragment::Struct(st)) = v else { return true };
+    // a write or reset of the whole value removes every box
+    if !f.is_plain_struct() {
+        return false;
+    }
+    let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
     let map_of = |id: u64| match st.field(id).and_then(|x| x.slot(osis_crdt::Encoding::Map)) {
         Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) => Some(m.clone()),
@@ -606,5 +613,70 @@ mod keys_tests {
         lp.sync_all().unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         assert_ne!(s.history.get(&hk), Some(&vec![0; 48]));
+    }
+
+    /// Peer 1 commits `m` past the writer-side rules (they refuse it first).
+    fn force(lp: &mut LocalPeer, i: usize, mut m: Mutation) {
+        assert!(lp.peers[i].commit(m.clone()).is_err(), "refused writer-side");
+        m.unchecked();
+        lp.peers[i].engine.core.skip_writer_rules = true;
+        lp.peers[i].commit(m).unwrap().unwrap();
+        lp.peers[i].engine.core.skip_writer_rules = false;
+    }
+
+    // spec/permissions.md §3 (a writer rotates read and write; the admin keyset is an admin's),
+    // spec/crypto.md §3: a write or reset of the whole `/keys` or `/secrets` value replaces the
+    // admin fields and every box: an admin's write, invalid from a writer
+    #[test]
+    fn writer_cannot_replace_keys_or_secrets_spec_perm_3() {
+        let mut lp = LocalPeer::new(2, 903, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let w = lp.peers[1].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
+        lp.sync_all().unwrap();
+        let keys = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
+        let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        for ak in ["/keys", "/secrets"] {
+            let mut m = Mutation::new();
+            m.set(t, &osis_core::Ak::new(ak).unwrap(), &Value::Int(1)).unwrap();
+            force(&mut lp, 1, m);
+        }
+        // a root reset with writer fields only
+        let mut k = keys.clone();
+        k.admin = None;
+        let mut m = Mutation::new();
+        m.replace(t, &ct::KEYS, &k).unwrap();
+        force(&mut lp, 1, m);
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap(), keys);
+        assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), secrets);
+    }
+
+    // spec/permissions.md §2: an invite grant carries the grantee's boxes only; a write of the
+    // whole `/secrets` value is no grantee's box
+    #[test]
+    fn invite_grant_cannot_replace_secrets_spec_perm_2() {
+        let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None }).unwrap();
+        lp.sync_all().unwrap();
+        let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &ct::Edge { role: Role::Read, until: None, invite: None, since: None }).unwrap();
+        m.set(t, &osis_core::Ak::new("/secrets").unwrap(), &Value::Int(1)).unwrap();
+        force(&mut lp, 1, m);
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), secrets);
     }
 }

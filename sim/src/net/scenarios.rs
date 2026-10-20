@@ -151,6 +151,13 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     sim.excused.insert(w);
     sim.run(30)?;
     sim.quiet(40)?;
+    // W forgets what it lost (spec/permissions.md §3) and never brings it back
+    if sim.engine(w)?.role_on(&g).is_none() {
+        sim.sync(w)?.drop_lost().map_err(|e| sim.fail(format!("W drops lost: {e}")))?;
+        if sim.engine(w)?.header(&cw).is_some() {
+            return Err(sim.fail("W kept its commit on a thing it no longer reads"));
+        }
+    }
     if sim.engine(b)?.header(&cw).is_none() {
         return Err(sim.fail("B never received W's body"));
     }

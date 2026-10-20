@@ -87,6 +87,8 @@ pub struct SyncConfig {
     pub max_served: usize,
     /// A served session without bytes this long is closed.
     pub serve_idle_ms: u64,
+    /// Unopened unvouched entries a label may hold per server (an inbox label a sixteenth).
+    pub unvouched_cap: usize,
 }
 
 impl Default for SyncConfig {
@@ -108,6 +110,7 @@ impl Default for SyncConfig {
             peer_total_bytes: 1 << 30,
             max_served: 64,
             serve_idle_ms: 120_000,
+            unvouched_cap: 1 << 16,
         }
     }
 }

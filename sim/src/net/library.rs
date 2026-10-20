@@ -441,6 +441,19 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     }
     sim.run(80)?;
     sim.run_until_quiescent(60)?;
+    // C forgets what it lost (spec/permissions.md §3): the chat and the others' personas, not
+    // its own
+    if sim.engine(c)?.role_on(&chat).is_none() {
+        sim.sync(c)?.drop_lost().map_err(|e| sim.fail(format!("C drops lost: {e}")))?;
+        for (n, persona) in personas.clone() {
+            let held = sim.engine(c)?.get_typed(&persona, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.is_some();
+            if held != (n == c) {
+                return Err(sim.fail(format!("C after dropping: persona of node {n} held: {held}")));
+            }
+        }
+        sim.run(40)?;
+        sim.run_until_quiescent(60)?;
+    }
     let now = newest_read(&mut sim, a, &chat)?;
     if now == before {
         return Err(sim.fail("the removal did not rotate the chat"));
