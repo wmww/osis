@@ -271,6 +271,8 @@ pub struct SyncEngine {
     pub(crate) leaving: BTreeSet<Tid>,
     /// Reopens in a row per (connection, label).
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
+    /// Sessions of forgotten labels whose pushes the server is still to stop.
+    pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
     /// Snapshots under a label whose covered bodies this node has dropped (spec/sync.md §7).
@@ -336,6 +338,7 @@ impl SyncEngine {
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
+            unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             snapshots_seen: BTreeSet::new(),
             peer_steps: BTreeMap::new(),
@@ -404,6 +407,10 @@ impl SyncEngine {
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
         }
+        // a received removal ended read access (spec/permissions.md §3)
+        if let Err(e) = self.drop_lost_due() {
+            self.diag(format!("dropping lost secrets: {e}"));
+        }
         // a self-removal is up: drop what was lost
         if !self.leaving.is_empty() && self.is_idle() && self.conns.values().any(|c| c.up) {
             self.leaving.clear();
@@ -411,6 +418,7 @@ impl SyncEngine {
                 self.diag(format!("dropping lost secrets: {e}"));
             }
         }
+        self.stop_pushes(&mut out);
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)
         {
@@ -744,6 +752,9 @@ impl SyncEngine {
             // a Push names its label: one not started on this connection is junk (spec/wire.md
             // §11.2; peer input never grows storage unasked)
             E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("server pushed a label not opened".into()),
+            // a session not open yet: a push left from an earlier session (a forgotten label's,
+            // a reopen's) would move the cursor past what its replay has not listed
+            E::Events { label, .. } if !self.conns.get(&conn).and_then(|c| c.labels.get(&label)).is_some_and(|x| x.phase == Phase::Open) => {}
             E::Events { label, events, cursor } => self.log_events(Some(conn), label, events, cursor, out)?,
             E::Want { label, ids } => self.want(conn, label, ids, out)?,
             E::Synced { label } => self.synced(conn, label, out)?,

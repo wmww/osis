@@ -217,6 +217,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         }
     }
     let rosters: BTreeSet<Tid> = if h.kind.is_membership() { h.aspects.iter().filter(|a| a.ak.as_str() == "/members" || a.ak.as_str() == "/tenures").map(|a| a.tid).collect() } else { BTreeSet::new() };
+    // a received roster change may end this node's read access (spec/permissions.md §3); its own
+    // self-removals drop what they lost once uploaded (`Done::drop_lost`)
+    if origin != Origin::Local {
+        crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
+    }
     tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
@@ -294,6 +299,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
         }
+    }
+    if edges && meta.origin != Origin::Local {
+        crate::rotation::mark_lost_due(tx, h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid))?;
     }
     if edges {
         for thing in h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid).collect::<BTreeSet<_>>() {

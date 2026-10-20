@@ -62,7 +62,8 @@ fn demote(sim: &mut NetSim, n: usize, target: Tid, member: Tid, new: Option<Role
 /// The revocation reference scenario (notes/permissions.md, Revocation; spec/permissions.md
 /// §5.1, §5.2): Alice shares a doc with Bob; Bob goes offline and writes X; Alice removes Bob
 /// without having seen X; Bob writes Y and comes back. X and Y are invalid everywhere. A re-grant
-/// makes both valid again.
+/// makes valid again those that reached another node: Bob forgets the doc once the removal
+/// applies there (spec/permissions.md §3), his own copies too, and regains it by sync.
 pub fn revocation_bob(seed: u64) -> Res<Report> {
     revocation("revocation_bob", seed, false)
 }
@@ -113,12 +114,19 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.run(60)?;
     sim.run_until_quiescent(40)?;
     expect_tags(&mut sim, &[a, c], t, &["mon", "x", "y"], &["mon"])?;
-    // a re-grant validates the gap (§5.2)
+    // a re-grant validates the gap (§5.2): Carol held X and Y; without her, what Bob uploaded
+    // before he forgot (all agree)
     sim.grant(a, g, pb, Role::Write)?;
     sim.excused.remove(&b);
     sim.run(40)?;
     sim.run_until_quiescent(60)?;
-    expect_tags(&mut sim, &[a, b, c], t, &["mon", "x", "y"], &["mon", "x", "y"])?;
+    let story = ["mon", "x", "y"];
+    let want: Vec<String> = if carol { story.iter().map(|w| w.to_string()).collect() } else { tags(&mut sim, a, t)?.into_iter().filter(|w| story.contains(&w.as_str())).collect() };
+    let want: Vec<&str> = want.iter().map(String::as_str).collect();
+    if !want.contains(&"mon") {
+        return Err(sim.fail(format!("the re-grant lost Monday's edit: {want:?}")));
+    }
+    expect_tags(&mut sim, &[a, b, c], t, &story, &want)?;
     sim.finish()
 }
 
@@ -441,10 +449,9 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     }
     sim.run(80)?;
     sim.run_until_quiescent(60)?;
-    // C forgets what it lost (spec/permissions.md §3): the chat and the others' personas, not
-    // its own
+    // C forgets what it lost once the removal applies there (spec/permissions.md §3): the chat
+    // and the others' personas, not its own
     if sim.engine(c)?.role_on(&chat).is_none() {
-        sim.sync(c)?.drop_lost().map_err(|e| sim.fail(format!("C drops lost: {e}")))?;
         for (n, persona) in personas.clone() {
             let held = sim.engine(c)?.get_typed(&persona, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.is_some();
             if held != (n == c) {

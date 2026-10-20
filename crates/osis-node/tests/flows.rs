@@ -289,6 +289,11 @@ const MINE_MARK: &str = "MINE-B-MARK-a40e";
 /// Alice shares d, e and f with bob as above and writes a marker on each, bob writes one on his
 /// own thing, then alice removes bob from d; bob has applied everything, dropped nothing.
 fn lost_setup(seed: u64) -> Lost {
+    lost_setup_from(seed, false)
+}
+
+/// `lost_setup`, bob removed from e instead of d when `from_e` (he still reads e through d).
+fn lost_setup_from(seed: u64, from_e: bool) -> Lost {
     let faults = osis_store::Faults::new();
     let mut lp = LocalPeer { peers: vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &faults)] };
     let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
@@ -315,9 +320,10 @@ fn lost_setup(seed: u64) -> Lost {
         assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s(&big(mark))));
         assert!(lp.peers[1].engine.epochs(&t).is_some_and(|x| x.read.held().next().is_some()), "bob holds the secrets");
     }
-    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    let target = if from_e { e } else { d };
+    lp.peers[0].engine.demote(&target, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
-    assert_eq!(lp.peers[1].engine.role_on(&d), None);
+    assert_eq!(lp.peers[1].engine.role_on(&d), if from_e { Some(Role::Read) } else { None });
     Lost { lp, faults, d, e, f, mine }
 }
 
@@ -398,6 +404,115 @@ fn removal_erasure_crash_safe_spec_perm_3() {
             return;
         }
     }
+}
+
+// spec/permissions.md §3: a node that learns it lost read access to an actor MUST drop those
+// role secrets and every local unit it can no longer read by another path: the received
+// removal's apply leaves the trigger its work, which forgets d and f (not e) with no call by hand
+// (node-sync runs it every step), and the attack recovers neither lost marker.
+#[test]
+fn applied_removal_triggers_forgetting_spec_perm_3() {
+    let mut x = lost_setup(513);
+    assert!(x.lp.peers[1].engine.lost_due());
+    let lost: BTreeSet<Tid> = x.lp.peers[1].engine.drop_lost_due().unwrap().into_iter().collect();
+    assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
+    assert!(!x.lp.peers[1].engine.lost_due());
+    assert_forgotten(&mut x);
+    // idempotent
+    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
+    assert_forgotten(&mut x);
+}
+
+// spec/permissions.md §3 (a node that learns it lost read access MUST drop): the work list is
+// durable, so a restart between the removal's apply and the trigger still forgets.
+#[test]
+fn lost_access_trigger_survives_restart_spec_perm_3() {
+    let mut x = lost_setup(515);
+    reopen(&mut x.lp, 1, 5).unwrap();
+    assert!(x.lp.peers[1].engine.lost_due());
+    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().contains(&x.d));
+    assert_forgotten(&mut x);
+    reopen(&mut x.lp, 1, 6).unwrap();
+    assert!(!x.lp.peers[1].engine.lost_due());
+    assert_forgotten(&mut x);
+}
+
+// spec/permissions.md §3: only units the node "can no longer read by another path" go: bob,
+// removed from e, still reads e through d and keeps everything.
+#[test]
+fn removal_with_another_path_keeps_all_spec_perm_3() {
+    let mut x = lost_setup_from(517, true);
+    assert_eq!(x.lp.peers[1].engine.role_on(&x.e), Some(Role::Read));
+    assert!(x.lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
+    assert!(x.lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
+    let reg = ak("/t/reg");
+    for (t, mark) in [(x.d, D_MARK), (x.e, E_MARK), (x.f, F_MARK), (x.mine, MINE_MARK)] {
+        assert_eq!(x.lp.peers[1].engine.get(&t, &reg).unwrap(), Some(s(&big(mark))));
+    }
+}
+
+// spec/crypto.md §4 (secrets read from a pending commit's boxes are kept for reading),
+// spec/permissions.md §3 (only lost access drops secrets): a grant bob holds but has not applied
+// is no loss when an unrelated removal applies, by the trigger or by hand; it applies later.
+#[test]
+fn pending_grant_survives_unrelated_removal_spec_perm_3() {
+    let mut x = lost_setup(519);
+    let (pa, pb) = (x.lp.peers[0].engine.owner(&x.d).unwrap(), x.lp.peers[1].engine.owner(&x.mine).unwrap());
+    let g = thing_of(&mut x.lp, 0, pa);
+    let done = x.lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
+    let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
+    x.lp.peers[1].engine.accept_inbox(blob).unwrap();
+    assert!(!x.lp.peers[1].engine.pending().is_empty(), "the grant waits for g's chain");
+    assert_eq!(x.lp.peers[1].engine.role_on(&g), None);
+    let reading = |x: &Lost| x.lp.peers[1].engine.epochs(&g).is_some_and(|e| !e.read.held_newest_first().is_empty());
+    assert!(reading(&x), "secrets from the pending grant");
+    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert!(lost.contains(&x.d) && !lost.contains(&g), "{lost:?}");
+    assert!(!x.lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&g));
+    assert!(reading(&x));
+    assert_forgotten(&mut x);
+    spread(&mut x.lp);
+    assert_eq!(x.lp.peers[1].engine.role_on(&g), Some(Role::Read));
+    assert_eq!(x.lp.peers[1].engine.get(&g, &ak("/t/reg")).unwrap(), Some(s("new")));
+}
+
+// spec/crypto.md §4 (a secret from an unchecked box is kept for reading only),
+// spec/permissions.md §3: a planted grant (bad signature, held pending while its author is
+// unknown) yields reading-only secrets; once it proves bad and is dropped, they go.
+#[test]
+fn dropped_pending_grant_drops_reading_secrets_spec_crypto_4() {
+    let mut lp = net(2, 521);
+    let pa = lp.peers[0].engine.create_person(&servers()).unwrap().0.person;
+    let pb = lp.peers[1].engine.create_person(&servers()).unwrap().0.person;
+    let bobs: Vec<CommitId> = lp.peers[1].engine.commit_ids();
+    send(&mut lp, 1, 0, &bobs);
+    let g = thing_of(&mut lp, 0, pa);
+    let done = lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
+    let grant = *done.commits.last().unwrap();
+    let pk = lp.peers[0].engine.package(&grant).unwrap().unwrap();
+    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let Value::Enum(c, Some(p)) = blob.signature.to_value() else { panic!() };
+    let Value::Bytes(mut sig) = *p else { panic!() };
+    sig[0] ^= 1;
+    blob.signature = osis_crypto::Signature::from_value(&Value::Enum(c, Some(Box::new(Value::Bytes(sig))))).unwrap();
+    lp.peers[1].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
+    assert!(!lp.peers[1].engine.pending().is_empty(), "held pending: its author is unknown");
+    assert!(lp.peers[1].engine.epochs(&g).is_some_and(|e| !e.read.held_newest_first().is_empty()), "read from the planted box");
+    // everything else of alice's arrives, the trigger running after each: kept while the grant
+    // is pending, dropped once it proves bad
+    let rest: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| *c != grant).collect();
+    let mut dropped = false;
+    for c in rest {
+        send(&mut lp, 0, 1, &[c]);
+        let lost = lp.peers[1].engine.drop_lost_due().unwrap();
+        if lp.peers[1].engine.pending().is_empty() {
+            dropped |= lost.contains(&g);
+        } else {
+            assert!(!lost.contains(&g), "dropped while the grant is pending");
+        }
+    }
+    assert!(dropped);
+    assert!(lp.peers[1].engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()));
 }
 
 // spec/permissions.md §2: an invite holder grants a new member up to its invite, and cannot

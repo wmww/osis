@@ -1,11 +1,10 @@
 # Membership flows: what is approximate or missing
-> Summary: Parts of the membership flows not done or done approximately in `osis-node` `flows/` and `rotation/`: label replacement, unit erasure on lost access, frontiers above `CHUNK_THRESHOLD`, contact cards, departures recomputed from the whole edge history and the key-actor `carries` test.
+> Summary: Parts of the membership flows not done or done approximately in `osis-node` `flows/` and `rotation/`: label replacement, frontiers above `CHUNK_THRESHOLD`, contact cards, departures recomputed from the whole edge history and the key-actor `carries` test.
 > Tags: permissions, sync, node
 
 Repro: known gaps, no failing test; sim `label_replacement_offline` (tier 2) runs the replaced-label residue.
 
 - **Label replacement** (spec/sync.md §2: admin rotation if needed, new index, re-upload, mark replaced, delete old content entries): node-sync's `replace_label` makes the next index, marks the old one replaced, and members follow (sim `label_replacement`); the admin rotation and the old label's maintenance are not done (issues/node-sync-gaps.md, Replaced labels; sim `label_replacement_offline`).
-- **Lost access trigger** (spec/permissions.md §3, "a node that learns"): forgetting runs on `drop_lost_secrets` / `SyncEngine::drop_lost` and after a self-removal only; nothing calls it when another node's removal applies (secrets read from a pending grant would look lost to a naive trigger).
 - **Frontier size**: a demotion's frontier goes inline in the header; above `CHUNK_THRESHOLD` it must be a chunked large value by link (spec/commits.md §1). `Mutation::frontier` takes a value only.
 - **Contact card**: built in the osis API (`contact_card`: profile thing with its own label, the person's `/created` and `/keys` placed there as certificates, a read link to it); flows has no call of its own. `create_link` places L's card (its creation commit) under K's label so redeemers and verifiers of L's commits hold L's `/created`.
 - **Departures** are recomputed on each call from the timeline and the `/secrets` state, recursively through member and owner actors: O(edge history + boxes) per `ensure_rotated`, and `introduced_by` scans `Core::box_keys`. Cache per actor, invalidated on roster and `/secrets` changes, if it shows in profiles.
