@@ -1,5 +1,5 @@
 # Rotation model: ambiguities and findings
-> Summary: Places where spec/crypto.md §3–§5, spec/sync.md §2/§5 and spec/permissions.md §3–§4 left a choice or failed a checked property. R1–R9 and residue 1 are resolved by spec edits and the model follows the new text; residue 2 of issues/reseal-triggers.md (refused stranded heartbeat) still reproduces as the one expected failure (`MC_drop_refresh.cfg`). R10–R12 are minor readings of the second-round text.
+> Summary: Places where spec/crypto.md §3–§5, spec/sync.md §2/§5 and spec/permissions.md §3–§4 left a choice or failed a checked property. R1–R9 and residue 1 are resolved by spec edits and the model follows the new text; residue 2 of issues/reseal-triggers.md (refused stranded heartbeat) still reproduces as the one expected failure (`MC_drop_refresh.cfg`). R10–R15 are minor readings of the later text.
 
 ## Resolved (model updated, rerun)
 - **R1. Re-seal raced a removal.** permissions §3 and commits §2: the removal and the rotation it requires are one membership commit; boxing a secret is encrypting under it (crypto §4), so a re-sealer that knows a departure re-seals only at covering epochs. Model: `Remove` is a rotation carrying the removal (`rem`), `Recv` learns it, the remover uploads it before anything else.
@@ -24,3 +24,12 @@
 
 ## R12. Snapshot-established epochs (not modeled)
 - crypto §4 lets a `/secrets` compaction snapshot establish an epoch; permissions §3 re-seals only at chain-established epochs and lets such a node rotate instead. The model has no `/secrets` snapshot, so every established epoch is chain-established and the accepted post-compaction residue (notes/sync.md Limits) is out of reach. An instance with a snapshot step is optional future work.
+
+## R13. Rotation by inbox: "holds no box at a current read epoch before it" (reading)
+- permissions §3: a rotation is also delivered by inbox to a member it boxes that "holds no box at a current read epoch before it". Current as whom, and boxes as known to whom? Model: the epochs the rotation supersedes (the rotator's current ones) and the boxes the rotator knows (applied rotations, read grant and re-seal commits). A box the rotator has not seen yet only adds an inbox copy.
+
+## R14. Wrap of a re-seal placed under the label (reading)
+- permissions §3 places a re-seal "under the actor's labels like any membership commit", so it is wrapped under the re-sealer's newest current epoch (crypto §5), which is encrypting under that epoch too: the re-sealer must cover every known departure there as well, not only at the epochs it re-seals. Model: `Reseal` and `RotateForced` include `EncEp(a)`. The re-sealed member usually cannot open the label copy (the trigger is that it lacks an epoch); its path stays the inbox.
+
+## R15. Heartbeat of a node holding only reading-only secrets (reading)
+- crypto §4 (secrets from a pending or invalid commit are never encrypted under) against crypto §5 / permissions §4 (the stranded heartbeat "is wrapped under the newest established read secret the node holds"). A grantee whose grant box has not arrived but that holds a planted secret of an established epoch: "holds" must exclude the planted one, so it places no heartbeat until a valid box arrives. Model: `Heartbeat` needs an established secret from a valid box. Negative control (README): with `Enc(x) == sec[x] \cup fsec[x]` TLC finds this 4-state trace (grant, plant, heartbeat under the planted secret), so the crypto §4 sentence is what closes it. The text could say "holds from an applied valid box" in crypto §5.

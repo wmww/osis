@@ -72,9 +72,14 @@ MustHold(A, H, S, b) == ~MustNot(A, H, b)
 NMustNot(n, b) == MustNot(applied[n], held[n], b)
 NMustHold(n, b) == MustHold(applied[n], held[n], held[n], b)
 SameBody(x, b) == x.c = b.c /\ x.ds = b.ds
-BodyAt(b) == \E x \in srv : SameBody(x, b)
 \* sync §7: a covering snapshot under the label, as the node knows it.
 SnapAt(n, b) == CoveredBy(applied[n], srv \cap seen[n], b)
+One(d) == [c |-> DC(d), ds |-> {d}, v |-> 0]
+\* sync §6: the label holds a body when "a blob of the commit holding every
+\* delta of the body that no snapshot under the label covers" is there; else
+\* it lacks it. Snapshots as the node knows them (LHolds) or globally (GHolds).
+HoldsIn(b, cov(_)) == \E x \in srv : x.c = b.c /\ {d \in b.ds : ~cov(One(d))} \subseteq x.ds
+LHolds(n, b) == LET cov(o) == SnapAt(n, o) IN HoldsIn(b, cov)
 \* sync §7: "another entry under it carries them: a covering snapshot, a blob
 \* of the commit holding a superset of its deltas, or an identical body with
 \* a lower blob ID" (v stands for the blob ID order).
@@ -116,9 +121,12 @@ Tick == now < MaxT /\ now' = now + 1
         /\ UNCHANGED <<state, created, applied, held, seen, compacted, online,
                        srv, dep, stamped, tomb, timed, adv>>
 
-\* A write. The timed delete of a body it replaces is SendTimed.
+\* A write. The timed delete of a body it replaces is SendTimed. commits §5: a
+\* snapshot covers a body only if its frontier reaches the body's counters,
+\* so its author has applied every commit whose deltas it covers.
 Write(n, c) ==
   /\ online[n] /\ Author[c] = n /\ created[c] = Inf /\ Deps[c] \subseteq applied[n]
+  /\ \A d \in Covers[c] : DC(d) \in applied[n]
   /\ now < Exp[c] /\ now < MostAbs[c]   \* commits §6 T > ts; same for at-most
   /\ created' = [created EXCEPT ![c] = now]
   /\ applied' = [applied EXCEPT ![n] = @ \cup {c}]
@@ -161,7 +169,7 @@ Drop(n, b) ==
 \* sync §6: a writer uploads every must-hold body the label lacks, as a fresh
 \* encryption if the old blob ID is tombstoned. Upload clears deposited (§5).
 Upload(n, b) ==
-  /\ online[n] /\ n \in Writers /\ b \in held[n] /\ NMustHold(n, b) /\ ~BodyAt(b)
+  /\ online[n] /\ n \in Writers /\ b \in held[n] /\ NMustHold(n, b) /\ ~LHolds(n, b)
   /\ \E b2 \in Fresh(b) :
        /\ (b \notin tomb => b2 = b)
        /\ held' = [held EXCEPT ![n] = (@ \ {b}) \cup {b2}]
@@ -174,14 +182,14 @@ Upload(n, b) ==
 \* label lacks". Refused at a tombstone.
 Relay(n, b) ==
   /\ online[n] /\ n \notin Writers /\ b \in held[n] /\ b \in stamped
-  /\ b \notin tomb /\ ~BodyAt(b) /\ NMustHold(n, b)
+  /\ b \notin tomb /\ ~LHolds(n, b) /\ NMustHold(n, b)
   /\ srv' = srv \cup {b}
   /\ UNCHANGED <<state, now, created, applied, held, seen, compacted, online, dep, stamped, tomb, timed, adv>>
 
 \* sync §5 deposit: no stamp, flagged, refused when the budget is full.
 Deposit(n, b) ==
   /\ online[n] /\ n \notin Writers /\ b \in held[n] /\ b.c \in DepositC
-  /\ b \notin stamped /\ NMustHold(n, b) /\ ~BodyAt(b) /\ Cardinality(dep) < Budget
+  /\ b \notin stamped /\ NMustHold(n, b) /\ ~LHolds(n, b) /\ Cardinality(dep) < Budget
   /\ \E b2 \in Fresh(b) :
        /\ (b \notin tomb => b2 = b)
        /\ held' = [held EXCEPT ![n] = (@ \ {b}) \cup {b2}]
@@ -314,7 +322,7 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 GA == {c \in Commits : created[c] # Inf}
 CurBody(c) == [c |-> c, ds |-> {d \in CD[c] : ~Purged(GA, d)}, v |-> 0]
 GLive(d) == DC(d) \in GA /\ ~Dead(GA, d) /\ ~Purged(GA, d)
-One(d) == [c |-> DC(d), ds |-> {d}, v |-> 0]
+GHolds(b) == LET cov(o) == CoveredBy(GA, srv, o) IN HoldsIn(b, cov)
 Carried(S, A, d) == (\E b \in S : d \in b.ds) \/ CoveredBy(A, S, One(d))
 
 TypeOK == /\ now \in 0..MaxT
@@ -339,9 +347,9 @@ Serves == <>[](\A n \in Nodes, d \in Deltas :
   (d \in state[n] /\ DC(d) \in applied[n] /\ ~Dead(applied[n], d) /\ ~Purged(applied[n], d))
     => Carried(held[n], applied[n], d))
 
-\* sync §6 convergence: every must-hold body ends up at the server.
+\* sync §6 convergence: the label ends up holding every must-hold body.
 Converge == <>[](\A c \in GA :
-  MustHold(GA, {}, srv, CurBody(c)) => BodyAt(CurBody(c)))
+  MustHold(GA, {}, srv, CurBody(c)) => GHolds(CurBody(c)))
 \* sync §6: must-not-hold bodies (purged, expired, past keep-at-most, strict
 \* subsets, §7 duplicates) do not persist at the server.
 Clean == <>[](\A b \in srv : ~MustNot(GA, srv, b) /\ ~DupHigher(b))

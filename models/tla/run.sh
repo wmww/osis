@@ -2,6 +2,7 @@
 # Run the TLC model instances. Usage: run.sh small|all [name-filter]
 #   small: the CI-sized instance of each model (about a minute in total)
 #   all:   every instance (the large ones take up to ~20 min each)
+# TLC_KEEP_LOGS=<dir> copies each TLC log there.
 # Downloads tla2tools.jar into ~/.cache/tla/ if missing. Exits non-zero if
 # any instance fails, except those listed as expected failures below, which
 # must fail (an unexpected pass is an error too: update the docs).
@@ -23,6 +24,7 @@ instances=(
   "rotation Rotation MC_drop.cfg all pass"
   "rotation Rotation MC_drop_refresh.cfg all fail"  # issues/reseal-triggers.md residue 2
   "rotation Rotation MC_grant.cfg small pass"
+  "rotation Rotation MC_plant.cfg small pass"
   "rotation Rotation MC_reorder.cfg all pass"
   "rotation Rotation MC_grant_remove.cfg all pass"
   "rotation Rotation MC_safety.cfg small pass"
@@ -60,5 +62,6 @@ for line in "${instances[@]}"; do
   printf '%-8s %-22s %-5s (expected %-4s) %10s states %5ss  %s\n' \
     "$dir" "$cfg" "$got" "$expect" "${states:-?}" "$secs" "$verdict"
   if [ "$verdict" = FAILED ]; then grep -E 'Error|violated' "$log" | head -n 5 | sed 's/^/    /'; fi
+  [ -n "${TLC_KEEP_LOGS:-}" ] && cp "$log" "$TLC_KEEP_LOGS/"
 done
 exit $failed
