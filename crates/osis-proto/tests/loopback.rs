@@ -470,6 +470,28 @@ fn upload_rules() {
     assert_eq!(statuses(&ev), vec![Code::MALFORMED]);
 }
 
+// spec/sync.md §5 (upload refusals): an oversized blob is refused by the session (the message
+// decoder's cap is the only check: `accept` has none of its own) and nothing is logged
+#[test]
+fn oversized_upload_refused_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new();
+    net.setup(&l);
+    let seq = net.store.log_head(&l.id).unwrap().1;
+    let big = l.entry(blob_sized(1, 0, vec![], osis_core::format::MAX_BLOB));
+    let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
+    assert!(body.len() < osis_core::format::MAX_MESSAGE);
+    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&body)));
+    net.server_out(0, so);
+    let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+    let mut d = FrameDecoder::new();
+    d.set_max(osis_core::format::MAX_MESSAGE);
+    d.push(&reply);
+    let m = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap();
+    assert_eq!(m, Message::Error { id: 77, code: Code::MALFORMED });
+    assert_eq!(net.store.log_head(&l.id).unwrap().1, seq);
+}
+
 // spec/sync.md §5: deposits by the deposit key within the budget (64 + 4 x claim slots), refused when full
 #[test]
 fn deposit_budget() {
