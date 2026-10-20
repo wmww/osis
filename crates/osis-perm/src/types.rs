@@ -78,7 +78,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
 }
 
 /// The dots of a write on one aspect (spec/commits.md §3).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Dots {
     /// Node form: counters `[lo, hi)` of the author node on the aspect.
     Node { lo: u64, hi: u64 },

@@ -18,9 +18,9 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 | tla-models | models merged at 49c8fd3; findings S1–S10, R1–R7 and (round 2) S11–S15, R8, R9, residue 1 resolved (spec edits below, issues/reseal-triggers.md) | follow-up agent: update both models to the round-2 text and rerun (plans/tla-models.md Progress lists the changes and expected flips); target 3 not started |
 | core alignment to wire.md | merged | osis-core constants and layouts fixed |
 | crypto | merged, reviewed, follow-ups merged at 80b8ad3 | |
-| crdt-core | merged, reviewed | plan stays until crdt-seq is done; issues/crdt-path-op-cost.md |
+| crdt-core | merged, reviewed | plan stays until crdt-seq is done |
 | perm | merged, reviewed | issues/ledger-late-audit.md, issues/perm-eval-cost.md |
-| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq; issues/crdt-path-op-cost.md |
+| crdt-core | merged, reviewed | plan folded into notes/crdt.md with crdt-seq |
 | perm | running (opus, worktree) | |
 | test-infra | merged | vectors FC-1 frozen (cbor, tid, gear); notes/testing.md conventions |
 | schema | merged at 3461fd8, reviewed | open: unknown-field-survives-set_field test waits for the crdt diff; lock-vs-file write policy undecided (notes/versioning.md) |
@@ -72,6 +72,7 @@ Wave 6: hardening-signoff, stage A. Disk is tight (worktree target dirs ~17 GB e
 - None. (TLC findings S1–S10, R1–R7 and round 2 S11–S15, R8, R9 decided: see Spec edits and Owner-calls pending. Wave 4 spawns must read issues/keys-established-epochs.md.)
 
 ## Spec edits
+- wave 6 performance round: spec/wire.md §11.3 a side splitting under a dense difference (most of at least 16 mode 0 ranges of the message mismatched) lists subranges of at most 8 IDs instead of 32 (10^6 IDs at 1% difference sent 35 MB up, more than the plain list; now 5.3 MB, same rounds). Policy only: both modes stay valid for any subrange.
 - wave 6 sync/server hardening: spec/permissions.md §3 a re-seal is also placed under the actor's labels like any membership commit (later rotations remove its boxes; delivered by inbox only, its entries were unknown to every other node, which then waited on those removals for good).
 - wave 6 label+server/node-sync review: spec/sync.md §9 receivers drop a signal whose `ts` is more than `MAX_DRIFT` from their corrected clock (a server could replay captured signals indefinitely; replays inside the window remain, apps dedupe by sender sequence, notes/ephemeral.md).
 - crypto+keys security review: spec/crypto.md §4 a secret learned only from a pending or invalid commit is kept for reading and never encrypted under until an applied valid box carries it (a box anyone can seal to a member's `/keys` in a pending commit otherwise planted the secret of an epoch before its real box arrived).

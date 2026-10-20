@@ -4,7 +4,7 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Struct};
-use crate::ops::{PathSeg, Writer, create, live_entries, present_slot, remove, replace};
+use crate::ops::{PathSeg, Writer, create, present_slot, remove, replace};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source};
 use crate::view::View;
@@ -25,7 +25,7 @@ impl UndoBuffer for Fragment {
                 (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id).cloned(),
                 (PathSeg::Case(id), Fragment::Enum(e)) => e.payloads.get(id).cloned(),
                 (PathSeg::Key(k), Fragment::Map(m)) => {
-                    let d = live_entries(&m.entries).get(k).and_then(|ds| ds.first().map(|d| (*d).clone()));
+                    let d = m.live_dots(k).first().map(|d| (*d).clone());
                     d.and_then(|d| m.entries.get(&d)).and_then(|e| e.frag.as_deref().cloned())
                 }
                 (PathSeg::Index(i), Fragment::Seq(s)) => seq::element_at(&s, *i).and_then(|(_, c)| c),
@@ -194,7 +194,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     }
                 }
             }
-            Fragment::Map(Map { meta: Meta::default(), entries })
+            Fragment::Map(Map::new(Meta::default(), entries))
         }
         Fragment::Struct(x) => {
             if x.meta.reset.is_some() {
@@ -275,5 +275,34 @@ struct Sub(Option<Fragment>);
 impl UndoBuffer for Sub {
     fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
         self.0.as_ref().and_then(|e| e.before(path))
+    }
+}
+
+impl Fragment {
+    /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
+    /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
+    /// writes, and of a map, set or bag the delta does not reset only the elements it writes
+    /// (a key's lowest live entry is the one a local write went into, §5.6). Everything else,
+    /// sequences included (their undo reads by position), is kept whole.
+    pub fn footprint(&self, delta: &Fragment) -> Fragment {
+        if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
+            return self.clone();
+        }
+        match (self, delta) {
+            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct {
+                meta: s.meta.clone(),
+                fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.footprint(df)))).collect(),
+            }),
+            (Fragment::Map(s), Fragment::Map(d)) => {
+                Fragment::Map(Map::new(s.meta.clone(), d.entries.keys().filter_map(|k| Some((k.clone(), s.entries.get(k)?.clone()))).collect()))
+            }
+            (Fragment::Set(s), Fragment::Set(d)) => {
+                Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
+            }
+            (Fragment::Bag(s), Fragment::Bag(d)) => {
+                Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
+            }
+            _ => self.clone(),
+        }
     }
 }

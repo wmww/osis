@@ -18,6 +18,7 @@ schema 0x0123456789abcdef0123456789abcdef;
 revision 1;
 type item = struct { 0 name: string, 1 n: int };
 type shape = enum { 0 dot, 1 circle(int) };
+type book = struct { 0 entries: map<string, string>, 1 note: string };
 aspect /t/reg: string;
 aspect /t/count: counter<int>;
 aspect /t/hi: max<int>;
@@ -34,6 +35,7 @@ aspect /t/kept: string [by: writer, keep_at_least: 1d];
 aspect /t/list: list<string>;
 aspect /t/text: text;
 aspect /t/blob: blob;
+aspect /t/book: book;
 "#,
 );
 
@@ -53,6 +55,7 @@ pub const KEPT: Aspect<Value> = Aspect::new("/t/kept", &TEST);
 pub const LIST: Aspect<Value> = Aspect::new("/t/list", &TEST);
 pub const TEXT: Aspect<Value> = Aspect::new("/t/text", &TEST);
 pub const BLOB: Aspect<Value> = Aspect::new("/t/blob", &TEST);
+pub const BOOK: Aspect<Value> = Aspect::new("/t/book", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()

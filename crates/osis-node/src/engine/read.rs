@@ -29,6 +29,20 @@ fn unresolved_ak(ak: &str) -> bool {
     matches!(ak, "/tid" | "/created" | "/was" | "/moved")
 }
 
+/// Navigates a read value along `path` (synthetic aspects).
+fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
+    use osis_crdt::PathSeg;
+    let Some((seg, rest)) = path.split_first() else { return Some(v) };
+    let next = match (seg, v) {
+        (PathSeg::Field(id), Value::Map(mut m)) => m.remove(&Value::Int(i64::try_from(*id).ok()?))?,
+        (PathSeg::Key(k), Value::Map(mut m)) => m.remove(k)?,
+        (PathSeg::Index(i), Value::List(l)) => l.into_iter().nth(*i)?,
+        (PathSeg::Case(id), Value::Enum(c, Some(p))) if c == *id => *p,
+        _ => return None,
+    };
+    value_at(next, rest)
+}
+
 fn edge_value(e: &Edge) -> Value {
     ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(|k| ct::EdgeKey { ts: k.ts, node: k.node }) }.to_value()
 }
@@ -89,6 +103,22 @@ impl Engine {
         };
         Ok(match v {
             Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(&tid, v)),
+            v => v,
+        })
+    }
+
+    /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
+    /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
+    pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
+        if path.is_empty() || matches!(ak.as_str(), "/tid" | "/aspects" | "/groups" | "/members") {
+            return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
+        }
+        if self.core.created(tid).is_none() {
+            return Ok(None);
+        }
+        let v = self.run(|tx| Ok(tx.state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read())))?;
+        Ok(match v {
+            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
             v => v,
         })
     }

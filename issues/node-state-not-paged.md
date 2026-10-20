@@ -1,15 +1,12 @@
-# The node rewrites a whole aspect state on every edit
-> Summary: The engine keeps each aspect's state as one encoded unit (`Tx::set_state` re-encodes the whole `Fragment`), so one entry edit of a 10^6-key map writes about 95 MB to the store and takes about 9 s; spec/requirements.md (Scale: O(change) per edit) is missed at the node. The store's paged tables and the crdt's paged snapshots are O(change) already; the engine does not use them.
-> Tags: performance, node, storage, crdt
+# Large states paged only at the root and in root struct fields
+> Summary: The node pages a large root collection and large collection fields of a root struct (one entry edit at 10^6 keys: 1.1–1.9 ms, about 50 KB written; a `/secrets` write at a 1000-member roster 19 KB); deeper collections, a sequence's undo buffer, the first load of a paged state per session and `/secrets` ingestion are still O(state).
+> Tags: performance, node, storage
 
-Measured (`cargo test --release -p osis-node --test scale big_map_edit_cost -- --ignored --nocapture`, shared 4-core box): one `PathOp` set into an untyped map aspect.
+Done (notes/node.md, Paged state): root collections, and collection fields of a root struct, above `PAGE_TARGET` live as ~8 KB pages of consecutive elements in aspect table 0; a join rewrites the pages holding the delta's root dots; joins are in place; the undo buffer keeps `Fragment::footprint`; `Core::invalid` keeps un-merge O(invalid parts); `Engine::get_at` reads one key in O(log n).
 
-| keys | fill commit | edit time | store bytes per edit | commit bytes |
-|---|---|---|---|---|
-| 10^4 | 0.16 s | 71 ms | 367 KB | 299 B |
-| 10^5 | 1.0 s | 0.84 s | 4.0 MB | 303 B |
-| 10^6 | 17 s | 8.6 s | 94.6 MB (3 batches, spilled) | 307 B |
-
-The commit itself is O(change) (about 300 B); the local cost is the whole state re-encoded and re-encrypted (about 40 B per key per write at 10^5, more once spilled) plus the in-memory state cloned per path op (notes/crdt.md: "ops scan entries and clone the joined map per path op").
-
-Fix shape (notes/local-store.md, Units: "a large state is paged like a snapshot ... MVP requirement"): store a state above `PAGE_TARGET` as osis-store table pages (`create_table`/`table_*`: one shredded edit of a 10^6-entry table writes 3 unit rows, about 36 KB, osis-store `paged.rs` `million_keys`), keyed by map key / dot, and load only the pages an op or a join touches. Snapshot encoding is already incremental in bytes (one new page per change at 10^6 keys, osis-bench `scale.rs`) but still re-encodes the whole state (1.2 s at 10^6).
+Remaining (spec/requirements.md, Scale):
+- Deeper collections: a big map inside a map entry or a nested struct (the slot is only root or a root field). Shape: slots keyed by path.
+- `/secrets` CPU: `observe_state` reads the whole value and `ingest_secrets` walks every box on each `/secrets` change (59 ms at 1000 members, linear); it should look only at the delta's entries.
+- Sequence undo buffer: `footprint` keeps a sequence whole (its undo reads by position); a footprint by dot (the delta's elements plus their anchors) would need `seq::undo` to read by dot.
+- First access per session loads every page into memory (O(state) once); a lazy in-memory page cache would need crdt ops over partial states.
+- Whole rewrites stay O(state) by nature: a root reset, a rebuild after validity flips, retention drops (`set_state`).

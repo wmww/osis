@@ -87,14 +87,14 @@ Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at
 
 | check | how to run (`cargo test --release ... -- --ignored --nocapture`) | numbers | verdict |
 |---|---|---|---|
-| map edit at the node | `-p osis-node --test scale big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: store writes 367 KB / 4.0 MB / 94.6 MB, 71 ms / 0.84 s / 8.6 s; commit 299–307 B | **miss** (O(state)): issues/node-state-not-paged.md |
+| map edit at the node | `-p osis-node --test scale big_map_edit_cost` | one entry edit at 10^4 / 10^5 / 10^6 keys: 1.3 / 1.3 / 1.1 ms, store writes 18 / 32 / 54 KB (paged state; was 71 ms / 0.84 s / 8.6 s and 0.4 / 4.0 / 94.6 MB); fill 0.2 / 1.6 / 10.4 s; commit 299–307 B | pass |
 | map edit in store tables | `-p osis-store --test paged million_keys` | 2 / 3 / 3 unit rows, 14 / 43 / 36 KB written, 0.1–0.3 ms per shredded edit; fill of 10^6 + index 100 s | pass |
 | paged snapshot rewrite | `-p osis-bench --test scale` | 3 / 27 / 292 pages (about 80 KB each); after one change 1 new page plus the top (31 KB of links at 10^6); re-encode still O(n): 8 ms / 0.12 s / 1.2 s | pass in bytes |
 | multi-GB value | `OSIS_LARGE_MIB=4096 -p osis-label --test scale` | 1 GiB: 13,451 blobs, write 141 MB/s, read 280 MB/s, peak RSS growth 3.2 MB / 1.2 MB; 4 GiB: 54,006 blobs, 233 / 385 MB/s, 5.9 MB / 0.9 MB (writer's `written` list is linear, ~60 B per blob) | pass (bound 64 MB) |
-| reconciliation 10^6 IDs, 1% diff | `-p osis-proto --lib million_blob_rounds` | 3 rounds (bound about log16(n/32) ≈ 4), 236 request messages, 35 MB up, 5 MB down, 1.3 s CPU | pass in rounds; bytes O(n): issues/rbsr-dense-diff-bytes.md |
-| removal from a roster | `-p osis-node --test scale roster_removal_cost` | read+write rotation of N writers: N=100 272 KB (2747 B per member), N=1000 2.70 MB (2707 B); `Engine::commit` 0.16 s / 28.7 s | pass in bytes (notes: 2.7 KB); **miss** in time: issues/rotation-commit-superlinear.md |
+| reconciliation 10^6 IDs, 1% diff | `-p osis-proto --lib million_blob_rounds` | 3 rounds (bound about log16(n/32) ≈ 4), 236 request messages, 5.3 MB up, 5.9 MB down, 0.4 s CPU (was 35 MB up, 5 MB down before the dense-difference rule) | pass |
+| removal from a roster | `-p osis-node --test scale roster_removal_cost` | read+write rotation of N writers: N=100 272 KB (2747 B per member), N=1000 2.70 MB (2707 B); `Engine::commit` 0.05 s / 0.7 s (was 0.16 s / 28.7 s before the map key index); one more `/secrets` entry afterwards 9.5 / 19 KB written (paged box map), 5 / 59 ms (`/secrets` ingestion reads the whole value) | pass (notes: 2.7 KB; linear) |
 | text snapshot budget | `-p osis-bench --test budgets budget_text_snapshot_ratio` | synthetic typist (20k edits): 2.89x at 100 edits per commit, 6.73x at 10 | pass (3.5x, 7x) |
-| perm evaluation | `-p osis-perm --test bench` | 10^3 edge writes 34 ms, 10^4 4.4–5.0 s, re-evaluation after one write 4.3 s; owner chain depth 10 / 100 / 1000: 0.3 / 1.7 / 34 ms, leaf role query 1 / 9 / 189 µs | **miss** (issues/perm-eval-cost.md) |
+| perm evaluation | `-p osis-perm --test bench` | 10^3 edge writes 25 ms, 10^4 4.3 s from scratch; one more write 3 ms / 30 ms (continued walk; was 38 ms / 4.3 s); `delta_valid` 0.1–0.2 ms cold, 0.6 µs memoized; owner chain depth 10 / 100 / 1000: 0.4 / 2.4 / 51 ms, leaf role query 2 / 13 / 300 µs | incremental pass; from scratch and owner chains **miss** (issues/perm-eval-cost.md) |
 
 Not covered: a million-key map through sync (pages fetched and joined whole), reconciliation over a real connection, a roster of thousands through the flows (grants and removals end to end).
 

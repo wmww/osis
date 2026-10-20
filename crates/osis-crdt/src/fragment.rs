@@ -4,7 +4,7 @@
 use crate::seq::Seq;
 use crate::stamp::{Dot, Stamp};
 use osis_core::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Merge encoding IDs (§3.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -158,10 +158,59 @@ pub struct Set {
 }
 
 /// §5.6.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct Map {
     pub(crate) meta: Meta,
     pub(crate) entries: BTreeMap<Dot, Entry>,
+    /// Local index, not part of the lattice: stored key -> dots that carried it. A superset
+    /// (every keyed entry is listed; a dot whose entry lost its key may linger), so lookups
+    /// check the entry.
+    pub(crate) keys: BTreeMap<Value, BTreeSet<Dot>>,
+}
+
+impl PartialEq for Map {
+    fn eq(&self, o: &Map) -> bool {
+        self.meta == o.meta && self.entries == o.entries
+    }
+}
+impl Eq for Map {}
+
+impl std::fmt::Debug for Map {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Map").field("meta", &self.meta).field("entries", &self.entries).finish()
+    }
+}
+
+impl Map {
+    pub(crate) fn new(meta: Meta, entries: BTreeMap<Dot, Entry>) -> Map {
+        let mut m = Map { meta, entries, keys: BTreeMap::new() };
+        m.reindex();
+        m
+    }
+    /// Rebuilds the key index exactly.
+    pub(crate) fn reindex(&mut self) {
+        self.keys.clear();
+        for (d, e) in &self.entries {
+            if let Some(k) = &e.key {
+                self.keys.entry(k.clone()).or_default().insert(d.clone());
+            }
+        }
+    }
+    /// Lists `d` under the key its entry carries now.
+    pub(crate) fn index_dot(&mut self, d: &Dot) {
+        if let Some(k) = self.entries.get(d).and_then(|e| e.key.as_ref())
+            && !self.keys.get(k).is_some_and(|s| s.contains(d))
+        {
+            self.keys.entry(k.clone()).or_default().insert(d.clone());
+        }
+    }
+    /// Live entries of `k`, ascending (§5.6): O(log n + dots of k).
+    pub(crate) fn live_dots(&self, k: &Value) -> Vec<&Dot> {
+        let Some(ds) = self.keys.get(k) else { return Vec::new() };
+        ds.iter()
+            .filter(|d| self.entries.get(*d).is_some_and(|e| e.key.as_ref() == Some(k) && e.frag.as_ref().is_some_and(|f| f.present())))
+            .collect()
+    }
 }
 
 /// A position that has seen several encodings (§7): the register slot and one slot per other

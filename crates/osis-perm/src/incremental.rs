@@ -127,11 +127,17 @@ impl Timelines {
         let mut evaluated = 0;
         self.of.clear();
         for (_, inputs) in groups {
+            let part = Part { held, things: &inputs.0 };
             let tl = match cache.remove(&inputs) {
                 Some(tl) => tl,
                 None => {
                     evaluated += 1;
-                    Timeline::evaluate(&Part { held, things: &inputs.0 })
+                    // a component that only gained commits continues its walk when it can
+                    let grown = cache.keys().find(|k| k.0 == inputs.0 && k.2 == inputs.2 && k.1.is_subset(&inputs.1)).cloned();
+                    match grown.and_then(|k| cache.remove(&k)).and_then(|tl| tl.extend(&part)) {
+                        Some(tl) => tl,
+                        None => Timeline::evaluate(&part),
+                    }
                 }
             };
             let i = self.comps.len();

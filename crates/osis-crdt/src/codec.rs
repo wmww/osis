@@ -456,7 +456,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
                 }
                 entries.insert(dot, Entry { reset, key: key.cloned(), frag });
             }
-            Fragment::Map(Map { meta, entries })
+            Fragment::Map(Map::new(meta, entries))
         }
         (Encoding::List | Encoding::Text, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;

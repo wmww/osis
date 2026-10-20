@@ -13,6 +13,7 @@ mod lifecycle;
 mod linearize;
 mod ops;
 mod page;
+mod paging;
 mod remap;
 mod seq;
 mod seq_diff;

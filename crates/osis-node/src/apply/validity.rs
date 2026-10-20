@@ -404,6 +404,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                 }
             }
             m.valid = now;
+            tx.core.index_validity(&id);
         }
     }
     if rebuild {

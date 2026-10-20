@@ -69,8 +69,19 @@ fn bench_10k_edges() {
         let t3 = Instant::now();
         let r = tl.role(&nodes[200], &doc, At::END);
         let query = t3.elapsed();
+        // a point query in the middle of the history, and a delta's validity (cold, then memoized)
+        let mid = tl.applied().values().nth(tl.applied().len() / 2).map(|a| a.point).unwrap();
+        let t4 = Instant::now();
+        let _ = tl.role(&nodes[200], &doc, At::before(mid));
+        let point_query = t4.elapsed();
+        let t5 = Instant::now();
+        let v = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
+        let valid_cold = t5.elapsed();
+        let t6 = Instant::now();
+        let _ = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
+        let valid_warm = t6.elapsed();
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one role query {query:?} ({r:?})",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?})",
             tl.passes(),
             tl.dropped().len()
         );
