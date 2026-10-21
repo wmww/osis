@@ -34,6 +34,11 @@ pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
 /// (provisional). Network changes come from `lan::NetWatch`.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
 pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
+/// Network changes rejoin the LAN at most this often (each join drops the LAN listener and its
+/// connections; provisional).
+pub const LAN_REJOIN_MIN: Duration = Duration::from_secs(30);
+/// A failed listen with a new dialable key is tried again after this long.
+pub const RELISTEN_RETRY: Duration = Duration::from_secs(5);
 
 /// A call on the sync engine from the app (create a label, signal, compact, read the engine):
 /// its actions are carried out.
@@ -144,6 +149,8 @@ struct LanLoop {
     sock: Arc<osis_transport::lan::Lan>,
     /// Join at the next check (start, network change, new dialable key).
     rejoin: bool,
+    /// When it last joined (network changes rejoin at most every `LAN_REJOIN_MIN`).
+    joined: Option<tokio::time::Instant>,
     /// This network's listener: its key and its IPv4 and IPv6 ports.
     listener: Option<([u8; 32], Ports)>,
     next: tokio::time::Instant,
@@ -202,8 +209,12 @@ struct Driver<T: Transport, H: Host> {
     /// The dialable listener's URL and relays (`Control::Reach`), and its key.
     reach: Option<(String, Vec<String>)>,
     dialable: Option<[u8; 32]>,
-    /// The engine rotated the dialable secret (`Action::Reach`): listen again.
+    /// The engine rotated the dialable secret (`Action::Reach`): listen again (not before
+    /// `relisten_at` after a failure).
     relisten: bool,
+    relisten_at: Option<tokio::time::Instant>,
+    /// Sessions each listener accepted, by its key: they close with it.
+    served_by: HashMap<[u8; 32], Vec<ConnId>>,
 }
 
 impl<T: Transport, H: Host> Driver<T, H> {
@@ -321,12 +332,19 @@ impl<T: Transport, H: Host> Driver<T, H> {
         }
     }
 
-    /// `unlisten`, returning once the listener is dropped (its address is free again).
+    /// `unlisten`, returning once the listener is dropped (its address is free again), and
+    /// closing the sessions it accepted (as an iroh endpoint closes its connections).
     async fn unlisten_now(&mut self, key: [u8; 32]) {
         if let Some(ts) = self.listeners.remove(&key) {
             for t in ts {
                 t.abort();
                 let _ = t.await;
+            }
+        }
+        for conn in self.served_by.remove(&key).unwrap_or_default() {
+            if self.conns.contains_key(&conn) {
+                self.close(conn);
+                self.feed(Event::Down { conn });
             }
         }
     }
@@ -377,6 +395,10 @@ impl<T: Transport, H: Host> Driver<T, H> {
         if let Some(conn) = conn {
             let task = pump(conn, rx, self.ev_tx.clone());
             self.conns.insert(conn, Conn { tx: Some(tx), task });
+            let conns = &self.conns;
+            let v = self.served_by.entry(key).or_default();
+            v.retain(|c| conns.contains_key(c));
+            v.push(conn);
         }
         match acts {
             Some(a) => self.apply(a),
@@ -445,15 +467,20 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 }
             }));
         }
-        self.lan = Some(LanLoop { cfg, sock, rejoin: true, listener: None, next: tokio::time::Instant::now(), tasks });
+        self.lan = Some(LanLoop { cfg, sock, rejoin: true, joined: None, listener: None, next: tokio::time::Instant::now(), tasks });
         self.lan_check().await;
     }
 
     /// Joins the network again at the next check (a network change, a new dialable key).
     #[cfg(feature = "lan")]
-    async fn lan_rejoin(&mut self) {
+    /// `force` (a new dialable key): at once; else (a network change) at most every
+    /// `LAN_REJOIN_MIN`, the LAN timer doing a deferred one.
+    async fn lan_rejoin(&mut self, force: bool) {
         if let Some(x) = self.lan.as_mut() {
             x.rejoin = true;
+            if force {
+                x.joined = None;
+            }
             self.lan_check().await;
         }
     }
@@ -463,8 +490,10 @@ impl<T: Transport, H: Host> Driver<T, H> {
     /// `LAN_ANNOUNCE`, each family's carrying the listener's port on that family.
     #[cfg(feature = "lan")]
     async fn lan_check(&mut self) {
-        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin).map(|x| {
+        let now = tokio::time::Instant::now();
+        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t + LAN_REJOIN_MIN <= now)).map(|x| {
             x.rejoin = false;
+            x.joined = Some(now);
             (x.listener.take(), x.cfg.listen.clone())
         }) else {
             return self.lan_announce().await;
@@ -535,7 +564,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
             #[cfg(feature = "lan")]
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
             #[cfg(feature = "lan")]
-            Some(Control::LanRejoin) => self.lan_rejoin().await,
+            Some(Control::LanRejoin) => self.lan_rejoin(true).await,
             #[cfg(not(feature = "lan"))]
             Some(Control::Lan(_) | Control::LanRejoin) => (self.log)("LAN: built without feature `lan`"),
             Some(Control::Shutdown) | None => return false,
@@ -546,18 +575,26 @@ impl<T: Transport, H: Host> Driver<T, H> {
     /// After `Action::Reach`: listens with the new dialable secret (the old listener stops) and
     /// joins the LAN again, so nothing announced or listening carries the old key.
     async fn after_rotation(&mut self) {
-        if !std::mem::take(&mut self.relisten) {
+        if !self.relisten || self.relisten_at.is_some_and(|t| t > tokio::time::Instant::now()) {
             return;
         }
+        self.relisten = false;
+        self.relisten_at = None;
         if let Some((url, relays)) = self.reach.clone() {
             // the old listener goes first: the new one takes its place (its URL, its relays)
             if let Some(old) = self.dialable.take() {
                 self.unlisten_now(old).await;
             }
-            let _ = self.reach(url, relays).await;
+            if let Err(e) = self.reach(url, relays).await {
+                // `/reach` already names the new key: keep trying
+                (self.log)(&format!("listening with the new dialable key: {e}; again in {RELISTEN_RETRY:?}"));
+                self.relisten = true;
+                self.relisten_at = Some(tokio::time::Instant::now() + RELISTEN_RETRY);
+                return;
+            }
         }
         #[cfg(feature = "lan")]
-        self.lan_rejoin().await;
+        self.lan_rejoin(true).await;
     }
 }
 
@@ -610,6 +647,8 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
         reach: None,
         dialable: None,
         relisten: false,
+        relisten_at: None,
+        served_by: HashMap::new(),
     };
     for l in listeners {
         d.serve(l);
@@ -634,8 +673,9 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
             Some((a, from)) = lan_rx.recv() => d.call(&mut |s| s.lan_seen(&a, from).1),
             Some(()) = net_rx.recv() => {
                 #[cfg(feature = "lan")]
-                d.lan_rejoin().await;
+                d.lan_rejoin(false).await;
             }
+            _ = sleep_until(d.relisten_at) => {}
             _ = tokio::time::sleep(idle) => {
                 d.wake = None;
                 d.feed(Event::Tick);
@@ -656,6 +696,14 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
         d.close(id);
     }
     d.host
+}
+
+/// Until `at`, else never.
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(t) => tokio::time::sleep_until(t).await,
+        None => std::future::pending::<()>().await,
+    }
 }
 
 /// The LAN check timer while the loop runs, else never.

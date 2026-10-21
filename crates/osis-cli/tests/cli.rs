@@ -308,11 +308,10 @@ fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group"]).line().to_string();
     s.ok(&["group", "sync", &g]);
-    let link = s.ok(&["link", "make", &g, "write", "--single-use"]).line().to_string();
-    assert!(link.starts_with("osis://link/"), "{link}");
-    let ls = s.ok(&["--json", "link", "ls", &g]).line().to_string();
-    assert!(ls.contains("\"single_use\":true") && ls.contains("\"role\":\"write\""), "{ls}");
-    assert!(s.ok(&["card", "show"]).line().starts_with("osis://"));
+    // spec/permissions.md §9: without servers a link reaches nobody unless direct (opt-in)
+    assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
+    assert_eq!(s.code(&["card", "show"]), 7);
+    assert_eq!(s.ok(&["--json", "link", "ls", &g]).line(), "[]");
     assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1);
     let other = S::mem();
     let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();

@@ -275,3 +275,28 @@ fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {
     net.run();
     assert_ne!(net.sync(a).own_reach().unwrap().dialable, new.dialable);
 }
+
+// spec/sync.md §10 (a candidate never replaces a working route before it is up): a LAN address
+// whose dial fails beside a running relay connection leaves that connection in place.
+#[test]
+fn failed_lan_route_keeps_relay_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let relay = net.sync(a).peer_routes();
+    assert!(matches!(relay.as_slice(), [(k, _, true)] if *k == kb));
+    // a signed announcement of a key nobody listens with
+    let ann = net.sync(b).lan_announcement([0x66; 32], 5000).unwrap();
+    let (_, acts) = net.sync(a).lan_seen(&ann, "192.168.3.9:47380".parse().unwrap());
+    assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.3.9:5000".into(), key: [0x66; 32] }]);
+    net.actions(a, acts);
+    net.settle(100_000);
+    assert_eq!(net.sync(a).peer_routes(), relay, "the relay connection stays");
+    let t = net.item(a, g, g, "still over the relay");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("still over the relay")));
+}

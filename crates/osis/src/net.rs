@@ -338,10 +338,11 @@ impl crate::Osis {
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with
-    /// the new key at once and publishes it only under groups that get `/reach`. Whoever held
-    /// the old one (a co-reader removed since, a link holder) can no longer dial or recognise
-    /// it on a LAN. Links made before lose direct first contact (they still work through
-    /// servers).
+    /// the new key at once and publishes it only under groups that get `/reach`. A co-reader
+    /// removed since can no longer dial it or recognise it on a LAN; a link holder (who got the
+    /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
+    /// still open lose first contact (they still work through servers). Done by itself when a
+    /// group holding its `/reach` stops qualifying and when a direct link ends.
     pub fn rotate_reach(&self) {
         self.locked(|l| {
             let acts = l.sync.rotate_reach();

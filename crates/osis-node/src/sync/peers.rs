@@ -106,9 +106,11 @@ impl SyncEngine {
     /// holding the current `/reach` stopped qualifying, `check_reach`): a new dialable secret and
     /// lan secret, `/reach` written with the new key and the same relays (it goes only under
     /// labels that qualify, spec/permissions.md §4), and `Action::Reach` so the driver listens
-    /// with the new key and joins the LAN with a fresh one. Whoever held the old `/reach` (a
-    /// co-reader removed since, a link holder) can no longer dial or recognise this node. Links
-    /// made before carry the old key: their first contact then needs a server.
+    /// with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
+    /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
+    /// on a LAN; a link holder (who got the dialable key only, never the lan secret) can no
+    /// longer dial it. Direct links still open lose first contact (they work through servers).
+    #[must_use]
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if let Err(e) = self.rotate_now(&mut out) {
@@ -263,9 +265,8 @@ impl SyncEngine {
             // newest heartbeat first, unknown last
             reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
             for (g, l) in self.labels() {
-                // a group whose labels carry no `/reach` of ours: its co-readers are not dialed,
-                // unless this node chose to (`dial_group`: a link it redeemed)
-                if !self.publishes_reach(&g) && !self.dials(&g) {
+                // a group whose labels carry no `/reach` of ours: its co-readers are not dialed
+                if !self.publishes_reach(&g) {
                     continue;
                 }
                 let mut n_label = 0;
@@ -330,9 +331,13 @@ impl SyncEngine {
     /// LAN candidate it went to is the proven route (spec/sync.md §10). True when the connection
     /// goes through the proven LAN route.
     pub(crate) fn lan_up(&mut self, peer: [u8; 32], addr: &Address) -> bool {
+        let raw = self.raw_now();
         let Some(r) = self.lan.get_mut(&peer) else { return false };
         if let Some(c) = r.candidate.take_if(|(a, _)| a == addr) {
             r.good = Some(c);
+        } else if r.good.as_ref().is_none_or(|(a, _)| a != addr) && r.heard.contains_key(addr) {
+            // a verified source the candidate moved away from while its dial ran
+            r.good = Some((addr.clone(), raw));
         }
         r.good.as_ref().is_some_and(|(a, _)| a == addr)
     }
@@ -370,23 +375,52 @@ impl SyncEngine {
         self.conns.values().filter(|c| c.peer).map(|c| (c.server, c.address.clone(), c.up)).collect()
     }
 
-    /// The `peer://` addresses hints name (a link's sharer node, spec/permissions.md §9), by key.
-    pub(crate) fn hint_peers(&self) -> BTreeMap<[u8; 32], Address> {
-        self.state.hints.values().flat_map(|h| h.servers.iter()).filter(|a| is_peer(a)).map(|a| (a.key, a.clone())).collect()
-    }
-
-    /// Dials co-readers of `g` (and of groups holding it) though this node's `/reach` stays out
-    /// of their labels: a link's actor and target this node redeemed with the sharer's reach
-    /// (stored). The sharer chose to be dialed by link holders; this node shows its IP to the
-    /// co-readers it dials, not its dialable key.
-    pub fn dial_group(&mut self, g: Tid) {
-        self.state.set_dial(g);
-        self.peers_cache = None;
+    /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
+    /// the link text only; spec/permissions.md §9). It is dialed like a co-reader (ephemeral key,
+    /// no member proof) for K's labels and the target's, and nothing else, until `forget_link`.
+    /// This node shows the sharer its IP, never its dialable key.
+    pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
+        let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
+        if peers.is_empty() {
+            return;
+        }
+        self.state.set_link_peer(k, super::state::LinkPeer { target, peers });
         let _ = self.state.flush(&mut self.engine);
     }
 
-    fn dials(&self, g: &Tid) -> bool {
-        !self.state.dial.is_empty() && (self.state.dial.contains(g) || self.engine.closure(g).iter().any(|t| self.state.dial.contains(t)))
+    /// The sharer nodes of followed links (their dialable keys).
+    pub fn link_peer_keys(&self) -> BTreeSet<[u8; 32]> {
+        self.state.link_peers.values().flat_map(|lp| lp.peers.iter().map(|a| a.key)).collect()
+    }
+
+    /// A link follow ended without a redemption (it failed, or its key guard went): its hint
+    /// and sharer node are forgotten.
+    #[must_use]
+    pub fn forget_link(&mut self, k: Tid) -> Vec<Action> {
+        self.state.remove_link_peer(&k);
+        let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
+        for l in hinted {
+            self.state.remove_hint(&l);
+        }
+        self.handle(Event::Local)
+    }
+
+    /// Where to dial followed links' sharer nodes, by key, with the labels each serves here: K's
+    /// hinted label and the synced labels of K and of the target.
+    pub(crate) fn link_routes(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
+        if self.state.link_peers.is_empty() {
+            return BTreeMap::new();
+        }
+        let synced = self.labels();
+        let mut out: BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> = BTreeMap::new();
+        for (k, lp) in &self.state.link_peers {
+            let mut labels: BTreeSet<LabelId> = synced.iter().filter(|(g, _)| g == k || *g == lp.target).map(|(_, l)| l.id).collect();
+            labels.extend(self.state.hints.iter().filter(|(_, h)| h.thing == *k && h.via.is_some()).map(|(l, _)| *l));
+            for a in &lp.peers {
+                out.entry(a.key).or_insert_with(|| (a.clone(), BTreeSet::new())).1.extend(labels.iter().copied());
+            }
+        }
+        out
     }
 
     /// A connection to a co-reader ended before coming up: when it went to a LAN address, that
@@ -523,6 +557,7 @@ impl SyncEngine {
     /// Whether `group`'s labels carry this node's `/reach` (spec/permissions.md §4): `Some`
     /// sets it, `None` returns to the default (`publishes_reach`). Stored. A group that stops
     /// qualifying while its labels hold the current `/reach` rotates it (`check_reach`).
+    #[must_use]
     pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) -> Vec<Action> {
         self.state.set_reach_policy(group, publish);
         self.policy_changed()
@@ -530,6 +565,7 @@ impl SyncEngine {
 
     /// Marks a person as a contact of this node's person (stored): groups whose readers are only
     /// contacts get `/reach` by default. Unmarking may rotate `/reach` (`check_reach`).
+    #[must_use]
     pub fn set_contact(&mut self, person: Tid, contact: bool) -> Vec<Action> {
         self.state.set_contact(person, contact);
         self.policy_changed()

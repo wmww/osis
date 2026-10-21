@@ -217,9 +217,22 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     let t = w.create(g, Place::In(g)).unwrap();
     w.at(t, ak("/t/x")).set(&Value::Str("first contact".into())).unwrap();
     w.commit().unwrap();
+    // `/reach` went under g (only Alice reads it); the link's K joining g makes g stop
+    // qualifying, so the key rotates, and the link carries the new one, listened on
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    let now = alice.sync_engine(|s| s.own_reach()).unwrap();
+    assert_ne!(now.dialable, me.reach.dialable, "rotated: g no longer qualifies");
     let parsed = osis_label::ShareLink::from_text(&link.to_string()).unwrap();
-    assert_eq!(parsed.peers, vec![osis_label::Peer { dialable: me.reach.dialable, relays: vec![] }]);
+    assert_eq!(parsed.peers, vec![osis_label::Peer { dialable: now.dialable, relays: vec![] }]);
+    let probe = net.endpoint("probe");
+    tokio::time::timeout(GUARD, async {
+        while probe.dial(&osis_transport::Address { url: osis_transport::peer_url(&[]), key: now.dialable }).await.is_err() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     let want = Some(Value::Str("first contact".into()));
@@ -242,8 +255,29 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     })
     .await
     .unwrap();
-    assert!(!bob.sync_engine(|s| s.publishes_reach(&g)), "Bob's dialable key stays out");
-    drop((alice, bob));
+    // Bob keeps the sharer from the link; Alice never saw his dialable key (no member proof)
+    assert_eq!(bob.sync_engine(|s| s.link_peer_keys()), [now.dialable].into());
+    let bob_key = bob.sync_engine(|s| s.own_reach()).unwrap().dialable;
+    assert!(!alice.sync_engine(|s| s.served_members()).contains(&bob_key));
+    // the link ends (revoked): the key it carried rotates
+    let k = alice.links(g)[0].id;
+    tokio::time::timeout(GUARD, alice.revoke_link(k, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None })).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, async {
+        while alice.sync_engine(|s| s.own_reach()).unwrap().dialable == now.dialable {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // a later holder of the link reaches nothing, and its follow is forgotten
+    let mut c = cfg(3, vec![], Transport::InProcess(net.endpoint("c")));
+    c.wait_timeout = Duration::from_secs(2);
+    let carol = Osis::create(c).unwrap().0;
+    net.partition("c", "s");
+    assert!(matches!(carol.redeem(&link).await, Err(osis::Error::Network(_))));
+    assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
+    assert_eq!(carol.role_on(g), None);
+    drop((alice, bob, carol));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }
@@ -255,6 +289,8 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(7);
     let db = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
     let old = reach_of(&db).await.reach;
+    // spec/permissions.md §9: direct is opt-in; without servers a link must be direct
+    assert!(matches!(db.make_link(db.home(), osis::Role::Read, Default::default()), Err(osis::Error::Invalid(_))));
     let probe = net.endpoint("probe");
     let dial = |key: [u8; 32]| {
         let probe = probe.clone();

@@ -58,11 +58,11 @@ pub struct LinkOpts {
     /// redeemer removes the link key in its redemption, and this node finalizes the link when it
     /// sees that (spec/permissions.md §9).
     pub single_use: bool,
-    /// The link carries this device's dialable key and relays (spec/permissions.md §9), so a
-    /// redeemer that shares no server with it reaches it directly while it is online; anyone
-    /// holding the link can then dial this device, and the link's actor gets this device's
-    /// `/reach`. Always so when the database has no servers (else the link reaches nobody);
-    /// never without a published `/reach` (no runtime, `Config.peers` off).
+    /// Opt-in: the link text carries this device's dialable key and relays (never its lan
+    /// secret; spec/permissions.md §9), so a redeemer that shares no server with it reaches it
+    /// directly while it is online. Anyone holding the link can dial this device until the link
+    /// ends, when the key rotates. Needs this device reachable (a runtime, `Config.peers`); a
+    /// database without servers can only make direct links.
     pub direct: bool,
 }
 
@@ -436,23 +436,36 @@ impl Osis {
         let t = self.resolved(target);
         let servers: Vec<osis_label::Address> = self.servers()?.into_iter().map(|s| s.0).collect();
         let me = self.me();
-        // first contact by this device (spec/permissions.md §9)
-        let peers: Vec<osis_label::Peer> = match opts.direct || servers.is_empty() {
-            true => self.locked(|x| x.sync.own_reach()).map(|r| osis_label::Peer { dialable: r.dialable, relays: r.relays }).into_iter().collect(),
-            false => Vec::new(),
-        };
-        let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers, single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
+        if servers.is_empty() && !opts.direct {
+            return Err(Error::Invalid("this database has no servers: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
+        }
+        if opts.direct && self.locked(|x| x.sync.own_reach()).is_none() {
+            return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
+        }
+        let (mut link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
-            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false });
-            // redeemers find this device again through K's label once the link's hint is done
-            if !link.peers.is_empty() {
-                let acts = x.sync.set_reach_policy(link.k, Some(true));
-                self.inner.net.apply(acts);
-            }
+            x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false, direct: opts.direct, ended: false });
         });
         self.save_links()?;
+        // K joining the target may rotate this device's reach (the target no longer qualifies,
+        // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
+        if opts.direct {
+            // only the dialable key and relays, never the lan secret (spec/permissions.md §9)
+            let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this device's reach is gone".into()))?;
+            link.peers = vec![osis_label::Peer { dialable: r.dialable, relays: r.relays }];
+            if let Some(until) = opts.until {
+                // the link ends by expiry: `upkeep_links` rotates the key then
+                let wait = Duration::from_millis(until.0.saturating_sub(self.inner.clock.now_wall_ms().0).saturating_add(1));
+                let db = self.downgrade();
+                self.inner.net.after(wait, Box::new(move || {
+                    if let Some(db) = db.upgrade() {
+                        db.locked(|x| db.upkeep_links(x, &BTreeSet::new(), true));
+                    }
+                }));
+            }
+        }
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
@@ -474,6 +487,9 @@ impl Osis {
         .await?;
         let me = self.me();
         let done = self.engine(|e| e.redeem(&link, &me, link.single_use))?;
+        // redeemed: the follow (hint, sharer node) stays
+        let mut key = key;
+        key.link = None;
         drop(key);
         self.carry(done)?;
         self.wait_until(t, Box::new(move |s, _| s.engine().knows(&target).then_some(Ok(())))).await?;
@@ -481,23 +497,19 @@ impl Osis {
     }
 
     /// Holds a link's key and follows K's label at its servers and at the sharer's device when
-    /// the link names it (first contact, spec/permissions.md §9: dialed by its dialable key and
-    /// relays like a co-reader; K and the target are then synced with it whatever this
-    /// device's `/reach` policy says, `dial_group`); the key goes with the guard.
+    /// the link names it (first contact, spec/permissions.md §9: dialed at the link's dialable
+    /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
+    /// goes with the guard, and with it the follow unless the redemption went through.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
         let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
-            let mut at = link.servers.clone();
-            at.extend(link.peers.iter().map(|p| osis_label::Address { url: osis_transport::peer_url(&p.relays), key: p.dialable }));
-            if !link.peers.is_empty() {
-                x.sync.dial_group(link.k);
-                x.sync.dial_group(link.target);
-            }
-            let acts = x.sync.follow(l, link.k, link.k_label, at);
+            let peers = link.peers.iter().map(|p| osis_label::Address { url: osis_transport::peer_url(&p.relays), key: p.dialable }).collect();
+            x.sync.follow_link_peer(link.k, link.target, peers);
+            let acts = x.sync.follow(l, link.k, link.k_label, link.servers.clone());
             self.inner.net.apply(acts);
             Ok(l)
         })?;
-        Ok(KeyGuard { db: self.downgrade(), l })
+        Ok(KeyGuard { db: self.downgrade(), l, link: Some(link.k) })
     }
 
     /// The links this node made to `target` that still work.
@@ -560,6 +572,29 @@ impl Osis {
                 Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![k], commit: None, peer: None, detail: format!("finalizing a single-use link: {e}") }),
             }
         }
+        // a direct link that ended (its key left K: revoked, finalized; or expired) gave out this
+        // device's dialable key: rotate it (spec/permissions.md §9)
+        let now = l.engine().now();
+        let ended: Vec<Tid> = l
+            .links
+            .iter()
+            .filter(|(_, m)| m.direct && !m.ended)
+            .map(|(k, m)| (*k, m.l))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(k, lk)| l.engine().roster(k).get(lk).is_none_or(|e| e.until.is_some_and(|u| u <= now)))
+            .map(|(k, _)| k)
+            .collect();
+        if !ended.is_empty() {
+            let acts = l.sync.rotate_reach();
+            self.inner.net.apply(acts);
+            for k in ended {
+                if let Some(m) = l.links.get_mut(&k) {
+                    m.ended = true;
+                    any = true;
+                }
+            }
+        }
         if any {
             let v = osis_core::cbor::encode(&links_value(&l.links));
             if let Err(e) = l.engine().set_app_record(LINKS, &v) {
@@ -583,8 +618,9 @@ impl Osis {
             if let Value::List(f) = i
                 && let [Value::Tid(k), Value::Tid(l), Value::Tid(t), Value::Bool(s), rest @ ..] = f.as_slice()
             {
-                let finalized = matches!(rest, [Value::Bool(true)]);
-                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, finalized });
+                let flag = |i: usize| matches!(rest.get(i), Some(Value::Bool(true)));
+                let (finalized, direct, ended) = (flag(0), flag(1), flag(2));
+                links.insert(*k, MadeLink { l: *l, target: *t, single_use: *s, finalized, direct, ended });
             }
         }
         self.locked(|x| {
@@ -660,6 +696,11 @@ impl Osis {
                 }),
             )
             .await;
+        let mut key = key;
+        // read: the follow stays (bearer use)
+        if r.is_ok() {
+            key.link = None;
+        }
         drop(key);
         r?;
         let who = *crate::watch::lock(&found);
@@ -956,7 +997,7 @@ fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::A
 const CONTACT: &str = "contact";
 
 fn links_value(links: &BTreeMap<Tid, MadeLink>) -> Value {
-    Value::List(links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized)])).collect())
+    Value::List(links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized), Value::Bool(m.direct), Value::Bool(m.ended)])).collect())
 }
 
 /// A held link or recovery key, forgotten when the guard goes: every outcome of a waiting call,
@@ -964,12 +1005,20 @@ fn links_value(links: &BTreeMap<Tid, MadeLink>) -> Value {
 pub(crate) struct KeyGuard {
     pub db: crate::handle::WeakOsis,
     pub l: Tid,
+    /// A link's K whose follow (hint, sharer node) goes with the key: set until the redemption.
+    pub link: Option<Tid>,
 }
 
 impl Drop for KeyGuard {
     fn drop(&mut self) {
         if let Some(db) = self.db.upgrade() {
             db.engine(|e| e.drop_key_actor(&self.l));
+            if let Some(k) = self.link {
+                db.locked(|x| {
+                    let acts = x.sync.forget_link(k);
+                    db.inner.net.apply(acts);
+                });
+            }
         }
     }
 }

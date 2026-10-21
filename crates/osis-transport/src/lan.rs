@@ -105,6 +105,8 @@ pub struct Lan {
     v4: tokio::net::UdpSocket,
     v6: Option<tokio::net::UdpSocket>,
     port: u16,
+    /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
+    turn: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(feature = "lan")]
@@ -134,7 +136,7 @@ impl Lan {
         let v4 = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)).await.map_err(io)?;
         v4.set_broadcast(true).map_err(io)?;
         let port = v4.local_addr().map_err(io)?.port();
-        Ok(Lan { v4, v6: bind_v6(port).ok(), port })
+        Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default() })
     }
 
     pub fn port(&self) -> u16 {
@@ -163,15 +165,14 @@ impl Lan {
         let mut b4 = [0u8; LEN + 1];
         let mut b6 = [0u8; LEN + 1];
         loop {
+            let v6_first = self.turn.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
             let (n, from, v6) = std::future::poll_fn(|cx| {
-                let mut r = tokio::io::ReadBuf::new(&mut b4);
-                if let Poll::Ready(x) = self.v4.poll_recv_from(cx, &mut r) {
-                    return Poll::Ready(x.map(|from| (r.filled().len(), from, false)));
-                }
-                if let Some(s) = &self.v6 {
-                    let mut r = tokio::io::ReadBuf::new(&mut b6);
-                    if let Poll::Ready(x) = s.poll_recv_from(cx, &mut r) {
-                        return Poll::Ready(x.map(|from| (r.filled().len(), from, true)));
+                for v6 in [v6_first, !v6_first] {
+                    let (sock, buf) = if v6 { (self.v6.as_ref(), &mut b6) } else { (Some(&self.v4), &mut b4) };
+                    let Some(sock) = sock else { continue };
+                    let mut r = tokio::io::ReadBuf::new(buf);
+                    if let Poll::Ready(x) = sock.poll_recv_from(cx, &mut r) {
+                        return Poll::Ready(x.map(|from| (r.filled().len(), from, v6)));
                     }
                 }
                 Poll::Pending
@@ -189,8 +190,8 @@ impl Lan {
     }
 }
 
-/// The local IP addresses of the routes to the internet (IPv4, IPv6), if any: a change means
-/// another network. No packet is sent.
+/// The local IP address of the IPv4 route to the internet and the /64 prefix of the IPv6 one,
+/// if any: a change means another network. No packet is sent.
 #[cfg(feature = "lan")]
 pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
     async fn via(local: IpAddr, to: IpAddr) -> Option<IpAddr> {
@@ -201,7 +202,7 @@ pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
     }
     let v4 = via(IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))).await;
     let v6 = via(IpAddr::V6(Ipv6Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))).await;
-    (v4, v6)
+    (v4, v6.map(network_of))
 }
 
 /// How often `NetWatch` looks at the routes' local addresses (provisional).
@@ -278,6 +279,18 @@ impl NetWatch {
     }
 }
 
+/// What identifies the network of a local address: an IPv4 address itself, an IPv6 address's
+/// /64 prefix (its interface part may be a temporary address that rotates).
+pub fn network_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v) => {
+            let [a, b, c, d, ..] = v.segments();
+            IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+        }
+    }
+}
+
 /// netwatch's state changes that matter for the LAN: the default route's interface, its being
 /// up and its addresses, and wakes from sleep.
 #[cfg(all(feature = "lan", feature = "iroh"))]
@@ -287,7 +300,10 @@ async fn netwatch_events() -> Option<(tokio::sync::mpsc::Receiver<()>, tokio::ta
     let mut w = mon.interface_state();
     let print = |s: &netwatch::netmon::State| {
         let iface = s.default_route_interface.as_ref().and_then(|n| s.interfaces.get(n));
-        let addrs: Vec<IpAddr> = iface.map(|i| i.addrs().map(|a| a.addr()).collect()).unwrap_or_default();
+        // IPv6 by /64 prefix: temporary (privacy) addresses rotate within one network
+        let mut addrs: Vec<IpAddr> = iface.map(|i| i.addrs().map(|a| network_of(a.addr())).collect()).unwrap_or_default();
+        addrs.sort();
+        addrs.dedup();
         (s.default_route_interface.clone(), iface.map(|i| i.is_up()), addrs, s.last_unsuspend)
     };
     let mut last = print(&w.get());

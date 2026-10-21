@@ -153,8 +153,11 @@
 //! Grants need the member's keys (a contact card, a shared group); links need nothing. Things a
 //! group owns are what its members read: create shared things with the group as owner.
 //! ```
-//! # use osis::{Config, Osis, Place, Role, LinkOpts};
-//! let db = Osis::create(Config::memory())?.0;
+//! # use osis::{Config, Osis, Place, Role, LinkOpts, ServerAddr};
+//! // a link names servers (or is direct, `LinkOpts::direct`)
+//! let mut cfg = Config::memory();
+//! cfg.servers = vec![ServerAddr::new("quic://example.org:4433", [7; 32])];
+//! let db = Osis::create(cfg)?.0;
 //! let mut w = db.write();
 //! let g = w.create(db.me(), Place::In(db.home()))?;
 //! w.make_group(g)?;

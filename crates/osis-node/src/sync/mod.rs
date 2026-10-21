@@ -269,7 +269,7 @@ pub struct SyncEngine {
     pub(crate) outbox: Vec<local::Outgoing>,
     /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
     /// limit, sends them again after `retry_ms`).
-    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
+    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), (ConnId, local::Outgoing)>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
@@ -591,10 +591,10 @@ impl SyncEngine {
         self.deleting.retain(|(c, _, _), _| *c != conn);
         self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
-            // deposits not answered go out again on the next connection
-            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.keys().filter(|(s, _)| *s == c.server).copied().collect();
+            // deposits not answered on this connection go out again on the next one
+            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.iter().filter(|(_, (x, _))| *x == conn).map(|(k, _)| *k).collect();
             for k in back {
-                if let Some(o) = self.inbox_sent.remove(&k) {
+                if let Some((_, o)) = self.inbox_sent.remove(&k) {
                     self.outbox.push(o);
                 }
             }
@@ -792,7 +792,7 @@ impl SyncEngine {
                 m.entry(k).or_insert((a, true));
             }
             // a link's sharer node (first contact, spec/permissions.md §9) is dialed as a co-reader
-            for (k, a) in self.hint_peers() {
+            for (k, (a, _)) in self.link_routes() {
                 m.entry(k).or_insert((a, true));
             }
         }
@@ -833,7 +833,7 @@ impl SyncEngine {
         if self.conns.values().all(|c| !c.peer) {
             return;
         }
-        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.hint_peers().into_keys()).collect() } else { BTreeSet::new() };
+        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
         let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
         for conn in gone {
             out.push(Action::Close { conn });
@@ -987,7 +987,8 @@ impl SyncEngine {
             }
         }
         if self.cfg.peers && self.conns.values().any(|c| c.peer) {
-            for (k, (_, labels)) in self.peer_addresses() {
+            let routes: Vec<_> = self.peer_addresses().into_iter().chain(self.link_routes()).collect();
+            for (k, (_, labels)) in routes {
                 for (_, l, keys) in want.iter_mut() {
                     if labels.contains(l) {
                         keys.push(k);

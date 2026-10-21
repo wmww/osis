@@ -103,6 +103,10 @@ pub(crate) struct MadeLink {
     pub single_use: bool,
     /// Its single-use redemption was finalized here.
     pub finalized: bool,
+    /// The link text carries this device's dialable key (`LinkOpts.direct`).
+    pub direct: bool,
+    /// A direct link that ended (revoked, finalized, expired): the key it carried was rotated.
+    pub ended: bool,
 }
 
 /// The sync engine with its event channel, the dispatcher sequence number and the handle's
