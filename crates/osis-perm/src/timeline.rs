@@ -69,6 +69,8 @@ type Valid = BTreeMap<(Point, Tid, String, crate::types::Dots, Role), crate::con
 pub(crate) struct Memo {
     pub first_held: Mutex<FirstHeld>,
     pub valid: Mutex<Valid>,
+    /// `roles_of` at `At::END`, per node.
+    pub roles_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
 }
 
 fn checkpoints(w: &walk::Walked) -> Vec<Edges> {
@@ -207,7 +209,18 @@ impl Timeline {
 
     /// Effective role (§1).
     pub fn role(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
-        self.standing(node, thing, at).role
+        if at != At::END {
+            return self.roles_of(node, at).get(thing).copied();
+        }
+        if let Some(r) = self.memo.roles_end.lock().ok().and_then(|m| m.get(node).cloned()) {
+            return r.get(thing).copied();
+        }
+        let r = Arc::new(self.roles_of(node, at));
+        let out = r.get(thing).copied();
+        if let Ok(mut m) = self.memo.roles_end.lock() {
+            m.insert(*node, r);
+        }
+        out
     }
 
     /// Authority class (§5.1 step 3).

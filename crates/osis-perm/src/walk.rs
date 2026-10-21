@@ -523,8 +523,10 @@ impl<'a> Pass<'a> {
         // A value already expired when written never conferred anything.
         let old = self.edges.get(&member, &target).copied().filter(|_| !self.dead.contains(&key));
         self.set_dead(key, edge.is_some_and(|e| !e.alive_at(Some(point.ts))));
-        // Before the change: does the author reach the member (a demotion of itself)?
-        let own = auditor.and_then(|a| a.author).filter(|a| self.view(point.ts).reach_backward(&member).contains(a));
+        // Before the change: does the author reach the member (a demotion of itself)? Only
+        // asked when the edge restores something.
+        let restores = old.is_some() || self.prior.contains_key(&key);
+        let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
         let was = self.edges.get(&member, &target).copied();
         let mut raise = Vec::new();
         self.roles.retain(|x, (b, _, _)| match widest_changes(b, (member, target), was, edge, point.ts) {

@@ -89,10 +89,20 @@ fn bench_10k_edges() {
         let t6 = Instant::now();
         let _ = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
         let valid_warm = t6.elapsed();
+        // what a node re-judges after a change in this component: one content delta per
+        // applied write, by its author on its target, on a fresh timeline (nothing memoized)
+        let fresh = Timeline::evaluate(&held);
+        let deltas: Vec<_> = fresh.applied().values().take(1000).map(|a| (a.point, a.target)).collect();
+        let t7 = Instant::now();
+        for (p, t) in &deltas {
+            let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+        }
+        let rejudge = t7.elapsed();
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?})",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}",
             tl.passes(),
-            tl.dropped().len()
+            tl.dropped().len(),
+            deltas.len()
         );
     }
 }
