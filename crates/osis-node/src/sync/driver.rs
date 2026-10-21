@@ -593,11 +593,12 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 (self.log)(&format!("listening with the new dialable key: {e}; again in {RELISTEN_RETRY:?}"));
                 self.relisten = true;
                 self.relisten_at = Some(tokio::time::Instant::now() + RELISTEN_RETRY);
-                return;
             }
         }
         #[cfg(feature = "lan")]
-        self.lan_rejoin(true).await;
+        if !self.relisten {
+            self.lan_rejoin(true).await;
+        }
     }
 }
 
