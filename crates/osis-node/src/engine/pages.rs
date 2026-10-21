@@ -620,7 +620,9 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             let hi = if i + 1 == n { r.1.clone() } else { ds.get((i + 1) * per).cloned() };
             let pr = (lo, hi);
             let pk = set.row_key(pr.0.as_ref());
-            txn.table_put(t, &pk, page_row(&pr, &page(c, nested, &pr)?)?, shred)?;
+            // elements moving to another row: the old versions go shredded, so a later shred of
+            // a moved element's row reaches every copy
+            txn.table_put(t, &pk, page_row(&pr, &page(c, nested, &pr)?)?, Shred::Yes)?;
             set.loaded.insert(pk, pr);
         }
     }
@@ -653,6 +655,11 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     let unit = unit_state(&f.reduced(&idx.paths), idx)?;
     // unpaged parts grown large: written whole, which pages them
     Ok((unit.len() <= PAGE_TARGET).then_some(Some(unit)))
+}
+
+/// The unit state of the paged state `f` (its skeleton and sets).
+pub fn skeleton_unit(f: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
+    unit_state(&f.reduced(&idx.paths), idx)
 }
 
 /// The paths of the ops of a mutation if each addresses map keys or fields only (a write there

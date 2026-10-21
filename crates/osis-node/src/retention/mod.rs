@@ -149,6 +149,8 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     for di in 0..n {
         m.dropped.insert((ai, di));
     }
+    // the dropped deltas, to find what of the state holds copies of their writes
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes)?;
@@ -156,9 +158,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
-    tx.load(&a.tid, &a.ak)?;
-    let st = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten();
-    tx.set_state(&a.tid, &a.ak, st, Shred::Yes, true)
+    tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).

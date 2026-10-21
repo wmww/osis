@@ -489,6 +489,44 @@ impl Tx<'_> {
         self.set_state(tid, ak, f, shred, false)
     }
 
+    /// Rewrites shredded what of the state of `(tid, ak)` may hold copies of a dropped body's
+    /// writes (`bodies`: its deltas), and clears the undo buffer (spec/commits.md §5: dropping a
+    /// body destroys every local copy; the state's content is unchanged). A paged state rewrites
+    /// the pages holding the bodies' dots and its skeleton; anything else is rewritten whole.
+    pub fn shred_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment]) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
+            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
+            None => None,
+        };
+        if let Some(touches) = touches {
+            for t in &touches {
+                self.ensure_touch(tid, ak, &Some(t.clone()))?;
+            }
+            self.core.touch();
+            self.core.written.push(k.clone());
+            let done = self.with_pages(tid, ak, |txn, idx, f| {
+                for t in &touches {
+                    if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
+                        return Ok(false);
+                    }
+                }
+                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
+                unit.state = pages::skeleton_unit(f, idx)?;
+                unit.undo.clear();
+                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
+                Ok(true)
+            })?;
+            if done == Some(true) {
+                return Ok(());
+            }
+        }
+        self.load(tid, ak)?;
+        let st = self.core.states.get(&k).cloned().flatten();
+        self.set_state(tid, ak, st, Shred::Yes, true)
+    }
+
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
