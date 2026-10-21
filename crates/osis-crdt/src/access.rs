@@ -11,6 +11,11 @@ impl Map {
     pub fn entries(&self) -> impl Iterator<Item = (&Dot, Option<&Stamp>, Option<&Value>, Option<&Fragment>)> {
         self.entries.iter().map(|(d, e)| (d, e.reset.as_ref(), e.key.as_ref(), e.frag.as_deref()))
     }
+
+    /// The live entries of key `k` by dot (O(log n + their number)).
+    pub fn live(&self, k: &Value) -> Vec<(&Dot, &Fragment)> {
+        self.live_dots(k).into_iter().filter_map(|d| Some((d, self.entries.get(d)?.frag.as_deref()?))).collect()
+    }
 }
 
 impl crate::fragment::Struct {
@@ -31,7 +36,11 @@ impl Fragment {
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.at(rest),
             (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
-            (PathSeg::Key(k), Fragment::Map(m)) => crate::ops::key_state(m, &m.live_dots(k))?.at(rest),
+            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_dots(k).as_slice() {
+                // one live entry: read in place
+                [d] => m.entries.get(*d)?.frag.as_deref()?.at(rest),
+                ds => crate::ops::key_state(m, ds)?.at(rest),
+            },
             (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.at(rest),
             _ => None,
         }

@@ -27,11 +27,37 @@ pub const SYNCING: &[u8] = b"s/";
 pub const VOID: &[u8] = b"o/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
-/// Deletion obligations node-sync executes (append log).
-pub const DELETIONS: &[u8] = b"deletions";
-/// Re-snapshot triggers node-sync executes (append log): aspects left without a covering
-/// snapshot after a purge.
-pub const RESNAPSHOT: &[u8] = b"resnapshot";
+
+fn uint(n: u64) -> osis_core::Value {
+    osis_core::Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// A dot as a value (local records).
+pub fn dot_value(d: &osis_crdt::Dot) -> osis_core::Value {
+    use osis_core::Value;
+    use osis_crdt::SourceKind;
+    let src = match d.src.kind() {
+        SourceKind::Node(t) => Value::List(vec![Value::Int(0), Value::Bytes(t.as_bytes().to_vec())]),
+        SourceKind::Commit(c) => Value::List(vec![Value::Int(1), Value::Bytes(c.0.to_vec())]),
+        SourceKind::Derived(x) => Value::List(vec![Value::Int(2), dot_value(x)]),
+    };
+    Value::List(vec![src, uint(d.ctr)])
+}
+
+pub fn dot_of(v: &osis_core::Value) -> Result<osis_crdt::Dot> {
+    use osis_core::Value;
+    use osis_crdt::{Dot, Source};
+    let bad = || Error::Corrupt("dot");
+    let Value::List(items) = v else { return Err(bad()) };
+    let [Value::List(src), Value::Int(ctr)] = items.as_slice() else { return Err(bad()) };
+    let src = match src.as_slice() {
+        [Value::Int(0), Value::Bytes(t)] => Source::node(Tid::from_bytes(t.as_slice().try_into().map_err(|_| bad())?)),
+        [Value::Int(1), Value::Bytes(c)] => Source::commit(CommitId(c.as_slice().try_into().map_err(|_| bad())?)),
+        [Value::Int(2), x] => Source::derived(dot_of(x)?).ok_or_else(bad)?,
+        _ => return Err(bad()),
+    };
+    Ok(Dot::new(src, u64::try_from(*ctr).map_err(|_| bad())?))
+}
 
 /// `tid || u16 len || ak`: aspect part of a key.
 pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {

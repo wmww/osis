@@ -33,7 +33,7 @@ One line per subsystem, with what proves it (crate tests unless named otherwise)
 ## Deviations
 Each is a requirement of spec/requirements.md not fully met, with the issue (or accepted limit) behind it.
 - **Large values**: an edit uploads the changed chunks plus the root node (met since; notes/testing.md, Scale checks), but range reads fetch every chunk before the offset: issues/large-value-seek.md; residues issues/large-value-residues.md.
-- **Some operations are O(state) or O(history)** (Scale): the perm walk from scratch (10^4 edge writes about 0.5 s, at open and on early late arrivals): issues/perm-eval-cost.md; deep collections, a sequence's undo buffer, first load per session, `/secrets` ingestion: issues/node-state-not-paged.md; sequence reads and ops place every element: issues/crdt-seq-linearization-cost.md; open replays every commit record, sync passes recompute every body: issues/node-core-gaps.md, issues/node-sync-gaps.md.
+- **Some operations are O(state) or O(history)** (Scale): the perm walk from scratch (10^4 edge writes about 0.5 s, at open and on early late arrivals): issues/perm-eval-cost.md; a text or list loads whole in a session, set ops by value load every page: issues/node-sequences-not-paged.md; sequence reads and ops place every element: issues/crdt-seq-linearization-cost.md; a change perm evaluates anew re-judges its whole component, open reads every commit header: issues/node-core-gaps.md; sync passes judge every present entry: issues/node-sync-gaps.md.
 - **Peer input bounds** (Scale: "never causes unbounded allocation"): a tiny sequence snapshot run expands to 2^16 records: issues/crdt-run-amplification.md.
 - **Determinism** (Decentralization: "never of arrival order"): an invite grant's `/secrets` resets of entries the node has not seen pass, so validity depends on arrival order: issues/invite-grant-secrets.md.
 - **Chat costs** (Cost goal): measured (`costs_join_message_removal`, tier 2, passes) join 41 KB, message 2.5 KB, removal 26 KB at 4 members (37 KB at 8) with others sending only heartbeats; the waste after flows round 2 was certificate re-copies (fixed: certificates per label). Left: the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) in issues/chat-costs.md.
@@ -71,7 +71,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
 - Chat cost wire-format knobs (issues/chat-costs.md).
 - Large-value seeking and residues (issues/large-value-seek.md, large-value-residues.md).
-- Node-state paging remainder (issues/node-state-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).
+- Sequence paging remainder (issues/node-sequences-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).
 - Security residues: invite-grant-secrets, crdt-run-amplification, rereview-residues.
 - TLA+ target 3 (membership walk) when spec/permissions.md §5–§6 next changes; the rest of issues/tests-unbuilt.md.
 

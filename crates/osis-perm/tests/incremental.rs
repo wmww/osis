@@ -53,6 +53,18 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
     None
 }
 
+/// Things whose held inputs differ between two held sets (what a node tracks as it adds).
+fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
+    let mut all: BTreeSet<Tid> = a.things().into_iter().collect();
+    all.extend(b.things());
+    let key = |h: &osis_perm::MemoryHeldSet, t: &Tid| {
+        let c: BTreeSet<_> = h.edge_commits(t).iter().map(|c| c.id).collect();
+        let s: BTreeSet<_> = h.roster_snapshots(t).iter().map(|s| s.id).collect();
+        (c, s, h.created(t))
+    };
+    all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
+}
+
 fn run(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     for s in 0..samples {
@@ -90,11 +102,22 @@ fn run(samples: u64, seed: u64) {
         let mut held_ids = BTreeSet::new();
         let mut inc = Timelines::new();
         let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+        // half the samples re-partition only around what changed
+        let around = rng.below(2) == 0;
+        let mut prev = w.held_without(&all);
+        if around {
+            inc.update(&prev);
+        }
         for (step, &i) in order.iter().enumerate() {
             held_ids.insert(w.commits[i].id);
             let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
             let held = w.held_without(&skip);
-            inc.update(&held);
+            if around {
+                inc.update_touched(&held, &touched(&prev, &held));
+            } else {
+                inc.update(&held);
+            }
+            prev = held.clone();
             if let Some(d) = check(&held, &inc, &nodes) {
                 panic!("sample {s} step {step}: {d}");
             }
@@ -147,4 +170,37 @@ fn created_late_every_order() {
             assert_eq!(inc.get(&d).map(|t| t.role(&x, &d, At::END)), Some(full.role(&x, &d, At::END)), "order {order:?}");
         }
     }
+}
+
+/// §5.1: a new thing's `/created` alone (nothing names it yet) and a write after every held one
+/// continue the component's timeline; each reports what changed (the leaf; the write's target),
+/// and the result equals an evaluation from scratch.
+#[test]
+fn leaves_and_appends_extend() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, x) = (n[0], n[1]);
+    let g = w.thing(k);
+    w.set(k, g, x, edge(osis_core::Role::Write), 10, &[]);
+    let leaf = w.thing(k);
+    let mut held = w.held();
+    held.created.remove(&leaf);
+    let mut inc = Timelines::new();
+    let touched: BTreeSet<Tid> = held.things().into_iter().collect();
+    inc.update_touched(&held, &touched);
+    let held = w.held();
+    let c = inc.update_touched(&held, &BTreeSet::from([leaf]));
+    assert!(c.evaluated.is_empty(), "{c:?}");
+    assert_eq!(c.extended, BTreeSet::from([leaf]));
+    assert!(check(&held, &inc, &n).is_none());
+    let prev = w.held();
+    w.set(k, g, leaf, edge(osis_core::Role::Read), 20, &[]);
+    let held = w.held();
+    let c = inc.update_touched(&held, &touched_of(&prev, &held));
+    assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
+    assert!(check(&held, &inc, &n).is_none());
+}
+
+fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
+    touched(a, b)
 }

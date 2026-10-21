@@ -214,6 +214,8 @@ pub(crate) struct Resolved {
     pub lo: u64,
     pub hi: u64,
     pub schema: Option<Arc<Schema>>,
+    /// The schema table entry without a schema held: an import keeps its origin's.
+    pub schema_ref: Option<(SchemaId, u64)>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers (spec/crdt.md §8).
@@ -316,7 +318,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
                 return Err(Error::Misuse("counter moved under the writer"));
             }
         }
-        let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision));
+        let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision)).or(d.schema_ref);
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
@@ -412,6 +414,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
+        // a paged state loads what the ops address (map keys, fields), else whole
+        match crate::engine::pages::op_paths(&am.ops) {
+            Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
+            None => tx.load(&tid, &ak)?,
+        }
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
         if kind == Kind::Content {
@@ -426,7 +433,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Form::Commit => next_ctr,
         };
         let w = Writer::new(ts, own_source(m.form, node), lo);
-        tx.load(&tid, &ak)?;
         let empty = Fragment::default();
         let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
@@ -450,7 +456,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             tx.core.schemas.entry(s.id).or_insert_with(|| s.clone());
         }
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);

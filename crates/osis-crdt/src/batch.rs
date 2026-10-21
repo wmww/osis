@@ -265,7 +265,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
-                    resolve(w, ks.as_ref(), None, None, rest, op, &vview, false, None)?
+                    resolve(w, ks.as_deref(), None, None, rest, op, &vview, false, None)?
                         .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
@@ -302,8 +302,9 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
 /// The lowest live entry of key `k` and what the key reads as, at a map position with state `s`
 /// and batch writes `a` under the reset `e` from above (§5.6). Only the entries carrying `k`
 /// join: entries are independent per dot, so this equals a lookup in the whole join, in
-/// O(log n) instead of a copy of the map.
-fn key_lookup(s: Option<&Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_core::Value) -> Option<(Dot, Option<Fragment>)> {
+/// O(log n) instead of a copy of the map; a key with one live entry the batch has not written
+/// is read in place (no copy of what it holds).
+fn key_lookup<'s>(s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: &osis_core::Value) -> Option<(Dot, Option<std::borrow::Cow<'s, Fragment>>)> {
     fn map(f: Option<&Fragment>) -> Option<&Map> {
         match f {
             Some(Fragment::Map(m)) => Some(m),
@@ -311,6 +312,13 @@ fn key_lookup(s: Option<&Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: 
         }
     }
     let (sm, am) = (map(s), map(a));
+    if e.is_none()
+        && let Some(m) = sm
+        && am.is_none_or(|a| !a.keys.contains_key(k) && m.keys.get(k).into_iter().flatten().all(|d| !a.entries.contains_key(d)))
+        && let [d] = m.live_dots(k).as_slice()
+    {
+        return Some(((*d).clone(), m.entries.get(*d).and_then(|x| x.frag.as_deref()).map(std::borrow::Cow::Borrowed)));
+    }
     let dots: std::collections::BTreeSet<&Dot> = [sm, am].into_iter().flatten().filter_map(|m| m.keys.get(k)).flatten().collect();
     if dots.is_empty() {
         return None;
@@ -318,7 +326,7 @@ fn key_lookup(s: Option<&Fragment>, a: Option<&Fragment>, e: Option<&Stamp>, k: 
     let restrict = |m: Option<&Map>| m.map(|m| Fragment::Map(Map::new(m.meta.clone(), dots.iter().filter_map(|d| Some(((*d).clone(), m.entries.get(*d)?.clone()))).collect())));
     let Some(Fragment::Map(m)) = joined(restrict(sm).as_ref(), restrict(am).as_ref(), e) else { return None };
     let ds = m.live_dots(k);
-    Some(((*ds.first()?).clone(), key_state(&m, &ds)))
+    Some(((*ds.first()?).clone(), key_state(&m, &ds).map(std::borrow::Cow::Owned)))
 }
 
 /// Merges `d` (a later op of the same commit) into `acc` (§4.5 net effect).

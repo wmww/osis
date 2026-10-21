@@ -19,14 +19,21 @@ Same as notes/mvp-progress.md "Method used by the run": a toplevel coordinator, 
 10. P2P: `Multi` transport under one driver, LAN loop with sealed signed announcements (FC-5: `sign/signatures.vec`, `kdf/purposes.vec`, `proto/messages.vec`), member-open proof kind 3 over ephemeral dials, stored `sync_policy { publish_reach }` defaulting to contacts-only groups, complete pass over peers (bounded), served-session eviction, announcement caches and candidate fallback; issues/p2p-followups.md filed.
 11. osis-perm: tenure ledger audit-only entries make re-snapshots neutral (80k histories, no wire change), walk cost (role cache, audits by one backward search, undo log for restarts and late writes, incremental re-judge in the node): 10^4 writes 4.5 s → 0.5 s; issues/ledger-same-ts-commits.md filed; perm-eval-cost keeps open cost and late-write residues.
 
-## Unmerged branches
-- `worktree-agent-a9188d23cf53ba532` (node sync): in progress from main 9bcd188: the second-device joiner-removal liveness bug, concurrent upload duplicates, reading candidates from unknown authors, the remaining node-sync-gaps bullets.
-- `worktree-agent-a4d5d86e39171e244` (node core): in progress from the CRDT merge: node-core-gaps and node-state-not-paged.
-Both get a fresh review, a main merge, then merge to main with clippy + workspace tests + `tools/spec_map.py --check`.
+12. CRDT follow-ups: set elements as one register, placement cache in blocks following wire deltas, batch copies only at sequence positions, tenure chunking exception.
+13. Node sync: late parts judged with held parts (second-device liveness bug), relayed uploads (5–30 s wait), inbox copies and bounded re-sends, timed deletes without live writes, `Engine::latest_by` for cards/certificates/revokes, coverage without held secrets judged by the departure's own commit, revokes under uncovered epochs limited to current departures, replaced-label cleanup, lazy tree fetch, per-commit body cache.
+14. TLA+ membership model (target 3): found the chain-write forgery (M1) and sticky-drop residues (M2).
+15. P2P follow-ups: direct links (dialable key and relays only, explicit opt-in, no rotation on single-use redemption), LAN replaces relay, `/reach` rotation without restart, netwatch and IPv6 discovery, link-holder budgets.
+16. Chain-write forgery fix: a remover's chain writes count only through its frontier (commit IDs listed). A second review found the frontier is built from the end state not R's point, misses the grantor's chain, and that counter reuse can void a node's own earlier grants; a second round is in progress on `worktree-agent-a5c3b7f9b808b7692`.
+17. Node core: paging at any depth, lazy page loading, dot-based undo footprints, journaled indexes with a persisted validity index tagged by a source hash, incremental re-judging with main's commit-level triggers, snapshot-carried writes judged with exact dots, moves from snapshots, keyed key-index hashes; issues/snapshot-unstamped-writes.md and issues/at-most-zero-snapshots.md filed. A re-review of its fix round is in progress.
+
+## Open rounds
+- `worktree-agent-a5c3b7f9b808b7692` (forgery fix round 2, against main): frontier at R's point, list the whole chain-certificate set, counter-reuse voiding, generator receipts and the test skip.
+- Node-core re-review (`a6423a9162b21705e`) may send small fixes to `worktree-agent-a4d5d86e39171e244`.
+After both land: run `cargo run --release -p osis-sim --bin sim-sweep -- --seeds 1000` and `models/tla/run.sh small` as the closing verification, then fold this note's merged list into notes/mvp-progress.md and delete it.
 
 ## Issues left and their kind
 - Reframed tradeoffs for the owner (no implementation planned): header-list-commitments, token-admin-secret, reseal-triggers, store-concurrent-readers; chat-costs keeps only the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) with savings in user terms; ledger-same-ts-commits (needs a format change); crdt-undo-absent-positions (spec choice).
-- Being worked by the two branches above: node-sync-gaps, second-device-joiner-removal-loop, concurrent-upload-duplicates, reading-candidates-unknown-authors, node-core-gaps, node-state-not-paged.
+- Being worked by the two branches above: node-sync-gaps, second-device-joiner-removal-loop, concurrent-upload-duplicates, reading-candidates-unknown-authors, node-core-gaps, node-state-not-paged (now node-sequences-not-paged and import-bare-anchors).
 - Still to assign: p2p-followups, perm-eval-cost remainder (persisted walk at open, late writes early in long histories), crdt-seq-linearization-cost remainder (moves rebuild the placement, a multi-op batch copies the state once), api-deferred (queries are a design pass; the app layer is the owner's later work), tests-unbuilt remainder (10^4 sweep, membership-model refactors, TLA+ walk).
 
 ## Resume procedure

@@ -94,6 +94,46 @@ fn move_and_resolve_spec_perm_7() {
     assert_eq!(lp.peers[1].engine.state(&copy, &ak("/t/text")).unwrap(), lp.peers[2].engine.state(&copy, &ak("/t/text")).unwrap());
 }
 
+// spec/permissions.md §7 (origins: snapshots, whose carried writes are imported): after a
+// compaction dropped the bodies a snapshot covers, a move imports those writes from the
+// snapshot (ranked dots, ts kept) and the rest from their own commits, with each origin
+// delta's schema; the copy reads as T, at the mover and at a node that applies the imports.
+#[test]
+fn move_imports_from_snapshot_spec_perm_7() {
+    let mut lp = net(2, 64);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let mut bodies = Vec::new();
+    for tag in ["a", "b", "c"] {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(tag)) }).unwrap();
+        bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("a")) }).unwrap();
+    bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/tags")).unwrap().unwrap();
+    for c in &bodies {
+        lp.peers[0].engine.drop_body(c, &t, &ak("/t/tags")).unwrap();
+    }
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("d")) }).unwrap();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("b")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&copy, &ak("/t/tags")).unwrap(), e.get(&t, &ak("/t/tags")).unwrap());
+    assert_eq!(e.get(&copy, &ak("/t/tags")).unwrap(), Some(Value::Set([s("c"), s("d")].into_iter().collect())));
+    let from_snap = imports.iter().find(|i| e.header(i).unwrap().origins.first().map(|o| o.commit) == Some(snap)).expect("an import from the snapshot");
+    let h = e.header(from_snap).unwrap();
+    assert!(h.aspects[0].schema.is_some() && !h.schemas.is_empty(), "the origin's schema");
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&copy, &ak("/t/tags")).unwrap(), lp.peers[0].engine.get(&copy, &ak("/t/tags")).unwrap());
+    assert_eq!(lp.peers[1].engine.state(&copy, &ak("/t/tags")).unwrap(), lp.peers[0].engine.state(&copy, &ak("/t/tags")).unwrap());
+}
+
 // notes/architecture.md §3: diagnostics are deduped.
 // spec: none (diagnostics are local, notes/architecture.md)
 #[test]

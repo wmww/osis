@@ -1,12 +1,13 @@
-# Node-core gaps left after the engine core landed
-> Summary: What osis-node's engine does approximately or not yet: imports from snapshot origins, element-level judging inside compaction snapshots, deaths of writes carried only by snapshots, O(history) open and re-judging. Paging: issues/node-state-not-paged.md.
-> Tags: node, permissions, storage
+# Node-core residue: membership-heavy changes
+> Summary: Granting someone new to a large tree re-checks every change in it (about 70 ms at 10^4 changes; linear); a validity flip re-reads every held change of the aspect; opening still reads every commit header.
+> Tags: node, permissions, performance
 
-Repro: known approximations, no failing test.
+Repro: `cargo test --release -p osis-node --test scale -- --ignored --nocapture membership_change_and_open_cost`.
 
-- **Import from snapshots** (spec/permissions.md §7): only ordinary commits are origins; writes held only in a compaction snapshot (their own body dropped) are not imported, and the schema table of import deltas is left empty (untyped).
-- **Snapshots vouch for nothing** (spec/permissions.md §5.2): a snapshot body is joined whole; on rebuild the writes of sources with an invalid delta held here are removed, but a write whose own delta is not held is never judged on its own.
-- **Deaths** are attributed to the original commit's body only; a snapshot body carrying the same write gets no death record, so its keep bounds are only those of its own deaths.
-- **Cost**: open replays every commit record; every changing transaction copies the in-memory indexes for rollback; each membership change re-judges every held delta (issues/perm-eval-cost.md); paging covers only root collections and root struct fields (issues/node-state-not-paged.md); `Timelines::update` walks the whole held set.
-- **Re-snapshot and deletion queues** are recorded (`deletions`, `resnapshot` logs); node-sync judges dropped parts from the commit index instead and does not read them, so nothing truncates them yet.
-- **`/groups`** is recomputed whole on every `/group` change (also on late deltas since node-sync found them missed): O(groups) per change, O(groups²) at open.
+Done (notes/node.md: Validity, Snapshots vouch for nothing, Snapshots, Import, Open, Rollback): imports from compaction snapshots with the origin's schema, element-level judging of snapshot-carried writes, deaths in every held body carrying a write, the persisted index, journaled rollback, re-judging per changed timeline, `Timelines::update_touched`, `/groups` incremental, the deletion and re-snapshot queues removed.
+
+Remaining:
+- A change that perm evaluates anew (a member new to the component joins it, an out-of-order or dropping write, an epoch start change) re-judges every delta of the component: for one person's tree, every delta (perm's component granularity; issues/perm-eval-cost.md item 4 would give per-(node, thing) answers).
+- A validity flip rebuilds the aspect from every held body (O(aspect history)); re-merging needs them (a register's earlier value comes back only from its body), un-merging alone would not.
+- Open reads every commit record's head and header and every membership commit's `/members` and `/tenures` parts, and perm evaluates every component from scratch.
+- Snapshot-carried writes without a `ts` of their own: issues/snapshot-unstamped-writes.md.

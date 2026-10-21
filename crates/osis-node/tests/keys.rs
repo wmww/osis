@@ -22,10 +22,15 @@ fn rcpt(lp: &LocalPeer, i: usize, role: Role) -> Recipient {
 /// A read rotation of `a` from node 0's view, written as one membership commit.
 fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>) -> (osis_core::CommitId, Rotation) {
     let members = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
+    rotation_commit_to(lp, a, seed, roles, &members)
+}
+
+/// A rotation of `a` from node 0's view boxing `members`.
+fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, members: &[Recipient]) -> (osis_core::CommitId, Rotation) {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, &members, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, members, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
     let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -80,4 +85,36 @@ fn rotation_out_of_order_spec_crypto_4() {
     assert_eq!(v.read.current(), vec![e2]);
     lp.peers[1].restart(810).unwrap();
     assert_eq!(lp.peers[1].engine.epochs(&a).unwrap().read.current(), vec![e2]);
+}
+
+// spec/crypto.md §4: a node boxed at the newest epoch only opens the earlier ones through the
+// history boxes the actor's `/secrets` already holds (written by rotations that did not box it):
+// the delta's box, then the chain of held history entries, without reading every box.
+#[test]
+fn history_chain_from_state_spec_crypto_4() {
+    let mut lp = net(2, 84);
+    lp.sync_all().unwrap();
+    let a = new_thing(&mut lp, 0);
+    let roles = BTreeSet::from([Role::Read]);
+    let only0 = [rcpt(&lp, 0, Role::Admin)];
+    let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0);
+    let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0);
+    sync(&mut lp, 0, 1);
+    let (e1, e2) = (r1.rotated[0].epoch, r2.rotated[0].epoch);
+    assert!(lp.peers[1].engine.epochs(&a).is_none_or(|v| v.read.secret(&e2).is_none()), "not boxed yet");
+    // node 1's box at e2 alone: no history entry in the delta
+    let e = &mut lp.peers[0].engine;
+    let view = e.epochs(&a).unwrap();
+    let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
+    let w = osis_keys::box_member(&a, &view, &state, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
+    let mut m = Mutation::new();
+    for (k, b) in &w.boxes {
+        m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
+    }
+    lp.peers[0].engine.commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let v1 = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(v1.read.secret(&e2).is_some(), "the box");
+    assert!(v1.read.secret(&e1).is_some(), "e2's history box, held in state");
+    assert_eq!(v1.read.secret(&e1), lp.peers[0].engine.epochs(&a).unwrap().read.secret(&e1));
 }

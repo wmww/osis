@@ -240,6 +240,51 @@ fn removal_rotates_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
 }
 
+// notes/local-store.md (a rebuildable index): after grants, a removal with its rotation, content
+// by the removed member before and after it (the latter invalid here), the indexes an open reads
+// from the persisted index equal those rebuilt from every commit record, and those in memory; a
+// tag of other rules or an index that does not decode is rebuilt.
+#[test]
+fn persisted_index_equals_rebuild_spec_perm_5_2() {
+    let (mut lp, ps) = people(3, 509);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let write = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(d, &REG, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    write(&mut lp, 1, "bob before");
+    spread(&mut lp);
+    lp.advance(10);
+    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    lp.advance(10);
+    let late = write(&mut lp, 1, "bob after");
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    let h = e.header(&late).unwrap();
+    assert!(h.aspects.iter().any(|a| a.tid == d), "bob's late write is held");
+    assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "and invalid here");
+    let before = e.index_digest();
+    assert!(before.contains("false"), "an invalid part is indexed");
+    e.reload_index().unwrap();
+    assert_eq!(e.index_digest(), before, "loaded from the persisted index");
+    e.rebuild_index().unwrap();
+    assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
+    e.reload_index().unwrap();
+    assert_eq!(e.index_digest(), before, "the rebuilt index persisted");
+    // another build's tag, then a row that does not decode: each open rebuilds and re-tags
+    for garble in [false, true] {
+        e.damage_index(garble).unwrap();
+        e.reload_index().unwrap();
+        assert_eq!(e.index_digest(), before, "rebuilt after damage (garbled: {garble})");
+        assert!(e.index_current().unwrap());
+    }
+}
+
 /// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not
 /// incidentally rotate a leaked copy away), every row recorded, faults injectable.
 fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {
@@ -1770,4 +1815,49 @@ fn linked_tenure_frontier_spec_perm_6() {
     lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
     assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
+}
+
+// spec/crypto.md §4 (opening `/secrets`; reading-only secrets of unchecked boxes; history keys
+// with several live entries): random grants, demotions and rotations by several admins, carried
+// by inbox blobs (pending until their chain arrives) and partial deliveries. Every per-entry
+// ingestion of a `/secrets` change is checked against ingesting the whole state (the engine
+// fails the operation where the whole state teaches more).
+#[test]
+fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
+    for seed in 0..4u64 {
+        let (mut lp, ps) = people(4, 530 + seed);
+        for p in &mut lp.peers {
+            p.engine.check_secrets_ingest(true);
+        }
+        let t = thing_of(&mut lp, 0, ps[0]);
+        let mut rng = osis_crypto::SeededRng::from_u64(seed);
+        let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut rng) % n;
+        let roles = [Role::Read, Role::Write, Role::Admin];
+        for _ in 0..14 {
+            lp.advance(1000);
+            let by = r(4) as usize;
+            let member = ps[1 + r(3) as usize];
+            let done = match r(5) {
+                0 | 1 => lp.peers[by].engine.grant(&t, &member, &edge_of(roles[r(3) as usize])),
+                2 => lp.peers[by].engine.demote(&t, &Demotion { member, new: None, presync: PreSync::Synced }),
+                3 => lp.peers[by].engine.demote(&t, &Demotion { member, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }),
+                _ => lp.peers[by].engine.ensure_rotated(&t).map(|x| x.0),
+            };
+            match done {
+                Ok(d) => carry(&mut lp, by, &d),
+                Err(e) => assert!(!format!("{e}").contains("/secrets ingestion"), "seed {seed}: {e}"),
+            }
+            // deliveries: everything, or one peer's commits to one other peer
+            if r(3) == 0 {
+                spread(&mut lp);
+            } else {
+                let (a, b) = (r(4) as usize, r(4) as usize);
+                if a != b {
+                    let ids = lp.peers[a].engine.commit_ids();
+                    send(&mut lp, a, b, &ids);
+                }
+            }
+        }
+        spread(&mut lp);
+    }
 }

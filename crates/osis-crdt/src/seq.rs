@@ -102,6 +102,21 @@ impl Seq {
     pub(crate) fn into_elems(self) -> Elems {
         self.elems
     }
+    /// The records undoing `delta` reads (`seq_ops::undo` looks the pre-commit state up by the
+    /// delta's dots): every record holding a dot of a delta record. O(delta), not O(sequence).
+    pub(crate) fn footprint(&self, delta: &Seq) -> Seq {
+        let mut keep = Elems::new();
+        for (d, e) in &delta.elems {
+            if let Some((k, r)) = crate::seq_span::find(&self.elems, d) {
+                keep.insert(k.clone(), r.clone());
+            }
+            let last = nth(d, e.span.saturating_sub(1));
+            for (k, r) in self.elems.range::<Dot, _>((std::ops::Bound::Excluded(d), std::ops::Bound::Included(&last))) {
+                keep.insert(k.clone(), r.clone());
+            }
+        }
+        Seq::new(self.text, self.meta.clone(), keep)
+    }
     /// The placement (§6), cached from `LIN_MIN` records.
     pub(crate) fn lin(&self) -> Arc<Lin> {
         if let Some(l) = self.lin.get() {

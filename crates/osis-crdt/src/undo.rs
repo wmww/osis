@@ -314,8 +314,9 @@ impl Fragment {
     /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
     /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
     /// writes, and of a map, set or bag the delta does not reset only the elements it writes
-    /// (of a map also every live entry of a key it edits into: undo reads their join, §5.6). Everything else,
-    /// sequences included (their undo reads by position), is kept whole.
+    /// (of a map also every live entry of a key it edits into, along the edit's paths: undo
+    /// reads their join, §5.6), of a list or text the records holding the delta's dots (its undo
+    /// reads by dot). Anything reset is kept whole.
     pub fn footprint(&self, delta: &Fragment) -> Fragment {
         if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
             return self.clone();
@@ -326,13 +327,23 @@ impl Fragment {
                 fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.footprint(df)))).collect(),
             }),
             (Fragment::Map(s), Fragment::Map(d)) => {
-                let mut keep: std::collections::BTreeSet<&Dot> = d.entries.keys().collect();
-                for e in d.entries.values() {
-                    if let (Some(_), Some(k)) = (&e.frag, &e.key) {
-                        keep.extend(s.live_dots(k));
+                // the delta's own entries whole; a nested edit into key k reads the join of k's
+                // live entries along the edit's paths only
+                let mut keep: BTreeMap<Dot, Entry> = BTreeMap::new();
+                for (dot, e) in &d.entries {
+                    if let (Some(f), Some(k)) = (&e.frag, &e.key) {
+                        for ld in s.live_dots(k) {
+                            if let Some(x) = s.entries.get(ld) {
+                                let frag = x.frag.as_ref().map(|xf| Box::new(xf.footprint(f)));
+                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), key: x.key.clone(), frag });
+                            }
+                        }
+                    }
+                    if let Some(x) = s.entries.get(dot) {
+                        keep.entry(dot.clone()).or_insert_with(|| x.clone());
                     }
                 }
-                Fragment::Map(Map::new(s.meta.clone(), keep.into_iter().filter_map(|k| Some((k.clone(), s.entries.get(k)?.clone()))).collect()))
+                Fragment::Map(Map::new(s.meta.clone(), keep))
             }
             (Fragment::Set(s), Fragment::Set(d)) => {
                 Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
@@ -340,6 +351,7 @@ impl Fragment {
             (Fragment::Bag(s), Fragment::Bag(d)) => {
                 Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
             }
+            (Fragment::Seq(s), Fragment::Seq(d)) => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
         }
     }

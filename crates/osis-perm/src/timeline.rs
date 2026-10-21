@@ -118,7 +118,8 @@ impl Timeline {
     /// snapshots plus more membership commits: the final walk is rolled back to the earliest
     /// new commit and goes on from there instead of starting over (equal to `evaluate`).
     /// `None` when that does not hold (another walk reached that point, or the inputs differ
-    /// otherwise): evaluate.
+    /// otherwise): evaluate. With no new commit the inputs may add only leaves (`/created` of
+    /// things nothing held names, `Timelines`): the walk is kept as it is.
     pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
         if !self.converged {
             return None;
@@ -132,7 +133,11 @@ impl Timeline {
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
             return None;
         }
-        let from = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min()?;
+        let Some(from) = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min() else {
+            let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, rejected, reach, .. } = self;
+            let out = walk::Outcome { walked, dropped, epoch_starts, passes, converged: true, epoch_changed, rejected, reach };
+            return Some(Timeline::from_outcome(input, out));
+        };
         if self.reach.is_some_and(|r| r >= from) {
             return None;
         }
