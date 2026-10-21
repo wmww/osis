@@ -637,6 +637,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         }
     }
     tx.core.groups.rebuild();
+    // every delta is judged once at open
+    let all: Vec<Tid> = tx.core.by_thing.keys().copied().collect();
+    tx.core.rejudge.extend(all);
     validity::rejudge_all(tx, false)?;
     Ok(())
 }

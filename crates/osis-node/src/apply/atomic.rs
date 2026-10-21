@@ -23,9 +23,10 @@ fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
 /// Adds a commit to the per-aspect and node-form range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
-        core.by_aspect.entry((a.tid, a.ak.clone())).or_default().insert((h.ts, *id));
+        core.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        core.by_thing.insert(a.tid, *id);
         if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
-            core.ranges.entry((a.tid, a.ak.clone(), h.author)).or_default().insert(a.lo, (a.hi, *id));
+            core.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
         }
     }
 }
@@ -152,6 +153,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         for c in ov.iter().chain(std::iter::once(&id)) {
             tx.core.void.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
+            if let Some(m) = tx.core.commits.get(c) {
+                let things: Vec<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
+                tx.core.rejudge.extend(things);
+            }
         }
         let now = tx.now();
         tx.core.events.diagnostic(
@@ -411,11 +416,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
         }
         "/was" => {
-            for s in tx.core.was.values_mut() {
-                s.remove(tid);
+            if let Some(old) = tx.core.was_of.remove(tid) {
+                tx.core.was.remove(&old, tid);
             }
             if let Some(Value::Tid(t)) = v {
-                tx.core.was.entry(t).or_default().insert(*tid);
+                tx.core.was.insert(t, *tid);
+                tx.core.was_of.insert(*tid, t);
             }
         }
         "/moved" => match v {

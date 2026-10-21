@@ -16,7 +16,7 @@ const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
     pub(crate) fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
-        self.held.created.get(tid)
+        self.held.created(tid)
     }
 
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {

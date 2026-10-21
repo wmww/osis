@@ -17,6 +17,8 @@ pub(crate) struct Groups {
     pub of: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Group -> things it contains, transitively (its closure without itself).
     pub items: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Definitions replaced by the running transaction (`Journaled`).
+    log: Vec<(Tid, Option<(BTreeSet<Tid>, BTreeSet<Tid>)>)>,
 }
 
 impl Groups {
@@ -75,6 +77,11 @@ impl Groups {
         if self.defs.get(&g) == def.as_ref() {
             return;
         }
+        self.log.push((g, self.defs.get(&g).cloned()));
+        self.apply(g, def);
+    }
+
+    fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
         let above = self.above(&g);
         for a in &above {
             self.unlist(a);
@@ -124,6 +131,17 @@ impl Groups {
         let gs: Vec<Tid> = self.defs.keys().copied().collect();
         for g in gs {
             self.list(&g);
+        }
+    }
+}
+
+impl super::journal::Journaled for Groups {
+    fn commit(&mut self) {
+        self.log.clear();
+    }
+    fn rollback(&mut self) {
+        while let Some((g, def)) = self.log.pop() {
+            self.apply(g, def);
         }
     }
 }

@@ -63,7 +63,7 @@ fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
     let mut new = false;
     for (d, k, frag) in entries(f) {
         if let (Some(Value::Tid(m)), Some(frag)) = (k, frag) {
-            let slot = core.member_keys.entry((*target, d)).or_insert_with(|| (m, None));
+            let slot = core.member_keys.entry_or((*target, d), || (m, None));
             if slot.1.is_none() {
                 slot.1 = frag.read();
                 new = true;
@@ -380,27 +380,12 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
         if !seen.insert(x) || seen.len() > 4096 {
             continue;
         }
-        for cs in core.held.commits.values() {
-            for c in cs {
-                for o in &c.ops {
-                    if o.member == x {
-                        if chain.contains(&o.target) {
-                            return true;
-                        }
-                        frontier.push(o.target);
-                    }
-                }
+        // the things `x` is named on as a member (edge writes, rosters, ledgers)
+        for t in core.held.named_on(&x) {
+            if chain.contains(t) {
+                return true;
             }
-        }
-        for ss in core.held.snapshots.values() {
-            for sn in ss {
-                if sn.roster.contains_key(&x) || sn.ledger.iter().any(|t| t.member == x) {
-                    if chain.contains(&sn.thing) {
-                        return true;
-                    }
-                    frontier.push(sn.thing);
-                }
-            }
+            frontier.push(*t);
         }
     }
     false
@@ -454,7 +439,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
         {
-            let e = core.rotation_role.entry((*id, *ai)).or_insert(r);
+            let e = core.rotation_role.entry_or((*id, *ai), || r);
             *e = (*e).max(r);
         }
     }
@@ -589,8 +574,10 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
-/// Re-judges every held delta after the held set changed; rebuilds aspects whose validity
-/// flipped. Returns them.
+/// Re-judges the held deltas whose validity may have changed with the held set: those on the
+/// things whose timeline changed since they were last judged (`Core::rejudge`, filled by
+/// `update_timelines`; a voided commit's things are added there too), so the cost follows the
+/// changed components, not the held set. Rebuilds aspects whose validity flipped; returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
@@ -598,11 +585,13 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
-    let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
+    let things = std::mem::take(&mut tx.core.rejudge);
+    let ids: BTreeSet<CommitId> = things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()).collect();
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
         let h = m.header.clone();
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(tx.core, &h, &id, ai)).collect();
+        // parts on things not re-judged keep their flag
+        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
         if let Some(m) = tx.core.commits.get_mut(&id)
             && m.valid != now
         {

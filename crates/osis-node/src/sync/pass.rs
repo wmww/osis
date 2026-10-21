@@ -1135,7 +1135,7 @@ impl SyncEngine {
             return Ok(out);
         }
         let mut live = BTreeSet::new();
-        for (id, m) in &self.engine.core.commits {
+        for (id, m) in self.engine.core.commits.iter() {
             let h = &m.header;
             for ch in &h.chunks {
                 let idx: Vec<usize> = ch.tokens.iter().map(|(i, _)| *i).collect();

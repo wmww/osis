@@ -6,6 +6,8 @@
 pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod groups;
+pub(crate) mod held;
+pub(crate) mod journal;
 pub(crate) mod large;
 mod read;
 pub(crate) mod records;
@@ -26,7 +28,8 @@ use osis_core::{Ak, Clock, CommitId, Tid, Ts, WallMs};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
-use osis_perm::{MemoryHeldSet, Timelines};
+use journal::{JMap, JNested, JSet, JSetMap, Journaled};
+use osis_perm::Timelines;
 use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
 use records::{Rd, Wr};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -84,8 +87,37 @@ impl Owned {
     }
 }
 
-/// Node-form ranges of one node on one aspect: lo -> (hi, commit).
-pub(crate) type Ranges = BTreeMap<u64, (u64, CommitId)>;
+/// Applies `$m` to every journaled index of a `Core`.
+macro_rules! journaled {
+    ($c:expr, $m:ident) => {{
+        let c = &mut *$c;
+        c.held.$m();
+        c.commits.$m();
+        c.invalid.$m();
+        c.by_aspect.$m();
+        c.by_thing.$m();
+        c.ranges.$m();
+        c.pending.$m();
+        c.syncing.$m();
+        c.void.$m();
+        c.valueless.$m();
+        c.secrets.$m();
+        c.own_keys.$m();
+        c.was.$m();
+        c.was_of.$m();
+        c.moved.$m();
+        c.groups.$m();
+        c.member_keys.$m();
+        c.unresolved.$m();
+        c.rotation_role.$m();
+        c.grant_overreach.$m();
+        c.box_keys.$m();
+        c.boxes_to.$m();
+        c.epoch_intro.$m();
+        c.box_written.$m();
+        c.secrets_unresolved.$m();
+    }};
+}
 
 /// A scan callback: key (without prefix), value.
 type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
@@ -93,7 +125,8 @@ type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
 /// A decoded commit record: received, origin, dropped parts, blob.
 pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
 
-/// In-memory state over the store: caches and indexes, rebuilt by `load`.
+/// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
+/// journaled (`journal`): a failed transaction undoes its own changes to them.
 pub(crate) struct Core {
     pub id: Identity,
     pub hlc: Hlc,
@@ -101,43 +134,49 @@ pub(crate) struct Core {
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), state::PageIndex>,
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
-    pub held: MemoryHeldSet,
+    pub held: held::Held,
     pub timelines: Timelines,
-    pub commits: BTreeMap<CommitId, Meta>,
+    /// Things whose timeline changed since their deltas were last judged (`rejudge_all`).
+    pub rejudge: BTreeSet<Tid>,
+    pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
-    pub invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
-    pub by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
+    pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
+    pub by_thing: JSetMap<Tid, CommitId>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
-    pub ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
-    pub pending: BTreeMap<CommitId, Reason>,
-    pub syncing: BTreeSet<Tid>,
-    pub void: BTreeSet<CommitId>,
+    pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
+    pub pending: JMap<CommitId, Reason>,
+    pub syncing: JSet<Tid>,
+    pub void: JSet<CommitId>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
-    pub valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
+    pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
-    pub secrets: BTreeMap<Tid, ActorEpochs>,
+    pub secrets: JMap<Tid, ActorEpochs>,
     /// Things known to have secrets of their own (a `/keys` with keysets).
-    pub own_keys: BTreeSet<Tid>,
+    pub own_keys: JSet<Tid>,
     /// `/was` index: t -> things whose `/was` reads t.
-    pub was: BTreeMap<Tid, BTreeSet<Tid>>,
-    pub moved: BTreeMap<Tid, Tid>,
+    pub was: JSetMap<Tid, Tid>,
+    /// The `/was` each thing reads.
+    pub was_of: JMap<Tid, Tid>,
+    pub moved: JMap<Tid, Tid>,
     /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
     /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
-    pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
+    pub member_keys: JMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     /// Membership commits whose removed keys are not known yet.
-    pub unresolved: BTreeSet<CommitId>,
+    pub unresolved: JSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
-    pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    pub box_keys: JMap<(Tid, Dot), osis_core::Value>,
     /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
-    pub boxes_to: BTreeMap<Tid, BTreeSet<(Tid, osis_core::Value)>>,
+    pub boxes_to: JSetMap<Tid, (Tid, osis_core::Value)>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
-    pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    pub epoch_intro: JMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
-    pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
+    pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
@@ -145,20 +184,18 @@ pub(crate) struct Core {
     /// here (`validity::add_membership`): no roster snapshot of them is written.
     pub frontier_unknown: BTreeSet<Tid>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `membership_changed`. Not backed up: a rollback clears it.
+    /// write's future `ts`); cleared by `membership_changed`. Not journaled: a rollback clears it.
     pub departures: BTreeMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
-    pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
+    pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
-    pub rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    pub rotation_role: JMap<(CommitId, usize), osis_core::Role>,
     /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
-    pub grant_overreach: BTreeSet<(CommitId, usize)>,
+    pub grant_overreach: JSet<(CommitId, usize)>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
-    /// The indexes as they were before the running transaction first changed them.
-    pub backup: Option<Box<Backup>>,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side membership rules (to test receivers).
@@ -175,34 +212,6 @@ pub(crate) struct Core {
     pub live_trees: BTreeMap<Tid, LiveTrees>,
 }
 
-/// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
-/// re-evaluating the restored held set).
-pub(crate) struct Backup {
-    held: MemoryHeldSet,
-    commits: BTreeMap<CommitId, Meta>,
-    invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
-    ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
-    pending: BTreeMap<CommitId, Reason>,
-    syncing: BTreeSet<Tid>,
-    void: BTreeSet<CommitId>,
-    valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
-    secrets: BTreeMap<Tid, ActorEpochs>,
-    own_keys: BTreeSet<Tid>,
-    was: BTreeMap<Tid, BTreeSet<Tid>>,
-    moved: BTreeMap<Tid, Tid>,
-    groups: groups::Groups,
-    member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
-    unresolved: BTreeSet<CommitId>,
-    rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
-    grant_overreach: BTreeSet<(CommitId, usize)>,
-    box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
-    boxes_to: BTreeMap<Tid, BTreeSet<(Tid, osis_core::Value)>>,
-    epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
-    box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
-    secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
-}
-
 impl Core {
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
     /// called wherever those change.
@@ -210,46 +219,29 @@ impl Core {
         self.departures.clear();
     }
 
-    /// Re-evaluates the timelines over the held set.
+    /// Re-evaluates the timelines around the things whose held inputs changed; the things of
+    /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
-        self.timelines.update(&self.held);
+        let touched = self.held.take_touched();
+        if !touched.is_empty() {
+            let changed = self.timelines.update_touched(&self.held, &touched);
+            self.rejudge.extend(changed);
+        }
         self.membership_changed();
     }
 
-    /// Saves the indexes before the running transaction's first change to them.
+    /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
-        if self.backup.is_some() {
-            return;
-        }
-        self.backup = Some(Box::new(Backup {
-            held: self.held.clone(),
-            commits: self.commits.clone(),
-            invalid: self.invalid.clone(),
-            by_aspect: self.by_aspect.clone(),
-            ranges: self.ranges.clone(),
-            pending: self.pending.clone(),
-            syncing: self.syncing.clone(),
-            void: self.void.clone(),
-            valueless: self.valueless.clone(),
-            secrets: self.secrets.clone(),
-            own_keys: self.own_keys.clone(),
-            was: self.was.clone(),
-            moved: self.moved.clone(),
-            groups: self.groups.clone(),
-            member_keys: self.member_keys.clone(),
-            unresolved: self.unresolved.clone(),
-            rotation_role: self.rotation_role.clone(),
-            grant_overreach: self.grant_overreach.clone(),
-            box_keys: self.box_keys.clone(),
-            boxes_to: self.boxes_to.clone(),
-            epoch_intro: self.epoch_intro.clone(),
-            box_written: self.box_written.clone(),
-            secrets_unresolved: self.secrets_unresolved.clone(),
-        }));
     }
 
-    /// Undoes the aborted transaction's changes to the caches.
+    /// The running transaction committed: its journal is forgotten.
+    fn commit_journal(&mut self) {
+        journaled!(self, commit);
+        self.written.clear();
+    }
+
+    /// Undoes the aborted transaction's changes to the caches and indexes.
     fn rollback(&mut self) {
         self.live_trees.clear();
         self.membership_changed();
@@ -257,33 +249,13 @@ impl Core {
             self.states.remove(&k);
             self.pages.remove(&k);
         }
-        if let Some(b) = self.backup.take() {
-            let b = *b;
-            self.held = b.held;
-            self.commits = b.commits;
-            self.invalid = b.invalid;
-            self.by_aspect = b.by_aspect;
-            self.ranges = b.ranges;
-            self.pending = b.pending;
-            self.syncing = b.syncing;
-            self.void = b.void;
-            self.valueless = b.valueless;
-            self.secrets = b.secrets;
-            self.own_keys = b.own_keys;
-            self.was = b.was;
-            self.moved = b.moved;
-            self.groups = b.groups;
-            self.member_keys = b.member_keys;
-            self.unresolved = b.unresolved;
-            self.rotation_role = b.rotation_role;
-            self.grant_overreach = b.grant_overreach;
-            self.box_keys = b.box_keys;
-            self.boxes_to = b.boxes_to;
-            self.epoch_intro = b.epoch_intro;
-            self.box_written = b.box_written;
-            self.secrets_unresolved = b.secrets_unresolved;
-            self.timelines.update(&self.held);
+        journaled!(self, rollback);
+        // the timelines follow the restored held set; validity flags are restored with `commits`
+        let touched = self.held.take_touched();
+        if !touched.is_empty() {
+            self.timelines.update_touched(&self.held, &touched);
         }
+        self.rejudge.clear();
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
@@ -292,36 +264,38 @@ impl Core {
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
             pages: HashMap::new(),
-            held: MemoryHeldSet::new(),
+            held: held::Held::default(),
             timelines: Timelines::new(),
-            commits: BTreeMap::new(),
-            invalid: BTreeMap::new(),
-            by_aspect: BTreeMap::new(),
-            ranges: BTreeMap::new(),
-            pending: BTreeMap::new(),
-            syncing: BTreeSet::new(),
-            void: BTreeSet::new(),
-            valueless: BTreeMap::new(),
-            secrets: BTreeMap::new(),
-            own_keys: BTreeSet::new(),
-            was: BTreeMap::new(),
-            moved: BTreeMap::new(),
+            rejudge: BTreeSet::new(),
+            commits: JMap::default(),
+            invalid: JSetMap::default(),
+            by_aspect: JSetMap::default(),
+            by_thing: JSetMap::default(),
+            ranges: JNested::default(),
+            pending: JMap::default(),
+            syncing: JSet::default(),
+            void: JSet::default(),
+            valueless: JMap::default(),
+            secrets: JMap::default(),
+            own_keys: JSet::default(),
+            was: JSetMap::default(),
+            was_of: JMap::default(),
+            moved: JMap::default(),
             groups: groups::Groups::default(),
-            member_keys: BTreeMap::new(),
-            unresolved: BTreeSet::new(),
-            rotation_role: BTreeMap::new(),
-            grant_overreach: BTreeSet::new(),
-            box_keys: BTreeMap::new(),
-            boxes_to: BTreeMap::new(),
-            epoch_intro: BTreeMap::new(),
-            box_written: BTreeMap::new(),
+            member_keys: JMap::default(),
+            unresolved: JSet::default(),
+            rotation_role: JMap::default(),
+            grant_overreach: JSet::default(),
+            box_keys: JMap::default(),
+            boxes_to: JSetMap::default(),
+            epoch_intro: JMap::default(),
+            box_written: JMap::default(),
             departures: BTreeMap::new(),
             frontiers: BTreeMap::new(),
             frontier_unknown: BTreeSet::new(),
-            secrets_unresolved: BTreeMap::new(),
+            secrets_unresolved: JMap::default(),
             schemas: BTreeMap::new(),
             events: Events::default(),
-            backup: None,
             written: Vec::new(),
             skip_writer_rules: false,
             key_actors: BTreeMap::new(),
@@ -340,14 +314,9 @@ impl Core {
         for (ai, a) in m.header.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             if m.valid.get(ai).copied().unwrap_or(false) {
-                if let Some(s) = self.invalid.get_mut(&k) {
-                    s.remove(id);
-                    if s.is_empty() {
-                        self.invalid.remove(&k);
-                    }
-                }
+                self.invalid.remove(&k, id);
             } else {
-                self.invalid.entry(k).or_default().insert(*id);
+                self.invalid.insert(k, *id);
             }
         }
     }
@@ -636,6 +605,8 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        // changes made outside a transaction are not this one's to undo
+        self.core.commit_journal();
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -651,8 +622,7 @@ impl Engine {
         };
         match r {
             Ok(v) => {
-                self.core.backup = None;
-                self.core.written.clear();
+                self.core.commit_journal();
                 self.core.events.flush();
                 Ok(v)
             }
@@ -678,6 +648,8 @@ impl Engine {
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-        crate::apply::load(&mut tx)
+        crate::apply::load(&mut tx)?;
+        self.core.commit_journal();
+        Ok(())
     }
 }

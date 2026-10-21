@@ -382,7 +382,7 @@ impl Engine {
     /// label (a grant this device accepts).
     pub fn accept_inbox(&mut self, blob: &[u8]) -> Result<(Vec<InboxThing>, Done)> {
         let mut candidates: Vec<(Tid, osis_crypto::KemSecret)> = Vec::new();
-        for (a, e) in &self.core.secrets {
+        for (a, e) in self.core.secrets.iter() {
             for (_, s) in e.role(Role::Read).held_newest_first() {
                 candidates.push((*a, osis_crypto::role_kem(s)));
             }

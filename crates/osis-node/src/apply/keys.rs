@@ -39,16 +39,18 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
     if let Some(m) = map(field(delta, 0)) {
         for (d, _, k, f) in m.entries() {
             let Some(k) = k else { continue };
-            core.box_keys.entry((*actor, d.clone())).or_insert_with(|| k.clone());
+            if !core.box_keys.contains_key(&(*actor, d.clone())) {
+                core.box_keys.insert((*actor, d.clone()), k.clone());
+            }
             if f.is_none() {
                 continue;
             }
             let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
-            core.boxes_to.entry(bk.member).or_default().insert((*actor, k.clone()));
+            core.boxes_to.insert(bk.member, (*actor, k.clone()));
             if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
                 note_intro(core, h, actor, bk.role, e);
             }
-            let w = core.box_written.entry((*actor, bk)).or_insert(h.ts);
+            let w = core.box_written.entry_or((*actor, bk), || h.ts);
             *w = (*w).min(h.ts);
         }
     }
@@ -106,7 +108,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
 
 fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
     let v = (h.ts, h.author, h.actor);
-    let slot = core.epoch_intro.entry((*actor, r, e)).or_insert(v);
+    let slot = core.epoch_intro.entry_or((*actor, r, e), || v);
     if v < *slot {
         *slot = v;
     }
@@ -260,7 +262,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             tx.core.secrets_unresolved.remove(&(*c, *ai));
             remove_unresolved(tx, c, *ai)?;
             progress = true;
-            let e = tx.core.secrets.entry(actor).or_default();
+            let e = tx.core.secrets.entry_or_default(actor);
             if w.applied(e, (&u.keys, &u.before)).unwrap_or(false) {
                 save(tx, &actor)?;
             }
@@ -274,7 +276,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             }
             let Decoded::Snapshot(s) = d else { continue };
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
-            let e = tx.core.secrets.entry(a.tid).or_default();
+            let e = tx.core.secrets.entry_or_default(a.tid);
             if osis_keys::snapshot_keyed(&sv, e).unwrap_or(false) {
                 save(tx, &a.tid)?;
             }
@@ -340,7 +342,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let keys_ak = osis_core::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
     let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
     tx.core.touch();
-    let e = tx.core.secrets.entry(a.tid).or_default();
+    let e = tx.core.secrets.entry_or_default(a.tid);
     if secrets.applied(e, (&keys, &before)).unwrap_or(false) {
         save(tx, &a.tid)?;
     }
@@ -474,7 +476,7 @@ impl crate::engine::Engine {
         let g = *g;
         self.run(|tx| {
             tx.core.touch();
-            let ep = tx.core.secrets.entry(g).or_default();
+            let ep = tx.core.secrets.entry_or_default(g);
             ep.role_mut(Role::Read).observe(e);
             ep.role_mut(Role::Read).set_secret(e, secret);
             crate::flows::save_epochs(tx, &g)
