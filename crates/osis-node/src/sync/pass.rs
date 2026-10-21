@@ -796,14 +796,21 @@ impl SyncEngine {
         } else {
             let mut wanted = self.card_certificates(g);
             // revokes and roster snapshots about authors seen under the label (spec/permissions.md
-            // §4), so its verifiers judge their writes as this node does
+            // §4), so its verifiers judge their writes as this node does: authors of an entry
+            // judged invalid here or not judged yet (pending); a revoke changes no verdict on the
+            // writes its frontier covers (a joiner's home label holds the copy of its grant by
+            // link actor L, made before L's removal)
             let me = self.engine.tid();
             let mut authors: BTreeSet<Tid> = BTreeSet::new();
             for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
-                if let Kind::Commit { commit, .. } = &e.kind
+                if let Kind::Commit { commit, parts } = &e.kind
                     && let Some(h) = self.engine.header(commit)
+                    && !authors.contains(&h.author)
                 {
-                    authors.insert(h.author);
+                    let judged = self.engine.core.commits.get(commit).filter(|_| !self.engine.core.pending.contains_key(commit));
+                    if judged.is_none_or(|m| parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false))) {
+                        authors.insert(h.author);
+                    }
                 }
             }
             authors.remove(&me);
