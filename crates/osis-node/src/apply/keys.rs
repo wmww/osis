@@ -50,8 +50,7 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
             if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
                 note_intro(core, h, actor, bk.role, e);
             }
-            let w = core.box_written.entry_or((*actor, bk), || h.ts);
-            *w = (*w).min(h.ts);
+            core.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
         }
     }
 }
@@ -108,10 +107,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
 
 fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
     let v = (h.ts, h.author, h.actor);
-    let slot = core.epoch_intro.entry_or((*actor, r, e), || v);
-    if v < *slot {
-        *slot = v;
-    }
+    core.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 
 /// The `/secrets` write a delta makes: keyed entries put, resets of entries whose key is known

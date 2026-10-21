@@ -33,7 +33,6 @@ use osis_keys::ActorEpochs;
 use journal::{JMap, JNested, JSet, JSetMap, Journaled};
 use osis_perm::Timelines;
 use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
-use records::{Rd, Wr};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -588,16 +587,10 @@ impl Tx<'_> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
 
+    /// Writes a commit record: what the engine indexes of it (`index::record_head`: received,
+    /// origin, dropped parts, per part its validity and roles) and its blob.
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
-        let mut w = Wr::new().u8(1).u64(meta.received.0).u8(match meta.origin {
-            Origin::Local => 0,
-            Origin::Remote => 1,
-        });
-        w = w.u32(meta.dropped.len() as u32);
-        for (a, d) in &meta.dropped {
-            w = w.u32(*a as u32).u32(*d as u32);
-        }
-        let v = w.raw(&blob.encode()).take();
+        let v = [index::record_head(self.core, id, meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         Ok(())
     }
@@ -635,19 +628,9 @@ fn scan_local(txn: &mut Transaction<'_>, prefix: &[u8], f: &mut ScanFn<'_>) -> R
 
 /// `(received, origin, dropped, blob)`.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
-    let mut r = Rd::new(v);
-    if r.u8()? != 1 {
-        return Err(Error::Corrupt("commit record version"));
-    }
-    let received = WallMs(r.u64()?);
-    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
-    let n = r.u32()?;
-    let mut dropped = BTreeSet::new();
-    for _ in 0..n {
-        dropped.insert((r.u32()? as usize, r.u32()? as usize));
-    }
-    let blob = CommitBlob::decode(r.rest()).map_err(|_| Error::Corrupt("commit blob"))?;
-    Ok((received, origin, dropped, blob))
+    let (head, rest) = index::parse_head(v)?;
+    let blob = CommitBlob::decode(rest).map_err(|_| Error::Corrupt("commit blob"))?;
+    Ok((head.received, head.origin, head.dropped, blob))
 }
 
 /// One node's engine.

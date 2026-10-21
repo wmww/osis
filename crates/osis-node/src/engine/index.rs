@@ -21,18 +21,16 @@ use std::sync::Arc;
 
 /// Whether the index on disk was written by this build.
 const VERSION_KEY: &[u8] = b"i/v";
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 1");
-/// Commit metas: `i/h/` + commit ID.
-const META: &[u8] = b"i/h/";
-const ROTATION_ROLE: &[u8] = b"i/r/";
-const GRANT_OVERREACH: &[u8] = b"i/g/";
-const BOX_KEYS: &[u8] = b"i/b/";
-const BOXES_TO: &[u8] = b"i/t/";
-const EPOCH_INTRO: &[u8] = b"i/e/";
-const BOX_WRITTEN: &[u8] = b"i/w/";
-const OWN_KEYS: &[u8] = b"i/k/";
-const SNAPSHOTS: &[u8] = b"i/s/";
-const CARRIED: &[u8] = b"i/c/";
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 3");
+// The derived indexes live in rebuildable store index tables of their own (a node's local
+// records table is not deepened by them).
+const BOX_KEYS: &[u8] = b"node/box keys";
+const BOXES_TO: &[u8] = b"node/boxes to";
+const EPOCH_INTRO: &[u8] = b"node/epoch intro";
+const BOX_WRITTEN: &[u8] = b"node/box written";
+const OWN_KEYS: &[u8] = b"node/own keys";
+const SNAPSHOTS: &[u8] = b"node/snapshots";
+const CARRIED: &[u8] = b"node/carried";
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -211,49 +209,119 @@ fn dec<T: Rec>(b: &[u8]) -> Result<T> {
     T::from(&v).ok_or(Error::Corrupt("index record"))
 }
 
-fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, prefix: &[u8], m: &JMap<K, V>, keys: &[K]) -> Result<()> {
+fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, keys: &[K]) -> Result<()> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let t = txn.index(name)?;
     for k in keys {
-        let key = [prefix, &enc(k)].concat();
+        let key = enc(k);
         match m.get(k) {
-            Some(v) => txn.put_local(&key, &enc(v), Shred::No)?,
-            None => txn.remove_local(&key, Shred::No).map(|_| ())?,
+            Some(v) => txn.table_put(t, &key, enc(v), Shred::No).map(|_| ())?,
+            None => txn.table_remove(t, &key, Shred::No).map(|_| ())?,
         }
     }
     Ok(())
 }
 
-fn put_set<T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, prefix: &[u8], s: &JSet<T>, items: &[T]) -> Result<()> {
+fn put_set<T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSet<T>, items: &[T]) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let tb = txn.index(name)?;
     for t in items {
-        let key = [prefix, &enc(t)].concat();
+        let key = enc(t);
         if s.contains(t) {
-            txn.put_local(&key, &[], Shred::No)?;
+            txn.table_put(tb, &key, Vec::new(), Shred::No)?;
         } else {
-            txn.remove_local(&key, Shred::No)?;
+            txn.table_remove(tb, &key, Shred::No)?;
         }
     }
     Ok(())
 }
 
-fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, prefix: &[u8], s: &JSetMap<K, T>, items: &[(K, T)]) -> Result<()> {
+fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, items: &[(K, T)]) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let tb = txn.index(name)?;
     for (k, t) in items {
-        let key = [prefix, &enc(&(k.clone(), t.clone()))].concat();
+        let key = enc(&(k.clone(), t.clone()));
         if s.get(k).is_some_and(|x| x.contains(t)) {
-            txn.put_local(&key, &[], Shred::No)?;
+            txn.table_put(tb, &key, Vec::new(), Shred::No)?;
         } else {
-            txn.remove_local(&key, Shred::No)?;
+            txn.table_remove(tb, &key, Shred::No)?;
         }
     }
     Ok(())
 }
 
-fn put_meta(txn: &mut Transaction<'_>, core: &Core, ids: &[CommitId]) -> Result<()> {
-    for id in ids {
-        let key = [META, &id.0[..]].concat();
-        match core.commits.get(id).map(meta_bytes) {
-            Some(b) => txn.put_local(&key, &b, Shred::No)?,
-            None => txn.remove_local(&key, Shred::No).map(|_| ())?,
+/// What of a commit the engine indexes, ahead of its blob in its record (version 2): received,
+/// origin, dropped parts, and per part one byte: bit 0 valid, bits 1-2 the rotation role it
+/// needs (0 none, 1 read, 2 write, 3 admin), bit 3 a grant's overreach.
+pub(crate) struct RecordHead {
+    pub received: WallMs,
+    pub origin: Origin,
+    pub dropped: BTreeSet<(usize, usize)>,
+    pub parts: Vec<u8>,
+}
+
+pub(crate) fn record_head(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
+    let mut w = records::Wr::new().u8(2).u64(m.received.0).u8(match m.origin {
+        Origin::Local => 0,
+        Origin::Remote => 1,
+    });
+    w = w.u32(m.dropped.len() as u32);
+    for (a, d) in &m.dropped {
+        w = w.u32(*a as u32).u32(*d as u32);
+    }
+    w = w.u32(m.valid.len() as u32);
+    for (ai, v) in m.valid.iter().enumerate() {
+        let role = match core.rotation_role.get(&(*id, ai)) {
+            None => 0,
+            Some(Role::Read) => 1,
+            Some(Role::Write) => 2,
+            Some(Role::Admin) => 3,
+        };
+        w = w.u8(u8::from(*v) | (role << 1) | (u8::from(core.grant_overreach.contains(&(*id, ai))) << 3));
+    }
+    w.take()
+}
+
+/// A commit record's head and its blob bytes (version 1 records have no part bytes).
+pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
+    let mut r = records::Rd::new(v);
+    let version = r.u8()?;
+    if version != 1 && version != 2 {
+        return Err(Error::Corrupt("commit record version"));
+    }
+    let received = WallMs(r.u64()?);
+    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
+    let mut dropped = BTreeSet::new();
+    for _ in 0..r.u32()? {
+        dropped.insert((r.u32()? as usize, r.u32()? as usize));
+    }
+    let mut parts = Vec::new();
+    if version == 2 {
+        for _ in 0..r.u32()? {
+            parts.push(r.u8()?);
         }
     }
+    Ok((RecordHead { received, origin, dropped, parts }, r.rest()))
+}
+
+/// Rewrites the head of commit `id`'s record where what the engine indexes of it changed (its
+/// validity, the roles its parts need): the blob bytes stay.
+fn restamp(txn: &mut Transaction<'_>, core: &Core, id: &CommitId) -> Result<()> {
+    let Some(m) = core.commits.get(id) else { return Ok(()) };
+    let key = records::commit_key(id);
+    let Some(v) = txn.get_local(&key)? else { return Ok(()) };
+    let head = record_head(core, id, m);
+    if v.starts_with(&head) && parse_head(&v)?.0.parts.len() == m.valid.len() {
+        return Ok(());
+    }
+    let (_, blob) = parse_head(&v)?;
+    txn.put_local(&key, &[head.as_slice(), blob].concat(), Shred::No)?;
     Ok(())
 }
 
@@ -261,12 +329,18 @@ fn put_meta(txn: &mut Transaction<'_>, core: &Core, ids: &[CommitId]) -> Result<
 fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let c = &*tx.core;
     let txn = &mut tx.txn;
-    let ids: Vec<CommitId> = if all { c.commits.keys().copied().collect() } else { c.commits.logged() };
-    put_meta(txn, c, &ids)?;
-    let k = if all { c.rotation_role.keys().cloned().collect() } else { c.rotation_role.logged() };
-    put_map(txn, ROTATION_ROLE, &c.rotation_role, &k)?;
-    let k = if all { c.grant_overreach.iter().cloned().collect() } else { c.grant_overreach.logged() };
-    put_set(txn, GRANT_OVERREACH, &c.grant_overreach, &k)?;
+    // a commit's meta carries its parts' rotation roles and grant overreach
+    let ids: Vec<CommitId> = if all {
+        c.commits.keys().copied().collect()
+    } else {
+        let mut s: BTreeSet<CommitId> = c.commits.logged().into_iter().collect();
+        s.extend(c.rotation_role.logged().into_iter().map(|k| k.0));
+        s.extend(c.grant_overreach.logged().into_iter().map(|k| k.0));
+        s.into_iter().collect()
+    };
+    for id in &ids {
+        restamp(txn, c, id)?;
+    }
     let k = if all { c.box_keys.keys().cloned().collect() } else { c.box_keys.logged() };
     put_map(txn, BOX_KEYS, &c.box_keys, &k)?;
     let k = if all { c.boxes_to.iter().flat_map(|(m, s)| s.iter().map(|x| (*m, x.clone()))).collect() } else { c.boxes_to.logged() };
@@ -292,14 +366,8 @@ pub(crate) fn persist(tx: &mut Tx<'_>) -> Result<()> {
 /// Writes the whole persisted index (after a rebuild from the commit records) and tags it; what
 /// an older one held goes shredded (forgotten commits' headers among it).
 pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
-    let mut old = Vec::new();
-    tx.scan(b"i/", |k, _| {
-        old.push([b"i/".as_slice(), k].concat());
-        Ok(())
-    })?;
-    for k in old {
-        tx.txn.remove_local(&k, Shred::Yes)?;
-    }
+    // what an older index held goes shredded (forgotten things' entries among it)
+    tx.txn.drop_indexes()?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;
     Ok(())
@@ -317,44 +385,64 @@ pub(crate) fn invalidate(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-fn scan<T: Rec>(tx: &mut Tx<'_>, prefix: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
+fn scan<T: Rec>(tx: &mut Tx<'_>, name: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
+    let t = tx.txn.index(name)?;
     let mut out = Vec::new();
-    tx.scan(prefix, |k, v| {
-        out.push((dec(k)?, v));
-        Ok(())
-    })?;
-    Ok(out)
+    let mut from = Vec::new();
+    loop {
+        let rows = tx.txn.table_range(t, &from, None, 256)?;
+        let n = rows.len();
+        for (k, v) in rows {
+            out.push((dec(&k)?, v));
+            from = [k.as_slice(), &[0]].concat();
+        }
+        if n < 256 {
+            return Ok(out);
+        }
+    }
 }
 
 /// Loads the persisted index into `core`: commit metas (headers resolved), and the indexes
 /// derived from membership bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+    // commit records: the head and the header only, no part decoded
     let mut metas = Vec::new();
-    tx.scan(META, |k, v| {
-        let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("index meta key"))?);
-        metas.push((id, v));
+    tx.scan(records::COMMIT, |k, v| {
+        let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
+        let (head, blob) = parse_head(&v)?;
+        // the blob is `[header, signature, parts]`: its first item
+        let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
+        let (_, hb) = osis_core::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
+        let h = osis_commit::Header::decode(hb).map_err(|_| Error::Corrupt("commit record header"))?;
+        metas.push((id, head, h));
         Ok(())
     })?;
-    for (id, v) in metas {
-        let (received, origin, dropped, valid, mut h) = meta_of(&v)?;
+    for (id, head, mut h) in metas {
+        if head.parts.len() != h.aspects.len() {
+            return Err(Error::Corrupt("commit record head"));
+        }
+        let mut valid = Vec::with_capacity(head.parts.len());
+        for (ai, p) in head.parts.into_iter().enumerate() {
+            valid.push(p & 1 != 0);
+            if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
+                tx.core.rotation_role.insert((id, ai), *r);
+            }
+            if p & 8 != 0 {
+                tx.core.grant_overreach.insert((id, ai));
+            }
+        }
         if !h.is_resolved()
             && let Some(dedup) = tx.core.dedup(&h.actor)
         {
             h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup, osis_commit::MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
         }
         if h.id() != id {
-            return Err(Error::Corrupt("index meta"));
+            return Err(Error::Corrupt("commit record"));
         }
         let h = Arc::new(h);
         crate::apply::index_commit(tx.core, &id, &h);
-        tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
+        tx.core.commits.insert(id, Meta { header: h, received: head.received, origin: head.origin, valid, dropped: head.dropped });
         tx.core.index_validity(&id);
-    }
-    for (k, v) in scan::<(CommitId, usize)>(tx, ROTATION_ROLE)? {
-        tx.core.rotation_role.insert(k, dec(&v)?);
-    }
-    for (k, _) in scan::<(CommitId, usize)>(tx, GRANT_OVERREACH)? {
-        tx.core.grant_overreach.insert(k);
     }
     for (k, v) in scan::<(Tid, Dot)>(tx, BOX_KEYS)? {
         tx.core.box_keys.insert(k, dec(&v)?);
@@ -380,40 +468,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-fn meta_bytes(m: &Meta) -> Vec<u8> {
-    let mut w = records::Wr::new().u64(m.received.0).u8(match m.origin {
-        Origin::Local => 0,
-        Origin::Remote => 1,
-    });
-    w = w.u32(m.dropped.len() as u32);
-    for (a, d) in &m.dropped {
-        w = w.u32(*a as u32).u32(*d as u32);
-    }
-    w = w.u32(m.valid.len() as u32);
-    for v in &m.valid {
-        w = w.u8(u8::from(*v));
-    }
-    w.raw(&m.header.encode()).take()
-}
 
-/// A commit meta record: received, origin, dropped parts, validity, header.
-type MetaRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, Vec<bool>, osis_commit::Header);
-
-fn meta_of(b: &[u8]) -> Result<MetaRecord> {
-    let mut r = records::Rd::new(b);
-    let received = WallMs(r.u64()?);
-    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
-    let mut dropped = BTreeSet::new();
-    for _ in 0..r.u32()? {
-        dropped.insert((r.u32()? as usize, r.u32()? as usize));
-    }
-    let mut valid = Vec::new();
-    for _ in 0..r.u32()? {
-        valid.push(r.u8()? != 0);
-    }
-    let h = osis_commit::Header::decode(r.rest()).map_err(|_| Error::Corrupt("index header"))?;
-    Ok((received, origin, dropped, valid, h))
-}
 
 
 impl super::Engine {

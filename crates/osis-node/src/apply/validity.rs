@@ -63,9 +63,9 @@ fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
     let mut new = false;
     for (d, k, frag) in entries(f) {
         if let (Some(Value::Tid(m)), Some(frag)) = (k, frag) {
-            let slot = core.member_keys.entry_or((*target, d), || (m, None));
-            if slot.1.is_none() {
-                slot.1 = frag.read();
+            if core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none()) {
+                let v = frag.read();
+                core.member_keys.upsert((*target, d), || (m, None), |slot| slot.1 = v);
                 new = true;
             }
         }
@@ -439,8 +439,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
         {
-            let e = core.rotation_role.entry_or((*id, *ai), || r);
-            *e = (*e).max(r);
+            core.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
     if h.kind != Kind::Membership {
@@ -699,8 +698,8 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         let h = m.header.clone();
         // parts on things not re-judged keep their flag
         let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
-        if let Some(m) = tx.core.commits.get_mut(&id)
-            && m.valid != now
+        if tx.core.commits.get(&id).is_some_and(|m| m.valid != now)
+            && let Some(m) = tx.core.commits.get_mut(&id)
         {
             for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
                 if a != b

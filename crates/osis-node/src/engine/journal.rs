@@ -59,6 +59,19 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
         self.log.push((k.clone(), old));
         self.map.entry(k).or_insert_with(default)
     }
+    /// Changes the value of `k` (from `default` if absent) by `f`, journaled only if it changed.
+    pub fn upsert(&mut self, k: K, default: impl FnOnce() -> V, f: impl FnOnce(&mut V))
+    where
+        V: PartialEq,
+    {
+        let old = self.map.get(&k).cloned();
+        let mut v = old.clone().unwrap_or_else(default);
+        f(&mut v);
+        if old.as_ref() != Some(&v) {
+            self.map.insert(k.clone(), v);
+            self.log.push((k, old));
+        }
+    }
     pub fn entry_or_default(&mut self, k: K) -> &mut V
     where
         V: Default,
