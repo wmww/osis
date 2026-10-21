@@ -35,8 +35,19 @@ pub enum Role {
 /// chain certificates, the writes setting edges on its paths and, transitively, on the paths
 /// of their authors before them. `writes[j]` = (author, t); `sets(j, x)`: write j may set an
 /// edge on node x's paths (an over-approximation is fine: more receipts). `recv[j][x]` drops
-/// below write j's own `t` for each such holder (receipt clocks may skew).
-pub fn hold_chains(writes: &[(usize, u32)], sets: impl Fn(usize, usize) -> bool, recv: &mut [Vec<u32>]) {
+/// below write j's own `t` for each such holder (receipt clocks may skew). A `late` write was
+/// written last (a backdated forgery, say): nobody but its author ever holds it.
+pub fn hold_chains(writes: &[(usize, u32)], late: &[bool], sets: impl Fn(usize, usize) -> bool, recv: &mut [Vec<u32>]) {
+    for (j, row) in recv.iter_mut().enumerate() {
+        if late.get(j).copied().unwrap_or(false) {
+            let author = writes.get(j).map_or(usize::MAX, |w| w.0);
+            for (x, r) in row.iter_mut().enumerate() {
+                if x != author {
+                    *r = 1000; // LATE: never received
+                }
+            }
+        }
+    }
     for &(a, ti) in writes {
         let mut stack = vec![(a, ti)];
         let mut seen = std::collections::HashSet::new();
@@ -46,7 +57,7 @@ pub fn hold_chains(writes: &[(usize, u32)], sets: impl Fn(usize, usize) -> bool,
             }
             for (j, &(aj, tj)) in writes.iter().enumerate() {
                 // a write at the same `t` may be ordered before: received just before it
-                if tj <= bound && sets(j, y) {
+                if tj <= bound && !late.get(j).copied().unwrap_or(false) && sets(j, y) {
                     if let Some(r) = recv.get_mut(j).and_then(|r| r.get_mut(a)) {
                         *r = (*r).min(tj.saturating_sub(1));
                     }
@@ -55,6 +66,13 @@ pub fn hold_chains(writes: &[(usize, u32)], sets: impl Fn(usize, usize) -> bool,
             }
         }
     }
+}
+
+/// About a quarter of the writes `eligible` allows, tagged as written last (`hold_chains`).
+/// Only writes that grant no admin are eligible: nobody honest acts on authority it never
+/// received, so a late write never gives anyone the authority behind another write.
+pub fn late_writes(rng: &mut Rng, eligible: &[bool]) -> Vec<bool> {
+    eligible.iter().map(|e| rng.below(4) == 0 && *e).collect()
 }
 
 /// Seeded xorshift generator: every history is a seed.

@@ -431,7 +431,9 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
         .collect();
     let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
     let members: Vec<usize> = h.writes.iter().map(|w| w.member).collect();
-    crate::hold_chains(&ws, |j, x| reach[x][members[j]], &mut h.recv);
+    let eligible: Vec<bool> = h.writes.iter().map(|w| w.role < Role::Admin).collect();
+    let late = crate::late_writes(rng, &eligible);
+    crate::hold_chains(&ws, &late, |j, x| reach[x][members[j]], &mut h.recv);
     h
 }
 
