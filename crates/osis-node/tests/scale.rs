@@ -7,7 +7,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::{MemberKeys, Recipient, rotate};
 use osis_node::{Config, Engine, Mutation};
-use osis_schema::{AspectKey, Codec};
+use osis_schema::{Aspect, AspectKey, Codec, StaticSchema};
 use osis_schema::core_types as ct;
 use osis_store::{Backend, BackendError, KeyValue, MemoryBackend, MemoryRoot, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,12 +46,33 @@ impl Backend for Counting {
 }
 
 fn engine(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>) {
-    let (batches, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
-    let b = Counting { inner: MemoryBackend::new(), batches: batches.clone(), bytes: bytes.clone() };
-    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(WallMs(1_700_000_000_000)));
-    let e = Engine::create(Box::new(b), Box::new(MemoryRoot::new()), Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
+    let (e, batches, bytes, _) = engine_reopenable(seed);
     (e, batches, bytes)
 }
+
+/// The store's backend and root, to open the node again.
+struct Reopen(MemoryBackend, MemoryRoot);
+
+impl Reopen {
+    /// Opens the node again over the same store (a new session: nothing cached).
+    fn open(&self, batches: &Arc<AtomicU64>, bytes: &Arc<AtomicU64>) -> Engine {
+        let b = Counting { inner: self.0.clone(), batches: batches.clone(), bytes: bytes.clone() };
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(WallMs(1_700_000_000_000)));
+        Engine::open(Box::new(b), Box::new(self.1.clone()), Config::default(), clock, Box::new(SeededRng::from_u64(99))).unwrap()
+    }
+}
+
+fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reopen) {
+    let (batches, bytes) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+    let (inner, root) = (MemoryBackend::new(), MemoryRoot::new());
+    let b = Counting { inner: inner.clone(), batches: batches.clone(), bytes: bytes.clone() };
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(WallMs(1_700_000_000_000)));
+    let e = Engine::create(Box::new(b), Box::new(root.clone()), Config::default(), clock, Box::new(SeededRng::from_u64(seed))).unwrap();
+    (e, batches, bytes, Reopen(inner, root))
+}
+
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text;\n");
+const TEXT: Aspect<Value> = Aspect::new("/s/text", &SCALE);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -163,4 +184,103 @@ fn roster_removal_cost() {
         e.commit(m2).unwrap().unwrap();
         println!("roster {n}: one more /secrets entry {:?}, store writes {} B ({} batches total)", t2.elapsed(), bytes.load(Ordering::Relaxed) - w0, batches.load(Ordering::Relaxed));
     }
+}
+
+// spec/requirements.md, Scale: a change inside a huge value costs O(change), at any depth.
+// One edit of a key of a 10^5-key map held in an entry of a root map (a deep collection).
+#[test]
+#[ignore = "tier 2"]
+fn deep_map_edit_cost() {
+    let a = ak("/app/deep");
+    for n in [10_000usize, 100_000] {
+        let (mut e, batches, bytes) = engine(n as u64 + 1);
+        let me = e.tid();
+        let inner: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        let outer = Value::Map(BTreeMap::from([(Value::Str("inner".into()), Value::Map(inner)), (Value::Str("x".into()), Value::Int(1))]));
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, me);
+        m.set(t, &a, &outer).unwrap();
+        e.commit(m).unwrap().unwrap();
+        let (b0, w0) = (batches.load(Ordering::Relaxed), bytes.load(Ordering::Relaxed));
+        let t1 = Instant::now();
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Str("inner".into())), PathSeg::Key(Value::Int(n as i64 / 2))], op: Op::Set(Value::Int(-1)) }).unwrap();
+        e.commit(m).unwrap().unwrap();
+        let edit = t1.elapsed();
+        let (b1, w1) = (batches.load(Ordering::Relaxed), bytes.load(Ordering::Relaxed));
+        println!("deep map {n} keys: one edit {edit:?}, store writes {} B in {} batches", w1 - w0, b1 - b0);
+        assert_eq!(e.get_at(&t, &a, &[PathSeg::Key(Value::Str("inner".into())), PathSeg::Key(Value::Int(n as i64 / 2))]).unwrap(), Some(Value::Int(-1)));
+    }
+}
+
+// spec/requirements.md, Scale (O(change)); spec/commits.md §7 (undo): one insert into a
+// 10^5-char text keeps an undo buffer of what undoing it reads, not the text; the first access
+// to the text in a new session; the undo commit.
+#[test]
+#[ignore = "tier 2"]
+fn text_undo_and_first_access_cost() {
+    let n = 100_000usize;
+    let (mut e, batches, bytes, reopen) = engine_reopenable(5);
+    let me = e.tid();
+    let text: String = (0..n).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &TEXT, &Value::Str(text)).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let w0 = bytes.load(Ordering::Relaxed);
+    let t1 = Instant::now();
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at: n / 2, items: vec![Value::Str("XYZ".into())] } }).unwrap();
+    let id = e.commit(m).unwrap().unwrap();
+    let insert = t1.elapsed();
+    let w1 = bytes.load(Ordering::Relaxed);
+    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included)", w1 - w0);
+    drop(e);
+    let t2 = Instant::now();
+    let mut e = reopen.open(&batches, &bytes);
+    let opened = t2.elapsed();
+    let t3 = Instant::now();
+    let v = e.get(&t, &ak("/s/text")).unwrap();
+    let first = t3.elapsed();
+    assert!(matches!(&v, Some(Value::Str(x)) if x.len() == n + 3));
+    println!("text {n} chars: open {opened:?}, first read {first:?}");
+    let t4 = Instant::now();
+    e.undo(&id).unwrap().unwrap();
+    println!("text {n} chars: undo commit {:?}", t4.elapsed());
+}
+
+// spec/requirements.md, Scale (no operation O(history)): a membership change while the node
+// holds 10^4 content commits on other things of its own tree, and opening that store.
+#[test]
+#[ignore = "tier 2"]
+fn membership_change_and_open_cost() {
+    let a = ak("/app/v");
+    let (mut e, batches, bytes, reopen) = engine_reopenable(6);
+    let me = e.tid();
+    let mut things = Vec::new();
+    for _ in 0..100 {
+        let mut m = Mutation::new();
+        things.push(e.new_thing(&mut m, me));
+        let t = *things.last().unwrap();
+        m.set(t, &a, &Value::Int(0)).unwrap();
+        e.commit(m).unwrap().unwrap();
+    }
+    let t0 = Instant::now();
+    for i in 0..10_000i64 {
+        let mut m = Mutation::new();
+        m.set(things[(i % 100) as usize], &a, &Value::Int(i + 1)).unwrap();
+        e.commit(m).unwrap().unwrap();
+    }
+    println!("10^4 content commits: {:?}", t0.elapsed());
+    let other = Tid::from_bytes([7; 15]);
+    let t1 = Instant::now();
+    let mut m = Mutation::new();
+    m.op(things[0], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    println!("one grant with 10^4 commits held: {:?}", t1.elapsed());
+    drop(e);
+    let t2 = Instant::now();
+    let e = reopen.open(&batches, &bytes);
+    println!("open with 10^4 commits held: {:?}", t2.elapsed());
+    assert_eq!(e.roster(&things[0]).len(), 1);
 }
