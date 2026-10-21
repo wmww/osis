@@ -158,6 +158,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, &parts)?;
+    validity::note_authors(tx.core, &id, &h, &parts)?;
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, &id, &parts);
         validity::add_membership(tx, &h, &id, &parts)?;
@@ -274,6 +275,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
     let mut held_changed = note_created(tx, &h, &parts)?;
+    validity::note_authors(tx.core, id, &h, &parts)?;
     let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
     if h.kind.is_membership() {
         // judged with the parts held before (a grant's `/members` part names what its

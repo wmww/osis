@@ -97,12 +97,16 @@ pub struct Delta {
     pub fragment: Fragment,
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers]`.
+/// `[nonce, Sources, Commits, Fragment, Frontiers]` or, with commit-form sources' authors,
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Authors]` (§8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
     pub fragment: Fragment,
     pub frontiers: Frontiers,
+    /// Per `Commit` source of the fragment, the node its writes are judged as and at which `ts`
+    /// (spec/permissions.md §5.2). Entries for sources the fragment does not hold are dropped.
+    pub authors: BTreeMap<CommitId, (Tid, Ts)>,
 }
 
 /// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
@@ -159,6 +163,19 @@ impl<'p> Enc<'p> {
             commits: Vec::new(),
             commit_idx: HashMap::new(),
             pages,
+        }
+    }
+
+    /// Whether `s` is a stamp of this commit.
+    pub fn is_own(&self, s: &Stamp) -> bool {
+        s.ts == self.ts && s.dot.src == self.own
+    }
+
+    /// `Ci` of the commit of stamp `s` (a creation's commit, §3.2).
+    pub fn commit_of(&mut self, s: &Stamp) -> Value {
+        match self.stamp(s) {
+            Value::List(a) => a.into_iter().next().unwrap_or(uint(0)),
+            v => v,
         }
     }
 
@@ -256,6 +273,14 @@ impl<'p> Enc<'p> {
     /// `Opt(Stamp)`: a reset `R` or presence `W`.
     pub fn opt_stamp(&mut self, s: Option<&Stamp>) -> Value {
         Value::List(s.map(|s| self.stamp(s)).into_iter().collect())
+    }
+
+    /// The `Commit` sources of `Sources` with their `Src`, ascending.
+    pub(crate) fn commit_sources(&self) -> Vec<(u64, CommitId)> {
+        self.sources.iter().enumerate().filter_map(|(i, s)| match s.kind() {
+            SourceKind::Commit(c) => Some((i as u64 + 1, *c)),
+            _ => None,
+        }).collect()
     }
 
     /// `Sources := [Source*]`.
@@ -369,6 +394,9 @@ impl<'a> Dec<'a> {
     }
     pub fn own(&self) -> &Source {
         &self.own
+    }
+    pub fn ts(&self) -> Ts {
+        self.ts
     }
 
     /// In a writer's delta, records that an own creation or position write takes counter `ctr`;

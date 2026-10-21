@@ -201,10 +201,11 @@ pub(crate) struct Core {
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: EpochIntro,
-    /// Commit-form commits and import origins whose writes snapshots may carry: commit ID ->
-    /// (the node judged for its writes, its `ts`) (commit form: its author; an import origin:
-    /// the import's author and `ts`; else a snapshot's `Authors` table, spec/crdt.md §8).
-    pub authors: JMap<CommitId, (Tid, Ts)>,
+    /// Commit-form sources whose writes snapshots may carry, per thing: (thing, commit ID) ->
+    /// (the node its writes are judged as, at which `ts`): a commit-form commit's author and
+    /// `ts`, an import origin's importer and import `ts`, else a held snapshot's `Authors`
+    /// (spec/crdt.md §8).
+    pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content

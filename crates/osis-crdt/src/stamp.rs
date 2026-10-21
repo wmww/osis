@@ -93,6 +93,12 @@ impl Source {
             _ => None,
         }
     }
+    pub fn as_commit(&self) -> Option<CommitId> {
+        match &*self.0 {
+            SourceKind::Commit(c) => Some(*c),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for Source {

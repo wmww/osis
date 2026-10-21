@@ -102,7 +102,7 @@ proptest! {
         for c in &commits {
             full.join(frag(&c.delta));
         }
-        let snap = Snapshot { nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default() };
+        let snap = Snapshot { nonce: [0; 16], fragment: full.clone(), frontiers: Frontiers::default(), authors: Default::default() };
         let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
         let mut boot = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
         let Fragment::Seq(sq) = &full else { return Ok(()) };
@@ -240,7 +240,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         mapply(&mut state, c.delta.clone());
         let st = state.as_ref().unwrap();
         let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
-        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default(), authors: Default::default() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
         let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
@@ -344,7 +344,7 @@ fn snapshot_carries_bare_anchors_spec_3_3() {
     let (m, base) = typed("abc");
     let rm = mops::remove(&mut mw(1, 5), 9);
     let st = joined(&base, &[&rm]);
-    let s = Snapshot { nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
+    let s = Snapshot { nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default(), authors: Default::default() };
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     assert_eq!(decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment, st);
     let _ = m;
@@ -566,7 +566,7 @@ fn text_pages_spec_8() {
         e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
     }
     let mut pages = MemoryPages::with_params(params);
-    let snap = Snapshot { nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { nonce: [0; 16], fragment: st.clone(), frontiers: Frontiers::default(), authors: Default::default() };
     let bytes = encode_snapshot(&snap, &snap_cx(), Some(&mut pages)).unwrap();
     assert!(!pages.is_empty());
     let got = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages)).unwrap();
@@ -616,7 +616,7 @@ fn expanded(f: &Fragment) -> Fragment {
     Fragment::Seq(Seq::new(s.text, s.meta.clone(), expand(s.elems().clone())))
 }
 fn snapshot_of(f: &Fragment) -> Vec<u8> {
-    encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap()
+    encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default(), authors: Default::default() }, &snap_cx(), None).unwrap()
 }
 
 /// §3.2 Run, issue run amplification: a snapshot run of 2^16 - 1 bare anchors (a reset text)

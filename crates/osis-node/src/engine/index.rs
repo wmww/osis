@@ -542,7 +542,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED)? {
         tx.core.carried.insert(k, dec(&v)?);
     }
-    for (k, v) in scan::<CommitId>(tx, AUTHORS)? {
+    for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
         tx.core.authors.insert(k, dec(&v)?);
     }
     Ok(())

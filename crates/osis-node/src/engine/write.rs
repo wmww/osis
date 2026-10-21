@@ -269,6 +269,19 @@ fn own_source(form: Form, node: Tid) -> Source {
     }
 }
 
+/// The `Authors` a snapshot of `tid` carrying `f` names (spec/crdt.md §8): per commit-form
+/// source its recorded author and `ts`; a source of unknown author refuses the snapshot.
+fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<BTreeMap<CommitId, (Tid, osis_core::Ts)>> {
+    let mut out = BTreeMap::new();
+    for (d, _) in f.writes() {
+        if let osis_crdt::SourceKind::Commit(c) = d.src.kind() {
+            let v = core.authors.get(&(*tid, *c)).copied().ok_or(Error::Misuse("a snapshot of a commit-form write whose author is unknown"))?;
+            out.insert(*c, v);
+        }
+    }
+    Ok(out)
+}
+
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
     let node = plan.signer;
@@ -292,7 +305,10 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             tx.rng.fill_bytes(&mut nonce);
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             bytes.push(match frontiers.take() {
-                Some(frontiers) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers }, &cx, Some(&mut bw))?,
+                Some(frontiers) => {
+                    let authors = snapshot_authors(tx.core, &d.tid, &fragment)?;
+                    osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, authors }, &cx, Some(&mut bw))?
+                }
                 None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             });
         }

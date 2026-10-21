@@ -606,6 +606,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
             atomic::index_commit(tx.core, &id, &h);
+            validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
             tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
             if is_kind_snapshot(blob.header.kind) {
                 snaps.push(blob.clone());
@@ -620,6 +621,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let mut b = blob.clone();
             if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
+                validity::note_authors(tx.core, &id, &b.header, &parts).map_err(|_| Error::Corrupt("snapshot authors"))?;
                 for (ai, _, d) in parts {
                     if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
                         validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);

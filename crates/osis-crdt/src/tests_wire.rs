@@ -8,7 +8,7 @@ use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::r#gen::Rng;
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
-use crdt_model::wire::{Ctx, encode_delta as m_encode_delta, encode_snapshot as m_encode_snapshot};
+use crdt_model::wire::{Ctx, encode_delta as m_encode_delta};
 use osis_core::{Classified, ErrorClass, Tid, Value};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -25,6 +25,9 @@ pub(crate) fn snap_cx() -> DeltaCtx {
 /// and decodes back to itself under the writer's header; snapshots of the joined state likewise.
 fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
     let mut r = Rng(seed | 1);
+    // commit-form sources get an author (§8 `Authors`)
+    let mau: crdt_model::wire::Authors = sources.iter().filter_map(|s| if let MSource::Commit(c) = s { Some((*c, ([1; 15], 5u64 << 16))) } else { None }).collect();
+    let authors: BTreeMap<osis_core::CommitId, (osis_core::Tid, osis_core::Ts)> = mau.iter().map(|(c, (t, ts))| (osis_core::CommitId(*c), (osis_core::Tid::from_bytes(*t), osis_core::Ts::from_u64(*ts).unwrap()))).collect();
     let commits = history_with(&mut r, types, sources, 5);
     let mut state = None;
     for c in &commits {
@@ -41,12 +44,16 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let mut fr = crdt_model::received::Received::default();
         fr.add(&c.w.source, 1, c.w.hi());
         let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| matches!(s, MSource::Node(_))).collect();
-        let msnap = m_encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let msnap = crdt_model::wire::encode_snapshot_authors(st, &mfr, &mau, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
         let frontiers = Frontiers(mfr.iter().map(|(s, c)| (source(s).as_node().unwrap(), *c)).collect());
-        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers };
+        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers, authors: authors.clone() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
-        assert_eq!(decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap(), s, "snapshot round trip");
+        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        // the authors of the sources the fragment holds, those of others not carried
+        assert!(back.authors.iter().all(|(c, v)| s.authors.get(c) == Some(v)));
+        back.authors = s.authors.clone();
+        assert_eq!(back, s, "snapshot round trip");
     }
 }
 
@@ -255,7 +262,7 @@ fn rejects_deep_values_spec_3_3() {
 #[test]
 fn snapshot_frontiers_spec_8() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { nonce: [0; 16], fragment: crate::Fragment::default(), frontiers: Frontiers(BTreeMap::from([(tid(5), 7), (tid(2), 3)])) };
+    let s = Snapshot { nonce: [0; 16], fragment: crate::Fragment::default(), frontiers: Frontiers(BTreeMap::from([(tid(5), 7), (tid(2), 3)])), authors: Default::default() };
     let b = encode_snapshot(&s, &scx, None).unwrap();
     // own (Src 0) first; the frontier-only source last in Sources
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();

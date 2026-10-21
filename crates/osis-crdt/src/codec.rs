@@ -8,7 +8,7 @@ use crate::error::Error;
 use crate::fragment::{Bag, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::seq::{self, Seq};
-use crate::stamp::{Dot, Interner, Source};
+use crate::stamp::{Dot, Interner, Source, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_core::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_core::{Limits, PageCutter, Value};
@@ -195,7 +195,13 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
             let mut a = head(cx, Encoding::Map, &m.meta);
             let mut items = Vec::with_capacity(m.entries.len());
             for (d, e) in cx.sorted(&m.entries) {
-                let mut x = vec![cx.dot(d), cx.opt_stamp(e.reset.as_ref())];
+                let mut x = vec![cx.dot(d)];
+                // the creation's commit, where a snapshot or import carries it (a writer's own
+                // creations are implied, §3.2)
+                if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
+                    x.push(cx.commit_of(c));
+                }
+                x.push(cx.opt_stamp(e.reset.as_ref()));
                 x.extend(e.key.clone());
                 x.push(opt_frag(cx, e.frag.as_deref())?);
                 items.push(Value::List(x));
@@ -252,8 +258,17 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
     }
     let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
-    let top = Value::List(vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr]);
-    Ok(osis_core::encode(&top))
+    let mut top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr];
+    // `Authors := [[Src, tid, Ts]*]` by `Src`, only when one is given (§8)
+    let authors: Vec<Value> = enc
+        .commit_sources()
+        .into_iter()
+        .filter_map(|(i, c)| s.authors.get(&c).map(|(n, ts)| Value::List(vec![uint(i), Value::Bytes(n.as_bytes().to_vec()), uint(ts.to_u64())])))
+        .collect();
+    if !authors.is_empty() {
+        top.push(Value::List(authors));
+    }
+    Ok(osis_core::encode(&Value::List(top)))
 }
 
 // ---- decode
@@ -527,7 +542,11 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             let (items, fetched) = elem_items(cx, es)?;
             for e in &items {
                 let x = as_array(e)?;
-                let (d, r, key, f) = match x {
+                let (x, ci) = match x {
+                    [d, Value::Int(_), rest @ ..] => (std::iter::once(d).chain(rest.iter()).cloned().collect::<Vec<Value>>(), x.get(1)),
+                    _ => (x.to_vec(), None),
+                };
+                let (d, r, key, f) = match x.as_slice() {
                     [d, r, f] => (d, r, None, f),
                     [d, r, k, f] => (d, r, Some(k), f),
                     _ => return Err(Error::Malformed("entry")),
@@ -544,7 +563,22 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
                 if frag.is_some() {
                     cx.claim(&dot)?;
                 }
-                entries.insert(dot, Entry { reset, key: key.cloned(), frag });
+                // the creation: carried by a snapshot or import; implied in a writer's delta for
+                // an entry created here (own dot in the range)
+                let created = match ci {
+                    Some(_) if cx.kind() == crate::wire::DeltaKind::Writer => return Err(Error::Malformed("creation commit in a writer's delta")),
+                    Some(_) if frag.is_none() => return Err(Error::Malformed("creation commit on a tombstone")),
+                    Some(ci) => {
+                        let c = cx.stamp(ci)?;
+                        if c.dot.src != dot.src {
+                            return Err(Error::Malformed("creation commit of another source"));
+                        }
+                        Some(Stamp::new(c.ts, dot.src.clone(), dot.ctr))
+                    }
+                    None if cx.kind() == crate::wire::DeltaKind::Writer && frag.is_some() && dot.src == *cx.own() && cx.range().contains(dot.ctr) => Some(Stamp::new(cx.ts(), dot.src.clone(), dot.ctr)),
+                    None => None,
+                };
+                entries.insert(dot, Entry { reset, key: key.cloned(), frag, created });
             }
             cx.done(fetched);
             Fragment::Map(Map::new(meta, entries))
@@ -617,7 +651,11 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 /// Decodes a snapshot delta (§8); bad input unless canonical.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
     let top = osis_core::decode(bytes, &LIMITS)?;
-    let [n, sources, commits, frag, fr] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
+    let (n, sources, commits, frag, fr, au) = match as_array(&top)? {
+        [n, sources, commits, frag, fr] => (n, sources, commits, frag, fr, None),
+        [n, sources, commits, frag, fr, au] => (n, sources, commits, frag, fr, Some(au)),
+        _ => return Err(Error::Malformed("snapshot arity")),
+    };
     let mut dec = Dec::new(cx, interner, pages);
     dec.load_sources(sources)?;
     dec.load_commits(commits)?;
@@ -631,8 +669,23 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
             return Err(Error::Malformed("frontier counter 0 or repeated"));
         }
     }
+    let mut authors = BTreeMap::new();
+    let mut last = 0u64;
+    for e in au.map(as_array).transpose()?.unwrap_or_default() {
+        let [i, t, ts] = as_array(e)? else { return Err(Error::Malformed("author")) };
+        let i = as_uint(i)?;
+        let Value::Bytes(t) = t else { return Err(Error::Malformed("author tid")) };
+        let t = osis_core::Tid::from_bytes(t.as_slice().try_into().map_err(|_| Error::Malformed("author tid"))?);
+        let ts = osis_core::Ts::from_u64(as_uint(ts)?).ok_or(Error::Malformed("author ts"))?;
+        let c = dec.source(i)?.as_commit().ok_or(Error::Malformed("author of a non-commit source"))?;
+        if i <= last {
+            return Err(Error::Malformed("authors out of order"));
+        }
+        last = i;
+        authors.insert(c, (t, ts));
+    }
     let mut replay = dec.replay();
-    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers) };
+    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers), authors };
     canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
     Ok(s)
 }

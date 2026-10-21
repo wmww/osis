@@ -89,7 +89,7 @@ fn snapshot() -> CommitBlob {
     let at = ts(1_700_000_002_000);
     let mut w = Writer::new(ts(1_700_000_000_000), Source::node(AUTHOR), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let s = Snapshot { nonce: [4; 16], fragment, frontiers: Frontiers([(AUTHOR, 1)].into_iter().collect()) };
+    let s = Snapshot { nonce: [4; 16], fragment, frontiers: Frontiers([(AUTHOR, 1)].into_iter().collect()), authors: Default::default() };
     let bytes = encode_snapshot(&s, &writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Node);
     let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 0, 0, bytes);

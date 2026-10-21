@@ -60,7 +60,7 @@ Self-removals are never added to D, except a single-use redemption's (§9), whic
 
 ### 5.2 Layer 2: content
 - A delta by actor X on thing N is valid if X held write or above on N at the commit's `ts` and no valid explicit demotion of X below write on N is ordered after it (a ledger entry with a frontier counts as an explicit demotion at its key, §6).
-- Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N (ledger entries included) covers its dot. A compaction snapshot vouches for nothing: its elements are judged as their authors' writes, and an invalid one is un-merged from the snapshot body too.
+- Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N (ledger entries included) covers its dot. A compaction snapshot vouches for nothing: each write it carries whose own commit the receiver does not hold is judged as its author's, exactly as that commit would be: a node-form write as its node's delta at the `ts` the snapshot carries for it (a stamp's; an element creation's, spec/crdt.md §3.2) covering its own counter, a commit-form write as its commit per the snapshot's `Authors` (spec/crdt.md §8); an invalid one is un-merged from the snapshot body too (exactly its dots). A record carrying no `ts` (a tombstone, a bare anchor) carries no write to judge.
 - A re-grant makes every write of the re-granted actor valid again, including those in the gap. Edge writes in the gap stay dropped.
 - A revoked actor cannot reuse a covered dot: two commits by one node with overlapping node-form ranges on one aspect are both invalid (spec/commits.md §4).
 - A delta that becomes invalid is un-merged (spec/crdt.md §4.6).

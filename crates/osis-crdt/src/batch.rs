@@ -266,7 +266,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
                     resolve(w, ks.as_deref(), None, None, rest, op, &vview, false, None)?
-                        .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
+                        .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)), created: None })]))))
                 }
                 None => {
                     // a key that is not live, or a put_new: a new entry holding the op's writes
@@ -283,7 +283,8 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                     };
                     let Some(c) = c else { return Ok(None) };
                     *w = w2;
-                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
+                    let created = Some(Stamp::new(w.ts(), d.src.clone(), d.ctr));
+                    Some(Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)), created })]))))
                 }
             }
         }
@@ -376,7 +377,8 @@ pub(crate) fn overlay(acc: Fragment, d: Fragment, w: &Writer) -> Fragment {
                 let prev = entries.remove(&dot).unwrap_or_default();
                 let frag = overlay_opt(prev.frag, de.frag, de.reset.is_some(), w);
                 let key = if frag.is_some() { de.key.or(prev.key) } else { None };
-                entries.insert(dot, Entry { reset: de.reset.or(prev.reset), key, frag });
+                let created = if frag.is_some() { de.created.or(prev.created) } else { None };
+                entries.insert(dot, Entry { reset: de.reset.or(prev.reset), key, frag, created });
             }
             keep_present(&mut meta, omitted && entries.is_empty(), w);
             let mut m = Map { meta, entries, keys };

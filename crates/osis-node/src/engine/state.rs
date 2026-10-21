@@ -40,7 +40,7 @@ fn ctx() -> DeltaCtx {
 /// `[snapshot bytes, [page*]]`.
 pub fn encode(f: &Fragment) -> Result<Vec<u8>> {
     let mut pages = LocalPages::default();
-    let snap = Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default(), authors: Default::default() };
     let bytes = encode_snapshot(&snap, &ctx(), Some(&mut pages))?;
     let v = Value::List(vec![Value::Bytes(bytes), Value::List(pages.0.into_values().map(Value::Bytes).collect())]);
     Ok(osis_core::encode(&v))

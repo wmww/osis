@@ -607,7 +607,7 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
         let node = match d.src.kind() {
             // a dot a held commit owns is that commit's write, judged with it
             osis_crdt::SourceKind::Node(n) if core.commit_of(tid, ak, &d).is_none() => *n,
-            osis_crdt::SourceKind::Commit(c) if !core.commits.contains_key(c) => match core.authors.get(c) {
+            osis_crdt::SourceKind::Commit(c) if !core.commits.contains_key(c) => match core.authors.get(&(*tid, *c)) {
                 Some((n, _)) => *n,
                 None => continue,
             },
@@ -650,6 +650,79 @@ pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> V
         }
         _ => c.ctrs.iter().copied().filter(|x| !ok(*x)).collect(),
     }
+}
+
+/// Records whom commit-form writes on the commit's things are judged as (`Core::authors`): a
+/// commit-form commit's author, an import's origins as the importer, a snapshot's `Authors`.
+/// A snapshot naming another author or `ts` than a held commit or an earlier snapshot, lacking
+/// the author of a commit-form write it carries, or carrying a `ts` for a dot of a held commit
+/// other than that commit's, is bad input (spec/crdt.md §8).
+pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
+    let mut held: Vec<((Tid, CommitId), (Tid, osis_core::Ts))> = Vec::new();
+    if h.form == Form::Commit && h.kind.has_own_writes() {
+        held.extend(h.aspects.iter().map(|a| ((a.tid, *id), (h.author, h.ts))));
+    }
+    if h.kind == Kind::Import {
+        for a in &h.aspects {
+            held.extend(h.origins.iter().map(|o| ((a.tid, o.commit), (h.author, h.ts))));
+        }
+    }
+    for (k, v) in held {
+        if core.authors.get(&k) != Some(&v) {
+            core.authors.insert(k, v);
+            // groups recorded under another claim follow the held commit
+            let ks: Vec<(Tid, Ak)> = core.carried.keys().filter(|x| x.0 == k.0).cloned().collect();
+            for ak in ks {
+                let Some(mut gs) = core.carried.get(&ak).cloned() else { continue };
+                let src = osis_crdt::Source::commit(k.1);
+                if !gs.iter().any(|g| g.src == src) {
+                    continue;
+                }
+                for g in gs.iter_mut().filter(|g| g.src == src) {
+                    (g.node, g.ts) = v;
+                    g.invalid = carried_invalid(core, &ak.0, &ak.1, g);
+                }
+                core.carried.insert(ak, gs);
+            }
+        }
+    }
+    for (ai, _, d) in parts {
+        let (osis_commit::Decoded::Snapshot(s), Some(a)) = (d, h.aspects.get(*ai)) else { continue };
+        for (c, v) in &s.authors {
+            match core.authors.get(&(a.tid, *c)) {
+                Some(x) if x != v => return Err(crate::error::Error::BadInput("snapshot author differs from the held one")),
+                Some(_) => {}
+                None => {
+                    core.authors.insert((a.tid, *c), *v);
+                }
+            }
+        }
+        for (d, ts) in s.fragment.writes() {
+            match d.src.kind() {
+                osis_crdt::SourceKind::Commit(c) => {
+                    if !core.authors.contains_key(&(a.tid, *c)) {
+                        return Err(crate::error::Error::BadInput("snapshot without the author of a commit-form write"));
+                    }
+                    if let (Some(ts), Some(m)) = (ts, core.commits.get(c))
+                        && m.header.form == Form::Commit
+                        && m.header.ts != ts
+                    {
+                        return Err(crate::error::Error::BadInput("snapshot ts differs from the held commit's"));
+                    }
+                }
+                osis_crdt::SourceKind::Node(_) => {
+                    if let Some(ts) = ts
+                        && let Some(k) = core.commit_of(&a.tid, &a.ak, &d)
+                        && core.commits.get(&k).is_some_and(|m| m.header.ts != ts)
+                    {
+                        return Err(crate::error::Error::BadInput("snapshot ts differs from the held commit's"));
+                    }
+                }
+                osis_crdt::SourceKind::Derived(_) => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Records and judges the writes snapshot `snap`'s fragment `f` of `(tid, ak)` carries without

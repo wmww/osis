@@ -161,7 +161,7 @@ fn paging_limits_accept_valid_spec_8() {
         s.join(create(&mut w, &AnyView, &Value::Set([Value::Str(format!("item {i}"))].into_iter().collect())).unwrap());
     }
     let mut pages = MemoryPages::with_params(SMALL);
-    let snap = Snapshot { nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default() };
+    let snap = Snapshot { nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default(), authors: Default::default() };
     let bytes = encode_snapshot(&snap, &scx(), Some(&mut pages)).unwrap();
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, s);
 }

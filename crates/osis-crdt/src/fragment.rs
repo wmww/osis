@@ -112,12 +112,15 @@ pub struct Elem {
     pub(crate) frag: Option<Box<Fragment>>,
 }
 
-/// A map entry (§5.6). `key` is `None` for tombstones and value-less creations.
+/// A map entry (§5.6). `key` is `None` for tombstones and value-less creations. `created` is
+/// the creation write's stamp (its dot is the entry's), kept while it survives pruning and the
+/// entry holds content (§5.6).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub(crate) reset: Option<Stamp>,
     pub(crate) key: Option<Value>,
     pub(crate) frag: Option<Box<Fragment>>,
+    pub(crate) created: Option<Stamp>,
 }
 
 /// Counter, max, min (§5.2).

@@ -25,7 +25,7 @@ const STATE_TABLE: u8 = 0;
 const KEY_TABLE: u8 = 1;
 
 /// A path with the keys of its entry steps (to rebuild an entry's key from a page alone).
-type KeyedPath = Vec<(Step, Option<Value>)>;
+type KeyedPath = Vec<(Step, Option<Value>, Option<osis_crdt::Stamp>)>;
 
 /// The range of a page: its first dot (`None`: the collection's first page) and the next page's.
 type Range = (Option<Dot>, Option<Dot>);
@@ -140,10 +140,15 @@ fn opt_dot_of(v: &Value) -> Result<Option<Dot>> {
 fn path_value(p: &KeyedPath) -> Value {
     Value::List(
         p.iter()
-            .map(|(s, k)| match s {
+            .map(|(s, k, c)| match s {
                 Step::Field(id) => Value::List(vec![Value::Int(0), uint(*id)]),
                 Step::Case(id) => Value::List(vec![Value::Int(1), uint(*id)]),
-                Step::Entry(d) => Value::List(vec![Value::Int(2), dot_value(d), k.clone().map_or(Value::List(Vec::new()), |k| Value::List(vec![k]))]),
+                Step::Entry(d) => Value::List(vec![
+                    Value::Int(2),
+                    dot_value(d),
+                    k.clone().map_or(Value::List(Vec::new()), |k| Value::List(vec![k])),
+                    Value::List(c.iter().map(|c| uint(c.ts.to_u64())).collect()),
+                ]),
             })
             .collect(),
     )
@@ -157,9 +162,18 @@ fn path_of(v: &Value) -> Result<KeyedPath> {
         .iter()
         .map(|s| match s {
             Value::List(x) => match x.as_slice() {
-                [Value::Int(0), Value::Int(id)] => Ok((Step::Field(n(id)?), None)),
-                [Value::Int(1), Value::Int(id)] => Ok((Step::Case(n(id)?), None)),
-                [Value::Int(2), d, Value::List(k)] => Ok((Step::Entry(dot_of(d)?), k.first().cloned())),
+                [Value::Int(0), Value::Int(id)] => Ok((Step::Field(n(id)?), None, None)),
+                [Value::Int(1), Value::Int(id)] => Ok((Step::Case(n(id)?), None, None)),
+                [Value::Int(2), d, Value::List(k)] => Ok((Step::Entry(dot_of(d)?), k.first().cloned(), None)),
+                [Value::Int(2), d, Value::List(k), Value::List(c)] => {
+                    let d = dot_of(d)?;
+                    let created = match c.as_slice() {
+                        [] => None,
+                        [Value::Int(ts)] => Some(osis_crdt::Stamp::new(osis_core::Ts::from_u64(n(ts)?).ok_or_else(bad)?, d.src.clone(), d.ctr)),
+                        _ => return Err(bad()),
+                    };
+                    Ok((Step::Entry(d), k.first().cloned(), created))
+                }
                 _ => Err(bad()),
             },
             _ => Err(bad()),
@@ -168,7 +182,7 @@ fn path_of(v: &Value) -> Result<KeyedPath> {
 }
 
 fn steps(p: &KeyedPath) -> Vec<Step> {
-    p.iter().map(|(s, _)| s.clone()).collect()
+    p.iter().map(|(s, _, _)| s.clone()).collect()
 }
 
 /// Unit state of a paged state: `[4, skeleton, [[set ID, path, encoding]*]]` (`3`: an earlier
@@ -461,8 +475,8 @@ pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Page
                     }
                     for set in idx.sets.values() {
                         if set.path.len() > p.len()
-                            && set.path.iter().zip(&p).all(|((s, _), q)| s == q)
-                            && let Some((s @ Step::Entry(_), Some(key))) = set.path.get(p.len())
+                            && set.path.iter().zip(&p).all(|((s, _, _), q)| s == q)
+                            && let Some((s @ Step::Entry(_), Some(key), _)) = set.path.get(p.len())
                             && key == k
                         {
                             let q = [p.clone(), vec![s.clone()]].concat();
@@ -519,11 +533,11 @@ fn keyed(f: &Fragment, p: &[Step]) -> KeyedPath {
     let mut out = Vec::with_capacity(p.len());
     let mut cur = Some(f);
     for s in p {
-        let key = match s {
-            Step::Entry(d) => cur.and_then(|c| c.entry_key(d)).cloned(),
-            _ => None,
+        let (key, created) = match s {
+            Step::Entry(d) => (cur.and_then(|c| c.entry_key(d)).cloned(), cur.and_then(|c| c.entry_created(d)).cloned()),
+            _ => (None, None),
         };
-        out.push((s.clone(), key));
+        out.push((s.clone(), key, created));
         cur = cur.and_then(|c| c.step(s));
     }
     out
