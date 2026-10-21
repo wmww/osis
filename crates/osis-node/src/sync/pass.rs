@@ -8,7 +8,7 @@
 use super::state::{BlobRec, Entry, Kind, ServerKey};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::{Body, Facts, HeadKeys, Hold, Why, classify, delete_item, may_delete, seal_body};
+use crate::labeling::{Body, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
 use osis_commit::Kind as CKind;
 use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
@@ -865,7 +865,7 @@ impl SyncEngine {
     /// that count): another node's copy or body counts once genuine and present at every server
     /// this node syncs the label with, and, carrying a rotation of the label's actor, only if it
     /// opens under the newest read secret (spec/permissions.md §4).
-    fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(BTreeSet<(usize, usize)>, BTreeSet<(usize, usize)>)> {
+    fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
         let servers: Vec<ServerKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
         let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
