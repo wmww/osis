@@ -33,6 +33,10 @@ pub struct Verdicts {
     pub unsettled: Vec<Option<(Tid, Ak)>>,
 }
 
+/// How long another node's fresh demotion or `/keys` is left to its author before this node
+/// places it as its own chain certificate (ms; the periodic pass picks it up after).
+const SETTLE_MS: u64 = 30_000;
+
 /// An entry to send, by priority (membership and certificates before content before
 /// heartbeats).
 struct Out {
@@ -567,25 +571,62 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// Whether an entry of commit `c` holding `parts` is present at `server` under `l`.
-    fn carried_by(&self, server: &ServerKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        self.state
+    /// Whether an entry of commit `c` holding `parts` is present at `server` under `l` (checked
+    /// genuine: a forged blob listing the parts holds nothing).
+    fn carried_by(&mut self, server: &ServerKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let ids: Vec<BlobId> = self
+            .state
             .entries
             .range((*l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| x == l)
-            .any(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && self.state.is_present(server, l, id))
+            .filter(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && self.state.is_present(server, l, id))
+            .map(|((_, id), _)| *id)
+            .collect();
+        ids.into_iter().any(|id| self.genuine(&id))
     }
 
-    /// The entry under `l` holding exactly this body, not tombstoned at `server`, whoever
+    /// The genuine entry under `l` holding exactly this body, not tombstoned at `server`, whoever
     /// placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
-    fn entry_for(&self, server: &ServerKey, l: &LabelId, b: &Body) -> Option<BlobId> {
-        self.state
+    fn entry_for(&mut self, server: &ServerKey, l: &LabelId, b: &Body) -> Option<BlobId> {
+        let ids: Vec<BlobId> = self
+            .state
             .entries
             .range((*l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| x == l)
             .filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && !self.state.gone.contains(&(*server, *l, *id)))
             .map(|((_, id), _)| *id)
-            .min()
+            .collect();
+        ids.into_iter().find(|id| self.genuine(id))
+    }
+
+    /// Whether every delta of commit blob `id` hashes to its header entry (spec/commits.md §4;
+    /// `Engine::parts_genuine`). Opening a blob checks its prefix, not its deltas, and a held
+    /// commit's late parts are skipped unchecked, so an entry's parts are only its own claim
+    /// until this says yes. A forged blob is marked `Bad` under every label; unknown yet (a
+    /// thing's `/created` missing) counts as no.
+    pub(crate) fn genuine(&mut self, id: &BlobId) -> bool {
+        if let Some(v) = self.genuine.get(id) {
+            return *v;
+        }
+        let Some(key) = self.state.blobs.get(id).map(|r| r.key.clone()) else { return false };
+        let Ok(Some(bytes)) = self.engine.blob(id) else { return false };
+        let verdict = match crate::labeling::open_commit(&bytes, &key) {
+            Ok((_, c)) => self.engine.parts_genuine(&c),
+            Err(_) => Some(false),
+        };
+        let Some(v) = verdict else { return false };
+        self.genuine.insert(*id, v);
+        if !v {
+            let ls: Vec<LabelId> = self.state.entries.keys().filter(|(_, b)| b == id).map(|(l, _)| *l).collect();
+            for l in ls {
+                if let Some(mut e) = self.state.entries.get(&(l, *id)).cloned() {
+                    e.kind = Kind::Bad;
+                    self.state.set_entry(l, *id, e);
+                }
+            }
+            self.diag(format!("blob {id:?}: a delta does not match its header"));
+        }
+        v
     }
 
     /// Places a body under `l`: an encryption of it this node holds (never a certificate
@@ -632,31 +673,65 @@ impl SyncEngine {
         Ok(all.into_iter().filter(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id)).collect())
     }
 
-    /// This node's chain certificates and node card under `l` (spec/permissions.md §4): a fresh
-    /// encryption per label, placed once per commit.
+    /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
+    /// aspects no entry under the label holds yet, as a fresh encryption per label. Another
+    /// node's entry counts only when this node checked it genuine (`genuine`), it is present at
+    /// every server this node syncs the label with (the decision is the label's, not one
+    /// server's), and a newcomer can open it: one granted after a rotation gets the history
+    /// boxes with its grant (spec/crypto.md §4) and opens entries under older epochs like the
+    /// label's older content, except a rotation commit of the label's actor, which is wrapped
+    /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
+    /// opens under the newest read secret.
     fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let closure = self.engine.closure(g);
+        let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
+        let newest = self.engine.wrap_secret(g, None)?;
         for (c, want) in self.card_certificates(g) {
-            // the parts this node's copies or any present blob of the commit under the label
-            // carry (a copy of carried parts is a strict subset or duplicate others delete, and
-            // placing it again churns, spec/sync.md §7): a chain grown since (an owner's
-            // `/created` this node learned later) places the rest
-            let placed: BTreeSet<(usize, usize)> = self
-                .state
-                .entries
-                .range((l, BlobId([0; 32]))..)
-                .take_while(|((x, _), _)| *x == l)
-                .filter_map(|((_, id), e)| match &e.kind {
-                    Kind::Commit { commit, parts } if *commit == c && (e.cert || self.state.present_anywhere(&l, id)) => Some(parts.clone()),
-                    _ => None,
-                })
-                .flatten()
-                .collect();
-            // what the label's closure bodies carry is not copied again
+            // the parts entries of `c` under the label hold: this node's copies, and another
+            // node's copy or body counted as described above
+            let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
+            let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
+            for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+                let Kind::Commit { commit, parts } = &e.kind else { continue };
+                if *commit != c {
+                    continue;
+                }
+                if e.cert {
+                    mine.extend(parts.iter().copied());
+                } else if !servers.is_empty()
+                    && servers.iter().all(|s| self.state.is_present(s, &l, id))
+                    && (!self.engine.carries_secrets(g, &c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, id, &e.wrap).is_ok()))
+                {
+                    others.push((*id, parts.clone()));
+                }
+            }
+            let mut held = mine.clone();
+            for (id, parts) in others {
+                if self.genuine(&id) {
+                    held.extend(parts);
+                }
+            }
+            // what the label's closure bodies carry is never copied (a copy duplicating closure
+            // parts is a strict subset others delete)
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
-            let missing: BTreeSet<(usize, usize)> = want.difference(&placed).filter(|(ai, _)| placed.is_empty() || !inside.contains(ai)).copied().collect();
-            // placed before and gone since (deleted at the server): not placed again
-            if missing.is_empty() || placed.is_empty() && self.state.certs.contains(&(l, c)) {
+            let missing: BTreeSet<(usize, usize)> = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
+            // this node's own copy placed before and gone since (deleted at the server): not
+            // placed again
+            if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) {
+                continue;
+            }
+            // another node's demotion or new `/keys` received less than `SETTLE_MS` ago is its
+            // author's to place (spec/permissions.md §3, §4): members that learn of it under
+            // another label first do not all copy it; a wake brings the pass back then
+            let me = self.engine.tid();
+            let now = self.now();
+            let due = self.engine.core.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
+            if let Some(t) = due
+                && let Some(h) = self.engine.header(&c)
+                && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
+            {
+                let at = self.raw_now().saturating_add(t - now);
+                self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
                 continue;
             }
             for b in self.engine.part_bodies(&c, &missing)? {
@@ -817,7 +892,9 @@ impl SyncEngine {
         if desired.contains(&parts) {
             f.required = true;
             // the duplicate with the higher blob ID goes (spec/sync.md §7)
-            f.duplicate_higher = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).any(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && self.state.is_present(server, l, b));
+            // (only a genuine one: a forged duplicate must not get the real entry deleted)
+            let lower: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).filter(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && self.state.is_present(server, l, b)).map(|((_, b), _)| *b).collect();
+            f.duplicate_higher = lower.into_iter().any(|b| self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset projection: every delta in it must be one the label's actor may read
             let x = self.engine.group_actor(g);
@@ -833,10 +910,15 @@ impl SyncEngine {
                 .range((*l, BlobId([0; 32]))..)
                 .take_while(|((x, _), _)| x == l)
                 .filter(|((_, b), _)| b != id && self.state.present_anywhere(l, b))
-                .filter_map(|(_, o)| match &o.kind {
-                    Kind::Commit { commit: c2, parts: p2 } if c2 == commit && p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) => Some(p2.clone()),
+                .filter_map(|((_, b), o)| match &o.kind {
+                    Kind::Commit { commit: c2, parts: p2 } if c2 == commit && p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) => Some((*b, p2.clone())),
                     _ => None,
                 })
+                .collect::<Vec<_>>()
+                .into_iter()
+                // a forged superset holds nothing (it would get the real projection deleted)
+                .filter(|(b, _)| self.genuine(b))
+                .map(|(_, p2)| p2)
                 .collect();
             // a superset whose extra deltas a snapshot under the label covers carries nothing
             // more: this projection is one a right holder dropped them from (spec/sync.md §7)

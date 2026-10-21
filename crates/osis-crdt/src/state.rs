@@ -293,8 +293,8 @@ pub(crate) fn embed(r: &Register, target: Encoding) -> Option<Fragment> {
             }
             Fragment::Bag(Bag { kind: target.bag_kind()?, meta, elems })
         }
-        Encoding::Text => Fragment::Seq(Seq { text: true, meta, elems: seq::embed_text(r) }),
-        Encoding::List => Fragment::Seq(Seq { text: false, meta, elems: BTreeMap::new() }),
+        Encoding::Text => Fragment::Seq(Seq::new(true, meta, seq::embed_text(r))),
+        Encoding::List => Fragment::Seq(Seq::new(false, meta, BTreeMap::new())),
         Encoding::Struct => Fragment::Struct(Struct { meta, fields: BTreeMap::new() }),
         Encoding::Enum => Fragment::Enum(Enum { meta, case: None, payloads: BTreeMap::new() }),
         Encoding::Set => Fragment::Set(Set { meta, elems: BTreeMap::new() }),
@@ -708,7 +708,7 @@ fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Chang
 
 /// Prunes a position's members under its one effective reset (an own reset below it goes,
 /// §4.2, §7) and assembles the canonical form.
-fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+pub(crate) fn prune_slots(reg: Option<Register>, members: BTreeMap<Encoding, Fragment>, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     // every member holds the register's embedding, whatever path the members came by (a
     // received snapshot's `Slots` included)
     let mut members = members;

@@ -11,15 +11,19 @@ use osis_store::{Shred, Table, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
-/// Pages of a locally stored state: link hash = BLAKE3 of the plaintext, key zero.
+/// Pages of a locally stored state: link hash = BLAKE3 of the plaintext, key zero, blob ID
+/// distinct per put (a decode refuses one blob linked twice, and equal pages can recur).
 #[derive(Default)]
-pub struct LocalPages(pub BTreeMap<[u8; 32], Vec<u8>>);
+pub struct LocalPages(pub BTreeMap<[u8; 32], Vec<u8>>, u64);
 
 impl PageSink for LocalPages {
     fn put(&mut self, plaintext: &[u8]) -> std::result::Result<Link, PageError> {
         let hash = osis_core::hash::hash(plaintext);
         self.0.insert(hash, plaintext.to_vec());
-        Ok(Link { hash, blob: BlobId(hash), suite: 1, key: [0; 32] })
+        self.1 += 1;
+        let mut id = hash.to_vec();
+        id.extend(self.1.to_le_bytes());
+        Ok(Link { hash, blob: BlobId(osis_core::hash::hash(&id)), suite: 1, key: [0; 32] })
     }
 }
 
@@ -375,5 +379,50 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             Ok((unit.len() <= PAGE_TARGET).then_some(Some(unit)))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use osis_core::{Tid, Ts, Value};
+    use osis_crdt::{Encoding, Source, View, Writer, create};
+    use std::borrow::Cow;
+
+    /// A map of structs of registers.
+    struct V(u8);
+
+    impl View for V {
+        fn encoding(&self) -> Option<Encoding> {
+            Some([Encoding::Map, Encoding::Struct, Encoding::Register][usize::from(self.0)])
+        }
+        fn project<'a>(&self, v: &'a Value) -> Option<Cow<'a, Value>> {
+            Some(Cow::Borrowed(v))
+        }
+        fn field(&self, _: u64) -> Option<V> {
+            (self.0 == 1).then_some(V(2))
+        }
+        fn field_default(&self, _: u64) -> Option<Value> {
+            None
+        }
+        fn case(&self, _: u64) -> Option<V> {
+            None
+        }
+        fn element(&self) -> Option<V> {
+            (self.0 == 0).then_some(V(1))
+        }
+        fn key(&self) -> Option<V> {
+            (self.0 == 0).then_some(V(2))
+        }
+    }
+
+    /// spec/crdt.md §8: equal structs written in one commit page into equal field-map pages;
+    /// the local state round-trips (each put is its own blob, never one blob linked twice).
+    #[test]
+    fn equal_pages_round_trip_spec_8() {
+        let s = Value::Map((0..4).map(|i| (Value::Int(i), Value::Str("x".repeat(30_000)))).collect());
+        let v = Value::Map((0..2).map(|k| (Value::Int(k), s.clone())).collect());
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let st = create(&mut w, &V(0), &v).unwrap();
+        assert_eq!(super::decode(&super::encode(&st).unwrap()).unwrap(), st);
     }
 }

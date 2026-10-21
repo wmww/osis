@@ -318,6 +318,43 @@ fn large_list_insert_chunked_spec_dm_6() {
     assert_eq!(p.engine.get_full(&t, &a).unwrap(), Some(Value::List(vec![common::s("a"), big, common::s("b")])));
 }
 
+/// A struct of 65 string registers: each field just under `CHUNK_THRESHOLD` stays inline, and
+/// together they exceed `MAX_BLOB`.
+static WIDE: osis_schema::StaticSchema = osis_schema::StaticSchema::new("wide.osis", WIDE_SRC);
+const WIDE_SRC: &str = concat!(
+    "schema 0x0123456789abcdef0123456789abcd02;\nrevision 1;\ntype wide = struct { ",
+    "0 f0: string, 1 f1: string, 2 f2: string, 3 f3: string, 4 f4: string, 5 f5: string, 6 f6: string, 7 f7: string, 8 f8: string, 9 f9: string, ",
+    "10 f10: string, 11 f11: string, 12 f12: string, 13 f13: string, 14 f14: string, 15 f15: string, 16 f16: string, 17 f17: string, 18 f18: string, 19 f19: string, ",
+    "20 f20: string, 21 f21: string, 22 f22: string, 23 f23: string, 24 f24: string, 25 f25: string, 26 f26: string, 27 f27: string, 28 f28: string, 29 f29: string, ",
+    "30 f30: string, 31 f31: string, 32 f32: string, 33 f33: string, 34 f34: string, 35 f35: string, 36 f36: string, 37 f37: string, 38 f38: string, 39 f39: string, ",
+    "40 f40: string, 41 f41: string, 42 f42: string, 43 f43: string, 44 f44: string, 45 f45: string, 46 f46: string, 47 f47: string, 48 f48: string, 49 f49: string, ",
+    "50 f50: string, 51 f51: string, 52 f52: string, 53 f53: string, 54 f54: string, 55 f55: string, 56 f56: string, 57 f57: string, 58 f58: string, 59 f59: string, ",
+    "60 f60: string, 61 f61: string, 62 f62: string, 63 f63: string, 64 f64: string };\naspect /w/wide: wide;\n"
+);
+const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/wide", &WIDE);
+
+// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
+// registers (no field chunked) outgrows one blob, so its field map is paged: the write commits,
+// syncs as pages and reads back whole.
+#[test]
+fn wide_struct_paged_fits_spec_commits_1() {
+    use osis_core::format::{CHUNK_THRESHOLD, MAX_BLOB};
+    let mut p = peer(14);
+    let me = p.engine.tid();
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &ak("/app/x"), &Value::Int(1)).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let field = "w".repeat(CHUNK_THRESHOLD - 16);
+    let wide = |n: i64| Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(if i < n { field.clone() } else { String::new() }))).collect());
+    assert!(65 * field.len() > MAX_BLOB && 63 * field.len() < MAX_BLOB);
+    let mut m = Mutation::new();
+    m.set(t, &WIDE_AK, &wide(65)).unwrap();
+    p.commit(m).unwrap().unwrap();
+    let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };
+    assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 65);
+}
+
 // spec/data-model.md §6: a list `edit` chunks the items it inserts as an insert does; base items
 // match the list's links by content hash (so the edit lands in place), and an item the list
 // holds already keeps its tree (nothing of it is written again).

@@ -184,6 +184,17 @@ impl Net {
         Ok(())
     }
 
+    /// Runs `f` on the runtime after `d`; `false` (and `f` dropped) without one.
+    pub fn after(&self, d: Duration, f: Box<dyn FnOnce() + Send>) -> bool {
+        let Net::Driver { handle, .. } = self else { return false };
+        handle.spawn(async move {
+            tokio::time::sleep(d).await;
+            // off the runtime's workers: `f` may take the database lock
+            let _ = tokio::task::spawn_blocking(f).await;
+        });
+        true
+    }
+
     /// Wakes the driver after `d` so waiters with a deadline are looked at.
     pub fn timer(&self, d: Duration) {
         if let Net::Driver { ctl, handle, .. } = self {

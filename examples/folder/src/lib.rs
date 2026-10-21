@@ -21,40 +21,40 @@ pub use schema::{CONTENT, NAME};
 
 /// A new root folder: a group owned by the person, in its home group, synced.
 pub fn new_root(db: &Osis, name: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let f = w.create(db.me(), Place::In(db.home()))?;
-    w.make_group(f)?;
-    w.at(f, NAME).set(&name.to_string())?;
-    w.commit()?;
+    let f = db.write_with(|w| {
+        let f = w.create(db.me(), Place::In(db.home()))?;
+        w.make_group(f)?;
+        w.at(f, NAME).set(&name.to_string())?;
+        Ok(f)
+    })?;
     db.sync(f, &[])?;
     Ok(f)
 }
 
 /// A subfolder of `parent`, owned by the root folder actor.
 pub fn new_subfolder(db: &Osis, root: Tid, parent: Tid, name: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let f = w.create(root, Place::In(parent))?;
-    w.make_group(f)?;
-    w.at(f, NAME).set(&name.to_string())?;
-    w.add_subgroup(parent, f)?;
-    w.commit()?;
-    Ok(f)
+    db.write_with(|w| {
+        let f = w.create(root, Place::In(parent))?;
+        w.make_group(f)?;
+        w.at(f, NAME).set(&name.to_string())?;
+        w.add_subgroup(parent, f)?;
+        Ok(f)
+    })
 }
 
 /// A file in `folder`, owned by the root folder actor (needs write on the root).
 pub fn new_file(db: &Osis, root: Tid, folder: Tid, name: &str, content: &str) -> Result<Tid> {
-    let mut w = db.write();
-    let f = w.create(root, Place::In(folder))?;
-    w.at(f, NAME).set(&name.to_string())?;
-    w.at(f, CONTENT).set(&content.to_string())?;
-    w.commit()?;
-    Ok(f)
+    db.write_with(|w| {
+        let f = w.create(root, Place::In(folder))?;
+        w.at(f, NAME).set(&name.to_string())?;
+        w.at(f, CONTENT).set(&content.to_string())?;
+        Ok(f)
+    })
 }
 
 /// Overwrites a file's content (what the user saw is `shown`).
 pub fn edit_file(db: &Osis, file: Tid, shown: &str, new: &str) -> Result<()> {
-    db.write_with(|w| w.at(file, CONTENT).edit(&shown.to_string(), &new.to_string()))?;
-    Ok(())
+    db.write_with(|w| w.at(file, CONTENT).edit(&shown.to_string(), &new.to_string()))
 }
 
 pub fn content(db: &Osis, file: Tid) -> Result<Option<String>> {

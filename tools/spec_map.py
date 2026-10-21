@@ -103,7 +103,7 @@ def spec_sections():
 # (file, section, anchor, a substring of the rule's sentence). Every MUST sentence matches one;
 # the others are refusal rules ("cannot", "refused", "only") checked by negative tests.
 RULES = [
-    ("spec/commits.md", "1", "delta fits a blob", "One delta MUST fit a blob"),
+    ("spec/commits.md", "1", "delta fits a blob", "Paging and chunking keep every delta and page within a blob"),
     ("spec/commits.md", "2", "membership no expires", "Membership commits MUST NOT carry `expires`"),
     ("spec/commits.md", "3", "shared key commit form", "(link key, recovery key) MUST use it"),
     ("spec/commits.md", "4", "signature", "signature MUST verify"),
@@ -120,6 +120,7 @@ RULES = [
     ("spec/permissions.md", "1", "membership-class by admins", "are written only by its admins"),
     ("spec/permissions.md", "2", "invite scope", "Invite holders cannot change or remove any other edge"),
     ("spec/permissions.md", "2", "edge inbox delivery", "MUST also be delivered to G as an inbox blob"),
+    ("spec/permissions.md", "6", "linked frontier bounds", "A linked frontier's tree blobs MUST be in the commit's chunk list"),
     ("spec/permissions.md", "3", "required rotation", "MUST do so before it next encrypts"),
     ("spec/permissions.md", "3", "removal placement", "MUST, in the same sync and before any other upload"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),

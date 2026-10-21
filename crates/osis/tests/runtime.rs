@@ -150,3 +150,23 @@ async fn redeem_in_process_spec_permissions_9() {
 async fn redeem_quic_localhost_spec_permissions_9() {
     redeem_over(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
 }
+
+// notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
+// pause): with a runtime, a session commits after `idle_commit` without edits, with no further
+// edit or call. Tier 2: it waits on a real 20 ms timer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "tier 2"]
+async fn text_idle_commit_api_text_sessions() {
+    let net = osis_transport::Net::new(4);
+    let mut c = cfg(1, vec![], Transport::InProcess(net.endpoint("a")));
+    c.idle_commit = Duration::from_millis(20);
+    let db = Osis::create(c).unwrap().0;
+    let k = ak("/t/body");
+    let t = db.write_with(|w| w.create(db.me(), Place::Unsynced)).unwrap();
+    let s = db.edit_text(t, k.clone(), osis::Path::root()).unwrap();
+    let watch = db.at(t, k.clone()).watch().unwrap();
+    s.insert(0, "hi").unwrap();
+    tokio::time::timeout(GUARD, watch.changed()).await.unwrap();
+    assert_eq!(db.get(t, k).unwrap(), Some(Value::Str("hi".into())));
+    assert_eq!(s.commit().unwrap(), None, "already committed");
+}

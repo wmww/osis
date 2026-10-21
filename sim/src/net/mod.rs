@@ -236,6 +236,9 @@ pub struct NetSim {
     pub parked_ok: BTreeSet<CommitId>,
     /// Held-back messages of evil servers per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
+    /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
+    pub watched: BTreeSet<osis_core::BlobId>,
+    pub sent_watched: u64,
 }
 
 /// The proto messages in a run of bytes, shortened (trace only).
@@ -251,6 +254,22 @@ fn frames(b: &[u8]) -> String {
         v.push(s.chars().take(110).collect::<String>());
     }
     if v.is_empty() { format!("<{} bytes>", b.len()) } else { v.join(" | ") }
+}
+
+/// Uploads and deposits of `watched` blobs among the frames in `b`.
+fn watched_in(watched: &BTreeSet<osis_core::BlobId>, b: &[u8]) -> u64 {
+    let mut d = osis_proto::FrameDecoder::default();
+    d.push(b);
+    let mut n = 0u64;
+    while let Ok(Some(f)) = d.next_frame() {
+        let blobs: Vec<Vec<u8>> = match osis_proto::Message::decode(&f) {
+            Ok(osis_proto::Message::Upload { entries, .. } | osis_proto::Message::Sync { entries, .. }) => entries.into_iter().map(|e| e.blob).collect(),
+            Ok(osis_proto::Message::Deposit { blob, .. }) => vec![blob],
+            _ => Vec::new(),
+        };
+        n += blobs.iter().filter(|x| watched.contains(&osis_label::blob_id(x))).count() as u64;
+    }
+    n
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -303,6 +322,8 @@ impl NetSim {
             dishonest: BTreeSet::new(),
             parked_ok: BTreeSet::new(),
             held: BTreeMap::new(),
+            watched: BTreeSet::new(),
+            sent_watched: 0,
         }
     }
 
@@ -490,6 +511,9 @@ impl NetSim {
                 Action::Send { conn, bytes } => {
                     if let Some(x) = self.nodes.get_mut(n) {
                         x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);
+                    }
+                    if !self.watched.is_empty() {
+                        self.sent_watched = self.sent_watched.saturating_add(watched_in(&self.watched, &bytes));
                     }
                     if let Some((id, to)) = self.peer_end(End::Node(n, conn)) {
                         self.send(id, to, Payload::Bytes(bytes));

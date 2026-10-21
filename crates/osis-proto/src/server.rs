@@ -8,7 +8,7 @@ use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
 use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
-use osis_core::format::{MAX_BLOB, MAX_MESSAGE};
+use osis_core::format::MAX_MESSAGE;
 use osis_core::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, VerifyingKey};
 use osis_label::auth::delete_digest;
@@ -679,10 +679,9 @@ impl ServerConnection {
 
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
+        // An oversized blob never gets here: the message decoder refuses it (`field_sizes`).
+        debug_assert!(blob.len() <= osis_core::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        if blob.len() > MAX_BLOB {
-            return Ok(Code::TOO_LARGE);
-        }
         let blob_id = osis_label::blob_id(blob);
         if let Some(stamp) = stamp {
             let code = c.check(Key::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);

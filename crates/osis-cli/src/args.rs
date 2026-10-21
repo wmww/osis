@@ -244,6 +244,10 @@ pub enum Cmd {
     },
     /// This device's role on T
     Role { t: String },
+    /// The edges through which MEMBER is a member of T (thing member, one per line)
+    Via { t: String, member: String },
+    /// The database's corrected clock
+    Now,
     /// Grant MEMBER ROLE (read, write, admin) on T
     Grant {
         t: String,
@@ -417,10 +421,12 @@ pub enum SignalCmd {
         #[arg(long, value_name = "NODE")]
         to: Option<String>,
     },
-    /// Print signals about T
+    /// Print signals about T (--in: about T or anything in its closure, the thing first)
     Listen {
         t: String,
         kind: String,
+        #[arg(long = "in")]
+        in_group: bool,
         #[arg(long)]
         count: Option<usize>,
     },
@@ -444,8 +450,11 @@ pub enum LinkCmd {
     },
     Redeem { link: String },
     Ls { t: String },
+    /// End link ID; with --joiner, also remove that joiner in the same commit
     Revoke {
         id: String,
+        #[arg(long, value_name = "ACTOR")]
+        joiner: Option<String>,
         #[command(flatten)]
         d: DemoteFlags,
     },

@@ -251,3 +251,51 @@ fn foreign_actor_claim_refused_spec_wire_4() {
     m.act_as(c);
     assert!(lp.peers[1].engine.commit(m).is_err(), "a write claiming an actor the node does not act for was signed");
 }
+
+/// A membership commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
+/// the writer-side rules; its counters start at `lo`.
+fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_core::Ak, v: &Value, lo: u64) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    let author = lp.peers[by].engine.tid();
+    let ts = osis_core::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+    let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
+    let mut w = Writer::new(ts, Source::node(author), lo);
+    let f = create(&mut w, &view, v).unwrap();
+    let r = w.range();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Membership, ts, author, r.lo, r.hi), None).unwrap();
+    let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
+    aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Node);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+// spec/permissions.md §1 (membership-class by admins): a writer's `/moved`, `/was` or `/label`
+// write, forged past its own node's writer-side refusal, is invalid where it is received (the
+// same write by its author once an admin applies).
+#[test]
+fn forged_membership_class_unmerged_spec_perm_1() {
+    use osis_schema::{AspectKey, core_types as ct};
+    let (mut lp, d, _, _) = setup(49);
+    let other = new_thing(&mut lp, 0);
+    let label = ct::Label { index: 0, steps: BTreeMap::new(), servers: Vec::new(), replaced: false };
+    let labels: ct::Labels = BTreeMap::from([(osis_core::LabelId([5; 16]), label)]);
+    let writes = [(ct::MOVED.ak(), Value::Tid(other)), (ct::WAS.ak(), Value::Tid(other)), (ct::LABEL.ak(), labels.to_value())];
+    for (a, v) in &writes {
+        let a = ak(a);
+        let before = lp.peers[0].engine.get(&d, &a).unwrap();
+        let forged = forge_membership(&mut lp, 1, d, &a, v, 1);
+        lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+        assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "{a}: a writer's membership-class write applied");
+    }
+    // control: the same write by the same key applies once its author is an admin
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    lp.advance(1_000);
+    let a = ak(ct::MOVED.ak());
+    let honest = forge_membership(&mut lp, 1, d, &a, &Value::Tid(other), 100);
+    lp.peers[0].engine.ingest(&honest, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(Value::Tid(other)));
+}

@@ -79,6 +79,43 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     assert_eq!(net.server_ids(sv, &l).len(), n);
 }
 
+// spec/permissions.md §4 (chain certificates per label: what any entry already holds is not
+// copied again; closure deltas are never copied): the admin places first, then a writer, then a
+// reader; the later ones copy only their own cards, so no delta of any commit sits in two
+// entries under the label.
+#[test]
+fn certificates_once_per_label_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let r = net.node(3, &[sv]);
+    let _g = net.group(a, &[(w, Role::Write), (r, Role::Read)], &[sv]);
+    net.set_online(w, false);
+    net.set_online(r, false);
+    net.run();
+    net.set_online(w, true);
+    net.run();
+    net.set_online(r, true);
+    net.run();
+    let l = net.label(a);
+    let ids: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
+    let mut held: std::collections::BTreeMap<osis_core::CommitId, Vec<(usize, usize)>> = Default::default();
+    for (id, k) in net.sync(a).entries(&l) {
+        if let EntryKind::Commit { commit, parts } = k
+            && ids.contains(&id)
+        {
+            let seen = held.entry(commit).or_default();
+            assert!(parts.iter().all(|p| !seen.contains(p)), "a delta of {commit:?} twice under the label");
+            seen.extend(parts);
+        }
+    }
+    for n in [w, r] {
+        let t = net.tid(n);
+        assert!(held.keys().any(|c| net.engine(a).header(c).is_some_and(|h| h.author == t && h.aspects.iter().any(|x| x.ak.as_str() == "/node"))), "node {n}'s card is there");
+    }
+}
+
 // spec/sync.md §6, spec/commits.md §4: pages of a paged delta are fetched before its commit
 // applies; chunks of a large value are fetched lazily, on demand.
 #[test]
@@ -568,6 +605,66 @@ fn purge_shreds_only_unique_chunks_spec_sync_7() {
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
 }
 
+/// Commits in the order server `s` logged their blobs under `l` (blob IDs mapped through node
+/// `n`'s entries; first appearance).
+fn logged_commits(net: &mut Net, s: usize, n: usize, l: &osis_core::LabelId) -> Vec<osis_core::CommitId> {
+    use osis_proto::LabelStore;
+    let of: std::collections::BTreeMap<osis_core::BlobId, osis_core::CommitId> =
+        net.sync(n).entries(l).into_iter().filter_map(|(id, k)| if let EntryKind::Commit { commit, .. } = k { Some((id, commit)) } else { None }).collect();
+    let log = net.servers[s].hub.store().log_after(l, 0, 100_000).unwrap().unwrap();
+    let mut out = Vec::new();
+    for (_, r) in log {
+        if let osis_proto::LogRecord::Added(id) = r
+            && let Some(c) = of.get(&id)
+            && !out.contains(c)
+        {
+            out.push(*c);
+        }
+    }
+    out
+}
+
+// spec/permissions.md §3 (removal placement): a content write, then a removal, both before the
+// next sync; that sync places the removal (which carries the group's new `/keys`) under both of
+// the group's labels before the earlier content write.
+#[test]
+fn removal_placed_first_under_every_label_spec_perm_3() {
+    use osis_node::flows::{Delivery, Demotion, PreSync};
+    let mut net = Net::new();
+    let (s0, s1) = (net.add_server(), net.add_server());
+    let a = net.node(1, &[s0, s1]);
+    let b = net.node(2, &[s0, s1]);
+    let c = net.node(3, &[s0, s1]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[s0]);
+    let addr = net.address(s1);
+    let (l1, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    let labels: Vec<osis_core::LabelId> = net.sync(a).labels().into_iter().filter(|(x, _)| *x == g).map(|(_, l)| l.id).collect();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.contains(&l1));
+    assert_eq!(net.read(c, t), Some(s("before")));
+    let ct_ = net.tid(c);
+    // a content write not yet uploaded, then the removal
+    let after = net.write(a, t, "after");
+    let done = net.engine(a).demote(&g, &Demotion { member: ct_, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
+    let removal = done.commits[0];
+    let h = net.engine(a).header(&removal).unwrap();
+    assert!(h.aspects.iter().any(|x| x.ak.as_str() == "/keys"), "the removal carries the new /keys");
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for (s, l) in [(s0, labels.iter().find(|l| **l != l1).copied().unwrap()), (s1, l1)] {
+        let order = logged_commits(&mut net, s, a, &l);
+        let (r, w) = (order.iter().position(|x| *x == removal), order.iter().position(|x| *x == after));
+        assert!(r.is_some() && w.is_some() && r < w, "server {s}: removal at {r:?}, later content at {w:?}");
+    }
+    assert_eq!(net.read(b, t), Some(s("after")));
+}
+
 /// A thing in a new group `g` (admin `a`, reader or writer `b`) holding a 1 MiB blob written
 /// twice by `a`, the second version reusing most chunks of the first: the thing, the blob AK,
 /// the two commits, the second value, and the first commit's chunks the live tree shares and
@@ -695,6 +792,157 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
     net.actions(b, acts);
     net.settle(100_000);
     assert_eq!(net.engine(b).get_full(&t, &blob_ak).unwrap(), Some(Value::Bytes(v2)));
+}
+
+/// Node `n`'s certificate commit by `author` touching `ak` among `n`'s chain certificates for
+/// `g`, with the aspect indexes to carry.
+fn chain_commit(net: &mut Net, n: usize, g: osis_core::Tid, author: osis_core::Tid, ak: &str) -> (osis_core::CommitId, BTreeSet<(usize, usize)>) {
+    let certs = net.engine(n).certificates(&g);
+    certs
+        .into_iter()
+        .find(|(c, _)| net.engine(n).header(c).is_some_and(|h| h.author == author && h.aspects.iter().any(|a| a.tid == author && a.ak.as_str() == ak)))
+        .expect("a chain commit")
+}
+
+/// The entries under `l` that node `n` knows holding commit `c` and present at server `sv`.
+fn entries_of(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<(osis_core::BlobId, EntryKind)> {
+    let live: BTreeSet<osis_core::BlobId> = net.server_ids(sv, l).into_iter().collect();
+    net.sync(n).entries(l).into_iter().filter(|(id, k)| live.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).collect()
+}
+
+// spec/commits.md §4 (a delta must hash to its header entry), spec/permissions.md §4 (a copy
+// counts once opened as the same commit): a blob under the label with the header of the
+// writer's card commit but forged deltas holds nothing: the writer marks it bad and places its
+// own copy.
+#[test]
+fn forged_certificate_copy_ignored_spec_commits_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    net.set_online(w, false);
+    net.run();
+    let l = net.label(a);
+    let wt = net.tid(w);
+    let (cc, ais) = chain_commit(&mut net, w, g, wt, "/node");
+    let secret = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    let mut forged = Vec::new();
+    for b in net.engine(w).part_bodies(&cc, &ais).unwrap() {
+        let mut blob = osis_commit::CommitBlob::decode(&b.plaintext).unwrap();
+        for p in &mut blob.parts {
+            p.delta.push(0);
+        }
+        let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
+        let s = osis_node::labeling::seal_body(&fake, &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
+        let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None };
+        osis_proto::LabelStore::put(net.servers[sv].hub.store_mut(), &l, put).unwrap();
+        forged.push(s.id);
+    }
+    net.set_online(w, true);
+    net.run();
+    let entries = net.sync(w).entries(&l);
+    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad)), "the forged copies are bad input");
+    assert!(entries_of(&mut net, w, sv, &l, &cc).iter().any(|(id, _)| !forged.contains(id)), "the writer placed its own card");
+}
+
+// spec/permissions.md §4 (another node's copy counts while it is there): the reader relies on
+// the admin's copy of the admin's card; once that copy is deleted at the server, the reader
+// places its own.
+#[test]
+fn deleted_copy_placed_again_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.set_online(r, false);
+    net.run();
+    net.set_online(r, true);
+    net.run();
+    let l = net.label(a);
+    let at = net.tid(a);
+    let (cc, _) = chain_commit(&mut net, r, g, at, "/node");
+    let before = entries_of(&mut net, r, sv, &l, &cc);
+    assert_eq!(before.len(), 2, "the admin's copy only (two retention classes): {before:?}");
+    net.set_online(r, false);
+    for (id, _) in &before {
+        let now = net.now();
+        osis_proto::LabelStore::delete(net.servers[sv].hub.store_mut(), &l, id, now).unwrap();
+    }
+    net.set_online(r, true);
+    net.run();
+    // the next pass (the periodic one at the latest) sees the copy gone
+    net.advance(61_000);
+    net.run();
+    let after = entries_of(&mut net, r, sv, &l, &cc);
+    assert!(!after.is_empty() && after.iter().all(|x| !before.contains(x)), "the reader placed its own: {after:?}");
+}
+
+// spec/permissions.md §3, §4 (another node's new `/keys` is its author's to place; a node may
+// wait at most `SETTLE_MS` after receipt): the reader receives the admin's new card keys while
+// the admin is offline, holds back its copy, and places it once the wait is over.
+#[test]
+fn others_fresh_keys_left_to_author_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    net.run();
+    let l = net.label(a);
+    let at = net.tid(a);
+    net.set_online(a, false);
+    // a change of the admin node's `/keys` (a deposit seed field it lacked)
+    let mut m = Mutation::new();
+    let op = osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(5)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some([0x5e; 32]))) };
+    m.op(at, &ct::KEYS, op).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.pair(a, r);
+    net.run();
+    assert_eq!(chain_commit(&mut net, r, g, at, "/keys").0, c, "the new keys are on the reader's chain");
+    assert!(entries_of(&mut net, r, sv, &l, &c).is_empty(), "left to its author for now");
+    net.advance(31_000);
+    net.run();
+    assert!(!entries_of(&mut net, r, sv, &l, &c).is_empty(), "placed once the wait is over");
+}
+
+// spec/crypto.md §4 (a grant or rotation boxing an epoch carries its history box), spec/
+// permissions.md §4 (copies placed by any node count): a newcomer first boxed after a rotation
+// opens certificate copies wrapped under the older epoch and so verifies a writer whose card
+// went up before the rotation (why copies under older epochs count for newcomers).
+#[test]
+fn newcomer_after_rotation_reads_older_copies_spec_crypto_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let r = net.node(3, &[sv]);
+    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    net.set_online(r, false);
+    net.run();
+    let l = net.label(a);
+    let (at, wt, rt) = (net.tid(a), net.tid(w), net.tid(r));
+    let old = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    // r joins with the rotation: its first box is at the new epoch
+    net.pair(r, a);
+    let e = net.engine(a);
+    set_edge(e, g, rt, Role::Read);
+    let rs = recipients_of(e, &[(at, Role::Admin), (wt, Role::Write), (rt, Role::Read)]);
+    rotation(e, g, &rs, 78, false);
+    net.pair(a, r);
+    net.run();
+    let t = net.item(w, g, g, "after");
+    net.run();
+    // the writer's card went up only under the old epoch
+    let (cc, _) = chain_commit(&mut net, w, g, wt, "/node");
+    let cards: Vec<osis_core::BlobId> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cc)).map(|(id, _)| id).collect();
+    let store = net.servers[sv].hub.store();
+    assert!(!cards.is_empty() && cards.iter().all(|id| osis_proto::LabelStore::entry(store, &l, id).unwrap().is_some_and(|m| osis_crypto::unwrap(&old, id, &m.wrap).is_ok())));
+    net.set_online(r, true);
+    net.run();
+    assert_eq!(net.read(r, t), Some(s("after")), "the newcomer verified the writer");
 }
 
 // spec/sync.md §1 (a chunk reused by a later delta keeps its blob; one a server deleted is

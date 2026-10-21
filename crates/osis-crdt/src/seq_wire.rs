@@ -7,7 +7,7 @@ use crate::stamp::{Dot, Stamp};
 use osis_core::Ts;
 use crate::wire::{Dec, DeltaKind, Enc, MAX_RUN, as_array, as_uint, uint};
 use osis_core::Value;
-use osis_core::format::MAX_DELTA_BARE;
+use osis_core::format::{CHUNK_MAX, MAX_DELTA_BARE};
 
 /// Content goes on the wire for text elements not deleted (rule 5) and for list elements whose
 /// fragment exists.
@@ -87,10 +87,37 @@ fn commit_index(v: &Value) -> u64 {
 
 /// The `[Run*]` array of `s` (before paging), runs in wire order.
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
-    let v = cx.sorted(&s.elems);
+    let v = cx.sorted(s.elems());
     let mut out = Vec::new();
     for run in runs(s.text, &v) {
-        let Some(&(k0, e0, off0, _)) = run.first() else { continue };
+        // a list run also closes once its content reaches `CHUNK_MAX` bytes (rule 3), so a run
+        // fits a page; the collecting pass ignores this (rule 1 orders sources without it)
+        if s.text || cx.collecting() || !run.iter().any(|p| has_content(p.1)) {
+            out.push(encode_run(s.text, &run, None, cx)?);
+            continue;
+        }
+        // content-carrying list elements are single-element records, all of the run's
+        let (mut start, mut size, mut fs) = (0, 0, Vec::new());
+        for (j, p) in run.iter().enumerate() {
+            if let SeqContent::Frag(f) = &p.1.content {
+                let v = cx.fragment(f)?;
+                size += osis_core::encode(&v).len();
+                fs.push(v);
+            }
+            if size >= CHUNK_MAX || j + 1 == run.len() {
+                out.push(encode_run(false, run.get(start..=j).unwrap_or_default(), Some(std::mem::take(&mut fs)), cx)?);
+                start = j + 1;
+                size = 0;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// One run; `content`: its list content already encoded.
+fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut Enc) -> Result<Value, Error> {
+    {
+        let Some(&(k0, e0, off0, _)) = run.first() else { return Err(Error::Malformed("empty run")) };
         let n: u64 = run.iter().map(|p| p.3).sum();
         let first = cx.dot(&nth(k0, off0));
         let creation = match &e0.created {
@@ -98,7 +125,7 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
             Some((_, a)) => {
                 let a = if off0 == 0 { anchor(cx, a) } else { anchor(cx, &Anchor::Dot(nth(k0, off0 - 1))) };
                 let mut segs: Vec<(u64, u64)> = Vec::new();
-                for &(k, e, off, len) in &run {
+                for &(k, e, off, len) in run {
                     let Some((st, _)) = &e.created else { continue };
                     let ci = if off == 0 { commit_index(&cx.stamp(st)) } else { commit_index(&cx.stamp(&Stamp { ts: st.ts, dot: nth(k, off) })) };
                     match segs.last_mut() {
@@ -111,13 +138,15 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
             }
         };
         // content and extra position writes sit only on single-element records
-        let content = if !run.iter().any(|p| has_content(p.1)) {
+        let content = if let Some(fs) = content {
+            Value::List(fs)
+        } else if !run.iter().any(|p| has_content(p.1)) {
             Value::List(Vec::new())
-        } else if s.text {
+        } else if text {
             Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| if let SeqContent::Char(c) = p.1.content { Some(c) } else { None }).collect())
         } else {
             let mut fs = Vec::with_capacity(run.len());
-            for p in &run {
+            for p in run {
                 if let SeqContent::Frag(f) = &p.1.content {
                     fs.push(cx.fragment(f)?);
                 }
@@ -127,7 +156,7 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
         let mut posw = Vec::new();
         let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
         let mut idx = 0u64;
-        for &(k, e, _, len) in &run {
+        for &(k, e, _, len) in run {
             if e.span == 1 {
                 for (st, a) in e.pos.iter().filter(|p| p.0.dot != *k) {
                     let st = cx.stamp(st);
@@ -146,9 +175,8 @@ pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
         for (i, j, (st, b)) in flagw {
             fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
         }
-        out.push(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]));
+        Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
     }
-    Ok(out)
 }
 
 fn index(v: &Value, n: u64) -> Result<u64, Error> {
@@ -332,10 +360,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 } else {
                     SeqContent::None
                 };
-                if overlaps(&s.elems, &dot, len) {
+                if overlaps(s.elems(), &dot, len) {
                     return Err(Error::Malformed("element in two runs"));
                 }
-                s.elems.insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
                 at += len;
             }
         }

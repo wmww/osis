@@ -65,3 +65,10 @@ pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
         std::thread::park_timeout(Duration::from_millis(50));
     }
 }
+
+/// Commits the ops `f` makes in one batch; the commit.
+pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Result<()>) -> osis::Committed {
+    let mut w = db.write();
+    f(&mut w).unwrap();
+    w.commit().unwrap().unwrap()
+}

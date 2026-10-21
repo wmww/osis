@@ -695,7 +695,11 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         // the one exception for edge writes in a plain membership commit: a single-use
         // redemption (a grant plus the author key's own self-removal, spec/permissions.md §9)
         let redemption = members.len() == 2 && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
-        if !redemption {
+        // or an explicit removal of several others' edges on one target (a link joiner with
+        // the link key), under one frontier and one rotation: no edge of it a self-removal
+        let first = members.first().map(|m| m.0);
+        let removal = h.frontier.is_some() && changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none() && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
+        if !redemption && !removal {
             return Err(Error::BadInput("a membership commit changes more than one edge"));
         }
     }

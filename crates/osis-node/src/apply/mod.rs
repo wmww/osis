@@ -337,6 +337,27 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
 }
 
 impl Engine {
+    /// Whether every delta of `blob` hashes to its entry in the commit's header (the applied,
+    /// resolved one when held; spec/commits.md §4): a blob of a held commit is otherwise never
+    /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
+    /// secret) or the resolved header is unknown.
+    pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
+        let h = match self.core.commits.get(&blob.id()) {
+            Some(m) => m.header.clone(),
+            None if blob.header.is_resolved() => Arc::new(blob.header.clone()),
+            None => return None,
+        };
+        for p in &blob.parts {
+            let Some(want) = h.aspects.get(p.ai).and_then(|a| a.hashes.get(p.di)) else { return Some(false) };
+            let a = h.aspects.get(p.ai)?;
+            let r = self.core.created(&a.tid)?;
+            if osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
     /// Receives a commit blob's plaintext (`CommitBlobPlaintext`, spec/wire.md §4) with the page,
     /// chunk and header-list blobs it references (ciphertexts by ID). Bad input is reported as
     /// a diagnostic and returned as an error; nothing of it is stored.
@@ -476,6 +497,19 @@ impl Engine {
     /// The header of an applied commit.
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
         self.core.commits.get(id).map(|m| m.header.clone())
+    }
+
+    /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
+    /// no snapshot (spec/commits.md: covering snapshots carry `/created` too) and valid here.
+    /// `/created` is kept forever, so every node reading the thing gets that commit; until it
+    /// is here (only a snapshot held) `None`.
+    pub fn creation(&self, tid: &Tid) -> Option<Creation> {
+        let ak = osis_core::Ak::new("/created").ok()?;
+        self.core.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
+            let m = self.core.commits.get(id)?;
+            let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
+            (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+        })
     }
 }
 
@@ -632,6 +666,16 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         Exam::Ready(v) => Ok(v),
         _ => Ok(Vec::new()),
     }
+}
+
+/// When a thing was created (`Engine::creation`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Creation {
+    pub commit: CommitId,
+    pub ts: osis_core::Ts,
+    pub node: Tid,
+    pub actor: Tid,
+    pub received: WallMs,
 }
 
 pub(crate) fn is_kind_snapshot(k: Kind) -> bool {

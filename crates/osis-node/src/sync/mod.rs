@@ -47,6 +47,12 @@ fn in_flight(m: &BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>, k: &(ConnI
     m.get(k).is_some_and(|t| now < t.saturating_add(RESEND_MS))
 }
 
+/// Whether `OSIS_TRACE_UPLOADS` asks for the upload trace (`SyncEngine::trace`).
+fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("OSIS_TRACE_UPLOADS").is_some())
+}
+
 /// The earliest Tick asked for after any event (ms).
 const MIN_WAKE_MS: u64 = 1_000;
 
@@ -291,6 +297,12 @@ pub struct SyncEngine {
     pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
     pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
+    /// Commit blobs whose every delta was checked against its header hash (`true`) or found
+    /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
+    /// uploads or justify deleting another entry (`SyncEngine::genuine`).
+    pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
+    /// When a certificate left to its author (`SETTLE_MS`) is due again (raw ms).
+    pub(crate) settle_at: Option<u64>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -395,6 +407,8 @@ impl SyncEngine {
             direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
+            genuine: BTreeMap::new(),
+            settle_at: None,
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
@@ -833,9 +847,41 @@ impl SyncEngine {
     /// Sends a command on a connection.
     pub(crate) fn command(&mut self, conn: ConnId, cmd: Command, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
+        if tracing() {
+            self.trace(conn, &cmd);
+        }
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let o = c.session.handle(now, ClientInput::Command(cmd));
         self.outputs(conn, o, out)
+    }
+
+    /// One stderr line per entry sent (cost attribution, `OSIS_TRACE_UPLOADS`): node, group,
+    /// how, bytes, what the entry is (commit, kind, certificate copy, aspects).
+    fn trace(&self, conn: ConnId, cmd: &Command) {
+        let short = |b: &[u8]| b.iter().take(3).map(|x| format!("{x:02x}")).collect::<String>();
+        let t4 = |t: &Tid| t.to_string().chars().take(4).collect::<String>();
+        let sent: Vec<(LabelId, osis_core::BlobId, usize, &str)> = match cmd {
+            Command::Upload { label, entries } | Command::Sync { label, entries, .. } => entries.iter().map(|e| (*label, osis_label::blob_id(&e.blob), e.blob.len(), "up")).collect(),
+            Command::Deposit { label, blob, .. } => vec![(*label, osis_label::blob_id(blob), blob.len(), "dep")],
+            _ => return,
+        };
+        let group = |l: &LabelId| self.conns.get(&conn).and_then(|c| c.labels.get(l)).map(|x| t4(&x.group)).unwrap_or_default();
+        for (l, id, n, how) in sent {
+            let what = match self.state.entries.get(&(l, id)) {
+                Some(e) => match &e.kind {
+                    state::Kind::Commit { commit, parts } => {
+                        let h = self.engine.header(commit);
+                        let aspects: Vec<String> = parts.iter().filter_map(|(ai, _)| h.as_ref().and_then(|h| h.aspects.get(*ai))).map(|a| format!("{}{}", t4(&a.tid), a.ak.as_str())).collect();
+                        let kind = h.as_ref().map(|h| format!("{:?}", h.kind)).unwrap_or_default();
+                        let author = h.as_ref().map(|h| t4(&h.author)).unwrap_or_default();
+                        format!("commit {} {kind} by {author}{} [{}]", short(&commit.0), if e.cert { " cert" } else { "" }, aspects.join(" "))
+                    }
+                    k => format!("{k:?}"),
+                },
+                None => "unknown".into(),
+            };
+            eprintln!("TRACE node {} group {} {how} {n} B blob {}: {what}", t4(&self.engine.tid()), group(&l), short(&id.0));
+        }
     }
 
     fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
@@ -978,6 +1024,11 @@ impl SyncEngine {
     /// Session pings, periodic re-syncs, heartbeats and retries.
     fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
+        // certificates left to their author are due: every label judges again
+        if self.settle_at.is_some_and(|t| t <= now) {
+            self.settle_at = None;
+            self.mark_dirty();
+        }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
             if let Some(c) = self.conns.get_mut(&conn) {
@@ -1039,6 +1090,9 @@ impl SyncEngine {
         }
         for (_, x) in self.retry.values() {
             at(*x);
+        }
+        if let Some(x) = self.settle_at {
+            at(x);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
         for o in self.outbox.iter().filter(|o| o.after > now) {
@@ -1131,6 +1185,12 @@ impl SyncEngine {
     /// Entries this node knows under a label (tests).
     pub fn entries(&self, l: &LabelId) -> Vec<(osis_core::BlobId, EntryKind)> {
         self.state.entries.iter().filter(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.kind.clone())).collect()
+    }
+
+    /// The wrap and stamp this node keeps for an entry (tests).
+    #[doc(hidden)]
+    pub fn entry_meta(&self, l: &LabelId, b: &osis_core::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
+        self.state.entries.get(&(*l, *b)).map(|e| (e.wrap, e.stamp))
     }
 
     /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body

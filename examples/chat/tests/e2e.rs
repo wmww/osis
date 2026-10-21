@@ -48,10 +48,11 @@ fn join_by_link_and_talk() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
-    let t = w.now() as i64;
-    let m1 = send(&alice, ps[0], "hi all", t, None).unwrap();
-    send(bob, ps[1], "hi alice", t + 1, None).unwrap();
-    send(carol, ps[2], "hello", t + 2, None).unwrap();
+    let m1 = send(&alice, ps[0], "hi all", None).unwrap();
+    w.advance(1);
+    send(bob, ps[1], "hi alice", None).unwrap();
+    w.advance(1);
+    send(carol, ps[2], "hello", None).unwrap();
     w.run();
     for db in [&alice, bob, carol] {
         assert_eq!(texts(db, c).unwrap(), ["hi all", "hi alice", "hello"]);
@@ -67,22 +68,60 @@ fn join_by_link_and_talk() {
     assert_eq!(read_marker(&alice, ps[2]).unwrap(), Some(m1));
 }
 
+// notes/chat.md Structure (the chat is synced under its own label, not placed in the home
+// group), spec/sync.md §2 (a labeled group's `/label` is published under the owner's home
+// label): the creator's second device and a device restored from the recovery card find the
+// chat through the home label and read its timeline.
+#[test]
+fn creator_devices_find_chat_through_home_label() {
+    let mut w = World::new();
+    let sv = w.add_server().unwrap();
+    let (alice, card) = w.person(1, &[sv]).unwrap();
+    let card = card.unwrap();
+    w.run();
+    let bob = person(&mut w, 2, sv);
+    let (c, pa) = new_chat(&alice, "Lunch", "alice").unwrap();
+    assert!(!alice.groups_of(c).contains(&alice.home()), "not a home item");
+    let link = invite(&alice, c, false).unwrap();
+    w.run();
+    let (_, pb) = w.until(join(&bob, &link, "bob"), 1000, 10).expect("joined").unwrap();
+    send(&alice, pa, "hi", None).unwrap();
+    w.advance(1);
+    send(&bob, pb, "hello", None).unwrap();
+    w.run();
+    let joining = Osis::pair(w.cfg(3, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(joining.request()).unwrap();
+    let phone = joining.finish(&reply).unwrap();
+    w.run();
+    assert_eq!(texts(&phone, c).unwrap(), ["hi", "hello"], "the second device");
+    w.advance(1000);
+    let restored = w.until(Osis::restore(w.cfg(4, &[]), &card), 1000, 10).unwrap().unwrap();
+    w.run();
+    assert_eq!(texts(&restored, c).unwrap(), ["hi", "hello"], "a device restored from the card");
+}
+
 // notes/chat.md Structure (typing as signals on the persona), spec/sync.md §9, spec/
-// requirements.md (Ephemeral data): typing reaches the other participants and is never stored.
+// requirements.md (Ephemeral data), notes/api.md Signals (`on_signal_in`): typing reaches the
+// other participants, a participant who joined after the listener included, and is never stored.
 #[test]
 fn typing_signals() {
     let mut w = World::new();
-    let (alice, others, c, ps) = chat_of(&mut w, 1);
+    let (alice, others, c, ps, link) = chat_link(&mut w, 1);
     let bob = &others[0];
     let (tx, rx) = mpsc::channel();
-    let _subs = on_typing(&alice, c, move |p, on| {
+    let _sub = on_typing(&alice, c, move |p, on| {
         let _ = tx.send((p, on));
-    })
-    .unwrap();
+    });
     typing(bob, ps[1], true).unwrap();
     w.run();
     assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), (ps[1], true));
     assert!(bob.aspects(ps[1]).unwrap().iter().all(|a| a.as_str() != "/chat/typing"), "not stored");
+    let carol = person(&mut w, 9, 0);
+    let (_, pc) = w.until(join(&carol, &link, "carol"), 1000, 10).expect("joined").unwrap();
+    w.run();
+    typing(&carol, pc, true).unwrap();
+    w.run();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(20)).unwrap(), (pc, true));
 }
 
 // spec/permissions.md §9 (single-use links), notes/chat.md (join by link): the first redeemer
@@ -116,14 +155,13 @@ fn removal_rotates() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
-    let t = w.now() as i64;
-    send(bob, ps[1], "before", t, None).unwrap();
+    send(bob, ps[1], "before", None).unwrap();
     w.run();
     w.until(remove(&alice, c, ps[1]), 1000, 20).expect("pre-sync").unwrap();
     assert!(!alice.roster(c).contains_key(&bob.me()));
     assert!(!personas(&alice, c).unwrap().contains(&ps[1]));
-    send(&alice, ps[0], "after", t + 10, None).unwrap();
-    send(bob, ps[1], "still here?", t + 11, None).unwrap();
+    send(&alice, ps[0], "after", None).unwrap();
+    send(bob, ps[1], "still here?", None).unwrap();
     w.run();
     assert_eq!(texts(carol, c).unwrap(), ["after"], "the removed persona is out of the timeline");
     assert!(!texts(bob, c).unwrap().contains(&"after".to_string()), "nothing new for bob");
@@ -139,9 +177,8 @@ fn disappearing_messages() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 1);
     let bob = &others[0];
-    let t = w.now() as i64;
-    send(&alice, ps[0], "stays", t, None).unwrap();
-    let gone = send(&alice, ps[0], "self-destructs", t + 1, Some(Duration::from_secs(10))).unwrap();
+    send(&alice, ps[0], "stays", None).unwrap();
+    let gone = send(&alice, ps[0], "self-destructs", Some(Duration::from_secs(10))).unwrap();
     w.run();
     assert_eq!(texts(bob, c).unwrap(), ["stays", "self-destructs"]);
     w.set_online(bob, false);
@@ -160,8 +197,7 @@ fn moderator_hides() {
     let mut w = World::new();
     let (alice, others, c, ps) = chat_of(&mut w, 1);
     let bob = &others[0];
-    let t = w.now() as i64;
-    let spam = send(bob, ps[1], "spam", t, None).unwrap();
+    let spam = send(bob, ps[1], "spam", None).unwrap();
     w.run();
     hide(&alice, c, spam).unwrap();
     w.run();
@@ -170,28 +206,40 @@ fn moderator_hides() {
 }
 
 // notes/chat.md Costs (budgets): bytes a join, a message and a removal send to the server in a
-// chat of N (`OSIS_CHAT_N`, default 4), against the design costs with a margin: join ≈ 38 KB
-// (chain certificates under two labels, grant, persona, inbox blobs), message ≈ 2.5 KB on the
-// wire (3 projections), removal ≈ 79 KB at 4 (two K and two C rotations, 2.7 KB per remaining
-// member per K rotation, copies under K, C and home), others little more than heartbeats and
-// their changed certificates. Tier 2 (about 18 s in a debug build, 4 s in release): run
+// chat of N (`OSIS_CHAT_N`, default 4), against the measured costs with a margin: join ≈ 41 KB
+// (the joiner's chain certificates under two labels, grant, persona, inbox blobs), message
+// ≈ 2.5 KB (3 projections), removal ≈ 26 KB at 4 and ≈ 3 KB more per member (one K and one C
+// rotation, 2.7 KB of boxes per remaining member), others only heartbeats (≈ 0.5 KB each).
+// Tier 2 (about 18 s in a debug build, 5 s in release): run
 // `cargo test --release -p chat -- --ignored --nocapture`.
 #[test]
-#[ignore = "issues/chat-costs.md"]
+#[ignore = "tier 2"]
 fn costs_join_message_removal() {
     let n: usize = std::env::var("OSIS_CHAT_N").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let mut w = World::new();
     let (alice, others, c, ps, link) = chat_link(&mut w, n - 2);
     let late = person(&mut w, 99, 0);
+    // names for the upload trace (`OSIS_TRACE_UPLOADS=1`: one line per entry sent)
+    let t4 = |t: Tid| t.to_string().chars().take(4).collect::<String>();
+    let mut legend = vec![("chat".to_string(), c), ("link".to_string(), alice.links(c)[0].id)];
+    for (i, db) in [&alice].into_iter().chain(&others).chain([&late]).enumerate() {
+        legend.push((format!("person{i}"), db.me()));
+        legend.push((format!("node{i}"), db.node()));
+    }
+    legend.extend(ps.iter().enumerate().map(|(i, p)| (format!("persona{i}"), *p)));
+    eprintln!("legend {}", legend.iter().map(|(n, t)| format!("{n}={}", t4(*t))).collect::<Vec<_>>().join(" "));
     w.start_tally();
+    eprintln!("TRACE step join");
     w.until(join(&late, &link, "late"), 1000, 10).unwrap().unwrap();
     w.run();
     let join = w.tally(&late);
     w.start_tally();
-    send(&alice, ps[0], "hello", w.now() as i64, None).unwrap();
+    eprintln!("TRACE step message");
+    send(&alice, ps[0], "hello", None).unwrap();
     w.run();
     let msg = w.tally(&alice);
     w.start_tally();
+    eprintln!("TRACE step removal");
     w.until(remove(&alice, c, ps[1]), 1000, 20).unwrap().unwrap();
     w.run();
     let rm = w.tally(&alice);
@@ -199,9 +247,9 @@ fn costs_join_message_removal() {
     let sum = |t: &std::collections::BTreeMap<String, (u64, u64)>| t.values().map(|v| v.1).sum::<u64>();
     eprintln!("chat of {n}\n join {} B {join:?}\n message {} B {msg:?}\n removal {} B {rm:?}\n others during removal {others_rm} B", sum(&join), sum(&msg), sum(&rm));
     assert!(sum(&msg) < 3_000, "a message: 3 projections, about 2.5 KB");
-    assert!(sum(&join) < 45_000, "join: about 38 KB");
-    assert!(sum(&rm) < 11_000 * n as u64 + 40_000, "removal: about 79 KB at 4 members");
-    assert!(others_rm < 6_000 * (n as u64 - 1), "others during a removal: heartbeats and certificates");
+    assert!(sum(&join) < 50_000, "join: about 41 KB");
+    assert!(sum(&rm) < 4_000 * n as u64 + 24_000, "removal: about 26 KB at 4 members, 3 KB per member");
+    assert!(others_rm < 1_500 * (n as u64 - 1), "others during a removal: heartbeats");
 }
 
 
@@ -221,8 +269,7 @@ fn second_link_then_removal() {
     w.run();
     w.until(remove(&alice, c, ps[1]), 1000, 20).expect("removed").unwrap();
     w.run();
-    let t = w.now() as i64;
-    send(&alice, ps[0], "after", t, None).unwrap();
+    send(&alice, ps[0], "after", None).unwrap();
     w.run();
     assert_eq!(texts(&late, c).unwrap(), ["after"]);
 }

@@ -18,6 +18,8 @@ pub enum Target {
 /// A received signal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalEvent<T> {
+    /// The thing the signal is about.
+    pub tid: Tid,
     pub value: Result<T>,
     pub actor: Tid,
     pub node: Tid,
@@ -50,13 +52,25 @@ impl Osis {
     }
 
     /// Calls `f` with every signal of kind `key` about `tid`.
-    pub fn on_signal<S: SignalKey + Send + 'static>(&self, tid: Tid, key: S, mut f: impl FnMut(&Osis, SignalEvent<S::T>) + Send + 'static) -> Subscription {
+    pub fn on_signal<S: SignalKey + Send + 'static>(&self, tid: Tid, key: S, f: impl FnMut(&Osis, SignalEvent<S::T>) + Send + 'static) -> Subscription {
         let tid = self.read(|r| r.resolve(tid));
         let kind = key.kind().to_string();
-        self.subscribe(Filter::Signal(tid, kind), false, |_| {
+        self.signal_sub(Filter::Signal(tid, kind), key, f)
+    }
+
+    /// Calls `f` with every signal of kind `key` about `group` or anything in its closure when
+    /// the signal arrives (things placed later included); `SignalEvent::tid` names the thing.
+    pub fn on_signal_in<S: SignalKey + Send + 'static>(&self, group: Tid, key: S, f: impl FnMut(&Osis, SignalEvent<S::T>) + Send + 'static) -> Subscription {
+        let g = self.read(|r| r.resolve(group));
+        let kind = key.kind().to_string();
+        self.signal_sub(Filter::SignalIn(g, kind), key, f)
+    }
+
+    fn signal_sub<S: SignalKey + Send + 'static>(&self, filter: Filter, key: S, mut f: impl FnMut(&Osis, SignalEvent<S::T>) + Send + 'static) -> Subscription {
+        self.subscribe(filter, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Signal(s) = d {
-                    f(db, SignalEvent { value: key.decode(&s.value).map_err(Error::from), actor: s.actor, node: s.node, ts: s.ts });
+                    f(db, SignalEvent { tid: s.tid, value: key.decode(&s.value).map_err(Error::from), actor: s.actor, node: s.node, ts: s.ts });
                 }
             })
         })

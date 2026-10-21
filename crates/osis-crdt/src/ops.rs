@@ -73,7 +73,10 @@ pub enum PathSeg {
 /// An op at a path (§5.x).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Op {
-    /// Make the position read `v`: structural diff (§9). A map key that is not live is put.
+    /// Make the position read `v`: structural diff (§9). A map key that is not live is put (a
+    /// path op into it creates the entry unless its path goes on through a field or case,
+    /// §5.6). An entry so created by an expiring delta goes value-less at T, and later writes
+    /// into it stay hidden with it (§4.7).
     Set(Value),
     /// Reset, then create `v`.
     Replace(Value),
@@ -224,8 +227,12 @@ pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
 }
 
 /// The slot of encoding `enc` at a position, present only.
-pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<Fragment> {
-    st.and_then(|s| s.slot(enc)).map(|m| m.to_fragment()).filter(Fragment::present)
+pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, Fragment>> {
+    let slot = match st.and_then(|s| s.slot(enc))? {
+        crate::state::MemberRef::Frag(f) => std::borrow::Cow::Borrowed(f),
+        m => std::borrow::Cow::Owned(m.to_fragment()),
+    };
+    slot.present().then_some(slot)
 }
 
 /// Live set or bag elements: dot and read.
@@ -277,7 +284,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
     }
     let enc = encoding_for(view, v);
     let Some(slot) = present_slot(st, enc) else { return create(w, view, v).map(Some) };
-    let out = match (enc, &slot, v) {
+    let out = match (enc, &*slot, v) {
         (Encoding::Register, _, v) => reg(w, v.clone()),
         (Encoding::Counter, _, Value::Int(n)) => {
             let c = match slot.read() {
@@ -405,7 +412,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
         }
         Op::Add(v) => {
             let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
-            if let Some(Fragment::Set(s)) = present_slot(cur, Encoding::Set)
+            if let Some(Fragment::Set(s)) = present_slot(cur, Encoding::Set).as_deref()
                 && live_elems(&s.elems).iter().any(|(_, x)| projected(&ev, x).as_ref() == Some(v))
             {
                 return Ok(None);
@@ -417,7 +424,8 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
         Op::Remove(x) => {
             let r = w.delta_stamp();
             let enc = view.encoding().or_else(|| cur.map(|c| c.chosen().encoding()));
-            match (enc, enc.and_then(|e| present_slot(cur, e))) {
+            let slot = enc.and_then(|e| present_slot(cur, e));
+            match (enc, slot.as_deref()) {
                 (Some(Encoding::Set), Some(Fragment::Set(s))) => {
                     let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
                     let elems: BTreeMap<Dot, Elem> = live_elems(&s.elems)
@@ -460,11 +468,12 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                 Encoding::List => false,
                 _ => return Err(Error::Mismatch("sequence op needs a list or text")),
             };
-            let s = match present_slot(cur, enc) {
+            let slot = present_slot(cur, enc);
+            let s = match slot.as_deref() {
                 Some(Fragment::Seq(s)) => Some(s),
                 _ => None,
             };
-            Ok(seq::op(w, text, s.as_ref(), view, op)?.map(Fragment::Seq))
+            Ok(seq::op(w, text, s, view, op)?.map(Fragment::Seq))
         }
     }
 }
@@ -538,10 +547,18 @@ fn diff_values_at<V: View>(base: Option<&Value>, new: &Value, view: &V, path: &m
 }
 
 /// Joins `b` into a clone of `a` under `e` (used to see the batch's own writes over the state).
+/// `a` must be pruned (any state built by join, decode or the ops is): it is pruned again only
+/// when a reset `e` comes from above, which keeps cached placements.
 pub(crate) fn joined(a: Option<&Fragment>, b: Option<&Fragment>, e: Option<&Stamp>) -> Option<Fragment> {
     let mut ch = Changes::new();
     let mut out = a.cloned();
-    if let Some(x) = &mut out {
+    #[cfg(debug_assertions)]
+    if let (Some(x), None) = (&out, e) {
+        let mut p = x.clone();
+        p.prune(None, &mut Changes::new());
+        debug_assert!(p == *x, "joined: state not pruned");
+    }
+    if let (Some(x), Some(_)) = (&mut out, e) {
         x.prune(e, &mut ch);
     }
     match (out, b) {
