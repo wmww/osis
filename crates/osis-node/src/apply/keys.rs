@@ -600,6 +600,37 @@ mod tests {
         assert!(read > osis_keys::MAX_READING_PER_AUTHOR, "the grant's candidate is read: {read}");
     }
 
+    // spec/crypto.md §4 (residue, issues/reading-candidates-unknown-authors.md): a bogus
+    // pending commit can claim a grant as easily as a genuine one (its `/members` part is
+    // unverified until its chain arrives), so such claims under throwaway authors each get a
+    // budget of their own; only the role's total (`MAX_READING`) bounds them, and once they
+    // fill it a genuine grant's candidate is refused until its grant applies.
+    #[test]
+    fn bogus_grant_claims_bounded_by_role_total_spec_crypto_4() {
+        let mut lp = LocalPeer::new(2, 910, WallMs(1_700_000_000_000)).unwrap();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
+        lp.sync(1, 0).unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+        let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        // what MAX_READING bogus grant claims under throwaway authors leave
+        let mut bogus = ActorEpochs::default();
+        for n in 0..osis_keys::MAX_READING {
+            let x = u8::try_from(n % 256).unwrap();
+            let y = u8::try_from(n / 256).unwrap();
+            bogus.read.set_reading_secret(Epoch::new(1, [x; 16]).unwrap(), Secret32::from_bytes([x; 32]), Unchecked { author: Tid::from_bytes([x ^ 0x55, y, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]), commit: CommitId([x; 32]) });
+        }
+        lp.peers[1].engine.core.secrets.insert(t, bogus);
+        lp.deliver(1, &p).unwrap();
+        let read = lp.peers[1].engine.core.secrets.get(&t).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
+        assert_eq!(read, osis_keys::MAX_READING, "bounded; the genuine grant's candidate waits for its grant to apply");
+    }
+
     // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped
     // takes its reading-only candidates; an actor they were the only secrets of is handed to
     // the lost-access trigger, which forgets it.
