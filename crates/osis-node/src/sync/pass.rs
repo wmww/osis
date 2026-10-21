@@ -53,6 +53,9 @@ struct Out {
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
+/// A deposited entry due for promotion: (blob, entry, commit, its parts).
+type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
+
 fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::MembershipSnapshot)
 }
@@ -478,7 +481,7 @@ impl SyncEngine {
 
     /// Deposited commit entries at `server` a writer may promote now: past this node's wait
     /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight, never a heartbeat.
-    fn due_deposits(&mut self, conn: ConnId, server: ServerKey, l: LabelId) -> Vec<(BlobId, Entry, CommitId, Vec<(usize, usize)>)> {
+    fn due_deposits(&mut self, conn: ConnId, server: ServerKey, l: LabelId) -> Vec<Deposit> {
         let ids: Vec<(BlobId, Entry)> = self
             .state
             .entries
@@ -559,50 +562,18 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The parts of `want` of commit `c` that no entry under `l` holds, outside the label's
-    /// closure (its closure bodies carry those: a copy duplicating them is a strict subset others
-    /// delete), and the parts this node's own copies hold. Held: this node's copies, and another
-    /// node's copy or body counted as `certificates` describes, present at each of `servers`.
-    #[allow(clippy::too_many_arguments)]
-    fn not_held(&mut self, g: &Tid, l: LabelId, c: &CommitId, want: &BTreeSet<(usize, usize)>, servers: &[ServerKey], newest: Option<&Secret32>, closure: &BTreeSet<Tid>) -> (BTreeSet<(usize, usize)>, BTreeSet<(usize, usize)>) {
-        let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
-        let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
-        for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
-            let Kind::Commit { commit, parts } = &e.kind else { continue };
-            if commit != c {
-                continue;
-            }
-            if e.cert {
-                mine.extend(parts.iter().copied());
-            } else if !servers.is_empty()
-                && servers.iter().all(|s| self.state.is_present(s, &l, id))
-                && (!self.engine.carries_secrets(g, c, parts) || newest.is_some_and(|k| osis_crypto::unwrap(k, id, &e.wrap).is_ok()))
-            {
-                others.push((*id, parts.clone()));
-            }
-        }
-        let mut held = mine.clone();
-        for (id, parts) in others {
-            if self.genuine(&id) {
-                held.extend(parts);
-            }
-        }
-        let inside: BTreeSet<usize> = self.engine.header(c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
-        let missing = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
-        (mine, missing)
-    }
-
     /// The parts of the author's chain for `parts` of commit `c` (`Engine::author_chain`) that
-    /// no entry under `l` holds at `server` (`not_held`: the promotion or deletion is that
-    /// server's); `None` when this node has not applied `c`.
-    fn chain_missing(&mut self, server: ServerKey, g: &Tid, l: LabelId, c: &CommitId, parts: &[(usize, usize)]) -> Result<Option<BTreeMap<CommitId, BTreeSet<(usize, usize)>>>> {
+    /// no entry under `l` holds at `server` (`held_parts_at`: the promotion or deletion is
+    /// that server's); `None` when this node has not applied `c`.
+    fn chain_missing(&mut self, server: ServerKey, g: &Tid, l: LabelId, c: &CommitId, parts: &[(usize, usize)]) -> Result<Option<BTreeMap<CommitId, Parts>>> {
         let Some(chain) = self.engine.author_chain(c, &parts.iter().copied().collect()) else { return Ok(None) };
         let closure = self.engine.closure(g);
-        let servers = [server];
-        let newest = self.engine.wrap_secret(g, None)?;
         let mut out = BTreeMap::new();
         for (x, want) in chain {
-            let (_, missing) = self.not_held(g, l, &x, &want, &servers, newest.as_ref(), &closure);
+            let (_, held) = self.held_parts_at(g, l, &x, &[server])?;
+            // closure bodies carry what is on the label's own things
+            let inside: BTreeSet<usize> = self.engine.header(&x).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let missing: Parts = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
                 out.insert(x, missing);
             }
@@ -969,6 +940,11 @@ impl SyncEngine {
     /// opens under the newest read secret (spec/permissions.md §4).
     fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
         let servers: Vec<ServerKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.server).collect();
+        self.held_parts_at(g, l, c, &servers)
+    }
+
+    /// `held_parts` with another node's entries counted when present at each of `servers`.
+    fn held_parts_at(&mut self, g: &Tid, l: LabelId, c: &CommitId, servers: &[ServerKey]) -> Result<(Parts, Parts)> {
         let newest = self.engine.wrap_secret(g, None)?;
         let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
         let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();

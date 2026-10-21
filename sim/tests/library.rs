@@ -154,6 +154,13 @@ fn link_race_seed_46() {
     ok("link_race", 46);
 }
 
+// spec/sync.md §5, spec/permissions.md §4: sweep seed 50 after the chat-cost fix, the loser's promoted `/keys` copy left pending (same cause as seed 41).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_50() {
+    ok("link_race", 50);
+}
+
 // spec/permissions.md §7: move with import and re-grant.
 #[test]
 #[ignore = "tier 2"]
