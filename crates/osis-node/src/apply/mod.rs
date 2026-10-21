@@ -10,7 +10,7 @@ pub(crate) mod validity;
 #[cfg(test)]
 mod tests_linked;
 
-pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, invalid_of, rebuild, strip_valueless};
+pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, invalid_of, rebuild};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};

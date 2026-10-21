@@ -541,6 +541,46 @@ impl Tx<'_> {
         self.set_state(tid, ak, st, Shred::Yes, true)
     }
 
+    /// Holds value-less the writes of `(tid, ak)` that `owned` owns (a delta expired or
+    /// purged, spec/crdt.md §4.7), shredding every copy of their values; `bodies` are the deltas
+    /// owning them (where they lie). A paged state strips and rewrites only their pages and
+    /// its skeleton; anything else is rewritten whole.
+    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
+            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
+            None => None,
+        };
+        let pred = |d: &osis_crdt::Dot| owned.owns(d);
+        if let Some(touches) = touches {
+            for t in &touches {
+                self.ensure_touch(tid, ak, &Some(t.clone()))?;
+            }
+            self.core.touch();
+            self.core.written.push(k.clone());
+            let done = self.with_pages(tid, ak, |txn, idx, f| {
+                if !pages::strip_touched(txn, idx, tid, ak, f, &touches, &pred)? {
+                    return Ok(false);
+                }
+                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
+                unit.state = pages::skeleton_unit(f, idx)?;
+                unit.undo.clear();
+                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
+                Ok(true)
+            })?;
+            if done == Some(true) {
+                return Ok(());
+            }
+        }
+        self.load(tid, ak)?;
+        if let Some(mut st) = self.core.states.get(&k).cloned().flatten() {
+            st.strip(&pred);
+            self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
+        }
+        Ok(())
+    }
+
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }

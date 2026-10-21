@@ -200,15 +200,13 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let k = (a.tid, a.ak.clone());
     let list = tx.core.valueless.entry_or_default(k.clone());
     if !list.contains(&o) {
-        list.push(o);
+        list.push(o.clone());
     }
     let enc = encode_owned(list);
     tx.txn.put_local(&records::aspect_key(records::VALUELESS, &a.tid, &a.ak), &enc, Shred::No)?;
-    tx.load(&a.tid, &a.ak)?;
-    if let Some(mut st) = tx.core.states.get(&k).cloned().flatten() {
-        crate::apply::strip_valueless(tx.core, &a.tid, &a.ak, &mut st);
-        tx.set_state(&a.tid, &a.ak, Some(st), Shred::Yes, true)?;
-    }
+    // the delta's writes lie where it touched the state (a page of a paged state)
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
+    tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
     Ok(Some(k))
 }
 

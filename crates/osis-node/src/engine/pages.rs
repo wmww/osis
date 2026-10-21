@@ -637,6 +637,39 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     Ok((unit.len() <= PAGE_TARGET).then_some(Some(unit)))
 }
 
+/// Holds value-less, in the paged state `f`, the writes `pred` names, which lie in the pages
+/// `touches` say (those of the deltas owning them, loaded by `ensure_touch`): strips them in
+/// memory, rewrites those pages shredded and drops the key index rows of map entries left
+/// without their key (an index entry derived from a dropped write, spec/commits.md §5).
+/// `Ok(false)`: it does not fit the pages (strip and write whole).
+pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<bool> {
+    let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
+    for t in touches {
+        for (p, dots) in &t.elems {
+            if idx.sets.get(p).is_some_and(|s| s.enc == Encoding::Map)
+                && let Some(c) = f.at_steps(p)
+            {
+                before.extend(dots.iter().filter_map(|d| Some((p.clone(), d.clone(), c.entry_key(d)?.clone()))));
+            }
+        }
+    }
+    f.strip(pred);
+    for t in touches {
+        if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
+            return Ok(false);
+        }
+    }
+    if let Some(kt) = txn.table(tid, ak, KEY_TABLE)? {
+        for (p, d, k) in before {
+            let (Some(set), Some(c)) = (idx.sets.get(&p), f.at_steps(&p)) else { continue };
+            if c.entry_key(&d) != Some(&k) {
+                txn.table_remove(kt, &key_row(set.id, &k, Some(&d)), Shred::Yes)?;
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// The unit state of the paged state `f` (its skeleton and sets).
 pub fn skeleton_unit(f: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     unit_state(&f.reduced(&idx.paths), idx)
