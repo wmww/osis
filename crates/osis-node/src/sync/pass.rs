@@ -977,8 +977,9 @@ impl SyncEngine {
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
             let missing: BTreeSet<(usize, usize)> = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the server): not
-            // placed again
-            if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) {
+            // placed again, but for its own card while it reads the label's actor (admins delete
+            // a departed node's card; a re-grant wants it back, spec/permissions.md §4)
+            if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) && !self.own_card_read(g, &c, &missing) {
                 continue;
             }
             // another node's demotion or new `/keys` received less than `SETTLE_MS` ago is its
@@ -1002,6 +1003,14 @@ impl SyncEngine {
             self.state.add_cert(l, c);
         }
         Ok(())
+    }
+
+    /// Whether `parts` of `c` are this node's own card (its `/node`, `/reach`, `/keys` writes)
+    /// and it currently reads `g`'s actor.
+    fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> bool {
+        let me = self.engine.tid();
+        let Some(h) = self.engine.header(c) else { return false };
+        h.author == me && parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == me && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another

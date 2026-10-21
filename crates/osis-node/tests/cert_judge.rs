@@ -79,6 +79,42 @@ fn departed_node_card_deleted_spec_permissions_4() {
     assert!(!card_entries(&mut net, a, sv, &l, rt, "/keys").is_empty(), "its /keys stays");
 }
 
+// spec/permissions.md §4 (a member node places its card under the labels it reads): a reader
+// removed while offline, its card deleted by the admin, then re-granted, places its card again
+// when it is back, though its `/reach` did not change.
+#[test]
+fn regranted_node_card_placed_again_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let g = net.group(a, &[(r, Role::Read)], &[sv]);
+    let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(r, acts);
+    settle(&mut net);
+    let l = net.label(a);
+    let rt = net.tid(r);
+    let first = card_entries(&mut net, a, sv, &l, rt, "/reach");
+    assert!(!first.is_empty());
+    net.set_online(r, false);
+    let done = net.engine(a).demote(&g, &Demotion { member: rt, new: None, presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    settle(&mut net);
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
+    let at = net.tid(a);
+    let e = net.engine(a);
+    set_edge(e, g, rt, Role::Read);
+    let rcpt = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
+    rotation(e, g, &rcpt, 9, false);
+    net.pair(a, r);
+    net.set_online(r, true);
+    settle(&mut net);
+    settle(&mut net);
+    let back = card_entries(&mut net, a, sv, &l, rt, "/reach");
+    assert!(back.iter().any(|(_, c)| first.iter().any(|(_, f)| f == c)), "the re-granted node's unchanged /reach is under the label again: {first:?} {back:?}");
+}
+
 // spec/sync.md §3 (a certificate copy carries the blobs its parts link), §6: once no entry of
 // the copied commit is under the label any more, the admin deletes the linked blobs the copy
 // placed (here an owner's `/created` from a commit whose aspect list goes by link).
