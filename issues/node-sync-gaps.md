@@ -10,7 +10,7 @@ Repro: known gaps, no failing test.
 - **Timed deletes** always wait for a carrier snapshot (live writes are assumed: the engine does not say whether a body still has live writes).
 - **Revokes and roster snapshots about authors seen under a label** (spec/permissions.md §4): not placed (no trigger yet; grantee certificate copies and chain certificates are).
 - **Certificates**: others' certificates are never judged (left as may-hold), so a departed node's card stays until an admin deletes it; the linked blobs a certificate copy places (`place_linked`) are never deleted by it.
-- **Cost**: every pass recomputes the label's bodies from every held commit touching the closure (projection, `covered` joins against each snapshot entry) and judges every present entry; fine for tests, O(commits) per change at scale. `/groups` recomputation: issues/node-core-gaps.md.
+- **Cost**: every pass recomputes the label's bodies from every held commit touching the closure (projection, `covered` joins against each snapshot entry) and judges every present entry; fine for tests, O(commits) per change at scale. `/groups` is kept incrementally (notes/node.md).
 - **Lazy chunks**: `fetch_missing` fetches every unopened entry; a read that misses a chunk should fetch that tree only (needs the missing blob ID from osis-label's reader).
 - **Volatile state**: stranded-heartbeat times and outstanding fetches are in memory (a restart may place one more stranded heartbeat).
 - **Hints**: a label learned from an inbox blob is opened by guessing its index 0..4 (a reader cannot derive the label ID); the hint goes once `/label` of the thing names it.
