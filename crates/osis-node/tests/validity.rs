@@ -446,3 +446,70 @@ fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
     let (copy, _) = lp.peers[0].engine.move_thing(&d, a).unwrap();
     assert_eq!(lp.peers[0].engine.get(&copy, &m_ak).unwrap(), want, "the copy holds both");
 }
+
+// spec/permissions.md §5.2 (a snapshot vouches for nothing): Dave holds Bob's tag only inside
+// Alice's compaction snapshot, which arrives before Bob's grant: Bob's carried write is invalid
+// there (stripped), its index persisted equals a rebuild from the commit records, and the
+// grant arriving makes it valid and merged, across a restart.
+#[test]
+fn snapshot_before_grant_then_valid_spec_perm_5_2() {
+    let mut lp = net(2, 57);
+    lp.peers.push(osis_node::local_peer::Peer::new(5700, T0).unwrap());
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    add_tag(&mut lp, 1, d, "x");
+    sync(&mut lp, 1, 0);
+    lp.advance(DAY);
+    let snap = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+    // Dave: Alice's commits but the grant, then the grant
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+    let (members, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
+    for pk in &content {
+        lp.deliver(2, pk).unwrap();
+    }
+    lp.peers[2].engine.reexamine().unwrap();
+    assert!(lp.peers[2].engine.header(&snap).is_some(), "the snapshot applied");
+    assert_eq!(tags(&mut lp, 2, d), BTreeSet::new(), "Bob's carried write is invalid without his grant");
+    let e = &mut lp.peers[2].engine;
+    let before = e.index_digest();
+    e.reload_index().unwrap();
+    assert_eq!(e.index_digest(), before, "loaded from the persisted index");
+    e.rebuild_index().unwrap();
+    assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
+    for pk in &members {
+        lp.deliver(2, pk).unwrap();
+    }
+    lp.peers[2].engine.reexamine().unwrap();
+    assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["x".to_string()]), "valid once the grant is held");
+    lp.peers[2].restart(58).unwrap();
+    assert_eq!(tags(&mut lp, 2, d), BTreeSet::from(["x".to_string()]), "after a restart");
+}
+
+// spec/permissions.md §5.2: Carol compacts the tags (her snapshot carries Bob's and Alice's
+// writes, none of hers); Alice then removes Carol with a frontier that lacks the snapshot. A
+// fresh node receiving everything reads what Alice reads (the snapshot's writes are judged as
+// their authors', not Carol's).
+#[test]
+fn demoted_compactor_fresh_node_spec_perm_5_2() {
+    let (mut lp, d, _, c) = setup(59);
+    lp.peers.push(osis_node::local_peer::Peer::new(5900, T0).unwrap());
+    add_tag(&mut lp, 0, d, "alice");
+    add_tag(&mut lp, 1, d, "bob");
+    lp.sync_all().unwrap();
+    lp.advance(DAY);
+    let st = lp.peers[0].engine.state(&d, &ak("/t/tags")).unwrap().unwrap();
+    let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let snap = forge_snapshot(&mut lp, 2, d, &ak("/t/tags"), now, st);
+    lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(DAY);
+    set_edge(&mut lp.peers[0].engine, d, c, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    lp.sync_all().unwrap();
+    let want = BTreeSet::from(["alice".to_string(), "bob".to_string()]);
+    assert_eq!(tags(&mut lp, 0, d), want);
+    assert_eq!(tags(&mut lp, 3, d), want, "a fresh node reads the same");
+    assert_eq!(lp.peers[3].engine.state(&d, &ak("/t/tags")).unwrap(), lp.peers[0].engine.state(&d, &ak("/t/tags")).unwrap());
+}
