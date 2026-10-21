@@ -302,6 +302,49 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     server.await.unwrap();
 }
 
+// spec/permissions.md §9 (a node without servers makes only direct links), spec/sync.md §5
+// (member peer: a label synced with nobody is served complete): Alice has no server and no
+// other device; Bob redeems her direct link at her device and the two sync the target there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redeem_direct_no_server_in_process_spec_permissions_9() {
+    let net = osis_transport::Net::new(9);
+    let alice = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
+    c.wait_timeout = GUARD;
+    let bob = Osis::create(c).unwrap().0;
+    reach_of(&alice).await;
+    let mut w = alice.write();
+    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    let mut w = alice.write();
+    let t = w.create(g, Place::In(g)).unwrap();
+    w.at(t, ak("/t/x")).set(&Value::Str("no server".into())).unwrap();
+    w.commit().unwrap();
+    let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
+    let want = Some(Value::Str("no server".into()));
+    tokio::time::timeout(GUARD, async {
+        while bob.get(t, ak("/t/x")).unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut w = bob.write();
+    w.at(t, ak("/t/x")).set(&Value::Str("back".into())).unwrap();
+    w.commit().unwrap();
+    let back = Some(Value::Str("back".into()));
+    tokio::time::timeout(GUARD, async {
+        while alice.get(t, ak("/t/x")).unwrap() != back {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 // spec/permissions.md §9 (a single-use link finalized by its redemption does not rotate): Bob
 // redeems Alice's single-use direct link with no server between them; once Alice finalizes it,
 // her key is the one the link carried and Bob's writes still reach her directly.

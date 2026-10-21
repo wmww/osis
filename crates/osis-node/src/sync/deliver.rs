@@ -118,6 +118,10 @@ impl SyncEngine {
             match d {
                 Delivery::Inbox { to, inbox, blob, resend } => {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
+                    // an inbox this node serves to nobody else's server: deposited here
+                    if inbox.servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == inbox.label) {
+                        self.local_inbox.push((inbox.label, blob.clone()));
+                    }
                     for server in inbox.servers {
                         self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
                     }

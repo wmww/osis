@@ -134,10 +134,10 @@ impl SyncEngine {
         for b in &bodies {
             let Some(needed) = self.must_hold(b, &snaps, &snapping)? else { continue };
             // another projection of the commit (a right holder dropped covered deltas) holds it
-            if needed != b.parts && self.carried_by(&server, &l, &b.commit, &needed) {
+            if needed != b.parts && self.carried_by(Some(&server), &l, &b.commit, &needed) {
                 continue;
             }
-            let entry = self.entry_for(&server, &l, b);
+            let entry = self.entry_for(Some(&server), &l, b);
             // another node's commit not at this server: its author (or a co-writer) first
             if !entry.is_some_and(|id| self.state.is_present(&server, &l, &id)) && !self.relay_due(&b.commit) {
                 continue;
@@ -180,7 +180,8 @@ impl SyncEngine {
             if read_ok {
                 self.inbox_copies(&g, l)?;
                 self.certificates(&g, l, false)?;
-                self.heartbeat(&g, l, &keys, conn)?;
+                let tight = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
+                self.heartbeat(&g, l, &keys, tight)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside members only: they tell the label's rotators
                 // what keeps its epoch uncovered (spec/permissions.md §4 exception)
@@ -257,6 +258,82 @@ impl SyncEngine {
             self.retire_at(server, &g, l)?;
         }
         self.reseal(&g, l)?;
+        Ok(())
+    }
+
+    /// Local passes over the labels this node syncs with nobody (no server in their `/label`):
+    /// this node is their server, so a peer that dials it (a direct link's redeemer,
+    /// spec/permissions.md §9) finds a complete state (spec/sync.md §5, member peer). Passes
+    /// otherwise run only per dialed connection, and a node serves only the entries they placed.
+    pub(crate) fn local_passes(&mut self) -> Result<()> {
+        self.local_dirty = false;
+        self.local_last = self.raw_now();
+        let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().filter(|(_, l)| !l.replaced && l.servers.iter().all(super::peers::is_peer)).map(|(g, l)| (g, l.id, l.index)).collect();
+        self.local_any = !labels.is_empty();
+        if labels.is_empty() {
+            return Ok(());
+        }
+        let served = self.served_labels();
+        for (g, l, index) in labels {
+            let Some(head) = served.get(&l).and_then(|s| s.head()) else { continue };
+            self.local_pass(g, l, index, head)?;
+        }
+        Ok(())
+    }
+
+    /// One label's local pass: what a pass at a server would upload is placed under it (the
+    /// must-hold bodies and the chunks they link, inbox copies, certificates, the heartbeat),
+    /// stamped when this node writes. No presence and no deletions: a dropped body's blob is
+    /// forgotten (`forget_dropped`), which ends that entry's service.
+    fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step) -> Result<()> {
+        let mut keys = self.engine.head_keys(&g, index, head)?;
+        let still = self.uncovered(&g)?;
+        if still.contains(&Role::Write) {
+            keys.write = None;
+        }
+        if still.contains(&Role::Read) || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
+            return Ok(());
+        }
+        for t in self.engine.closure(&g) {
+            if !self.engine.core.syncing.contains(&t) {
+                self.engine.set_syncing(t, true)?;
+            }
+        }
+        let snaps = self.snapshots_at(&l);
+        let snapping = self.unsettled_hold(&l, &g)?;
+        let mut ours: BTreeSet<BlobId> = BTreeSet::new();
+        for b in &self.bodies_under(&g, &l)? {
+            let Some(needed) = self.must_hold(b, &snaps, &snapping)? else { continue };
+            if needed != b.parts && self.carried_by(None, &l, &b.commit, &needed) {
+                continue;
+            }
+            if self.entry_for(None, &l, b).is_some() || !self.relay_due(&b.commit) || !(keys.is_writer() || self.may_deposit(&keys, b)) {
+                continue;
+            }
+            let Some(id) = self.place(&g, l, b, false)? else { continue };
+            ours.insert(id);
+            if keys.is_writer() {
+                let mut linked = self.chunk_blobs(&b.commit)?;
+                linked.extend(self.body_blobs(&l, b)?);
+                for cb in linked {
+                    if !self.state.entries.contains_key(&(l, cb)) {
+                        let wrap = osis_crypto::filler_wrap(&mut *self.rng);
+                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, kind: Kind::Unknown });
+                        ours.insert(cb);
+                    }
+                }
+            }
+        }
+        self.inbox_copies(&g, l)?;
+        self.certificates(&g, l, false)?;
+        self.heartbeat(&g, l, &keys, false)?;
+        let Some(w) = keys.write else { return Ok(()) };
+        // stamped as an upload would be; another node's deposits stay deposits
+        let unstamped: Vec<(BlobId, Entry)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, id), e)| e.stamp.is_none() && (e.cert || ours.contains(id))).map(|((_, id), e)| (*id, e.clone())).collect();
+        for (id, mut e) in unstamped {
+            e.stamp = Some(osis_label::sign_stamp(&w, &l, &id, &e.wrap));
+            self.state.set_entry(l, id, e);
+        }
         Ok(())
     }
 
@@ -695,15 +772,16 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// Whether an entry of commit `c` holding `parts` is present at `server` under `l` (checked
-    /// genuine: a forged blob listing the parts holds nothing).
-    fn carried_by(&mut self, server: &ServerKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    /// Whether an entry of commit `c` holding `parts` is present at `server` under `l` (any
+    /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
+    /// the parts holds nothing.
+    fn carried_by(&mut self, server: Option<&ServerKey>, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let ids: Vec<BlobId> = self
             .state
             .entries
             .range((*l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| x == l)
-            .filter(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && self.state.is_present(server, l, id))
+            .filter(|((_, id), e)| !e.cert && matches!(&e.kind, Kind::Commit { commit, parts: p } if commit == c && parts.iter().all(|x| p.contains(x))) && server.is_none_or(|s| self.state.is_present(s, l, id)))
             .map(|((_, id), _)| *id)
             .collect();
         ids.into_iter().any(|id| self.genuine(&id))
@@ -713,17 +791,19 @@ impl SyncEngine {
     /// placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
     /// One present at `server` first: the label then holds the body (spec/sync.md §6), and
     /// uploading another encryption (this node's own, whose upload was lost) would only add a
-    /// duplicate for the tiebreak of §7 to delete.
-    fn entry_for(&mut self, server: &ServerKey, l: &LabelId, b: &Body) -> Option<BlobId> {
+    /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
+    fn entry_for(&mut self, server: Option<&ServerKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
         let mut ids: Vec<BlobId> = self
             .state
             .entries
             .range((*l, BlobId([0; 32]))..)
             .take_while(|((x, _), _)| x == l)
-            .filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && !self.state.gone.contains(&(*server, *l, *id)))
+            .filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && server.is_none_or(|s| !self.state.gone.contains(&(*s, *l, *id))))
             .map(|((_, id), _)| *id)
             .collect();
-        ids.sort_by_key(|id| !self.state.is_present(server, l, id));
+        if let Some(server) = server {
+            ids.sort_by_key(|id| !self.state.is_present(server, l, id));
+        }
         ids.into_iter().find(|id| self.genuine(id))
     }
 
@@ -980,7 +1060,7 @@ impl SyncEngine {
 
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),
     /// skipped by deposit when the budget is tight.
-    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, conn: ConnId) -> Result<()> {
+    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, tight: bool) -> Result<()> {
         if !self.cfg.heartbeats {
             return Ok(());
         }
@@ -988,7 +1068,6 @@ impl SyncEngine {
         if self.state.beats.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now) {
             return Ok(());
         }
-        let tight = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
         if !keys.is_writer() && tight {
             return Ok(());
         }
@@ -1069,7 +1148,7 @@ impl SyncEngine {
                 if b.reader != a && !self.engine.core.may_read(&a, &b.reader) {
                     continue;
                 }
-                let bid = match self.entry_for(&server, &l, &b) {
+                let bid = match self.entry_for(Some(&server), &l, &b) {
                     Some(x) => x,
                     None => match self.place(&g, l, &b, false)? {
                         Some(x) => x,
@@ -1412,7 +1491,7 @@ impl SyncEngine {
         }
         // timed deletes: bodies under a relative keep-at-most with a known bound
         for b in bodies {
-            let Some(id) = self.entry_for(&server, &l, b) else { continue };
+            let Some(id) = self.entry_for(Some(&server), &l, b) else { continue };
             if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) || self.timed_sent.contains(&(conn, l, id)) {
                 continue;
             }
