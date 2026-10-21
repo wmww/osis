@@ -69,7 +69,7 @@ pub(crate) struct Meta {
 pub(crate) enum Owned {
     Node { node: Tid, lo: u64, hi: u64 },
     Commit(CommitId),
-    Dots { node: Tid, ctrs: Vec<u64> },
+    Dots { src: osis_crdt::Source, ctrs: Vec<u64> },
 }
 
 impl Owned {
@@ -85,7 +85,7 @@ impl Owned {
         match (self, d.src.kind()) {
             (Owned::Node { node, lo, hi }, SourceKind::Node(t)) => t == node && *lo <= d.ctr && d.ctr < *hi,
             (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
-            (Owned::Dots { node, ctrs }, SourceKind::Node(t)) => t == node && ctrs.binary_search(&d.ctr).is_ok(),
+            (Owned::Dots { src, ctrs }, _) => d.src == *src && ctrs.binary_search(&d.ctr).is_ok(),
             _ => false,
         }
     }
@@ -121,6 +121,7 @@ macro_rules! journaled {
         c.boxes_to.$m();
         c.epoch_intro.$m();
         c.box_written.$m();
+        c.authors.$m();
         c.secrets_unresolved.$m();
     }};
 }
@@ -198,6 +199,10 @@ pub(crate) struct Core {
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: EpochIntro,
+    /// Commit-form commits and import origins whose writes snapshots may carry: commit ID ->
+    /// (the node judged for its writes, its `ts`) (commit form: its author; an import origin:
+    /// the import's author and `ts`; else a snapshot's `Authors` table, spec/crdt.md §8).
+    pub authors: JMap<CommitId, (Tid, Ts)>,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
@@ -357,6 +362,7 @@ impl Core {
             boxes_to: JSetMap::default(),
             epoch_intro: JMap::default(),
             box_written: JMap::default(),
+            authors: JMap::default(),
             departures: BTreeMap::new(),
             frontiers: BTreeMap::new(),
             frontier_unknown: BTreeSet::new(),

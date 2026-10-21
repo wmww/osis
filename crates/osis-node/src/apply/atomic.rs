@@ -104,8 +104,8 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     }
     // writes snapshots carry without their commit, invalid as their author's
     for c in core.carried.get(&(*tid, ak.clone())).into_iter().flatten() {
-        if !c.valid {
-            out.push(Owned::Dots { node: c.node, ctrs: c.ctrs.clone() });
+        if !c.invalid.is_empty() {
+            out.push(Owned::Dots { src: c.src.clone(), ctrs: c.invalid.clone() });
         }
     }
     out
@@ -183,7 +183,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         );
     }
     index_commit(tx.core, &id, &h);
-    validity::uncarry(tx.core, &h);
+    validity::uncarry(tx.core, &id, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let meta = Meta { header: h.clone(), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
     tx.core.commits.insert(id, meta.clone());
@@ -212,6 +212,12 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
+        let (f, fr) = fragment(d);
+        // every held snapshot's frontiers and carried writes, whatever its validity
+        if let Some(fr) = fr {
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
+            validity::note_carried(tx.core, &a.tid, &a.ak, &id, &f);
+        }
         if !valid.get(ai).copied().unwrap_or(false) {
             // others' writes already joined may sit under its creations
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
@@ -220,11 +226,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
                 touched.whole(&a.tid, &a.ak);
             }
             continue;
-        }
-        let (f, fr) = fragment(d);
-        if let Some(fr) = fr {
-            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
-            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
         }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
@@ -319,13 +320,13 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut touched = Touched::default();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
-        if !meta.valid.get(ai).copied().unwrap_or(false) {
-            continue;
-        }
         let (f, fr) = fragment(d);
         if let Some(fr) = fr {
             note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
-            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
+            validity::note_carried(tx.core, &a.tid, &a.ak, id, &f);
+        }
+        if !meta.valid.get(ai).copied().unwrap_or(false) {
+            continue;
         }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
@@ -530,10 +531,6 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for (_, c) in held {
         let Some(m) = tx.core.commits.get(&c).cloned() else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        // a snapshot its author could not write carries nothing (its own writes are none)
-        if super::is_kind_snapshot(m.header.kind) && !m.valid.get(ai).copied().unwrap_or(false) {
-            continue;
-        }
         for d in super::held_parts(tx, &c, ai)? {
             bodies.push(fragment(d).0);
         }

@@ -611,7 +611,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<bool> {
             if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
                 for (ai, _, d) in parts {
                     if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
-                        validity::note_carried(tx.core, &a.tid, &a.ak, &s.fragment);
+                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
                         atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, s.frontiers);
                     }
                 }

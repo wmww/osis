@@ -390,8 +390,7 @@ fn entry_by(node: Tid, ts: osis_core::Ts, lo: u64, k: &str, v: &str) -> osis_crd
 // spec/permissions.md §5.2 (a compaction snapshot vouches for nothing), spec/commits.md §2
 // (written by a node that may write the aspect): a writer's hostile snapshot carrying two stamps
 // of Bob from before his grant, at counters below and far above his real ones, un-merges exactly
-// those dots, not Bob's held write between them; a snapshot dated before its author's grant is
-// invalid and carries nothing (not even the owner's writes it names).
+// those dots, not Bob's held write between them, and keeps the owner's write it carries.
 #[test]
 fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(53);
@@ -419,10 +418,6 @@ fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
     let want = BTreeSet::from([s("k"), s("c")]);
     assert_eq!(entries(&mut lp), want, "Bob's held write stays; the forged ones go");
-    // Carol's snapshot from before her grant, naming an owner's write
-    let early = forge_snapshot(&mut lp, 2, d, &m_ak, old, entry_by(a, old, 1 << 41, "z", "forged"));
-    lp.peers[0].engine.ingest(&early, Vec::new()).unwrap();
-    assert_eq!(entries(&mut lp), want, "an unauthorized snapshot carries nothing");
     lp.peers[0].restart(53).unwrap();
     assert_eq!(entries(&mut lp), want, "after a restart");
 }
