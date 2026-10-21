@@ -239,9 +239,10 @@ pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>
 
 /// The roles of `uncovered` that a fresh rotation of `a` would cover: one uncovered departure
 /// at least is a member's own (the rotation omits it), or lies inside a member M that is no
-/// longer current or whose newest epoch (the one its fresh box names) covers the rest. A role
-/// whose departures a rotation cannot help is not rotated: the node may not encrypt under it
-/// until the intermediate rotates (spec/permissions.md §3).
+/// longer current or whose newest epoch covers the rest and is the one its fresh box names (M's
+/// keyset in `/keys`: a node holding a newer `/keys` than secrets of M would otherwise rotate
+/// without end). A role whose departures a rotation cannot help is not rotated: the node may
+/// not encrypt under it until the intermediate rotates (spec/permissions.md §3).
 fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     if uncovered_roles.is_empty() {
         return Ok(BTreeSet::new());
@@ -251,6 +252,19 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
     let secrets = secrets_in(tx, a)?;
     let held = held_actors(tx)?;
     let current: BTreeSet<Tid> = tx.core.current_members(a).into_iter().map(|x| x.0).collect();
+    // M's keyset epoch per role in `/keys` (a fresh box names it when newer than M's secrets)
+    let mut keysets: BTreeMap<(Tid, Role), Option<Epoch>> = BTreeMap::new();
+    for d in &deps {
+        if let Some(m) = d.via.first()
+            && !keysets.contains_key(&(*m, Role::Read))
+        {
+            let keys = Core::keys_in(tx, m)?;
+            for r in ROLES {
+                let e = keys.as_ref().and_then(|k| osis_keys::aspects::keyset_of(k, r)).and_then(|ks| osis_keys::aspects::from_schema(&ks.epoch).ok());
+                keysets.insert((*m, r), e);
+            }
+        }
+    }
     let mut out = BTreeSet::new();
     for &r in uncovered_roles {
         let Some((e, _)) = epochs.role(r).newest_held() else {
@@ -264,7 +278,14 @@ fn rotation_helps(tx: &mut Tx<'_>, a: &Tid, uncovered_roles: &BTreeSet<Role>) ->
             }
             let inner = Departure { via: rest.to_vec(), member: d.member, from: d.from };
             match (osis_keys::HeldActors::epochs(&held, m), osis_keys::HeldActors::secrets(&held, m)) {
-                (Some(me), Some(ms)) => me.role(r).newest().is_some_and(|k| osis_keys::covers(ms, me, r, &k, &inner, &held)),
+                (Some(me), Some(ms)) => {
+                    let ks = keysets.get(&(*m, r)).copied().flatten();
+                    let named = match me.role(r).newest_held().map(|x| x.0) {
+                        Some(es) if ks.is_none_or(|ek| !osis_keys::is_newer(&ek, &es)) => Some(es),
+                        _ => ks,
+                    };
+                    me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(ms, me, r, &k, &inner, &held))
+                }
                 _ => false,
             }
         });

@@ -448,7 +448,8 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 }
 
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
-/// of a membership commit that write beyond its grantees' boxes.
+/// of a membership commit that write beyond its grantees' boxes. `parts`: every held part of the
+/// commit (a late `/secrets` part is judged with the `/members` part held before it).
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
@@ -475,8 +476,12 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
-            core.grant_overreach.insert((*id, *ai));
+        if a.ak.as_str() == "/secrets" {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
+                core.grant_overreach.remove(&(*id, *ai));
+            } else {
+                core.grant_overreach.insert((*id, *ai));
+            }
         }
     }
     // one delta per `/secrets` aspect, known from the signed header: a node that never holds a

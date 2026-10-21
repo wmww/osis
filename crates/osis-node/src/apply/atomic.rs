@@ -244,7 +244,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut held_changed = note_created(tx, &h, &parts)?;
     let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
     if h.kind.is_membership() {
-        validity::note_required(tx.core, &h, id, &parts);
+        // judged with the parts held before (a grant's `/members` part names what its
+        // `/secrets` part may box)
+        let mut all = parts.clone();
+        all.extend(super::held_parts_at(tx, id, &|ai| !parts.iter().any(|(x, _, _)| *x == ai))?);
+        validity::note_required(tx.core, &h, id, &all);
     }
     // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
     // (held parts). The keysets "before" are the current `/keys` state, which already holds this

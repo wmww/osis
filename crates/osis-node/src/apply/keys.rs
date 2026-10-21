@@ -289,11 +289,23 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     if a.ak.as_str() != "/secrets" {
         return Ok(());
     }
+    // only the rotations this commit made (its `/keys` write sets the epoch's keyset): a grant
+    // or re-seal re-writes history boxes of epochs another commit applied
+    let mut keys = KeysWrite::default();
+    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "/keys") {
+        for d in super::held_parts(tx, c, ki)? {
+            if let Decoded::Delta(d) = d {
+                keys = keys_write(&d.fragment);
+            }
+        }
+    }
     let mut eps = Vec::new();
     for d in super::held_parts(tx, c, ai)? {
         if let Decoded::Delta(d) = d {
             for k in secrets_write(tx.core, &a.tid, &d.fragment).0.history.keys() {
-                if let Ok(e) = osis_keys::aspects::from_schema(&k.epoch) {
+                if let Ok(e) = osis_keys::aspects::from_schema(&k.epoch)
+                    && keys.keysets.get(&k.role).is_some_and(|ks| ks.epoch == k.epoch)
+                {
                     eps.push((k.role, e));
                 }
             }
