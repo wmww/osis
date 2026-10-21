@@ -147,6 +147,8 @@ pub(crate) struct Core {
     pub timelines: Timelines,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
+    /// The paged maps' key index hash key, derived from the node's seed.
+    pub key_salt: [u8; 32],
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
@@ -314,6 +316,7 @@ impl Core {
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
+        let key_salt = osis_core::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
@@ -325,6 +328,7 @@ impl Core {
             stale_commits: BTreeSet::new(),
             stale_all: true,
             dirty: false,
+            key_salt,
             commits: JMap::default(),
             invalid: JSetMap::default(),
             by_aspect: JSetMap::default(),
@@ -420,10 +424,10 @@ impl Tx<'_> {
                 if let Some(whole) = pages::legacy(&mut self.txn, tid, ak, &u.state)? {
                     self.core.touch();
                     self.core.written.push(k.clone());
-                    u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true)?.0;
+                    u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true, &self.core.key_salt)?.0;
                     self.txn.put_aspect(tid, ak, &u, Shred::No)?;
                 }
-                let (f, idx) = pages::open(&u.state)?;
+                let (f, idx) = pages::open(&u.state, &self.core.key_salt)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
             }
@@ -511,7 +515,7 @@ impl Tx<'_> {
         }
         self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
-        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state))?;
+        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
         unit.state = bytes;
         match idx {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
@@ -582,6 +586,7 @@ impl Tx<'_> {
                         return Ok(false);
                     }
                 }
+                pages::unindex(txn, idx, tid, ak, f, bodies)?;
                 let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
                 unit.state = pages::skeleton_unit(f, idx)?;
                 unit.undo.clear();

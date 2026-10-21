@@ -4,7 +4,7 @@
 //! store's B+tree is the index: a page's row key is its collection's set ID and the
 //! order-preserving bytes of its first dot, so the page holding a dot is the last row at or below
 //! it (`table_rank`, `table_nth`), and a map key's entries are found through a key index (set ID,
-//! key hash, dot). In memory a state is loaded lazily: the skeleton first, then the pages a read,
+//! keyed hash of the key under a node-local secret, dot). In memory a state is loaded lazily: the skeleton first, then the pages a read,
 //! write or join needs (`ensure_*`), or all of them (`load_all`) where the whole state is needed.
 
 use super::state::{decode, encode};
@@ -34,6 +34,8 @@ type Range = (Option<Dot>, Option<Dot>);
 #[derive(Clone, Debug)]
 struct PageSet {
     id: u32,
+    /// The key index's hash key (`Core::key_salt`).
+    salt: [u8; 32],
     path: KeyedPath,
     enc: Encoding,
     /// Pages in the in-memory state: row key -> range.
@@ -169,11 +171,11 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
     p.iter().map(|(s, _)| s.clone()).collect()
 }
 
-/// Unit state of a paged state: `[3, skeleton, [[set ID, path, encoding]*]]`. Unpaged states
-/// start `[bytes, ...]`.
+/// Unit state of a paged state: `[4, skeleton, [[set ID, path, encoding]*]]` (`3`: an earlier
+/// build's, its key index hashed unkeyed). Unpaged states start `[bytes, ...]`.
 fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     let sets = idx.sets.values().map(|s| Value::List(vec![uint(u64::from(s.id)), path_value(&s.path), uint(u64::from(s.enc.id()))])).collect();
-    Ok(osis_core::encode(&Value::List(vec![Value::Int(3), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
+    Ok(osis_core::encode(&Value::List(vec![Value::Int(4), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
 }
 
 /// A page row: `[first dot or [], next page's first dot or [], page]`.
@@ -190,9 +192,9 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
 }
 
 /// A key index row of a paged map: set ID, the key's hash, the entry's dot.
-fn key_row(set: u32, k: &Value, d: Option<&Dot>) -> Vec<u8> {
-    let mut out = set.to_be_bytes().to_vec();
-    out.extend_from_slice(&osis_core::hash::hash(&osis_core::encode(k)));
+fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
+    let mut out = set.id.to_be_bytes().to_vec();
+    out.extend_from_slice(&osis_core::hash::keyed_hash(&set.salt, &osis_core::encode(k)));
     if let Some(d) = d {
         out.extend_from_slice(&osis_core::encode(&dot_value(d)));
     }
@@ -202,12 +204,19 @@ fn key_row(set: u32, k: &Value, d: Option<&Dot>) -> Vec<u8> {
 // ---- loading
 
 /// Opens a paged state: its skeleton and index, no page loaded yet.
-pub fn open(unit_state: &[u8]) -> Result<(Fragment, PageIndex)> {
+pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)> {
+    open_tagged(unit_state, salt, 4)
+}
+
+fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment, PageIndex)> {
     let bad = || Error::Corrupt("state");
     let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: unit_state.len() };
     let v = osis_core::decode(unit_state, &lim).map_err(|_| bad())?;
     let Value::List(items) = v else { return Err(bad()) };
-    let [Value::Int(3), Value::Bytes(skel), Value::List(list)] = items.as_slice() else { return Err(bad()) };
+    let [Value::Int(t), Value::Bytes(skel), Value::List(list)] = items.as_slice() else { return Err(bad()) };
+    if *t != tag {
+        return Err(bad());
+    }
     let f = decode(skel)?;
     let mut idx = PageIndex { sets: BTreeMap::new(), paths: Paths::default() };
     for x in list {
@@ -217,20 +226,29 @@ pub fn open(unit_state: &[u8]) -> Result<(Fragment, PageIndex)> {
         let enc = u64::try_from(*enc).ok().and_then(Encoding::from_id).ok_or_else(bad)?;
         let s = steps(&path);
         idx.paths.insert(&s);
-        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, path, enc, loaded: BTreeMap::new(), whole: false });
+        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false });
     }
     Ok((f, idx))
 }
 
 /// A paged state in an earlier build's layout (`[1]`: a root collection; `[2, skeleton]`: a
-/// struct with paged fields; pages in the state table, each a fragment), joined whole; `None`
-/// for any other unit state.
+/// struct with paged fields; pages in the state table, each a fragment; `[3, ...]`: this layout
+/// with an unkeyed key index), joined whole; `None` for any other unit state.
 pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) -> Result<Option<Fragment>> {
+    // the tag is the array's first byte item
+    if !matches!(unit_state.get(1), Some(1..=3)) {
+        return Ok(None);
+    }
     let lim = osis_core::Limits { max_depth: 4, max_bytes: unit_state.len() };
     let Ok(Value::List(items)) = osis_core::decode(unit_state, &lim) else { return Ok(None) };
     let mut f = match items.as_slice() {
         [Value::Int(1)] => Fragment::default(),
         [Value::Int(2), Value::Bytes(s)] => decode(s)?,
+        [Value::Int(3), ..] => {
+            let (mut f, mut idx) = open_tagged(unit_state, &[0; 32], 3)?;
+            load_all(txn, tid, ak, &mut idx, &mut f)?;
+            return Ok(Some(f));
+        }
         _ => return Ok(None),
     };
     let t = table(txn, tid, ak)?;
@@ -360,10 +378,31 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Pag
     Ok(true)
 }
 
+/// Removes the key index rows of the map entries `bodies` hold that the state no longer holds
+/// under that key (shredded: a dropped body leaves no local entry derived from it,
+/// spec/commits.md §5). The pages holding the bodies' dots are loaded.
+pub fn unindex(txn: &mut Transaction<'_>, idx: &PageIndex, tid: &Tid, ak: &Ak, f: &Fragment, bodies: &[Fragment]) -> Result<()> {
+    let Some(kt) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(()) };
+    for (p, set) in idx.sets.iter().filter(|(_, s)| s.enc == Encoding::Map) {
+        let c = f.at_steps(p);
+        for b in bodies {
+            let Some(Fragment::Map(m)) = b.at_steps(p) else { continue };
+            for (d, _, k, _) in m.entries() {
+                if let Some(k) = k
+                    && c.and_then(|c| c.entry_key(d)) != Some(k)
+                {
+                    txn.table_remove(kt, &key_row(set, k, Some(d)), Shred::Yes)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The dots of key `k`'s entries in the paged map `set` (a superset: the index is never pruned).
 fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Value) -> Result<Vec<Dot>> {
     let Some(t) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(Vec::new()) };
-    let start = key_row(set.id, k, None);
+    let start = key_row(set, k, None);
     // every row of the key: the dot after the prefix is a CBOR array (first byte below 0xff)
     let end = [start.as_slice(), &[0xff]].concat();
     let mut out = Vec::new();
@@ -498,7 +537,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
     for d in dots {
         if let Some(k) = c.entry_key(d) {
             // rows are never removed (a superset), so most are there already: a read, not a write
-            let row = key_row(set.id, k, Some(d));
+            let row = key_row(set, k, Some(d));
             if txn.table_get(kt, &row)?.is_none() {
                 txn.table_put(kt, &row, Vec::new(), Shred::No)?;
             }
@@ -529,7 +568,7 @@ fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, 
 /// Writes a whole state: the unit's state field, and the pages when the state is above
 /// `PAGE_TARGET` and holds large collections (the old pages, if any, are dropped shredded).
 /// `f` must be the whole state.
-pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Fragment>, old_paged: bool) -> Result<(Vec<u8>, Option<PageIndex>)> {
+pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Fragment>, old_paged: bool, salt: &[u8; 32]) -> Result<(Vec<u8>, Option<PageIndex>)> {
     if old_paged {
         txn.drop_table(tid, ak, STATE_TABLE)?;
         txn.drop_table(tid, ak, KEY_TABLE)?;
@@ -551,7 +590,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     for (i, p) in paged.into_iter().enumerate() {
         let c = f.at_steps(&p).ok_or(Error::Corrupt("state collection"))?;
-        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false };
+        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false };
         write_set(txn, t, kt, &mut set, c, &idx.nested(&p))?;
         idx.sets.insert(p, set);
     }
@@ -689,7 +728,7 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
         for (p, d, k) in before {
             let (Some(set), Some(c)) = (idx.sets.get(&p), f.at_steps(&p)) else { continue };
             if c.entry_key(&d) != Some(&k) {
-                txn.table_remove(kt, &key_row(set.id, &k, Some(&d)), Shred::Yes)?;
+                txn.table_remove(kt, &key_row(set, &k, Some(&d)), Shred::Yes)?;
             }
         }
     }
@@ -724,6 +763,7 @@ pub fn op_paths(ops: &[osis_crdt::PathOp]) -> Option<Vec<Vec<PathSeg>>> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
+    const SALT: [u8; 32] = [9; 32];
     use osis_core::Ts;
     use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
@@ -731,6 +771,40 @@ mod tests {
     /// The value of `n` ints keyed 0..n.
     fn ints(n: i64, x: i64) -> Value {
         Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i * x))).collect())
+    }
+
+    // spec/commits.md §5 (a dropped body leaves no local index entry derived from it): the key
+    // index rows of a removed key's entry go (shredded) when the bodies holding it are dropped;
+    // the other keys' rows stay; rows are keyed hashes (another salt finds nothing).
+    #[test]
+    fn dropped_body_unindexed_spec_commits_5() {
+        let mut rng = osis_crypto::SeededRng::from_u64(80);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([5; 15]), osis_core::Ak::new("/app/keys").unwrap());
+        let node = Source::node(Tid::from_bytes([1; 15]));
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
+        let body = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&body), false, &SALT).unwrap();
+        assert!(idx.is_some());
+        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 10_000).unwrap().len());
+        assert_eq!(rows(&mut txn), 6000);
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        let mut b = Batch::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Remove(Value::Int(5)) }, &AnyView).unwrap();
+        let (d, _) = b.finish().unwrap();
+        f.join(d);
+        let set = idx.sets.values().next().unwrap().clone();
+        let k5 = key_row(&set, &Value::Int(5), None);
+        assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().len(), 1, "a superset until the body goes");
+        unindex(&mut txn, &idx, &tid, &ak, &f, std::slice::from_ref(&body)).unwrap();
+        assert_eq!(rows(&mut txn), 5999);
+        assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
+        assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
+        let other = PageSet { salt: [8; 32], ..set };
+        assert!(key_dots(&mut txn, &tid, &ak, &other, &Value::Int(6)).unwrap().is_empty(), "keyed");
+        assert_ne!(k5, key_row(&other, &Value::Int(5), None));
     }
 
     // notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
@@ -754,10 +828,10 @@ mod tests {
         assert!(is_paged(&old));
         let whole = legacy(&mut txn, &tid, &ak, &old).unwrap().unwrap();
         assert_eq!(whole, st);
-        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&whole), true).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&whole), true, &SALT).unwrap();
         assert!(idx.is_some());
         assert_eq!(legacy(&mut txn, &tid, &ak, &unit).unwrap(), None, "the new layout is not legacy");
-        let (mut f, mut idx) = open(&unit).unwrap();
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         assert_eq!(f, st);
     }
@@ -790,10 +864,10 @@ mod tests {
         let mut st = create(&mut w, &AnyView, &v).unwrap();
         let mut ctr = w.range().hi;
         let mut txn = store.transaction(&mut rng).unwrap();
-        let (mut unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false).unwrap();
+        let (mut unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
         assert!(idx.unwrap().sets() >= 2);
         let whole = |txn: &mut Transaction<'_>, unit: &[u8]| {
-            let (mut f, mut idx) = open(unit).unwrap();
+            let (mut f, mut idx) = open(unit, &SALT).unwrap();
             load_all(txn, &tid, &ak, &mut idx, &mut f).unwrap();
             f
         };
@@ -813,7 +887,7 @@ mod tests {
                 _ => PathOp { path: vec![key("x")], op: Op::Set(Value::Int(step as i64)) },
             };
             // a fresh session: the skeleton, then the pages the op addresses
-            let (mut f, mut idx) = open(&unit).unwrap();
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             match op_paths(std::slice::from_ref(&op)) {
                 Some(paths) => {
                     for p in &paths {
@@ -853,7 +927,7 @@ mod tests {
                 None => {
                     load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                     assert_eq!(f, st, "step {step}");
-                    let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true).unwrap();
+                    let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                     unit = u;
                     assert!(i.is_some(), "still paged");
                 }
@@ -861,7 +935,7 @@ mod tests {
             assert_eq!(whole(&mut txn, &unit), st, "step {step}: {op:?}");
             // a read by key in a fresh session
             let k = PathSeg::Key(Value::Int(r(2600) as i64));
-            let (mut f, mut idx) = open(&unit).unwrap();
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &[key("big"), k.clone()]).unwrap());
             assert!(!idx.whole(), "one key loads a page or two");
             assert_eq!(f.at(&[key("big"), k.clone()]).and_then(|x| x.read()), st.at(&[key("big"), k]).and_then(|x| x.read()));
