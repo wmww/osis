@@ -4,7 +4,7 @@
 
 mod common;
 use common::*;
-use osis_core::{CommitId, Role, Tid, Value};
+use osis_core::{Clock, CommitId, Role, Tid, Value};
 use osis_label::Address;
 use osis_node::flows::{Delivery, Demotion, Done, PreSync};
 use osis_node::local_peer::LocalPeer;
@@ -629,6 +629,128 @@ fn remover_lists_chain_writes_spec_perm_5_1() {
         let r = lp.peers[i].engine.roster(&t);
         assert_eq!(r.get(&pb).map(|e| e.role), Some(Role::Admin), "peer {i}");
         assert!(!r.contains_key(&pc) && !r.contains_key(&pd), "peer {i}: {r:?}");
+    }
+}
+
+/// New commits of peer `i` since `before`.
+fn new_ids(lp: &LocalPeer, i: usize, before: &BTreeSet<CommitId>) -> Vec<CommitId> {
+    lp.peers[i].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect()
+}
+
+fn ids(lp: &LocalPeer, i: usize) -> BTreeSet<CommitId> {
+    lp.peers[i].engine.commit_ids().into_iter().collect()
+}
+
+/// The frontier commit IDs of membership commit `c`.
+fn frontier_ids(lp: &mut LocalPeer, i: usize, c: &CommitId) -> BTreeSet<CommitId> {
+    let h = lp.peers[i].engine.header(c).unwrap();
+    let v = h.frontier.clone().expect("an inline frontier");
+    <ct::Frontier as osis_schema::Codec>::from_value(&v).unwrap().commits
+}
+
+// spec/permissions.md §5.1 Frontier (chain-write forgery): C granted Bob admin; Bob removes C
+// without having received anything else of C's; C, with a lagging clock, then writes Bob's
+// edge with an `until` stamped before the removal. Bob's frontier lists his grant but not the
+// forgery: it drops, Bob keeps admin and C stays removed.
+#[test]
+fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
+    let (mut lp, ps) = people(3, 509);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    let g = new_ids(&lp, 2, &before);
+    spread(&mut lp);
+    // C's clock stays behind from here
+    let lag = lp.peers[2].clock.as_ref().now_wall_ms();
+    lp.advance(60_000);
+    lp.peers[2].clock.set(lag);
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
+    assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
+    let until = osis_core::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None }).unwrap();
+    let forged = new_ids(&lp, 2, &before);
+    assert!(lp.peers[2].engine.header(&forged[0]).unwrap().ts < lp.peers[1].engine.header(&r).unwrap().ts, "backdated");
+    spread(&mut lp);
+    lp.advance(3_700_000);
+    for i in 0..3 {
+        let ro = lp.peers[i].engine.roster(&t);
+        assert_eq!(ro.get(&pb).map(|e| (e.role, e.until)), Some((Role::Admin, None)), "peer {i}");
+        assert!(!ro.contains_key(&pc), "peer {i}");
+    }
+}
+
+// spec/permissions.md §5.1 Frontier (at R's point): C rewrites Bob's admin edge with a ts
+// ahead of everyone's clock (within MAX_DRIFT) after granting it; Bob then removes C. His
+// frontier lists both writes on his chain, so the removal stands either way.
+#[test]
+fn future_stamped_setter_spec_perm_5_1() {
+    let (mut lp, ps) = people(4, 510);
+    let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    // C grants D (Bob never gets it), then Bob: C's counters at Bob have a gap
+    lp.peers[2].engine.grant(&t, &pd, &edge_of(Role::Write)).unwrap();
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    let g = new_ids(&lp, 2, &before);
+    send(&mut lp, 2, 1, &g);
+    // a rewrite of Bob's edge stamped half an hour ahead
+    lp.peers[2].clock.advance(1_800_000);
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None }).unwrap();
+    let f = new_ids(&lp, 2, &before);
+    send(&mut lp, 2, 1, &f);
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
+    let listed = frontier_ids(&mut lp, 1, &r);
+    assert!(g.iter().chain(&f).all(|c| listed.contains(c)), "both writes on Bob's chain are listed");
+    lp.advance(1_800_000);
+    spread(&mut lp);
+    for i in 0..4 {
+        let ro = lp.peers[i].engine.roster(&t);
+        assert_eq!(ro.get(&pb).map(|e| e.role), Some(Role::Admin), "peer {i}");
+        assert!(!ro.contains_key(&pc) && !ro.contains_key(&pd), "peer {i}: {ro:?}");
+    }
+}
+
+// spec/permissions.md §5.1 Frontier, §4: the frontier lists the remover's whole chain
+// certificates, its grantor's grant included. C grants Y admin (W1), Y grants Bob admin; Bob
+// holds W1 only as a certificate and never got C's earlier grant of E; Bob removes C: W1 stays
+// covered, so Y keeps admin, Bob's grant and the removal stand; C's grant of E drops.
+#[test]
+fn intermediate_grantor_covered_spec_perm_5_1() {
+    let (mut lp, ps) = people(5, 511);
+    let (pa, pb, pc, py, pe) = (ps[0], ps[1], ps[2], ps[3], ps[4]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.peers[2].engine.grant(&t, &pe, &edge_of(Role::Write)).unwrap();
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.grant(&t, &py, &edge_of(Role::Admin)).unwrap();
+    let w1 = new_ids(&lp, 2, &before);
+    send(&mut lp, 2, 3, &w1);
+    let before = ids(&lp, 3);
+    lp.peers[3].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    let g = new_ids(&lp, 3, &before);
+    send(&mut lp, 2, 1, &w1);
+    send(&mut lp, 3, 1, &g);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
+    lp.advance(1000);
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    let r = lp.peers[1].engine.commit_ids().into_iter().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
+    let listed = frontier_ids(&mut lp, 1, &r);
+    assert!(w1.iter().chain(&g).all(|c| listed.contains(c)), "Bob's chain certificates are listed");
+    spread(&mut lp);
+    for i in 0..5 {
+        let ro = lp.peers[i].engine.roster(&t);
+        assert_eq!((ro.get(&pb).map(|e| e.role), ro.get(&py).map(|e| e.role)), (Some(Role::Admin), Some(Role::Admin)), "peer {i}");
+        assert!(!ro.contains_key(&pc) && !ro.contains_key(&pe), "peer {i}: {ro:?}");
     }
 }
 

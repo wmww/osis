@@ -183,6 +183,26 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!(edge_role(&tl, n[2], g), None);
 }
 
+/// §5.1 Frontier: the same forgery by the remover's own grantor. X granted A admin (A got
+/// it); A removes X; X's backdated write on A's edge (admin until 9, stamped 6) drops, while
+/// X's grant of A, which A's frontier lists, stands.
+#[test]
+fn grantor_cannot_backdate_removers_edge_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let g = w.thing(n[0]);
+    let (a, x) = (n[1], n[2]);
+    w.set(n[0], g, x, edge(Admin), 1, &n.iter().map(|y| (*y, 1)).collect::<Vec<_>>());
+    let grant = w.set(x, g, a, edge(Admin), 2, &[(a, 2)]);
+    let r = w.set(a, g, x, None, 8, &[]);
+    let forged = w.set(x, g, a, edge_inv(Admin, None, Some(9)), 6, &[]);
+    let tl = eval(&w);
+    assert!(tl.is_applied(&WriteId::Op(grant, 0)) && tl.is_applied(&WriteId::Op(r, 0)));
+    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
+    assert_eq!(tl.roster(&g, At::END).get(&a).map(|e| (e.role, e.until)), Some((Admin, None)));
+    assert_eq!(edge_role(&tl, x, g), None);
+}
+
 /// §5.1 Frontier: a chain write the demoter received counts (its frontier lists it), so an
 /// admin removes the admin that last set its own edge and keeps what that write gave it.
 #[test]
