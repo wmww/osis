@@ -469,6 +469,21 @@ impl Engine {
         self.core.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
 
+    /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
+    /// step not verified yet): the members of `thing` that held pending membership commits grant
+    /// and its applied members, those this node is or holds secrets of.
+    pub fn hint_actors(&mut self, thing: &Tid) -> Result<std::collections::BTreeSet<Tid>> {
+        let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::MEMBERS)?.unwrap_or_default().into_keys().collect();
+        for (c, _) in self.pending() {
+            if let Some(b) = self.commit_bytes(&c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
+                out.extend(keys::pending_grantees(&b, &c, Some(thing)));
+            }
+        }
+        let me = self.core.id.tid();
+        out.retain(|t| *t == me || self.core.secrets.contains_key(t));
+        Ok(out)
+    }
+
     /// The stored bytes of a held commit (applied: its current blob; pending or parked: as
     /// received), for relaying.
     pub fn commit_bytes(&mut self, id: &CommitId) -> Result<Option<Vec<u8>>> {

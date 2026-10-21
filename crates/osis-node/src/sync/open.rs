@@ -79,8 +79,16 @@ impl SyncEngine {
     /// X25519 keys this node may be listed by in a claim set: its own, and the read-role KEM
     /// key of every held read epoch of the actors it holds secrets of (spec/sync.md §2).
     fn claim_keys(&self) -> Vec<X25519Secret> {
-        let mut v = vec![self.engine.identity().keys().kem.x25519().clone()];
-        for e in self.engine.core.secrets.values() {
+        self.claim_keys_of(None)
+    }
+
+    /// `claim_keys` of the actors in `only` (this node's own key if it is one), when given.
+    fn claim_keys_of(&self, only: Option<&std::collections::BTreeSet<Tid>>) -> Vec<X25519Secret> {
+        let mut v = Vec::new();
+        if only.is_none_or(|o| o.contains(&self.engine.tid())) {
+            v.push(self.engine.identity().keys().kem.x25519().clone());
+        }
+        for (_, e) in self.engine.core.secrets.iter().filter(|(t, _)| only.is_none_or(|o| o.contains(t))) {
             for (_, s) in e.read.held_newest_first() {
                 v.push(role_kem(s).x25519().clone());
             }
@@ -416,17 +424,21 @@ impl SyncEngine {
         self.walk_on(conn, l, step, out)
     }
 
-    /// Continues a walk at `step` (verified): its sync key if held, else claims on it.
+    /// Continues a walk at `step` (verified): its sync key if held, else claims on it. On a
+    /// hinted label's walk the step is the server's word until the path verifies (`opened`):
+    /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`),
+    /// so a server handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
-        let (g, index) = (lc.group, lc.index.unwrap_or(0));
+        let (g, index, hinted) = (lc.group, lc.index.unwrap_or(0), lc.walk.is_some());
+        let only = if hinted { Some(self.engine.hint_actors(&g)?) } else { None };
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)
         {
             front.push(Try::Sync { step: Some(step.clone()), index, key: s });
         }
-        for x in self.claim_keys() {
+        for x in self.claim_keys_of(only.as_ref()) {
             if let Ok(key) = step.claim_key(&x) {
                 front.push(Try::Claim { step: step.clone(), key });
             }

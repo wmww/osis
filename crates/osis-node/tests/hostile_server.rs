@@ -636,3 +636,62 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
     assert!(statics.contains(&v1), "the followed key actor tries its static entry");
     assert!(!statics.contains(&v2), "another held key actor is never named to the server");
 }
+
+// spec/requirements.md (blind nodes: a server cannot link labels or recognise devices), spec/
+// sync.md §5 (a superseded step's child is verified under its parent; a hinted label has none
+// recorded): a server answering a hinted label's open with a step of its choosing gets claims
+// only by the actors the hint is for (the thing's members this node is), never by another
+// actor this node holds secrets of.
+#[test]
+fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    // a is a member of g (b's group) and admin of its own g2
+    let g = net.group(b, &[(a, Role::Read)], &[sv]);
+    let g2 = net.group_seeded(a, &[], vec![net.address(sv)], 7);
+    let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3f; 32])).unwrap();
+    let held = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
+    let others: Vec<osis_crypto::X25519Secret> = held(&mut net, g2).into_iter().chain(held(&mut net, g)).collect();
+    assert!(!others.is_empty());
+    let own = net.engine(a).identity().keys().kem.x25519().clone();
+    let target = LabelId([0x44; 16]);
+    let addr = net.address(sv);
+    let mut se: SyncEngine = net.take(a);
+    let acts = se.follow(k, g, target, vec![addr]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    let forged = foreign_step(60);
+    let (mut walked, mut claims) = (false, Vec::new());
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            let reply = match proof {
+                // the first guessed sync key is answered with the server's own "next step"
+                osis_label::Proof::Sync { .. } if !walked => {
+                    walked = true;
+                    Message::Step { id, step: forged.clone() }
+                }
+                osis_label::Proof::Claim { pk, .. } => {
+                    claims.push(pk);
+                    Message::Error { id, code: osis_proto::Code::REFUSED }
+                }
+                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
+            };
+            next.extend(se.handle(Event::Bytes { conn, bytes: frame(reply) }));
+        }
+        acts = next;
+    }
+    assert!(walked, "the hinted open was answered with a step");
+    assert_eq!(claims, vec![forged.claim_key(&own).unwrap().verifying_key()], "claims by this node's own key only (a's edge on g)");
+    for x in &others {
+        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the server");
+    }
+}
