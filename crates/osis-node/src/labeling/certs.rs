@@ -157,6 +157,7 @@ impl Engine {
     /// places under such an epoch (spec/permissions.md §4).
     pub fn inside_member_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
+        let mut whole: Vec<(CommitId, Tid)> = Vec::new();
         let members: Vec<Tid> = self.core.current_members(actor).into_iter().map(|x| x.0).filter(|m| self.core.has_own_secrets(m) && !closure.contains(m)).collect();
         for m in members {
             let Some(tl) = self.core.timelines.get(&m) else { continue };
@@ -173,12 +174,21 @@ impl Engine {
                     && let Some(cs) = tl.write_certificates(wid)
                 {
                     found.push(cs);
+                    whole.push((*c, m));
                 }
             }
         }
         let mut out = BTreeMap::new();
         for cs in &found {
             self.cert_parts(cs, &mut out);
+        }
+        // the whole write on M (its rotation's `/keys` and `/secrets` too: boxes sealed to M's
+        // members): a reader that syncs M waits for every delta of it (spec/commits.md §4)
+        for (c, m) in whole {
+            let p = self.parts_of(&c, &BTreeSet::from([m]), &["/members", "/tenures", "/keys", "/secrets"]);
+            if !p.is_empty() {
+                out.entry(c).or_default().extend(p);
+            }
         }
         out
     }
