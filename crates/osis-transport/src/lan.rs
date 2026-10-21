@@ -149,8 +149,6 @@ pub struct Lan {
     port: u16,
     /// Which socket `recv` looks at first (alternates, so a flood on one starves neither).
     turn: std::sync::atomic::AtomicBool,
-    /// Interfaces whose all-nodes group the IPv6 socket joined.
-    joined: std::sync::Mutex<std::collections::BTreeSet<u32>>,
 }
 
 #[cfg(feature = "lan")]
@@ -180,7 +178,7 @@ impl Lan {
         let v4 = tokio::net::UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)).await.map_err(io)?;
         v4.set_broadcast(true).map_err(io)?;
         let port = v4.local_addr().map_err(io)?.port();
-        Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default(), joined: Default::default() })
+        Ok(Lan { v4, v6: bind_v6(port).ok(), port, turn: Default::default() })
     }
 
     pub fn port(&self) -> u16 {
@@ -195,8 +193,10 @@ impl Lan {
     /// Sends an announcement to `to` (the broadcast address or the all-nodes group at the
     /// announcement port, or one host) on the socket of its family. The all-nodes group with no
     /// interface named goes out every up interface with IPv6, each with its scope (`targets`,
-    /// `v6_scopes`, looked up at each call: interfaces come and go); it fails only if every
-    /// send does.
+    /// `v6_scopes`, looked up at each call: interfaces come and go); if every one of those
+    /// sends fails, it goes out the default multicast interface. Nothing is joined per
+    /// interface: every IPv6 interface is in the all-nodes group, and an unconnected socket
+    /// bound to the port hears it there (Linux: `IPV6_MULTICAST_ALL`, on by default).
     pub async fn announce(&self, a: &Announce, to: SocketAddr) -> Result<(), Error> {
         let s = match (to, &self.v6) {
             (SocketAddr::V4(_), _) => &self.v4,
@@ -204,14 +204,6 @@ impl Lan {
             (SocketAddr::V6(_), None) => return Err(Error::Unreachable("no IPv6 socket".into())),
         };
         let scopes = if to == multicast(to.port()) { v6_scopes().await } else { Vec::new() };
-        if let Ok(mut j) = self.joined.lock() {
-            for sc in &scopes {
-                // heard on that link too (hosts are in the group anyway)
-                if j.insert(*sc) {
-                    let _ = s.join_multicast_v6(&ALL_NODES, *sc);
-                }
-            }
-        }
         let bytes = a.encode();
         let mut res = Ok(());
         let mut sent = false;
@@ -220,6 +212,10 @@ impl Lan {
                 Ok(_) => sent = true,
                 Err(e) => res = Err(io(e)),
             }
+        }
+        if !sent && !scopes.is_empty() {
+            res = s.send_to(&bytes, to).await.map(|_| ()).map_err(io);
+            sent = res.is_ok();
         }
         if sent { Ok(()) } else { res }
     }

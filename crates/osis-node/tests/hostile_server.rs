@@ -695,3 +695,70 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
         assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the server");
     }
 }
+
+// spec/sync.md §5 (claims by the keys a step's claim set lists: members' read-role KEM keys),
+// spec/crypto.md §4 (boxes): a node that reads the hinted thing through an actor a rotation
+// boxed, with no `/members` edge of it held, still claims by that actor's key, and by no other.
+#[test]
+fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    // P and g2: a's groups; g: b's, its rotation boxing P with no edge of P on g
+    let p = net.group_seeded(a, &[], vec![net.address(sv)], 5);
+    let g2 = net.group_seeded(a, &[], vec![net.address(sv)], 7);
+    net.pair(a, b);
+    let g = net.group_seeded(b, &[], vec![net.address(sv)], 3);
+    let bt = net.tid(b);
+    let e = net.engine(b);
+    let rcpt = recipients_of(e, &[(bt, Role::Admin), (p, Role::Read)]);
+    rotation(e, g, &rcpt, 11, false);
+    net.pair(b, a);
+    assert!(net.engine(a).epochs(&g).is_some_and(|x| !x.read.held_newest_first().is_empty()), "a reads g through P's box");
+    assert!(!net.engine(a).get_typed(&g, &osis_schema::core_types::MEMBERS).unwrap().unwrap_or_default().contains_key(&p), "no edge of P on g");
+    let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x40; 32])).unwrap();
+    let kem = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
+    let ps = kem(&mut net, p);
+    let others: Vec<osis_crypto::X25519Secret> = kem(&mut net, g2).into_iter().chain(kem(&mut net, g)).collect();
+    let own = net.engine(a).identity().keys().kem.x25519().clone();
+    let target = LabelId([0x45; 16]);
+    let addr = net.address(sv);
+    let mut se: SyncEngine = net.take(a);
+    let acts = se.follow(k, g, target, vec![addr]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).expect("dial");
+    se.handle(Event::Up { conn });
+    let mut acts = se.handle(Event::Bytes { conn, bytes: encode_frame(&Hello::new(net.now(), [9; 32]).encode()) });
+    let forged = foreign_step(70);
+    let (mut walked, mut claims) = (false, Vec::new());
+    for _ in 0..64 {
+        let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+        if opens.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for m in opens {
+            let Message::Open { id, proof, .. } = m else { continue };
+            let reply = match proof {
+                osis_label::Proof::Sync { .. } if !walked => {
+                    walked = true;
+                    Message::Step { id, step: forged.clone() }
+                }
+                osis_label::Proof::Claim { pk, .. } => {
+                    claims.push(pk);
+                    Message::Error { id, code: osis_proto::Code::REFUSED }
+                }
+                _ => Message::Error { id, code: osis_proto::Code::REFUSED },
+            };
+            next.extend(se.handle(Event::Bytes { conn, bytes: frame(reply) }));
+        }
+        acts = next;
+    }
+    assert!(walked);
+    let want: Vec<_> = ps.iter().map(|x| forged.claim_key(x).unwrap().verifying_key()).collect();
+    assert!(!want.is_empty() && want.iter().all(|k| claims.contains(k)), "claims by P's keys");
+    assert!(!claims.contains(&forged.claim_key(&own).unwrap().verifying_key()), "not by the node's own key (no edge of it on g)");
+    for x in &others {
+        assert!(!claims.contains(&forged.claim_key(x).unwrap().verifying_key()), "another actor's pseudonym went to the server");
+    }
+}

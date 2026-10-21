@@ -268,6 +268,11 @@ impl SyncEngine {
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
         self.local_last = self.raw_now();
+        // nobody can dial a node without `/reach` (no listener): nothing to serve
+        if self.own_reach().is_none() {
+            self.local_any = false;
+            return Ok(());
+        }
         let labels: Vec<(Tid, LabelId, u64)> = self.labels().into_iter().filter(|(_, l)| !l.replaced && l.servers.iter().all(super::peers::is_peer)).map(|(g, l)| (g, l.id, l.index)).collect();
         self.local_any = !labels.is_empty();
         if labels.is_empty() {
@@ -281,15 +286,30 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// One label's local pass: what a pass at a server would upload is placed under it (the
+    /// One label's local pass, as a pass at a server would leave that server: a newer
+    /// established epoch first registers a child step (recorded in `/label`, so the served head
+    /// moves; `reregister` without the upload), then what a pass would upload is placed (the
     /// must-hold bodies and the chunks they link, inbox copies, certificates, the heartbeat),
-    /// stamped when this node writes. No presence and no deletions: a dropped body's blob is
-    /// forgotten (`forget_dropped`), which ends that entry's service.
+    /// stamped when this node writes, then must-not-hold, expired and blobless entries go
+    /// (`local_deletions`).
     fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step) -> Result<()> {
         let mut keys = self.engine.head_keys(&g, index, head)?;
         let still = self.uncovered(&g)?;
         if still.contains(&Role::Write) {
             keys.write = None;
+        }
+        if still.contains(&Role::Admin) {
+            keys.delete = None;
+        }
+        if keys.delete.is_some() && keys.write.is_some() && self.engine.epochs(&g).is_some_and(|e| osis_keys::newer_than_head(&e, keys.epochs)) {
+            let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
+            self.take_done(done)?;
+            if step.is_some() {
+                // the next local pass runs under the new head
+                self.served_cache = None;
+                self.local_dirty = true;
+                return Ok(());
+            }
         }
         if still.contains(&Role::Read) || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
             return Ok(());
@@ -301,8 +321,9 @@ impl SyncEngine {
         }
         let snaps = self.snapshots_at(&l);
         let snapping = self.unsettled_hold(&l, &g)?;
+        let bodies = self.bodies_under(&g, &l)?;
         let mut ours: BTreeSet<BlobId> = BTreeSet::new();
-        for b in &self.bodies_under(&g, &l)? {
+        for b in &bodies {
             let Some(needed) = self.must_hold(b, &snaps, &snapping)? else { continue };
             if needed != b.parts && self.carried_by(None, &l, &b.commit, &needed) {
                 continue;
@@ -327,14 +348,82 @@ impl SyncEngine {
         self.inbox_copies(&g, l)?;
         self.certificates(&g, l, false)?;
         self.heartbeat(&g, l, &keys, false)?;
-        let Some(w) = keys.write else { return Ok(()) };
-        // stamped as an upload would be; another node's deposits stay deposits
-        let unstamped: Vec<(BlobId, Entry)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, id), e)| e.stamp.is_none() && (e.cert || ours.contains(id))).map(|((_, id), e)| (*id, e.clone())).collect();
-        for (id, mut e) in unstamped {
-            e.stamp = Some(osis_label::sign_stamp(&w, &l, &id, &e.wrap));
-            self.state.set_entry(l, id, e);
+        if let Some(w) = &keys.write {
+            // stamped as an upload would be; another node's deposits stay deposits
+            let unstamped: Vec<(BlobId, Entry)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, id), e)| e.stamp.is_none() && (e.cert || ours.contains(id))).map(|((_, id), e)| (*id, e.clone())).collect();
+            for (id, mut e) in unstamped {
+                e.stamp = Some(osis_label::sign_stamp(w, &l, &id, &e.wrap));
+                self.state.set_entry(l, id, e);
+            }
+        }
+        let settled = self.unsettled(&l, &g)?.is_empty();
+        self.local_deletions(&g, l, &keys, &bodies, &snaps, settled)
+    }
+
+    /// The deletion step of a local pass, over the entries no server or peer holds (those go by
+    /// their deletions, spec/sync.md §5-§7): an entry whose bytes this node no longer holds
+    /// serves nothing and goes; one past its prefix's expiry goes outright (an expired body, a
+    /// heartbeat, an inbox blob); one judged must-not-hold goes when this node holds a delete
+    /// item for it and the rule lets it (`may_delete`: live writes need a carrier, else a
+    /// covering snapshot first); chunks of dropped deltas go. Removed entries are tombstoned
+    /// here (`State::remove_entry`), expired ones not.
+    fn local_deletions(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool) -> Result<()> {
+        let ids: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).filter(|id| !self.state.present_anywhere(&l, id)).collect();
+        let now = self.now();
+        for id in ids {
+            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
+            let Some(blob) = self.engine.blob(&id)? else {
+                self.state.drop_entry(l, id);
+                continue;
+            };
+            if osis_label::Prefix::parse(&blob).ok().and_then(|p| p.expiry()).is_some_and(|t| t.0 <= now) {
+                self.state.drop_entry(l, id);
+                self.forget_entry_blob(&id)?;
+                continue;
+            }
+            let Some((Hold::MustNot(why), live, aspects)) = self.judge(None, &l, g, &id, &e, bodies, settled)? else { continue };
+            if why != Why::Expired {
+                let carried = match why {
+                    Why::Duplicate | Why::StrictSubset => true,
+                    _ => self.carried(None, &l, &e, &aspects, snaps)?,
+                };
+                if !may_delete(why, live, carried) {
+                    if let Kind::Commit { commit, .. } = &e.kind {
+                        self.snapshot_first(&aspects, commit)?;
+                    }
+                    continue;
+                }
+                if self.delete_for(keys, &l, &id, &e, None)?.is_none() {
+                    continue;
+                }
+            }
+            self.state.remove_entry(l, id);
+            self.forget_entry_blob(&id)?;
+        }
+        // chunks of dropped deltas (a purge, spec/commits.md §5)
+        let unknown: BTreeSet<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, id), e)| e.kind == Kind::Unknown && !self.state.present_anywhere(&l, id)).map(|((_, id), _)| *id).collect();
+        let chunks = self.dropped_chunks(|b| unknown.contains(b))?;
+        for b in chunks.into_keys() {
+            self.state.remove_entry(l, b);
+            self.forget_chunk(&b)?;
         }
         Ok(())
+    }
+
+    /// Drops the bytes of a blob whose entry under a label synced with nobody went: a commit
+    /// blob's record and bytes once no entry names it, any other blob's bytes likewise.
+    fn forget_entry_blob(&mut self, id: &BlobId) -> Result<()> {
+        if self.state.entries.keys().any(|(_, x)| x == id) {
+            return Ok(());
+        }
+        if self.state.blobs.contains_key(id) {
+            self.state.remove_blob(id);
+        }
+        let b = *id;
+        self.engine.run(|tx| {
+            tx.txn.delete_blob(&b);
+            Ok(())
+        })
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
@@ -414,11 +503,11 @@ impl SyncEngine {
         }
         let entries: Vec<(BlobId, Entry)> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((x, _), _)| x == l).map(|((_, b), e)| (*b, e.clone())).collect();
         for (id, e) in entries {
-            let j = self.judge(server, l, &g, &id, &e, &bodies, unsettled.is_empty())?;
+            let j = self.judge(Some(server), l, &g, &id, &e, &bodies, unsettled.is_empty())?;
             let Some((Hold::MustNot(why), live, aspects)) = j else { continue };
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,
-                _ => self.carried(server, l, &e, &aspects, &snaps)?,
+                _ => self.carried(Some(server), l, &e, &aspects, &snaps)?,
             };
             if why != Why::Expired && may_delete(why, live, carried) && self.delete_for(&keys, l, &id, &e, None)?.is_some() {
                 v.must_not.push((id, format!("{why:?}")));
@@ -1186,9 +1275,10 @@ impl SyncEngine {
     }
 
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
-    /// judge it (may-hold).
+    /// judge it (may-hold). `server` `None`: this node's own served state (every entry counts
+    /// as present).
     #[allow(clippy::too_many_arguments)]
-    fn judge(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, bodies: &[Body], settled: bool) -> Result<Option<Judged>> {
+    fn judge(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, bodies: &[Body], settled: bool) -> Result<Option<Judged>> {
         let now = self.now();
         let Kind::Commit { commit, parts } = &e.kind else { return Ok(None) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok(None) };
@@ -1224,7 +1314,7 @@ impl SyncEngine {
             f.required = true;
             // the duplicate with the higher blob ID goes (spec/sync.md §7)
             // (only a genuine one: a forged duplicate must not get the real entry deleted)
-            let lower: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).filter(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && self.state.is_present(server, l, b)).map(|((_, b), _)| *b).collect();
+            let lower: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..(*l, *id)).filter(|((x, b), o)| x == l && b != id && !o.cert && o.kind == e.kind && server.is_none_or(|s| self.state.is_present(s, l, b))).map(|((_, b), _)| *b).collect();
             f.duplicate_higher = lower.into_iter().any(|b| self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset projection: every delta in it must be one the label's actor may read
@@ -1321,7 +1411,7 @@ impl SyncEngine {
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
     /// `/node` and `/reach`, the node reads the label's actor no more (a departed node is never
     /// dialed; its `/keys` stays while chains of its old writes may need it).
-    fn stale_card(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+    fn stale_card(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
         let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"));
@@ -1350,7 +1440,7 @@ impl SyncEngine {
             if x == *c || !self.engine.header(&x).is_some_and(|n| n.ts > h.ts) {
                 return false;
             }
-            let ids: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id)).map(|((_, id), _)| *id).collect();
+            let ids: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && server.is_none_or(|s| self.state.is_present(s, l, id))).map(|((_, id), _)| *id).collect();
             ids.into_iter().any(|id| self.genuine(&id))
         })
     }
@@ -1362,7 +1452,9 @@ impl SyncEngine {
     /// Judged only on a commit this node applied (it knows the author and the chain), and not on
     /// a deposit there: promotion completes or leaves those (spec/sync.md §5).
     #[allow(clippy::too_many_arguments)]
-    fn orphan(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+    fn orphan(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+        // this node's own served state: its chain completion runs at servers only
+        let Some(server) = server else { return Ok(false) };
         let actor = self.engine.group_actor(g);
         if h.author == self.engine.tid() || self.state.deposited.contains(&(*server, *l, *id)) || self.engine.core.may_read(&h.author, &actor) {
             return Ok(false);
@@ -1378,7 +1470,7 @@ impl SyncEngine {
         let mut items = Vec::new();
         for id in ids {
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
-            let Some((hold, live, aspects)) = self.judge(&server, &l, g, &id, &e, bodies, settled)? else { continue };
+            let Some((hold, live, aspects)) = self.judge(Some(&server), &l, g, &id, &e, bodies, settled)? else { continue };
             let Hold::MustNot(why) = hold else { continue };
             if why == Why::Expired {
                 // the server drops it unattended (spec/sync.md §5)
@@ -1391,7 +1483,7 @@ impl SyncEngine {
             }
             let carried = match why {
                 Why::Duplicate | Why::StrictSubset => true,
-                _ => self.carried(&server, &l, &e, &aspects, snaps)?,
+                _ => self.carried(Some(&server), &l, &e, &aspects, snaps)?,
             };
             if !may_delete(why, live, carried) {
                 if let Kind::Commit { commit, .. } = &e.kind {
@@ -1513,7 +1605,7 @@ impl SyncEngine {
             let aspects = vec![(a.tid, a.ak.clone())];
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             // a body whose writes all died needs no carrier (spec/sync.md §7)
-            if !self.carried(&server, &l, &e, &aspects, snaps)? && self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
+            if !self.carried(Some(&server), &l, &e, &aspects, snaps)? && self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
                 self.snapshot_first(&aspects, &b.commit)?;
                 continue;
             }
@@ -1530,7 +1622,7 @@ impl SyncEngine {
 
     /// Whether a later snapshot of each aspect is under the label at the server: the carrier of
     /// a body's live writes (spec/sync.md §7).
-    fn carried(&mut self, server: &ServerKey, l: &LabelId, e: &Entry, aspects: &[(Tid, Ak)], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
+    fn carried(&mut self, server: Option<&ServerKey>, l: &LabelId, e: &Entry, aspects: &[(Tid, Ak)], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
         let Kind::Commit { commit, .. } = &e.kind else { return Ok(false) };
         let dropped = self.engine.core.commits.get(commit).is_some_and(|m| !m.dropped.is_empty());
         for (t, a) in aspects {
@@ -1544,7 +1636,7 @@ impl SyncEngine {
             };
             let mut ok = false;
             for s in candidates {
-                if s == *commit || !self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if *c == s) && self.state.is_present(server, l, b)) {
+                if s == *commit || !self.state.entries.iter().any(|((x, b), o)| x == l && matches!(&o.kind, Kind::Commit { commit: c, .. } if *c == s) && server.is_none_or(|sv| self.state.is_present(sv, l, b))) {
                     continue;
                 }
                 let covers = self.engine.covered(&s, commit, t, a)? == Some(true);
