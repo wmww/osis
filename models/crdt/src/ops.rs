@@ -118,7 +118,8 @@ pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
         .collect()
 }
 
-fn register(w: &mut Writer, v: Value) -> Frag {
+/// A register write; also a set element's value, whatever the element type (spec §3.2, §5.5).
+pub(crate) fn register(w: &mut Writer, v: Value) -> Frag {
     Frag::Register { reset: None, write: Some((w.delta(), Some(v))) }
 }
 
@@ -167,7 +168,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             }
             Frag::Enum { c: comp(None), case, payloads }
         }
-        (Ty::Set(et), Value::Set(items)) => {
+        (Ty::Set(_), Value::Set(items)) => {
             let mut elems = BTreeMap::new();
             let mut c = comp(None);
             if items.is_empty() {
@@ -175,7 +176,7 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
             }
             for it in items {
                 let d = w.stamp().dot;
-                elems.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, et, it))) });
+                elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, it.clone()))) });
             }
             Frag::Set { c, elems }
         }
@@ -270,7 +271,7 @@ pub fn elem_reset(w: &mut Writer, enc: u8, dots: &[Dot]) -> Frag {
     f
 }
 
-pub fn set_add(w: &mut Writer, state: Option<&Frag>, et: &Ty, v: &Value) -> Option<Frag> {
+pub fn set_add(w: &mut Writer, state: Option<&Frag>, v: &Value) -> Option<Frag> {
     if let Some(Frag::Set { elems, .. }) = state {
         if live_elems(elems).iter().any(|(_, x)| x == v) {
             return None;
@@ -278,7 +279,7 @@ pub fn set_add(w: &mut Writer, state: Option<&Frag>, et: &Ty, v: &Value) -> Opti
     }
     let d = w.stamp().dot;
     let mut elems = BTreeMap::new();
-    elems.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, et, v))) });
+    elems.insert(d, Elem { reset: None, frag: Some(Box::new(register(w, v.clone()))) });
     let f = Frag::Set { c: comp(None), elems };
     Some(f)
 }

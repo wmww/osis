@@ -27,7 +27,7 @@ Both get a fresh review, a main merge, then merge to main with clippy + workspac
 ## Issues left and their kind
 - Reframed tradeoffs for the owner (no implementation planned): header-list-commitments, token-admin-secret, reseal-triggers, store-concurrent-readers; chat-costs keeps only the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) with savings in user terms; ledger-same-ts-commits (needs a format change); crdt-undo-absent-positions (spec choice).
 - Being worked by the two branches above: node-sync-gaps, second-device-joiner-removal-loop, concurrent-upload-duplicates, reading-candidates-unknown-authors, node-core-gaps, node-state-not-paged.
-- Still to assign: set-element-encoding (crdt wire change: register-encode set element values), p2p-followups, perm-eval-cost remainder (persisted walk at open, late writes early in long histories), crdt-seq-linearization-cost remainder (batch ops copy the state, O(n) cache follow), api-deferred (queries are a design pass; the app layer is the owner's later work), tests-unbuilt remainder (10^4 sweep, membership-model refactors, TLA+ walk).
+- Still to assign: p2p-followups, perm-eval-cost remainder (persisted walk at open, late writes early in long histories), crdt-seq-linearization-cost remainder (batch ops copy the state, O(n) cache follow), api-deferred (queries are a design pass; the app layer is the owner's later work), tests-unbuilt remainder (10^4 sweep, membership-model refactors, TLA+ walk).
 
 ## Resume procedure
 1. `git -C /home/ai/osis log --oneline -12`, `git branch`, `git worktree list`; read this note and `grep -h '^> Summary' issues/*.md`.

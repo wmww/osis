@@ -155,7 +155,9 @@ pub fn ostate(f: &Option<m::Frag>) -> Fragment {
 
 /// The kitchen-sink type without sequences: every encoding crdt-core implements, nested.
 pub fn sink_no_seq() -> Ty {
-    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    // a set of structs: elements are registers holding the whole value (§3.2)
+    let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(pair)))].into_iter().collect());
     let cases = [(0, None), (1, Some(Ty::Register)), (2, Some(inner.clone()))].into_iter().collect();
     Ty::Struct(
         [
