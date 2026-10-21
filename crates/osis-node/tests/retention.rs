@@ -34,7 +34,7 @@ fn deaths_and_bounds_spec_commits_5() {
 }
 
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
-// transaction that applies the kill (live state unchanged; a deletion for blind nodes queued);
+// transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).
 // spec/commits.md §5 (keep at most)
 #[test]
@@ -48,8 +48,6 @@ fn keep_at_most_zero_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.holds_body(&c1, &t, &ak("/t/gone")));
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
-    let dels = e.deletions(0, 10).unwrap();
-    assert!(dels.iter().any(|d| d.1 == c1));
     assert_eq!(e.undo(&c1).unwrap(), None);
     // every node drops it by the bound, here when it applies the kill
     sync(&mut lp, 0, 1);
@@ -176,6 +174,22 @@ fn compaction_snapshot_spec_commits_5() {
     // its frontiers count as received
     let r = lp.peers[1].engine.receipt(&t, &ak("/t/tags")).unwrap();
     assert_eq!(r.contiguous(&me0, u64::MAX), 5);
+    // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
+    // it, the snapshot's included, also where its own body was never held
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("t1")) }).unwrap();
+    let kill = lp.peers[0].commit(m).unwrap().unwrap();
+    let ts = lp.peers[0].engine.header(&kill).unwrap().ts;
+    for p in lp.packages(0).unwrap() {
+        if p.id == kill {
+            lp.deliver(1, &p).unwrap();
+        }
+    }
+    for i in 0..2 {
+        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("/t/tags")).unwrap(), Some((ts, ts)), "node {i}");
+    }
+    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/tags")).unwrap(), Some((ts, ts)));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6: undo and redo; the derived stacks; an admin undoes
@@ -219,4 +233,95 @@ fn undo_redo_spec_commits_7() {
     assert!(lp.peers[0].engine.changes(&scope).iter().any(|c| c.0 == cb && c.1 == b));
     lp.peers[0].engine.undo(&cb).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+}
+
+// spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/node.md, Paged state): in a new
+// session, which loads only the pages it touches, undoing an edit of a key of a large map, an
+// edit inside an entry's nested map and a removal restores what a whole state would, and a
+// session loading everything reads the same.
+#[test]
+fn undo_in_lazily_loaded_pages_spec_commits_7() {
+    let mut lp = net(1, 58);
+    let t = new_thing(&mut lp, 0);
+    let fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &BIG, &Value::Map(fill)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let key = |k: &str| osis_crdt::PathSeg::Key(s(k));
+    let edit = |lp: &mut osis_node::local_peer::LocalPeer, op: PathOp| {
+        let mut m = Mutation::new();
+        m.op(t, &BIG, op).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    lp.advance(5);
+    let c1 = edit(&mut lp, PathOp { path: vec![key("k100")], op: Op::Set(s("changed")) });
+    lp.advance(5);
+    let c2 = edit(&mut lp, PathOp { path: Vec::new(), op: Op::Remove(s("k200")) });
+    lp.advance(5);
+    let c3 = edit(&mut lp, PathOp { path: vec![key("new")], op: Op::Set(s("added")) });
+    let before = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap();
+    for (c, k, want) in [(c3, "new", None), (c2, "k200", Some(s(&"v".repeat(300)))), (c1, "k100", Some(s(&"v".repeat(300))))] {
+        lp.peers[0].restart(58).unwrap();
+        lp.advance(5);
+        lp.peers[0].engine.undo(&c).unwrap().unwrap();
+        assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[key(k)]).unwrap(), want, "undo of {k}");
+    }
+    // a whole read after the three undos: the fill again
+    lp.peers[0].restart(59).unwrap();
+    let Some(Value::Map(after)) = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap() else { panic!() };
+    assert_eq!(after.len(), 300);
+    assert!(after.values().all(|v| *v == s(&"v".repeat(300))));
+    assert_ne!(Some(Value::Map(after)), before);
+}
+
+// spec/commits.md §7, spec/crdt.md §4.6 over a paged state: node 0 edits inside key "n" of a
+// large map while node 1 concurrently writes its own entry for "n", which lands on another page.
+// In a new session, undoing the edit reads the join of every entry of "n" (the undo replaces
+// both), exactly as with the whole state loaded.
+#[test]
+fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
+    use std::collections::BTreeMap;
+    let run = |whole: bool| {
+        let mut lp = net(2, 61);
+        let t = new_thing(&mut lp, 0);
+        let b = lp.peers[1].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+        let big = ak("/x/big");
+        let key = |k: &str| osis_crdt::PathSeg::Key(s(k));
+        let put = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, v: Value| {
+            let mut m = Mutation::new();
+            m.op(t, &big, PathOp { path, op: Op::Set(v) }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        let mut m = Mutation::new();
+        m.set(t, &big, &Value::Map(BTreeMap::new())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        put(&mut lp, 1, vec![key("n")], Value::Map(BTreeMap::from([(s("b"), s("1"))])));
+        let fill = |lp: &mut osis_node::local_peer::LocalPeer, r: std::ops::Range<usize>| {
+            let mut m = Mutation::new();
+            for i in r {
+                m.op(t, &big, PathOp { path: vec![key(&format!("k{i:03}"))], op: Op::Set(s(&"v".repeat(300))) }).unwrap();
+            }
+            lp.peers[0].commit(m).unwrap().unwrap();
+        };
+        fill(&mut lp, 0..150);
+        put(&mut lp, 0, vec![key("n")], Value::Map(BTreeMap::from([(s("a"), s("0"))])));
+        fill(&mut lp, 150..300);
+        lp.advance(5);
+        let e = put(&mut lp, 0, vec![key("n"), key("a")], s("5"));
+        lp.sync_all().unwrap();
+        assert_eq!(lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap(), Some(Value::Map(BTreeMap::from([(s("a"), s("5")), (s("b"), s("1"))]))));
+        lp.peers[0].restart(61).unwrap();
+        if whole {
+            lp.peers[0].engine.get(&t, &big).unwrap();
+        }
+        lp.advance(5);
+        lp.peers[0].engine.undo(&e).unwrap().unwrap();
+        let n = lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap();
+        assert_eq!(n, Some(Value::Map(BTreeMap::from([(s("a"), s("0")), (s("b"), s("1"))]))));
+        lp.peers[0].restart(62).unwrap();
+        lp.peers[0].engine.state(&t, &big).unwrap()
+    };
+    assert!(run(false) == run(true), "the undo in a lazily loaded session equals the whole state's");
 }

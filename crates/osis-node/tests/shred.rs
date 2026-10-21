@@ -125,6 +125,65 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
 }
 
+// spec/commits.md §5 (keep at most 0), spec/requirements.md (Scale: O(change)): in a paged map
+// state, the dropped body's pages are rewritten shredded (not the whole state); no copy of the
+// superseded entry value survives
+#[test]
+fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
+    let mut lp = net2(75);
+    let t = new_thing(&mut lp, 0);
+    let fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let marker = "PAGED-ATMOST-MARK-77e3";
+    let edit = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &GONEMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k047"))], op: osis_crdt::Op::Set(s(v)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    lp.advance(5);
+    let c = edit(&mut lp, &big(marker));
+    filler(&mut lp, 0, 6);
+    assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
+    lp.advance(5);
+    edit(&mut lp, "final");
+    assert!(!lp.peers[0].engine.holds_body(&c, &t, &ak("/t/gonemap")));
+    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/gonemap"), &[osis_crdt::PathSeg::Key(s("k047"))]).unwrap(), Some(s("final")));
+}
+
+// spec/commits.md §6, spec/crdt.md §4.7 (expiry), spec/requirements.md (Scale: O(change)): an
+// expiring entry of a paged map goes value-less in its page (rewritten shredded with its key
+// index row), not by rewriting the whole state; no copy of its value survives
+#[test]
+fn expired_entry_paged_unrecoverable_spec_commits_6() {
+    let mut lp = net2(76);
+    let t = new_thing(&mut lp, 0);
+    let fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &BIG, &Value::Map(fill)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let marker = "PAGED-EXPIRY-MARK-31aa";
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k999"))], op: osis_crdt::Op::Set(s(&big(marker))) }).unwrap();
+    m.expires(t, &BIG, osis_core::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    filler(&mut lp, 0, 6);
+    assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
+    lp.advance(60_001);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k999"))]).unwrap(), None);
+    // the value, the key, nor the key's hash (the paged map's key index): one attack
+    let h = osis_core::hash::hash(&osis_core::encode(&s("k999")));
+    let found = plaintexts(&mut lp.peers[0]);
+    for (needle, what) in [(marker.as_bytes(), "expired content"), (b"k999".as_slice(), "the expired key"), (h.as_slice(), "the expired key's index row")] {
+        assert!(!found.iter().any(|x| contains(x, needle)), "{what} recovered");
+    }
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
+}
+
 // spec/commits.md §5: shredding a version covers every chunk only it reached (chunk keys live in
 // links inside the dropped body); a purged large value's chunks stay unopenable from what the
 // device still yields, though their ciphertext may linger in freed storage

@@ -6,6 +6,7 @@
 use crate::fragment::{Bag, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
 use crate::stamp::Dot;
+use osis_core::Value;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
@@ -121,4 +122,240 @@ impl Fragment {
             _ => return None,
         })
     }
+}
+
+/// A step from a fragment to a position inside it, for the node's paged states: a struct field,
+/// an enum payload, or a map entry's content (by its dot).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Step {
+    Field(u64),
+    Case(u64),
+    Entry(Dot),
+}
+
+/// A set of paths (a trie of steps): the paged collections of a state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Paths {
+    /// A path ends here.
+    pub here: bool,
+    pub next: BTreeMap<Step, Paths>,
+}
+
+impl Paths {
+    pub fn insert(&mut self, path: &[Step]) {
+        match path.split_first() {
+            None => self.here = true,
+            Some((s, rest)) => self.next.entry(s.clone()).or_default().insert(rest),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        !self.here && self.next.is_empty()
+    }
+    /// The subtrie below `path`.
+    pub fn below(&self, path: &[Step]) -> Option<&Paths> {
+        match path.split_first() {
+            None => Some(self),
+            Some((s, rest)) => self.next.get(s)?.below(rest),
+        }
+    }
+}
+
+/// What joining a delta can change in a paged state (`Fragment::touched_paths`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PagedTouch {
+    /// Anything outside the paged collections' elements (the skeleton).
+    pub skeleton: bool,
+    /// Per paged collection, its root elements by dot (a sequence's as (first, last) pairs per
+    /// delta record).
+    pub elems: BTreeMap<Vec<Step>, Vec<Dot>>,
+}
+
+impl Fragment {
+    /// The position one step down (no `Slots` member: a position with several encodings is a
+    /// leaf here).
+    pub fn step(&self, s: &Step) -> Option<&Fragment> {
+        match (s, self) {
+            (Step::Field(id), Fragment::Struct(x)) => x.fields.get(id),
+            (Step::Case(id), Fragment::Enum(x)) => x.payloads.get(id),
+            (Step::Entry(d), Fragment::Map(m)) => m.entries.get(d)?.frag.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn at_steps(&self, path: &[Step]) -> Option<&Fragment> {
+        match path.split_first() {
+            None => Some(self),
+            Some((s, rest)) => self.step(s)?.at_steps(rest),
+        }
+    }
+
+    /// The key a map entry carries.
+    pub fn entry_key(&self, d: &Dot) -> Option<&Value> {
+        match self {
+            Fragment::Map(m) => m.entries.get(d)?.key.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// A fragment holding `inner` at `path` and nothing else; an entry step carries the entry's
+    /// key (so joining it alone restores the entry with its key).
+    pub fn wrap(path: &[(Step, Option<Value>)], inner: Fragment) -> Fragment {
+        let mut f = inner;
+        for (s, key) in path.iter().rev() {
+            f = match s {
+                Step::Field(id) => Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, f)]) }),
+                Step::Case(id) => Fragment::Enum(crate::fragment::Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, f)]) }),
+                Step::Entry(d) => Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d.clone(), crate::fragment::Entry { reset: None, key: key.clone(), frag: Some(Box::new(f)) })]))),
+            };
+        }
+        f
+    }
+
+    /// A copy with the collections at `paths` (relative to this position) reduced to their own
+    /// reset and `W`: O(what is kept), never descending into a reduced collection.
+    pub fn reduced(&self, paths: &Paths) -> Fragment {
+        if paths.here {
+            return self.elem_range_empty().unwrap_or_default();
+        }
+        if paths.next.is_empty() {
+            return self.clone();
+        }
+        let below = |s: &Step, f: &Fragment| -> Fragment {
+            match paths.next.get(s) {
+                Some(p) => f.reduced(p),
+                None => f.clone(),
+            }
+        };
+        match self {
+            Fragment::Struct(x) => Fragment::Struct(Struct {
+                meta: x.meta.clone(),
+                fields: x.fields.iter().map(|(id, f)| (*id, below(&Step::Field(*id), f))).filter(|(_, f)| !f.is_empty()).collect(),
+            }),
+            Fragment::Enum(x) => Fragment::Enum(crate::fragment::Enum {
+                meta: x.meta.clone(),
+                case: x.case.clone(),
+                payloads: x.payloads.iter().map(|(id, f)| (*id, below(&Step::Case(*id), f))).filter(|(_, f)| !f.is_empty()).collect(),
+            }),
+            Fragment::Map(m) => {
+                let entries = m
+                    .entries
+                    .iter()
+                    .map(|(d, e)| {
+                        let frag = e.frag.as_ref().map(|f| Box::new(below(&Step::Entry(d.clone()), f))).filter(|f| !f.is_empty());
+                        // an entry reduced to nothing keeps no key here: the pages below carry it
+                        let key = if frag.is_some() { e.key.clone() } else { None };
+                        (d.clone(), crate::fragment::Entry { reset: e.reset.clone(), key, frag })
+                    })
+                    .filter(|(_, e)| e.reset.is_some() || e.frag.is_some())
+                    .collect();
+                Fragment::Map(Map::new(m.meta.clone(), entries))
+            }
+            f => f.clone(),
+        }
+    }
+
+    /// Every collection (map, set, bag, list, text) reachable through `Step`s, with its path,
+    /// outermost first.
+    pub fn collections(&self) -> Vec<(Vec<Step>, &Fragment)> {
+        let mut out = Vec::new();
+        let mut stack: Vec<(Vec<Step>, &Fragment)> = vec![(Vec::new(), self)];
+        while let Some((p, f)) = stack.pop() {
+            if f.elem_count().is_some() {
+                out.push((p.clone(), f));
+            }
+            let mut kids: Vec<(Step, &Fragment)> = match f {
+                Fragment::Struct(x) => x.fields.iter().map(|(id, f)| (Step::Field(*id), f)).collect(),
+                Fragment::Enum(x) => x.payloads.iter().map(|(id, f)| (Step::Case(*id), f)).collect(),
+                Fragment::Map(m) => m.entries.iter().filter_map(|(d, e)| Some((Step::Entry(d.clone()), e.frag.as_deref()?))).collect(),
+                _ => Vec::new(),
+            };
+            kids.reverse();
+            for (s, k) in kids {
+                let mut q = p.clone();
+                q.push(s);
+                stack.push((q, k));
+            }
+        }
+        out
+    }
+
+    /// What joining this delta can change in a state whose collections at `paged` are kept as
+    /// pages of root elements: per paged collection its elements by dot, and whether anything
+    /// else (the skeleton) may change. `None` when it may change a paged collection's elements
+    /// beyond those (a reset at or above it, a case change above it, another encoding there).
+    pub fn touched_paths(&self, paged: &Paths) -> Option<PagedTouch> {
+        let mut out = PagedTouch::default();
+        let mut path = Vec::new();
+        touched_walk(self, paged, &mut path, &mut out)?;
+        Some(out)
+    }
+}
+
+fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTouch) -> Option<()> {
+    if t.here {
+        let (w, dots) = d.touched_elems()?;
+        out.skeleton |= w;
+        // elements holding paged collections below
+        for (s, sub) in &t.next {
+            let Step::Entry(e) = s else { return None };
+            if let Some(f) = d.step(s) {
+                if matches!(d, Fragment::Map(m) if m.entries.get(e).is_some_and(|x| x.reset.is_some())) {
+                    return None;
+                }
+                path.push(s.clone());
+                touched_walk(f, sub, path, out)?;
+                path.pop();
+            }
+        }
+        out.elems.entry(path.clone()).or_default().extend(dots);
+        return Some(());
+    }
+    if t.next.is_empty() {
+        out.skeleton = true;
+        return Some(());
+    }
+    // a position above paged collections: no reset or case change may reach them
+    if d.has_reset() {
+        return None;
+    }
+    let kids: Vec<(Step, &Fragment)> = match d {
+        Fragment::Struct(x) => {
+            out.skeleton |= x.meta.w.is_some();
+            x.fields.iter().map(|(id, f)| (Step::Field(*id), f)).collect()
+        }
+        Fragment::Enum(x) => {
+            if x.case.is_some() {
+                return None;
+            }
+            out.skeleton |= x.meta.w.is_some();
+            x.payloads.iter().map(|(id, f)| (Step::Case(*id), f)).collect()
+        }
+        Fragment::Map(m) => {
+            out.skeleton |= m.meta.w.is_some();
+            let mut v = Vec::new();
+            for (dot, e) in &m.entries {
+                let s = Step::Entry(dot.clone());
+                if t.next.contains_key(&s) && e.reset.is_some() {
+                    return None;
+                }
+                match &e.frag {
+                    Some(f) => v.push((s, &**f)),
+                    None => out.skeleton = true,
+                }
+            }
+            v
+        }
+        _ => return None,
+    };
+    for (s, f) in kids {
+        match t.next.get(&s) {
+            Some(sub) => {
+                path.push(s);
+                touched_walk(f, sub, path, out)?;
+                path.pop();
+            }
+            None => out.skeleton = true,
+        }
+    }
+    Some(())
 }

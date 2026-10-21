@@ -10,7 +10,7 @@ use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_core::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
@@ -20,12 +20,21 @@ fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
     }
 }
 
+/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers.
+pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
+    let v = core.snapshots.entry_or_default((*tid, ak.clone()));
+    if !v.iter().any(|x| x.1 == *id) {
+        v.push((ts, *id, fr));
+    }
+}
+
 /// Adds a commit to the per-aspect and node-form range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
-        core.by_aspect.entry((a.tid, a.ak.clone())).or_default().insert((h.ts, *id));
+        core.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        core.by_thing.insert(a.tid, *id);
         if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
-            core.ranges.entry((a.tid, a.ak.clone(), h.author)).or_default().insert(a.lo, (a.hi, *id));
+            core.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
         }
     }
 }
@@ -51,7 +60,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 
 /// Joins `delta` into the state of `(tid, ak)`, holding value-less what must be.
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
-    tx.load(tid, ak)?;
+    tx.load_lazy(tid, ak)?;
     // writes owned by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too)
     let invalid = invalid_of(tx.core, tid, ak);
@@ -60,7 +69,9 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
     strip_valueless(tx.core, tid, ak, &mut delta);
-    let touch = crate::engine::state::touch_of(&delta);
+    // a paged state loads only the pages the join touches
+    let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
+    tx.ensure_touch(tid, ak, &touch)?;
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();
@@ -89,6 +100,12 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
             out.extend(Owned::of(&m.header, c, ai));
         } else if m.header.kind == osis_commit::Kind::Import {
             out.extend(m.header.origins.iter().map(|o| Owned::Commit(o.commit)));
+        }
+    }
+    // writes snapshots carry without their commit, invalid as their author's
+    for c in core.carried.get(&(*tid, ak.clone())).into_iter().flatten() {
+        if !c.valid {
+            out.push(Owned::Dots { node: c.node, ctrs: c.ctrs.clone() });
         }
     }
     out
@@ -166,6 +183,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         );
     }
     index_commit(tx.core, &id, &h);
+    validity::uncarry(tx.core, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let meta = Meta { header: h.clone(), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
     tx.core.commits.insert(id, meta.clone());
@@ -190,6 +208,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut touched = Touched::default();
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -198,10 +217,16 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
                 rebuild(tx, &a.tid, &a.ak)?;
                 changed.insert((a.tid, a.ak.clone()));
+                touched.whole(&a.tid, &a.ak);
             }
             continue;
         }
-        let (f, _) = fragment(d);
+        let (f, fr) = fragment(d);
+        if let Some(fr) = fr {
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
+            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
+        }
+        touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
@@ -212,11 +237,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     crate::retention::on_apply(tx, &id, &mut changed)?;
 
     for (tid, ak) in &changed {
-        observe_state(tx, tid, ak)?;
+        observe_touched(tx, tid, ak, &touched)?;
     }
     super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     let mut flipped = Vec::new();
-    if held_changed {
+    if held_changed || tx.core.stale() {
         flipped = validity::rejudge_all(tx, true)?;
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
@@ -291,12 +316,18 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
+    let mut touched = Touched::default();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
         }
-        let (f, _) = fragment(d);
+        let (f, fr) = fragment(d);
+        if let Some(fr) = fr {
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
+            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
+        }
+        touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
@@ -320,11 +351,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.update_timelines();
     }
     for (tid, ak) in &changed {
-        observe_state(tx, tid, ak)?;
+        observe_touched(tx, tid, ak, &touched)?;
     }
     super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
     let mut flipped = Vec::new();
-    if held_changed {
+    if held_changed || tx.core.stale() {
         flipped = validity::rejudge_all(tx, true)?;
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
@@ -343,6 +374,87 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
+    }
+    Ok(())
+}
+
+/// The `/secrets` entries a commit's joins touched, per aspect (`None`: anything may have
+/// changed, read the whole state).
+#[derive(Default)]
+struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<SecretsKeys>>);
+
+/// Keys of the box and history-box entries a change touched.
+type SecretsKeys = (Vec<Value>, Vec<Value>);
+
+impl Touched {
+    fn note(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) {
+        if ak.as_str() != "/secrets" {
+            return;
+        }
+        let keys = crate::engine::secrets::touched_keys(f);
+        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some((Vec::new(), Vec::new()))), keys) {
+            (Some(acc), Some((b, h))) => {
+                acc.0.extend(b);
+                acc.1.extend(h);
+            }
+            (slot, _) => *slot = None,
+        }
+    }
+    fn whole(&mut self, tid: &Tid, ak: &Ak) {
+        self.0.insert((*tid, ak.clone()), None);
+    }
+}
+
+/// `observe_state`, reading only the touched `/secrets` entries where known.
+fn observe_touched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, touched: &Touched) -> Result<()> {
+    match touched.0.get(&(*tid, ak.clone())) {
+        Some(Some((boxes, history))) => observe_secrets_keys(tx, tid, boxes, history),
+        _ => observe_state(tx, tid, ak),
+    }
+}
+
+/// What the `/secrets` entries keyed `boxes` and `history` of `actor` hold (and the history chain
+/// they reach) teaches this node: O(those entries), not O(boxes). Whether anything was learned.
+pub(crate) fn ingest_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<bool> {
+    let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
+    // the boxes keyed so, and the history boxes (their chain is followed in memory)
+    use osis_crdt::PathSeg;
+    let mut paths: Vec<Vec<PathSeg>> = boxes.iter().map(|k| vec![PathSeg::Field(0), PathSeg::Key(k.clone())]).collect();
+    paths.push(vec![PathSeg::Field(1)]);
+    tx.ensure_paths(actor, &ak, &paths)?;
+    let k = (*actor, ak);
+    // taken out of the cache while the core learns from it, then put back
+    let Some(st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(false) };
+    tx.core.touch();
+    let learned = tx.core.ingest_keyed(actor, &st, boxes, history);
+    tx.core.states.insert(k, Some(st));
+    Ok(learned)
+}
+
+/// `ingest_secrets_keys`, persisting what was learned and reopening the boxes sealed to `actor`.
+fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<()> {
+    if ingest_secrets_keys(tx, actor, boxes, history)? && let Some(e) = tx.core.secrets.get(actor) {
+        let b = crate::engine::secrets::encode_epochs(e);
+        tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
+        // boxes sealed to this actor elsewhere open now (membership flows hook)
+        crate::flows::reopen_dependents(tx, *actor)?;
+    }
+    if tx.core.check_ingest {
+        // the whole state's ingestion learns nothing the entries' did not
+        let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
+        let before = tx.core.secrets.get(actor).cloned();
+        let st = tx.state(actor, &ak)?.cloned();
+        let alts = st.as_ref().map(crate::engine::secrets::history_alts).unwrap_or_default();
+        if let Some(s) = st.as_ref().and_then(Fragment::read).as_ref().and_then(crate::engine::secrets::secrets_value)
+            && tx.core.ingest_secrets(actor, &s, None, &alts, None)
+        {
+
+            match before {
+                Some(b) => tx.core.secrets.insert(*actor, b),
+                None => tx.core.secrets.remove(actor),
+            };
+            return Err(Error::Misuse("per-entry /secrets ingestion missed what the whole state holds"));
+        }
     }
     Ok(())
 }
@@ -379,11 +491,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
         }
         "/was" => {
-            for s in tx.core.was.values_mut() {
-                s.remove(tid);
+            if let Some(old) = tx.core.was_of.remove(tid) {
+                tx.core.was.remove(&old, tid);
             }
             if let Some(Value::Tid(t)) = v {
-                tx.core.was.entry(t).or_default().insert(*tid);
+                tx.core.was.insert(t, *tid);
+                tx.core.was_of.insert(*tid, t);
             }
         }
         "/moved" => match v {
@@ -394,44 +507,16 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 tx.core.moved.remove(tid);
             }
         },
-        "/group" => {
-            let g = v.and_then(|v| osis_schema::AspectKey::decode(&osis_schema::core_types::GROUP, &v).ok());
-            match g {
-                Some(g) => {
-                    tx.core.group_defs.insert(*tid, (g.items, g.subgroups));
-                }
-                None => {
-                    tx.core.group_defs.remove(tid);
-                }
-            }
-            // every path that changes a `/group` (late deltas, re-judging) updates `/groups`
-            recompute_groups(tx.core);
-        }
+        // every path that changes a `/group` (late deltas, re-judging) updates `/groups`
+        "/group" => tx.core.groups.set(*tid, group_def(v)),
         _ => {}
     }
     Ok(())
 }
 
-/// `/groups` (spec/data-model.md §8): every group whose items, directly or through
-/// subgroups (cycles allowed), contain the thing.
-pub(crate) fn recompute_groups(core: &mut Core) {
-    let mut out: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-    for g in core.group_defs.keys() {
-        let mut seen: BTreeSet<Tid> = BTreeSet::new();
-        let mut stack = vec![*g];
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
-                continue;
-            }
-            if let Some((items, subs)) = core.group_defs.get(&x) {
-                for i in items {
-                    out.entry(*i).or_default().insert(*g);
-                }
-                stack.extend(subs.iter().copied());
-            }
-        }
-    }
-    core.groups = out;
+/// A `/group` value's (items, subgroups).
+pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid>)> {
+    v.and_then(|v| osis_schema::AspectKey::decode(&osis_schema::core_types::GROUP, &v).ok()).map(|g| (g.items, g.subgroups))
 }
 
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):
@@ -445,6 +530,10 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for (_, c) in held {
         let Some(m) = tx.core.commits.get(&c).cloned() else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        // a snapshot its author could not write carries nothing (its own writes are none)
+        if super::is_kind_snapshot(m.header.kind) && !m.valid.get(ai).copied().unwrap_or(false) {
+            continue;
+        }
         for d in super::held_parts(tx, &c, ai)? {
             bodies.push(fragment(d).0);
         }

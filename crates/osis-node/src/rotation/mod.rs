@@ -63,7 +63,7 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
             out.extend(Departure::of_change(op.member, old, new));
         }
         // a roster snapshot ahead of the clock changes the roster when its `ts` passes
-        for sn in tx.core.held.snapshots.get(a).into_iter().flatten() {
+        for sn in tx.core.held.snapshots_of(a) {
             later(sn.ts.wall_ms());
         }
         for (m, e) in tl.edges_at(None).members(a) {
@@ -478,7 +478,7 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
         Some(e) => e.clone(),
         None => tx.core.epochs(&a).unwrap_or_default(),
     };
-    let e = tx.core.secrets.entry(a).or_insert(base);
+    let e = tx.core.secrets.entry_or(a, || base);
     rot.record(e);
     e.establish();
     save_epochs(tx, &a)

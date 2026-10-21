@@ -2,7 +2,8 @@
 //! crdt change summary, keep-at-most drops (in the killing transaction for at most 0, else by
 //! timer), expiry at T (value-less, body dropped), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
-//! test, and the queues node-sync executes (deletions at blind nodes, re-snapshots).
+//! test. node-sync judges what to delete at blind nodes and what to re-snapshot from the commit
+//! index (dropped parts, `covered`), so no queue is kept here.
 //!
 //! A body here is one delta (one commit's deltas on one aspect): finer than a projection, so
 //! a projection's bounds are those of its deltas. Its death records use the commit ID as the
@@ -14,7 +15,7 @@ use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
-use osis_core::{Ak, BlobId, CommitId, Tid, Ts, WallMs};
+use osis_core::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::{Death, Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
 use osis_schema::core_types::is_membership_class;
@@ -22,9 +23,6 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 pub(crate) mod forget;
-
-/// A deletion obligation: (log sequence, commit, tid, ak, time).
-pub type Deletion = (u64, CommitId, Tid, Ak, WallMs);
 
 const T_EXPIRY: u8 = 1;
 const T_AT_MOST: u8 = 2;
@@ -35,6 +33,13 @@ pub(crate) fn encode_owned(v: &[Owned]) -> Vec<u8> {
         w = match o {
             Owned::Node { node, lo, hi } => w.u8(0).raw(node.as_bytes()).u64(*lo).u64(*hi),
             Owned::Commit(c) => w.u8(1).raw(&c.0),
+            Owned::Dots { node, ctrs } => {
+                let mut w = w.u8(2).raw(node.as_bytes()).u32(ctrs.len() as u32);
+                for c in ctrs {
+                    w = w.u64(*c);
+                }
+                w
+            }
         };
     }
     w.take()
@@ -46,7 +51,15 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
     for _ in 0..r.u32()? {
         out.push(match r.u8()? {
             0 => Owned::Node { node: r.tid()?, lo: r.u64()?, hi: r.u64()? },
-            _ => Owned::Commit(CommitId(r.arr()?)),
+            1 => Owned::Commit(CommitId(r.arr()?)),
+            _ => {
+                let node = r.tid()?;
+                let mut ctrs = Vec::new();
+                for _ in 0..r.u32()? {
+                    ctrs.push(r.u64()?);
+                }
+                Owned::Dots { node, ctrs }
+            }
         });
     }
     r.end()?;
@@ -98,16 +111,48 @@ fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -
     Ok(out)
 }
 
-/// Records deaths per body and drops bodies past keep at most (spec/commits.md §5).
+/// The held bodies carrying write `dot` of `(tid, ak)` when it died at `at`: its own commit's,
+/// and every compaction snapshot taken before `at` whose frontier holds it (a snapshot carries
+/// every write live at its time up to its frontier, spec/crdt.md §8). Commit-form writes are
+/// found in their own commit only (snapshots keep no frontier for them). Dropped bodies are not.
+fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Vec<(CommitId, usize)> {
+    let mut out = Vec::new();
+    let held = |c: &CommitId| -> Option<usize> {
+        let m = core.commits.get(c)?;
+        let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        (!m.dropped.contains(&(ai, 0))).then_some(ai)
+    };
+    if let Some(c) = core.commit_of(tid, ak, dot)
+        && let Some(ai) = held(&c)
+    {
+        out.push((c, ai));
+    }
+    if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
+        for (ts, s, fr) in core.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+            if *ts < at
+                && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
+                && let Some(ai) = held(s)
+                // a snapshot its author could not write carries nothing
+                && core.commits.get(s).is_some_and(|m| m.valid.get(ai).copied().unwrap_or(false))
+            {
+                out.push((*s, ai));
+            }
+        }
+    }
+    out
+}
+
+/// Records deaths per body (every held body carrying the write) and drops bodies past keep at
+/// most (spec/commits.md §5).
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
     let mut bodies = BTreeSet::new();
     for d in deaths {
-        let Some(c) = tx.core.commit_of(tid, ak, &d.stamp.dot) else { continue };
-        let Some(ai) = aspect_index(tx, &c, tid, ak) else { continue };
-        let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
-        let (body, _) = body_class(tx.core, &h, &c, ai);
-        tx.txn.note_death(tid, ak, &body, d.at)?;
-        bodies.insert((c, ai));
+        for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
+            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
+            let (body, _) = body_class(tx.core, &h, &c, ai);
+            tx.txn.note_death(tid, ak, &body, d.at)?;
+            bodies.insert((c, ai));
+        }
     }
     for (c, ai) in bodies {
         check_at_most(tx, &c, ai)?;
@@ -138,8 +183,8 @@ fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect's state
-/// rewritten shredded with its undo buffer cleared; node-sync is told to delete it at blind
-/// nodes.
+/// rewritten shredded with its undo buffer cleared (node-sync deletes it at blind nodes, judged
+/// from the dropped parts).
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     tx.core.touch();
     let Some(mut m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
@@ -151,6 +196,8 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     for di in 0..n {
         m.dropped.insert((ai, di));
     }
+    // the dropped deltas, to find what of the state holds copies of their writes
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes)?;
@@ -158,13 +205,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
-    tx.load(&a.tid, &a.ak)?;
-    let st = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten();
-    tx.set_state(&a.tid, &a.ak, st, Shred::Yes, true)?;
-    let now = tx.now();
-    let entry = Wr::new().raw(&c.0).raw(a.tid.as_bytes()).bytes(a.ak.as_str().as_bytes()).u64(now.0).take();
-    tx.txn.log_append(records::DELETIONS, &entry)?;
-    Ok(())
+    tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
@@ -174,17 +215,15 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
     let Some(o) = Owned::of(&m.header, c, ai).filter(|_| m.header.kind.has_own_writes()) else { return Ok(None) };
     let k = (a.tid, a.ak.clone());
-    let list = tx.core.valueless.entry(k.clone()).or_default();
+    let list = tx.core.valueless.entry_or_default(k.clone());
     if !list.contains(&o) {
-        list.push(o);
+        list.push(o.clone());
     }
     let enc = encode_owned(list);
     tx.txn.put_local(&records::aspect_key(records::VALUELESS, &a.tid, &a.ak), &enc, Shred::No)?;
-    tx.load(&a.tid, &a.ak)?;
-    if let Some(mut st) = tx.core.states.get(&k).cloned().flatten() {
-        crate::apply::strip_valueless(tx.core, &a.tid, &a.ak, &mut st);
-        tx.set_state(&a.tid, &a.ak, Some(st), Shred::Yes, true)?;
-    }
+    // the delta's writes lie where it touched the state (a page of a paged state)
+    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
+    tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
     Ok(Some(k))
 }
 
@@ -246,7 +285,8 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
 }
 
 /// Applies purge item `item` of commit `pc` to held delta `(c, ai)` if it may: its values go
-/// value-less, its body and every snapshot body carrying them drop, a re-snapshot is queued.
+/// value-less, its body and every snapshot body carrying them drop (node-sync re-snapshots
+/// where no covering snapshot is left, spec/commits.md §5).
 fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let (Some(p), Some(m)) = (tx.core.commits.get(pc).cloned(), tx.core.commits.get(c).cloned()) else { return Ok(()) };
     if !purge_allowed(tx.core, &p.header, pc, item, &m.header, c, ai) {
@@ -273,8 +313,6 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
             }
         }
     }
-    let entry = Wr::new().raw(a.tid.as_bytes()).bytes(a.ak.as_str().as_bytes()).take();
-    tx.txn.log_append(records::RESNAPSHOT, &entry)?;
     Ok(())
 }
 
@@ -423,11 +461,15 @@ impl Engine {
             for x in members {
                 let Some(a) = h.aspects.get(x) else { continue };
                 let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
-                tx.load(&a.tid, &a.ak)?;
+                // the pages holding the body's dots (all of them when the body is not held)
+                tx.load_lazy(&a.tid, &a.ak)?;
+                let touch = match crate::apply::held_parts(tx, &c, x)?.into_iter().next() {
+                    Some(osis_commit::Decoded::Delta(d)) => crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone()))),
+                    _ => None,
+                };
+                tx.ensure_touch(&a.tid, &a.ak, &touch)?;
                 let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-                let mut g = st.clone();
-                g.strip(&|d| o.owns(d));
-                if &g != st {
+                if st.writes().iter().any(|(d, _)| o.owns(d)) {
                     return Ok(true);
                 }
             }
@@ -479,10 +521,8 @@ impl Engine {
             }
             // frontiers cover only counters whose writes this state reflects: applied, valid
             let mut fr = std::collections::BTreeMap::new();
-            for ((t, a, n), ranges) in tx.core.ranges.iter() {
-                if *t != tid || *a != ak {
-                    continue;
-                }
+            let from = (tid, ak.clone(), Tid::from_bytes([0; 15]));
+            for ((_, _, n), ranges) in tx.core.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
                 let mut next = 1u64;
                 for (lo, (hi, c)) in ranges {
                     let ok = tx.core.commits.get(c).is_some_and(|m| m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak));
@@ -500,7 +540,7 @@ impl Engine {
             // the schema's default bounds: core, or a registered schema declaring the AK
             let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid() };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new(), split: false };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new(), split: false };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
@@ -540,21 +580,6 @@ impl Engine {
                 j.join(b);
             }
             Ok(Some(crate::engine::state::encode(&j)? == before))
-        })
-    }
-
-    /// Deletion obligations for node-sync: (commit, tid, ak, time), oldest first, from `from`.
-    pub fn deletions(&mut self, from: u64, limit: usize) -> Result<Vec<Deletion>> {
-        self.run(|tx| {
-            let mut out = Vec::new();
-            for (seq, b) in tx.txn.log_scan(records::DELETIONS, from, limit)? {
-                let mut r = Rd::new(&b);
-                let c = CommitId(r.arr()?);
-                let t = r.tid()?;
-                let ak = Ak::new(std::str::from_utf8(r.bytes()?).map_err(|_| Error::Corrupt("ak"))?).map_err(|_| Error::Corrupt("ak"))?;
-                out.push((seq, c, t, ak, WallMs(r.u64()?)));
-            }
-            Ok(out)
         })
     }
 }

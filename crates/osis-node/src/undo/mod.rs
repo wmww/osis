@@ -30,7 +30,15 @@ fn decode_buffer(b: &[u8]) -> Result<Vec<(CommitId, Vec<u8>)>> {
 /// Records the state of `(tid, ak)` before local commit `id` applies: the part undoing `delta`
 /// reads (`Fragment::footprint`), or all of it without one.
 pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta: Option<&Fragment>) -> Result<()> {
-    tx.load(tid, ak)?;
+    // a paged state loads what the delta touches (its footprint lies there)
+    match delta {
+        Some(d) => {
+            tx.load_lazy(tid, ak)?;
+            let touch = crate::engine::pages::touch_of(d, tx.core.pages.get(&(*tid, ak.clone())));
+            tx.ensure_touch(tid, ak, &touch)?;
+        }
+        None => tx.load(tid, ak)?,
+    }
     let pre = match (tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref), delta) {
         (Some(f), Some(d)) => crate::engine::state::encode(&f.footprint(d))?,
         (Some(f), None) => crate::engine::state::encode(f)?,
@@ -110,9 +118,16 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
                 f
             }
         };
-        tx.load(&a.tid, &a.ak)?;
-        let state = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten().unwrap_or_default();
+        // the undo reads the current state along the delta's paths
+        tx.load_lazy(&a.tid, &a.ak)?;
+        let touch = crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())));
+        tx.ensure_touch(&a.tid, &a.ak, &touch)?;
+        // a nested edit reads only its own entries (by dot: `osis_crdt::undo`), on the pages
+        // holding the delta's dots; the pre-commit side comes from the buffer or held bodies
         let lo = tx.txn.counter(&a.tid, &a.ak)?;
+        // read in place: the undo reads the current state along the delta's paths only
+        let empty = Fragment::default();
+        let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let mut w = Writer::new(ts, Source::node(node), lo);
         let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| a.ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
@@ -130,12 +145,12 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let out = match &view {
-            Some(v) => undo_delta(&mut w, &undone, &state, buf, v)?,
-            None => undo_delta(&mut w, &undone, &state, buf, &AnyView)?,
+            Some(v) => undo_delta(&mut w, &undone, state, buf, v)?,
+            None => undo_delta(&mut w, &undone, state, buf, &AnyView)?,
         };
         if let Some(f) = out {
             let r = w.range();
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false });
         }
     }
     if deltas.is_empty() {

@@ -86,7 +86,108 @@ fn seq(s: &mut Seq, f: DotFn<'_>) {
         .collect();
 }
 
+/// Collects the writes of a fragment: every stamp with its `ts`, every element identity
+/// (creation) without one; `Derived` dots as their owner's. Anchors are references, not writes.
+struct Writes<'a>(&'a mut Vec<(Dot, Option<osis_core::Ts>)>);
+
+impl Writes<'_> {
+    fn stamp(&mut self, s: &Stamp) {
+        self.0.push((s.dot.owner().clone(), Some(s.ts)));
+    }
+    fn opt(&mut self, s: &Option<Stamp>) {
+        if let Some(s) = s {
+            self.stamp(s);
+        }
+    }
+    fn elem(&mut self, d: &Dot) {
+        self.0.push((d.owner().clone(), None));
+    }
+    fn frag(&mut self, f: &Fragment) {
+        match f {
+            Fragment::Register(r) => {
+                self.opt(&r.reset);
+                if let Some(w) = &r.write {
+                    self.stamp(&w.stamp);
+                }
+            }
+            Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e }) => {
+                self.opt(&m.reset);
+                self.opt(&m.w);
+                for (d, x) in e {
+                    self.elem(d);
+                    self.opt(&x.reset);
+                    if let Some(f) = &x.frag {
+                        self.frag(f);
+                    }
+                }
+            }
+            Fragment::Struct(Struct { meta: m, fields }) => {
+                self.opt(&m.reset);
+                self.opt(&m.w);
+                fields.values().for_each(|f| self.frag(f));
+            }
+            Fragment::Enum(Enum { meta: m, case, payloads }) => {
+                self.opt(&m.reset);
+                self.opt(&m.w);
+                if let Some(c) = case {
+                    self.stamp(&c.stamp);
+                }
+                payloads.values().for_each(|f| self.frag(f));
+            }
+            Fragment::Map(mp) => {
+                self.opt(&mp.meta.reset);
+                self.opt(&mp.meta.w);
+                for (d, e) in &mp.entries {
+                    self.elem(d);
+                    self.opt(&e.reset);
+                    if let Some(f) = &e.frag {
+                        self.frag(f);
+                    }
+                }
+            }
+            Fragment::Seq(s) => {
+                self.opt(&s.meta.reset);
+                self.opt(&s.meta.w);
+                for (d, e) in crate::seq_span::expand(s.elems().clone()) {
+                    self.elem(&d);
+                    if let Some((st, _)) = &e.created {
+                        self.stamp(st);
+                    }
+                    for (st, _) in &e.pos {
+                        self.stamp(st);
+                    }
+                    if let Some((st, _)) = &e.deleted {
+                        self.stamp(st);
+                    }
+                    if let SeqContent::Frag(x) = &e.content {
+                        self.frag(x);
+                    }
+                }
+            }
+            Fragment::Slots(Slots { reg, members }) => {
+                if let Some(r) = reg {
+                    self.opt(&r.reset);
+                    if let Some(w) = &r.write {
+                        self.stamp(&w.stamp);
+                    }
+                }
+                members.values().for_each(|f| self.frag(f));
+            }
+        }
+    }
+}
+
 impl Fragment {
+    /// Every write in this fragment by its owner dot: stamps with their `ts`, element
+    /// creations (map entries, set and bag elements, sequence elements) without (a sequence
+    /// creation also appears with its creation stamp). For judging a snapshot's writes as their
+    /// authors' (spec/permissions.md §5.2) and ranking them (§7).
+    pub fn writes(&self) -> Vec<(Dot, Option<osis_core::Ts>)> {
+        let mut out = Vec::new();
+        Writes(&mut out).frag(self);
+        out
+    }
+
     /// Maps every dot (`f` sees non-`Derived` dots; `None` keeps the dot).
     pub fn map_dots(&mut self, f: &dyn Fn(&Dot) -> Option<Dot>) {
         match self {

@@ -40,6 +40,10 @@ fn laws(s: &[Fragment]) {
     assert_eq!(join(a, a), a.clone(), "idempotent");
     assert_eq!(join(&join(a, b), b), join(a, b), "absorbing");
     assert!(!join(a, a).is_empty() || a.is_empty());
+    // §4.3: the short-circuit presence equals the presence stamp's
+    for x in [a, b, c, &join(a, b)] {
+        assert_eq!(x.present(), x.written().is_some(), "present");
+    }
 }
 
 proptest! {

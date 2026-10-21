@@ -350,7 +350,8 @@ fn wide_struct_paged_fits_spec_commits_1() {
     assert!(65 * field.len() > MAX_BLOB && 63 * field.len() < MAX_BLOB);
     let mut m = Mutation::new();
     m.set(t, &WIDE_AK, &wide(65)).unwrap();
-    p.commit(m).unwrap().unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert!(!p.engine.package(&id).unwrap().unwrap().blobs.is_empty(), "the field map pages");
     let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };
     assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 65);
 }

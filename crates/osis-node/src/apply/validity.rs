@@ -62,12 +62,12 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
     let mut new = false;
     for (d, k, frag) in entries(f) {
-        if let (Some(Value::Tid(m)), Some(frag)) = (k, frag) {
-            let slot = core.member_keys.entry((*target, d)).or_insert_with(|| (m, None));
-            if slot.1.is_none() {
-                slot.1 = frag.read();
-                new = true;
-            }
+        if let (Some(Value::Tid(m)), Some(frag)) = (k, frag)
+            && core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none())
+        {
+            let v = frag.read();
+            core.member_keys.upsert((*target, d), || (m, None), |slot| slot.1 = v);
+            new = true;
         }
     }
     new
@@ -381,27 +381,12 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
         if !seen.insert(x) || seen.len() > 4096 {
             continue;
         }
-        for cs in core.held.commits.values() {
-            for c in cs {
-                for o in &c.ops {
-                    if o.member == x {
-                        if chain.contains(&o.target) {
-                            return true;
-                        }
-                        frontier.push(o.target);
-                    }
-                }
+        // the things `x` is named on as a member (edge writes, rosters, ledgers)
+        for t in core.held.named_on(&x) {
+            if chain.contains(t) {
+                return true;
             }
-        }
-        for ss in core.held.snapshots.values() {
-            for sn in ss {
-                if sn.roster.contains_key(&x) || sn.ledger.iter().any(|t| t.member == x) {
-                    if chain.contains(&sn.thing) {
-                        return true;
-                    }
-                    frontier.push(sn.thing);
-                }
-            }
+            frontier.push(*t);
         }
     }
     false
@@ -457,8 +442,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
         {
-            let e = core.rotation_role.entry((*id, *ai)).or_insert(r);
-            *e = (*e).max(r);
+            core.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
     if h.kind != Kind::Membership {
@@ -576,9 +560,10 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     if ak != "/created" && too_deep(core, &a.tid) {
         return false;
     }
-    // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline);
-    // a compaction snapshot's writes are judged as their authors' when bodies are rebuilt
-    if ak == "/created" || ak == "/members" || ak == "/tenures" || super::is_kind_snapshot(h.kind) {
+    // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline).
+    // A compaction snapshot is valid iff its author may write the aspect (spec/commits.md §2);
+    // its carried writes are judged as their authors' (`Carried`)
+    if ak == "/created" || ak == "/members" || ak == "/tenures" {
         return true;
     }
     let Some(tl) = core.timelines.get(&a.tid) else { return false };
@@ -596,9 +581,132 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
-/// Re-judges the held deltas whose validity may have changed since the last call (on things
-/// whose timeline was evaluated, or with other inputs changed; every one after open or a
-/// rollback); rebuilds aspects whose validity flipped. Returns them.
+/// Writes of one commit that held compaction snapshots carry while the commit itself is not held
+/// here: its author node, `ts`, the exact counters (sorted), and whether they are valid as its
+/// author's writes (spec/permissions.md §5.2: a snapshot vouches for nothing). An invalid group
+/// un-merges exactly these dots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Carried {
+    pub node: Tid,
+    pub ts: osis_core::Ts,
+    pub ctrs: Vec<u64>,
+    pub valid: bool,
+}
+
+/// The writes of snapshot fragment `f` of `(tid, ak)` whose commit is not held, grouped by
+/// (author node, `ts`) with their exact counters: a stamp gives its write's `ts`; an element
+/// created without a stamp of its own is judged with its node's nearest stamp below it (the same
+/// commit's, whose writes have consecutive counters; issues/snapshot-unstamped-writes.md). An
+/// element with no stamp below it is not judged; commit-form writes name no author: not judged
+/// either (same issue).
+pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(Tid, osis_core::Ts, BTreeSet<u64>)> {
+    let mut groups: BTreeMap<(Tid, osis_core::Ts), BTreeSet<u64>> = BTreeMap::new();
+    let mut bare: Vec<(Tid, u64)> = Vec::new();
+    for (d, ts) in f.writes() {
+        let osis_crdt::SourceKind::Node(n) = d.src.kind() else { continue };
+        // a dot a held commit owns is that commit's write, judged with it
+        if core.commit_of(tid, ak, &d).is_some() {
+            continue;
+        }
+        match ts {
+            Some(ts) => {
+                groups.entry((*n, ts)).or_default().insert(d.ctr);
+            }
+            None => bare.push((*n, d.ctr)),
+        }
+    }
+    // counters of one node on one aspect rise with `ts`: a creation belongs to the group with the
+    // greatest low counter at or below it
+    for (n, c) in bare {
+        let best = groups.iter_mut().filter(|((m, _), s)| *m == n && s.first().is_some_and(|lo| *lo <= c)).max_by_key(|(_, s)| s.first().copied());
+        if let Some((_, g)) = best {
+            g.insert(c);
+        }
+    }
+    groups.into_iter().map(|((n, ts), s)| (n, ts, s)).collect()
+}
+
+/// Whether carried writes of `node` at `ts` with counters `ctrs` on `(tid, ak)` are valid as
+/// their author's (§5.2), judged at their `ts` like a delta of theirs covering those counters.
+pub(crate) fn carried_valid(core: &Core, tid: &Tid, ak: &Ak, node: &Tid, ts: osis_core::Ts, ctrs: &[u64]) -> bool {
+    if ak.as_str() == "/created" {
+        return true;
+    }
+    if too_deep(core, tid) {
+        return false;
+    }
+    let (Some(lo), Some(hi)) = (ctrs.first().copied(), ctrs.last().and_then(|c| c.checked_add(1))) else { return false };
+    let Some(tl) = core.timelines.get(tid) else { return false };
+    // no commit ID is known: the point sorts before the author's commits at that `ts`
+    let point = Point { ts, node: *node, commit: CommitId([0; 32]) };
+    tl.delta_valid(point, tid, ak.as_str(), Dots::Node { lo, hi }, required_role(ak.as_str())) == Validity::Valid
+}
+
+/// Records and judges the writes snapshot fragment `f` carries without their commit; whether
+/// the aspect's judged set changed.
+pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, f: &Fragment) -> bool {
+    let groups = carried_of(core, tid, ak, f);
+    if groups.is_empty() {
+        return false;
+    }
+    let k = (*tid, ak.clone());
+    let mut cur = core.carried.get(&k).cloned().unwrap_or_default();
+    let before = cur.clone();
+    for (n, ts, ctrs) in groups {
+        match cur.iter_mut().find(|c| c.node == n && c.ts == ts) {
+            Some(c) => {
+                let all: BTreeSet<u64> = c.ctrs.iter().copied().chain(ctrs).collect();
+                c.ctrs = all.into_iter().collect();
+                c.valid = carried_valid(core, tid, ak, &n, ts, &c.ctrs);
+            }
+            None => {
+                let ctrs: Vec<u64> = ctrs.into_iter().collect();
+                let valid = carried_valid(core, tid, ak, &n, ts, &ctrs);
+                cur.push(Carried { node: n, ts, ctrs, valid });
+            }
+        }
+    }
+    if cur == before {
+        return false;
+    }
+    core.carried.insert(k, cur);
+    true
+}
+
+/// Drops the carried writes a commit now held owns (its counters; it is judged itself), and
+/// re-judges the groups that lost some.
+pub(crate) fn uncarry(core: &mut Core, h: &Header) {
+    if h.form != Form::Node || !h.kind.has_own_writes() {
+        return;
+    }
+    for a in &h.aspects {
+        let k = (a.tid, a.ak.clone());
+        let owns = |c: &Carried| c.node == h.author && c.ctrs.iter().any(|x| a.lo <= *x && *x < a.hi);
+        if !core.carried.get(&k).is_some_and(|v| v.iter().any(owns)) {
+            continue;
+        }
+        let mut v = core.carried.get(&k).cloned().unwrap_or_default();
+        for c in v.iter_mut().filter(|c| owns(c)) {
+            c.ctrs.retain(|x| !(a.lo <= *x && *x < a.hi));
+            c.valid = carried_valid(core, &a.tid, &a.ak, &c.node, c.ts, &c.ctrs);
+        }
+        v.retain(|c| !c.ctrs.is_empty());
+        if v.is_empty() {
+            core.carried.remove(&k);
+        } else {
+            core.carried.insert(k, v);
+        }
+    }
+}
+
+
+/// Re-judges the held deltas whose validity may have changed since the last call: those on the
+/// things whose timeline changed (`Core::stale_things`, filled by `update_timelines`: the things
+/// of components evaluated anew, and below what a continued walk touched), the commits whose
+/// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
+/// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Writes
+/// snapshots carry without their commit on those things too. Rebuilds aspects whose validity
+/// flipped; returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
@@ -607,18 +715,21 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
     let things = std::mem::take(&mut tx.core.stale_things);
-    let mut ids = std::mem::take(&mut tx.core.stale_commits);
-    if std::mem::take(&mut tx.core.stale_all) {
+    let explicit = std::mem::take(&mut tx.core.stale_commits);
+    let all = std::mem::take(&mut tx.core.stale_all);
+    let mut ids = explicit.clone();
+    if all {
         ids.extend(tx.core.commits.keys().copied());
     } else {
-        ids.extend(tx.core.by_aspect.iter().filter(|((t, _), _)| things.contains(t)).flat_map(|(_, s)| s.iter().map(|x| x.1)));
+        ids.extend(things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()));
     }
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
         let h = m.header.clone();
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(tx.core, &h, &id, ai)).collect();
-        if let Some(m) = tx.core.commits.get_mut(&id)
-            && m.valid != now
+        // parts on things not re-judged keep their flag
+        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if all || explicit.contains(&id) || h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
+        if tx.core.commits.get(&id).is_some_and(|m| m.valid != now)
+            && let Some(m) = tx.core.commits.get_mut(&id)
         {
             for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
                 if a != b
@@ -637,9 +748,26 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             tx.core.index_validity(&id);
         }
     }
+    // writes carried by snapshots without their commit, on the same things
+    let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
+    for k in aspects {
+        let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
+        let mut any = false;
+        for c in v.iter_mut() {
+            let now = carried_valid(tx.core, &k.0, &k.1, &c.node, c.ts, &c.ctrs);
+            if now != c.valid {
+                c.valid = now;
+                any = true;
+            }
+        }
+        if any {
+            tx.core.carried.insert(k.clone(), v);
+            flipped.insert(k);
+        }
+    }
     // what was not re-judged has not changed
     #[cfg(debug_assertions)]
-    for (id, m) in &tx.core.commits {
+    for (id, m) in tx.core.commits.iter() {
         let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
         debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
     }

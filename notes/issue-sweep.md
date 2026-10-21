@@ -21,12 +21,12 @@ Same as notes/mvp-progress.md "Method used by the run": a toplevel coordinator, 
 
 ## Unmerged branches
 - `worktree-agent-a9188d23cf53ba532` (node sync): in progress from main 9bcd188: the second-device joiner-removal liveness bug, concurrent upload duplicates, reading candidates from unknown authors, the remaining node-sync-gaps bullets.
-- `worktree-agent-a4d5d86e39171e244` (node core): in progress from the CRDT merge: node-core-gaps and node-state-not-paged.
+- `worktree-agent-a4d5d86e39171e244` (node core): node-state-not-paged done (left: node-sequences-not-paged, import-bare-anchors), node-core-gaps narrowed; main merged in.
 Both get a fresh review, a main merge, then merge to main with clippy + workspace tests + `tools/spec_map.py --check`.
 
 ## Issues left and their kind
 - Reframed tradeoffs for the owner (no implementation planned): header-list-commitments, token-admin-secret, reseal-triggers, store-concurrent-readers; chat-costs keeps only the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) with savings in user terms; ledger-same-ts-commits (needs a format change); crdt-undo-absent-positions (spec choice).
-- Being worked by the two branches above: node-sync-gaps, second-device-joiner-removal-loop, concurrent-upload-duplicates, reading-candidates-unknown-authors, node-core-gaps, node-state-not-paged.
+- Being worked by the two branches above: node-sync-gaps, second-device-joiner-removal-loop, concurrent-upload-duplicates, reading-candidates-unknown-authors, node-core-gaps, node-state-not-paged (now node-sequences-not-paged and import-bare-anchors).
 - Still to assign: p2p-followups, perm-eval-cost remainder (persisted walk at open, late writes early in long histories), crdt-seq-linearization-cost remainder (moves rebuild the placement, a multi-op batch copies the state once), api-deferred (queries are a design pass; the app layer is the owner's later work), tests-unbuilt remainder (10^4 sweep, membership-model refactors, TLA+ walk).
 
 ## Resume procedure

@@ -5,6 +5,11 @@
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
+pub(crate) mod groups;
+pub(crate) mod held;
+pub(crate) mod index;
+pub(crate) mod journal;
+pub(crate) mod pages;
 pub(crate) mod large;
 mod read;
 pub(crate) mod records;
@@ -25,9 +30,9 @@ use osis_core::{Ak, Clock, CommitId, Tid, Ts, WallMs};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
-use osis_perm::{MemoryHeldSet, Timelines};
+use journal::{JMap, JNested, JSet, JSetMap, Journaled};
+use osis_perm::Timelines;
 use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
-use records::{Rd, Wr};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -58,11 +63,13 @@ pub(crate) struct Meta {
     pub dropped: BTreeSet<(usize, usize)>,
 }
 
-/// Owner of writes: one delta of one node (`[lo, hi)`), or a commit-form commit.
+/// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
+/// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Owned {
     Node { node: Tid, lo: u64, hi: u64 },
     Commit(CommitId),
+    Dots { node: Tid, ctrs: Vec<u64> },
 }
 
 impl Owned {
@@ -78,13 +85,48 @@ impl Owned {
         match (self, d.src.kind()) {
             (Owned::Node { node, lo, hi }, SourceKind::Node(t)) => t == node && *lo <= d.ctr && d.ctr < *hi,
             (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
+            (Owned::Dots { node, ctrs }, SourceKind::Node(t)) => t == node && ctrs.binary_search(&d.ctr).is_ok(),
             _ => false,
         }
     }
 }
 
-/// Node-form ranges of one node on one aspect: lo -> (hi, commit).
-pub(crate) type Ranges = BTreeMap<u64, (u64, CommitId)>;
+/// Applies `$m` to every journaled index of a `Core`.
+macro_rules! journaled {
+    ($c:expr, $m:ident) => {{
+        let c = &mut *$c;
+        c.held.$m();
+        c.commits.$m();
+        c.invalid.$m();
+        c.by_aspect.$m();
+        c.snapshots.$m();
+        c.carried.$m();
+        c.by_thing.$m();
+        c.ranges.$m();
+        c.pending.$m();
+        c.syncing.$m();
+        c.void.$m();
+        c.valueless.$m();
+        c.secrets.$m();
+        c.own_keys.$m();
+        c.was.$m();
+        c.was_of.$m();
+        c.moved.$m();
+        c.groups.$m();
+        c.member_keys.$m();
+        c.unresolved.$m();
+        c.rotation_role.$m();
+        c.grant_overreach.$m();
+        c.box_keys.$m();
+        c.boxes_to.$m();
+        c.epoch_intro.$m();
+        c.box_written.$m();
+        c.secrets_unresolved.$m();
+    }};
+}
+
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
 
 /// A scan callback: key (without prefix), value.
 type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
@@ -92,57 +134,72 @@ type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
 /// A decoded commit record: received, origin, dropped parts, blob.
 pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
 
-/// In-memory state over the store: caches and indexes, rebuilt by `load`.
+/// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
+/// journaled (`journal`): a failed transaction undoes its own changes to them.
 pub(crate) struct Core {
     pub id: Identity,
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
     /// Page indexes of the cached states kept paged in the store.
-    pub pages: HashMap<(Tid, Ak), state::PageIndex>,
+    pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
-    pub held: MemoryHeldSet,
+    pub held: held::Held,
     pub timelines: Timelines,
-    pub commits: BTreeMap<CommitId, Meta>,
+    /// The running transaction called `touch` (`rollback` drops the caches).
+    pub dirty: bool,
+    /// The paged maps' key index hash key, derived from the node's seed.
+    pub key_salt: [u8; 32],
+    pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
-    pub invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
-    pub by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
+    pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
+    /// besides its own (deaths, spec/commits.md §5).
+    pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
+    /// Writes held snapshots carry whose own commit is not held, per aspect, judged as their
+    /// authors' (spec/permissions.md §5.2: a snapshot vouches for nothing).
+    pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
+    /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
+    pub by_thing: JSetMap<Tid, CommitId>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
-    pub ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
-    pub pending: BTreeMap<CommitId, Reason>,
-    pub syncing: BTreeSet<Tid>,
-    pub void: BTreeSet<CommitId>,
+    pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
+    pub pending: JMap<CommitId, Reason>,
+    pub syncing: JSet<Tid>,
+    pub void: JSet<CommitId>,
     /// What validity may have changed for since the last `rejudge_all`: things whose timeline
-    /// was evaluated, commits whose other inputs changed (void, required roles, overreach), or
-    /// everything (open, rollback).
+    /// changed, commits whose other inputs changed (void, required roles, overreach), or
+    /// everything (a rebuild at open).
     pub stale_things: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
-    pub valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
+    pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
-    pub secrets: BTreeMap<Tid, ActorEpochs>,
+    pub secrets: JMap<Tid, ActorEpochs>,
     /// Things known to have secrets of their own (a `/keys` with keysets).
-    pub own_keys: BTreeSet<Tid>,
+    pub own_keys: JSet<Tid>,
     /// `/was` index: t -> things whose `/was` reads t.
-    pub was: BTreeMap<Tid, BTreeSet<Tid>>,
-    pub moved: BTreeMap<Tid, Tid>,
-    /// `/group` of each group thing: (items, subgroups).
-    pub group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
-    /// `/groups`: thing -> groups containing it, transitively.
-    pub groups: BTreeMap<Tid, BTreeSet<Tid>>,
+    pub was: JSetMap<Tid, Tid>,
+    /// The `/was` each thing reads.
+    pub was_of: JMap<Tid, Tid>,
+    pub moved: JMap<Tid, Tid>,
+    /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
+    pub groups: groups::Groups,
     /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
-    pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
+    pub member_keys: JMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     /// Membership commits whose removed keys are not known yet.
-    pub unresolved: BTreeSet<CommitId>,
+    pub unresolved: JSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
-    pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    pub box_keys: JMap<(Tid, Dot), osis_core::Value>,
+    /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
+    pub boxes_to: JSetMap<Tid, (Tid, osis_core::Value)>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
-    pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
+    pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
@@ -150,24 +207,25 @@ pub(crate) struct Core {
     /// here (`validity::add_membership`): no roster snapshot of them is written.
     pub frontier_unknown: BTreeSet<Tid>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `membership_changed`. Not backed up: a rollback clears it.
+    /// write's future `ts`); cleared by `membership_changed`. Not journaled: a rollback clears it.
     pub departures: BTreeMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
-    pub secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
+    pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
-    pub rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
+    pub rotation_role: JMap<(CommitId, usize), osis_core::Role>,
     /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
-    pub grant_overreach: BTreeSet<(CommitId, usize)>,
+    pub grant_overreach: JSet<(CommitId, usize)>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_core::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
-    /// The indexes as they were before the running transaction first changed them.
-    pub backup: Option<Box<Backup>>,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side membership rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Tests: after each per-entry `/secrets` ingestion, check that ingesting the whole state
+    /// learns nothing more (`apply::atomic::observe_secrets_keys`).
+    pub check_ingest: bool,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -192,35 +250,7 @@ pub(crate) struct Core {
 }
 
 /// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
-pub type EpochIntro = BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
-
-/// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
-/// re-evaluating the restored held set).
-pub(crate) struct Backup {
-    held: MemoryHeldSet,
-    commits: BTreeMap<CommitId, Meta>,
-    invalid: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    by_aspect: BTreeMap<(Tid, Ak), BTreeSet<(Ts, CommitId)>>,
-    ranges: BTreeMap<(Tid, Ak, Tid), Ranges>,
-    pending: BTreeMap<CommitId, Reason>,
-    syncing: BTreeSet<Tid>,
-    void: BTreeSet<CommitId>,
-    valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
-    secrets: BTreeMap<Tid, ActorEpochs>,
-    own_keys: BTreeSet<Tid>,
-    was: BTreeMap<Tid, BTreeSet<Tid>>,
-    moved: BTreeMap<Tid, Tid>,
-    group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
-    groups: BTreeMap<Tid, BTreeSet<Tid>>,
-    member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
-    unresolved: BTreeSet<CommitId>,
-    rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
-    grant_overreach: BTreeSet<(CommitId, usize)>,
-    box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
-    epoch_intro: EpochIntro,
-    box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
-    secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
-}
+pub(crate) type EpochIntro = JMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
@@ -229,141 +259,113 @@ impl Core {
         self.departures.clear();
     }
 
-    /// Re-evaluates the timelines over the held set.
+    /// Re-evaluates the timelines around the things whose held inputs changed; the things of
+    /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
-        self.timelines.update(&self.held);
-        self.stale_things.extend(self.timelines.changed().iter().copied());
+        let touched = self.held.take_touched();
+        if !touched.is_empty() {
+            let changed = self.timelines.update_touched(&self.held, &touched);
+            self.stale_things.extend(changed.evaluated);
+            // a walk that only went on changed authority only below what it touched
+            let below = self.held.reach(&changed.extended);
+            self.stale_things.extend(below);
+        }
         self.membership_changed();
     }
 
-    /// The sizes of the indexes `touch` saves (a debug check that a failed transaction changed
-    /// none without it).
-    #[cfg(debug_assertions)]
-    fn shape(&self) -> [usize; 11] {
-        [self.commits.len(), self.pending.len(), self.secrets.len(), self.own_keys.len(), self.by_aspect.len(), self.invalid.len(), self.void.len(), self.valueless.len(), self.groups.len(), self.member_keys.len(), self.box_keys.len()]
+    /// Whether some validity waits for `rejudge_all`.
+    pub fn stale(&self) -> bool {
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
     }
 
-    /// Saves the indexes before the running transaction's first change to them.
+    /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
         self.live_bodies.clear();
         self.generation += 1;
-        if self.backup.is_some() {
-            return;
-        }
-        self.backup = Some(Box::new(Backup {
-            held: self.held.clone(),
-            commits: self.commits.clone(),
-            invalid: self.invalid.clone(),
-            by_aspect: self.by_aspect.clone(),
-            ranges: self.ranges.clone(),
-            pending: self.pending.clone(),
-            syncing: self.syncing.clone(),
-            void: self.void.clone(),
-            valueless: self.valueless.clone(),
-            secrets: self.secrets.clone(),
-            own_keys: self.own_keys.clone(),
-            was: self.was.clone(),
-            moved: self.moved.clone(),
-            group_defs: self.group_defs.clone(),
-            groups: self.groups.clone(),
-            member_keys: self.member_keys.clone(),
-            unresolved: self.unresolved.clone(),
-            rotation_role: self.rotation_role.clone(),
-            grant_overreach: self.grant_overreach.clone(),
-            box_keys: self.box_keys.clone(),
-            epoch_intro: self.epoch_intro.clone(),
-            box_written: self.box_written.clone(),
-            secrets_unresolved: self.secrets_unresolved.clone(),
-        }));
+        self.dirty = true;
     }
 
-    /// Undoes the aborted transaction's changes to the caches (none when it changed nothing:
-    /// a failed read keeps them).
+    /// The running transaction committed: its journal is forgotten.
+    fn commit_journal(&mut self) {
+        journaled!(self, commit);
+        self.written.clear();
+        self.dirty = false;
+    }
+
+    /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
+    /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
-        if self.backup.is_none() && self.written.is_empty() {
-            return;
+        if self.dirty || !self.written.is_empty() {
+            self.dirty = false;
+            self.live_trees.clear();
+            self.live_bodies.clear();
+            self.bodies.clear();
+            self.generation += 1;
+            self.membership_changed();
+            for k in std::mem::take(&mut self.written) {
+                self.states.remove(&k);
+                self.pages.remove(&k);
+            }
         }
-        self.live_trees.clear();
-        self.live_bodies.clear();
-        self.bodies.clear();
-        self.generation += 1;
-        self.membership_changed();
-        for k in std::mem::take(&mut self.written) {
-            self.states.remove(&k);
-            self.pages.remove(&k);
+        journaled!(self, rollback);
+        // the timelines follow the restored held set; validity flags are restored with `commits`
+        let touched = self.held.take_touched();
+        if !touched.is_empty() {
+            self.timelines.update_touched(&self.held, &touched);
         }
-        if let Some(b) = self.backup.take() {
-            let b = *b;
-            self.held = b.held;
-            self.commits = b.commits;
-            self.invalid = b.invalid;
-            self.by_aspect = b.by_aspect;
-            self.ranges = b.ranges;
-            self.pending = b.pending;
-            self.syncing = b.syncing;
-            self.void = b.void;
-            self.valueless = b.valueless;
-            self.secrets = b.secrets;
-            self.own_keys = b.own_keys;
-            self.was = b.was;
-            self.moved = b.moved;
-            self.group_defs = b.group_defs;
-            self.groups = b.groups;
-            self.member_keys = b.member_keys;
-            self.unresolved = b.unresolved;
-            self.rotation_role = b.rotation_role;
-            self.grant_overreach = b.grant_overreach;
-            self.box_keys = b.box_keys;
-            self.epoch_intro = b.epoch_intro;
-            self.box_written = b.box_written;
-            self.secrets_unresolved = b.secrets_unresolved;
-            self.timelines.update(&self.held);
-            self.stale_all = true;
-        }
+        self.stale_things.clear();
+        self.stale_commits.clear();
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
+        let key_salt = osis_core::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
             pages: HashMap::new(),
-            held: MemoryHeldSet::new(),
+            held: held::Held::default(),
             timelines: Timelines::new(),
-            commits: BTreeMap::new(),
-            invalid: BTreeMap::new(),
-            by_aspect: BTreeMap::new(),
-            ranges: BTreeMap::new(),
-            pending: BTreeMap::new(),
-            syncing: BTreeSet::new(),
-            void: BTreeSet::new(),
             stale_things: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
-            valueless: BTreeMap::new(),
-            secrets: BTreeMap::new(),
-            own_keys: BTreeSet::new(),
-            was: BTreeMap::new(),
-            moved: BTreeMap::new(),
-            group_defs: BTreeMap::new(),
-            groups: BTreeMap::new(),
-            member_keys: BTreeMap::new(),
-            unresolved: BTreeSet::new(),
-            rotation_role: BTreeMap::new(),
-            grant_overreach: BTreeSet::new(),
-            box_keys: BTreeMap::new(),
-            epoch_intro: BTreeMap::new(),
-            box_written: BTreeMap::new(),
+            dirty: false,
+            key_salt,
+            commits: JMap::default(),
+            invalid: JSetMap::default(),
+            by_aspect: JSetMap::default(),
+            snapshots: JMap::default(),
+            carried: JMap::default(),
+            by_thing: JSetMap::default(),
+            ranges: JNested::default(),
+            pending: JMap::default(),
+            syncing: JSet::default(),
+            void: JSet::default(),
+            valueless: JMap::default(),
+            secrets: JMap::default(),
+            own_keys: JSet::default(),
+            was: JSetMap::default(),
+            was_of: JMap::default(),
+            moved: JMap::default(),
+            groups: groups::Groups::default(),
+            member_keys: JMap::default(),
+            unresolved: JSet::default(),
+            rotation_role: JMap::default(),
+            grant_overreach: JSet::default(),
+            box_keys: JMap::default(),
+            boxes_to: JSetMap::default(),
+            epoch_intro: JMap::default(),
+            box_written: JMap::default(),
             departures: BTreeMap::new(),
             frontiers: BTreeMap::new(),
             frontier_unknown: BTreeSet::new(),
-            secrets_unresolved: BTreeMap::new(),
+            secrets_unresolved: JMap::default(),
             schemas: BTreeMap::new(),
             events: Events::default(),
-            backup: None,
             written: Vec::new(),
             skip_writer_rules: false,
+            check_ingest: false,
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
@@ -383,14 +385,9 @@ impl Core {
         for (ai, a) in m.header.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             if m.valid.get(ai).copied().unwrap_or(false) {
-                if let Some(s) = self.invalid.get_mut(&k) {
-                    s.remove(id);
-                    if s.is_empty() {
-                        self.invalid.remove(&k);
-                    }
-                }
+                self.invalid.remove(&k, id);
             } else {
-                self.invalid.entry(k).or_default().insert(*id);
+                self.invalid.insert(k, *id);
             }
         }
     }
@@ -418,15 +415,23 @@ pub(crate) struct Tx<'a> {
 }
 
 impl Tx<'_> {
-    /// Loads the state of `(tid, ak)` into the cache.
-    pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+    /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
+    /// as `ensure_*` and `load` need them).
+    pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         let k = (*tid, ak.clone());
         if self.core.states.contains_key(&k) {
             return Ok(());
         }
         let f = match self.txn.get_aspect(tid, ak)? {
-            Some(u) if state::is_paged(&u.state) => {
-                let (f, idx) = state::load_paged(&mut self.txn, tid, ak, &u.state)?;
+            Some(mut u) if pages::is_paged(&u.state) => {
+                // an earlier build's layout is laid out anew, once
+                if let Some(whole) = pages::legacy(&mut self.txn, tid, ak, &u.state)? {
+                    self.core.touch();
+                    self.core.written.push(k.clone());
+                    u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true, &self.core.key_salt)?.0;
+                    self.txn.put_aspect(tid, ak, &u, Shred::No)?;
+                }
+                let (f, idx) = pages::open(&u.state, &self.core.key_salt)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
             }
@@ -437,12 +442,76 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Runs `g` on the cached state of `(tid, ak)` (taken out of the cache meanwhile) and its page
+    /// index; nothing for an unpaged state.
+    fn with_pages<T>(&mut self, tid: &Tid, ak: &Ak, g: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment) -> Result<T>) -> Result<Option<T>> {
+        let k = (*tid, ak.clone());
+        let Some(idx) = self.core.pages.get_mut(&k) else { return Ok(None) };
+        let Some(mut f) = self.core.states.get_mut(&k).and_then(Option::take) else { return Ok(None) };
+        let r = g(&mut self.txn, idx, &mut f);
+        self.core.states.insert(k, Some(f));
+        r.map(Some)
+    }
+
+    /// Loads the whole state of `(tid, ak)` into the cache.
+    pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            self.with_pages(tid, ak, |txn, idx, f| pages::load_all(txn, tid, ak, idx, f))?;
+        }
+        Ok(())
+    }
+
+    /// Loads what ops at `paths` (op path segments) read and write (`pages::ensure_path`).
+    pub fn ensure_paths(&mut self, tid: &Tid, ak: &Ak, paths: &[Vec<osis_crdt::PathSeg>]) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            return Ok(());
+        }
+        let ok = self.with_pages(tid, ak, |txn, idx, f| {
+            for p in paths {
+                if !pages::ensure_path(txn, tid, ak, idx, f, p)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })?;
+        if ok == Some(false) {
+            self.load(tid, ak)?;
+        }
+        Ok(())
+    }
+
+    /// Loads what joining a delta with this touch reads and rewrites (`pages::ensure_touch`;
+    /// `None`: everything).
+    pub fn ensure_touch(&mut self, tid: &Tid, ak: &Ak, touch: &pages::Touch) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            return Ok(());
+        }
+        let ok = match touch {
+            Some(t) => self.with_pages(tid, ak, |txn, idx, f| pages::ensure_touch(txn, tid, ak, idx, f, t))? == Some(true),
+            None => false,
+        };
+        if !ok {
+            self.load(tid, ak)?;
+        }
+        Ok(())
+    }
+
+    /// The cached state as loaded so far (after `load_lazy` and `ensure_*`).
+    pub fn cached(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
+        self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref)
+    }
+
+    /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;
         Ok(self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref))
     }
 
-    /// Writes a state (keeping the unit's undo buffer unless `clear_undo`).
+    /// Writes a whole state (keeping the unit's undo buffer unless `clear_undo`); `f` is the
+    /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
         self.core.touch();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
@@ -450,7 +519,7 @@ impl Tx<'_> {
         }
         self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
-        let (bytes, idx) = state::write_full(&mut self.txn, tid, ak, f.as_ref(), state::is_paged(&unit.state))?;
+        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
         unit.state = bytes;
         match idx {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
@@ -470,17 +539,18 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Writes a state a join changed: `touch` (`state::touch_of` the delta) says what it
+    /// Writes a state a join changed: `touch` (`pages::touch_of` the delta) says what it
     /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
-    /// else is written whole. The caller has noted the state as written (`Core::written`).
-    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
+    /// else is written whole (the pages not loaded joined in first). The caller has noted the
+    /// state as written (`Core::written`).
+    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
         self.core.live_bodies.clear();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
         let k = (*tid, ak.clone());
-        if let (Some(st), Some(idx)) = (&f, self.core.pages.get_mut(&k))
-            && let Some(unit_state) = state::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
+        if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
+            && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
         {
             if let Some(s) = unit_state {
                 let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
@@ -490,24 +560,101 @@ impl Tx<'_> {
             self.core.states.insert(k, f);
             return Ok(());
         }
+        let mut f = f;
+        if let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k)) {
+            pages::load_all(&mut self.txn, tid, ak, idx, st)?;
+        }
         self.set_state(tid, ak, f, shred, false)
+    }
+
+    /// Rewrites shredded what of the state of `(tid, ak)` may hold copies of a dropped body's
+    /// writes (`bodies`: its deltas), and clears the undo buffer (spec/commits.md §5: dropping a
+    /// body destroys every local copy; the state's content is unchanged). A paged state rewrites
+    /// the pages holding the bodies' dots and its skeleton; anything else is rewritten whole.
+    pub fn shred_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment]) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
+            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
+            None => None,
+        };
+        if let Some(touches) = touches {
+            for t in &touches {
+                self.ensure_touch(tid, ak, &Some(t.clone()))?;
+            }
+            self.core.touch();
+            self.core.written.push(k.clone());
+            let done = self.with_pages(tid, ak, |txn, idx, f| {
+                for t in &touches {
+                    if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
+                        return Ok(false);
+                    }
+                }
+                pages::unindex(txn, idx, tid, ak, f, bodies)?;
+                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
+                unit.state = pages::skeleton_unit(f, idx)?;
+                unit.undo.clear();
+                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
+                Ok(true)
+            })?;
+            if done == Some(true) {
+                return Ok(());
+            }
+        }
+        self.load(tid, ak)?;
+        let st = self.core.states.get(&k).cloned().flatten();
+        self.set_state(tid, ak, st, Shred::Yes, true)
+    }
+
+    /// Holds value-less the writes of `(tid, ak)` that `owned` owns (a delta expired or
+    /// purged, spec/crdt.md §4.7), shredding every copy of their values; `bodies` are the deltas
+    /// owning them (where they lie). A paged state strips and rewrites only their pages and
+    /// its skeleton; anything else is rewritten whole.
+    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
+            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
+            None => None,
+        };
+        let pred = |d: &osis_crdt::Dot| owned.owns(d);
+        if let Some(touches) = touches {
+            for t in &touches {
+                self.ensure_touch(tid, ak, &Some(t.clone()))?;
+            }
+            self.core.touch();
+            self.core.written.push(k.clone());
+            let done = self.with_pages(tid, ak, |txn, idx, f| {
+                if !pages::strip_touched(txn, idx, tid, ak, f, &touches, &pred)? {
+                    return Ok(false);
+                }
+                let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
+                unit.state = pages::skeleton_unit(f, idx)?;
+                unit.undo.clear();
+                txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
+                Ok(true)
+            })?;
+            if done == Some(true) {
+                return Ok(());
+            }
+        }
+        self.load(tid, ak)?;
+        if let Some(mut st) = self.core.states.get(&k).cloned().flatten() {
+            st.strip(&pred);
+            self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
+        }
+        Ok(())
     }
 
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())
     }
 
+    /// Writes a commit record: what the engine indexes of it (`index::record_head`: received,
+    /// origin, dropped parts, per part its validity and roles) and its blob.
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
         self.core.bodies.remove(id);
-        let mut w = Wr::new().u8(1).u64(meta.received.0).u8(match meta.origin {
-            Origin::Local => 0,
-            Origin::Remote => 1,
-        });
-        w = w.u32(meta.dropped.len() as u32);
-        for (a, d) in &meta.dropped {
-            w = w.u32(*a as u32).u32(*d as u32);
-        }
-        let v = w.raw(&blob.encode()).take();
+        let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         Ok(())
     }
@@ -545,19 +692,9 @@ fn scan_local(txn: &mut Transaction<'_>, prefix: &[u8], f: &mut ScanFn<'_>) -> R
 
 /// `(received, origin, dropped, blob)`.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
-    let mut r = Rd::new(v);
-    if r.u8()? != 1 {
-        return Err(Error::Corrupt("commit record version"));
-    }
-    let received = WallMs(r.u64()?);
-    let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };
-    let n = r.u32()?;
-    let mut dropped = BTreeSet::new();
-    for _ in 0..n {
-        dropped.insert((r.u32()? as usize, r.u32()? as usize));
-    }
-    let blob = CommitBlob::decode(r.rest()).map_err(|_| Error::Corrupt("commit blob"))?;
-    Ok((received, origin, dropped, blob))
+    let (head, rest) = index::parse_head(v)?;
+    let blob = CommitBlob::decode(rest).map_err(|_| Error::Corrupt("commit blob"))?;
+    Ok((head.received, head.origin, head.dropped, blob))
 }
 
 /// One node's engine.
@@ -581,7 +718,11 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
-        e.run(|tx| Ok(tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?))?;
+        // a new store: its (empty) persisted index is current
+        e.run(|tx| {
+            tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?;
+            index::write_all(tx)
+        })?;
         e.bootstrap()?;
         Ok(e)
     }
@@ -674,6 +815,13 @@ impl Engine {
         self.core.hlc.set_offset(ms);
     }
 
+    /// Tests: check every per-entry `/secrets` ingestion against the whole state's (an operation
+    /// fails with `Misuse` where they differ).
+    #[doc(hidden)]
+    pub fn check_secrets_ingest(&mut self, on: bool) {
+        self.core.check_ingest = on;
+    }
+
     /// A channel of engine events, sent after durability.
     pub fn subscribe(&mut self) -> Receiver<Event> {
         self.core.events.subscribe()
@@ -681,12 +829,17 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
-        #[cfg(debug_assertions)]
-        let shape = self.core.shape();
+        // changes made outside a transaction are not this one's to undo
+        self.core.commit_journal();
+        let stale_all = self.core.stale_all;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-                match f(&mut tx) {
+                // the persisted index follows the in-memory indexes in the same transaction
+                let r = f(&mut tx);
+                // every validity change was judged before the index is persisted
+                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
+                match r.and_then(|v| index::persist(&mut tx).map(|_| v)) {
                     Ok(v) => {
                         let Tx { txn, .. } = tx;
                         txn.commit().map(|_| v).map_err(Error::from)
@@ -698,26 +851,22 @@ impl Engine {
         };
         match r {
             Ok(v) => {
-                self.core.backup = None;
-                self.core.written.clear();
+                self.core.commit_journal();
                 self.core.events.flush();
                 Ok(v)
             }
             Err(e) => {
-                // a failed transaction that changed nothing keeps the caches (`rollback`): every
-                // index change must go through `touch` or `written`
-                #[cfg(debug_assertions)]
-                debug_assert!(self.core.backup.is_some() || !self.core.written.is_empty() || self.core.shape() == shape, "an index changed without Core::touch");
                 self.core.events.discard();
                 self.core.rollback();
+                self.core.stale_all = stale_all;
                 Err(e)
             }
         }
     }
 
-    /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
-    /// subscribers).
-    pub(crate) fn reload(&mut self) -> Result<()> {
+    /// A fresh `Core` loaded from the store (`rebuild`: ignoring the persisted index); whether
+    /// it was rebuilt from the commit records.
+    fn load_fresh(&mut self, rebuild: bool) -> Result<bool> {
         let id = Identity::from_seed(self.core.id.seed().clone());
         let mut fresh = Core::new(id, self.clock.clone());
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
@@ -726,9 +875,28 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.check_ingest = self.core.check_ingest;
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-        crate::apply::load(&mut tx)
+        let r = crate::apply::load(&mut tx, rebuild);
+        self.core.commit_journal();
+        r
+    }
+
+    /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
+    /// subscribers).
+    pub(crate) fn reload(&mut self) -> Result<()> {
+        let rebuilt = match self.load_fresh(false) {
+            Ok(r) => r,
+            // a persisted index that does not decode is rebuilt from the commit records
+            Err(Error::Corrupt(_)) => self.load_fresh(true)?,
+            Err(e) => return Err(e),
+        };
+        if rebuilt {
+            // persisted for the next open
+            self.run(index::write_all)?;
+        }
+        Ok(())
     }
 }
