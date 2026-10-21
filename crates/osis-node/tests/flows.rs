@@ -240,7 +240,7 @@ fn removal_rotates_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
 }
 
-// notes/local-store.md (a rebuildable index): after grants, a removal with its rotation, content
+// spec/permissions.md §5.2 (validity judged alike); notes/local-store.md (a rebuildable index): after grants, a removal with its rotation, content
 // by the removed member before and after it (the latter invalid here), the indexes an open reads
 // from the persisted index equal those rebuilt from every commit record, and those in memory; a
 // tag of other rules or an index that does not decode is rebuilt.

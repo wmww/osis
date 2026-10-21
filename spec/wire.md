@@ -26,6 +26,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MEMBERSHIP_KEEP` | 90 days |
+| `SNAPSHOT_GRACE` | 1 hour: added to a compaction-snapshot body's relative keep-at-most bound (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `RESOLUTION_HOPS` | 8 (spec/permissions.md §7) |

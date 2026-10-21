@@ -1,6 +1,6 @@
 //! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8): deaths per body from the
-//! crdt change summary, keep-at-most drops (in the killing transaction for at most 0, else by
-//! timer), expiry at T (value-less, body dropped), purge requests judged by perm at the
+//! crdt change summary, keep-at-most drops (in the killing transaction for at most 0 but for
+//! compaction snapshots, which get `SNAPSHOT_GRACE` more, else by timer), expiry at T (value-less, body dropped), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
 //! test. node-sync judges what to delete at blind nodes and what to re-snapshot from the commit
 //! index (dropped parts, `covered`), so no queue is kept here.
@@ -233,8 +233,10 @@ fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
     if let Some(t) = keep.at_most {
         // at most 0: the replacing node drops in the killing transaction, even when the
-        // killing `ts` is ahead of its clock
-        let zero = a.retention.at_most.rel == Some(0) && d.is_some();
+        // killing `ts` is ahead of its clock; a compaction snapshot keeps to the next
+        // compaction or its first death plus D plus `SNAPSHOT_GRACE` (`body_keep`), so an
+        // erasing edit does not re-snapshot the aspect
+        let zero = a.retention.at_most.rel == Some(0) && d.is_some() && !m.header.kind.is_compaction();
         if t <= tx.now().0 || zero {
             for x in members {
                 drop_part(tx, c, x)?;
@@ -524,6 +526,9 @@ impl Engine {
             let Some(ai) = aspect_index(tx, &c, &tid, &ak) else { return Ok(true) };
             let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { return Ok(true) };
             let (_, members) = body_class(tx.core, &h, &c, ai);
+            if h.kind.is_compaction() {
+                return snapshot_live(tx, &h, &c, &members);
+            }
             for x in members {
                 let Some(a) = h.aspects.get(x) else { continue };
                 let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
@@ -674,6 +679,42 @@ impl Engine {
             Ok(Some(crate::engine::state::encode(&j)? == before))
         })
     }
+}
+
+/// Whether a compaction snapshot carries a write still in this node's state (`body_live`): held,
+/// a write it carries (by dot) is there; dropped, a node-form write within its frontiers
+/// or a commit-form write is there (it carried every write live at its time up to them; unknown
+/// counts as live).
+fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
+    for x in members {
+        let Some(a) = h.aspects.get(*x) else { continue };
+        let k = (a.tid, a.ak.clone());
+        let parts = crate::apply::held_parts(tx, c, *x)?;
+        let frontiers = tx.core.snapshots.get(&k).and_then(|v| v.iter().find(|s| s.1 == *c)).map(|s| s.2.clone());
+        if parts.is_empty() && frontiers.is_none() {
+            return Ok(true);
+        }
+        tx.load(&a.tid, &a.ak)?;
+        let Some(Some(st)) = tx.core.states.get(&k) else { continue };
+        // by dot: tombstones and other writes without a `ts` count too
+        let live: BTreeSet<osis_crdt::Dot> = st.writes().into_iter().map(|(d, _)| d).collect();
+        if parts.is_empty() {
+            let fr = frontiers.unwrap_or_default();
+            if live.iter().any(|d| match d.src.kind() {
+                osis_crdt::SourceKind::Node(n) => fr.0.get(n).is_some_and(|f| *f >= d.ctr),
+                _ => true,
+            }) {
+                return Ok(true);
+            }
+            continue;
+        }
+        for p in parts {
+            if frag(p).writes().into_iter().any(|(d, _)| live.contains(&d)) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn frag(d: Decoded) -> Fragment {

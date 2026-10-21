@@ -64,6 +64,8 @@ pub struct Net {
     held_msgs: Vec<Msg>,
     /// Message kinds nodes sent to servers, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
+    /// Bytes nodes sent to servers.
+    pub sent_bytes: usize,
     /// Every dial: (node, address).
     pub dialed: Vec<(usize, Address)>,
 }
@@ -74,7 +76,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), dialed: Vec::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -237,6 +239,7 @@ impl Net {
                     self.queue.push_back(Msg::Close(m, pc));
                 }
                 Action::Send { conn, bytes } => {
+                    self.sent_bytes += bytes.len();
                     let mut d = osis_proto::FrameDecoder::new();
                     d.push(&bytes);
                     while let Ok(Some(body)) = d.next_frame() {
@@ -447,6 +450,8 @@ aspect /t/gone: string [by: writer, keep_at_most: 1h];
 aspect /t/brief: string [expires: 1h];
 aspect /t/blob: blob;
 aspect /t/big: map<string, string>;
+aspect /t/gonemap: map<string, string> [by: writer, keep_at_most: 0s];
+aspect /t/shortmap: map<string, string> [by: writer, keep_at_most: 10m];
 "#,
 );
 
@@ -455,6 +460,8 @@ pub const GONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gone",
 pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/brief", &TEST);
 pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/blob", &TEST);
 pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/big", &TEST);
+pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gonemap", &TEST);
+pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/shortmap", &TEST);
 
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())
