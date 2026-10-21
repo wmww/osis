@@ -346,7 +346,7 @@ impl SyncEngine {
     /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
     /// membership-class ones only (spec/sync.md §2: its content entries go).
     fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
-        let mut bodies = self.engine.label_bodies(g)?;
+        let mut bodies = self.engine.label_bodies_meta(g)?;
         if self.is_replaced(g, l) {
             bodies.retain(|b| b.membership);
         }
@@ -692,7 +692,11 @@ impl SyncEngine {
         let (id, key) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone()))) {
             Some(x) => x,
             None => {
-                let s = seal_body(b, &mut *self.rng)?;
+                let pt = self.engine.body_plaintext(b)?;
+                if pt.is_empty() {
+                    return Ok(None);
+                }
+                let s = seal_body(&Body { plaintext: pt, ..b.clone() }, &mut *self.rng)?;
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert });
                 (s.id, s.key)
@@ -717,7 +721,8 @@ impl SyncEngine {
         let all = match self.body_links.get(&key) {
             Some(x) => x.clone(),
             None => {
-                let r = self.engine.body_links(&b.plaintext)?;
+                let pt = self.engine.body_plaintext(b)?;
+                let r = self.engine.body_links(&pt)?;
                 let all: Vec<BlobId> = r.blobs.into_iter().collect();
                 if r.missing.is_empty() {
                     self.body_links.insert(key, all.clone());

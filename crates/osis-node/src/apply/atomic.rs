@@ -120,6 +120,11 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
         if rec.tid() == a.tid {
             tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_core::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
+            // the reader actor of the thing's deltas is known now
+            let touching: Vec<CommitId> = tx.core.by_aspect.iter().filter(|((t, _), _)| *t == a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+            for c in touching {
+                tx.core.bodies.remove(&c);
+            }
             any = true;
         }
     }

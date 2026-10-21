@@ -172,6 +172,13 @@ pub(crate) struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
+    /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
+    /// when the commit's record is written (late parts, drops), when a thing it touches gets
+    /// its creation record, and all when an actor gets secrets of its own (reader actors move);
+    /// only commits whose things' owner chains are known are kept.
+    pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
+    /// Commits projected into bodies so far (`Engine::projections`).
+    pub projections: u64,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -248,9 +255,14 @@ impl Core {
         }));
     }
 
-    /// Undoes the aborted transaction's changes to the caches.
+    /// Undoes the aborted transaction's changes to the caches (none when it changed nothing:
+    /// a failed read keeps them).
     fn rollback(&mut self) {
+        if self.backup.is_none() && self.written.is_empty() {
+            return;
+        }
         self.live_trees.clear();
+        self.bodies.clear();
         self.membership_changed();
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
@@ -326,6 +338,8 @@ impl Core {
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            projections: 0,
         }
     }
 
@@ -453,6 +467,7 @@ impl Tx<'_> {
     }
 
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
+        self.core.bodies.remove(id);
         let mut w = Wr::new().u8(1).u64(meta.received.0).u8(match meta.origin {
             Origin::Local => 0,
             Origin::Remote => 1,

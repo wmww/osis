@@ -94,6 +94,7 @@ impl Engine {
     /// The projections of a held commit's current blob (its held deltas), with their reader
     /// actors.
     pub fn bodies(&mut self, c: &CommitId) -> Result<Vec<Body>> {
+        self.core.projections += 1;
         let id = *c;
         let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         let membership = blob.header.kind.is_membership();
@@ -118,6 +119,31 @@ impl Engine {
     /// (an actor synced as a group of itself) also carries the `/label` and `/created` writes of
     /// the labeled groups it is the nearest labeled owner-chain actor of (spec/sync.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
+        let mut out = self.label_bodies_meta(g)?;
+        for b in &mut out {
+            b.plaintext = self.body_plaintext(b)?;
+        }
+        Ok(out)
+    }
+
+    /// How many times a commit was projected into bodies since start (the label pass's cost;
+    /// tests and benches).
+    pub fn projections(&self) -> u64 {
+        self.core.projections
+    }
+
+    /// The plaintext of a body (`label_bodies_meta` leaves it out): projected again from the
+    /// held commit; empty when that body is not there any more.
+    pub fn body_plaintext(&mut self, b: &Body) -> Result<Vec<u8>> {
+        if !b.plaintext.is_empty() {
+            return Ok(b.plaintext.clone());
+        }
+        Ok(self.bodies(&b.commit)?.into_iter().find(|x| x.parts == b.parts).map(|x| x.plaintext).unwrap_or_default())
+    }
+
+    /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
+    /// change projects only the commits it changed.
+    pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let closure = self.closure(g);
         let x = self.group_actor(g);
         let published = self.published_under(g);
@@ -132,7 +158,22 @@ impl Engine {
         for id in ids {
             let Some(h) = self.header(&id) else { continue };
             let touches = h.aspects.iter().any(|a| closure.contains(&a.tid));
-            for b in self.bodies(&id)? {
+            let bodies = match self.core.bodies.get(&id) {
+                Some(b) => b.clone(),
+                None => {
+                    let mut b = self.bodies(&id)?;
+                    for x in &mut b {
+                        x.plaintext = Vec::new();
+                    }
+                    // kept only while every reader actor is resolved (a missing owner record
+                    // arriving later moves it)
+                    if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
+                        self.core.bodies.insert(id, b.clone());
+                    }
+                    b
+                }
+            };
+            for b in bodies {
                 let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
                 if inside && self.core.may_read(&x, &b.reader) {
                     out.push(b);
