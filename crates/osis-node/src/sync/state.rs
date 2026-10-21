@@ -45,6 +45,16 @@ const DIRECT: &[u8] = b"y/j";
 const REACH_POLICY: &[u8] = b"y/n";
 /// Persons marked as contacts (`SyncEngine::set_contact`).
 const CONTACT: &[u8] = b"y/a";
+/// The sharer node a followed link names, by K (`SyncEngine::follow_link_peer`).
+const LINK_PEER: &[u8] = b"y/l";
+
+/// A followed link's sharer node (spec/permissions.md §9): dialed at the link's `peer://`
+/// addresses for K's labels and the target's, nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkPeer {
+    pub target: Tid,
+    pub peers: Vec<Address>,
+}
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +176,8 @@ pub struct State {
     pub reach_policy: BTreeMap<Tid, bool>,
     /// Persons marked as contacts (`y/a`).
     pub contacts: BTreeSet<Tid>,
+    /// Sharer nodes of followed links by K (`y/l`).
+    pub link_peers: BTreeMap<Tid, LinkPeer>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -345,6 +357,18 @@ impl State {
                 }
                 b"a" => {
                     s.contacts.insert(r.tid()?);
+                }
+                b"l" => {
+                    let k = r.tid()?;
+                    let mut x = Rd::new(&v);
+                    let target = x.tid()?;
+                    let n = x.u32()?;
+                    let mut peers = Vec::new();
+                    for _ in 0..n {
+                        let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("link peer"))?;
+                        peers.push(Address { url, key: x.arr()? });
+                    }
+                    s.link_peers.insert(k, LinkPeer { target, peers });
                 }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
@@ -538,6 +562,22 @@ impl State {
         } else {
             self.del(key(CONTACT, &[person.as_bytes()]));
             self.contacts.remove(&person);
+        }
+    }
+
+    /// Records the sharer node a followed link names (its K, target and `peer://` addresses).
+    pub fn set_link_peer(&mut self, k: Tid, lp: LinkPeer) {
+        let mut w = Wr::new().raw(lp.target.as_bytes()).u32(lp.peers.len() as u32);
+        for a in &lp.peers {
+            w = w.bytes(a.url.as_bytes()).raw(&a.key);
+        }
+        self.put(key(LINK_PEER, &[k.as_bytes()]), w.take());
+        self.link_peers.insert(k, lp);
+    }
+
+    pub fn remove_link_peer(&mut self, k: &Tid) {
+        if self.link_peers.remove(k).is_some() {
+            self.del(key(LINK_PEER, &[k.as_bytes()]));
         }
     }
 

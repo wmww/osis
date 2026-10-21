@@ -7,7 +7,7 @@
 //! peer's old cursor replays). A peer's deletion hides the entry from peers only, a registration
 //! extends the served path in memory: this node's own state follows its own rules. Entries this
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
-//! deposit is charged to the uploading peer key and to a node-wide total (`SyncConfig`
+//! deposit is charged to the label it went under (dialer keys are fresh per connection) and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a server or is dropped; past either,
 //! uploads get code 12 and deposits code 5. A member proof by the dialable key of a node that
 //! currently reads a label opens it (spec/sync.md §5, member peer); budgets are then charged to
@@ -198,10 +198,27 @@ struct PeerStore<'a> {
     now: u64,
     /// Corrected wall ms (tombstones of this node's drops).
     wall: u64,
-    /// Bytes this peer, and all peers together, may still have charged.
-    peer_left: u64,
+    /// What is charged so far per charge key (`charge_key`), its limit, the session's member
+    /// key, and this request's charges per key; all peers together may still have `total_left`.
+    charged: &'a BTreeMap<[u8; 32], u64>,
+    limit: u64,
+    member: Option<[u8; 32]>,
+    used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
+}
+
+/// Whom bytes a peer session put here are charged to: the dialable key its member proof
+/// proved, else the label they went under (a dialer key is fresh per connection, so charging
+/// it would bound nothing: a link holder's sessions share its K label's budget).
+fn charge_key(member: Option<[u8; 32]>, label: &LabelId) -> [u8; 32] {
+    member.unwrap_or_else(|| {
+        let mut k = [0xff; 32];
+        if let Some(d) = k.get_mut(16..) {
+            d.copy_from_slice(&label.0);
+        }
+        k
+    })
 }
 
 fn local(e: crate::Error) -> StoreError {
@@ -292,11 +309,13 @@ impl LabelStore for PeerStore<'_> {
         // a held entry costs nothing more (a new wrap or a stamp)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
-            if size > self.peer_left || size > self.total_left {
+            let key = charge_key(self.member, label);
+            let used = self.charged.get(&key).copied().unwrap_or(0).saturating_add(self.used_here.get(&key).copied().unwrap_or(0));
+            if size > self.limit.saturating_sub(used) || size > self.total_left {
                 self.acc.full = true;
                 return Ok(if put.stamp.is_some() { Code::STORAGE_CAP } else { Code::BUDGET_FULL });
             }
-            self.peer_left -= size;
+            *self.used_here.entry(key).or_default() += size;
             self.total_left -= size;
             self.acc.charges.push((*label, put.blob_id, size));
         }
@@ -308,8 +327,10 @@ impl LabelStore for PeerStore<'_> {
         Ok(Code::OK)
     }
 
-    fn budget(&self, _label: &LabelId) -> std::result::Result<Budget, StoreError> {
-        let bytes_left = self.peer_left.min(self.total_left);
+    fn budget(&self, label: &LabelId) -> std::result::Result<Budget, StoreError> {
+        let key = charge_key(self.member, label);
+        let used = self.charged.get(&key).copied().unwrap_or(0).saturating_add(self.used_here.get(&key).copied().unwrap_or(0));
+        let bytes_left = self.limit.saturating_sub(used).min(self.total_left);
         Ok(Budget { entries_left: bytes_left / ENTRY_UNIT, bytes_left })
     }
 
@@ -423,6 +444,11 @@ impl SyncEngine {
         self.served.iter().map(|(c, s)| (*c, s.conn.opened().clone())).collect()
     }
 
+    /// The dialable keys member proofs proved on the sessions served now (spec/sync.md §5).
+    pub fn served_members(&self) -> BTreeSet<[u8; 32]> {
+        self.served.values().filter_map(|s| s.conn.member()).collect()
+    }
+
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
     /// peers registered here since start). Cached until `/label`, membership or the peer steps
     /// change.
@@ -484,7 +510,6 @@ impl SyncEngine {
             self.prune_charges();
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
-        let used = self.charged_per.get(&s.conn.member().unwrap_or(s.peer)).copied().unwrap_or(0);
         let total = self.charged_total;
         let reach = self.reach_nodes();
         self.state.feed.heads(labels);
@@ -503,7 +528,10 @@ impl SyncEngine {
                 sizes: RefCell::new(&mut self.blob_sizes),
                 now,
                 wall,
-                peer_left: self.cfg.peer_bytes.saturating_sub(used),
+                charged: &self.charged_per,
+                limit: self.cfg.peer_bytes,
+                member: s.conn.member(),
+                used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
             };
@@ -511,16 +539,18 @@ impl SyncEngine {
             (o, store.acc)
         };
         let peer = s.conn.member().unwrap_or(s.peer);
-        let member = s.conn.member().is_some_and(|k| reach.contains_key(&k));
+        let proven = s.conn.member();
+        let member = proven.is_some_and(|k| reach.contains_key(&k));
         if !s.conn.is_closed() {
             self.served.insert(conn, s);
         }
         self.charges_full |= acc.full;
         for (l, b, n) in acc.charges {
-            if let Some((p, old)) = self.charges.insert((l, b), (peer, n)) {
+            let key = charge_key(proven, &l);
+            if let Some((p, old)) = self.charges.insert((l, b), (key, n)) {
                 self.uncharge(p, old);
             }
-            *self.charged_per.entry(peer).or_default() += n;
+            *self.charged_per.entry(key).or_default() += n;
             self.charged_total = self.charged_total.saturating_add(n);
         }
         if !acc.entries.is_empty() && member {

@@ -416,7 +416,8 @@ impl SyncEngine {
                     let pt = osis_core::encode(&payload.commit);
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
-                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone(), via: None });
+                            // a sender's word: servers only, never a node to dial (`peer://`)
+                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned().collect(), via: None });
                         }
                     }
                     let c = osis_commit::CommitBlob::decode(&pt).ok();
@@ -770,7 +771,7 @@ impl SyncEngine {
         if let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {
             lc.budget = Some(entries_left);
         }
-        if let Some(mut o) = self.inbox_sent.remove(&(server, b)) {
+        if let Some((_, mut o)) = self.inbox_sent.remove(&(server, b)) {
             let retry = matches!(code, Code::UNKNOWN_LABEL | Code::RATE_LIMITED | Code::BUDGET_FULL | Code::NOT_HEAD);
             o.tries += 1;
             if !retry {

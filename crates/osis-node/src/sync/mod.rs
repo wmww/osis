@@ -154,6 +154,10 @@ pub enum Action {
     Close { conn: ConnId },
     /// Deliver `Event::Tick` at this wall ms (the driver's clock; replaces earlier ones).
     Wake { at: u64 },
+    /// The dialable secret changed (`rotate_reach`): stop listening with the old one, listen
+    /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
+    /// transport key.
+    Reach,
 }
 
 /// Open state of a label on a connection.
@@ -265,7 +269,7 @@ pub struct SyncEngine {
     pub(crate) outbox: Vec<local::Outgoing>,
     /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
     /// limit, sends them again after `retry_ms`).
-    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), local::Outgoing>,
+    pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), (ConnId, local::Outgoing)>,
     /// Blobs asked for and not received yet.
     pub(crate) fetching: BTreeMap<osis_core::BlobId, ConnId>,
     /// Tree node blobs a judgment of dropped chunks waits for (`dropped_chunks`); a pass
@@ -326,6 +330,9 @@ pub struct SyncEngine {
     pub(crate) lan: BTreeMap<ServerKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
+    /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
+    /// (`check_reach`: at start, after membership, policy and contact changes).
+    pub(crate) reach_check: bool,
     /// Served labels, until `/label`, membership or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums
@@ -416,6 +423,7 @@ impl SyncEngine {
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
+            reach_check: true,
             served_cache: None,
             charges: BTreeMap::new(),
             charged_per: BTreeMap::new(),
@@ -534,10 +542,12 @@ impl SyncEngine {
                     c.up = true;
                     let o = c.session.handle(now, ClientInput::Start);
                     let lan = c.peer.then(|| (c.server, c.address.clone()));
-                    if let Some((k, a)) = lan {
-                        self.lan_up(k, &a);
-                    }
                     self.outputs(conn, o, out)?;
+                    if let Some((k, a)) = lan
+                        && self.lan_up(k, &a)
+                    {
+                        self.lan_switched(conn, k, out);
+                    }
                 }
             }
             Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServerInput::Bytes(bytes), out)?,
@@ -560,6 +570,10 @@ impl SyncEngine {
         self.engine_events()?;
         if std::mem::take(&mut self.members_moved) {
             self.members_changed(out);
+            self.reach_check = true;
+        }
+        if std::mem::take(&mut self.reach_check) {
+            self.check_reach(out)?;
         }
         self.drop_unwanted_peers(out);
         self.connect(out);
@@ -577,10 +591,10 @@ impl SyncEngine {
         self.deleting.retain(|(c, _, _), _| *c != conn);
         self.missing.retain(|(c, _)| *c != conn);
         if let Some(c) = self.conns.remove(&conn) {
-            // deposits not answered go out again on the next connection
-            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.keys().filter(|(s, _)| *s == c.server).copied().collect();
+            // deposits not answered on this connection go out again on the next one
+            let back: Vec<(ServerKey, osis_core::BlobId)> = self.inbox_sent.iter().filter(|(_, (x, _))| *x == conn).map(|(k, _)| *k).collect();
             for k in back {
-                if let Some(o) = self.inbox_sent.remove(&k) {
+                if let Some((_, o)) = self.inbox_sent.remove(&k) {
                     self.outbox.push(o);
                 }
             }
@@ -764,17 +778,22 @@ impl SyncEngine {
     fn wanted_servers(&mut self) -> BTreeMap<ServerKey, (Address, bool)> {
         let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
-            for a in l.servers {
+            // an admin's word: servers only (`peer://` nodes come from `/reach` or a link)
+            for a in l.servers.into_iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert((a, false));
             }
         }
         for h in self.state.hints.values() {
-            for a in &h.servers {
+            for a in h.servers.iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
+                m.entry(k).or_insert((a, true));
+            }
+            // a link's sharer node (first contact, spec/permissions.md §9) is dialed as a co-reader
+            for (k, (a, _)) in self.link_routes() {
                 m.entry(k).or_insert((a, true));
             }
         }
@@ -789,7 +808,9 @@ impl SyncEngine {
         // a server no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
-            if self.conns.values().any(|c| c.server == key) {
+            // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
+            // the running connection, which goes once that is up (`lan_switched`)
+            if self.conns.values().any(|c| c.server == key) && !(peer && self.lan_probe(&key, &addr)) {
                 continue;
             }
             if self.retry.get(&key).is_some_and(|(_, t)| *t > now) {
@@ -813,7 +834,7 @@ impl SyncEngine {
         if self.conns.values().all(|c| !c.peer) {
             return;
         }
-        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().collect() } else { BTreeSet::new() };
+        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.link_routes().into_keys()).collect() } else { BTreeSet::new() };
         let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
         for conn in gone {
             out.push(Action::Close { conn });
@@ -967,7 +988,8 @@ impl SyncEngine {
             }
         }
         if self.cfg.peers && self.conns.values().any(|c| c.peer) {
-            for (k, (_, labels)) in self.peer_addresses() {
+            let routes: Vec<_> = self.peer_addresses().into_iter().chain(self.link_routes()).collect();
+            for (k, (_, labels)) in routes {
                 for (_, l, keys) in want.iter_mut() {
                     if labels.contains(l) {
                         keys.push(k);

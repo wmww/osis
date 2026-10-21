@@ -356,7 +356,7 @@ impl SyncEngine {
             let wrap = osis_crypto::filler_wrap(&mut *self.rng);
             let id = osis_label::blob_id(&o.blob);
             let sig = osis_label::sign_deposit(&d, &o.label, &id, &wrap);
-            self.inbox_sent.insert((o.server.key, id), o.clone());
+            self.inbox_sent.insert((o.server.key, id), (*conn, o.clone()));
             self.command(*conn, Command::Deposit { label: o.label, blob: o.blob, wrap, sig }, out)?;
         }
         self.outbox = keep;

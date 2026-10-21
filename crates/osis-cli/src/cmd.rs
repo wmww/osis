@@ -407,7 +407,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: until.as_deref().map(parse_ts).transpose()?.map(WallMs), single_use })?;
+            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: until.as_deref().map(parse_ts).transpose()?.map(WallMs), single_use, direct: false })?;
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {

@@ -14,7 +14,7 @@ use osis_label::Address;
 use osis_schema::core_types::{self as ct, Reach};
 use osis_transport::lan::Announce;
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 /// LAN tag window (spec/sync.md §10).
@@ -34,6 +34,11 @@ pub fn lan_tag(lan_secret: &[u8; 32], unix_ms: u64) -> [u8; 16] {
     let mut t = [0u8; 16];
     t.copy_from_slice(k.expose().get(..16).unwrap_or(&[0; 16]));
     t
+}
+
+/// Whether an address names a node by dialable key (`peer://`), not a server.
+pub fn is_peer(a: &Address) -> bool {
+    osis_transport::peer_relays(&a.url).is_some()
 }
 
 /// A co-reader node this node may dial.
@@ -97,12 +102,49 @@ impl SyncEngine {
         s
     }
 
-    /// A new dialable secret, and a new lan secret at the next `publish_reach` (a co-reader
-    /// removed from every label still knows the old ones, notes/networking.md decision 4).
-    pub fn rotate_reach(&mut self) -> Secret32 {
+    /// Rotates this node's reach now (`Osis::rotate_reach`; also done by itself when a label
+    /// holding the current `/reach` stopped qualifying, `check_reach`): a new dialable secret and
+    /// lan secret, `/reach` written with the new key and the same relays (it goes only under
+    /// labels that qualify, spec/permissions.md §4), and `Action::Reach` so the driver listens
+    /// with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
+    /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
+    /// on a LAN; a link holder (who got the dialable key only, never the lan secret) can no
+    /// longer dial it. Direct links still open lose first contact (they work through servers).
+    #[must_use]
+    pub fn rotate_reach(&mut self) -> Vec<Action> {
+        let mut out = Vec::new();
+        if let Err(e) = self.rotate_now(&mut out) {
+            self.diag(format!("rotating /reach: {e}"));
+        }
+        out.extend(self.handle(Event::Local));
+        out
+    }
+
+    fn rotate_now(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let relays = self.own_reach().map(|r| r.relays);
         self.state.reach_secret = None;
         self.lan_rotate = true;
-        self.dialable_secret()
+        let s = self.dialable_secret();
+        // every transport's key is the Ed25519 key of its secret (the driver's listener presents it)
+        if let Some(relays) = relays {
+            self.write_reach(SigningSecret::from_seed(&s).verifying_key().to_bytes(), relays)?;
+        }
+        out.push(Action::Reach);
+        Ok(())
+    }
+
+    /// Looks for this node's current `/reach` under a label of a group that no longer qualifies
+    /// (`publishes_reach`: its policy turned to exclude, a reader is no contact any more) and
+    /// rotates it then (spec/permissions.md §4): readers there keep the old one, useless.
+    pub(crate) fn check_reach(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        let me = self.engine.tid();
+        let Some((c, _)) = self.engine.aspect_commit(&me, "/reach") else { return Ok(()) };
+        let placed: Vec<(Tid, LabelId)> = self.labels().into_iter().map(|(g, l)| (g, l.id)).filter(|(_, l)| self.state.certs.contains(&(*l, c))).collect();
+        if placed.iter().any(|(g, _)| !self.publishes_reach(g)) {
+            self.rotate_now(out)?;
+            self.engine_events()?;
+        }
+        Ok(())
     }
 
     /// This node's `/reach`, if published.
@@ -116,6 +158,14 @@ impl SyncEngine {
     /// `rotate_reach`). The node card goes under every synced label with the next pass
     /// (spec/permissions.md §4).
     pub fn publish_reach(&mut self, dialable: [u8; 32], relays: Vec<String>) -> Result<Vec<Action>> {
+        if !self.write_reach(dialable, relays)? {
+            return Ok(Vec::new());
+        }
+        Ok(self.handle(Event::Local))
+    }
+
+    /// Commits `/reach` when it changed; true when it did.
+    fn write_reach(&mut self, dialable: [u8; 32], relays: Vec<String>) -> Result<bool> {
         let old = self.own_reach();
         let lan_secret = match &old {
             Some(r) if !self.lan_rotate => r.lan_secret,
@@ -127,14 +177,14 @@ impl SyncEngine {
         };
         let reach = Reach { dialable, relays, lan_secret };
         if old.as_ref() == Some(&reach) {
-            return Ok(Vec::new());
+            return Ok(false);
         }
         let me = self.engine.tid();
         let mut m = Mutation::new();
         m.replace(me, &ct::REACH, &reach)?;
         self.engine.commit(m)?;
         self.lan_rotate = false;
-        Ok(self.handle(Event::Local))
+        Ok(true)
     }
 
     /// This node's LAN announcement tag now (spec/sync.md §10), once `/reach` is published.
@@ -278,13 +328,99 @@ impl SyncEngine {
     }
 
     /// A connection to a co-reader came up: the transport authenticated the address's key, so a
-    /// LAN candidate it went to is the proven route (spec/sync.md §10).
-    pub(crate) fn lan_up(&mut self, peer: [u8; 32], addr: &Address) {
-        if let Some(r) = self.lan.get_mut(&peer)
-            && let Some(c) = r.candidate.take_if(|(a, _)| a == addr)
-        {
+    /// LAN candidate it went to is the proven route (spec/sync.md §10). True when the connection
+    /// goes through the proven LAN route.
+    pub(crate) fn lan_up(&mut self, peer: [u8; 32], addr: &Address) -> bool {
+        let raw = self.raw_now();
+        let Some(r) = self.lan.get_mut(&peer) else { return false };
+        if let Some(c) = r.candidate.take_if(|(a, _)| a == addr) {
             r.good = Some(c);
+        } else if r.good.as_ref().is_none_or(|(a, _)| a != addr) && r.heard.contains_key(addr) {
+            // a verified source the candidate moved away from while its dial ran
+            r.good = Some((addr.clone(), raw));
         }
+        r.good.as_ref().is_some_and(|(a, _)| a == addr)
+    }
+
+    /// Whether to dial a co-reader's LAN route `addr` beside its running connection: one
+    /// connection runs, it is up and goes elsewhere (a relay), and `addr` is the LAN route.
+    pub(crate) fn lan_probe(&self, peer: &[u8; 32], addr: &Address) -> bool {
+        let Some(r) = self.lan.get(peer) else { return false };
+        let lan = [&r.good, &r.candidate].into_iter().flatten().any(|(a, _)| a == addr) && !r.failed.contains_key(addr);
+        let mut running = self.conns.values().filter(|c| c.server == *peer);
+        lan && matches!((running.next(), running.next()), (Some(c), None) if c.up && c.address != *addr)
+    }
+
+    /// A co-reader's connection through its proven LAN route came up: the other connections to
+    /// it (a relay route it ran over before) close; its labels go on over the LAN connection
+    /// from their cursors (spec/sync.md §10: the proven route first).
+    pub(crate) fn lan_switched(&mut self, conn: super::ConnId, peer: [u8; 32], out: &mut Vec<Action>) {
+        let old: Vec<super::ConnId> = self.conns.iter().filter(|(id, c)| **id != conn && c.server == peer).map(|(id, _)| *id).collect();
+        if old.is_empty() {
+            return;
+        }
+        for c in old {
+            out.push(Action::Close { conn: c });
+            self.fetching.retain(|_, x| *x != c);
+            self.reopens.retain(|(x, _), _| *x != c);
+            self.lost(c);
+        }
+        // the peer is connected: no pause from the closed route
+        self.retry.remove(&peer);
+    }
+
+    /// Connections to co-readers: dialable key, the address dialed (a LAN route or `peer://`
+    /// with relays) and whether it is up.
+    pub fn peer_routes(&self) -> Vec<([u8; 32], Address, bool)> {
+        self.conns.values().filter(|c| c.peer).map(|c| (c.server, c.address.clone(), c.up)).collect()
+    }
+
+    /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
+    /// the link text only; spec/permissions.md §9). It is dialed like a co-reader (ephemeral key,
+    /// no member proof) for K's labels and the target's, and nothing else, until `forget_link`.
+    /// This node shows the sharer its IP, never its dialable key.
+    pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
+        let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
+        if peers.is_empty() {
+            return;
+        }
+        self.state.set_link_peer(k, super::state::LinkPeer { target, peers });
+        let _ = self.state.flush(&mut self.engine);
+    }
+
+    /// The sharer nodes of followed links (their dialable keys).
+    pub fn link_peer_keys(&self) -> BTreeSet<[u8; 32]> {
+        self.state.link_peers.values().flat_map(|lp| lp.peers.iter().map(|a| a.key)).collect()
+    }
+
+    /// A link follow ended without a redemption (it failed, or its key guard went): its hint
+    /// and sharer node are forgotten.
+    #[must_use]
+    pub fn forget_link(&mut self, k: Tid) -> Vec<Action> {
+        self.state.remove_link_peer(&k);
+        let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
+        for l in hinted {
+            self.state.remove_hint(&l);
+        }
+        self.handle(Event::Local)
+    }
+
+    /// Where to dial followed links' sharer nodes, by key, with the labels each serves here: K's
+    /// hinted label and the synced labels of K and of the target.
+    pub(crate) fn link_routes(&mut self) -> BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> {
+        if self.state.link_peers.is_empty() {
+            return BTreeMap::new();
+        }
+        let synced = self.labels();
+        let mut out: BTreeMap<[u8; 32], (Address, BTreeSet<LabelId>)> = BTreeMap::new();
+        for (k, lp) in &self.state.link_peers {
+            let mut labels: BTreeSet<LabelId> = synced.iter().filter(|(g, _)| g == k || *g == lp.target).map(|(_, l)| l.id).collect();
+            labels.extend(self.state.hints.iter().filter(|(_, h)| h.thing == *k && h.via.is_some()).map(|(l, _)| *l));
+            for a in &lp.peers {
+                out.entry(a.key).or_insert_with(|| (a.clone(), BTreeSet::new())).1.extend(labels.iter().copied());
+            }
+        }
+        out
     }
 
     /// A connection to a co-reader ended before coming up: when it went to a LAN address, that
@@ -347,8 +483,8 @@ impl SyncEngine {
     /// once per window) and the signature verifies under that co-reader's dialable key; the
     /// address then becomes the co-reader's candidate route. Returns whose dialable key matched,
     /// and the actions (only when the candidate changed: a repeat costs a lookup).
-    pub fn lan_seen(&mut self, a: &Announce, from: IpAddr) -> (Option<[u8; 32]>, Vec<Action>) {
-        if !osis_transport::lan::is_local(from) {
+    pub fn lan_seen(&mut self, a: &Announce, from: SocketAddr) -> (Option<[u8; 32]>, Vec<Action>) {
+        if !osis_transport::lan::is_local(from.ip()) {
             return (None, Vec::new());
         }
         let window = self.now() / LAN_WINDOW_MS;
@@ -400,8 +536,11 @@ impl SyncEngine {
         if self.retry.contains_key(&k) && self.lan_cut(k) {
             self.retry.remove(&k);
         }
-        // nothing to do while a connection to the peer runs or its pause holds
-        if self.conns.values().any(|c| c.server == k) || self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
+        // nothing to do while its pause holds, or while a connection to the peer runs but over
+        // a relay, where the LAN route is dialed beside it (`lan_probe`)
+        let running = self.conns.values().any(|c| c.server == k);
+        let address = Address { url: a.address(from).url, key: a.key };
+        if running && !self.lan_probe(&k, &address) || !running && self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
             return (Some(k), Vec::new());
         }
         (Some(k), self.handle(Event::Local))
@@ -416,19 +555,26 @@ impl SyncEngine {
     }
 
     /// Whether `group`'s labels carry this node's `/reach` (spec/permissions.md §4): `Some`
-    /// sets it, `None` returns to the default (`publishes_reach`). Stored.
-    pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) {
+    /// sets it, `None` returns to the default (`publishes_reach`). Stored. A group that stops
+    /// qualifying while its labels hold the current `/reach` rotates it (`check_reach`).
+    #[must_use]
+    pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) -> Vec<Action> {
         self.state.set_reach_policy(group, publish);
-        self.peers_cache = None;
-        let _ = self.state.flush(&mut self.engine);
+        self.policy_changed()
     }
 
     /// Marks a person as a contact of this node's person (stored): groups whose readers are only
-    /// contacts get `/reach` by default.
-    pub fn set_contact(&mut self, person: Tid, contact: bool) {
+    /// contacts get `/reach` by default. Unmarking may rotate `/reach` (`check_reach`).
+    #[must_use]
+    pub fn set_contact(&mut self, person: Tid, contact: bool) -> Vec<Action> {
         self.state.set_contact(person, contact);
+        self.policy_changed()
+    }
+
+    fn policy_changed(&mut self) -> Vec<Action> {
         self.peers_cache = None;
-        let _ = self.state.flush(&mut self.engine);
+        self.reach_check = true;
+        self.handle(Event::Local)
     }
 
     /// Whether `/reach` goes under `g`'s labels: the policy set for `g`, else when everyone who

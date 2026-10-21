@@ -328,8 +328,25 @@ pub struct GroupPolicy {
 
 impl crate::Osis {
     /// Sets `group`'s sync policy (stored). Co-readers of groups without `/reach` are not
-    /// dialed; a `/reach` already placed under a label stays there.
+    /// dialed. When the group's labels already hold this node's `/reach` and it no longer goes
+    /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_core::Tid, policy: GroupPolicy) {
-        self.locked(|l| l.sync.set_reach_policy(group, policy.publish_reach));
+        self.locked(|l| {
+            let acts = l.sync.set_reach_policy(group, policy.publish_reach);
+            self.inner.net.apply(acts);
+        });
+    }
+
+    /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with
+    /// the new key at once and publishes it only under groups that get `/reach`. A co-reader
+    /// removed since can no longer dial it or recognise it on a LAN; a link holder (who got the
+    /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
+    /// still open lose first contact (they still work through servers). Done by itself when a
+    /// group holding its `/reach` stops qualifying and when a direct link ends.
+    pub fn rotate_reach(&self) {
+        self.locked(|l| {
+            let acts = l.sync.rotate_reach();
+            self.inner.net.apply(acts);
+        });
     }
 }

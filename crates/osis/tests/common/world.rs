@@ -143,7 +143,7 @@ impl World {
                         self.servers[s].hub.closed(hc);
                     }
                 }
-                Action::Wake { .. } => {}
+                Action::Wake { .. } | Action::Reach => {}
             }
         }
     }

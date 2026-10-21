@@ -540,6 +540,8 @@ impl NetSim {
                     }
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
+                // the simulated transport finds a node by its current `/reach`
+                Action::Reach => {}
             }
         }
         Ok(())

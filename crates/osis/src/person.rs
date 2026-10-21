@@ -183,7 +183,7 @@ impl Osis {
         let r = engine.hold_key_actor(c.seed.clone())?;
         save_servers(engine, &servers)?;
         let db = Osis::start(sync, clock, &cfg, c.person)?;
-        let key = crate::share::KeyGuard { db: db.downgrade(), l: r };
+        let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.locked(|x| {
             let acts = x.sync.follow(r, c.person, c.home_label, c.servers.clone());
             db.inner.net.apply(acts);
