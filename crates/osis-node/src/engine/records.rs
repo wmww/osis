@@ -27,11 +27,6 @@ pub const SYNCING: &[u8] = b"s/";
 pub const VOID: &[u8] = b"o/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
-/// Deletion obligations node-sync executes (append log).
-pub const DELETIONS: &[u8] = b"deletions";
-/// Re-snapshot triggers node-sync executes (append log): aspects left without a covering
-/// snapshot after a purge.
-pub const RESNAPSHOT: &[u8] = b"resnapshot";
 
 /// `tid || u16 len || ak`: aspect part of a key.
 pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {

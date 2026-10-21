@@ -34,7 +34,7 @@ fn deaths_and_bounds_spec_commits_5() {
 }
 
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
-// transaction that applies the kill (live state unchanged; a deletion for blind nodes queued);
+// transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).
 // spec/commits.md §5 (keep at most)
 #[test]
@@ -48,8 +48,6 @@ fn keep_at_most_zero_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.holds_body(&c1, &t, &ak("/t/gone")));
     assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
-    let dels = e.deletions(0, 10).unwrap();
-    assert!(dels.iter().any(|d| d.1 == c1));
     assert_eq!(e.undo(&c1).unwrap(), None);
     // every node drops it by the bound, here when it applies the kill
     sync(&mut lp, 0, 1);

@@ -2,7 +2,8 @@
 //! crdt change summary, keep-at-most drops (in the killing transaction for at most 0, else by
 //! timer), expiry at T (value-less, body dropped), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
-//! test, and the queues node-sync executes (deletions at blind nodes, re-snapshots).
+//! test. node-sync judges what to delete at blind nodes and what to re-snapshot from the commit
+//! index (dropped parts, `covered`), so no queue is kept here.
 //!
 //! A body here is one delta (one commit's deltas on one aspect): finer than a projection, so
 //! a projection's bounds are those of its deltas. Its death records use the commit ID as the
@@ -14,7 +15,7 @@ use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
-use osis_core::{Ak, BlobId, CommitId, Tid, Ts, WallMs};
+use osis_core::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::{Death, Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
 use osis_schema::core_types::is_membership_class;
@@ -22,9 +23,6 @@ use osis_store::Shred;
 use std::collections::BTreeSet;
 
 pub(crate) mod forget;
-
-/// A deletion obligation: (log sequence, commit, tid, ak, time).
-pub type Deletion = (u64, CommitId, Tid, Ak, WallMs);
 
 const T_EXPIRY: u8 = 1;
 const T_AT_MOST: u8 = 2;
@@ -138,8 +136,8 @@ fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
 
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect's state
-/// rewritten shredded with its undo buffer cleared; node-sync is told to delete it at blind
-/// nodes.
+/// rewritten shredded with its undo buffer cleared (node-sync deletes it at blind nodes, judged
+/// from the dropped parts).
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     tx.core.touch();
     let Some(mut m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
@@ -160,11 +158,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.load(&a.tid, &a.ak)?;
     let st = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten();
-    tx.set_state(&a.tid, &a.ak, st, Shred::Yes, true)?;
-    let now = tx.now();
-    let entry = Wr::new().raw(&c.0).raw(a.tid.as_bytes()).bytes(a.ak.as_str().as_bytes()).u64(now.0).take();
-    tx.txn.log_append(records::DELETIONS, &entry)?;
-    Ok(())
+    tx.set_state(&a.tid, &a.ak, st, Shred::Yes, true)
 }
 
 /// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
@@ -246,7 +240,8 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
 }
 
 /// Applies purge item `item` of commit `pc` to held delta `(c, ai)` if it may: its values go
-/// value-less, its body and every snapshot body carrying them drop, a re-snapshot is queued.
+/// value-less, its body and every snapshot body carrying them drop (node-sync re-snapshots
+/// where no covering snapshot is left, spec/commits.md §5).
 fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let (Some(p), Some(m)) = (tx.core.commits.get(pc).cloned(), tx.core.commits.get(c).cloned()) else { return Ok(()) };
     if !purge_allowed(tx.core, &p.header, pc, item, &m.header, c, ai) {
@@ -273,8 +268,6 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
             }
         }
     }
-    let entry = Wr::new().raw(a.tid.as_bytes()).bytes(a.ak.as_str().as_bytes()).take();
-    tx.txn.log_append(records::RESNAPSHOT, &entry)?;
     Ok(())
 }
 
@@ -507,21 +500,6 @@ impl Engine {
                 j.join(b);
             }
             Ok(Some(crate::engine::state::encode(&j)? == before))
-        })
-    }
-
-    /// Deletion obligations for node-sync: (commit, tid, ak, time), oldest first, from `from`.
-    pub fn deletions(&mut self, from: u64, limit: usize) -> Result<Vec<Deletion>> {
-        self.run(|tx| {
-            let mut out = Vec::new();
-            for (seq, b) in tx.txn.log_scan(records::DELETIONS, from, limit)? {
-                let mut r = Rd::new(&b);
-                let c = CommitId(r.arr()?);
-                let t = r.tid()?;
-                let ak = Ak::new(std::str::from_utf8(r.bytes()?).map_err(|_| Error::Corrupt("ak"))?).map_err(|_| Error::Corrupt("ak"))?;
-                out.push((seq, c, t, ak, WallMs(r.u64()?)));
-            }
-            Ok(out)
         })
     }
 }
