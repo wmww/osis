@@ -298,7 +298,10 @@ impl SyncEngine {
                 continue;
             }
             let parts = if s.edge_only { crate::flows::edges::Parts::Edge } else { crate::flows::edges::Parts::All };
-            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &s.things, parts));
+            // a removal notice names no label: a removed member must not learn the target's
+            // current one
+            let things = if s.edge_only { Vec::new() } else { s.things.clone() };
+            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &things, parts));
             match r {
                 Ok(deliveries) if !deliveries.is_empty() => self.take_done(crate::flows::Done { deliveries, ..Default::default() })?,
                 // no inbox or keys for the member any more

@@ -151,31 +151,43 @@ impl Engine {
         }
     }
 
-    /// Revokes of departures inside members of `actor` (a member M with secrets of its own,
-    /// outside `closure`: an applied write lowering an edge on M), with what judges them: the
-    /// ones that keep `actor`'s epoch uncovered, the only certificates a node that may not rotate
-    /// places under such an epoch (spec/permissions.md §4).
+    /// Revokes of the departures inside members of `actor` that leave its epochs uncovered now
+    /// (`rotation::uncovered_departures`: a member M with secrets of its own, outside `closure`;
+    /// the newest applied write lowering the leaver's edge on M), each the whole write on M with
+    /// what judges it: the only certificates a node that may not rotate places under such an
+    /// epoch (spec/permissions.md §4). A departure by `until` has no write and places nothing.
     pub fn inside_member_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
+        let a = *actor;
+        let deps = self.run(|tx| crate::rotation::uncovered_departures(tx, &a)).unwrap_or_default();
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut whole: Vec<(CommitId, Tid)> = Vec::new();
-        let members: Vec<Tid> = self.core.current_members(actor).into_iter().map(|x| x.0).filter(|m| self.core.has_own_secrets(m) && !closure.contains(m)).collect();
-        for m in members {
+        for d in deps {
+            let Some(m) = d.via.first().copied() else { continue };
+            let leaver = d.via.get(1).copied().unwrap_or(d.member);
+            if closure.contains(&m) || !self.core.has_own_secrets(&m) {
+                continue;
+            }
             let Some(tl) = self.core.timelines.get(&m) else { continue };
+            let mut newest: Option<(osis_core::Ts, osis_perm::WriteId, CommitId)> = None;
             for wid in tl.applied().keys() {
                 let osis_perm::WriteId::Op(c, i) = wid else { continue };
                 let Some(mc) = tl.membership_commit(c) else { continue };
                 let Some(op) = mc.ops.get(*i as usize) else { continue };
-                if op.target != m {
+                if op.target != m || op.member != leaver {
                     continue;
                 }
                 let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
                 let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
-                if new < old
-                    && let Some(cs) = tl.write_certificates(wid)
-                {
-                    found.push(cs);
-                    whole.push((*c, m));
+                if new < old && newest.as_ref().is_none_or(|(t, _, _)| mc.ts > *t) {
+                    newest = Some((mc.ts, *wid, *c));
                 }
+            }
+            if let Some((_, wid, c)) = newest
+                && let Some(cs) = tl.write_certificates(&wid)
+                && !whole.contains(&(c, m))
+            {
+                found.push(cs);
+                whole.push((c, m));
             }
         }
         let mut out = BTreeMap::new();

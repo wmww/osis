@@ -140,7 +140,7 @@ pub(crate) struct Core {
     pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
-    pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
@@ -191,6 +191,9 @@ pub(crate) struct Core {
     pub generation: u64,
 }
 
+/// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
+pub type EpochIntro = BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
+
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
 /// re-evaluating the restored held set).
 pub(crate) struct Backup {
@@ -214,7 +217,7 @@ pub(crate) struct Backup {
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     grant_overreach: BTreeSet<(CommitId, usize)>,
     box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
-    epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    epoch_intro: EpochIntro,
     box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }

@@ -255,13 +255,22 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         let mut all = parts.clone();
         all.extend(super::held_parts_at(tx, id, &|ai| !parts.iter().any(|(x, _, _)| *x == ai))?);
         validity::note_required(tx.core, &h, id, &all);
-        // what that judged (an overreaching late `/secrets` part) holds for the join below,
-        // and every held delta is judged again
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, id, ai)).collect();
-        if now != meta.valid {
-            meta.valid = now.clone();
+        // what that judged (an overreaching late `/secrets` part) holds for the late parts'
+        // join below; other aspects' flips go through the re-judge (`invalidated`, `revalidated`)
+        let late: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
+        let mut flipped = false;
+        for ai in late {
+            let v = validity::part_valid(tx.core, &h, id, ai);
+            if let Some(x) = meta.valid.get_mut(ai)
+                && *x != v
+            {
+                *x = v;
+                flipped = true;
+            }
+        }
+        if flipped {
             if let Some(m) = tx.core.commits.get_mut(id) {
-                m.valid = now;
+                m.valid = meta.valid.clone();
             }
             tx.core.index_validity(id);
             held_changed = true;

@@ -104,7 +104,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
 }
 
 fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
-    let v = (h.ts, h.author, h.actor);
+    let v = (h.ts, h.author, h.actor, h.id());
     let slot = core.epoch_intro.entry((*actor, r, e)).or_insert(v);
     if v < *slot {
         *slot = v;
