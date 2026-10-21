@@ -325,6 +325,11 @@ impl SyncEngine {
         v
     }
 
+    /// Actors whose inbox is `l`.
+    pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
+        self.inbox_of(l).into_iter().map(|(a, _)| a).collect()
+    }
+
     /// Actors whose inbox is `l`, with their held read KEM secrets.
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
         let actors: Vec<Tid> = self.engine.core.secrets.keys().copied().collect();

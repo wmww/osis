@@ -741,13 +741,25 @@ impl SyncEngine {
     /// member that cannot apply the copied `/label` yet (the granter's chain pending) opens the
     /// thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
+        // would show that group's readers the actor's edges, labels and box keys
+        if self.engine.core.secret_actor(g) != Some(*g) || !self.inbox_actors(&l).contains(g) {
+            return Ok(());
+        }
         let opened: Vec<(BlobId, CommitId)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter_map(|((_, b), e)| if let Kind::Inbox(Some(c)) = e.kind { Some((*b, c)) } else { None }).collect();
         for (b, c) in opened {
-            if self.state.certs.contains(&(l, c)) || !self.engine.core.commits.contains_key(&c) || self.engine.core.pending.contains_key(&c) {
+            if self.state.certs.contains(&(l, c)) || self.engine.core.pending.contains_key(&c) {
                 continue;
             }
+            let Some(m) = self.engine.core.commits.get(&c).cloned() else { continue };
             let Some((ais, things)) = self.inbox_parts(&l, &b)? else { continue };
-            for t in things {
+            // a valid commit only, and labels only of things it touches (the payload's list is
+            // the sender's word: it could name any thing this device holds)
+            if !ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
+                continue;
+            }
+            let touched: BTreeSet<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
+            for t in things.into_iter().filter(|t| touched.contains(t)) {
                 for ak in ["/created", "/label"] {
                     let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
                     if !self.state.certs.contains(&(l, x)) {
@@ -1115,22 +1127,30 @@ impl SyncEngine {
         if h.author == me || aks.is_empty() || !all_card {
             return false;
         }
-        // departed: an applied write removed the node's edge, and it reads the actor no more (a
-        // view lacking the node's chain alone proves nothing)
+        // departed: an applied write removed the node's edge on a thing on its way to the actor,
+        // and it reads the actor no more (a view lacking the node's chain alone proves nothing)
         let actor = self.engine.group_actor(g);
-        let removed = self.engine.core.timelines.get(&h.author).is_some_and(|tl| {
+        let core = &self.engine.core;
+        let removed = core.timelines.get(&h.author).is_some_and(|tl| {
             tl.applied().keys().any(|w| match w {
-                osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.member == h.author && op.edge.is_none()),
+                osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.member == h.author && op.edge.is_none() && (op.target == actor || core.may_read(&op.target, &actor))),
                 osis_perm::WriteId::Snapshot(_) => false,
             })
         });
-        let departed = removed && !self.engine.core.may_read(&h.author, &actor);
+        let departed = removed && !core.may_read(&h.author, &actor);
+        let author = h.author;
         aks.into_iter().all(|ak| {
             if departed && ak != "/keys" {
                 return true;
             }
-            let Some((x, _)) = self.engine.aspect_commit(&h.author, ak) else { return false };
-            x != *c && self.engine.header(&x).is_some_and(|n| n.ts > h.ts) && self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id))
+            // newer: the node's own valid write, with an entry here checked genuine (anyone may
+            // sign a commit writing another's card with a later `ts`)
+            let Some(x) = self.engine.latest_by(&author, ak, Some(&author)) else { return false };
+            if x == *c || !self.engine.header(&x).is_some_and(|n| n.ts > h.ts) {
+                return false;
+            }
+            let ids: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id)).map(|((_, id), _)| *id).collect();
+            ids.into_iter().any(|id| self.genuine(&id))
         })
     }
 

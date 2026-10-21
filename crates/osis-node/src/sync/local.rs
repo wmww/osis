@@ -293,7 +293,7 @@ impl SyncEngine {
         let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
         for s in due {
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
-            if !ts.is_some_and(|ts| s.tries < MAX_INBOX_RESENDS && !self.acted(&s.member, ts)) {
+            if !ts.is_some_and(|ts| s.tries < MAX_INBOX_RESENDS && !self.acted(&s.member, ts)) || !s.edge_only && !self.still_member(&s.member, &s.commit) {
                 self.state.remove_sent(&s.member, &s.commit);
                 continue;
             }
@@ -306,6 +306,15 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// Whether `member` is still a current member of a thing whose edges or secrets commit `c`
+    /// writes (a grant or re-seal is re-sent only while the member holds what it gave; a removal
+    /// since then must not hand it the target's current label).
+    fn still_member(&self, member: &Tid, c: &CommitId) -> bool {
+        let Some(h) = self.engine.header(c) else { return false };
+        let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/secrets")).map(|a| a.tid).collect();
+        targets.iter().any(|t| self.engine.core.current_members(t).iter().any(|(m, _, _)| m == member))
     }
 
     /// Whether `member` acted after `since` as this node sees it: a held commit newer than that

@@ -242,7 +242,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 /// `/members` delta after its `/created` one), and held deltas are re-judged.
 pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Vec<(usize, usize, Decoded)>) -> Result<()> {
     tx.core.touch();
-    let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let mut meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
@@ -254,6 +254,17 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         let mut all = parts.clone();
         all.extend(super::held_parts_at(tx, id, &|ai| !parts.iter().any(|(x, _, _)| *x == ai))?);
         validity::note_required(tx.core, &h, id, &all);
+        // what that judged (an overreaching late `/secrets` part) holds for the join below,
+        // and every held delta is judged again
+        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, id, ai)).collect();
+        if now != meta.valid {
+            meta.valid = now.clone();
+            if let Some(m) = tx.core.commits.get_mut(id) {
+                m.valid = now;
+            }
+            tx.core.index_validity(id);
+            held_changed = true;
+        }
     }
     // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
     // (held parts). The keysets "before" are the current `/keys` state, which already holds this

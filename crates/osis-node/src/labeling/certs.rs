@@ -18,10 +18,23 @@ const CARD: [&str; 3] = ["/keys", "/node", "/reach"];
 pub type Parts = BTreeSet<(usize, usize)>;
 
 impl Engine {
-    /// The newest held commit touching `(tid, ak)`.
+    /// The newest applied commit whose delta on `(tid, ak)` is valid here: `ts` is the author's
+    /// to choose, so an invalid write (anyone's commit on another's card) never stands for the
+    /// current one.
     fn latest_on(&self, tid: &Tid, ak: &str) -> Option<CommitId> {
-        let ak = Ak::new(ak).ok()?;
-        self.core.by_aspect.get(&(*tid, ak)).and_then(|s| s.iter().next_back()).map(|(_, c)| *c)
+        self.latest_by(tid, ak, None)
+    }
+
+    /// `latest_on`, written by `author` when given.
+    pub(crate) fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
+        let k = Ak::new(ak).ok()?;
+        let held = self.core.by_aspect.get(&(*tid, k))?;
+        held.iter().rev().map(|(_, c)| *c).find(|c| {
+            let Some(m) = self.core.commits.get(c) else { return false };
+            !self.core.pending.contains_key(c)
+                && author.is_none_or(|a| m.header.author == *a)
+                && m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid.get(i).copied().unwrap_or(false))
+        })
     }
 
     /// Every delta of commit `c` on `(tid, ak)` for any of `aks`.
@@ -237,5 +250,45 @@ impl Engine {
         })?;
         out.extend(found);
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::Mutation;
+    use crate::local_peer::LocalPeer;
+    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_schema::core_types as ct;
+
+    // spec/permissions.md §4 (certificates and cards are the current valid writes), §5.2: a
+    // later write by a node without the role (here a reader; anyone's on another node's card)
+    // is invalid and never stands for the newest commit on the aspect: admins would otherwise
+    // delete the real one as superseded.
+    #[test]
+    fn invalid_later_write_never_newest_spec_permissions_4() {
+        let mut lp = LocalPeer::new(3, 921, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
+        let ak = Ak::new("/x/a").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(t, &ak, &Value::Int(1)).unwrap();
+        let good = lp.peers[0].commit(m).unwrap().unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Int(2)).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let bad = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync(1, 2).unwrap();
+        let e = &lp.peers[2].engine;
+        assert!(e.header(&bad).is_some_and(|h| h.ts > e.header(&good).unwrap().ts), "the reader's write is held, later");
+        assert_eq!(e.latest_by(&t, "/x/a", None), Some(good));
+        assert_eq!(e.latest_by(&t, "/x/a", Some(&b)), None);
     }
 }

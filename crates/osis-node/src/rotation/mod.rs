@@ -138,10 +138,12 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Dep
 }
 
 /// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
-/// of its own whose secrets it does not hold is judged by its newest `/keys` keysets alone
-/// (spec/crypto.md §4): those epochs, established in this view only, with no boxes. Epochs
-/// observed without any secret (boxes or keysets seen) are not holding: such an actor is judged
-/// by its `/keys` too, or a newer keyset arriving alone never covered its departures.
+/// of its own whose secrets it does not hold is judged by its newest `/keys` keysets (spec/crypto.md
+/// §4): those epochs, established in this view only, with the `/secrets` boxes held of it.
+/// Epochs observed without any secret (boxes or keysets seen) are not holding: such an actor is
+/// judged by its `/keys` too, or a newer keyset arriving alone never covered its departures.
+/// Holding no `/secrets` state of it, a departure from it counts as boxed at a keyset epoch
+/// unless that keyset's rotation commit is not ordered before the departure (`presumed_boxes`).
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.secrets.keys().copied().collect();
@@ -164,7 +166,11 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
                 e.role_mut(r).set_established(ep, osis_keys::Provenance::Fixed);
             }
         }
-        h.map.insert(a, (Default::default(), e));
+        let mut s = secrets_in(tx, &a)?;
+        if s.boxes.is_empty() {
+            presumed_boxes(tx.core, &a, &e, &mut s);
+        }
+        h.map.insert(a, (s, e));
     }
     // key-actor boxes keyed at a superseded epoch of a higher role still carry lower roles'
     // secrets (a grant raced by a rotation of that role only): the covers rule counts them
@@ -188,6 +194,56 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     }
     h.stale = stale;
     Ok(h)
+}
+
+/// Boxes presumed in actor `a`'s keyset epochs when this node holds none of its `/secrets`
+/// (spec/crypto.md §4): a member that left a role of `a` (an applied lowering write, or an edge
+/// past its `until`) and holds less now counts as boxed at `a`'s keyset epoch of each role it
+/// left unless that keyset's rotation commit (`Core::epoch_intro`) is not ordered before the
+/// departure (a removal's own rotation sets it in the same commit); unknown introduction counts
+/// as before. A self-removal or an expiry rotates
+/// nothing, so the old keyset still reaches the leaver.
+fn presumed_boxes(core: &Core, a: &Tid, e: &ActorEpochs, s: &mut osis_schema::core_types::Secrets) {
+    let Some(tl) = core.timelines.get(a) else { return };
+    let now = now_ts(core);
+    let current: BTreeMap<Tid, Role> = tl.roster(a, At::now(now)).into_iter().map(|(m, x)| (m, x.role)).collect();
+    // (member, the role it left and above, when)
+    let mut left: Vec<(Tid, Role, Ts)> = Vec::new();
+    for wid in tl.applied().keys() {
+        let WriteId::Op(c, i) = wid else { continue };
+        let Some(mc) = tl.membership_commit(c) else { continue };
+        let Some(op) = mc.ops.get(*i as usize) else { continue };
+        if op.target != *a {
+            continue;
+        }
+        let old = tl.edges_at(Some(mc.point())).get(&op.member, a).map(|x| x.role);
+        let new = op.edge.filter(|x| x.alive_at(Some(mc.ts))).map(|x| x.role);
+        if let Some(d) = Departure::of_change(op.member, old, new) {
+            left.push((op.member, d.from, mc.ts));
+        }
+    }
+    for (m, x) in tl.edges_at(None).members(a) {
+        if let Some(u) = x.until
+            && !x.alive_at(Some(now))
+        {
+            left.push((*m, Role::Read, Ts::make(u, 0).unwrap_or_default()));
+        }
+    }
+    for (m, from, at) in left {
+        if current.get(&m).copied() >= Some(from) || core.owner(a) == Some(m) {
+            continue;
+        }
+        for r in ROLES.into_iter().filter(|r| *r >= from) {
+            let Some(ep) = e.role(r).newest() else { continue };
+            // the rotation that removed it introduces the keyset in the same commit
+            let after = core.epoch_intro.get(&(*a, r, ep)).is_some_and(|(ts, _, _)| *ts >= at);
+            if !after {
+                let k = BoxKey { member: m, role: r, epoch: osis_keys::aspects::to_schema(&ep) };
+                let placeholder = osis_schema::core_types::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: k.epoch.clone(), wrap: Vec::new() });
+                s.boxes.entry(k).or_insert(placeholder);
+            }
+        }
+    }
 }
 
 /// For the covers rule: whether the commit that wrote key-actor box `k` may have known epoch `e`
@@ -797,5 +853,60 @@ impl Engine {
             self.reexamine()?;
         }
         Ok(r)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::Mutation;
+    use crate::flows::{Demotion, PreSync};
+    use crate::local_peer::LocalPeer;
+    use osis_core::{Role, Tid, WallMs};
+    use osis_schema::core_types as ct;
+
+    /// Delivers every commit of peer `from` to peer `to` without the `/secrets` deltas of `x`
+    /// (what a node that does not read `x` gets of them: certificates).
+    fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize, x: Tid) {
+        for pk in lp.packages(from).unwrap() {
+            let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            let cut = osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && a.ak.as_str() == "/secrets"));
+            let _ = lp.peers[to].engine.ingest(&cut.encode(), pk.blobs.clone());
+        }
+    }
+
+    // spec/crypto.md §4 (a node holding no secret of member M judges by M's keyset and the
+    // boxes of M it holds; holding none, a departure from M that M's keyset predates is not
+    // covered): W leaves team X by self-removal (nothing rotates X); G's admin, who holds no
+    // secret and no `/secrets` of X, must not count G's epoch as covering W's departure inside
+    // X (W still reads through X's old epoch), and cannot fix it by rotating G.
+    #[test]
+    fn departure_inside_unheld_actor_uncovered_spec_crypto_4() {
+        let mut lp = LocalPeer::new(3, 931, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        // X: b's team with W
+        let mut m = Mutation::new();
+        let x = lp.peers[1].engine.new_thing(&mut m, b);
+        lp.peers[1].commit(m).unwrap();
+        lp.peers[1].engine.give_own_secrets(&x).unwrap();
+        lp.peers[1].engine.grant(&x, &w, &write).unwrap();
+        lp.sync(1, 2).unwrap();
+        deliver_without_secrets(&mut lp, 1, 0, x);
+        // G: a's group, X a writer of it
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, a);
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        lp.peers[0].engine.grant(&g, &x, &write).unwrap();
+        assert!(lp.peers[0].engine.get_typed(&x, &ct::SECRETS).unwrap().is_none_or(|s| s.boxes.is_empty()), "a holds nothing of X's /secrets");
+        assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().1.is_empty(), "covered before");
+        // W leaves X by itself: no rotation of X
+        lp.peers[2].engine.demote(&x, &Demotion { member: w, new: None, presync: PreSync::Synced }).unwrap();
+        deliver_without_secrets(&mut lp, 2, 0, x);
+        assert_eq!(lp.peers[0].engine.roster(&x).get(&w), None, "a sees W gone");
+        let (_, still) = lp.peers[0].engine.ensure_rotated(&g).unwrap();
+        assert!(still.contains(&Role::Read), "W's departure inside X is not covered: {still:?}");
     }
 }
