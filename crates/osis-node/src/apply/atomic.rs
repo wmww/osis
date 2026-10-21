@@ -229,11 +229,15 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
+        let early = a.retention.at_most.rel.is_some().then(|| f.clone());
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
         crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
+        if let Some(f) = early {
+            crate::retention::note_earlier_deaths(tx, &id, &a.tid, &a.ak, &f)?;
+        }
     }
     tx.put_commit(&id, blob, &meta, Shred::No)?;
     crate::retention::on_apply(tx, &id, &mut changed)?;
@@ -331,11 +335,15 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
+        let early = a.retention.at_most.rel.is_some().then(|| f.clone());
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
         crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
+        if let Some(f) = early {
+            crate::retention::note_earlier_deaths(tx, id, &a.tid, &a.ak, &f)?;
+        }
     }
     tx.put_commit(id, merged, &meta, Shred::No)?;
     if edges {
