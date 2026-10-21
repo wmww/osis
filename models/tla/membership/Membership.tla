@@ -18,7 +18,8 @@ CONSTANTS NN,           \* nodes 1..NN; node 1 is the key actor owning A
           SnapAu,       \* candidate authors of a snapshot of B (A: node 1)
           MaxDepth,     \* MAX_OWNER_DEPTH (A is 1 link below node 1, B 2)
           FrMode,       \* "all": a frontier is every commit received;
-                        \* "subset": any subset of the commits generated before
+                        \* "subset": any subset of the commits generated before,
+                        \* always with the author's chain certificates (Certs)
           SameKey,      \* nodes that may stamp two commits at one ts
           KeepStanding, \* FALSE: negative control, the demoter keeps nothing
           Chaos         \* TRUE: DropOrderFree explores every drop order
@@ -109,9 +110,15 @@ HSet == {hist[j] : j \in 1..Len(hist)}
 
 Init == hist = GenHist(Len(Genesis)) /\ used = {}
 
+\* Commits setting an edge of x or of B (over-approximating x's paths).
+SetsFor(x) == {c \in HSet : c.kind = "e" /\ \E k \in 1..Len(c.ops) : c.ops[k].mb \in {x, B}}
+\* An honest demoter holds its chain certificates (§4): the writes on its paths
+\* and on its grantors' paths; its frontier lists them (§5.1).
+Certs(au) == LET d1 == SetsFor(au)
+             IN {c.id : c \in {c \in d1 \cup UNION {SetsFor(c2.au) : c2 \in d1} : c.au # au /\ c.au # 1}}
 FrChoices(au) ==
   LET others == {c.id : c \in {c \in HSet : c.au # au /\ c.au # 1}}
-  IN IF FrMode = "subset" THEN SUBSET others ELSE {others}
+  IN IF FrMode = "subset" THEN {S \cup Certs(au) : S \in SUBSET others} ELSE {others}
 
 KeyFree(au, ts) == au \in SameKey \/ ~\E c \in HSet : c.au = au /\ c.ts = ts
 

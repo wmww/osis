@@ -110,8 +110,11 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
 fn joint_run(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
+    let mut with_drops = 0u64;
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
+        // histories where an audit dropped something (late forgeries, unseen writes)
+        with_drops += u64::from(joint::walk(&h).dropped != 0);
         if let Some(d) = joint_diff(&h) {
             fails.push(format!("sample {s}: {d}\n{h:?}"));
             if fails.len() >= 3 {
@@ -120,6 +123,7 @@ fn joint_run(samples: u64, seed: u64) {
         }
     }
     assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    eprintln!("joint model: {samples} histories, {with_drops} with drops");
 }
 
 /// spec/permissions.md §5.1: the joint walk agrees with models/membership `joint`.

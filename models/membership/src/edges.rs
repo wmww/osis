@@ -622,6 +622,11 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
         h.writes.push(EWrite { author, t, id, ops });
         h.recv.push(r);
     }
+    let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
+    let sets: Vec<Vec<usize>> = h.writes.iter().map(|w| w.ops.iter().map(|o| o.0).collect()).collect();
+    let eligible: Vec<bool> = h.writes.iter().map(|w| w.ops.iter().all(|(_, e)| e.is_none_or(|e| e.role < Role::Admin && e.invite == Role::None))).collect();
+    let late = crate::late_writes(rng, &eligible);
+    crate::hold_chains(&ws, &late, |j, x| sets[j].contains(&x), &mut h.recv);
     h
 }
 

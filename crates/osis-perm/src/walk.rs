@@ -8,9 +8,9 @@
 //!   R is below its class with the edge restored ("as if the member still held the role"): the
 //!   join (componentwise maximum, alive) of its values since the last explicit write on it,
 //!   plus, for a node that demoted itself by an explicit write on it, its values before that.
-//! - Only R's frontier and R itself cover X's writes (§5.1): A's chain writes (the writes that
-//!   set the admin edges on A's admin paths to R's target, `Walked::chain_writes`) are covered
-//!   only as listed in it, so a removed admin's backdated write on its remover's edge drops.
+//! - Only R's frontier and R itself cover X's writes (§5.1): writes on A's own chain too (the
+//!   writer lists its chain certificates by commit ID), so a removed admin's backdated write on
+//!   its remover's edge drops.
 //! - Epoch starts: the newest snapshot found applicable at its position in a walk becomes N's
 //!   epoch start and the walk restarts; one found inapplicable or dropped while chosen is
 //!   rejected until an epoch start changes on a thing authority on N may come through
@@ -159,28 +159,6 @@ pub(crate) struct Walked {
     pub demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
     /// The rest of the walk's state, to continue it past its last write (`Timeline::extend`).
     pub rest: Rest,
-}
-
-impl Walked {
-    /// Node `a`'s chain writes on `target` at `ts` after the walk (spec/permissions.md §5.1,
-    /// Frontier): the applied writes that set the admin edges on `a`'s admin paths to `target`,
-    /// which `a`'s frontier lists by commit ID.
-    pub(crate) fn chain_writes(&self, owners: &Owners, a: &Tid, target: &Tid, ts: Ts) -> BTreeSet<CommitId> {
-        let view = View::new(owners, &self.edges, Some(ts));
-        let best = view.roles_from(a);
-        let mut out = BTreeSet::new();
-        for t in view.admin_reaching(target) {
-            for (m, e) in self.edges.members(&t) {
-                let admin = m == a || best.get(m) == Some(&Role::Admin);
-                if e.role == Role::Admin && e.alive_at(Some(ts)) && admin
-                    && let Some(w) = self.rest.setter.get(&(*m, t))
-                {
-                    out.insert(w.commit());
-                }
-            }
-        }
-        out
-    }
 }
 
 /// Walk state beyond what queries read (see `Pass`), and the undo log that rolls it back.

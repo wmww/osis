@@ -44,11 +44,7 @@ static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
-    // a snapshot may repair sticky residue (models/tla/membership MC_sticky_snap)
-    if sticky_residue(&tl) {
-        RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
+    let residue = sticky_residue(&tl);
     let state = tl.roster_state(&thing);
     let mut w2 = w.clone();
     let ledger = state.ledger.clone();
@@ -64,7 +60,13 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if before == after && before == compacted {
         return None;
     }
-    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}"))
+    // a snapshot may repair sticky residue (models/tla/membership MC_sticky_snap): it only
+    // undoes drops, never adds them
+    if residue && before.applied.is_subset(&after.applied) && before.applied.is_subset(&compacted.applied) {
+        RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
+    Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}\ndropped {:?}\nnodes {:?}", tl.dropped(), w.commits.iter().map(|c| (c.id, c.author, c.t, c.ops.clone())).collect::<Vec<_>>()))
 }
 
 /// Content probes by every node at a few times, with random receipts.
@@ -130,7 +132,7 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -189,7 +191,7 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("sample {s}: {d}\n{h:?}");
         }
     }
-    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -255,7 +257,7 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is

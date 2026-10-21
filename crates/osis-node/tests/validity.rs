@@ -183,6 +183,42 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
+// spec/commits.md §3, §4 (counter reuse): membership commits use commit form and a node-form one
+// is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
+// node-form ranges void both commits): Bob keeps the edge Alice gave him.
+#[test]
+fn reused_counters_never_void_a_grant_spec_commits_4() {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Source, Writer, encode_delta};
+    let mut lp = net(3, 46);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
+    let h = lp.peers[0].engine.header(&g).unwrap();
+    assert_eq!(h.form, Form::Commit, "membership commits use commit form");
+    let members = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "/members").unwrap();
+    // Alice's key signs a node-form commit on d's /members with the grant's range
+    let ts = osis_core::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let empty = osis_crdt::Fragment::default();
+    let mut batch = Batch::new(&empty, Writer::new(ts, Source::node(a), members.lo));
+    batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
+    let (f, range) = batch.finish().unwrap();
+    assert!(range.lo < members.hi && members.lo < range.hi, "the ranges overlap");
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Membership, ts, a, range.lo, range.hi), None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Membership, ts, a, a, Form::Node);
+    let mut aw = AspectWrite::new(d, members.ak.clone(), range.lo, range.hi, bytes);
+    aw.retention = osis_commit::retention::MEMBERSHIP_RETENTION;
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    // a node-form membership commit is refused when built and when received (spec/commits.md §4)
+    let e = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap_err();
+    assert!(e.to_string().contains("node-form membership"), "{e}");
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
+}
+
 // spec/commits.md §2: a membership commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
@@ -260,13 +296,17 @@ fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_core::Ak, v
     let author = lp.peers[by].engine.tid();
     let ts = osis_core::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-    let mut w = Writer::new(ts, Source::node(author), lo);
+    // commit form (spec/commits.md §3): own dots name the commit, a placeholder until built
+    let own = Source::commit(osis_core::CommitId([0; 32]));
+    let mut w = Writer::new(ts, own.clone(), lo);
     let f = create(&mut w, &view, v).unwrap();
     let r = w.range();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Membership, ts, author, r.lo, r.hi), None).unwrap();
+    let mut cx = writer_ctx(Kind::Membership, ts, author, r.lo, r.hi);
+    cx.own = own;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
@@ -353,7 +393,7 @@ fn forge_snapshot(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak, ts: 
 fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak, ts: osis_core::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     let author = lp.peers[by].engine.tid();
-    let snap = osis_crdt::Snapshot { nonce: [7; 16], fragment: f, frontiers };
+    let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), None);

@@ -97,12 +97,15 @@ pub struct Delta {
     pub fragment: Fragment,
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers]`.
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
     pub fragment: Fragment,
     pub frontiers: Frontiers,
+    /// Commits judged by commit ID (commit form, imports) whose writes in this aspect the
+    /// writer had applied, with their author nodes (§8).
+    pub absorbed: BTreeMap<CommitId, Tid>,
 }
 
 /// A non-negative integer as a value. Counters and `ts` stay below 2^63 (decoded ones are `Int`).
