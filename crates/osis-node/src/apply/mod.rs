@@ -10,7 +10,7 @@ pub(crate) mod validity;
 #[cfg(test)]
 mod tests_linked;
 
-pub(crate) use atomic::{apply_verified, ingest_secrets_keys, rebuild, strip_valueless};
+pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, rebuild, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -513,8 +513,12 @@ impl Engine {
     }
 }
 
-/// Rebuilds the engine's indexes from the store (open, and after a failed transaction).
-pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
+/// Rebuilds the engine's indexes from the store (open, and after forgetting): from the persisted
+/// index when this build wrote it (`engine::index`: commit metas with their validity, the
+/// indexes derived from membership bodies; only `/members` and `/tenures` parts are decoded,
+/// for perm), else from every commit record, re-judging every delta. Returns whether it rebuilt
+/// (the persisted index is then to be written).
+pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
     if let Some(b) = tx.txn.get_local(records::HLC)?
         && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
         && let Some(ts) = osis_core::Ts::from_u64(u64::from_be_bytes(a))
@@ -560,45 +564,59 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     tx.core.secrets.extend(secrets);
-    // applied commits
-    let mut recs = Vec::new();
-    tx.scan(records::COMMIT, |_, v| {
-        recs.push(decode_commit_record(&v)?);
-        Ok(())
-    })?;
-    let mut bodies = Vec::new();
-    for (received, origin, dropped, mut blob) in recs {
-        if !blob.header.is_resolved()
-            && let Some(dedup) = tx.core.dedup(&blob.header.actor)
-        {
-            blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+    let fast = crate::engine::index::current(tx)?;
+    if fast {
+        crate::engine::index::load(tx)?;
+        // perm's inputs: the edge writes of the membership commits, oldest first
+        let mut ids: Vec<(osis_core::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| matches!(m.header.kind, Kind::Membership | Kind::RosterSnapshot)).map(|(id, m)| (m.header.ts, *id)).collect();
+        ids.sort();
+        for (_, id) in ids {
+            let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
+            let edges = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures"));
+            let parts = held_parts_at(tx, &id, &edges)?;
+            validity::add_membership(tx, &h, &id, &parts)?;
         }
-        let id = blob.id();
-        let h = Arc::new(blob.header.clone());
-        let valid = vec![true; h.aspects.len()];
-        atomic::index_commit(tx.core, &id, &h);
-        tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
-        if blob.header.kind.is_membership() {
-            bodies.push(blob);
+    } else {
+        // applied commits
+        let mut recs = Vec::new();
+        tx.scan(records::COMMIT, |_, v| {
+            recs.push(decode_commit_record(&v)?);
+            Ok(())
+        })?;
+        let mut bodies = Vec::new();
+        for (received, origin, dropped, mut blob) in recs {
+            if !blob.header.is_resolved()
+                && let Some(dedup) = tx.core.dedup(&blob.header.actor)
+            {
+                blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+            }
+            let id = blob.id();
+            let h = Arc::new(blob.header.clone());
+            let valid = vec![true; h.aspects.len()];
+            atomic::index_commit(tx.core, &id, &h);
+            tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
+            if blob.header.kind.is_membership() {
+                bodies.push(blob);
+            }
         }
-    }
-    // perm inputs from membership bodies, oldest first
-    bodies.sort_by_key(|b| b.header.ts);
-    for blob in bodies {
-        let id = blob.id();
-        let mut b = blob.clone();
-        if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
-            validity::note_required(tx.core, &b.header, &id, &parts);
-            for (ai, _, d) in &parts {
-                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
-                    match a.ak.as_str() {
-                        "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
-                        "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
-                        _ => {}
+        // perm inputs from membership bodies, oldest first
+        bodies.sort_by_key(|b| b.header.ts);
+        for blob in bodies {
+            let id = blob.id();
+            let mut b = blob.clone();
+            if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
+                validity::note_required(tx.core, &b.header, &id, &parts);
+                for (ai, _, d) in &parts {
+                    if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
+                        match a.ak.as_str() {
+                            "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
+                            "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
+                            _ => {}
+                        }
                     }
                 }
+                validity::add_membership(tx, &b.header, &id, &parts)?;
             }
-            validity::add_membership(tx, &b.header, &id, &parts)?;
         }
     }
     tx.core.update_timelines();
@@ -620,7 +638,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (id, k) in pend {
         tx.core.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
     }
-    // derived indexes from states
+    // derived indexes from states (secrets, own keys: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
     tx.scan(b"a/", |k, _| {
         let mut r = records::Rd::new(k);
@@ -628,20 +646,26 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (tid, ak) in aspects {
-        if ak.as_str() == "/group" {
+        match ak.as_str() {
             // definitions first, derived once below
-            let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
-            tx.core.groups.set_def(tid, atomic::group_def(v));
-        } else {
-            atomic::observe_state(tx, &tid, &ak)?;
+            "/group" => {
+                let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
+                tx.core.groups.set_def(tid, atomic::group_def(v));
+            }
+            "/secrets" | "/keys" if fast => {}
+            _ => atomic::observe_state(tx, &tid, &ak)?,
         }
     }
     tx.core.groups.rebuild();
-    // every delta is judged once at open
-    let all: Vec<Tid> = tx.core.by_thing.keys().copied().collect();
-    tx.core.rejudge.extend(all);
-    validity::rejudge_all(tx, false)?;
-    Ok(())
+    if fast {
+        // every delta's validity is persisted: nothing to re-judge
+        tx.core.rejudge.clear();
+    } else {
+        let all: Vec<Tid> = tx.core.by_thing.keys().copied().collect();
+        tx.core.rejudge.extend(all);
+        validity::rejudge_all(tx, false)?;
+    }
+    Ok(!fast)
 }
 
 /// Decodes a stored (already verified) commit's parts.

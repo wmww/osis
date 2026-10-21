@@ -7,6 +7,7 @@ pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod groups;
 pub(crate) mod held;
+pub(crate) mod index;
 pub(crate) mod journal;
 pub(crate) mod pages;
 pub(crate) mod large;
@@ -614,7 +615,11 @@ impl Engine {
         let id = Identity::generate(&mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
-        e.run(|tx| Ok(tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?))?;
+        // a new store: its (empty) persisted index is current
+        e.run(|tx| {
+            tx.txn.put_local(records::SEED, &seed_bytes, Shred::No)?;
+            index::write_all(tx)
+        })?;
         e.bootstrap()?;
         Ok(e)
     }
@@ -719,7 +724,8 @@ impl Engine {
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-                match f(&mut tx) {
+                // the persisted index follows the in-memory indexes in the same transaction
+                match f(&mut tx).and_then(|v| index::persist(&mut tx).map(|_| v)) {
                     Ok(v) => {
                         let Tx { txn, .. } = tx;
                         txn.commit().map(|_| v).map_err(Error::from)
@@ -757,8 +763,12 @@ impl Engine {
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-        crate::apply::load(&mut tx)?;
+        let rebuilt = crate::apply::load(&mut tx)?;
         self.core.commit_journal();
+        if rebuilt {
+            // persisted for the next open
+            self.run(index::write_all)?;
+        }
         Ok(())
     }
 }

@@ -10,8 +10,8 @@
 use super::state::{decode, encode};
 use crate::error::{Error, Result};
 use osis_core::format::PAGE_TARGET;
-use osis_core::{Ak, CommitId, Tid, Value};
-use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, Source, SourceKind, Step};
+use osis_core::{Ak, Tid, Value};
+use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
 
@@ -122,27 +122,7 @@ fn dot_key(d: &Dot, out: &mut Vec<u8>) {
     out.extend_from_slice(&d.ctr.to_be_bytes());
 }
 
-fn dot_value(d: &Dot) -> Value {
-    let src = match d.src.kind() {
-        SourceKind::Node(t) => Value::List(vec![Value::Int(0), Value::Bytes(t.as_bytes().to_vec())]),
-        SourceKind::Commit(c) => Value::List(vec![Value::Int(1), Value::Bytes(c.0.to_vec())]),
-        SourceKind::Derived(x) => Value::List(vec![Value::Int(2), dot_value(x)]),
-    };
-    Value::List(vec![src, uint(d.ctr)])
-}
-
-fn dot_of(v: &Value) -> Result<Dot> {
-    let bad = || Error::Corrupt("state page dot");
-    let Value::List(items) = v else { return Err(bad()) };
-    let [Value::List(src), Value::Int(ctr)] = items.as_slice() else { return Err(bad()) };
-    let src = match src.as_slice() {
-        [Value::Int(0), Value::Bytes(t)] => Source::node(Tid::from_bytes(t.as_slice().try_into().map_err(|_| bad())?)),
-        [Value::Int(1), Value::Bytes(c)] => Source::commit(CommitId(c.as_slice().try_into().map_err(|_| bad())?)),
-        [Value::Int(2), x] => Source::derived(dot_of(x)?).ok_or_else(bad)?,
-        _ => return Err(bad()),
-    };
-    Ok(Dot::new(src, u64::try_from(*ctr).map_err(|_| bad())?))
-}
+use super::records::{dot_of, dot_value};
 
 fn opt_dot_value(d: Option<&Dot>) -> Value {
     d.map_or(Value::List(Vec::new()), dot_value)
@@ -686,7 +666,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use super::*;
     use osis_core::Ts;
-    use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Writer, create};
+    use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 
     /// The value of `n` ints keyed 0..n.

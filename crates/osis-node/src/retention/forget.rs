@@ -71,6 +71,8 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
     if lost.is_empty() {
         return Ok(out);
     }
+    // commit records change below the indexes: the reload rebuilds the persisted index
+    crate::engine::index::invalidate(tx)?;
     let mut memo: BTreeMap<Tid, bool> = BTreeMap::new();
     // forgotten aspects: held in states or in commits
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();

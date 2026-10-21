@@ -240,6 +240,43 @@ fn removal_rotates_spec_perm_3() {
     assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.held().next().is_none()));
 }
 
+// notes/local-store.md (a rebuildable index): after grants, a removal with its rotation, content
+// by the removed member before and after it (the latter invalid here), the indexes an open reads
+// from the persisted index equal those rebuilt from every commit record, and those in memory.
+#[test]
+fn persisted_index_equals_rebuild_spec_perm_5_2() {
+    let (mut lp, ps) = people(3, 509);
+    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
+    let d = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    let write = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(d, &REG, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    write(&mut lp, 1, "bob before");
+    spread(&mut lp);
+    lp.advance(10);
+    lp.peers[0].engine.demote(&d, &Demotion { member: pb, new: None, presync: PreSync::Synced }).unwrap();
+    lp.advance(10);
+    let late = write(&mut lp, 1, "bob after");
+    spread(&mut lp);
+    let e = &mut lp.peers[0].engine;
+    let h = e.header(&late).unwrap();
+    assert!(h.aspects.iter().any(|a| a.tid == d), "bob's late write is held");
+    assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "and invalid here");
+    let before = e.index_digest();
+    assert!(before.contains("false"), "an invalid part is indexed");
+    e.reload_index().unwrap();
+    assert_eq!(e.index_digest(), before, "loaded from the persisted index");
+    e.rebuild_index().unwrap();
+    assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
+    e.reload_index().unwrap();
+    assert_eq!(e.index_digest(), before, "the rebuilt index persisted");
+}
+
 /// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not
 /// incidentally rotate a leaked copy away), every row recorded, faults injectable.
 fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {

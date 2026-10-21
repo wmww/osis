@@ -292,7 +292,10 @@ fn membership_change_and_open_cost() {
     println!("one grant with 10^4 commits held: {:?}", t1.elapsed());
     drop(e);
     let t2 = Instant::now();
-    let e = reopen.open(&batches, &bytes);
-    println!("open with 10^4 commits held: {:?}", t2.elapsed());
+    let mut e = reopen.open(&batches, &bytes);
+    let opened = t2.elapsed();
+    let t3 = Instant::now();
+    e.rebuild_index().unwrap();
+    println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
     assert_eq!(e.roster(&things[0]).len(), 1);
 }

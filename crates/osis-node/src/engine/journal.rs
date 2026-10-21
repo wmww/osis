@@ -77,6 +77,11 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
             self.insert(k, v);
         }
     }
+    /// The keys the running transaction changed.
+    pub fn logged(&self) -> Vec<K> {
+        let s: std::collections::BTreeSet<&K> = self.log.iter().map(|(k, _)| k).collect();
+        s.into_iter().cloned().collect()
+    }
 }
 
 impl<K: Ord + Clone, V: Clone> Journaled for JMap<K, V> {
@@ -132,6 +137,11 @@ impl<T: Ord + Clone> JSet<T> {
         for t in it {
             self.insert(t);
         }
+    }
+    /// The items the running transaction changed.
+    pub fn logged(&self) -> Vec<T> {
+        let s: BTreeSet<&T> = self.log.iter().map(|(t, _)| t).collect();
+        s.into_iter().cloned().collect()
     }
 }
 
@@ -195,6 +205,11 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
             self.log.push((k.clone(), t.clone(), true));
         }
         was
+    }
+    /// The elements the running transaction changed.
+    pub fn logged(&self) -> Vec<(K, T)> {
+        let s: BTreeSet<(&K, &T)> = self.log.iter().map(|(k, t, _)| (k, t)).collect();
+        s.into_iter().map(|(k, t)| (k.clone(), t.clone())).collect()
     }
 }
 
