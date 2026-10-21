@@ -63,7 +63,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides.
 
 ## 6. Large atomic values
-- A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; below it MUST NOT be.
+- A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; below it MUST NOT be. Exception: a `/tenures` element is never chunked whole; its frontier is (spec/permissions.md §6).
 - Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8, giving a tree: leaves are chunks, interior nodes are `[level, [LINK+], [len+]]` (at most 512 links, each with the plaintext length under it, so a reader seeks without fetching what lies before); the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6); the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.

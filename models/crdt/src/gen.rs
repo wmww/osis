@@ -29,7 +29,9 @@ impl Rng {
 
 /// A type exercising every encoding: a struct with one field per encoding, nested collections.
 pub fn kitchen_sink() -> Ty {
-    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    // a set of structs: elements are registers holding the whole value (§3.2)
+    let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(pair)))].into_iter().collect());
     let mut cases = BTreeMap::new();
     cases.insert(0, None);
     cases.insert(1, Some(Ty::Register));
@@ -179,7 +181,7 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
         (Ty::Set(et), _) => {
             let v = random_value(r, et, 1);
             if r.chance(1, 2) {
-                ops::set_add(w, Some(st), et, &v)
+                ops::set_add(w, Some(st), &v)
             } else {
                 ops::set_remove(w, Some(st), &v)
             }

@@ -542,12 +542,12 @@ fn map_resurrection_and_set_semantics() {
     let st_ty = Ty::Set(Box::new(Ty::Register));
     let mut a = Writer::new(Source::node(1), 1 << 16, 1);
     let mut st: Option<Frag> = None;
-    apply(&mut st, ops::set_add(&mut a, None, &Ty::Register, &Value::Int(5)).unwrap());
+    apply(&mut st, ops::set_add(&mut a, None, &Value::Int(5)).unwrap());
     let base = st.unwrap();
     let mut b = Writer::new(Source::node(2), 3 << 16, 1);
     let rm = ops::set_remove(&mut b, Some(&base), &Value::Int(5)).unwrap();
     let mut c = Writer::new(Source::node(3), 2 << 16, 1);
-    let add = ops::set_add(&mut c, None, &Ty::Register, &Value::Int(5)).unwrap();
+    let add = ops::set_add(&mut c, None, &Value::Int(5)).unwrap();
     let mut s = base.clone();
     s.join(rm);
     s.join(add);
@@ -1011,4 +1011,30 @@ fn decoder_rejects_rule_7_strict() {
     joined.join(set);
     assert!(matches!(joined, Frag::Slots { .. }), "{joined:?}");
     assert!(dec(&snap(&joined)).is_ok());
+}
+
+/// spec §3.2 (set elements), §5.5: a set element of a struct type is one register holding the
+/// whole value; the decoder rejects a set or bag element whose fragment is not a register.
+#[test]
+fn set_element_is_a_register_spec_3_2() {
+    use crdt_model::state::{Composite, Elem};
+    use std::collections::BTreeMap;
+    let own = Source::node(1);
+    let ts = 3 << 16;
+    let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let v = Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(2))]);
+    let mut w = Writer::new(own.clone(), ts, 1);
+    let f = ops::create(&mut w, &Ty::Set(Box::new(pair.clone())), &Value::set(vec![v.clone()]));
+    let Frag::Set { elems, .. } = &f else { panic!("set") };
+    let e = elems.values().next().unwrap();
+    assert!(matches!(e.frag.as_deref(), Some(Frag::Register { reset: None, write: Some((_, Some(x))) }) if *x == v));
+    let enc = |f: &Frag| encode_delta(f, [1; 16], &mut Ctx::new(ts, own.clone(), 1));
+    let wcx = || Ctx::writer(ts, own.clone(), 1, 3);
+    assert!(decode_delta(&enc(&f), &mut wcx()).is_ok());
+    // the same element as a nested struct fragment
+    let mut w = Writer::new(own.clone(), ts, 1);
+    let d = w.stamp().dot;
+    let nested = ops::create(&mut w, &pair, &v);
+    let bad = Frag::Set { c: Composite::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(nested)) })]) };
+    assert!(decode_delta(&enc(&bad), &mut wcx()).is_err());
 }

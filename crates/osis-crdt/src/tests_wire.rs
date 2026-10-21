@@ -267,3 +267,39 @@ fn snapshot_frontiers_spec_8() {
     let bad = Snapshot { frontiers: Frontiers(BTreeMap::from([(tid(5), 0)])), ..s };
     assert!(encode_snapshot(&bad, &scx, None).is_err());
 }
+
+/// spec/crdt.md §3.2 (set elements), §3.3 rule 7, §5.5: a set element of a struct type is one
+/// register holding the whole value, byte-identical with the model; a set element that is a
+/// nested fragment is bad input; a link fits only a register position.
+#[test]
+fn set_element_is_a_register_spec_3_2() {
+    use crate::fragment::{Elem, Fragment, Meta, Set};
+    use crate::ops::{Writer, create};
+    use crate::testutil::{TyView, writer};
+    let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let v = Value::Map([(Value::Int(1), Value::Int(1)), (Value::Int(2), Value::Int(2))].into());
+    let mw = crdt_model::ops::Writer::new(MSource::node(1), 3 << 16, 1);
+    let mut w: Writer = writer(&mw);
+    let f = create(&mut w, &TyView(Ty::Set(Box::new(pair.clone()))), &Value::Set([v.clone()].into())).unwrap();
+    let Fragment::Set(s) = &f else { panic!("set") };
+    assert!(s.elems.values().all(|e| matches!(e.frag.as_deref(), Some(Fragment::Register(_)))));
+    let mut mw2 = mw.clone();
+    let mf = crdt_model::ops::create(&mut mw2, &Ty::Set(Box::new(pair.clone())), &crdt_model::value::Value::set(vec![crdt_model::value::Value::fields(vec![(1, crdt_model::value::Value::Int(1)), (2, crdt_model::value::Value::Int(2))])]));
+    assert_eq!(f, frag(&mf));
+    let cx = writer_cx(&mw2);
+    let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: f }, &cx, None).unwrap();
+    assert!(decode_delta(&bytes, &cx, &mut Interner::new(), None).is_ok());
+    // the element as a nested struct fragment
+    let mut w = writer(&mw);
+    let d = w.fresh().dot;
+    let nested = create(&mut w, &TyView(pair.clone()), &v).unwrap();
+    let bad = Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(nested)) })]) });
+    let bytes = encode_delta(&Delta { nonce: [1; 16], fragment: bad }, &cx, None).unwrap();
+    let e = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap_err();
+    assert_eq!(e.class(), ErrorClass::BadInput);
+    // a link at a struct, list, set or counter position is refused
+    let link = Value::Link(osis_core::Link { hash: [1; 32], blob: osis_core::BlobId([2; 32]), suite: 1, key: [0; 32] });
+    for ty in [pair, Ty::List(Box::new(Ty::Register)), Ty::Set(Box::new(Ty::Register)), Ty::Counter] {
+        assert!(create(&mut writer(&mw), &TyView(ty), &link).is_err());
+    }
+}

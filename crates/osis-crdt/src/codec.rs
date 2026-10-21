@@ -414,6 +414,10 @@ fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
         let dot = cx.dot(d)?;
         let reset = cx.opt_stamp(r)?;
         let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
+        // a set or bag element's value is one register (§3.2)
+        if frag.as_deref().is_some_and(|f| !matches!(f, Fragment::Register(_))) {
+            return Err(Error::Malformed("set or bag element not a register"));
+        }
         if frag.is_some() {
             cx.claim(&dot)?;
         }

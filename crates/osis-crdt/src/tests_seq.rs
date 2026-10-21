@@ -609,7 +609,7 @@ fn records(f: &Fragment) -> usize {
 fn order(f: &Fragment) -> Vec<Dot> {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
     let p = place(s.elems(), s.text);
-    p.rows.iter().flat_map(|r| (0..r.span).map(move |i| nth(&r.dot, i))).collect()
+    p.iter().flat_map(|r| (0..r.span).map(move |i| nth(&r.dot, i))).collect()
 }
 fn expanded(f: &Fragment) -> Fragment {
     let Fragment::Seq(s) = f else { panic!("not a sequence") };
