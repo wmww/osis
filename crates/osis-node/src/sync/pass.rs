@@ -1035,7 +1035,11 @@ impl SyncEngine {
                 // a lagging projection: the superset goes up first
                 return Ok(None);
             } else {
-                // certificates (membership-class, node cards, heartbeats) are not ours to judge
+                // another node's card nobody needs any more goes (spec/permissions.md §4)
+                if settled && self.stale_card(server, l, g, commit, &h, parts) {
+                    return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
+                }
+                // other certificates (membership-class, node cards, heartbeats) are not ours to judge
                 let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "/keys" | "/node" | "/reach" | "/seen" | "/created"));
                 if h.kind.is_membership() || card {
                     return Ok(None);
@@ -1051,6 +1055,29 @@ impl SyncEngine {
             }
         }
         Ok(Some((classify(&f), true, aspects)))
+    }
+
+    /// Whether an entry of commit `c` holding `parts` is another node's card that no member
+    /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
+    /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
+    /// `/node` and `/reach`, the node reads the label's actor no more (a departed node is never
+    /// dialed; its `/keys` stays while chains of its old writes may need it).
+    fn stale_card(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+        let me = self.engine.tid();
+        let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
+        let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"));
+        if h.author == me || aks.is_empty() || !all_card {
+            return false;
+        }
+        let actor = self.engine.group_actor(g);
+        let departed = !self.engine.core.may_read(&h.author, &actor);
+        aks.into_iter().all(|ak| {
+            if departed && ak != "/keys" {
+                return true;
+            }
+            let Some((x, _)) = self.engine.aspect_commit(&h.author, ak) else { return false };
+            x != *c && self.engine.header(&x).is_some_and(|n| n.ts > h.ts) && self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id))
+        })
     }
 
     /// Deletes must-not-hold entries present at the server, carriers first (spec/sync.md §6,
@@ -1117,6 +1144,31 @@ impl SyncEngine {
                     items.push(item);
                 }
                 None => continue,
+            }
+        }
+        // the blobs certificate copies link (`place_linked`) once no entry of their commit is
+        // here any more (deleted, or superseded): nothing under the label needs them
+        if keys.delete.is_some() {
+            let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
+            let copied: Vec<CommitId> = self.state.certs.iter().filter(|(x, _)| *x == l).map(|(_, c)| *c).collect();
+            for c in copied {
+                let held = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c) && present.contains(id));
+                if held {
+                    continue;
+                }
+                let Some(h) = self.engine.header(&c) else { continue };
+                let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+                for b in self.engine.linked_blobs(&c, &all)? {
+                    let linked = self.state.entries.get(&(l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown);
+                    if !linked || !present.contains(&b) || super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                        continue;
+                    }
+                    if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                        let raw = self.raw_now();
+                        self.deleting.insert((conn, l, b), raw);
+                        items.push(item);
+                    }
+                }
             }
         }
         // consumed inbox blobs (spec/sync.md §3): the inbox label's admins delete one whose commit
