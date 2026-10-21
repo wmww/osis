@@ -201,8 +201,10 @@ impl SyncEngine {
             }
         }
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
-        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
-        if !lost.is_empty() {
+        // written again re-encrypted, one commit for the batch (spec/sync.md §1); not one a
+        // replaced label lost (its content goes, the replacement holds it)
+        let replaced = self.group_of(&l).is_some_and(|g| self.is_replaced(&g, &l));
+        if !lost.is_empty() && !replaced {
             self.relink_pending.extend(lost);
             self.relink_at = 0;
             self.relink_lost()?;

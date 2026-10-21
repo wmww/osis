@@ -1087,6 +1087,31 @@ impl SyncEngine {
         Ok(Some((classify(&f), true, aspects)))
     }
 
+    /// Unopened entries present at `server` under replaced label `l` that only content commits
+    /// list (their chunks, tree nodes and pages): no membership-class commit or certificate
+    /// kept there needs them (spec/sync.md §2). A blob no held commit lists stays.
+    pub(crate) fn replaced_leftovers(&self, server: &ServerKey, l: &LabelId) -> Vec<BlobId> {
+        let unknown: BTreeSet<BlobId> = self.state.present_at(server, l).into_iter().filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown)).collect();
+        if unknown.is_empty() {
+            return Vec::new();
+        }
+        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
+        let mut content = BTreeSet::new();
+        let mut keep = BTreeSet::new();
+        for m in self.engine.core.commits.values() {
+            let h = &m.header;
+            let membership = h.aspects.iter().any(|a| kept(a.ak.as_str()));
+            for ch in h.chunks.iter().filter(|ch| unknown.contains(&ch.blob)) {
+                if membership {
+                    keep.insert(ch.blob);
+                } else {
+                    content.insert(ch.blob);
+                }
+            }
+        }
+        content.difference(&keep).copied().collect()
+    }
+
     /// Whether an entry of commit `c` holding `parts` is another node's card that no member
     /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
@@ -1174,6 +1199,20 @@ impl SyncEngine {
                     items.push(item);
                 }
                 None => continue,
+            }
+        }
+        // under a replaced label the chunk and page entries of content commits go with them
+        // (spec/sync.md §2: only membership-class commits and certificates stay)
+        if keys.delete.is_some() && self.is_replaced(g, &l) {
+            for b in self.replaced_leftovers(&server, &l) {
+                if super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                    continue;
+                }
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, b), raw);
+                    items.push(item);
+                }
             }
         }
         // the blobs certificate copies link (`place_linked`) once no entry of their commit is

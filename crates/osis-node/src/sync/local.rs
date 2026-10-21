@@ -206,6 +206,10 @@ impl SyncEngine {
     /// syncing it for good; `labels` retires it after `MEMBERSHIP_KEEP` whatever.
     pub(crate) fn retire_at(&mut self, server: super::state::ServerKey, g: &Tid, l: LabelId) -> Result<()> {
         let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
+        // content commits' chunks and pages go too
+        if !self.replaced_leftovers(&server, &l).is_empty() {
+            return Ok(());
+        }
         for b in self.state.present_at(&server, &l) {
             let Some(Kind::Commit { commit, parts }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
             let Some(h) = self.engine.header(commit) else { return Ok(()) };
