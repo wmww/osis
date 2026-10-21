@@ -402,6 +402,36 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
         h.writes.push(JWrite { author, t, id, target, member, role });
         h.recv.push(r);
     }
+    // Entities each node may reach (any edge ever, owner links), for honest receipts.
+    let reach: Vec<Vec<bool>> = (0..nodes)
+        .map(|y| {
+            let mut v = vec![false; ents];
+            v[y] = true;
+            loop {
+                let mut changed = false;
+                for x in 0..na {
+                    if v[nodes + x] {
+                        continue;
+                    }
+                    let owner = match h.owners[x] {
+                        Owner::Node(o) => o,
+                        Owner::Actor(z) => nodes + z,
+                    };
+                    let edge = (0..ents).any(|m| v[m] && (h.genesis[m][x] > Role::None || h.writes.iter().any(|w| w.member == m && w.target == x)));
+                    if v[owner] || edge {
+                        v[nodes + x] = true;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    return v;
+                }
+            }
+        })
+        .collect();
+    let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
+    let members: Vec<usize> = h.writes.iter().map(|w| w.member).collect();
+    crate::hold_chains(&ws, |j, x| reach[x][members[j]], &mut h.recv);
     h
 }
 

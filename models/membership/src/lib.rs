@@ -31,6 +31,32 @@ pub enum Role {
     Admin,
 }
 
+/// Honest receipts (spec/permissions.md §4, §5.1): before writing, every author holds its
+/// chain certificates, the writes setting edges on its paths and, transitively, on the paths
+/// of their authors before them. `writes[j]` = (author, t); `sets(j, x)`: write j may set an
+/// edge on node x's paths (an over-approximation is fine: more receipts). `recv[j][x]` drops
+/// below write j's own `t` for each such holder (receipt clocks may skew).
+pub fn hold_chains(writes: &[(usize, u32)], sets: impl Fn(usize, usize) -> bool, recv: &mut [Vec<u32>]) {
+    for &(a, ti) in writes {
+        let mut stack = vec![(a, ti)];
+        let mut seen = std::collections::HashSet::new();
+        while let Some((y, bound)) = stack.pop() {
+            if !seen.insert((y, bound)) {
+                continue;
+            }
+            for (j, &(aj, tj)) in writes.iter().enumerate() {
+                // a write at the same `t` may be ordered before: received just before it
+                if tj <= bound && sets(j, y) {
+                    if let Some(r) = recv.get_mut(j).and_then(|r| r.get_mut(a)) {
+                        *r = (*r).min(tj.saturating_sub(1));
+                    }
+                    stack.push((aj, tj));
+                }
+            }
+        }
+    }
+}
+
 /// Seeded xorshift generator: every history is a seed.
 pub struct Rng(pub u64);
 impl Rng {

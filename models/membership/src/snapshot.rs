@@ -786,6 +786,10 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
         writes.push(SWrite { author, thing, target, role, t, snap, ledger, rec });
         recv.push(r);
     }
+    // honest receipts: a snapshot sets everyone's edges, a record none
+    let ws: Vec<(usize, u32)> = writes.iter().map(|w| (w.author, w.t)).collect();
+    let sets = |j: usize, x: usize| writes[j].snap.is_some() || (!writes[j].rec && writes[j].target == x);
+    crate::hold_chains(&ws, sets, &mut recv);
     SHist { gp, gg, writes, recv }
 }
 

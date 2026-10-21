@@ -622,6 +622,9 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
         h.writes.push(EWrite { author, t, id, ops });
         h.recv.push(r);
     }
+    let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
+    let sets: Vec<Vec<usize>> = h.writes.iter().map(|w| w.ops.iter().map(|o| o.0).collect()).collect();
+    crate::hold_chains(&ws, |j, x| sets[j].contains(&x), &mut h.recv);
     h
 }
 
