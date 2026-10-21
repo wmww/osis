@@ -223,6 +223,9 @@ pub(crate) struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side membership rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Tests: after each per-entry `/secrets` ingestion, check that ingesting the whole state
+    /// learns nothing more (`apply::atomic::observe_secrets_keys`).
+    pub check_ingest: bool,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -362,6 +365,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            check_ingest: false,
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
@@ -811,6 +815,13 @@ impl Engine {
         self.core.hlc.set_offset(ms);
     }
 
+    /// Tests: check every per-entry `/secrets` ingestion against the whole state's (an operation
+    /// fails with `Misuse` where they differ).
+    #[doc(hidden)]
+    pub fn check_secrets_ingest(&mut self, on: bool) {
+        self.core.check_ingest = on;
+    }
+
     /// A channel of engine events, sent after durability.
     pub fn subscribe(&mut self) -> Receiver<Event> {
         self.core.events.subscribe()
@@ -864,6 +875,7 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.check_ingest = self.core.check_ingest;
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };

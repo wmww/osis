@@ -439,6 +439,23 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
         // boxes sealed to this actor elsewhere open now (membership flows hook)
         crate::flows::reopen_dependents(tx, *actor)?;
     }
+    if tx.core.check_ingest {
+        // the whole state's ingestion learns nothing the entries' did not
+        let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
+        let before = tx.core.secrets.get(actor).cloned();
+        let st = tx.state(actor, &ak)?.cloned();
+        let alts = st.as_ref().map(crate::engine::secrets::history_alts).unwrap_or_default();
+        if let Some(s) = st.as_ref().and_then(Fragment::read).as_ref().and_then(crate::engine::secrets::secrets_value)
+            && tx.core.ingest_secrets(actor, &s, None, &alts, None)
+        {
+
+            match before {
+                Some(b) => tx.core.secrets.insert(*actor, b),
+                None => tx.core.secrets.remove(actor),
+            };
+            return Err(Error::Misuse("per-entry /secrets ingestion missed what the whole state holds"));
+        }
+    }
     Ok(())
 }
 
