@@ -146,16 +146,6 @@ Class(R, x, n) ==
   ELSE (IF x = 1 \/ R[x].a = 3 THEN 3 ELSE IF R[x].b = 3 THEN 2 ELSE 0)
 Reaches(R, x, m) == x = m \/ (m = B /\ R[x].b >= 1)
 
-\* Things whose admin gives admin on T.
-AdminReach(E, t, T) ==
-  LET s1 == IF T = B THEN {A, B} ELSE {A}
-  IN IF A \in s1 /\ AR(E, <<B, A>>, t) = 3 THEN s1 \cup {B} ELSE s1
-\* A's chain writes: the writes that set the admin edges on A's admin paths to T.
-ChainW(st, R, t, au, T) ==
-  LET ar == AdminReach(st.E, t, T)
-  IN {st.S[p] : p \in {p \in EdgeDom : p[2] \in ar /\ AR(st.E, p, t) = 3
-                         /\ (p[1] = au \/ (p[1] = B /\ R[au].b = 3))}} \ {0}
-
 UntilLE(a, b) == b = 0 \/ (a # 0 /\ a <= b)
 Lowers(nv, old, t) ==
   Alive(old, t) /\ (nv.r = 0 \/ (nv.r <= old.r /\ UntilLE(nv.u, old.u) /\ nv # old))
@@ -182,8 +172,9 @@ UpdW(st, key, t) ==
                 !.lastW = [q \in Nodes \X Things |-> IF q \in w THEN key ELSE @[q]]]
 
 \* Sets edge e to nv. explicit: audits as §5.1 step 4 by node au with
-\* frontier fr; chainW and the commit cid count as covered.
-Change(st, e, nv, t, key, au, explicit, fr, chainW, cid, gen) ==
+\* frontier fr; besides fr only the commit cid counts as covered (the
+\* demoter's chain writes too, §5.1 Frontier).
+Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
   LET old == st.E[e]
       ck == <<key[1], key[2]>>
   IN
@@ -208,7 +199,7 @@ Change(st, e, nv, t, key, au, explicit, fr, chainW, cid, gen) ==
                    gen |-> gen, au |-> au, m |-> e[1], t |-> e[2]] : q \in {q \in pairs : q.ca < q.cb}}
         dems == {[x |-> q.x, n |-> q.n, key |-> key, fr |-> fr, cid |-> cid, gen |-> gen]
                    : q \in {q \in pairs : q.rb >= 2 /\ q.ra < 2}}
-        drops == {a \in st.app : a.attr >= 2 /\ a.cid \notin fr /\ a.cid # cid /\ a.cid \notin chainW
+        drops == {a \in st.app : a.attr >= 2 /\ a.cid \notin fr /\ a.cid # cid
                     /\ \E f \in falls : f.x = a.au /\ f.n = a.tg /\ f.ca < a.attr /\ a.attr <= f.cb}
         own == au \in reach /\ base > 0
         K1 == [x \in Nodes |-> IF KeepStanding /\ own /\ x = au THEN Mx(base, kept[au]) ELSE 0]
@@ -223,7 +214,7 @@ Change(st, e, nv, t, key, au, explicit, fr, chainW, cid, gen) ==
                           fr |-> fr, nv |-> nv, reach |-> reach,
                           reachAdmin |-> {x \in Nodes : x = e[1] \/ (e[1] = B /\ Rb[x].b = 3)},
                           after |-> [x \in Nodes |-> Class(R1, x, e[2])],
-                          chainW |-> chainW, was |-> Mx(base, kept[au]), auReach |-> au \in reach]}]
+                          was |-> Mx(base, kept[au]), auReach |-> au \in reach]}]
 
 \* §5.1 step 2 and §2: -1 not applied, 1 self-removal, 2/3 by class.
 Judge(st, R, c, k) ==
@@ -236,18 +227,18 @@ Judge(st, R, c, k) ==
              /\ (o.mb = c.au \/ (o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ cls < 2)) THEN 1
      ELSE IF cls >= 2 THEN cls ELSE -1
 
-RECURSIVE ApplyOps(_, _, _, _, _, _)
-ApplyOps(st, c, js, chainW, k, t) ==
+RECURSIVE ApplyOps(_, _, _, _, _)
+ApplyOps(st, c, js, k, t) ==
   IF k > Len(c.ops) THEN st
-  ELSE IF js[k] = -1 THEN ApplyOps(st, c, js, chainW, k + 1, t)
+  ELSE IF js[k] = -1 THEN ApplyOps(st, c, js, k + 1, t)
   ELSE LET o == c.ops[k]
            e == <<o.mb, o.tg>>
            nv == Norm([r |-> o.r, u |-> o.u], t)
            rec == [w |-> <<c.id, k>>, cid |-> c.id, au |-> c.au, tg |-> o.tg, attr |-> js[k],
                    key |-> c.key5, gen |-> c.gen]
            st1 == [st EXCEPT !.app = @ \cup {rec}]
-       IN ApplyOps(Change(st1, e, nv, t, c.key5, c.au, js[k] >= 2, c.fr, chainW, c.id, c.gen),
-                   c, js, chainW, k + 1, t)
+       IN ApplyOps(Change(st1, e, nv, t, c.key5, c.au, js[k] >= 2, c.fr, c.id, c.gen),
+                   c, js, k + 1, t)
 
 RECURSIVE ApplyRo(_, _, _, _, _)
 ApplyRo(st, ev, ms, i, t) ==
@@ -255,7 +246,7 @@ ApplyRo(st, ev, ms, i, t) ==
   ELSE LET p == <<ms[i], ev.tg>>
            q == {x \in ev.ro : x.m = ms[i]}
            v == IF q = {} THEN Absent ELSE (CHOOSE x \in q : TRUE).v
-       IN ApplyRo(IF st.E[p] = v THEN st ELSE Change(st, p, v, t, ev.key5, ev.au, FALSE, {}, {}, ev.id, 0),
+       IN ApplyRo(IF st.E[p] = v THEN st ELSE Change(st, p, v, t, ev.key5, ev.au, FALSE, {}, ev.id, 0),
                   ev, ms, i + 1, t)
 MemSeq(n) == IF n = A THEN <<B>> \o [i \in 1..NN - 1 |-> i + 1] ELSE [i \in 1..NN |-> i]
 
@@ -265,8 +256,7 @@ Step(ev, st) ==
   IN
   CASE ev.kind = "e" ->
          LET js == [k \in 1..Len(ev.ops) |-> Judge(st, R, ev, k)]
-             chainW == ChainW(st, R, t, ev.au, ev.tg)
-         IN UpdW(ApplyOps(st, ev, js, chainW, 1, t), ev.key5, t)
+         IN UpdW(ApplyOps(st, ev, js, 1, t), ev.key5, t)
     [] ev.kind = "c" ->
          LET ra == IF DepthOK(ev.tg) THEN RoleOn(R, ev.au, ev.tg) ELSE 0
          IN [st EXCEPT !.cinfo = @ \cup {[cid |-> ev.id, au |-> ev.au, tg |-> ev.tg, key |-> ev.key5,
@@ -274,9 +264,8 @@ Step(ev, st) ==
                 ever |-> <<ev.au, ev.tg>> \in st.everW \/ ra >= 2]}]
     [] ev.kind = "v" ->
          LET o == ev.ops[1]
-             chainW == IF ev.ex THEN ChainW(st, R, t, ev.au, ev.tg) ELSE {}
          IN UpdW(Change(st, <<o.mb, o.tg>>, [r |-> o.r, u |-> o.u], t, ev.key5, ev.au, ev.ex,
-                        ev.fr, chainW, 0, 0), ev.key5, t)
+                        ev.fr, 0, 0), ev.key5, t)
     [] ev.kind = "s" ->
          IF Class(R, ev.au, ev.tg) < 3 \/ <<ev.id, 1>> \in st.D THEN [st EXCEPT !.rej = TRUE]
          ELSE LET st1 == [st EXCEPT !.app = @ \cup {[w |-> <<ev.id, 1>>, cid |-> ev.id, au |-> ev.au,
@@ -465,7 +454,7 @@ StandingAudited ==
       /\ r1.au \in r2.reachAdmin /\ r2.after[r1.au] < 2
       /\ ~\E r3 \in W0.ex : r3.m = B /\ r3.t = r1.t /\ Before(r1.key, r3.key) /\ Before(r3.key, r2.key) )
     => ~\E a \in W0.app : a.au = r1.au /\ a.tg = r1.t /\ a.attr = 2 /\ Before(a.key, r1.key)
-                           /\ a.cid \notin r2.fr \cup r2.chainW
+                           /\ a.cid \notin r2.fr
 
 \* (5) Owner chain: chain authority confers write wherever the chain reaches
 \* (content by a chain node stands unless a later demotion); nothing on a thing

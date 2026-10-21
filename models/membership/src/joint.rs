@@ -13,8 +13,8 @@
 //! as if the member still held its role (the highest role the edge had since the last
 //! explicit write on it, self-removals and A's own writes auditing nothing) has its
 //! earlier applied writes on N attributed to a class in (new, held] audited by A's frontier
-//! (A's receipts before t; A's chain writes, those setting the admin edges on A's admin paths
-//! to the target, and the write itself count), and the walk restarts on
+//! (A's receipts before t; nothing else counts, A's own chain writes included), and the walk
+//! restarts on
 //! any drop. Drops are sticky. No invites, `until` or snapshots here (edges.rs, snapshot.rs).
 //!
 //! Checked (`cargo run --release [samples] joint`, `cargo test`): termination, input-order
@@ -138,43 +138,6 @@ impl JHist {
         }
     }
 
-    /// A's chain writes for a write on actor x: the writes that set the admin edges on A's
-    /// admin paths to x (spec/permissions.md §5.1, "A's own chain writes").
-    fn chain_writes(&self, edges: &[Vec<Role>], r: &[Vec<Role>], set_by: &[Vec<Option<usize>>], a: usize, x: usize) -> Vec<usize> {
-        let (nn, na) = (self.nodes, self.actors());
-        let mut to = vec![false; nn + na];
-        to[nn + x] = true;
-        loop {
-            let mut changed = false;
-            for e in 0..nn + na {
-                if to[e] {
-                    continue;
-                }
-                let owns = |y: usize| match self.owners[y] {
-                    Owner::Node(o) => o == e,
-                    Owner::Actor(z) => nn + z == e,
-                };
-                if (0..na).any(|y| to[nn + y] && (edges[e][y] == Role::Admin || owns(y))) {
-                    to[e] = true;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        let mut out = vec![];
-        for m in 0..nn + na {
-            let admin = m == a || m >= nn && r[a][m - nn] == Role::Admin;
-            for y in 0..na {
-                if admin && edges[m][y] == Role::Admin && to[nn + y] {
-                    out.extend(set_by[m][y]);
-                }
-            }
-        }
-        out
-    }
-
     /// Entities reaching `m` (included) by edges of any role and owner links.
     fn reaching(&self, edges: &[Vec<Role>], m: usize) -> Vec<bool> {
         let (nn, na) = (self.nodes, self.actors());
@@ -250,8 +213,6 @@ impl JHist {
             let mut prior: Vec<Vec<Role>> = vec![vec![Role::None; na]; nn + na];
             let mut prior_self: std::collections::HashMap<(usize, usize, usize), Role> = Default::default();
             let mut attr = vec![Attr::Skipped; self.writes.len()];
-            // set_by[m][x]: the applied write that set m's current edge on x.
-            let mut set_by: Vec<Vec<Option<usize>>> = vec![vec![None; na]; nn + na];
             for &i in &order {
                 let w = &self.writes[i];
                 let a = w.author;
@@ -277,10 +238,8 @@ impl JHist {
                         c => Attr::By(c),
                     }
                 };
-                let chain_a = self.chain_writes(&edges, &r, &set_by, a, w.target);
                 let own = self.reaching(&edges, w.member)[a];
                 edges[w.member][w.target] = w.role;
-                set_by[w.member][w.target] = Some(i);
                 r = self.roles(&edges);
                 let mut grew = false;
                 let (m, t) = (w.member, w.target);
@@ -321,7 +280,7 @@ impl JHist {
                             if !(now < c && c <= before) {
                                 continue;
                             }
-                            let covered = self.recv[j][a] < w.t || chain_a.contains(&j);
+                            let covered = self.recv[j][a] < w.t;
                             if !covered {
                                 dropped |= 1 << j;
                                 grew = true;

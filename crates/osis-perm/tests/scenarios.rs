@@ -168,6 +168,34 @@ fn self_removal_finalized_by_explicit_removal() {
     assert!(tl.dropped().keys().all(|d| d.commit() == forged));
 }
 
+/// §5.1 Frontier (models/tla/membership M1, chain-write forgery): after n1 removes n2 having received
+/// nothing of n2's, n2's backdated write on n1's own admin edge (admin until 9, stamped 6) is
+/// not covered by n1's frontier: it drops and n1 keeps its role.
+#[test]
+fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
+    let (mut w, n, g) = group();
+    let r = w.set(n[1], g, n[2], None, 8, &[]);
+    let forged = w.set(n[2], g, n[1], edge_inv(Admin, None, Some(9)), 6, &[]);
+    let tl = eval(&w);
+    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
+    assert!(tl.is_applied(&WriteId::Op(r, 0)));
+    assert_eq!(role(&tl, n[1], g), Some(Admin));
+    assert_eq!(edge_role(&tl, n[2], g), None);
+}
+
+/// §5.1 Frontier: a chain write the demoter received counts (its frontier lists it), so an
+/// admin removes the admin that last set its own edge and keeps what that write gave it.
+#[test]
+fn received_chain_write_covered_spec_permissions_5_1() {
+    let (mut w, n, g) = group();
+    let set = w.set(n[2], g, n[1], edge_inv(Admin, Some(Write), None), 3, &[(n[1], 3)]);
+    let r = w.set(n[1], g, n[2], None, 8, &[]);
+    let tl = eval(&w);
+    assert!(tl.is_applied(&WriteId::Op(set, 0)) && tl.is_applied(&WriteId::Op(r, 0)));
+    assert!(tl.dropped().is_empty());
+    assert_eq!(tl.roster(&g, At::END).get(&n[1]).and_then(|e| e.invite), Some(Write));
+}
+
 /// Link K: L (node 1) holds (write, invite write) on K owned by sharer 0; J, Z joiners, Y member.
 fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();

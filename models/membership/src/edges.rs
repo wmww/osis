@@ -12,8 +12,8 @@
 //! Audit (demoter-frontier rule of main.rs): `held[x]` is the highest class (admin above every
 //! invite level) x held since its last audit. An applied op by another author leaving x below
 //! `held` drops x's earlier applied ops attributed to a class it fell through (above its new
-//! class, up to `held`) that the author had not received before the op's time (its own chain
-//! write always counts), and the walk restarts; `held[x]` becomes x's new class. `until`,
+//! class, up to `held`) that the author had not received before the op's time (its own commit
+//! counts), and the walk restarts; `held[x]` becomes x's new class. `until`,
 //! self-removal and invite grants never audit, so `held` persists until an explicit write.
 //! Links: L has (r, ∞, r) on K; redeem = L's commit adding the redeemer (single use: plus
 //! removing L's own edge).
@@ -224,7 +224,6 @@ impl EHist {
     }
 
     pub fn eval_mode(&self, mode: Drops) -> EOut {
-        let n = self.n();
         let order = self.order();
         let base = self.bases();
         let nops = base[self.writes.len()];
@@ -240,15 +239,12 @@ impl EHist {
             let mut held: Vec<u8> = edges.iter().map(|&e| class(auth(e, 0))).collect();
             let mut applied = 0u64;
             let mut attr = vec![Attr::Skipped; nops];
-            // Last applied op that set each actor's edge: the actor's chain.
-            let mut chain: Vec<Option<usize>> = vec![None; n];
             // Commits that demoted someone (and so audited) in this walk.
             let mut demoting = 0u64;
             for &i in &order {
                 let w = &self.writes[i];
                 let a = w.author;
                 let ats = self.judge(w, &edges);
-                let chain_a = chain[a];
                 let mut grew = false;
                 for (k, (&(x, new), &at)) in w.ops.iter().zip(&ats).enumerate() {
                     let op = base[i] + k;
@@ -258,7 +254,6 @@ impl EHist {
                     applied |= 1 << op;
                     attr[op] = at;
                     edges[x] = new;
-                    chain[x] = Some(op);
                     let now = class(auth(new, w.t));
                     // Self-removal and invite grants audit nothing; `held` keeps the highest
                     // class since the last audit, so the next explicit demotion audits as if
@@ -283,7 +278,7 @@ impl EHist {
                             continue;
                         }
                         let jc = self.commit_of(&base, j);
-                        let covered = self.recv[jc][a] < w.t || chain_a == Some(j) || jc == i;
+                        let covered = self.recv[jc][a] < w.t || jc == i;
                         if !covered && cause[j].is_none() {
                             cause[j] = Some(i);
                             grew = true;

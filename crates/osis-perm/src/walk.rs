@@ -8,7 +8,9 @@
 //!   R is below its class with the edge restored ("as if the member still held the role"): the
 //!   join (componentwise maximum, alive) of its values since the last explicit write on it,
 //!   plus, for a node that demoted itself by an explicit write on it, its values before that.
-//! - A's chain writes: the writes that set the admin edges on A's admin paths to R's target.
+//! - Only R's frontier and R itself cover X's writes (§5.1): A's chain writes (the writes that
+//!   set the admin edges on A's admin paths to R's target, `Walked::chain_writes`) are covered
+//!   only as listed in it, so a removed admin's backdated write on its remover's edge drops.
 //! - Epoch starts: the newest snapshot found applicable at its position in a walk becomes N's
 //!   epoch start and the walk restarts; one found inapplicable or dropped while chosen is
 //!   rejected until an epoch start changes on a thing authority on N may come through
@@ -159,6 +161,28 @@ pub(crate) struct Walked {
     pub rest: Rest,
 }
 
+impl Walked {
+    /// Node `a`'s chain writes on `target` at `ts` after the walk (spec/permissions.md §5.1,
+    /// Frontier): the applied writes that set the admin edges on `a`'s admin paths to `target`,
+    /// which `a`'s frontier lists by commit ID.
+    pub(crate) fn chain_writes(&self, owners: &Owners, a: &Tid, target: &Tid, ts: Ts) -> BTreeSet<CommitId> {
+        let view = View::new(owners, &self.edges, Some(ts));
+        let best = view.roles_from(a);
+        let mut out = BTreeSet::new();
+        for t in view.admin_reaching(target) {
+            for (m, e) in self.edges.members(&t) {
+                let admin = m == a || best.get(m) == Some(&Role::Admin);
+                if e.role == Role::Admin && e.alive_at(Some(ts)) && admin
+                    && let Some(w) = self.rest.setter.get(&(*m, t))
+                {
+                    out.insert(w.commit());
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Walk state beyond what queries read (see `Pass`), and the undo log that rolls it back.
 #[derive(Default)]
 pub(crate) struct Rest {
@@ -233,7 +257,6 @@ enum Item {
 struct Auditor<'a> {
     author: Option<Tid>,
     frontier: Option<&'a Frontier>,
-    chain: BTreeSet<WriteId>,
     commit: Option<CommitId>,
     point: Point,
     ledger: bool,
@@ -582,40 +605,11 @@ impl<'a> Pass<'a> {
         grew
     }
 
-    /// Could an explicit write of `new` on `key` demote anyone: does the edge it restores
-    /// exceed `new` in role, invite or life?
-    fn may_lower(&self, key: (Tid, Tid), new: Option<Edge>, ts: Ts) -> bool {
-        let mut r = self.prior.get(&key).copied();
-        if let Some(o) = self.edges.get(&key.0, &key.1).filter(|_| !self.dead.contains(&key)) {
-            r = Some(join(r, *o));
-        }
-        for e in self.prior_node.get(&key).into_iter().flat_map(|m| m.values()) {
-            r = Some(join(r, *e));
-        }
-        exceeds(r, new, ts)
-    }
-
     fn record(&mut self, id: WriteId, a: Applied) {
         self.by_author_target.entry((a.author, a.target)).or_default().push(id);
         self.log.push(Undo::ByAuthorTarget((a.author, a.target)));
         let was = self.applied.insert(id, a);
         self.log.push(Undo::Applied(id, was));
-    }
-
-    /// A's chain writes (spec/permissions.md §5.1): the writes that set the admin edges on
-    /// A's admin paths to `target`.
-    fn chain_writes(&self, best: &BTreeMap<Tid, Role>, target: &Tid, ts: Ts) -> BTreeSet<WriteId> {
-        let mut out = BTreeSet::new();
-        for t in self.view(ts).admin_reaching(target) {
-            for (m, e) in self.edges.members(&t) {
-                if e.role == Role::Admin && e.alive_at(Some(ts)) && best.get(m) == Some(&Role::Admin)
-                    && let Some(w) = self.setter.get(&(*m, t))
-                {
-                    out.insert(*w);
-                }
-            }
-        }
-        out
     }
 
     /// An explicit write changed edge `(member, target)`: every node X reaching the member
@@ -705,7 +699,6 @@ impl<'a> Pass<'a> {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.chain.contains(&id)
                 || aud.frontier.is_some_and(|f| f.covers(n, MEMBERS, x, a.dots, &id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
@@ -762,24 +755,18 @@ impl<'a> Pass<'a> {
                 continue;
             }
             if let Some(attr) = self.judge(c, k, &best) {
-                let new = op.edge.map(|e| Edge { since: None, ..e });
-                let chain = match attr {
-                    Attr::By(Class::Chain | Class::Edge) if self.may_lower((op.member, op.target), new, c.ts) => Some(self.chain_writes(&best, &op.target, c.ts)),
-                    Attr::By(Class::Chain | Class::Edge) => Some(BTreeSet::new()),
-                    _ => None,
-                };
-                judged.push((k, id, attr, chain));
+                judged.push((k, id, attr));
             }
         }
         let mut grew = false;
-        for (k, id, attr, chain) in judged {
+        for (k, id, attr) in judged {
             let Some(op) = c.ops.get(k) else { continue };
             let new = op.edge.map(|e| Edge { since: None, ..e });
             self.record(id, Applied { author: c.author, target: op.target, point, attr, dots: op.dots });
-            let auditor = chain.map(|chain| Auditor {
+            let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
+            let auditor = explicit.then(|| Auditor {
                 author: Some(c.author),
                 frontier: c.frontier.as_deref(),
-                chain,
                 commit: Some(c.id),
                 point,
                 ledger: false,
@@ -838,16 +825,11 @@ impl<'a> Pass<'a> {
     }
 
     fn virtual_write(&mut self, v: &Virtual) -> bool {
-        let chain = v.audit.as_ref().map(|(node, _)| {
-            let best = self.roles(*node, v.point.ts);
-            self.chain_writes(&best, &v.thing, v.point.ts)
-        });
-        let auditor = v.audit.as_ref().zip(chain).map(|((node, f), chain)| Auditor {
+        let auditor = v.audit.as_ref().map(|(node, f)| Auditor {
             // A ledger entry with a frontier counts as an explicit demotion by its key's node
-            // (§6): that node is exempt as from its own write, and its chain writes count.
+            // (§6): that node is exempt as from its own write.
             author: Some(*node),
             frontier: Some(f.as_ref()),
-            chain,
             commit: None,
             point: v.point,
             ledger: true,

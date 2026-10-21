@@ -6,7 +6,7 @@
 use crate::graph::View;
 use crate::timeline::Timeline;
 use crate::types::Edge;
-use osis_core::{Role, Tid, Ts};
+use osis_core::{CommitId, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The aspects a demotion puts in question, per demoted node.
@@ -52,5 +52,12 @@ impl Timeline {
             }
         }
         out
+    }
+
+    /// `author`'s chain writes on `target` now (at `ts`, after every held write): the commits
+    /// setting the admin edges on its admin paths to `target`, which a demotion's frontier
+    /// lists by commit ID (§5.1, Frontier).
+    pub fn chain_writes(&self, author: &Tid, target: &Tid, ts: Ts) -> BTreeSet<CommitId> {
+        self.walked.chain_writes(&self.owners, author, target, ts)
     }
 }

@@ -40,7 +40,7 @@ instances=(
   "membership Membership MC_keepoff.cfg small fail"     # negative control: no kept standing
   "membership Membership MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
   "membership Membership MC_sticky_snap.cfg small fail" # M2: a snapshot repairs a sticky drop
-  "membership Membership MC_forge.cfg small fail"       # issues/chain-write-forgery.md
+  "membership Membership MC_forge.cfg small pass"       # AMBIGUITIES.md M1 (fixed)
   "membership Membership MC_samets.cfg small fail"      # issues/ledger-same-ts-commits.md
 )
 

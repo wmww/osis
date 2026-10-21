@@ -40,8 +40,15 @@ fn answers(held: &MemoryHeldSet, things: &[Tid], probes: &[Point], keep: &dyn Fn
 /// `author` (owner chain of `thing`) snapshots it at the end; nothing changes, and a node that
 /// compacted `thing` at the snapshot answers the same, later audits and a demoter's own
 /// demotions included.
+static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
+    // a snapshot may repair sticky residue (models/tla/membership MC_sticky_snap)
+    if sticky_residue(&tl) {
+        RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
     let state = tl.roster_state(&thing);
     let mut w2 = w.clone();
     let ledger = state.ledger.clone();
@@ -123,6 +130,7 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
+    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -181,6 +189,7 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("sample {s}: {d}\n{h:?}");
         }
     }
+    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -246,6 +255,7 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
+    eprintln!("{samples} histories; sticky residue skipped so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is

@@ -2,10 +2,10 @@
 //! notes/permissions.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
-//! if the member still held its role (spec §5.1), counts as chain writes only the admin edges
-//! on the demoter's admin paths, ignores edges for the target's owner (§1), and treats removing
-//! a member one is admin of as a self-removal only without authority on the target (§2);
-//! `snapshot` counts only admin grants as chain writes. Modules by spec section:
+//! if the member still held its role (spec §5.1), ignores edges for the target's owner (§1),
+//! and treats removing a member one is admin of as a self-removal only without authority on
+//! the target (§2). No model exempts the demoter's chain writes: only its frontier covers
+//! them (§5.1). Modules by spec section:
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
 //! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor members, mutual
 //!   membership, commit-ID ties); `joint::walk`, `joint::random_hist`.

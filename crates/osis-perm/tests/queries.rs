@@ -85,6 +85,10 @@ fn cert_run_joint(samples: u64, seed: u64) {
 fn cert_check(w: &World) -> Option<String> {
     let held = w.held();
     let tl = Timeline::evaluate(&held);
+    // drops found in another order on a projection (sticky residue) need not agree
+    if sticky_residue(&tl) {
+        return None;
+    }
     for c in &w.commits {
         for (k, op) in c.ops.iter().enumerate() {
             let id = WriteId::Op(c.id, k as u32);
