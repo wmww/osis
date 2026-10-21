@@ -642,8 +642,11 @@ impl SyncEngine {
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `server`, whoever
     /// placed it (a certificate copy of the same parts holds it too: other nodes see one entry).
+    /// One present at `server` first: the label then holds the body (spec/sync.md §6), and
+    /// uploading another encryption (this node's own, whose upload was lost) would only add a
+    /// duplicate for the tiebreak of §7 to delete.
     fn entry_for(&mut self, server: &ServerKey, l: &LabelId, b: &Body) -> Option<BlobId> {
-        let ids: Vec<BlobId> = self
+        let mut ids: Vec<BlobId> = self
             .state
             .entries
             .range((*l, BlobId([0; 32]))..)
@@ -651,6 +654,7 @@ impl SyncEngine {
             .filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, parts } if *commit == b.commit && *parts == b.parts) && !self.state.gone.contains(&(*server, *l, *id)))
             .map(|((_, id), _)| *id)
             .collect();
+        ids.sort_by_key(|id| !self.state.is_present(server, l, id));
         ids.into_iter().find(|id| self.genuine(id))
     }
 
