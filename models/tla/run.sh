@@ -30,6 +30,18 @@ instances=(
   "rotation Rotation MC_safety.cfg small pass"
   "rotation Rotation MC_fork.cfg small pass"
   "rotation Rotation MC_fork_reorder.cfg all pass"
+  "membership Membership MC_core.cfg small pass"
+  "membership Membership MC_multi.cfg small pass"
+  "membership Membership MC_group.cfg all pass"
+  "membership Membership MC_snapA.cfg all pass"
+  "membership Membership MC_snapB.cfg all pass"
+  "membership Membership MC_until.cfg all pass"
+  "membership Membership MC_depth.cfg all pass"
+  "membership Membership MC_keepoff.cfg small fail"     # negative control: no kept standing
+  "membership Membership MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
+  "membership Membership MC_sticky_snap.cfg small fail" # M2: a snapshot repairs a sticky drop
+  "membership Membership MC_forge.cfg small fail"       # issues/chain-write-forgery.md
+  "membership Membership MC_samets.cfg small fail"      # issues/ledger-same-ts-commits.md
 )
 
 mode=${1:-}
