@@ -829,7 +829,8 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
     for (n, l, b) in std::mem::take(&mut sim.uploads) {
         by_blob.entry((l, b)).or_default().insert(n);
     }
-    let mut per_body: std::collections::BTreeMap<(osis_core::LabelId, CommitId, Vec<(usize, usize)>), BTreeSet<osis_core::BlobId>> = Default::default();
+    type BodyKey = (osis_core::LabelId, CommitId, Vec<(usize, usize)>);
+    let mut per_body: std::collections::BTreeMap<BodyKey, BTreeSet<osis_core::BlobId>> = Default::default();
     // the wait is a spread, not an election: a writer whose view of a promotion lags (its
     // session reopened for a new step) may send too; rare, and never every writer
     let twice = by_blob.values().filter(|w| w.len() > 1).count();
