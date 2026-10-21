@@ -70,6 +70,17 @@ impl HeldSet for Part<'_> {
 /// held `/created` records (by tid; a record's tid fixes its content).
 type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
 
+/// Which things' timelines an update changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Changed {
+    /// Things of components evaluated from scratch: anything about them may have changed.
+    pub evaluated: BTreeSet<Tid>,
+    /// Things of components whose walk only went on: the targets of the commits added, and
+    /// things added by a `/created` record alone (a new leaf). Authority changed only on what
+    /// is reachable from them (owned things, targets of their edges).
+    pub extended: BTreeSet<Tid>,
+}
+
 /// Timelines per component, cached across held-set changes.
 #[derive(Default)]
 pub struct Timelines {
@@ -119,9 +130,8 @@ impl Timelines {
     /// Re-partitions only around `touched` (things whose held inputs changed since the last
     /// update: a commit or snapshot on them added or removed, their `/created` recorded): their
     /// components and every component newly linked to them, so the cost follows the affected
-    /// components, not the held set. Equal to `update`. Returns the things of the components
-    /// evaluated (their timelines changed; the others' are unchanged).
-    pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+    /// components, not the held set. Equal to `update`. Returns what changed.
+    pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Changed {
         let mut region: BTreeSet<Tid> = BTreeSet::new();
         let mut queue: Vec<Tid> = touched.iter().copied().collect();
         while let Some(t) = queue.pop() {
@@ -137,8 +147,8 @@ impl Timelines {
     }
 
     /// Re-partitions `region` (a union of whole components, old and new) and evaluates its
-    /// components whose inputs changed: (how many, their things).
-    fn update_region(&mut self, held: &dyn HeldSet, region: BTreeSet<Tid>) -> (usize, BTreeSet<Tid>) {
+    /// components whose inputs changed: (how many, what changed).
+    fn update_region(&mut self, held: &dyn HeldSet, region: BTreeSet<Tid>) -> (usize, Changed) {
         let mut cache: BTreeMap<Inputs, Timeline> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
         for c in old {
@@ -187,19 +197,39 @@ impl Timelines {
             }
         }
         let mut evaluated = 0;
-        let mut changed = BTreeSet::new();
+        let mut changed = Changed::default();
         for (_, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
             let tl = match cache.remove(&inputs) {
                 Some(tl) => tl,
                 None => {
                     evaluated += 1;
-                    changed.extend(inputs.0.iter().copied());
-                    // a component that only gained commits continues its walk when it can
+                    // a component that only gained commits continues its walk when it can; one
+                    // that only gained new leaves (`/created` of things nothing else names) too
                     let grown = cache.keys().find(|k| k.0 == inputs.0 && k.2 == inputs.2 && k.1.is_subset(&inputs.1)).cloned();
-                    match grown.and_then(|k| cache.remove(&k)).and_then(|tl| tl.extend(&part)) {
-                        Some(tl) => tl,
-                        None => Timeline::evaluate(&part),
+                    let leaves = || cache.keys().find(|k| k.1 == inputs.1 && k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && inputs.2.difference(&k.2).eq(inputs.0.difference(&k.0))).cloned();
+                    let (from, new) = match grown.or_else(leaves) {
+                        Some(k) => {
+                            let added: BTreeSet<CommitId> = inputs.1.difference(&k.1).copied().collect();
+                            let mut new: BTreeSet<Tid> = inputs.0.difference(&k.0).copied().collect();
+                            for t in &inputs.0 {
+                                if held.edge_commits(t).iter().any(|c| added.contains(&c.id)) {
+                                    new.insert(*t);
+                                }
+                            }
+                            (cache.remove(&k), new)
+                        }
+                        None => (None, BTreeSet::new()),
+                    };
+                    match from.and_then(|tl| tl.extend(&part)) {
+                        Some(tl) => {
+                            changed.extended.extend(new);
+                            tl
+                        }
+                        None => {
+                            changed.evaluated.extend(inputs.0.iter().copied());
+                            Timeline::evaluate(&part)
+                        }
                     }
                 }
             };

@@ -156,3 +156,36 @@ fn created_late_every_order() {
         }
     }
 }
+
+/// §5.1: a new thing's `/created` alone (nothing names it yet) and a write after every held one
+/// continue the component's timeline; each reports what changed (the leaf; the write's target),
+/// and the result equals an evaluation from scratch.
+#[test]
+fn leaves_and_appends_extend() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, x) = (n[0], n[1]);
+    let g = w.thing(k);
+    w.set(k, g, x, edge(osis_core::Role::Write), 10, &[]);
+    let leaf = w.thing(k);
+    let mut held = w.held();
+    held.created.remove(&leaf);
+    let mut inc = Timelines::new();
+    let touched: BTreeSet<Tid> = held.things().into_iter().collect();
+    inc.update_touched(&held, &touched);
+    let held = w.held();
+    let c = inc.update_touched(&held, &BTreeSet::from([leaf]));
+    assert!(c.evaluated.is_empty(), "{c:?}");
+    assert_eq!(c.extended, BTreeSet::from([leaf]));
+    assert!(check(&held, &inc, &n).is_none());
+    let prev = w.held();
+    w.set(k, g, leaf, edge(osis_core::Role::Read), 20, &[]);
+    let held = w.held();
+    let c = inc.update_touched(&held, &touched_of(&prev, &held));
+    assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
+    assert!(check(&held, &inc, &n).is_none());
+}
+
+fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
+    touched(a, b)
+}

@@ -227,7 +227,10 @@ impl Core {
         let touched = self.held.take_touched();
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.held, &touched);
-            self.rejudge.extend(changed);
+            self.rejudge.extend(changed.evaluated);
+            // a walk that only went on changed authority only below what it touched
+            let below = self.held.reach(&changed.extended);
+            self.rejudge.extend(below);
         }
         self.membership_changed();
     }

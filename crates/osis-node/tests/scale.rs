@@ -284,6 +284,12 @@ fn membership_change_and_open_cost() {
         e.commit(m).unwrap().unwrap();
     }
     println!("10^4 content commits: {:?}", t0.elapsed());
+    let t4 = Instant::now();
+    let mut m = Mutation::new();
+    let fresh = e.new_thing(&mut m, me);
+    m.set(fresh, &a, &Value::Int(1)).unwrap();
+    e.commit(m).unwrap().unwrap();
+    println!("a new thing with 10^4 commits held: {:?}", t4.elapsed());
     let other = Tid::from_bytes([7; 15]);
     let t1 = Instant::now();
     let mut m = Mutation::new();

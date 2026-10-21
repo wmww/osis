@@ -24,6 +24,8 @@ pub(crate) struct Held {
     created: BTreeMap<Tid, CreationRecord>,
     /// Member -> things it is named on (edge writes, rosters, ledgers), with counts.
     members: BTreeMap<Tid, BTreeMap<Tid, usize>>,
+    /// Owner -> things it owns (by creation records).
+    owned: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> what it holds here (an ID's edge commit and roster snapshots).
     ids: BTreeMap<CommitId, (Option<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>)>,
     log: Vec<Undo>,
@@ -48,6 +50,42 @@ impl Held {
     /// Things `member` is named on as a member (edge writes, rosters, ledgers).
     pub fn named_on(&self, member: &Tid) -> impl Iterator<Item = &Tid> {
         self.members.get(member).into_iter().flat_map(|m| m.keys())
+    }
+
+    /// `from` and everything authority flows to from them: what they own, the things they are
+    /// named on as members, transitively (spec/permissions.md §1: paths climb owner links and
+    /// membership edges). A change of authority at `from` changes it only there.
+    pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        let mut stack: Vec<Tid> = from.iter().copied().collect();
+        while let Some(t) = stack.pop() {
+            if !out.insert(t) {
+                continue;
+            }
+            stack.extend(self.owned.get(&t).into_iter().flatten().copied());
+            stack.extend(self.named_on(&t).copied());
+        }
+        out
+    }
+
+    fn set_created(&mut self, t: Tid, r: Option<CreationRecord>) -> Option<CreationRecord> {
+        let old = match r {
+            Some(r) => {
+                if let CreationRecord::Thing { owner, .. } = &r {
+                    self.owned.entry(*owner).or_default().insert(t);
+                }
+                self.created.insert(t, r)
+            }
+            None => self.created.remove(&t),
+        };
+        if let Some(CreationRecord::Thing { owner, .. }) = &old
+            && self.created.get(&t).is_none_or(|n| !matches!(n, CreationRecord::Thing { owner: o, .. } if o == owner))
+            && let Some(s) = self.owned.get_mut(owner)
+        {
+            s.remove(&t);
+        }
+        self.touched.insert(t);
+        old
     }
 
     fn count(&mut self, pairs: Vec<(Tid, Tid)>, add: bool) {
@@ -120,8 +158,7 @@ impl Held {
     /// Adds a creation record under its tid.
     pub fn create(&mut self, record: CreationRecord) {
         let t = record.tid();
-        let old = self.created.insert(t, record);
-        self.touched.insert(t);
+        let old = self.set_created(t, Some(record));
         self.log.push(Undo::Created(t, old));
     }
 
@@ -162,11 +199,7 @@ impl Journaled for Held {
         while let Some(u) = self.log.pop() {
             match u {
                 Undo::Created(t, old) => {
-                    match old {
-                        Some(r) => self.created.insert(t, r),
-                        None => self.created.remove(&t),
-                    };
-                    self.touched.insert(t);
+                    self.set_created(t, old);
                 }
                 Undo::AddedCommit(c) => {
                     self.take(&c.id);
