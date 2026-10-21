@@ -94,7 +94,6 @@ impl Engine {
     /// The projections of a held commit's current blob (its held deltas), with their reader
     /// actors.
     pub fn bodies(&mut self, c: &CommitId) -> Result<Vec<Body>> {
-        self.core.projections += 1;
         let id = *c;
         let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         let membership = blob.header.kind.is_membership();
@@ -124,12 +123,6 @@ impl Engine {
             b.plaintext = self.body_plaintext(b)?;
         }
         Ok(out)
-    }
-
-    /// How many times a commit was projected into bodies since start (the label pass's cost;
-    /// tests and benches).
-    pub fn projections(&self) -> u64 {
-        self.core.projections
     }
 
     /// The plaintext of a body (`label_bodies_meta` leaves it out): projected again from the
@@ -398,6 +391,43 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are
+    // projected per commit once and kept until that commit or the readers change, so one more
+    // commit leaves every other commit's bodies cached.
+    #[test]
+    fn label_bodies_cached_per_commit_spec_sync_6() {
+        use crate::Mutation;
+        let mut lp = crate::local_peer::LocalPeer::new(1, 941, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        e.commit(m).unwrap();
+        let ak = osis_core::Ak::new("/x/a").unwrap();
+        let mut group = ct::Group::default();
+        let add = |e: &mut Engine, group: &mut ct::Group| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, g);
+            m.set(t, &ak, &osis_core::Value::Int(1)).unwrap();
+            group.items.insert(t);
+            m.set(g, &ct::GROUP, group).unwrap();
+            e.commit(m).unwrap().unwrap()
+        };
+        for _ in 0..30 {
+            add(e, &mut group);
+        }
+        let first = e.label_bodies_meta(&g).unwrap();
+        assert!(first.len() >= 30 && first.iter().all(|b| b.plaintext.is_empty()));
+        let cached: Vec<CommitId> = e.core.bodies.keys().copied().collect();
+        assert!(cached.len() >= 30);
+        let c = add(e, &mut group);
+        assert!(cached.iter().all(|x| e.core.bodies.contains_key(x)), "a new commit leaves the others' bodies cached");
+        let again = e.label_bodies_meta(&g).unwrap();
+        assert!(again.iter().any(|b| b.commit == c) && e.core.bodies.contains_key(&c));
+        let b = again.iter().find(|b| b.commit == c).unwrap();
+        assert!(!e.body_plaintext(b).unwrap().is_empty(), "the plaintext is projected on demand");
+    }
 
     // spec/crypto.md §4: a secret learned only from a pending or invalid commit is never
     // encrypted under; signing a stamp or delete is. A reading-only write or admin secret still

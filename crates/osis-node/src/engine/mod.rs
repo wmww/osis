@@ -177,8 +177,9 @@ pub(crate) struct Core {
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
     /// only commits whose things' owner chains are known are kept.
     pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
-    /// Commits projected into bodies so far (`Engine::projections`).
-    pub projections: u64,
+    /// `Engine::body_live` per body, cleared by every transaction that changes anything
+    /// (`touch`, `rollback`).
+    pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -222,9 +223,17 @@ impl Core {
         self.membership_changed();
     }
 
+    /// The sizes of the indexes `touch` saves (a debug check that a failed transaction changed
+    /// none without it).
+    #[cfg(debug_assertions)]
+    fn shape(&self) -> [usize; 11] {
+        [self.commits.len(), self.pending.len(), self.secrets.len(), self.own_keys.len(), self.by_aspect.len(), self.invalid.len(), self.void.len(), self.valueless.len(), self.groups.len(), self.member_keys.len(), self.box_keys.len()]
+    }
+
     /// Saves the indexes before the running transaction's first change to them.
     pub fn touch(&mut self) {
         self.live_trees.clear();
+        self.live_bodies.clear();
         if self.backup.is_some() {
             return;
         }
@@ -262,6 +271,7 @@ impl Core {
             return;
         }
         self.live_trees.clear();
+        self.live_bodies.clear();
         self.bodies.clear();
         self.membership_changed();
         for k in std::mem::take(&mut self.written) {
@@ -339,7 +349,7 @@ impl Core {
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
-            projections: 0,
+            live_bodies: BTreeMap::new(),
         }
     }
 
@@ -444,6 +454,7 @@ impl Tx<'_> {
     /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
     /// else is written whole. The caller has noted the state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
+        self.core.live_bodies.clear();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
@@ -650,6 +661,8 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        #[cfg(debug_assertions)]
+        let shape = self.core.shape();
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -671,6 +684,10 @@ impl Engine {
                 Ok(v)
             }
             Err(e) => {
+                // a failed transaction that changed nothing keeps the caches (`rollback`): every
+                // index change must go through `touch` or `written`
+                #[cfg(debug_assertions)]
+                debug_assert!(self.core.backup.is_some() || !self.core.written.is_empty() || self.core.shape() == shape, "an index changed without Core::touch");
                 self.core.events.discard();
                 self.core.rollback();
                 Err(e)

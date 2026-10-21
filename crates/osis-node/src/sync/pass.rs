@@ -179,8 +179,8 @@ impl SyncEngine {
                 self.certificates(&g, l, false)?;
                 self.heartbeat(&g, l, &keys, conn)?;
             } else if !self.may_rotate_read(&g) {
-                // revokes only: they tell the label's rotators of the departure that keeps its
-                // epoch uncovered (spec/crypto.md §4 binds nodes that may rotate)
+                // the revokes of departures inside members only: they tell the label's rotators
+                // what keeps its epoch uncovered (spec/permissions.md §4 exception)
                 self.certificates(&g, l, true)?;
             }
         }
@@ -785,23 +785,29 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
-        let mut wanted = if revokes_only { BTreeMap::new() } else { self.engine.certificates(g) };
-        // revokes and roster snapshots about authors seen under the label (spec/permissions.md
-        // §4), so its verifiers judge their writes as this node does
-        let me = self.engine.tid();
-        let mut authors: BTreeSet<Tid> = BTreeSet::new();
-        for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
-            if let Kind::Commit { commit, .. } = &e.kind
-                && let Some(h) = self.engine.header(commit)
-            {
-                authors.insert(h.author);
-                authors.insert(h.actor);
+        let wanted = if revokes_only {
+            // under an epoch a departure inside a member leaves uncovered: those revokes only
+            let actor = self.engine.group_actor(g);
+            self.engine.inside_member_revokes(&actor, &closure)
+        } else {
+            let mut wanted = self.engine.certificates(g);
+            // revokes and roster snapshots about authors seen under the label (spec/permissions.md
+            // §4), so its verifiers judge their writes as this node does
+            let me = self.engine.tid();
+            let mut authors: BTreeSet<Tid> = BTreeSet::new();
+            for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+                if let Kind::Commit { commit, .. } = &e.kind
+                    && let Some(h) = self.engine.header(commit)
+                {
+                    authors.insert(h.author);
+                }
             }
-        }
-        authors.remove(&me);
-        for (c, p) in self.engine.revoke_certificates(&authors, &closure) {
-            wanted.entry(c).or_default().extend(p);
-        }
+            authors.remove(&me);
+            for (c, p) in self.engine.revoke_certificates(&authors, &closure) {
+                wanted.entry(c).or_default().extend(p);
+            }
+            wanted
+        };
         for (c, want) in wanted {
             // the parts entries of `c` under the label hold: this node's copies, and another
             // node's copy or body counted as described above
@@ -1234,28 +1240,51 @@ impl SyncEngine {
                 }
             }
         }
-        // the blobs certificate copies link (`place_linked`) once no entry of their commit is
-        // here any more (deleted, or superseded): nothing under the label needs them
+        // the blobs certificate copies link (`place_linked`) once this node knows no entry of
+        // their commit under the label any more (deleted; one placed and not confirmed yet still
+        // counts), unless another present entry links them too (roster snapshots sharing tree
+        // pages): nothing under the label needs them
         if keys.delete.is_some() {
             let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
             let copied: Vec<CommitId> = self.state.certs.iter().filter(|(x, _)| *x == l).map(|(_, c)| *c).collect();
+            let mut gone = BTreeSet::new();
             for c in copied {
-                let held = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c) && present.contains(id));
-                if held {
+                let known = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|(_, e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c));
+                if known {
                     continue;
                 }
                 let Some(h) = self.engine.header(&c) else { continue };
                 let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
                 for b in self.engine.linked_blobs(&c, &all)? {
                     let linked = self.state.entries.get(&(l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown);
-                    if !linked || !present.contains(&b) || super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
-                        continue;
+                    if linked && present.contains(&b) && !super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                        gone.insert(b);
                     }
-                    if let Some(item) = delete_item(keys, &l, b, None, &[]) {
-                        let raw = self.raw_now();
-                        self.deleting.insert((conn, l, b), raw);
-                        items.push(item);
+                }
+            }
+            if !gone.is_empty() {
+                let others: Vec<(CommitId, BTreeSet<(usize, usize)>)> = self
+                    .state
+                    .entries
+                    .range((l, BlobId([0; 32]))..)
+                    .take_while(|((x, _), _)| *x == l)
+                    .filter(|((_, id), _)| present.contains(id))
+                    .filter_map(|(_, e)| match &e.kind {
+                        Kind::Commit { commit, parts } => Some((*commit, parts.iter().copied().collect())),
+                        _ => None,
+                    })
+                    .collect();
+                for (c, parts) in others {
+                    for b in self.engine.linked_blobs(&c, &parts)? {
+                        gone.remove(&b);
                     }
+                }
+            }
+            for b in gone {
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, b), raw);
+                    items.push(item);
                 }
             }
         }

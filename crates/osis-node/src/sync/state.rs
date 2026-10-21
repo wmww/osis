@@ -314,9 +314,11 @@ impl State {
                 b"f" => {
                     s.forget.insert(r.tid()?);
                 }
+                // a record that does not decode is a delivery not re-sent: never a failed load
                 b"v" => {
-                    let x = decode_sent(&v)?;
-                    s.sent_inbox.insert((x.member, x.commit), x);
+                    if let Ok(x) = decode_sent(&v) {
+                        s.sent_inbox.insert((x.member, x.commit), x);
+                    }
                 }
                 b"u" => {
                     s.stranded.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
@@ -753,6 +755,21 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/sync.md §3 (re-sends are the sender's policy): an inbox delivery record that does not
+    // decode is skipped, never a failed load of the sync state.
+    #[test]
+    fn corrupt_delivery_record_skipped_spec_sync_3() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 961, osis_core::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        e.run(|tx| {
+            tx.txn.put_local(b"y/vjunk", b"not a record", Shred::No)?;
+            Ok(())
+        })
+        .unwrap();
+        let s = State::load(e).unwrap();
+        assert!(s.sent_inbox.is_empty());
+    }
 
     // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox
     // payload names the same label first (its static entry is still tried).

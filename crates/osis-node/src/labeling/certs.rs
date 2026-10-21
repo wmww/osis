@@ -151,6 +151,38 @@ impl Engine {
         }
     }
 
+    /// Revokes of departures inside members of `actor` (a member M with secrets of its own,
+    /// outside `closure`: an applied write lowering an edge on M), with what judges them: the
+    /// ones that keep `actor`'s epoch uncovered, the only certificates a node that may not rotate
+    /// places under such an epoch (spec/permissions.md §4).
+    pub fn inside_member_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
+        let mut found: Vec<osis_perm::Certificates> = Vec::new();
+        let members: Vec<Tid> = self.core.current_members(actor).into_iter().map(|x| x.0).filter(|m| self.core.has_own_secrets(m) && !closure.contains(m)).collect();
+        for m in members {
+            let Some(tl) = self.core.timelines.get(&m) else { continue };
+            for wid in tl.applied().keys() {
+                let osis_perm::WriteId::Op(c, i) = wid else { continue };
+                let Some(mc) = tl.membership_commit(c) else { continue };
+                let Some(op) = mc.ops.get(*i as usize) else { continue };
+                if op.target != m {
+                    continue;
+                }
+                let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+                if new < old
+                    && let Some(cs) = tl.write_certificates(wid)
+                {
+                    found.push(cs);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        for cs in &found {
+            self.cert_parts(cs, &mut out);
+        }
+        out
+    }
+
     /// Revokes and roster snapshots about `authors` (of entries seen under a label), with what
     /// a verifier needs to judge them as this node does (their own authors' chain certificates;
     /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing outside

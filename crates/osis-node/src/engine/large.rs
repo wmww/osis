@@ -546,11 +546,12 @@ impl Engine {
     /// The blobs of the tree under `link` (a large value of `tid`) this node lacks: node blobs
     /// below the held ones and the chunks held nodes list (spec/sync.md §6: a read that misses a
     /// chunk fetches that tree only). Empty when the tree is whole here; a node fetched may list
-    /// more, so a reader asks again once those arrive.
+    /// more, so a reader asks again once those arrive. `UnknownThing` when the thing's secrets
+    /// are not held (nothing could be read either).
     pub fn tree_missing(&mut self, tid: &Tid, link: &Link) -> Result<Vec<BlobId>> {
         let (tid, link) = (*tid, *link);
         self.run(|tx| {
-            let Some(dedup) = tx.core.dedup(&tid) else { return Ok(Vec::new()) };
+            let dedup = tx.core.dedup(&tid).ok_or(Error::UnknownThing(tid))?;
             let mut out = LiveTrees::default();
             tree_blobs(tx, &dedup, &[link], &mut out)?;
             let mut v: Vec<BlobId> = out.missing.into_iter().collect();
