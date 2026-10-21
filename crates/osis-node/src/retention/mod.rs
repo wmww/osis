@@ -490,7 +490,7 @@ impl Engine {
             // the schema's default bounds: core, or a registered schema declaring the AK
             let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid() };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new(), split: false };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new(), split: false };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

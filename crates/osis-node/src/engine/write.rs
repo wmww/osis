@@ -214,6 +214,8 @@ pub(crate) struct Resolved {
     pub lo: u64,
     pub hi: u64,
     pub schema: Option<Arc<Schema>>,
+    /// The schema table entry without a schema held: an import keeps its origin's.
+    pub schema_ref: Option<(SchemaId, u64)>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers (spec/crdt.md §8).
@@ -316,7 +318,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
                 return Err(Error::Misuse("counter moved under the writer"));
             }
         }
-        let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision));
+        let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision)).or(d.schema_ref);
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
@@ -449,7 +451,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             tx.core.schemas.entry(s.id).or_insert_with(|| s.clone());
         }
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);
