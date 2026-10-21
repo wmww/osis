@@ -251,7 +251,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
     // two announcement ports, each node announcing to the other's
     let base = 40_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -265,7 +265,7 @@ async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
     use osis_transport::Iroh;
     let base = 30_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://[::1]:0".into(), watch: false };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://[::1]:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -283,7 +283,7 @@ async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
     let url = format!("peer://{}", relay.url);
     let base = 20_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
-    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false };
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
     converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
@@ -299,4 +299,39 @@ async fn driver_p2p_relay_localhost_spec_sync_10() {
     let r = vec![relay.url.clone()];
     let url = format!("peer://127.0.0.1:0 {}", relay.url);
     converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::None).await;
+}
+
+// spec/sync.md §10 (a fresh key per network join), notes/networking.md (rejoin interval): a
+// network change right after a join is deferred to `rejoin_min` (each join drops the LAN
+// listener and its connections); the deferred join then announces a fresh key (tier 2: UDP and
+// iroh on localhost).
+// Run: `cargo test -p osis-node --features iroh,lan --test driver -- --ignored`.
+#[cfg(all(feature = "iroh", feature = "lan"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn lan_rejoin_interval_spec_sync_10() {
+    use osis_crypto::SigningSecret;
+    use osis_transport::lan::Lan;
+    let mut net = Net::new();
+    let clock: Arc<dyn Clock> = net.clock.clone();
+    let a = net.add_node(1, Default::default());
+    let secret = net.sync(a).dialable_secret();
+    let k = SigningSecret::from_seed(&secret).verifying_key().to_bytes();
+    let acts = net.sync(a).publish_reach(k, vec![]).unwrap();
+    net.actions(a, acts);
+    let ear = Lan::bind(0).await.unwrap();
+    let to = vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, ear.port()))];
+    let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: Duration::from_millis(500) };
+    let (ctl, rx) = mpsc::unbounded_channel();
+    let d = tokio::spawn(driver::run(net.take(a), osis_transport::Iroh::new(), clock, rx, log()));
+    assert!(ctl.send(Control::Lan(cfg)).is_ok());
+    let (first, _) = tokio::time::timeout(GUARD, ear.recv()).await.unwrap().unwrap();
+    // a change at once: deferred, nothing announced now
+    assert!(ctl.send(Control::LanRejoin).is_ok());
+    assert!(tokio::time::timeout(Duration::from_millis(300), ear.recv()).await.is_err(), "no join inside the interval");
+    // the LAN timer runs the deferred join: a fresh key
+    let (next, _) = tokio::time::timeout(driver::LAN_CHECK * 2, ear.recv()).await.unwrap().unwrap();
+    assert_ne!(next.key, first.key);
+    assert!(ctl.send(Control::Shutdown).is_ok());
+    d.await.unwrap();
 }

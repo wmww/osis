@@ -57,12 +57,14 @@ pub struct LanConfig {
     pub listen: String,
     /// Whether the network watch runs (off in tests: joins come from `Control::LanRejoin`).
     pub watch: bool,
+    /// Network changes rejoin at most this often (`LAN_REJOIN_MIN`).
+    pub rejoin_min: Duration,
 }
 
 impl Default for LanConfig {
     fn default() -> LanConfig {
         let p = osis_transport::lan::PORT;
-        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://0.0.0.0:0 [::]:0".into(), watch: true }
+        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://0.0.0.0:0 [::]:0".into(), watch: true, rejoin_min: LAN_REJOIN_MIN }
     }
 }
 
@@ -81,7 +83,8 @@ pub enum Control {
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Run the LAN loop (feature `lan`; ignored without it).
     Lan(LanConfig),
-    /// Join the LAN again as after a network change: a fresh key and listener, announced at once.
+    /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
+    /// and listener, at most every `LanConfig::rejoin_min`.
     LanRejoin,
     /// Close every connection and return the engine.
     Shutdown,
@@ -491,7 +494,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
     #[cfg(feature = "lan")]
     async fn lan_check(&mut self) {
         let now = tokio::time::Instant::now();
-        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t + LAN_REJOIN_MIN <= now)).map(|x| {
+        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin && x.joined.is_none_or(|t| t + x.cfg.rejoin_min <= now)).map(|x| {
             x.rejoin = false;
             x.joined = Some(now);
             (x.listener.take(), x.cfg.listen.clone())
@@ -564,7 +567,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
             #[cfg(feature = "lan")]
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
             #[cfg(feature = "lan")]
-            Some(Control::LanRejoin) => self.lan_rejoin(true).await,
+            Some(Control::LanRejoin) => self.lan_rejoin(false).await,
             #[cfg(not(feature = "lan"))]
             Some(Control::Lan(_) | Control::LanRejoin) => (self.log)("LAN: built without feature `lan`"),
             Some(Control::Shutdown) | None => return false,

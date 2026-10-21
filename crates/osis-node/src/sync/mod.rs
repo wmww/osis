@@ -778,7 +778,8 @@ impl SyncEngine {
     fn wanted_servers(&mut self) -> BTreeMap<ServerKey, (Address, bool)> {
         let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
-            for a in l.servers {
+            // an admin's word: servers only (`peer://` nodes come from `/reach` or a link)
+            for a in l.servers.into_iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert((a, false));
             }
         }

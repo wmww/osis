@@ -13,6 +13,11 @@ use osis_schema::core_types as ct;
 /// Alice (node `a`) and Bob (node `b`) as persons on one server; Alice holds Bob's card and a
 /// group `g` with a label. Returns (net, sv, a, b, Alice's person, Bob's person, g, Bob's home).
 fn alice_and_bob() -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
+    alice_and_bob_at(Vec::new())
+}
+
+/// `alice_and_bob` with `extra` addresses in g's label server list.
+fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -31,7 +36,9 @@ fn alice_and_bob() -> (Net, usize, usize, usize, Tid, Tid, Tid, LabelId) {
     let g = e.new_thing(&mut m, alice.person);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
+    let mut at = vec![addr];
+    at.extend(extra);
+    let (_, done) = net.engine(a).create_label(&g, &at).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -213,4 +220,19 @@ fn removed_member_gets_no_resent_grant_spec_sync_3() {
     let now = net.server_ids(sv, &home);
     let fresh = now.iter().filter(|x| !first.contains(x)).count();
     assert_eq!(fresh, 1, "only the removal notice is sent again");
+}
+
+// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §9
+// (only a followed link names a node to dial): a `peer://` address in a granted label's server
+// list is never dialed by the grantee, neither from the inbox hint nor from the `/label`.
+#[test]
+fn inbox_hint_never_dials_peer_spec_sync_3() {
+    let node = osis_label::Address { url: "peer://".into(), key: [0x99; 32] };
+    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob_at(vec![node.clone()]);
+    let t = net.item(a, g, g, "for bob");
+    grant(&mut net, a, g, bob);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.read(b, t), Some(s("for bob")), "the grant went through");
+    assert!(!net.dialed.iter().any(|(n, x)| *n == b && x.key == node.key), "{:?}", net.dialed);
 }

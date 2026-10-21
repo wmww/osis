@@ -64,6 +64,8 @@ pub struct Net {
     held_msgs: Vec<Msg>,
     /// Message kinds nodes sent to servers, by kind.
     pub sent_kinds: BTreeMap<u64, usize>,
+    /// Every dial: (node, address).
+    pub dialed: Vec<(usize, Address)>,
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -72,7 +74,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), dialed: Vec::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -189,6 +191,9 @@ impl Net {
         for a in acts {
             if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
                 eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
+            }
+            if let Action::Dial { address, .. } = &a {
+                self.dialed.push((n, address.clone()));
             }
             match a {
                 Action::Dial { conn, address } if address.url.starts_with("peer://") => {

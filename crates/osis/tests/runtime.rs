@@ -277,7 +277,83 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(matches!(carol.redeem(&link).await, Err(osis::Error::Network(_))));
     assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(carol.role_on(g), None);
-    drop((alice, bob, carol));
+    // even at the sharer's current key, K refuses the revoked link's key: the open fails there
+    let mut patched = parsed.clone();
+    patched.peers = vec![osis_label::Peer { dialable: alice.sync_engine(|s| s.own_reach()).unwrap().dialable, relays: vec![] }];
+    let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
+    let refused = async {
+        loop {
+            if carol.sync_engine(|s| s.describe()).iter().any(|d| d.contains("Failed")) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let (r, seen) = tokio::join!(carol.redeem(&patched), tokio::time::timeout(Duration::from_secs(2), refused));
+    assert!(matches!(r, Err(osis::Error::Network(_))));
+    assert!(seen.is_ok(), "K's open was refused at the sharer");
+    assert_eq!(carol.role_on(g), None);
+    // a redemption dropped while it waits forgets its follow too (the key guard)
+    let dave = Osis::create(cfg(4, vec![], Transport::InProcess(net.endpoint("d")))).unwrap().0;
+    assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
+    assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());
+    drop((alice, bob, carol, dave));
+    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    server.await.unwrap();
+}
+
+// spec/permissions.md §9 (a single-use link finalized by its redemption does not rotate): Bob
+// redeems Alice's single-use direct link with no server between them; once Alice finalizes it,
+// her key is the one the link carried and Bob's writes still reach her directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
+    let net = osis_transport::Net::new(8);
+    let server_ep = net.endpoint("s");
+    let secret = StaticSecret::from_bytes([0x55; 32]);
+    let listener = server_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
+    let addr = listener.address();
+    let clock: Arc<dyn osis::Clock> = Arc::new(osis_core::SystemClock);
+    let store = BackendStore::open(MemoryBackend::new(), clock.clone(), Policy::default(), &mut SeededRng::from_u64(11)).unwrap();
+    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(12)));
+    let (sctl, srx) = mpsc::channel(8);
+    let server = tokio::spawn(osis_server::run(hub, Endpoint { transport: server_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    net.partition("b", "s");
+    let alice = Osis::create(cfg(1, vec![ServerAddr::new(&addr.url, addr.key)], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
+    c.wait_timeout = GUARD;
+    let bob = Osis::create(c).unwrap().0;
+    reach_of(&alice).await;
+    let mut w = alice.write();
+    let g = w.create(alice.me(), Place::In(alice.home())).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
+    let key = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
+    assert_eq!(osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable, key);
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
+    assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
+    tokio::time::timeout(GUARD, async {
+        while !alice.links(g).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(alice.sync_engine(|s| s.own_reach()).unwrap().dialable, key, "finalized by redemption: kept");
+    let mut w = bob.write();
+    let t = w.create(g, Place::In(g)).unwrap();
+    w.at(t, ak("/t/x")).set(&Value::Str("still direct".into())).unwrap();
+    w.commit().unwrap();
+    let want = Some(Value::Str("still direct".into()));
+    tokio::time::timeout(GUARD, async {
+        while alice.get(t, ak("/t/x")).unwrap() != want {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop((alice, bob));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();
 }

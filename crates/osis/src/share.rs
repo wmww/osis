@@ -61,7 +61,8 @@ pub struct LinkOpts {
     /// Opt-in: the link text carries this device's dialable key and relays (never its lan
     /// secret; spec/permissions.md §9), so a redeemer that shares no server with it reaches it
     /// directly while it is online. Anyone holding the link can dial this device until the link
-    /// ends, when the key rotates. Needs this device reachable (a runtime, `Config.peers`); a
+    /// ends by revocation or expiry, when the key rotates (a single-use link's redemption keeps
+    /// it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
     /// database without servers can only make direct links.
     pub direct: bool,
 }
@@ -572,8 +573,9 @@ impl Osis {
                 Err(e) => l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![k], commit: None, peer: None, detail: format!("finalizing a single-use link: {e}") }),
             }
         }
-        // a direct link that ended (its key left K: revoked, finalized; or expired) gave out this
-        // device's dialable key: rotate it (spec/permissions.md §9)
+        // a direct link that ended (its key left K, or its edge expired) gave out this device's
+        // dialable key: rotate it (spec/permissions.md §9), unless a single-use link ended by its
+        // redemption (the one who could use it is now a member and keeps the direct path)
         let now = l.engine().now();
         let ended: Vec<Tid> = l
             .links
@@ -585,9 +587,12 @@ impl Osis {
             .filter(|(k, lk)| l.engine().roster(k).get(lk).is_none_or(|e| e.until.is_some_and(|u| u <= now)))
             .map(|(k, _)| k)
             .collect();
-        if !ended.is_empty() {
+        let rotate = ended.iter().any(|k| l.links.get(k).is_some_and(|m| !(m.single_use && m.finalized)));
+        if rotate {
             let acts = l.sync.rotate_reach();
             self.inner.net.apply(acts);
+        }
+        if !ended.is_empty() {
             for k in ended {
                 if let Some(m) = l.links.get_mut(&k) {
                     m.ended = true;
