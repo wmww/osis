@@ -356,6 +356,9 @@ fn patched_view_equals_cloned_edges() {
         for x in &ents {
             let (ra, rb) = (a.roles_from(x), b.roles_from(x));
             assert_eq!(ra, rb);
+            for y in &ents {
+                assert_eq!(a.roles_to(y).get(x), ra.get(y));
+            }
             if wider {
                 let mut r = View::new(&o, &edges, at).roles_from(x);
                 r.extend(a.roles_raised(&r, &[m]));

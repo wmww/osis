@@ -245,6 +245,12 @@ impl<'a> View<'a> {
     /// edge here at least as wide, alive at `ts`), where only edges out of `seeds` may be
     /// wider: the raised entries. `best` with them equals `roles_from` on this view.
     pub fn roles_raised(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> BTreeMap<Tid, Role> {
+        self.roles_raised_expiring(best, seeds).0
+    }
+
+    /// `roles_raised` and the earliest `until` of an edge it followed.
+    pub fn roles_raised_expiring(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        let mut expires: Option<WallMs> = None;
         let mut raised: BTreeMap<Tid, Role> = BTreeMap::new();
         let mut stack: Vec<Tid> = seeds.iter().filter(|s| best.contains_key(s)).copied().collect();
         while let Some(e) = stack.pop() {
@@ -260,11 +266,42 @@ impl<'a> View<'a> {
             }
             self.each_target(&e, |t, edge| {
                 if edge.alive_at(self.ts) {
+                    if let Some(u) = edge.until {
+                        expires = Some(expires.map_or(u, |e| e.min(u)));
+                    }
                     raise(*t, level.min(edge.role), &mut stack);
                 }
             });
         }
-        raised
+        (raised, expires)
+    }
+
+    /// Every entity's effective role on `y` (`roles_from(x)[y]` for each `x`): the widest
+    /// paths searched backward from `y`.
+    pub fn roles_to(&self, y: &Tid) -> BTreeMap<Tid, Role> {
+        self.roles_to_any(&[*y])
+    }
+
+    /// Every entity's highest effective role on any of `ys`.
+    pub fn roles_to_any(&self, ys: &[Tid]) -> BTreeMap<Tid, Role> {
+        let mut best: BTreeMap<Tid, Role> = ys.iter().map(|y| (*y, Role::Admin)).collect();
+        let mut stack = ys.to_vec();
+        while let Some(t) = stack.pop() {
+            let Some(&level) = best.get(&t) else { continue };
+            let mut up: Vec<(Tid, Role)> = self.owners.owner_actor(&t).map(|o| (o, level)).into_iter().collect();
+            self.each_member(&t, |m, e| {
+                if e.alive_at(self.ts) {
+                    up.push((*m, level.min(e.role)));
+                }
+            });
+            for (z, v) in up {
+                if best.get(&z).is_none_or(|&b| v > b) {
+                    best.insert(z, v);
+                    stack.push(z);
+                }
+            }
+        }
+        best
     }
 
     /// Effective invite on `n` given `x`'s roles (spec/permissions.md §2).
@@ -280,9 +317,15 @@ impl<'a> View<'a> {
 
     /// Standing of `x` on `n` given `x`'s roles.
     pub fn standing(&self, x: &Tid, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
-        let role = best.get(n).copied();
         let (up, top) = self.owners.chain(n);
-        let class = if top == Some(*x) || up.iter().any(|y| best.get(y) == Some(&Role::Admin)) {
+        let chain = top == Some(*x) || up.iter().any(|y| best.get(y) == Some(&Role::Admin));
+        self.standing_from(chain, best.get(n).copied(), best, n)
+    }
+
+    /// Standing on `n` from its parts: whether the node is admin on `n`'s owner chain, its role
+    /// on `n`, and its roles on `n`'s members (for the invite).
+    pub fn standing_from(&self, chain: bool, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
+        let class = if chain {
             Class::Chain
         } else if role == Some(Role::Admin) {
             Class::Edge
