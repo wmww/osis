@@ -97,6 +97,7 @@ macro_rules! journaled {
         c.commits.$m();
         c.invalid.$m();
         c.by_aspect.$m();
+        c.snapshots.$m();
         c.by_thing.$m();
         c.ranges.$m();
         c.pending.$m();
@@ -146,6 +147,9 @@ pub(crate) struct Core {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
+    /// besides its own (deaths, spec/commits.md §5).
+    pub snapshots: JMap<(Tid, Ak), Vec<(Ts, CommitId, osis_crdt::Frontiers)>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
@@ -275,6 +279,7 @@ impl Core {
             commits: JMap::default(),
             invalid: JSetMap::default(),
             by_aspect: JSetMap::default(),
+            snapshots: JMap::default(),
             by_thing: JSetMap::default(),
             ranges: JNested::default(),
             pending: JMap::default(),

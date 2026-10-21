@@ -96,16 +96,46 @@ fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -
     Ok(out)
 }
 
-/// Records deaths per body and drops bodies past keep at most (spec/commits.md §5).
+/// The held bodies carrying write `dot` of `(tid, ak)` when it died at `at`: its own commit's,
+/// and every compaction snapshot taken before `at` whose frontier holds it (a snapshot carries
+/// every write live at its time up to its frontier, spec/crdt.md §8). Commit-form writes are
+/// found in their own commit only (snapshots keep no frontier for them). Dropped bodies are not.
+fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Vec<(CommitId, usize)> {
+    let mut out = Vec::new();
+    let held = |c: &CommitId| -> Option<usize> {
+        let m = core.commits.get(c)?;
+        let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        (!m.dropped.contains(&(ai, 0))).then_some(ai)
+    };
+    if let Some(c) = core.commit_of(tid, ak, dot)
+        && let Some(ai) = held(&c)
+    {
+        out.push((c, ai));
+    }
+    if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
+        for (ts, s, fr) in core.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+            if *ts < at
+                && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
+                && let Some(ai) = held(s)
+            {
+                out.push((*s, ai));
+            }
+        }
+    }
+    out
+}
+
+/// Records deaths per body (every held body carrying the write) and drops bodies past keep at
+/// most (spec/commits.md §5).
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
     let mut bodies = BTreeSet::new();
     for d in deaths {
-        let Some(c) = tx.core.commit_of(tid, ak, &d.stamp.dot) else { continue };
-        let Some(ai) = aspect_index(tx, &c, tid, ak) else { continue };
-        let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
-        let (body, _) = body_class(tx.core, &h, &c, ai);
-        tx.txn.note_death(tid, ak, &body, d.at)?;
-        bodies.insert((c, ai));
+        for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
+            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
+            let (body, _) = body_class(tx.core, &h, &c, ai);
+            tx.txn.note_death(tid, ak, &body, d.at)?;
+            bodies.insert((c, ai));
+        }
     }
     for (c, ai) in bodies {
         check_at_most(tx, &c, ai)?;

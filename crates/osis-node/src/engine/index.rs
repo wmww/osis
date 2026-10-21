@@ -31,6 +31,7 @@ const BOXES_TO: &[u8] = b"i/t/";
 const EPOCH_INTRO: &[u8] = b"i/e/";
 const BOX_WRITTEN: &[u8] = b"i/w/";
 const OWN_KEYS: &[u8] = b"i/k/";
+const SNAPSHOTS: &[u8] = b"i/s/";
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -124,6 +125,40 @@ impl Rec for Dot {
     }
     fn from(v: &Value) -> Option<Self> {
         records::dot_of(v).ok()
+    }
+}
+impl Rec for osis_core::Ak {
+    fn to(&self) -> Value {
+        Value::Str(self.as_str().to_string())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        match v {
+            Value::Str(s) => osis_core::Ak::new(s).ok(),
+            _ => None,
+        }
+    }
+}
+impl Rec for osis_crdt::Frontiers {
+    fn to(&self) -> Value {
+        Value::List(self.0.iter().map(|(t, c)| Value::List(vec![t.to(), uint(*c)])).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let mut out = std::collections::BTreeMap::new();
+        for e in x {
+            let (t, c) = <(Tid, usize) as Rec>::from(e)?;
+            out.insert(t, c as u64);
+        }
+        Some(osis_crdt::Frontiers(out))
+    }
+}
+impl<T: Rec> Rec for Vec<T> {
+    fn to(&self) -> Value {
+        Value::List(self.iter().map(Rec::to).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        x.iter().map(T::from).collect()
     }
 }
 impl Rec for () {
@@ -231,6 +266,8 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, BOX_WRITTEN, &c.box_written, &k)?;
     let k = if all { c.own_keys.iter().cloned().collect() } else { c.own_keys.logged() };
     put_set(txn, OWN_KEYS, &c.own_keys, &k)?;
+    let k = if all { c.snapshots.keys().cloned().collect() } else { c.snapshots.logged() };
+    put_map(txn, SNAPSHOTS, &c.snapshots, &k)?;
     Ok(())
 }
 
@@ -321,6 +358,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, _) in scan::<Tid>(tx, OWN_KEYS)? {
         tx.core.own_keys.insert(k);
     }
+    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, SNAPSHOTS)? {
+        tx.core.snapshots.insert(k, dec(&v)?);
+    }
     Ok(())
 }
 
@@ -378,7 +418,7 @@ impl super::Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.rotation_role, *c.grant_overreach, *c.box_keys, *c.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.epoch_intro, *c.box_written, *c.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.member_keys, *c.unresolved, *c.was, *c.moved, c.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}", *c.secrets, *c.void, *c.valueless);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots);
         out
     }
 

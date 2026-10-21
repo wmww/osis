@@ -20,6 +20,14 @@ fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
     }
 }
 
+/// Notes a held compaction snapshot of `(tid, ak)` with its frontiers.
+pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
+    let v = core.snapshots.entry_or_default((*tid, ak.clone()));
+    if !v.iter().any(|x| x.1 == *id) {
+        v.push((ts, *id, fr));
+    }
+}
+
 /// Adds a commit to the per-aspect and node-form range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
@@ -204,7 +212,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             }
             continue;
         }
-        let (f, _) = fragment(d);
+        let (f, fr) = fragment(d);
+        if let Some(fr) = fr {
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
+        }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
@@ -277,7 +288,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
         }
-        let (f, _) = fragment(d);
+        let (f, fr) = fragment(d);
+        if let Some(fr) = fr {
+            note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
+        }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {

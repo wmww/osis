@@ -174,6 +174,22 @@ fn compaction_snapshot_spec_commits_5() {
     // its frontiers count as received
     let r = lp.peers[1].engine.receipt(&t, &ak("/t/tags")).unwrap();
     assert_eq!(r.contiguous(&me0, u64::MAX), 5);
+    // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
+    // it, the snapshot's included, also where its own body was never held
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("t1")) }).unwrap();
+    let kill = lp.peers[0].commit(m).unwrap().unwrap();
+    let ts = lp.peers[0].engine.header(&kill).unwrap().ts;
+    for p in lp.packages(0).unwrap() {
+        if p.id == kill {
+            lp.deliver(1, &p).unwrap();
+        }
+    }
+    for i in 0..2 {
+        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("/t/tags")).unwrap(), Some((ts, ts)), "node {i}");
+    }
+    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/tags")).unwrap(), Some((ts, ts)));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6: undo and redo; the derived stacks; an admin undoes
