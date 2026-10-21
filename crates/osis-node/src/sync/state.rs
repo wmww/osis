@@ -45,6 +45,8 @@ const DIRECT: &[u8] = b"y/j";
 const REACH_POLICY: &[u8] = b"y/n";
 /// Persons marked as contacts (`SyncEngine::set_contact`).
 const CONTACT: &[u8] = b"y/a";
+/// Groups whose co-readers are dialed whatever the `/reach` policy (`SyncEngine::dial_group`).
+const DIAL: &[u8] = b"y/l";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +168,8 @@ pub struct State {
     pub reach_policy: BTreeMap<Tid, bool>,
     /// Persons marked as contacts (`y/a`).
     pub contacts: BTreeSet<Tid>,
+    /// Groups whose co-readers are dialed though this node's `/reach` stays out (`y/l`).
+    pub dial: BTreeSet<Tid>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -345,6 +349,9 @@ impl State {
                 }
                 b"a" => {
                     s.contacts.insert(r.tid()?);
+                }
+                b"l" => {
+                    s.dial.insert(r.tid()?);
                 }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
@@ -538,6 +545,12 @@ impl State {
         } else {
             self.del(key(CONTACT, &[person.as_bytes()]));
             self.contacts.remove(&person);
+        }
+    }
+
+    pub fn set_dial(&mut self, g: Tid) {
+        if self.dial.insert(g) {
+            self.put(key(DIAL, &[g.as_bytes()]), Vec::new());
         }
     }
 

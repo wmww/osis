@@ -450,4 +450,18 @@ mod tests {
         assert!(matches!(hints("quic://x:1"), Err(Error::UnknownScheme(_))));
         assert!(matches!(hints("peer://not a url"), Err(Error::BadUrl(_))));
     }
+
+    // spec/sync.md §10 (LAN discovery on both families): the LAN listener binds IPv4 and IPv6
+    // and lists one socket of each, whose ports the announcements carry.
+    #[test]
+    #[ignore]
+    fn listens_on_both_families_spec_sync_10() {
+        rt().block_on(async {
+            let t = Iroh::new();
+            let l = t.listen(ListenConfig { url: "peer://0.0.0.0:0 [::]:0".into(), secret: StaticSecret::from_bytes([8; 32]) }).await.unwrap();
+            let socks: Vec<SocketAddr> = crate::peer_relays(&l.address().url).unwrap().iter().filter_map(|x| x.parse().ok()).collect();
+            assert!(socks.iter().any(|a| a.is_ipv4() && a.port() != 0), "{socks:?}");
+            assert!(socks.iter().any(|a| a.is_ipv6() && a.port() != 0), "{socks:?}");
+        });
+    }
 }

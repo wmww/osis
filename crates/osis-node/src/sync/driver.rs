@@ -30,8 +30,8 @@ pub const MAX_IDLE: Duration = Duration::from_secs(60);
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 /// Bytes queued for a connection and not yet taken by the transport before it is dropped.
 pub const MAX_QUEUED: usize = 64 * 1024 * 1024;
-/// LAN loop: how often the route is checked for a network change, and announcements repeat
-/// (provisional).
+/// LAN loop: how often it looks whether an announcement is due, and how often they repeat
+/// (provisional). Network changes come from `lan::NetWatch`.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
 pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
 
@@ -44,15 +44,20 @@ pub type Call = Box<dyn FnOnce(&mut SyncEngine) -> Vec<Action> + Send>;
 pub struct LanConfig {
     /// The announcement socket's port (`lan::PORT`; 0: any, tests).
     pub port: u16,
-    /// Where announcements go (the broadcast address at `lan::PORT`; hosts in tests).
+    /// Where announcements go (the IPv4 broadcast address and the IPv6 all-nodes group at
+    /// `lan::PORT`; hosts in tests). Each carries the listener's port on its family.
     pub to: Vec<std::net::SocketAddr>,
-    /// The LAN listener's URL (`peer://0.0.0.0:0`: all IPv4 interfaces, any port).
+    /// The LAN listener's URL (`peer://0.0.0.0:0 [::]:0`: all interfaces of both families, any
+    /// port; IPv4 only where IPv6 cannot be bound).
     pub listen: String,
+    /// Whether the network watch runs (off in tests: joins come from `Control::LanRejoin`).
+    pub watch: bool,
 }
 
 impl Default for LanConfig {
     fn default() -> LanConfig {
-        LanConfig { port: osis_transport::lan::PORT, to: vec![osis_transport::lan::broadcast(osis_transport::lan::PORT)], listen: "peer://0.0.0.0:0".into() }
+        let p = osis_transport::lan::PORT;
+        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://0.0.0.0:0 [::]:0".into(), watch: true }
     }
 }
 
@@ -71,6 +76,8 @@ pub enum Control {
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Run the LAN loop (feature `lan`; ignored without it).
     Lan(LanConfig),
+    /// Join the LAN again as after a network change: a fresh key and listener, announced at once.
+    LanRejoin,
     /// Close every connection and return the engine.
     Shutdown,
 }
@@ -135,19 +142,40 @@ fn static_secret(s: &osis_crypto::Secret32) -> StaticSecret {
 struct LanLoop {
     cfg: LanConfig,
     sock: Arc<osis_transport::lan::Lan>,
-    /// The route's local IP at the last join (`None` inside: no route).
-    route: Option<Option<std::net::IpAddr>>,
-    /// This network's listener: its key and port.
-    listener: Option<([u8; 32], u16)>,
+    /// Join at the next check (start, network change, new dialable key).
+    rejoin: bool,
+    /// This network's listener: its key and its IPv4 and IPv6 ports.
+    listener: Option<([u8; 32], Ports)>,
     next: tokio::time::Instant,
-    recv: JoinHandle<()>,
+    /// The announcement receiver and the network watch.
+    tasks: Vec<JoinHandle<()>>,
 }
 
-/// The port of the first socket address a listener URL lists.
+/// A listener's port per address family.
 #[cfg(feature = "lan")]
-fn listen_port(url: &str) -> Option<u16> {
-    let rest = url.split_once("://")?.1;
-    rest.split(' ').find_map(|h| h.parse::<std::net::SocketAddr>().ok()).map(|a| a.port())
+#[derive(Clone, Copy, Debug, Default)]
+struct Ports {
+    v4: Option<u16>,
+    v6: Option<u16>,
+}
+
+/// The ports of the socket addresses a listener URL lists, per family.
+#[cfg(feature = "lan")]
+fn listen_ports(url: &str) -> Ports {
+    let mut p = Ports::default();
+    for a in osis_transport::peer_relays(url).unwrap_or_default().iter().filter_map(|h| h.parse::<std::net::SocketAddr>().ok()) {
+        let slot = if a.is_ipv4() { &mut p.v4 } else { &mut p.v6 };
+        slot.get_or_insert(a.port());
+    }
+    p
+}
+
+/// A listener URL without its IPv6 socket addresses (a host without IPv6).
+#[cfg(feature = "lan")]
+fn v4_only(url: &str) -> Option<String> {
+    let items = osis_transport::peer_relays(url)?;
+    let kept: Vec<String> = items.iter().filter(|h| !h.parse::<std::net::SocketAddr>().is_ok_and(|a| a.is_ipv6())).cloned().collect();
+    (kept.len() < items.len()).then(|| osis_transport::peer_url(&kept))
 }
 
 struct Driver<T: Transport, H: Host> {
@@ -167,7 +195,15 @@ struct Driver<T: Transport, H: Host> {
     #[cfg(feature = "lan")]
     lan: Option<LanLoop>,
     #[cfg_attr(not(feature = "lan"), allow(dead_code))]
-    lan_tx: mpsc::Sender<(Announce, std::net::IpAddr)>,
+    lan_tx: mpsc::Sender<(Announce, std::net::SocketAddr)>,
+    /// Network changes from the LAN loop's watch.
+    #[cfg_attr(not(feature = "lan"), allow(dead_code))]
+    net_tx: mpsc::Sender<()>,
+    /// The dialable listener's URL and relays (`Control::Reach`), and its key.
+    reach: Option<(String, Vec<String>)>,
+    dialable: Option<[u8; 32]>,
+    /// The engine rotated the dialable secret (`Action::Reach`): listen again.
+    relisten: bool,
 }
 
 impl<T: Transport, H: Host> Driver<T, H> {
@@ -240,6 +276,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 }
                 Action::Close { conn } => self.close(conn),
                 Action::Wake { at } => self.wake = Some(at),
+                Action::Reach => self.relisten = true,
             }
         }
     }
@@ -284,6 +321,16 @@ impl<T: Transport, H: Host> Driver<T, H> {
         }
     }
 
+    /// `unlisten`, returning once the listener is dropped (its address is free again).
+    async fn unlisten_now(&mut self, key: [u8; 32]) {
+        if let Some(ts) = self.listeners.remove(&key) {
+            for t in ts {
+                t.abort();
+                let _ = t.await;
+            }
+        }
+    }
+
     async fn listen(&mut self, cfg: ListenConfig) -> Result<Address, String> {
         match self.transport.listen(cfg).await {
             Ok(l) => Ok(self.serve(l)),
@@ -294,11 +341,16 @@ impl<T: Transport, H: Host> Driver<T, H> {
         }
     }
 
-    /// Listens with the dialable secret and publishes `/reach` with that listener's key.
+    /// Listens with the dialable secret and publishes `/reach` with that listener's key; a
+    /// listener of an older dialable key stops.
     async fn reach(&mut self, url: String, relays: Vec<String>) -> Result<Address, String> {
+        self.reach = Some((url.clone(), relays.clone()));
         let Some(secret) = self.read(|s| static_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
         let addr = self.listen(ListenConfig { url, secret }).await?;
         let key = addr.key;
+        if let Some(old) = self.dialable.replace(key).filter(|k| *k != key) {
+            self.unlisten(old);
+        }
         self.call(&mut |s| match s.publish_reach(key, relays.clone()) {
             Ok(a) => a,
             Err(e) => {
@@ -363,7 +415,7 @@ impl<T: Transport, H: Host> Driver<T, H> {
     #[cfg(feature = "lan")]
     async fn lan_start(&mut self, cfg: LanConfig) {
         if let Some(old) = self.lan.take() {
-            old.recv.abort();
+            old.tasks.iter().for_each(JoinHandle::abort);
         }
         let sock = match osis_transport::lan::Lan::bind(cfg.port).await {
             Ok(s) => Arc::new(s),
@@ -373,57 +425,83 @@ impl<T: Transport, H: Host> Driver<T, H> {
             }
         };
         let (s2, tx) = (sock.clone(), self.lan_tx.clone());
-        let recv = tokio::spawn(async move {
+        let mut tasks = vec![tokio::spawn(async move {
             while let Ok(x) = s2.recv().await {
                 // a flood is dropped, not queued
                 if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(x) {
                     return;
                 }
             }
-        });
-        self.lan = Some(LanLoop { cfg, sock, route: None, listener: None, next: tokio::time::Instant::now(), recv });
+        })];
+        if cfg.watch {
+            let tx = self.net_tx.clone();
+            tasks.push(tokio::spawn(async move {
+                let mut w = osis_transport::lan::NetWatch::new().await;
+                loop {
+                    w.changed().await;
+                    if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(()) {
+                        return;
+                    }
+                }
+            }));
+        }
+        self.lan = Some(LanLoop { cfg, sock, rejoin: true, listener: None, next: tokio::time::Instant::now(), tasks });
         self.lan_check().await;
     }
 
-    /// The LAN loop's timer: a new route means a new network (a fresh key and listener,
-    /// announced at once); announcements repeat every `LAN_ANNOUNCE`.
+    /// Joins the network again at the next check (a network change, a new dialable key).
+    #[cfg(feature = "lan")]
+    async fn lan_rejoin(&mut self) {
+        if let Some(x) = self.lan.as_mut() {
+            x.rejoin = true;
+            self.lan_check().await;
+        }
+    }
+
+    /// The LAN loop's timer: a join (start, network change, new dialable key) drops the old
+    /// listener and listens with a fresh key, announced at once; announcements repeat every
+    /// `LAN_ANNOUNCE`, each family's carrying the listener's port on that family.
     #[cfg(feature = "lan")]
     async fn lan_check(&mut self) {
-        let Some(route) = (match &self.lan {
-            Some(_) => Some(osis_transport::lan::route_ip().await),
-            None => None,
+        let Some((old, url)) = self.lan.as_mut().filter(|x| x.rejoin).map(|x| {
+            x.rejoin = false;
+            (x.listener.take(), x.cfg.listen.clone())
         }) else {
-            return;
+            return self.lan_announce().await;
         };
-        let joined = self.lan.as_ref().is_some_and(|x| x.route != Some(route));
-        if joined {
-            let (old, url) = match self.lan.as_mut() {
-                Some(x) => {
-                    x.route = Some(route);
-                    (x.listener.take(), x.cfg.listen.clone())
-                }
-                None => return,
-            };
-            if let Some((k, _)) = old {
-                self.unlisten(k);
-            }
-            let Some(secret) = self.read(|s| static_secret(&s.lan_secret())) else { return };
-            let joined = match self.listen(ListenConfig { url, secret }).await {
-                Ok(a) => listen_port(&a.url).map(|p| (a.key, p)),
-                Err(_) => None,
-            };
-            if let Some(x) = self.lan.as_mut() {
-                x.listener = joined;
-                x.next = tokio::time::Instant::now();
-            }
+        if let Some((k, _)) = old {
+            self.unlisten_now(k).await;
         }
+        let Some(secret) = self.read(|s| static_secret(&s.lan_secret())) else { return };
+        let mut r = self.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await;
+        if r.is_err()
+            && let Some(v4) = v4_only(&url)
+        {
+            r = self.listen(ListenConfig { url: v4, secret }).await;
+        }
+        if let Some(x) = self.lan.as_mut() {
+            x.listener = r.ok().map(|a| (a.key, listen_ports(&a.url)));
+            x.next = tokio::time::Instant::now();
+        }
+        self.lan_announce().await;
+    }
+
+    /// Announces this network's listener when due.
+    #[cfg(feature = "lan")]
+    async fn lan_announce(&mut self) {
         let now = tokio::time::Instant::now();
-        let Some((key, port, to, sock)) = self.lan.as_ref().filter(|x| x.next <= now).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
+        let Some((key, ports, to, sock)) = self.lan.as_ref().filter(|x| x.next <= now).and_then(|x| x.listener.map(|(k, p)| (k, p, x.cfg.to.clone(), x.sock.clone()))) else { return };
         if let Some(x) = self.lan.as_mut() {
             x.next = now + LAN_ANNOUNCE;
         }
-        if let Some(Some(a)) = self.read(|s| s.lan_announcement(key, port)) {
-            for t in to {
+        for (port, fam) in [(ports.v4, false), (ports.v6, true)] {
+            let Some(port) = port else { continue };
+            let targets: Vec<std::net::SocketAddr> = to.iter().filter(|t| t.is_ipv6() == fam && (!fam || sock.has_v6())).copied().collect();
+            if targets.is_empty() {
+                continue;
+            }
+            let Some(Some(a)) = self.read(|s| s.lan_announcement(key, port)) else { continue };
+            for t in targets {
                 if let Err(e) = sock.announce(&a, t).await {
                     (self.log)(&format!("LAN announce to {t}: {e}"));
                 }
@@ -456,11 +534,30 @@ impl<T: Transport, H: Host> Driver<T, H> {
             }
             #[cfg(feature = "lan")]
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
+            #[cfg(feature = "lan")]
+            Some(Control::LanRejoin) => self.lan_rejoin().await,
             #[cfg(not(feature = "lan"))]
-            Some(Control::Lan(_)) => (self.log)("LAN: built without feature `lan`"),
+            Some(Control::Lan(_) | Control::LanRejoin) => (self.log)("LAN: built without feature `lan`"),
             Some(Control::Shutdown) | None => return false,
         }
         true
+    }
+
+    /// After `Action::Reach`: listens with the new dialable secret (the old listener stops) and
+    /// joins the LAN again, so nothing announced or listening carries the old key.
+    async fn after_rotation(&mut self) {
+        if !std::mem::take(&mut self.relisten) {
+            return;
+        }
+        if let Some((url, relays)) = self.reach.clone() {
+            // the old listener goes first: the new one takes its place (its URL, its relays)
+            if let Some(old) = self.dialable.take() {
+                self.unlisten_now(old).await;
+            }
+            let _ = self.reach(url, relays).await;
+        }
+        #[cfg(feature = "lan")]
+        self.lan_rejoin().await;
     }
 }
 
@@ -487,6 +584,8 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
     let (ev_tx, mut ev_rx) = mpsc::channel(1024);
     let (link_tx, mut link_rx) = mpsc::channel::<([u8; 32], Link)>(64);
     let (lan_tx, mut lan_rx) = mpsc::channel(64);
+    #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
+    let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
     let mut max = 0;
     let _ = host.with(&mut |s| {
         max = s.config().max_served;
@@ -507,6 +606,10 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
         #[cfg(feature = "lan")]
         lan: None,
         lan_tx,
+        net_tx,
+        reach: None,
+        dialable: None,
+        relisten: false,
     };
     for l in listeners {
         d.serve(l);
@@ -529,15 +632,20 @@ pub async fn run_host<T: Transport, H: Host>(host: H, transport: T, listeners: V
                 d.lan_check().await;
             }
             Some((a, from)) = lan_rx.recv() => d.call(&mut |s| s.lan_seen(&a, from).1),
+            Some(()) = net_rx.recv() => {
+                #[cfg(feature = "lan")]
+                d.lan_rejoin().await;
+            }
             _ = tokio::time::sleep(idle) => {
                 d.wake = None;
                 d.feed(Event::Tick);
             }
         }
+        d.after_rotation().await;
     }
     #[cfg(feature = "lan")]
     if let Some(x) = d.lan.take() {
-        x.recv.abort();
+        x.tasks.iter().for_each(JoinHandle::abort);
     }
     let keys: Vec<[u8; 32]> = d.listeners.keys().copied().collect();
     for k in keys {

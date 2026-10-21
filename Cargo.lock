@@ -2834,10 +2834,12 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "iroh",
  "iroh-relay",
+ "netwatch",
  "osis-core",
  "quinn",
  "ring",
  "rustls",
+ "socket2",
  "tokio",
  "zeroize",
 ]

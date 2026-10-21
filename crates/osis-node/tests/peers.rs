@@ -10,7 +10,7 @@ use osis_crypto::{Domain, Secret32, SigningSecret};
 use osis_node::sync::peers::{lan_tag, LAN_WINDOW_MS};
 use osis_node::sync::Action;
 use osis_transport::lan::Announce;
-use std::net::IpAddr;
+use std::net::SocketAddr;
 
 fn reach(net: &mut Net, n: usize, key: u8) {
     let acts = net.sync(n).publish_reach([key; 32], vec!["https://relay.example".into()]).unwrap();
@@ -133,7 +133,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     net.run();
     let lan = net.sync(b).own_reach().unwrap().lan_secret;
     let now = net.now();
-    let ip: IpAddr = "192.168.1.5".parse().unwrap();
+    let ip: SocketAddr = "192.168.1.5:47380".parse().unwrap();
     let own = net.sync(b).lan_announcement([0x77; 32], 4433).unwrap();
     assert_eq!(own.tag, lan_tag(&lan, now));
     let mut stranger = own;
@@ -149,7 +149,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     let mut moved = own;
     moved.port = 4434;
     assert_eq!(net.sync(a).lan_seen(&moved, ip).0, None, "port not signed");
-    assert_eq!(net.sync(a).lan_seen(&own, "8.8.8.8".parse().unwrap()).0, None, "not on the LAN");
+    assert_eq!(net.sync(a).lan_seen(&own, "8.8.8.8:47380".parse().unwrap()).0, None, "not on the LAN");
     let prev = signed(&mut net, b, b, now.saturating_sub(LAN_WINDOW_MS), [0x77; 32], 4433);
     let (hit, acts) = net.sync(a).lan_seen(&prev, ip);
     assert_eq!(hit, Some(kb));
@@ -160,7 +160,7 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     // candidate waits for the pause
     net.actions(a, acts);
     net.settle(100_000);
-    let other: IpAddr = "192.168.1.6".parse().unwrap();
+    let other: SocketAddr = "192.168.1.6:47380".parse().unwrap();
     let (hit, acts) = net.sync(a).lan_seen(&own, other);
     assert_eq!((hit, acts), (Some(kb), Vec::new()), "within LAN_CHANGE_MS");
     net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
@@ -183,4 +183,95 @@ fn lan_announcement_needs_own_key_spec_sync_10() {
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "not the secret's key");
     reach_ed(&mut net, a);
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_some());
+}
+
+// spec/sync.md §10 (a proven route first): a co-reader reached through its `peer://` route that
+// is then heard on the LAN is dialed there beside the running connection; once that comes up
+// the other connection closes and the label goes on over the LAN.
+#[test]
+fn lan_replaces_relay_route_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    let t = net.item(a, g, g, "over the relay");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("over the relay")));
+    let routes = net.sync(a).peer_routes();
+    assert!(matches!(routes.as_slice(), [(k, x, true)] if *k == kb && x.key == kb), "{routes:?}");
+    // b joins a LAN a is on
+    let lk = SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
+    net.lan_keys.insert(lk, b);
+    let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
+    let (hit, acts) = net.sync(a).lan_seen(&ann, "192.168.3.4:47380".parse().unwrap());
+    assert_eq!(hit, Some(kb));
+    let lan = Address { url: "peer://192.168.3.4:5000".into(), key: lk };
+    assert_eq!(dials(&acts), vec![lan.clone()], "dialed beside the running connection");
+    net.actions(a, acts);
+    net.settle(100_000);
+    assert_eq!(net.sync(a).peer_routes(), vec![(kb, lan.clone(), true)], "the relay connection closed");
+    let u = net.item(a, g, g, "over the LAN");
+    net.run();
+    assert_eq!(net.read(b, u), Some(s("over the LAN")));
+    assert_eq!(net.sync(a).peer_routes(), vec![(kb, lan, true)]);
+    // a repeat of the announcement dials nothing more
+    let (_, acts) = net.sync(a).lan_seen(&ann, "192.168.3.4:47380".parse().unwrap());
+    assert!(dials(&acts).is_empty());
+}
+
+// spec/permissions.md §4 (`/reach` only under labels whose group qualifies), spec/sync.md §10: a
+// group whose labels hold this node's current `/reach` stops qualifying (its policy turns to
+// exclude): the dialable key and lan secret rotate, the driver is told to listen again, and the
+// new `/reach` goes only under groups that still qualify; a reader of only that group keeps the
+// old one, which reaches nothing.
+#[test]
+fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    reach_ed(&mut net, c);
+    let g = net.group_at(a, &[(b, Role::Write), (c, Role::Write)], vec![]);
+    let h = net.group_seeded(a, &[(b, Role::Write)], vec![], 2);
+    for x in [g, h] {
+        let acts = net.sync(a).set_reach_policy(x, Some(true));
+        net.actions(a, acts);
+    }
+    net.run();
+    let ta = net.tid(a);
+    let reach_at = |net: &mut Net, n: usize| net.engine(n).get_typed(&ta, &osis_schema::core_types::REACH).unwrap();
+    let old = net.sync(a).own_reach().unwrap();
+    assert_eq!(reach_at(&mut net, b), Some(old.clone()));
+    assert_eq!(reach_at(&mut net, c), Some(old.clone()));
+    // a group that holds nothing of ours changes nothing
+    let tb = net.tid(b);
+    let acts = net.sync(a).set_reach_policy(tb, Some(false));
+    assert!(!acts.iter().any(|x| matches!(x, Action::Reach)));
+    let acts = net.sync(a).set_reach_policy(g, Some(false));
+    assert!(acts.iter().any(|x| matches!(x, Action::Reach)), "{acts:?}");
+    net.actions(a, acts);
+    let new = net.sync(a).own_reach().unwrap();
+    assert_ne!(new.dialable, old.dialable);
+    assert_ne!(new.lan_secret, old.lan_secret);
+    assert_eq!(new.dialable, SigningSecret::from_seed(&net.sync(a).dialable_secret()).verifying_key().to_bytes());
+    let t = net.item(a, g, g, "after the rotation");
+    net.run();
+    net.advance(61_000);
+    assert_eq!(reach_at(&mut net, c), Some(old), "nothing new under g");
+    assert_eq!(reach_at(&mut net, b), Some(new.clone()), "under h, which qualifies");
+    // c still syncs g with b
+    assert_eq!(net.read(c, t), Some(s("after the rotation")));
+    // nothing more rotates
+    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
+    assert!(!acts.iter().any(|x| matches!(x, Action::Reach)));
+    // an explicit rotation (`Osis::rotate_reach`)
+    let acts = net.sync(a).rotate_reach();
+    assert!(acts.iter().any(|x| matches!(x, Action::Reach)));
+    net.actions(a, acts);
+    net.run();
+    assert_ne!(net.sync(a).own_reach().unwrap().dialable, new.dialable);
 }

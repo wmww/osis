@@ -160,7 +160,7 @@
 //! w.make_group(g)?;
 //! w.commit()?;
 //! db.sync(g, &[])?;
-//! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true })?;
+//! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true, direct: false })?;
 //! assert!(link.to_string().starts_with("osis://link/"));
 //! assert_eq!(db.links(g).len(), 1);
 //! # Ok::<(), osis::Error>(())

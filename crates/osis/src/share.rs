@@ -58,6 +58,12 @@ pub struct LinkOpts {
     /// redeemer removes the link key in its redemption, and this node finalizes the link when it
     /// sees that (spec/permissions.md §9).
     pub single_use: bool,
+    /// The link carries this device's dialable key and relays (spec/permissions.md §9), so a
+    /// redeemer that shares no server with it reaches it directly while it is online; anyone
+    /// holding the link can then dial this device, and the link's actor gets this device's
+    /// `/reach`. Always so when the database has no servers (else the link reaches nobody);
+    /// never without a published `/reach` (no runtime, `Config.peers` off).
+    pub direct: bool,
 }
 
 /// A link this node made (`links`).
@@ -430,10 +436,20 @@ impl Osis {
         let t = self.resolved(target);
         let servers: Vec<osis_label::Address> = self.servers()?.into_iter().map(|s| s.0).collect();
         let me = self.me();
-        let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers: Vec::new(), single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
+        // first contact by this device (spec/permissions.md §9)
+        let peers: Vec<osis_label::Peer> = match opts.direct || servers.is_empty() {
+            true => self.locked(|x| x.sync.own_reach()).map(|r| osis_label::Peer { dialable: r.dialable, relays: r.relays }).into_iter().collect(),
+            false => Vec::new(),
+        };
+        let (link, done) = self.engine(|e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, servers, peers, single_use: opts.single_use }).map(|(l, _, d)| (l, d))).map_err(needs_admin)?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
             x.links.insert(link.k, MadeLink { l, target: t, single_use: opts.single_use, finalized: false });
+            // redeemers find this device again through K's label once the link's hint is done
+            if !link.peers.is_empty() {
+                let acts = x.sync.set_reach_policy(link.k, Some(true));
+                self.inner.net.apply(acts);
+            }
         });
         self.save_links()?;
         self.carry(done)?;
@@ -464,11 +480,20 @@ impl Osis {
         Ok(target)
     }
 
-    /// Holds a link's key and follows K's label; the key goes with the guard.
+    /// Holds a link's key and follows K's label at its servers and at the sharer's device when
+    /// the link names it (first contact, spec/permissions.md §9: dialed by its dialable key and
+    /// relays like a co-reader; K and the target are then synced with it whatever this
+    /// device's `/reach` policy says, `dial_group`); the key goes with the guard.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
         let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
-            let acts = x.sync.follow(l, link.k, link.k_label, link.servers.clone());
+            let mut at = link.servers.clone();
+            at.extend(link.peers.iter().map(|p| osis_label::Address { url: osis_transport::peer_url(&p.relays), key: p.dialable }));
+            if !link.peers.is_empty() {
+                x.sync.dial_group(link.k);
+                x.sync.dial_group(link.target);
+            }
+            let acts = x.sync.follow(l, link.k, link.k_label, at);
             self.inner.net.apply(acts);
             Ok(l)
         })?;
@@ -639,7 +664,10 @@ impl Osis {
         r?;
         let who = *crate::watch::lock(&found);
         if let Some(p) = who {
-            self.locked(|l| l.sync.set_contact(p, true));
+            self.locked(|l| {
+                let acts = l.sync.set_contact(p, true);
+                self.inner.net.apply(acts);
+            });
         }
         who.ok_or(Error::Invalid("contact card: no person".into()))
     }

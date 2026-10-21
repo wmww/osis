@@ -229,7 +229,7 @@ impl World {
                         sv.hub.closed(hc);
                     }
                 }
-                Action::Wake { .. } => {}
+                Action::Wake { .. } | Action::Reach => {}
             }
         }
     }

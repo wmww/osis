@@ -163,7 +163,7 @@ fn link_redeem_spec_permissions_9() {
     let bob = &others[0];
     let g = group(&alice);
     let before = item(&alice, g, g, "before the link");
-    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true }).unwrap();
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
     assert_eq!(alice.links(g).len(), 1);
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();

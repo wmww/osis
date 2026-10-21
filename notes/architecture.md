@@ -84,6 +84,8 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `anyhow` 1.0 (cli): command errors; the API's `Error` and the CLI's `Exit` are downcast for exit codes.
 - `iroh` 1.3 (transport, feature `iroh`; `default-features = false`, `tls-ring`; needs Rust 1.91): the P2P transport (notes/networking.md decisions 2-4): dial by key, self-hosted relays, hole punching. Brings ~190 crates (reqwest, noq, a second RustCrypto/dalek generation); `deny.toml` has a `skip-tree` and licence exceptions for it. Never in a default build. Tokio features: transport feature `iroh` and `lan` reuse the `quic` set.
 - `iroh-relay` 1.3 (transport, feature `relay` only, optional; `default-features = false`, `server`, `tls-ring`): a self-hosted relay on localhost for tier-2 tests (`iroh::TestRelay`); never in a non-test path. Adds the relay server's crates (hyper server side) on top of iroh's.
+- `netwatch` 0.19 (transport, feature `iroh`, optional; default features): iroh's own network monitor (already in iroh's tree, same version): OS interface, address and route events and wakes from sleep tell the LAN loop of a network change (`lan::NetWatch`), beside the route poll. No crate beyond iroh's.
+- `socket2` 0.6 (transport, feature `lan`, optional; default features; already in tokio's `net` tree): the IPv6-only LAN socket beside the IPv4 one at the same port (`set_only_v6` before bind, which std cannot do).
 - Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime through its `bin` feature).
 
 ## 6. Conventions

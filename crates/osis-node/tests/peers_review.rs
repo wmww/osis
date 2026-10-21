@@ -228,6 +228,11 @@ fn dials(acts: &[Action]) -> Vec<Address> {
 
 const IP: &str = "192.168.7.7";
 
+/// A LAN source at `ip`.
+fn src(ip: &str) -> std::net::SocketAddr {
+    (ip.parse::<std::net::IpAddr>().unwrap(), 47380).into()
+}
+
 // spec/sync.md §10: a LAN address is only a candidate; one whose connection fails before coming
 // up is backed off without pausing the peer, which is reached by its `peer://` route at once,
 // and a repeat of its announcement is not dialed while backed off.
@@ -245,7 +250,7 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
     net.clock.advance(60_001);
     // b announces a key nobody listens with
     let ann = net.sync(b).lan_announcement([0x77; 32], 9).unwrap();
-    let (hit, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    let (hit, acts) = net.sync(a).lan_seen(&ann, src(IP));
     assert_eq!(hit, Some(kb));
     let bogus = Address { url: format!("peer://{IP}:9"), key: [0x77; 32] };
     assert_eq!(dials(&acts), vec![bogus.clone()]);
@@ -254,7 +259,7 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
     let t = net.item(a, g, g, "via peer route");
     net.run();
     assert_eq!(net.read(b, t), Some(s("via peer route")));
-    let (_, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    let (_, acts) = net.sync(a).lan_seen(&ann, src(IP));
     assert!(dials(&acts).is_empty());
 }
 
@@ -272,24 +277,28 @@ fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
     net.run();
     let lk = SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
     net.lan_keys.insert(lk, b);
-    net.blocked_peers.clear();
     let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
-    // a connection to b runs, so nothing is dialed while the sources are heard
+    // the peer:// route failed (paused): the first real announcement cuts the pause and is
+    // dialed; repeats and the spoofed one meanwhile dial nothing
     net.clock.advance(60_001);
     net.feed(a, Event::Tick);
-    let real: std::net::IpAddr = IP.parse().unwrap();
-    let spoof: std::net::IpAddr = "192.168.7.66".parse().unwrap();
-    for _ in 0..3 {
-        net.sync(a).lan_seen(&ann, real);
+    net.settle(100_000);
+    let real = IP;
+    let spoof = "192.168.7.66";
+    let (_, first) = net.sync(a).lan_seen(&ann, src(real));
+    let real_addr = Address { url: format!("peer://{real}:5000"), key: lk };
+    assert_eq!(dials(&first), vec![real_addr.clone()]);
+    for _ in 0..2 {
+        assert!(dials(&net.sync(a).lan_seen(&ann, src(real)).1).is_empty());
     }
     net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
-    net.sync(a).lan_seen(&ann, spoof);
-    // the spoofed candidate fails: the real one takes over
+    assert!(dials(&net.sync(a).lan_seen(&ann, src(spoof)).1).is_empty());
+    // that first dial got nowhere; the spoofed candidate is dialed after the pause and fails:
+    // the real one takes over
+    let conn = first.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).unwrap();
+    net.sync(a).handle(Event::Down { conn });
     let spoofed = Address { url: format!("peer://{spoof}:5000"), key: lk };
-    let real_addr = Address { url: format!("peer://{real}:5000"), key: lk };
-    net.set_online(b, false);
-    net.settle(100_000);
-    net.set_online(b, true);
+    net.blocked_peers.clear();
     net.clock.advance(61_000);
     let acts = net.sync(a).handle(Event::Tick);
     assert_eq!(dials(&acts), vec![spoofed.clone()]);
@@ -317,7 +326,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
     let lk = SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
     net.lan_keys.insert(lk, b);
     let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
-    let (_, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
+    let (_, acts) = net.sync(a).lan_seen(&ann, src(IP));
     let route = Address { url: format!("peer://{IP}:5000"), key: lk };
     assert_eq!(dials(&acts), vec![route.clone()]);
     net.actions(a, acts);
@@ -326,7 +335,7 @@ fn lan_route_proven_by_up_spec_sync_10() {
     net.run();
     assert_eq!(net.read(b, t), Some(s("over the LAN")));
     // another address while connected: no dial
-    let (_, acts) = net.sync(a).lan_seen(&ann, "192.168.7.8".parse().unwrap());
+    let (_, acts) = net.sync(a).lan_seen(&ann, src("192.168.7.8"));
     assert!(dials(&acts).is_empty(), "{acts:?}");
     // the connection drops: after the pause the proven route is dialed, not the candidate
     net.set_online(b, false);
@@ -462,7 +471,8 @@ fn reach_excluded_per_label_spec_permissions_4() {
         let a = net.node(1, &[sv]);
         let b = net.node(2, &[sv]);
         let g = net.group(a, &[(b, Role::Read)], &[sv]);
-        net.sync(a).set_reach_policy(g, Some(!excluded));
+        let acts = net.sync(a).set_reach_policy(g, Some(!excluded));
+        net.actions(a, acts);
         let ka = reach_ed(&mut net, a);
         let kb = reach_ed(&mut net, b);
         net.run();

@@ -154,6 +154,10 @@ pub enum Action {
     Close { conn: ConnId },
     /// Deliver `Event::Tick` at this wall ms (the driver's clock; replaces earlier ones).
     Wake { at: u64 },
+    /// The dialable secret changed (`rotate_reach`): stop listening with the old one, listen
+    /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
+    /// transport key.
+    Reach,
 }
 
 /// Open state of a label on a connection.
@@ -326,6 +330,9 @@ pub struct SyncEngine {
     pub(crate) lan: BTreeMap<ServerKey, peers::LanRoute>,
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
+    /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
+    /// (`check_reach`: at start, after membership, policy and contact changes).
+    pub(crate) reach_check: bool,
     /// Served labels, until `/label`, membership or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums
@@ -416,6 +423,7 @@ impl SyncEngine {
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
+            reach_check: true,
             served_cache: None,
             charges: BTreeMap::new(),
             charged_per: BTreeMap::new(),
@@ -534,10 +542,12 @@ impl SyncEngine {
                     c.up = true;
                     let o = c.session.handle(now, ClientInput::Start);
                     let lan = c.peer.then(|| (c.server, c.address.clone()));
-                    if let Some((k, a)) = lan {
-                        self.lan_up(k, &a);
-                    }
                     self.outputs(conn, o, out)?;
+                    if let Some((k, a)) = lan
+                        && self.lan_up(k, &a)
+                    {
+                        self.lan_switched(conn, k, out);
+                    }
                 }
             }
             Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServerInput::Bytes(bytes), out)?,
@@ -560,6 +570,10 @@ impl SyncEngine {
         self.engine_events()?;
         if std::mem::take(&mut self.members_moved) {
             self.members_changed(out);
+            self.reach_check = true;
+        }
+        if std::mem::take(&mut self.reach_check) {
+            self.check_reach(out)?;
         }
         self.drop_unwanted_peers(out);
         self.connect(out);
@@ -769,12 +783,16 @@ impl SyncEngine {
             }
         }
         for h in self.state.hints.values() {
-            for a in &h.servers {
+            for a in h.servers.iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
+                m.entry(k).or_insert((a, true));
+            }
+            // a link's sharer node (first contact, spec/permissions.md §9) is dialed as a co-reader
+            for (k, a) in self.hint_peers() {
                 m.entry(k).or_insert((a, true));
             }
         }
@@ -789,7 +807,9 @@ impl SyncEngine {
         // a server no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
-            if self.conns.values().any(|c| c.server == key) {
+            // a co-reader reached off the LAN that is heard on it: its LAN route is dialed beside
+            // the running connection, which goes once that is up (`lan_switched`)
+            if self.conns.values().any(|c| c.server == key) && !(peer && self.lan_probe(&key, &addr)) {
                 continue;
             }
             if self.retry.get(&key).is_some_and(|(_, t)| *t > now) {
@@ -813,7 +833,7 @@ impl SyncEngine {
         if self.conns.values().all(|c| !c.peer) {
             return;
         }
-        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().collect() } else { BTreeSet::new() };
+        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().chain(self.hint_peers().into_keys()).collect() } else { BTreeSet::new() };
         let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
         for conn in gone {
             out.push(Action::Close { conn });
