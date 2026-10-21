@@ -967,11 +967,19 @@ impl SyncEngine {
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let dropped: Vec<(usize, usize)> = parts.iter().filter(|p| m.dropped.contains(p)).copied().collect();
         if !dropped.is_empty() {
-            let live = dropped.iter().any(|(ai, _)| {
-                let Some(a) = h.aspects.get(*ai) else { return false };
+            let mut live = false;
+            for (ai, _) in &dropped {
+                let Some(a) = h.aspects.get(*ai) else { continue };
                 let o = crate::engine::Owned::of(&h, commit, *ai);
-                !self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o)))
-            });
+                if self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
+                    continue;
+                }
+                // a dropped body keeps its live writes in the state (spec/crdt.md §4.6)
+                if self.engine.body_live(commit, &a.tid, &a.ak).unwrap_or(true) {
+                    live = true;
+                    break;
+                }
+            }
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
         if e.cert {
@@ -1146,7 +1154,8 @@ impl SyncEngine {
             let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { continue };
             let aspects = vec![(a.tid, a.ak.clone())];
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
-            if !self.carried(&server, &l, &e, &aspects, snaps)? {
+            // a body whose writes all died needs no carrier (spec/sync.md §7)
+            if !self.carried(&server, &l, &e, &aspects, snaps)? && self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
                 self.snapshot_first(&aspects, &b.commit)?;
                 continue;
             }

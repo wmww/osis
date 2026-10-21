@@ -404,6 +404,30 @@ impl Engine {
         })
     }
 
+    /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
+    /// dot its deltas own survives there; unknown counts as live). A body without one needs no
+    /// carrier before it leaves a label (spec/sync.md §7).
+    pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| {
+            let Some(ai) = aspect_index(tx, &c, &tid, &ak) else { return Ok(true) };
+            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { return Ok(true) };
+            let (_, members) = body_class(tx.core, &h, &c, ai);
+            for x in members {
+                let Some(a) = h.aspects.get(x) else { continue };
+                let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
+                tx.load(&a.tid, &a.ak)?;
+                let Some(st) = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten() else { continue };
+                let mut g = st.clone();
+                g.strip(&|d| o.owns(d));
+                if g != st {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     /// Whether a body is held (not dropped).
     pub fn holds_body(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.commits.get(c) else { return false };
