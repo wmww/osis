@@ -235,7 +235,11 @@ proptest! {
         let Some((d, src, range)) = a.commit(10, &[op(o)], &text_view()) else { return Ok(()) };
         let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
-        if let Some(ud) = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap() {
+        let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap();
+        // the node keeps only the footprint of the delta as its undo buffer
+        let mut w2 = Writer::new(ts(11 << 16), node(1), a.lo);
+        prop_assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &text_view()).unwrap(), full.clone());
+        if let Some(ud) = full {
             a.state.join(ud);
         }
         prop_assert_eq!(read_str(&a.state), read_str(&before));
@@ -262,7 +266,10 @@ proptest! {
         let Some((d, src, range)) = a.commit(10, &[o], &view) else { return Ok(()) };
         let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
         let mut w = Writer::new(ts(11 << 16), node(1), a.lo);
-        if let Some(ud) = undo(&mut w, &u, &a.state, &before, &view).unwrap() {
+        let full = undo(&mut w, &u, &a.state, &before, &view).unwrap();
+        let mut w2 = Writer::new(ts(11 << 16), node(1), a.lo);
+        prop_assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &view).unwrap(), full.clone());
+        if let Some(ud) = full {
             a.state.join(ud);
         }
         prop_assert_eq!(a.state.read(), before.read());
@@ -537,7 +544,10 @@ fn move_undo_spec_5_7() {
     assert_eq!(read_str(&a.state), "BARFOO");
     let u = Undone { delta: &d, source: &src, range, restored: &|_| false };
     let mut w = Writer::new(ts(3 << 16), node(1), a.lo);
-    a.state.join(undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap());
+    let full = undo(&mut w, &u, &a.state, &before, &text_view()).unwrap().unwrap();
+    let mut w2 = Writer::new(ts(3 << 16), node(1), a.lo);
+    assert_eq!(undo(&mut w2, &u, &a.state, &before.footprint(&d), &text_view()).unwrap(), Some(full.clone()), "the footprint as the buffer");
+    a.state.join(full);
     assert_eq!(read_str(&a.state), "FOOBAR");
     // a later move of the same element makes the undo a no-op for it
     let mut b = Replica::new(2);

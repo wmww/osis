@@ -111,8 +111,10 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
             }
         };
         tx.load(&a.tid, &a.ak)?;
-        let state = tx.core.states.get(&(a.tid, a.ak.clone())).cloned().flatten().unwrap_or_default();
         let lo = tx.txn.counter(&a.tid, &a.ak)?;
+        // read in place: the undo reads the current state along the delta's paths only
+        let empty = Fragment::default();
+        let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let mut w = Writer::new(ts, Source::node(node), lo);
         let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| a.ak.is_core().then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
@@ -130,8 +132,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let out = match &view {
-            Some(v) => undo_delta(&mut w, &undone, &state, buf, v)?,
-            None => undo_delta(&mut w, &undone, &state, buf, &AnyView)?,
+            Some(v) => undo_delta(&mut w, &undone, state, buf, v)?,
+            None => undo_delta(&mut w, &undone, state, buf, &AnyView)?,
         };
         if let Some(f) = out {
             let r = w.range();

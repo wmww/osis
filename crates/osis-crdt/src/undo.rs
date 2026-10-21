@@ -315,8 +315,9 @@ impl Fragment {
     /// The part of this pre-commit state that undoing `delta` reads (`UndoBuffer::before` along
     /// the delta's paths), so a node keeps O(change) per local commit: struct fields the delta
     /// writes, and of a map, set or bag the delta does not reset only the elements it writes
-    /// (of a map also every live entry of a key it edits into: undo reads their join, §5.6). Everything else,
-    /// sequences included (their undo reads by position), is kept whole.
+    /// (of a map also every live entry of a key it edits into, along the edit's paths: undo
+    /// reads their join, §5.6), of a list or text the records holding the delta's dots (its undo
+    /// reads by dot). Anything reset is kept whole.
     pub fn footprint(&self, delta: &Fragment) -> Fragment {
         if delta.meta().is_none_or(|m| m.reset.is_some()) || self.encoding() != delta.encoding() {
             return self.clone();
@@ -351,6 +352,7 @@ impl Fragment {
             (Fragment::Bag(s), Fragment::Bag(d)) => {
                 Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() })
             }
+            (Fragment::Seq(s), Fragment::Seq(d)) => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
         }
     }
