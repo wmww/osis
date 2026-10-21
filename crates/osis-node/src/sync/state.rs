@@ -1,7 +1,8 @@
 //! The sync engine's durable state, in the engine's local records under `y/` (one write batch
 //! per `SyncEngine::handle`): label entries this node knows (wrap, stamp, what the blob is),
 //! presence per server, cursors and heads per (server, label), blob keys of commit blobs,
-//! certificates and heartbeats placed, blobs a server tombstoned, label hints from inbox blobs.
+//! certificates and heartbeats placed, blobs a server tombstoned, label hints from inbox blobs,
+//! inbox deliveries to re-send, stranded heartbeat times, direct commits for the app.
 
 use crate::engine::{Engine, Tx};
 use crate::engine::records::{Rd, Wr};
@@ -34,6 +35,12 @@ const OUTBOX: &[u8] = b"y/o";
 const FORGET: &[u8] = b"y/f";
 /// Replaced labels this admin is done with (`SyncEngine::retire_at`).
 const RETIRED: &[u8] = b"y/q";
+/// Inbox deliveries re-sent after `INBOX_LIFETIME` while unanswered (`SyncEngine::resend_inbox`).
+const SENT_INBOX: &[u8] = b"y/v";
+/// When a stranded heartbeat last went under a label.
+const STRANDED: &[u8] = b"y/u";
+/// Commits for a node over a direct connection, until the app takes them (`take_direct`).
+const DIRECT: &[u8] = b"y/n";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,8 +50,9 @@ pub enum Kind {
     Unknown,
     /// A commit blob holding these parts.
     Commit { commit: CommitId, parts: Vec<(usize, usize)> },
-    /// An inbox blob this node opened.
-    Inbox,
+    /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
+    /// build).
+    Inbox(Option<CommitId>),
     /// Unwraps under a held secret but is no valid commit blob (spec/versioning.md §2: bad
     /// input): never retried, never judged.
     Bad,
@@ -80,6 +88,20 @@ pub struct OutRec {
     pub server: Address,
     pub owner: Tid,
     pub blob: Vec<u8>,
+}
+
+/// A membership commit delivered by inbox to `member` (spec/sync.md §3): re-sealed and sent
+/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the member acted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SentInbox {
+    pub member: Tid,
+    pub commit: CommitId,
+    pub things: Vec<Tid>,
+    /// Only the `/members` parts went (a removal).
+    pub edge_only: bool,
+    pub at: u64,
+    /// Re-sends so far.
+    pub tries: u32,
 }
 
 /// A label learned from an inbox blob before its `/label` is held, or followed by a held key
@@ -130,6 +152,12 @@ pub struct State {
     /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
     /// with a time): retired after `MEMBERSHIP_KEEP` whatever its servers say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
+    /// Inbox deliveries by (member, commit), until the member acts or the re-sends run out.
+    pub sent_inbox: BTreeMap<(Tid, CommitId), SentInbox>,
+    /// When a stranded heartbeat last went under each label (corrected wall ms).
+    pub stranded: BTreeMap<LabelId, u64>,
+    /// Commits for nodes over a direct connection (pairing), until the app takes them.
+    pub direct: BTreeMap<Tid, Vec<CommitId>>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -167,7 +195,8 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
     match &e.kind {
         Kind::Unknown => w.u8(0),
         Kind::Commit { commit, parts } => encode_parts(w.u8(1).raw(&commit.0), parts),
-        Kind::Inbox => w.u8(2),
+        Kind::Inbox(None) => w.u8(2),
+        Kind::Inbox(Some(c)) => w.u8(5).raw(&c.0),
         Kind::Bad => w.u8(3),
         Kind::Parked(c) => w.u8(4).raw(&c.0),
     }
@@ -187,7 +216,8 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
             let commit = CommitId(r.arr()?);
             Kind::Commit { commit, parts: decode_parts(&mut r)? }
         }
-        2 => Kind::Inbox,
+        2 => Kind::Inbox(None),
+        5 => Kind::Inbox(Some(CommitId(r.arr()?))),
         3 => Kind::Bad,
         4 => Kind::Parked(CommitId(r.arr()?)),
         _ => Kind::Unknown,
@@ -283,6 +313,22 @@ impl State {
                 }
                 b"f" => {
                     s.forget.insert(r.tid()?);
+                }
+                b"v" => {
+                    let x = decode_sent(&v)?;
+                    s.sent_inbox.insert((x.member, x.commit), x);
+                }
+                b"u" => {
+                    s.stranded.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
+                }
+                b"n" => {
+                    let to = r.tid()?;
+                    let mut x = Rd::new(&v);
+                    let mut list = Vec::new();
+                    while !x.is_empty() {
+                        list.push(CommitId(x.arr()?));
+                    }
+                    s.direct.insert(to, list);
                 }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
@@ -472,6 +518,52 @@ impl State {
         now
     }
 
+    /// Records an inbox delivery, or a re-send of one (counted).
+    pub fn note_sent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
+        let x = match self.sent_inbox.get(&(member, commit)) {
+            Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
+            None => SentInbox { member, commit, things, edge_only, at, tries: 0 },
+        };
+        self.put(key(SENT_INBOX, &[member.as_bytes(), &commit.0]), encode_sent(&x));
+        self.sent_inbox.insert((member, commit), x);
+    }
+
+    pub fn remove_sent(&mut self, member: &Tid, commit: &CommitId) {
+        if self.sent_inbox.remove(&(*member, *commit)).is_some() {
+            self.del(key(SENT_INBOX, &[member.as_bytes(), &commit.0]));
+        }
+    }
+
+    pub fn set_stranded(&mut self, l: LabelId, t: u64) {
+        self.put(key(STRANDED, &[&l.0]), Wr::new().u64(t).take());
+        self.stranded.insert(l, t);
+    }
+
+    /// Adds commits for node `to` (direct connection).
+    pub fn add_direct(&mut self, to: Tid, commits: &[CommitId]) {
+        let list = self.direct.entry(to).or_default();
+        for c in commits {
+            if !list.contains(c) {
+                list.push(*c);
+            }
+        }
+        let v: Vec<u8> = list.iter().flat_map(|c| c.0).collect();
+        self.put(key(DIRECT, &[to.as_bytes()]), v);
+    }
+
+    /// Takes the commits for `to` (every node when `None`).
+    pub fn take_direct(&mut self, to: Option<&Tid>) -> Vec<(Tid, Vec<CommitId>)> {
+        let tids: Vec<Tid> = self.direct.keys().filter(|t| to.is_none_or(|x| x == *t)).copied().collect();
+        let mut out = Vec::new();
+        for t in tids {
+            if let Some(list) = self.direct.remove(&t) {
+                self.del(key(DIRECT, &[t.as_bytes()]));
+                out.push((t, list));
+            }
+        }
+        out
+    }
+
     pub fn add_cert(&mut self, l: LabelId, c: CommitId) {
         if self.certs.insert((l, c)) {
             self.put(key(CERT, &[&l.0, &c.0]), Vec::new());
@@ -616,6 +708,8 @@ pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things
             }
             b"s" => commits.contains(&CommitId(Rd::new(rest).arr()?)),
             b"o" => lab(&v)?,
+            b"u" => lab(rest)?,
+            b"v" => decode_sent(&v).is_ok_and(|x| commits.contains(&x.commit) || things.contains(&x.member)),
             b"i" => lab(rest)? || things.contains(&Rd::new(&v).tid()?),
             _ => false,
         };
@@ -630,6 +724,29 @@ pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things
         tx.txn.put_local(&key(FORGET, &[t.as_bytes()]), &[], Shred::No)?;
     }
     Ok(freed.difference(&kept).copied().collect())
+}
+
+fn encode_sent(x: &SentInbox) -> Vec<u8> {
+    let mut w = Wr::new().raw(x.member.as_bytes()).raw(&x.commit.0).u8(u8::from(x.edge_only)).u64(x.at).u32(x.tries).u32(x.things.len() as u32);
+    for t in &x.things {
+        w = w.raw(t.as_bytes());
+    }
+    w.take()
+}
+
+fn decode_sent(v: &[u8]) -> Result<SentInbox> {
+    let mut r = Rd::new(v);
+    let member = r.tid()?;
+    let commit = CommitId(r.arr()?);
+    let edge_only = r.u8()? == 1;
+    let at = r.u64()?;
+    let tries = r.u32()?;
+    let n = r.u32()?;
+    let mut things = Vec::new();
+    for _ in 0..n {
+        things.push(r.tid()?);
+    }
+    Ok(SentInbox { member, commit, things, edge_only, at, tries })
 }
 
 #[cfg(test)]

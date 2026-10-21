@@ -35,6 +35,15 @@ impl Engine {
             .collect()
     }
 
+    /// The newest held commit writing `(tid, ak)` with the indexes of its deltas on it (a
+    /// grantee's certificate copy names a thing's `/label` and `/created`, spec/sync.md §3).
+    pub(crate) fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
+        let c = self.latest_on(tid, ak)?;
+        let h = self.header(&c)?;
+        let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *tid && a.ak.as_str() == ak).map(|(i, _)| i).collect();
+        Some((c, ais))
+    }
+
     /// The deltas of roster snapshot `c` on `things` a chain needs (spec/permissions.md §6):
     /// those naming one of `members`, and those naming nobody (the reset alone). None when the
     /// commit cannot be read here (diagnostic): never the whole roster.

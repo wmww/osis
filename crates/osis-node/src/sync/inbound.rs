@@ -412,9 +412,10 @@ impl SyncEngine {
                             self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone(), via: None });
                         }
                     }
-                    e.kind = Kind::Inbox;
+                    let c = osis_commit::CommitBlob::decode(&pt).ok();
+                    e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
                     self.state.set_entry(l, b, e);
-                    if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
+                    if let Some(c) = c {
                         commits.push((pt, c));
                     }
                     return Ok(());
@@ -422,6 +423,17 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it names
+    /// (it opens again under the held keys of an actor whose inbox `l` is), if its bytes are
+    /// held.
+    pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
+        let Some(bytes) = self.engine.blob(b)? else { return Ok(None) };
+        let opened = self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
+        let Some((_, payload)) = opened else { return Ok(None) };
+        let Ok(c) = osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)) else { return Ok(None) };
+        Ok(Some((c.parts.iter().map(|p| p.ai).collect(), payload.things.iter().map(|t| t.tid).collect())))
     }
 
     /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
@@ -432,7 +444,7 @@ impl SyncEngine {
             return Ok(());
         }
         let things = self.state.forget.clone();
-        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Inbox).map(|(k, _)| *k).collect();
+        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| matches!(e.kind, Kind::Inbox(_))).map(|(k, _)| *k).collect();
         let mut gone = Vec::new();
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };

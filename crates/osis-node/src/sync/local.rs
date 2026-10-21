@@ -18,6 +18,10 @@ use std::collections::BTreeSet;
 /// budget, stale head).
 pub(crate) const MAX_INBOX_TRIES: u32 = 8;
 
+/// Re-sends of an inbox delivery whose member never acts (local policy; one per
+/// `INBOX_LIFETIME`).
+const MAX_INBOX_RESENDS: u32 = 3;
+
 /// An inbox blob waiting to be deposited at a server.
 #[derive(Clone)]
 pub(crate) struct Outgoing {
@@ -275,6 +279,39 @@ impl SyncEngine {
             self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
         }
         Ok(self.handle(super::Event::Local))
+    }
+
+    /// Inbox deliveries `INBOX_LIFETIME` old whose member has not acted are sealed again (to its
+    /// newest keyset) and sent again (spec/sync.md §3), at most `MAX_INBOX_RESENDS` times; one
+    /// whose commit is gone, or whose member acted, is forgotten.
+    pub(crate) fn resend_inbox(&mut self) -> Result<()> {
+        let now = self.now();
+        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
+        for s in due {
+            let ts = self.engine.header(&s.commit).map(|h| h.ts);
+            if !ts.is_some_and(|ts| s.tries < MAX_INBOX_RESENDS && !self.acted(&s.member, ts)) {
+                self.state.remove_sent(&s.member, &s.commit);
+                continue;
+            }
+            let parts = if s.edge_only { crate::flows::edges::Parts::Edge } else { crate::flows::edges::Parts::All };
+            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &s.things, parts));
+            match r {
+                Ok(deliveries) if !deliveries.is_empty() => self.take_done(crate::flows::Done { deliveries, ..Default::default() })?,
+                // no inbox or keys for the member any more
+                _ => self.state.remove_sent(&s.member, &s.commit),
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `member` acted after `since` as this node sees it: a held commit newer than that
+    /// by the member, for it, or by a node with a role on it (its devices).
+    fn acted(&self, member: &Tid, since: Ts) -> bool {
+        let tl = self.engine.core.timelines.get(member);
+        self.engine.core.commits.values().any(|m| {
+            let h = &m.header;
+            h.ts > since && (h.author == *member || h.actor == *member || tl.is_some_and(|tl| tl.role(&h.author, member, At::now(h.ts)).is_some()))
+        })
     }
 
     /// Queues an inbox blob, durably until its server answers (a crash or restart re-sends it).

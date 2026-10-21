@@ -174,6 +174,7 @@ impl SyncEngine {
             }
         }
         if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
+            self.inbox_copies(&g, l)?;
             self.certificates(&g, l)?;
             self.heartbeat(&g, l, &keys, conn)?;
         }
@@ -721,6 +722,47 @@ impl SyncEngine {
         Ok(all.into_iter().filter(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id)).collect())
     }
 
+    /// A grantee device places a certificate copy of what its inbox (label `l` of `g`) brought,
+    /// once applied, under that label: every part the inbox blob carried (its boxes included,
+    /// sealed to the actor anyway), with the `/label` and `/created` commits of the things it
+    /// named, so the actor's other devices find the grant and its labels there (spec/sync.md
+    /// §3); the inbox's admins then delete the consumed blob (`deletions`).
+    fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        let opened: Vec<(BlobId, CommitId)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter_map(|((_, b), e)| if let Kind::Inbox(Some(c)) = e.kind { Some((*b, c)) } else { None }).collect();
+        for (b, c) in opened {
+            if self.state.certs.contains(&(l, c)) || !self.engine.core.commits.contains_key(&c) || self.engine.core.pending.contains_key(&c) {
+                continue;
+            }
+            let Some((ais, things)) = self.inbox_parts(&l, &b)? else { continue };
+            for t in things {
+                for ak in ["/created", "/label"] {
+                    let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
+                    if !self.state.certs.contains(&(l, x)) {
+                        self.place_certificate_in(g, &x, &xs)?;
+                    }
+                }
+            }
+            self.place_certificate_in(g, &c, &ais)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the `/label` and `/created` commits of the things inbox blob `b` named are present
+    /// at `server` under `l` (an entry of each commit).
+    fn inbox_labels_copied(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> Result<bool> {
+        let Some((_, things)) = self.inbox_parts(l, b)? else { return Ok(false) };
+        for t in things {
+            for ak in ["/created", "/label"] {
+                let Some((x, _)) = self.engine.aspect_commit(&t, ak) else { continue };
+                let here = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id));
+                if !here {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
     /// aspects no entry under the label holds yet, as a fresh encryption per label. Another
     /// node's entry counts only when this node checked it genuine (`genuine`), it is present at
@@ -839,7 +881,7 @@ impl SyncEngine {
     /// A stranded heartbeat (spec/permissions.md §4; spec/sync.md §5): the label cannot be read
     /// here; deposited, wrapped under the newest established read secret held, no open needed.
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        if self.stranded_at.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
+        if self.state.stranded.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
             return Ok(());
         }
         let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
@@ -853,7 +895,7 @@ impl SyncEngine {
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;
         }
         let now = self.now();
-        self.stranded_at.insert(l, now);
+        self.state.set_stranded(l, now);
         Ok(())
     }
 
@@ -1067,6 +1109,27 @@ impl SyncEngine {
                     items.push(item);
                 }
                 None => continue,
+            }
+        }
+        // consumed inbox blobs (spec/sync.md §3): the inbox label's admins delete one whose commit
+        // applied here once a copy of that commit is under the label at this server (the
+        // grantee's certificate copy, which the actor's other devices read instead)
+        if keys.delete.is_some() {
+            for id in self.state.present_at(&server, &l) {
+                let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
+                if !self.engine.core.commits.contains_key(&c) || self.engine.core.pending.contains_key(&c) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
+                    continue;
+                }
+                let copied = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|((_, b), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c) && self.state.is_present(&server, &l, b));
+                // and the labels it named are under the label too (`inbox_copies`)
+                if !copied || !self.inbox_labels_copied(&server, &l, &id)? {
+                    continue;
+                }
+                if let Some(item) = delete_item(keys, &l, id, None, &[]) {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, id), raw);
+                    items.push(item);
+                }
             }
         }
         // timed deletes: bodies under a relative keep-at-most with a known bound

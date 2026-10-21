@@ -202,7 +202,7 @@ fn inbox_delivery_spec_sync_3() {
     net.actions(s_, acts);
     net.run();
     diags(&mut net, &[s_, b]);
-    assert!(net.sync(b).entries(&home.id).iter().any(|(_, k)| *k == EntryKind::Inbox));
+    assert!(net.sync(b).entries(&home.id).iter().any(|(_, k)| matches!(k, EntryKind::Inbox(_))));
     assert_eq!(net.read(b, x), Some(s("for P")));
 }
 
