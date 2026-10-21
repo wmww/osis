@@ -33,6 +33,38 @@ fn deaths_and_bounds_spec_commits_5() {
     assert!(e.holds_body(&c1, &t, &ak("/t/kept")));
 }
 
+// spec/crdt.md §4.8, spec/commits.md §5: a write dies at the earliest `ts` of its superseders,
+// whatever order they arrive in: a superseder arriving after a later one pruned the write, and
+// a write arriving after its earliest superseder was pruned, give the same first death (so
+// every node has one keep-at-most bound).
+#[test]
+fn first_death_order_independent_spec_crdt_4_8() {
+    let mut lp = net(3, 54);
+    let t = new_thing(&mut lp, 0);
+    let mut ids = Vec::new();
+    for v in ["one", "two", "three"] {
+        ids.push(set(&mut lp, 0, t, &SHORT, v));
+        lp.advance(10);
+    }
+    let ts2 = lp.peers[0].engine.header(&ids[1]).unwrap().ts;
+    let k = ak("/t/short");
+    assert_eq!(lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap().map(|d| d.0), Some(ts2));
+    let pks = packages(&mut lp, 0);
+    let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+    let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
+    for (to, order) in [(1, [0, 2, 1]), (2, [2, 1, 0])] {
+        for p in &rest {
+            lp.deliver(to, p).unwrap();
+        }
+        for i in order {
+            lp.deliver(to, &pk(&ids[i])).unwrap();
+        }
+        let e = &mut lp.peers[to].engine;
+        assert_eq!(e.deaths(&ids[0], &t, &k).unwrap().map(|d| d.0), Some(ts2), "node {to}");
+        assert_eq!(e.body_keep(&ids[0], &t, &k).unwrap().at_most, Some(ts2.wall_ms().0 + 600_000), "node {to}");
+    }
+}
+
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
 // transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).

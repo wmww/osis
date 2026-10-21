@@ -167,6 +167,64 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
     Ok(())
 }
 
+/// Earlier deaths of writes already dead here (spec/crdt.md §4.8: a write dies at the earliest
+/// `ts` of the writes superseding it). A join reports deaths against the state only, so a write
+/// arriving after a later superseder pruned its victim, or after its own earliest superseder was
+/// pruned, left a later death than at a node that applied them in another order: the nodes'
+/// keep-at-most bounds differed and one re-uploaded what the other deleted. `f`, the delta of
+/// `c` on `(tid, ak)`, is joined alone with each held body of the aspect under a pending
+/// keep-at-most timer (the dead bodies a first death bounds); a death it reports before a
+/// carrier's recorded first death lowers it (`last` stays: at most wins over at least).
+pub(crate) fn note_earlier_deaths(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<()> {
+    let mut dead = BTreeSet::new();
+    tx.scan(records::TIMER, |k, v| {
+        if v.first() == Some(&T_AT_MOST) {
+            let (_, b, ai) = records::parse_timer(k)?;
+            dead.insert((b, ai));
+        }
+        Ok(())
+    })?;
+    dead.retain(|(b, ai)| {
+        b != c
+            && tx.core.commits.get(b).is_some_and(|m| {
+                m.header.aspects.get(*ai).is_some_and(|a| a.tid == *tid && a.ak == *ak) && m.valid.get(*ai).copied().unwrap_or(false) && !m.dropped.contains(&(*ai, 0))
+            })
+    });
+    if dead.is_empty() {
+        return Ok(());
+    }
+    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
+    let bad = |d: &osis_crdt::Dot| invalid.iter().any(|o| o.owns(d));
+    let mut n = f.clone();
+    n.remove_dots(&bad);
+    let mut deaths = Vec::new();
+    for (b, ai) in dead {
+        for d in crate::apply::held_parts(tx, &b, ai)? {
+            let mut bf = match d {
+                Decoded::Delta(x) => x.fragment,
+                Decoded::Snapshot(x) => x.fragment,
+            };
+            bf.remove_dots(&bad);
+            deaths.extend(bf.join(n.clone()).deaths().iter().cloned());
+        }
+    }
+    let mut lowered = BTreeSet::new();
+    for d in deaths {
+        for (x, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
+            let Some(h) = tx.core.commits.get(&x).map(|m| m.header.clone()) else { continue };
+            let (body, _) = body_class(tx.core, &h, &x, ai);
+            if tx.txn.death(tid, ak, &body)?.is_some_and(|r| d.at < r.first) {
+                tx.txn.note_death(tid, ak, &body, d.at)?;
+                lowered.insert((x, ai));
+            }
+        }
+    }
+    for (x, ai) in lowered {
+        check_at_most(tx, &x, ai)?;
+    }
+    Ok(())
+}
+
 fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };

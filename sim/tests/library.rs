@@ -245,6 +245,14 @@ fn keep_at_most_seed_62() {
     ok("keep_at_most", 62);
 }
 
+// spec/crdt.md §4.8, spec/commits.md §5: sweep seed 445, deaths by arrival order: two keep-at-most
+// bounds, one node re-uploaded what the other deleted (a storm).
+#[test]
+#[ignore = "tier 2"]
+fn keep_at_most_seed_445() {
+    ok("keep_at_most", 445);
+}
+
 // spec/crdt.md §4.7, §9: sweep seed 28, an expiring diff lost a heartbeat field; the pass aborted.
 #[test]
 #[ignore = "tier 2"]
