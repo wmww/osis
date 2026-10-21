@@ -530,7 +530,8 @@ fn keyed(f: &Fragment, p: &[Step]) -> KeyedPath {
 }
 
 /// Adds the keys of the entries at `dots` of the map `c` to its key index.
-fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment, dots: &mut dyn Iterator<Item = &Dot>) -> Result<()> {
+/// Adds the key index rows of the map entries `dots` (`fresh`: the table is new, no row exists).
+fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment, dots: &mut dyn Iterator<Item = &Dot>, fresh: bool) -> Result<()> {
     if set.enc != Encoding::Map {
         return Ok(());
     }
@@ -538,7 +539,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
         if let Some(k) = c.entry_key(d) {
             // rows are never removed (a superset), so most are there already: a read, not a write
             let row = key_row(set, k, Some(d));
-            if txn.table_get(kt, &row)?.is_none() {
+            if fresh || txn.table_get(kt, &row)?.is_none() {
                 txn.table_put(kt, &row, Vec::new(), Shred::No)?;
             }
         }
@@ -562,7 +563,8 @@ fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, 
         set.loaded.insert(key, r);
     }
     set.whole = true;
-    index_keys(txn, kt, set, c, &mut dots.iter())
+    // the tables were created for this write
+    index_keys(txn, kt, set, c, &mut dots.iter(), true)
 }
 
 /// Writes a whole state: the unit's state field, and the pages when the state is above
@@ -635,7 +637,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             dirty.insert(k.clone(), r.clone());
         }
     }
-    index_keys(txn, kt, set, c, &mut dots.iter())?;
+    index_keys(txn, kt, set, c, &mut dots.iter(), false)?;
     for (key, r) in dirty {
         let ds = c.elem_dots(r.0.as_ref(), r.1.as_ref());
         if r.0.is_some() && ds.is_empty() {
