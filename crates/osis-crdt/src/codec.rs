@@ -258,8 +258,9 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
     }
     let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
-    let mut top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr];
-    // `Authors := [[Src, tid, Ts]*]` by `Src`, only when one is given (§8)
+    let absorbed = Value::List(s.absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect());
+    let mut top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
+    // `Authors := [[Src, tid, Ts]+]` by `Src`, only when one is given (§8)
     let authors: Vec<Value> = enc
         .commit_sources()
         .into_iter()
@@ -651,9 +652,9 @@ pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner,
 /// Decodes a snapshot delta (§8); bad input unless canonical.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
     let top = osis_core::decode(bytes, &LIMITS)?;
-    let (n, sources, commits, frag, fr, au) = match as_array(&top)? {
-        [n, sources, commits, frag, fr] => (n, sources, commits, frag, fr, None),
-        [n, sources, commits, frag, fr, au] => (n, sources, commits, frag, fr, Some(au)),
+    let (n, sources, commits, frag, fr, ab, au) = match as_array(&top)? {
+        [n, sources, commits, frag, fr, ab] => (n, sources, commits, frag, fr, ab, None),
+        [n, sources, commits, frag, fr, ab, au] => (n, sources, commits, frag, fr, ab, Some(au)),
         _ => return Err(Error::Malformed("snapshot arity")),
     };
     let mut dec = Dec::new(cx, interner, pages);
@@ -667,6 +668,15 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
         let c = as_uint(c)?;
         if c == 0 || frontiers.insert(tid, c).is_some() {
             return Err(Error::Malformed("frontier counter 0 or repeated"));
+        }
+    }
+    let mut absorbed = BTreeMap::new();
+    for e in as_array(ab)? {
+        let [c, a] = as_array(e)? else { return Err(Error::Malformed("absorbed commit")) };
+        let (Value::Bytes(c), Value::Tid(a)) = (c, a) else { return Err(Error::Malformed("absorbed commit")) };
+        let c = <[u8; 32]>::try_from(c.as_slice()).map_err(|_| Error::Malformed("absorbed commit ID"))?;
+        if absorbed.insert(osis_core::CommitId(c), *a).is_some() {
+            return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
     let mut authors = BTreeMap::new();
@@ -685,7 +695,7 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
         authors.insert(c, (t, ts));
     }
     let mut replay = dec.replay();
-    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers), authors };
+    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers: Frontiers(frontiers), absorbed, authors };
     canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
     Ok(s)
 }

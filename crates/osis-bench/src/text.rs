@@ -166,6 +166,6 @@ impl osis_crdt::PageSink for Counting {
 pub fn snapshot_len(state: &Fragment) -> usize {
     let cx = DeltaCtx { ts: Ts::from_u64(u64::MAX >> 2).unwrap_or_default(), own: Source::node(Tid::from_bytes([9; 15])), range: osis_crdt::CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = Counting(osis_crdt::MemoryPages::new(), 0);
-    let s = Snapshot { nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default(), authors: Default::default() };
+    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default() };
     encode_snapshot(&s, &cx, Some(&mut pages)).map(|b| b.len() + pages.1).unwrap_or(usize::MAX)
 }

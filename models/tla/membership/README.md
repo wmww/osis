@@ -4,7 +4,7 @@
 Files: `Membership.tla` (the model; `Scenario` picks a genesis and a menu of commits), `MC_*.cfg`, `AMBIGUITIES.md` (findings M1–M10). Unlike the other models, this one was written with the spec and checked against osis-perm where the text was subtle (AMBIGUITIES.md says where it follows osis-perm's reading).
 
 ## Shape
-A state is a history: commits in generation order, each from the scenario's menu (at most once), with any ts from `TsSet` (so skew and backdating) and a frontier that is any subset of the commits generated before it (`FrMode = "subset"`; the author's own and node 1's commits are left out, they never matter). Things: actor A owned by key actor n1, actor B owned by A; B may be a member of A, so B's admins reach A. Roles none/read/write/admin, edges with `until`; no invites. Commit IDs order like generation. The invariants run the walk over the whole history (`W0`): restarts until D is stable, attribution by class, falls judged against the edge as restored plus the demoter's kept standing, frontier and same-commit coverage, self-removals never audited, layer 2 per content commit. `WithSnap(N, s, au)` produces the roster and ledger of N at ts `s` from `W0` (what an owner-chain author holding everything writes), replays them as virtual writes (an entry with a frontier is an explicit demotion by its key's node), walks again with N's earlier edge writes ignored, and compares.
+A state is a history: commits in generation order, each from the scenario's menu (at most once), with any ts from `TsSet` (so skew and backdating) and a frontier that is any subset of the commits generated before it, always including the author's chain certificates as an honest author holds them (`FrMode = "subset"`, `Certs`: commits setting the author's or B's edges, and those of their authors; the author's own and node 1's commits are left out, they never matter). Things: actor A owned by key actor n1, actor B owned by A; B may be a member of A, so B's admins reach A. Roles none/read/write/admin, edges with `until`; no invites. Commit IDs order like generation. The invariants run the walk over the whole history (`W0`): restarts until D is stable, attribution by class, falls judged against the edge as restored plus the demoter's kept standing, frontier and same-commit coverage, self-removals never audited, layer 2 per content commit. `WithSnap(N, s, au)` produces the roster and ledger of N at ts `s` from `W0` (what an owner-chain author holding everything writes), replays them as virtual writes (an entry with a frontier is an explicit demotion by its key's node), walks again with N's earlier edge writes ignored, and compares.
 
 ## Properties
 - `DropOrderFree` (1): every order of finding the writes that add to D gives the same verdicts as the spec's restart at the first one. The walk is otherwise a function of the held set by construction (sorted by (ts, node, commit ID), D rebuilt from scratch), so this is the part of determinism that can fail.
@@ -19,18 +19,18 @@ TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 node
 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
-| `MC_core` | n2, n3 admins of A: mutual removals, a demotion, a chain grant on B, content; 3 free commits; drop order | all pass | 4,153 | 9 s |
+| `MC_core` | n2, n3 admins of A: mutual removals, a demotion, a chain grant on B, content; 3 free commits; drop order | all pass | 2,380 | 9 s |
 | `MC_multi` | n2 admin of B, B admin of A: several-edge removal of B and n3 and the one-edge versions; snapshots of A; drop order | all pass | 1,852 | 18 s |
-| `MC_group` | as MC_multi's genesis: n2 removes B (demotes itself, keeps its standing), n1 rewrites the edge, n2 grants through B; snapshots of A | all pass | 7,078 | 2 min |
+| `MC_group` | as MC_multi's genesis: n2 removes B (demotes itself, keeps its standing), n1 rewrites the edge, n2 grants through B; snapshots of A | all pass | 5,782 | 2 min |
 | `MC_snapA` | n2 admin of A, 4 free commits incl. self-demotion and removal; snapshots of A by n1 | all pass | 72,316 | 9 min |
-| `MC_snapB` | snapshots of B by n1 or n2 (rejected after n2's removal) | all pass | 72,760 | 12 min |
+| `MC_snapB` | snapshots of B by n1 or n2 (rejected after n2's removal) | all pass | 54,436 | 12 min |
 | `MC_until` | n2 admin of A until 7, resets and re-grants (audit-only entries); snapshots of A | all pass | 107,959 | 10 min |
 | `MC_depth` | `MaxDepth` 1: nothing on B valid; snapshots of A | all pass | 31,660 | 2 min |
-| `MC_keepoff` | negative control: MC_group without the kept standing | **fails** StandingAudited (expected) | 509 | 2 s |
-| `MC_sticky` | drop order (M2) | **fails** DropOrderFree (expected) | 223 | 1 s |
-| `MC_sticky_snap` | a snapshot repairs a sticky drop (M2) | **fails** Neutral (expected) | 223 | 2 s |
-| `MC_forge` | removed admin backdates a write on its remover's edge (M1, fixed) | all pass | 1,264 | 3 s |
-| `MC_samets` | n1 stamps two commits at one ts (M3) | **fails** Neutral (expected) | 186 | 3 s |
+| `MC_keepoff` | negative control: MC_group without the kept standing | **fails** StandingAudited (expected) | 443 | 2 s |
+| `MC_sticky` | drop order (M2) | **fails** DropOrderFree (expected) | 791 | 1 s |
+| `MC_sticky_snap` | a snapshot repairs a sticky drop (M2) | **fails** Neutral (expected) | 710 | 2 s |
+| `MC_forge` | removed admin backdates a write on its remover's edge (M1, fixed) | all pass | 580 | 3 s |
+| `MC_samets` | n1 stamps two commits at one ts (M3) | **fails** Neutral (expected) | 192 | 3 s |
 
 `MC_samets` trace (issues/ledger-same-ts-commits.md): n1 grants n2 admin of A; n2 grants n3 admin on B at ts 6; n1 removes n2 at ts 8 (frontier empty, so the grant on B drops) and re-grants n2 at ts 8 in another commit. The ledger keys both by (8, n1): the tenure ends and the roster edge starts at one key, the replay sees no demotion, and a snapshot of A after both revives the grant.
 

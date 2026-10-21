@@ -143,6 +143,9 @@ pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize
                 for (n, c) in &s.frontiers.0 {
                     r.add(*n, 1, c.saturating_add(1), received.0);
                 }
+                for (c, a) in &s.absorbed {
+                    r.commits.entry(*c).or_insert((*a, received.0));
+                }
             }
         }
         put(tx, &a.tid, &a.ak, &r)?;

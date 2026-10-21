@@ -46,7 +46,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| matches!(s, MSource::Node(_))).collect();
         let msnap = crdt_model::wire::encode_snapshot_authors(st, &mfr, &mau, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
         let frontiers = Frontiers(mfr.iter().map(|(s, c)| (source(s).as_node().unwrap(), *c)).collect());
-        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers, authors: authors.clone() };
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers, authors: authors.clone() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
         let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
@@ -262,7 +262,7 @@ fn rejects_deep_values_spec_3_3() {
 #[test]
 fn snapshot_frontiers_spec_8() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let s = Snapshot { nonce: [0; 16], fragment: crate::Fragment::default(), frontiers: Frontiers(BTreeMap::from([(tid(5), 7), (tid(2), 3)])), authors: Default::default() };
+    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: crate::Fragment::default(), frontiers: Frontiers(BTreeMap::from([(tid(5), 7), (tid(2), 3)])) };
     let b = encode_snapshot(&s, &scx, None).unwrap();
     // own (Src 0) first; the frontier-only source last in Sources
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();

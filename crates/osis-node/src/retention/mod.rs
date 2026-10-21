@@ -554,19 +554,29 @@ impl Engine {
                 }
             }
             let frontiers = Frontiers(fr);
+            // commits judged by ID (commit form, imports) whose valid writes the state reflects
+            let mut absorbed = std::collections::BTreeMap::new();
+            for (_, c) in tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
+                let Some(m) = tx.core.commits.get(c) else { continue };
+                let by_id = m.header.kind == Kind::Import || (m.header.form == Form::Commit && m.header.kind.has_own_writes());
+                if by_id && m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak) {
+                    absorbed.insert(*c, m.header.author);
+                }
+            }
             let kind = if is_membership_class(ak.as_str()) { Kind::MembershipSnapshot } else { Kind::ContentSnapshot };
             // the schema's default bounds: core, or a registered schema declaring the AK
             let schema = if ak.is_core() { Some(std::sync::Arc::new(osis_schema::core_schema().clone())) } else { tx.core.schemas.values().find(|s| s.aspects.contains_key(ak.as_str())).cloned() };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid() };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some(frontiers), chunks: Vec::new(), split: false };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema, schema_ref: None, retention: None, expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
 
     /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
-    /// unchanged, and for a node-form body, the snapshot's frontier holds its counters (so every
-    /// holder of the snapshot counts the body as received once it is dropped, spec/crdt.md §8).
+    /// unchanged, and for a node-form body, the snapshot's frontier holds its counters, for a
+    /// body judged by commit ID, the snapshot lists it as absorbed (so every holder of the
+    /// snapshot counts the body as received once it is dropped, spec/crdt.md §8).
     /// `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
@@ -581,11 +591,17 @@ impl Engine {
             {
                 return Ok(Some(false));
             }
+            if let (Some(m), [osis_commit::Decoded::Snapshot(sn)]) = (tx.core.commits.get(&c), parts.as_slice())
+                && (m.header.kind == Kind::Import || (m.header.form == osis_commit::Form::Commit && m.header.kind.has_own_writes()))
+                && !sn.absorbed.contains_key(&c)
+            {
+                return Ok(Some(false));
+            }
             let held = crate::apply::held_parts(tx, &c, cai)?;
             // a snapshot covers another only if its frontiers hold the other's too: otherwise a
             // holder of it alone does not count what the other's frontier gave as received
             if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-                && other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f))
+                && (other.frontiers.0.iter().any(|(n, f)| sn.frontiers.0.get(n).is_none_or(|g| g < f)) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
             {
                 return Ok(Some(false));
             }

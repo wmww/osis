@@ -189,7 +189,7 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
         mapply(&mut state, c.delta.clone());
     }
     if let Some(st) = &state {
-        let s = Snapshot { nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default(), authors: Default::default() };
+        let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
         let bytes = encode_snapshot(&s, &snap_cx(), None).map_err(|e| e.to_string())?;
         same_snapshot(&bytes)?;
         for _ in 0..per * 4 {

@@ -1091,9 +1091,10 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
     }
 }
 
-/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers]`, `Frontiers := [[Src, ctr]*]` sorted by `Src`,
-/// one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7). Frontier-only
-/// sources come last in `Sources`.
+/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]` sorted
+/// by `Src`, one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7).
+/// Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty here:
+/// the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     encode_snapshot_authors(f, frontiers, &BTreeMap::new(), nonce, cx)
 }
@@ -1116,7 +1117,7 @@ pub fn encode_snapshot_authors(f: &Frag, frontiers: &[(Source, u64)], authors: &
     let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
     fr.sort();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    let mut top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr];
+    let mut top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
     let au: Vec<Item> = cx
         .sources
         .iter()
@@ -1138,11 +1139,14 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
 
 pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>, Authors), Error> {
     let it = cbor::decode(bytes)?;
-    let (n, sources, commits, f, fr, au) = match it.array()? {
-        [n, sources, commits, f, fr] => (n, sources, commits, f, fr, None),
-        [n, sources, commits, f, fr, au] => (n, sources, commits, f, fr, Some(au)),
+    let (n, sources, commits, f, fr, ab, au) = match it.array()? {
+        [n, sources, commits, f, fr, ab] => (n, sources, commits, f, fr, ab, None),
+        [n, sources, commits, f, fr, ab, au] => (n, sources, commits, f, fr, ab, Some(au)),
         _ => return Err(Error::Bad("snapshot")),
     };
+    if !ab.array()?.is_empty() {
+        return Err(Error::Bad("absorbed commits (not modeled)"));
+    }
     match (n, sources, commits, f, fr) {
         (Item::Bytes(n), sources, commits, f, fr) if n.len() == 16 => {
             cx.snapshot = true;

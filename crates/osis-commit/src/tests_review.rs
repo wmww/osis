@@ -103,7 +103,7 @@ fn token_levels_strict() {
     m.tokens.clear();
     m.aspects[0].tokens.clear();
     m.validate().unwrap();
-    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::MEMBERSHIP_RETENTION;
     b.aspects.push(a);
@@ -118,7 +118,7 @@ fn zero_deltas_refused() {
     let mut h = membership_header("/members");
     h.aspects[0].hashes.clear();
     assert!(matches!(h.validate(), Err(Error::Malformed(_))));
-    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Membership, ts(1_000_000), t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, vec![]);
     a.deltas.clear();
     a.retention = retention::MEMBERSHIP_RETENTION;

@@ -97,13 +97,16 @@ pub struct Delta {
     pub fragment: Fragment,
 }
 
-/// `[nonce, Sources, Commits, Fragment, Frontiers]` or, with commit-form sources' authors,
-/// `[nonce, Sources, Commits, Fragment, Frontiers, Authors]` (§8).
+/// `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]` or, with commit-form sources'
+/// authors, `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed, Authors]` (§8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
     pub fragment: Fragment,
     pub frontiers: Frontiers,
+    /// Commits judged by commit ID (commit form, imports) whose writes in this aspect the
+    /// writer had applied, with their author nodes (§8).
+    pub absorbed: BTreeMap<CommitId, Tid>,
     /// Per `Commit` source of the fragment, the node its writes are judged as and at which `ts`
     /// (spec/permissions.md §5.2). Entries for sources the fragment does not hold are dropped.
     pub authors: BTreeMap<CommitId, (Tid, Ts)>,

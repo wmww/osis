@@ -119,7 +119,7 @@ fn scx() -> DeltaCtx {
 /// A snapshot whose root set's element array is `elems`: hand-built bytes.
 fn snapshot_with(elems: Value) -> Vec<u8> {
     let l = Value::List;
-    osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), l(vec![])]))
+    osis_core::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), l(vec![Value::Int(6), l(vec![]), l(vec![]), elems]), l(vec![]), l(vec![])]))
 }
 
 fn rejects(bytes: &[u8], pages: &mut MemoryPages, why: &str) {
@@ -161,7 +161,7 @@ fn paging_limits_accept_valid_spec_8() {
         s.join(create(&mut w, &AnyView, &Value::Set([Value::Str(format!("item {i}"))].into_iter().collect())).unwrap());
     }
     let mut pages = MemoryPages::with_params(SMALL);
-    let snap = Snapshot { nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default(), authors: Default::default() };
+    let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: s.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx(), Some(&mut pages)).unwrap();
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, s);
 }

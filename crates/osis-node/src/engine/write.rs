@@ -218,8 +218,8 @@ pub(crate) struct Resolved {
     pub schema_ref: Option<(SchemaId, u64)>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
-    /// A snapshot delta's frontiers (spec/crdt.md §8).
-    pub frontiers: Option<osis_crdt::Frontiers>,
+    /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
+    pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_core::CommitId, Tid>)>,
     /// Chunk blobs of large values the delta introduces (ID, prefix salt).
     pub chunks: Vec<(osis_core::BlobId, [u8; 16])>,
     /// Written as one delta per root map entry or set element (a roster snapshot).
@@ -305,9 +305,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             tx.rng.fill_bytes(&mut nonce);
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             bytes.push(match frontiers.take() {
-                Some(frontiers) => {
+                Some((frontiers, absorbed)) => {
                     let authors = snapshot_authors(tx.core, &d.tid, &fragment)?;
-                    osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, authors }, &cx, Some(&mut bw))?
+                    osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed, authors }, &cx, Some(&mut bw))?
                 }
                 None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
             });
@@ -412,6 +412,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });
+    }
+    // membership commits use commit form: a later commit by the same node can never void
+    // them by reusing their counters (spec/commits.md §3)
+    if kind != Kind::Content {
+        m.form = Form::Commit;
     }
     let ts = tx.core.hlc.next();
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };

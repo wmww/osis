@@ -71,6 +71,7 @@ fn validate_kinds() {
 pub(crate) fn membership_header(ak: &str) -> Header {
     let mut h = sample_header();
     h.kind = Kind::Membership;
+    h.form = crate::header::Form::Commit;
     h.schemas.clear();
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
@@ -91,6 +92,13 @@ pub(crate) fn membership_header(ak: &str) -> Header {
 fn validate_membership() {
     let h = membership_header("/members");
     h.validate().unwrap();
+    // spec/commits.md §3, §4: a node-form membership commit is bad input
+    for k in [Kind::Membership, Kind::RosterSnapshot] {
+        let mut x = h.clone();
+        x.kind = k;
+        x.form = crate::header::Form::Node;
+        assert!(invalid(&x).to_string().contains("node-form membership"));
+    }
     let mut x = h.clone();
     x.aspects[0].expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));

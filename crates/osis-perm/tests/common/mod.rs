@@ -233,13 +233,11 @@ impl World {
 
 /// The commit IDs of dropped writes.
 /// Sticky residue (notes/permissions.md, models/tla/membership M2): a drop whose cause was
-/// dropped too, or no longer applies (its author's authority rested on a chain write its own
-/// frontier did not cover, §5.1). Its writes stay dropped, so the answer depends on the order
-/// drops were found, and a roster snapshot can repair it.
+/// dropped too. Its writes stay dropped, so the answer depends on the order drops were found,
+/// and a roster snapshot can repair it.
 pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
     let dropped: BTreeSet<CommitId> = tl.dropped().keys().map(WriteId::commit).collect();
-    let applied: BTreeSet<CommitId> = tl.applied().keys().map(WriteId::commit).collect();
-    tl.dropped().values().any(|p| dropped.contains(&p.commit) || (tl.membership_commit(&p.commit).is_some() && !applied.contains(&p.commit)))
+    tl.dropped().values().any(|p| dropped.contains(&p.commit))
 }
 
 pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {

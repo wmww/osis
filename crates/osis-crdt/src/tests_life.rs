@@ -143,7 +143,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
         let tid = source(&c.w.source).as_node().unwrap();
         assert!(received.frontier(&tid) >= c.w.hi() - 1);
     }
-    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: fr, authors: Default::default() }, &scx(), None).unwrap();
+    let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
     let bytes = snap(&a, received.frontiers());
     let got = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap();
     let mut b = Fragment::default();
@@ -195,7 +195,7 @@ fn big_set(n: usize, order_seed: u64) -> Fragment {
 }
 
 fn snap(f: &Fragment) -> Snapshot {
-    Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default(), authors: Default::default() }
+    Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() }
 }
 
 fn scx() -> DeltaCtx {
