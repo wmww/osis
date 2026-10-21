@@ -93,7 +93,7 @@ impl Engine {
 
     /// The things of a group's closure: the group and every thing whose `/groups` holds it.
     pub fn closure(&self, g: &Tid) -> BTreeSet<Tid> {
-        let mut out: BTreeSet<Tid> = self.core.groups.iter().filter(|(_, gs)| gs.contains(g)).map(|(t, _)| *t).collect();
+        let mut out = self.core.group_items(g);
         out.insert(*g);
         out
     }

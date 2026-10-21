@@ -44,6 +44,7 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
                 continue;
             }
             let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
+            core.boxes_to.entry(bk.member).or_default().insert((*actor, k.clone()));
             if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
                 note_intro(core, h, actor, bk.role, e);
             }

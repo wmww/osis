@@ -11,6 +11,11 @@ impl Map {
     pub fn entries(&self) -> impl Iterator<Item = (&Dot, Option<&Stamp>, Option<&Value>, Option<&Fragment>)> {
         self.entries.iter().map(|(d, e)| (d, e.reset.as_ref(), e.key.as_ref(), e.frag.as_deref()))
     }
+
+    /// The live entries of key `k` by dot (O(log n + their number)).
+    pub fn live(&self, k: &Value) -> Vec<(&Dot, &Fragment)> {
+        self.live_dots(k).into_iter().filter_map(|d| Some((d, self.entries.get(d)?.frag.as_deref()?))).collect()
+    }
 }
 
 impl crate::fragment::Struct {

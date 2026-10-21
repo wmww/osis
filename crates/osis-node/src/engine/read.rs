@@ -94,7 +94,7 @@ impl Engine {
         let v = match ak.as_str() {
             "/tid" => Some(Value::Tid(tid)),
             "/aspects" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(self.core.groups.get(&tid).into_iter().flatten().map(|g| Value::Tid(*g)).collect())),
+            "/groups" => Some(Value::Set(self.core.groups.of.get(&tid).into_iter().flatten().map(|g| Value::Tid(*g)).collect())),
             "/members" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
@@ -155,7 +155,7 @@ impl Engine {
 
     /// Groups containing the thing, transitively (`/groups`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
-        self.core.groups.get(tid).cloned().unwrap_or_default()
+        self.core.groups.of.get(tid).cloned().unwrap_or_default()
     }
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).

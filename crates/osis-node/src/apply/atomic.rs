@@ -10,7 +10,7 @@ use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_core::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
@@ -184,6 +184,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut touched = Touched::default();
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -192,10 +193,12 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
                 rebuild(tx, &a.tid, &a.ak)?;
                 changed.insert((a.tid, a.ak.clone()));
+                touched.whole(&a.tid, &a.ak);
             }
             continue;
         }
         let (f, _) = fragment(d);
+        touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
@@ -206,7 +209,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     crate::retention::on_apply(tx, &id, &mut changed)?;
 
     for (tid, ak) in &changed {
-        observe_state(tx, tid, ak)?;
+        observe_touched(tx, tid, ak, &touched)?;
     }
     super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     let mut flipped = Vec::new();
@@ -261,12 +264,14 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
+    let mut touched = Touched::default();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
         }
         let (f, _) = fragment(d);
+        touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
@@ -290,7 +295,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.update_timelines();
     }
     for (tid, ak) in &changed {
-        observe_state(tx, tid, ak)?;
+        observe_touched(tx, tid, ak, &touched)?;
     }
     super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
     let mut flipped = Vec::new();
@@ -313,6 +318,63 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
+    }
+    Ok(())
+}
+
+/// The `/secrets` entries a commit's joins touched, per aspect (`None`: anything may have
+/// changed, read the whole state).
+#[derive(Default)]
+struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<(Vec<Value>, Vec<Value>)>>);
+
+impl Touched {
+    fn note(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) {
+        if ak.as_str() != "/secrets" {
+            return;
+        }
+        let keys = crate::engine::secrets::touched_keys(f);
+        match (self.0.entry((*tid, ak.clone())).or_insert_with(|| Some((Vec::new(), Vec::new()))), keys) {
+            (Some(acc), Some((b, h))) => {
+                acc.0.extend(b);
+                acc.1.extend(h);
+            }
+            (slot, _) => *slot = None,
+        }
+    }
+    fn whole(&mut self, tid: &Tid, ak: &Ak) {
+        self.0.insert((*tid, ak.clone()), None);
+    }
+}
+
+/// `observe_state`, reading only the touched `/secrets` entries where known.
+fn observe_touched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, touched: &Touched) -> Result<()> {
+    match touched.0.get(&(*tid, ak.clone())) {
+        Some(Some((boxes, history))) => observe_secrets_keys(tx, tid, boxes, history),
+        _ => observe_state(tx, tid, ak),
+    }
+}
+
+/// What the `/secrets` entries keyed `boxes` and `history` of `actor` hold (and the history chain
+/// they reach) teaches this node: O(those entries), not O(boxes). Whether anything was learned.
+pub(crate) fn ingest_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<bool> {
+    let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
+    tx.load(actor, &ak)?;
+    let k = (*actor, ak);
+    // taken out of the cache while the core learns from it, then put back
+    let Some(st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(false) };
+    tx.core.touch();
+    let learned = tx.core.ingest_keyed(actor, &st, boxes, history);
+    tx.core.states.insert(k, Some(st));
+    Ok(learned)
+}
+
+/// `ingest_secrets_keys`, persisting what was learned and reopening the boxes sealed to `actor`.
+fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<()> {
+    if ingest_secrets_keys(tx, actor, boxes, history)? && let Some(e) = tx.core.secrets.get(actor) {
+        let b = crate::engine::secrets::encode_epochs(e);
+        tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
+        // boxes sealed to this actor elsewhere open now (membership flows hook)
+        crate::flows::reopen_dependents(tx, *actor)?;
     }
     Ok(())
 }
@@ -364,44 +426,16 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 tx.core.moved.remove(tid);
             }
         },
-        "/group" => {
-            let g = v.and_then(|v| osis_schema::AspectKey::decode(&osis_schema::core_types::GROUP, &v).ok());
-            match g {
-                Some(g) => {
-                    tx.core.group_defs.insert(*tid, (g.items, g.subgroups));
-                }
-                None => {
-                    tx.core.group_defs.remove(tid);
-                }
-            }
-            // every path that changes a `/group` (late deltas, re-judging) updates `/groups`
-            recompute_groups(tx.core);
-        }
+        // every path that changes a `/group` (late deltas, re-judging) updates `/groups`
+        "/group" => tx.core.groups.set(*tid, group_def(v)),
         _ => {}
     }
     Ok(())
 }
 
-/// `/groups` (spec/data-model.md §8): every group whose items, directly or through
-/// subgroups (cycles allowed), contain the thing.
-pub(crate) fn recompute_groups(core: &mut Core) {
-    let mut out: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-    for g in core.group_defs.keys() {
-        let mut seen: BTreeSet<Tid> = BTreeSet::new();
-        let mut stack = vec![*g];
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
-                continue;
-            }
-            if let Some((items, subs)) = core.group_defs.get(&x) {
-                for i in items {
-                    out.entry(*i).or_default().insert(*g);
-                }
-                stack.extend(subs.iter().copied());
-            }
-        }
-    }
-    core.groups = out;
+/// A `/group` value's (items, subgroups).
+pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid>)> {
+    v.and_then(|v| osis_schema::AspectKey::decode(&osis_schema::core_types::GROUP, &v).ok()).map(|g| (g.items, g.subgroups))
 }
 
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):

@@ -5,6 +5,7 @@
 
 pub(crate) mod blobs;
 pub(crate) mod clock;
+pub(crate) mod groups;
 pub(crate) mod large;
 mod read;
 pub(crate) mod records;
@@ -122,16 +123,16 @@ pub(crate) struct Core {
     /// `/was` index: t -> things whose `/was` reads t.
     pub was: BTreeMap<Tid, BTreeSet<Tid>>,
     pub moved: BTreeMap<Tid, Tid>,
-    /// `/group` of each group thing: (items, subgroups).
-    pub group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
-    /// `/groups`: thing -> groups containing it, transitively.
-    pub groups: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
+    pub groups: groups::Groups,
     /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
     pub member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: BTreeSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
     pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
+    pub boxes_to: BTreeMap<Tid, BTreeSet<(Tid, osis_core::Value)>>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
@@ -190,13 +191,13 @@ pub(crate) struct Backup {
     own_keys: BTreeSet<Tid>,
     was: BTreeMap<Tid, BTreeSet<Tid>>,
     moved: BTreeMap<Tid, Tid>,
-    group_defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
-    groups: BTreeMap<Tid, BTreeSet<Tid>>,
+    groups: groups::Groups,
     member_keys: BTreeMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
     unresolved: BTreeSet<CommitId>,
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     grant_overreach: BTreeSet<(CommitId, usize)>,
     box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
+    boxes_to: BTreeMap<Tid, BTreeSet<(Tid, osis_core::Value)>>,
     epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
     box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
@@ -235,13 +236,13 @@ impl Core {
             own_keys: self.own_keys.clone(),
             was: self.was.clone(),
             moved: self.moved.clone(),
-            group_defs: self.group_defs.clone(),
             groups: self.groups.clone(),
             member_keys: self.member_keys.clone(),
             unresolved: self.unresolved.clone(),
             rotation_role: self.rotation_role.clone(),
             grant_overreach: self.grant_overreach.clone(),
             box_keys: self.box_keys.clone(),
+            boxes_to: self.boxes_to.clone(),
             epoch_intro: self.epoch_intro.clone(),
             box_written: self.box_written.clone(),
             secrets_unresolved: self.secrets_unresolved.clone(),
@@ -271,13 +272,13 @@ impl Core {
             self.own_keys = b.own_keys;
             self.was = b.was;
             self.moved = b.moved;
-            self.group_defs = b.group_defs;
             self.groups = b.groups;
             self.member_keys = b.member_keys;
             self.unresolved = b.unresolved;
             self.rotation_role = b.rotation_role;
             self.grant_overreach = b.grant_overreach;
             self.box_keys = b.box_keys;
+            self.boxes_to = b.boxes_to;
             self.epoch_intro = b.epoch_intro;
             self.box_written = b.box_written;
             self.secrets_unresolved = b.secrets_unresolved;
@@ -305,13 +306,13 @@ impl Core {
             own_keys: BTreeSet::new(),
             was: BTreeMap::new(),
             moved: BTreeMap::new(),
-            group_defs: BTreeMap::new(),
-            groups: BTreeMap::new(),
+            groups: groups::Groups::default(),
             member_keys: BTreeMap::new(),
             unresolved: BTreeSet::new(),
             rotation_role: BTreeMap::new(),
             grant_overreach: BTreeSet::new(),
             box_keys: BTreeMap::new(),
+            boxes_to: BTreeMap::new(),
             epoch_intro: BTreeMap::new(),
             box_written: BTreeMap::new(),
             departures: BTreeMap::new(),

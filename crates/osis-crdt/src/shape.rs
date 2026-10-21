@@ -14,6 +14,15 @@ impl Fragment {
         }
     }
 
+    /// Whether the fragment carries its own reset (a register's or a composite's).
+    pub fn has_reset(&self) -> bool {
+        match self {
+            Fragment::Register(r) => r.reset.is_some(),
+            Fragment::Slots(Slots { reg, members }) => reg.as_ref().is_some_and(|r| r.reset.is_some()) || members.values().any(Fragment::has_reset),
+            f => f.meta().is_some_and(|m| m.reset.is_some()),
+        }
+    }
+
     /// A map fragment holding only new keyed entries (puts, §5.6): no reset of the map or of any
     /// entry, and every entry's dot is one this delta creates (`own`: its source and counter
     /// range), so no write goes into an existing entry. Checkable from the delta alone.

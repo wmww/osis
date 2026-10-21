@@ -254,7 +254,7 @@ pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, V
     if let Some(l) = own_label(tx, tid)? {
         return Ok(Some(l));
     }
-    let groups: Vec<Tid> = tx.core.groups.get(tid).into_iter().flatten().copied().collect();
+    let groups: Vec<Tid> = tx.core.groups.of.get(tid).into_iter().flatten().copied().collect();
     for g in groups {
         if let Some(l) = own_label(tx, &g)? {
             return Ok(Some(l));
@@ -315,19 +315,15 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         if steps > 4096 {
             break;
         }
-        // the actors holding a box for `m`: from the index of keyed `/secrets` entries
-        let actors: BTreeSet<Tid> = tx
-            .core
-            .box_keys
-            .iter()
-            .filter(|((a, _), v)| *a != m && osis_schema::core_types::BoxKey::from_value(v).is_ok_and(|k| k.member == m))
-            .map(|((a, _), _)| *a)
-            .collect();
-        for a in actors {
-            let s = secrets_in(tx, &a)?;
-            let alts = secrets_alts(tx, &a)?;
-            tx.core.touch();
-            if tx.core.ingest_secrets(&a, &s, None, &alts, None) {
+        // the boxes keyed to `m`, per actor: from the index of keyed `/secrets` entries
+        let mut per: std::collections::BTreeMap<Tid, Vec<osis_core::Value>> = std::collections::BTreeMap::new();
+        for (a, k) in tx.core.boxes_to.get(&m).into_iter().flatten() {
+            if *a != m {
+                per.entry(*a).or_default().push(k.clone());
+            }
+        }
+        for (a, keys) in per {
+            if crate::apply::ingest_secrets_keys(tx, &a, &keys, &[])? {
                 save_epochs(tx, &a)?;
                 work.push(a);
             }

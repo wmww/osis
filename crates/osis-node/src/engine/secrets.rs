@@ -99,6 +99,62 @@ impl Core {
         false
     }
 
+    /// `ingest_secrets` over the entries of `actor`'s `/secrets` state `st` that a change touched:
+    /// the boxes keyed `boxes` and history boxes keyed `history` (key values), then the history
+    /// box of every epoch with a secret held, repeatedly, as `open_histories` would reach them
+    /// over the whole state. Boxes outside `boxes` were opened when they joined (an opener's new
+    /// secrets reopen the boxes keyed to it, `flows::reopen_dependents`). O(touched entries +
+    /// held epochs), not O(boxes). Returns whether anything new was learned.
+    pub(crate) fn ingest_keyed(&mut self, actor: &Tid, st: &osis_crdt::Fragment, boxes: &[Value], history: &[Value]) -> bool {
+        use osis_crdt::PathSeg;
+        let mut s = Secrets::default();
+        for k in boxes {
+            let v = st.at(&[PathSeg::Field(0), PathSeg::Key(k.clone())]).filter(osis_crdt::Fragment::present).and_then(|f| f.read());
+            if let (Some(bk), Some(b)) = (typed_as::<osis_schema::core_types::BoxKey>(k, "box_key"), v.and_then(|v| typed_as::<osis_schema::core_types::SecretBox>(&v, "box"))) {
+                s.boxes.insert(bk, b);
+            }
+        }
+        let mut alts = HistoryAlts::new();
+        let mut tried: std::collections::BTreeSet<osis_schema::core_types::HistoryKey> = std::collections::BTreeSet::new();
+        let mut add = |s: &mut Secrets, alts: &mut HistoryAlts, k: &Value| -> bool {
+            let Some(hk) = typed_as::<osis_schema::core_types::HistoryKey>(k, "history_key") else { return false };
+            if !tried.insert(hk.clone()) {
+                return false;
+            }
+            let Some(m) = history_map(st) else { return false };
+            let live: Vec<Vec<u8>> = m.live(k).into_iter().filter_map(|(_, f)| match f.read() {
+                Some(Value::Bytes(b)) => Some(b),
+                _ => None,
+            }).collect();
+            let Some(Value::Bytes(main)) = st.at(&[PathSeg::Field(1), PathSeg::Key(k.clone())]).filter(osis_crdt::Fragment::present).and_then(|f| f.read()) else { return false };
+            if live.len() > 1 {
+                alts.insert(hk.clone(), live);
+            }
+            s.history.insert(hk, main);
+            true
+        };
+        for k in history {
+            add(&mut s, &mut alts, k);
+        }
+        let mut learned = false;
+        loop {
+            learned |= self.ingest_secrets(actor, &s, None, &alts, None);
+            let Some(e) = self.secrets.get(actor) else { break };
+            let candidates: Vec<Value> = ROLES
+                .iter()
+                .flat_map(|r| e.role(*r).epochs().filter(|(ep, _)| !e.role(*r).reading_secrets(ep).is_empty()).map(|(ep, _)| osis_schema::Codec::to_value(&osis_keys::aspects::history_key(*r, ep))).collect::<Vec<_>>())
+                .collect();
+            let mut more = false;
+            for k in &candidates {
+                more |= add(&mut s, &mut alts, k);
+            }
+            if !more {
+                break;
+            }
+        }
+        learned
+    }
+
     /// A thing that got secrets of its own keeps its earlier derived epochs (by history box):
     /// those derived from an established epoch of the owner are established (spec/crypto.md §4,
     /// "derived from an established epoch of the owner"), so the rotation from them establishes
@@ -239,6 +295,42 @@ pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
         }
     }
     out
+}
+
+/// The history-box map of a `/secrets` state.
+fn history_map(f: &osis_crdt::Fragment) -> Option<&osis_crdt::Map> {
+    use osis_crdt::{Encoding, Fragment, MemberRef};
+    let Some(MemberRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return None };
+    match st.field(1)?.slot(Encoding::Map)? {
+        MemberRef::Frag(Fragment::Map(m)) => Some(m),
+        _ => None,
+    }
+}
+
+/// A core-schema value typed as the named type.
+fn typed_as<T: osis_schema::Codec>(v: &Value, name: &str) -> Option<T> {
+    let v = osis_schema::typed_read(osis_schema::core_schema(), v, &osis_schema::Type::Named(name.into(), Vec::new())).ok()?;
+    T::from_value(&v).ok()
+}
+
+/// The keys of the box and history-box entries a `/secrets` delta (or snapshot) writes; `None`
+/// when it writes the value, a field or a map whole (a reset): then every entry may change.
+pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, Vec<Value>)> {
+    use osis_crdt::{Encoding, Fragment, MemberRef};
+    if !delta.is_plain_struct() {
+        return None;
+    }
+    let Some(MemberRef::Frag(Fragment::Struct(st))) = delta.slot(Encoding::Struct) else { return None };
+    let mut out = (Vec::new(), Vec::new());
+    for (id, keys) in [(0, &mut out.0), (1, &mut out.1)] {
+        let Some(f) = st.field(id) else { continue };
+        let Some(MemberRef::Frag(Fragment::Map(m))) = f.slot(Encoding::Map) else { return None };
+        if f.has_reset() {
+            return None;
+        }
+        keys.extend(m.entries().filter_map(|(_, _, k, _)| k.cloned()));
+    }
+    Some(out)
 }
 
 /// The source given a reading-only secret persisted before sources were kept.

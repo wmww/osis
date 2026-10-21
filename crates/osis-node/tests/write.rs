@@ -333,11 +333,11 @@ const WIDE_SRC: &str = concat!(
 );
 const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/wide", &WIDE);
 
-// spec/commits.md §1 (delta fits a blob): a struct of many near-`CHUNK_THRESHOLD` registers (no
-// field chunked, a struct not paged) makes one delta over `MAX_BLOB`: the writer refuses it and
-// nothing is applied; the same struct with two fields empty is written.
+// spec/commits.md §1 (no size limit), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
+// registers (no field chunked) totalling more than `MAX_BLOB` pages its field map, so the commit
+// is written and reads back whole.
 #[test]
-fn wide_struct_over_max_blob_refused_spec_commits_1() {
+fn wide_struct_pages_spec_crdt_8() {
     use osis_core::format::{CHUNK_THRESHOLD, MAX_BLOB};
     let mut p = peer(14);
     let me = p.engine.tid();
@@ -346,18 +346,14 @@ fn wide_struct_over_max_blob_refused_spec_commits_1() {
     m.set(t, &ak("/app/x"), &Value::Int(1)).unwrap();
     p.commit(m).unwrap().unwrap();
     let field = "w".repeat(CHUNK_THRESHOLD - 16);
-    let wide = |n: i64| Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(if i < n { field.clone() } else { String::new() }))).collect());
-    assert!(65 * field.len() > MAX_BLOB && 63 * field.len() < MAX_BLOB);
+    let wide = Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(field.clone()))).collect());
+    assert!(65 * field.len() > MAX_BLOB);
     let mut m = Mutation::new();
-    m.set(t, &WIDE_AK, &wide(65)).unwrap();
-    let e = p.commit(m).unwrap_err();
-    assert!(matches!(e, osis_node::Error::Commit(osis_commit::Error::Build(_))), "{e}");
-    assert_eq!(p.engine.get(&t, &ak("/w/wide")).unwrap(), None);
-    let mut m = Mutation::new();
-    m.set(t, &WIDE_AK, &wide(63)).unwrap();
-    p.commit(m).unwrap().unwrap();
+    m.set(t, &WIDE_AK, &wide).unwrap();
+    let id = p.commit(m).unwrap().unwrap();
+    assert!(!p.engine.package(&id).unwrap().unwrap().blobs.is_empty(), "the field map pages");
     let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };
-    assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 63);
+    assert_eq!(got.values().filter(|v| **v == Value::Str(field.clone())).count(), 65);
 }
 
 // spec/data-model.md §6: a list `edit` chunks the items it inserts as an insert does; base items

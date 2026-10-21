@@ -10,7 +10,7 @@ pub(crate) mod validity;
 #[cfg(test)]
 mod tests_linked;
 
-pub(crate) use atomic::{apply_verified, rebuild, strip_valueless};
+pub(crate) use atomic::{apply_verified, ingest_secrets_keys, rebuild, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -628,9 +628,15 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (tid, ak) in aspects {
-        atomic::observe_state(tx, &tid, &ak)?;
+        if ak.as_str() == "/group" {
+            // definitions first, derived once below
+            let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
+            tx.core.groups.set_def(tid, atomic::group_def(v));
+        } else {
+            atomic::observe_state(tx, &tid, &ak)?;
+        }
     }
-    atomic::recompute_groups(tx.core);
+    tx.core.groups.rebuild();
     validity::rejudge_all(tx, false)?;
     Ok(())
 }
