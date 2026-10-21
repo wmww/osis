@@ -69,7 +69,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - BLE transport; P2P follow-ups (issues/p2p-followups.md).
 - Browser build: wasm target for the sans-I/O crates, a browser store backend and transport.
 - Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
-- Chat cost wire-format knobs (issues/chat-costs.md).
+- Chat cost wire-format knobs: declined by the owner (notes/chat.md Costs).
 - Large-value seeking and residues (issues/large-value-seek.md, large-value-residues.md).
 - Sequence paging remainder (issues/node-sequences-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).
 - Security residues: invite-grant-secrets, crdt-run-amplification, rereview-residues.
@@ -138,7 +138,7 @@ A coordinator-driven pass over the open issues (one opus agent per issue group i
 15. P2P follow-ups: direct links (dialable key and relays only, explicit opt-in, no rotation on single-use redemption), LAN replaces relay, `/reach` rotation without restart, netwatch and IPv6 discovery, link-holder budgets.
 16. Chain-write forgery fix: a demotion's frontier lists the remover's chain certificates at R's point by commit ID; membership commits and roster snapshots are written in commit form (node-form refused); snapshots list the commit-form commits they absorb (`Absorbed`); the model generators keep adversarial histories.
 17. Node core: paging at any depth, lazy page loading, dot-based undo footprints, journaled indexes with a persisted validity index tagged by a source hash, incremental re-judging with main's commit-level triggers, snapshot-carried writes judged with exact dots, moves from snapshots, keyed key-index hashes; issues/snapshot-unstamped-writes.md and issues/at-most-zero-snapshots.md filed. Round 2: snapshots carry creation stamps per map entry and an `Authors` table, carried writes recorded per snapshot and judged per counter, the unspecified author rule dropped, a rules-hash change re-joins changed states.
-18. Chat-cost wire knobs: one KEM key per keyset and one box per member would break role separation; variants recorded as an owner call in issues/chat-costs.md.
+18. Chat-cost wire knobs: one KEM key per keyset and one box per member would break role separation; the owner later declined the variants, keeping per-role keys (notes/chat.md Costs).
 19. stranded_reseal ping-pong: `entry_for` prefers an entry present at the server.
 20. Chat cost regression: inbox copies skip parts the label holds; revokes placed only where they change a verdict (spec/permissions.md §4); join 45 KB, others during a removal heartbeats only.
 21. Partial-certificate orphan: a promoter completes the chain it holds, orphan copies of ex-members deleted (spec/sync.md §5, §6); 200-seed sweep green over 41 scenarios.
