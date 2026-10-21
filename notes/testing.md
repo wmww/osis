@@ -37,6 +37,8 @@ How to replay a failing sim seed: `sim-sweep` prints `osis_sim::replay("<scenari
 
 What nothing covers: the scale checks' "Not covered" list below, the TLA+ "Not covered" list, the items of issues/tests-unbuilt.md, QUIC and iroh tests outside tier 2 with `--features`, browsers, real networks beyond localhost.
 
+**Post-MVP sweep run** (16-core box, main after the sweep's last merge): `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `tools/spec_map.py --check` and `cargo deny check` clean; tier 2 (`cargo test --release --workspace --no-fail-fast -- --ignored --skip sweep`) 109 passed, 0 failed, every budget including chat `costs_join_message_removal` met; `models/tla/run.sh small` 14 instances as expected (the four documented membership residues fail on their intended invariants, `MC_forge` passes); `sim-sweep --seeds 1000` over 41 scenarios: 41,000 runs, 1 failure (`keep_at_most` seed 445, under investigation), elapsed 1682 s.
+
 ## Models (models/)
 - `models/crdt` and `models/membership`: Rust reference models (notes/crdt.md, notes/permissions.md); the membership model's exhaustive tiers and random samples run in nightly `models`.
 - Differentials against models: crdt join and wire (osis-crdt `tests_seq`, `tests_join`), the crdt decoder (osis-crdt `tests_decoder.rs`: mutated writer deltas and snapshots of random histories accepted or rejected alike, accepted ones decoding to equal fragments; notes/crdt.md, Reference model), perm (osis-perm `tests/differential.rs`).
