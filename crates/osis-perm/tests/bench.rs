@@ -68,6 +68,13 @@ fn bench_10k_edges() {
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
+        // a write arriving late, ordered in the middle of the history
+        let mut w3 = w2.clone();
+        w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+        let held3 = w3.held();
+        let tl3 = Instant::now();
+        inc.update(&held3);
+        let late = tl3.elapsed();
         let t3 = Instant::now();
         let r = tl.role(&nodes[200], &doc, At::END);
         let query = t3.elapsed();
@@ -83,7 +90,7 @@ fn bench_10k_edges() {
         let _ = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
         let valid_warm = t6.elapsed();
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?})",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?})",
             tl.passes(),
             tl.dropped().len()
         );

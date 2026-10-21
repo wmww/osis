@@ -49,6 +49,9 @@ pub struct Timeline {
     nodes: BTreeSet<Tid>,
     ever_members: BTreeMap<Tid, BTreeSet<Tid>>,
     epoch_changed: bool,
+    rejected: BTreeSet<CommitId>,
+    /// The furthest point a walk other than the final one reached.
+    reach: Option<Point>,
     /// The edge state before history change `i * CHECKPOINT`, for `edges_at`.
     checkpoints: Vec<Edges>,
     /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
@@ -85,6 +88,10 @@ impl Timeline {
     pub fn evaluate(held: &dyn HeldSet) -> Timeline {
         let input = Input::gather(held);
         let out = walk::run(&input);
+        Timeline::from_outcome(input, out)
+    }
+
+    fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
         let checkpoints = checkpoints(&out.walked);
         Timeline {
             owners: input.owners,
@@ -98,15 +105,18 @@ impl Timeline {
             nodes: input.nodes,
             ever_members: input.ever_members,
             epoch_changed: out.epoch_changed,
+            rejected: out.rejected,
+            reach: out.reach,
             checkpoints,
             memo: Memo::default(),
         }
     }
 
     /// This timeline for `held`, which holds the same things, `/created` records and roster
-    /// snapshots plus membership commits placed after every write walked here: the walk goes
-    /// on from its end instead of starting over (equal to `evaluate`, the common case of a new
-    /// write). `None` when that does not hold (or the new writes drop something): evaluate.
+    /// snapshots plus more membership commits: the final walk is rolled back to the earliest
+    /// new commit and goes on from there instead of starting over (equal to `evaluate`).
+    /// `None` when that does not hold (another walk reached that point, or the inputs differ
+    /// otherwise): evaluate.
     pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
         if !self.converged {
             return None;
@@ -120,30 +130,13 @@ impl Timeline {
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
             return None;
         }
-        let last = self.commits.values().map(|c| c.point()).chain(self.snaps.values().map(|s| s.point())).max();
-        let mut added: Vec<Arc<MembershipCommit>> = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.clone()).collect();
-        added.sort_by_key(|c| c.point());
-        if added.first().is_some_and(|c| last.is_some_and(|l| c.point() <= l)) {
+        let from = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min()?;
+        if self.reach.is_some_and(|r| r >= from) {
             return None;
         }
-        let Timeline { walked, mut dropped, epoch_starts, passes, epoch_changed, .. } = self;
-        let walked = walk::extend(&input, &epoch_starts, &mut dropped, walked, &added)?;
-        let checkpoints = checkpoints(&walked);
-        Some(Timeline {
-            owners: input.owners,
-            commits: input.commits,
-            snaps: input.snaps,
-            walked,
-            dropped,
-            epoch_starts,
-            passes,
-            converged: true,
-            nodes: input.nodes,
-            ever_members: input.ever_members,
-            epoch_changed,
-            checkpoints,
-            memo: Memo::default(),
-        })
+        let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, rejected, reach, .. } = self;
+        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, rejected, passes, epoch_changed, reach, from });
+        Some(Timeline::from_outcome(input, out))
     }
     /// Walks evaluated (1 when nothing was dropped and no epoch start applied).
     pub fn passes(&self) -> usize {
