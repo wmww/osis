@@ -62,12 +62,12 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
     let mut new = false;
     for (d, k, frag) in entries(f) {
-        if let (Some(Value::Tid(m)), Some(frag)) = (k, frag) {
-            if core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none()) {
-                let v = frag.read();
-                core.member_keys.upsert((*target, d), || (m, None), |slot| slot.1 = v);
-                new = true;
-            }
+        if let (Some(Value::Tid(m)), Some(frag)) = (k, frag)
+            && core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none())
+        {
+            let v = frag.read();
+            core.member_keys.upsert((*target, d), || (m, None), |slot| slot.1 = v);
+            new = true;
         }
     }
     new
