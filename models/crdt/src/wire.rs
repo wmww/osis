@@ -739,7 +739,12 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
             return Err(Error::Bad("elem order"));
         }
         last = Some(d.clone());
-        m.insert(d, Elem { reset: dec_opt_stamp(&a[1], cx)?, frag: dec_opt_frag(&a[2], cx)? });
+        let frag = dec_opt_frag(&a[2], cx)?;
+        // a set or bag element's value is one register (spec §3.2)
+        if frag.as_deref().map_or(false, |f| !matches!(f, Frag::Register { .. })) {
+            return Err(Error::Bad("set or bag element not a register"));
+        }
+        m.insert(d, Elem { reset: dec_opt_stamp(&a[1], cx)?, frag });
     }
     Ok(m)
 }

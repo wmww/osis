@@ -37,6 +37,12 @@ pub struct Verdicts {
 /// places it as its own chain certificate (ms; the periodic pass picks it up after).
 const SETTLE_MS: u64 = 30_000;
 
+/// The least a writer waits, after receiving another node's commit or seeing a deposit, before
+/// it uploads or promotes it itself (ms); the most is `SETTLE_MS`. The point in between is this
+/// node's per blob (`relay_due`), so the author or the first co-writer is usually done and the
+/// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
+const RELAY_MIN_MS: u64 = 5_000;
+
 /// An entry to send, by priority (membership and certificates before content before
 /// heartbeats).
 struct Out {
@@ -129,6 +135,10 @@ impl SyncEngine {
                 continue;
             }
             let entry = self.entry_for(&server, &l, b);
+            // another node's commit not at this server: its author (or a co-writer) first
+            if !entry.is_some_and(|id| self.state.is_present(&server, &l, &id)) && !self.relay_due(&b.commit) {
+                continue;
+            }
             let id = match entry {
                 Some(id) => id,
                 None if read_ok && (keys.is_writer() || self.may_deposit(&keys, b)) => match self.place(&g, l, b, false)? {
@@ -163,9 +173,16 @@ impl SyncEngine {
                 sends.push(Out { prio: 3, id: *id });
             }
         }
-        if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
-            self.certificates(&g, l)?;
-            self.heartbeat(&g, l, &keys, conn)?;
+        if !replaced && (keys.is_writer() || keys.deposit.is_some()) {
+            if read_ok {
+                self.inbox_copies(&g, l)?;
+                self.certificates(&g, l, false)?;
+                self.heartbeat(&g, l, &keys, conn)?;
+            } else if !self.may_rotate_read(&g) {
+                // the revokes of departures inside members only: they tell the label's rotators
+                // what keeps its epoch uncovered (spec/permissions.md §4 exception)
+                self.certificates(&g, l, true)?;
+            }
         }
         // every certificate copy this node placed here: chain, card, flows' placements
         let certs: Vec<(BlobId, Option<CommitId>)> = self
@@ -329,7 +346,7 @@ impl SyncEngine {
     /// The bodies label `l` of `g` should hold: the closure's; under a replaced label
     /// membership-class ones only (spec/sync.md §2: its content entries go).
     fn bodies_under(&mut self, g: &Tid, l: &LabelId) -> Result<Vec<Body>> {
-        let mut bodies = self.engine.label_bodies(g)?;
+        let mut bodies = self.engine.label_bodies_meta(g)?;
         if self.is_replaced(g, l) {
             bodies.retain(|b| b.membership);
         }
@@ -466,8 +483,17 @@ impl SyncEngine {
             .filter(|((_, b), _)| self.state.deposited.contains(&(server, l, *b)))
             .map(|((_, b), e)| (*b, e.clone()))
             .collect();
+        let raw = self.raw_now();
+        self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         for (id, mut e) in ids {
-            if super::in_flight(&self.sent, &(conn, l, id), self.raw_now()) {
+            if super::in_flight(&self.sent, &(conn, l, id), raw) {
+                continue;
+            }
+            // a co-writer may promote it first (`RELAY_MIN_MS`)
+            let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
+            let due = seen.saturating_add(self.relay_delay(&id.0));
+            if raw < due {
+                self.settle_at = Some(self.settle_at.map_or(due, |x| x.min(due)));
                 continue;
             }
             let Kind::Commit { commit, .. } = &e.kind else { continue };
@@ -484,6 +510,35 @@ impl SyncEngine {
             // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
+    }
+
+    /// This node's wait before relaying another node's blob `key` (`RELAY_MIN_MS` to
+    /// `SETTLE_MS`, fixed per node and blob, so co-writers draw different points).
+    fn relay_delay(&self, key: &[u8]) -> u64 {
+        let mut h = osis_core::hash::Hasher::new();
+        h.update(b"osis relay wait").update(self.engine.tid().as_bytes()).update(key);
+        let mut x = [0u8; 8];
+        h.finalize_xof(&mut x);
+        RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
+    }
+
+    /// Whether this node uploads or relays commit `c` at a server lacking it now: its own (made
+    /// here, a held key actor's included, or placed first by a flow) at once, another node's once `relay_delay` has passed since it
+    /// arrived here (else a wake is set for then).
+    fn relay_due(&mut self, c: &CommitId) -> bool {
+        let me = self.engine.tid();
+        let Some(m) = self.engine.core.commits.get(c) else { return true };
+        if m.origin == crate::events::Origin::Local || m.header.author == me || self.first.contains(c) {
+            return true;
+        }
+        let due = m.received.0.saturating_add(self.relay_delay(&c.0));
+        let now = self.now();
+        if now >= due {
+            return true;
+        }
+        let at = self.raw_now().saturating_add(due - now);
+        self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+        false
     }
 
     /// Whether this node placed the entry (its certificates, heartbeats, membership writes).
@@ -637,7 +692,11 @@ impl SyncEngine {
         let (id, key) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone()))) {
             Some(x) => x,
             None => {
-                let s = seal_body(b, &mut *self.rng)?;
+                let pt = self.engine.body_plaintext(b)?;
+                if pt.is_empty() {
+                    return Ok(None);
+                }
+                let s = seal_body(&Body { plaintext: pt, ..b.clone() }, &mut *self.rng)?;
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert });
                 (s.id, s.key)
@@ -662,7 +721,8 @@ impl SyncEngine {
         let all = match self.body_links.get(&key) {
             Some(x) => x.clone(),
             None => {
-                let r = self.engine.body_links(&b.plaintext)?;
+                let pt = self.engine.body_plaintext(b)?;
+                let r = self.engine.body_links(&pt)?;
                 let all: Vec<BlobId> = r.blobs.into_iter().collect();
                 if r.missing.is_empty() {
                     self.body_links.insert(key, all.clone());
@@ -671,6 +731,45 @@ impl SyncEngine {
             }
         };
         Ok(all.into_iter().filter(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id)).collect())
+    }
+
+    /// A grantee device places a certificate copy of what its inbox (label `l` of `g`) brought,
+    /// once applied, under that label: every part the inbox blob carried (its boxes included,
+    /// sealed to the actor anyway), with the `/label` and `/created` commits of the things it
+    /// named, so the actor's other devices find the grant and its labels there (spec/sync.md
+    /// §3). The consumed inbox blob stays until it expires: its label hints are what a later
+    /// member that cannot apply the copied `/label` yet (the granter's chain pending) opens the
+    /// thing's label by.
+    fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+        // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
+        // would show that group's readers the actor's edges, labels and box keys
+        if self.engine.core.secret_actor(g) != Some(*g) || !self.inbox_actors(&l).contains(g) {
+            return Ok(());
+        }
+        let opened: Vec<(BlobId, CommitId)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter_map(|((_, b), e)| if let Kind::Inbox(Some(c)) = e.kind { Some((*b, c)) } else { None }).collect();
+        for (b, c) in opened {
+            if self.state.certs.contains(&(l, c)) || self.engine.core.pending.contains_key(&c) {
+                continue;
+            }
+            let Some(m) = self.engine.core.commits.get(&c).cloned() else { continue };
+            let Some((ais, things)) = self.inbox_parts(&l, &b)? else { continue };
+            // a valid commit only, and labels only of things it touches (the payload's list is
+            // the sender's word: it could name any thing this device holds)
+            if !ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
+                continue;
+            }
+            let touched: BTreeSet<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
+            for t in things.into_iter().filter(|t| touched.contains(t)) {
+                for ak in ["/created", "/label"] {
+                    let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
+                    if !self.state.certs.contains(&(l, x)) {
+                        self.place_certificate_in(g, &x, &xs)?;
+                    }
+                }
+            }
+            self.place_certificate_in(g, &c, &ais)?;
+        }
+        Ok(())
     }
 
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
@@ -682,11 +781,34 @@ impl SyncEngine {
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
     /// opens under the newest read secret.
-    fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool) -> Result<()> {
         let closure = self.engine.closure(g);
         let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
-        for (c, want) in self.engine.certificates(g) {
+        let wanted = if revokes_only {
+            // under an epoch a departure inside a member leaves uncovered: those revokes only
+            let actor = self.engine.group_actor(g);
+            self.engine.inside_member_revokes(&actor, &closure)
+        } else {
+            let mut wanted = self.card_certificates(g);
+            // revokes and roster snapshots about authors seen under the label (spec/permissions.md
+            // §4), so its verifiers judge their writes as this node does
+            let me = self.engine.tid();
+            let mut authors: BTreeSet<Tid> = BTreeSet::new();
+            for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+                if let Kind::Commit { commit, .. } = &e.kind
+                    && let Some(h) = self.engine.header(commit)
+                {
+                    authors.insert(h.author);
+                }
+            }
+            authors.remove(&me);
+            for (c, p) in self.engine.revoke_certificates(&authors, &closure) {
+                wanted.entry(c).or_default().extend(p);
+            }
+            wanted
+        };
+        for (c, want) in wanted {
             // the parts entries of `c` under the label hold: this node's copies, and another
             // node's copy or body counted as described above
             let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -743,6 +865,13 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).
+    fn may_rotate_read(&self, g: &Tid) -> bool {
+        let me = self.engine.tid();
+        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        crate::rotation::may_rotate(&self.engine.core, &me, &a).contains(&Role::Read)
+    }
+
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),
     /// skipped by deposit when the budget is tight.
     fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, conn: ConnId) -> Result<()> {
@@ -791,7 +920,7 @@ impl SyncEngine {
     /// A stranded heartbeat (spec/permissions.md §4; spec/sync.md §5): the label cannot be read
     /// here; deposited, wrapped under the newest established read secret held, no open needed.
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
-        if self.stranded_at.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
+        if self.state.stranded.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
             return Ok(());
         }
         let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
@@ -805,7 +934,7 @@ impl SyncEngine {
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;
         }
         let now = self.now();
-        self.stranded_at.insert(l, now);
+        self.state.set_stranded(l, now);
         Ok(())
     }
 
@@ -877,11 +1006,19 @@ impl SyncEngine {
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let dropped: Vec<(usize, usize)> = parts.iter().filter(|p| m.dropped.contains(p)).copied().collect();
         if !dropped.is_empty() {
-            let live = dropped.iter().any(|(ai, _)| {
-                let Some(a) = h.aspects.get(*ai) else { return false };
+            let mut live = false;
+            for (ai, _) in &dropped {
+                let Some(a) = h.aspects.get(*ai) else { continue };
                 let o = crate::engine::Owned::of(&h, commit, *ai);
-                !self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o)))
-            });
+                if self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
+                    continue;
+                }
+                // a dropped body keeps its live writes in the state (spec/crdt.md §4.6)
+                if self.engine.body_live(commit, &a.tid, &a.ak).unwrap_or(true) {
+                    live = true;
+                    break;
+                }
+            }
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
         if e.cert {
@@ -937,7 +1074,11 @@ impl SyncEngine {
                 // a lagging projection: the superset goes up first
                 return Ok(None);
             } else {
-                // certificates (membership-class, node cards, heartbeats) are not ours to judge
+                // another node's card nobody needs any more goes (spec/permissions.md §4)
+                if settled && self.stale_card(server, l, g, commit, &h, parts) {
+                    return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
+                }
+                // other certificates (membership-class, node cards, heartbeats) are not ours to judge
                 let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "/keys" | "/node" | "/reach" | "/seen" | "/created"));
                 if h.kind.is_membership() || card {
                     return Ok(None);
@@ -953,6 +1094,70 @@ impl SyncEngine {
             }
         }
         Ok(Some((classify(&f), true, aspects)))
+    }
+
+    /// Unopened entries present at `server` under replaced label `l` that only content commits
+    /// list (their chunks, tree nodes and pages): no membership-class commit or certificate
+    /// kept there needs them (spec/sync.md §2). A blob no held commit lists stays.
+    pub(crate) fn replaced_leftovers(&self, server: &ServerKey, l: &LabelId) -> Vec<BlobId> {
+        let unknown: BTreeSet<BlobId> = self.state.present_at(server, l).into_iter().filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown)).collect();
+        if unknown.is_empty() {
+            return Vec::new();
+        }
+        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen");
+        let mut content = BTreeSet::new();
+        let mut keep = BTreeSet::new();
+        for m in self.engine.core.commits.values() {
+            let h = &m.header;
+            let membership = h.aspects.iter().any(|a| kept(a.ak.as_str()));
+            for ch in h.chunks.iter().filter(|ch| unknown.contains(&ch.blob)) {
+                if membership {
+                    keep.insert(ch.blob);
+                } else {
+                    content.insert(ch.blob);
+                }
+            }
+        }
+        content.difference(&keep).copied().collect()
+    }
+
+    /// Whether an entry of commit `c` holding `parts` is another node's card that no member
+    /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
+    /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
+    /// `/node` and `/reach`, the node reads the label's actor no more (a departed node is never
+    /// dialed; its `/keys` stays while chains of its old writes may need it).
+    fn stale_card(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+        let me = self.engine.tid();
+        let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
+        let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys"));
+        if h.author == me || aks.is_empty() || !all_card {
+            return false;
+        }
+        // departed: an applied write removed the node's edge on a thing on its way to the actor,
+        // and it reads the actor no more (a view lacking the node's chain alone proves nothing)
+        let actor = self.engine.group_actor(g);
+        let core = &self.engine.core;
+        let removed = core.timelines.get(&h.author).is_some_and(|tl| {
+            tl.applied().keys().any(|w| match w {
+                osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.member == h.author && op.edge.is_none() && (op.target == actor || core.may_read(&op.target, &actor))),
+                osis_perm::WriteId::Snapshot(_) => false,
+            })
+        });
+        let departed = removed && !core.may_read(&h.author, &actor);
+        let author = h.author;
+        aks.into_iter().all(|ak| {
+            if departed && ak != "/keys" {
+                return true;
+            }
+            // newer: the node's own valid write, with an entry here checked genuine (anyone may
+            // sign a commit writing another's card with a later `ts`)
+            let Some(x) = self.engine.latest_by(&author, ak, Some(&author)) else { return false };
+            if x == *c || !self.engine.header(&x).is_some_and(|n| n.ts > h.ts) {
+                return false;
+            }
+            let ids: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id)).map(|((_, id), _)| *id).collect();
+            ids.into_iter().any(|id| self.genuine(&id))
+        })
     }
 
     /// Deletes must-not-hold entries present at the server, carriers first (spec/sync.md §6,
@@ -1021,6 +1226,68 @@ impl SyncEngine {
                 None => continue,
             }
         }
+        // under a replaced label the chunk and page entries of content commits go with them
+        // (spec/sync.md §2: only membership-class commits and certificates stay)
+        if keys.delete.is_some() && self.is_replaced(g, &l) {
+            for b in self.replaced_leftovers(&server, &l) {
+                if super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                    continue;
+                }
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, b), raw);
+                    items.push(item);
+                }
+            }
+        }
+        // the blobs certificate copies link (`place_linked`) once this node knows no entry of
+        // their commit under the label any more (deleted; one placed and not confirmed yet still
+        // counts), unless another present entry links them too (roster snapshots sharing tree
+        // pages): nothing under the label needs them
+        if keys.delete.is_some() {
+            let present: BTreeSet<BlobId> = self.state.present_at(&server, &l).into_iter().collect();
+            let copied: Vec<CommitId> = self.state.certs.iter().filter(|(x, _)| *x == l).map(|(_, c)| *c).collect();
+            let mut gone = BTreeSet::new();
+            for c in copied {
+                let known = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|(_, e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c));
+                if known {
+                    continue;
+                }
+                let Some(h) = self.engine.header(&c) else { continue };
+                let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+                for b in self.engine.linked_blobs(&c, &all)? {
+                    let linked = self.state.entries.get(&(l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown);
+                    if linked && present.contains(&b) && !super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                        gone.insert(b);
+                    }
+                }
+            }
+            if !gone.is_empty() {
+                let others: Vec<(CommitId, BTreeSet<(usize, usize)>)> = self
+                    .state
+                    .entries
+                    .range((l, BlobId([0; 32]))..)
+                    .take_while(|((x, _), _)| *x == l)
+                    .filter(|((_, id), _)| present.contains(id))
+                    .filter_map(|(_, e)| match &e.kind {
+                        Kind::Commit { commit, parts } => Some((*commit, parts.iter().copied().collect())),
+                        _ => None,
+                    })
+                    .collect();
+                for (c, parts) in others {
+                    for b in self.engine.linked_blobs(&c, &parts)? {
+                        gone.remove(&b);
+                    }
+                }
+            }
+            for b in gone {
+                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                    let raw = self.raw_now();
+                    self.deleting.insert((conn, l, b), raw);
+                    items.push(item);
+                }
+            }
+        }
         // timed deletes: bodies under a relative keep-at-most with a known bound
         for b in bodies {
             let Some(id) = self.entry_for(&server, &l, b) else { continue };
@@ -1035,7 +1302,8 @@ impl SyncEngine {
             let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { continue };
             let aspects = vec![(a.tid, a.ak.clone())];
             let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
-            if !self.carried(&server, &l, &e, &aspects, snaps)? {
+            // a body whose writes all died needs no carrier (spec/sync.md §7)
+            if !self.carried(&server, &l, &e, &aspects, snaps)? && self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
                 self.snapshot_first(&aspects, &b.commit)?;
                 continue;
             }

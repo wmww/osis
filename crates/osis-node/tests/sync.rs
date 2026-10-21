@@ -54,7 +54,8 @@ fn reader_relays_spec_sync_6() {
     let g = net.group(a, &[(r, Role::Read), (c, Role::Read)], &[s1, s2]);
     let t = net.item(a, g, g, "relayed");
     net.run();
-    net.run();
+    // another node's entries: left to their author for a while (spec/sync.md §6)
+    net.advance(30_000);
     trace(&mut net, &[a, r, c]);
     assert_eq!(net.read(r, t), Some(s("relayed")));
     assert_eq!(net.read(c, t), Some(s("relayed")), "the reader carried the writer's entries to the second server");

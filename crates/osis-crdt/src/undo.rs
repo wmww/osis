@@ -155,7 +155,6 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             if x.meta.reset.is_some() {
                 return undo_reset(w, o, buffer, view, path);
             }
-            let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
             let prev = buffer.before(path).map(|f| f.chosen());
             let mut elems = BTreeMap::new();
             for (d, e) in &x.elems {
@@ -168,8 +167,8 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                         _ => None,
                     };
                     if let Some(v) = v {
-                        let nd = w.fresh().dot;
-                        elems.insert(nd, Elem { reset: None, frag: Some(Box::new(create(w, &ev, &v)?)) });
+                        let (nd, e) = crate::ops::set_elem(w, v);
+                        elems.insert(nd, e);
                     }
                 }
             }

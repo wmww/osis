@@ -18,8 +18,8 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membersh
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
 | 6 | `osis-server` | server | blind node used as a server: `BackendStore`, sans-I/O `Hub`, async `driver` (default feature `driver`: tokio and transport `link`; `quic`; `file-backend`; `bin` for the binary) |
-| 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows; default feature `driver` (tokio driver, transport `link`); `quic`, `iroh` |
-| 8 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`quic` feature for `Transport::Quic`; `file-store` for the redb store) |
+| 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows; default feature `driver` (tokio driver, transport `link`); `quic`, `iroh`, `lan` (the driver's LAN loop), `relay` (tier-2 relay tests) |
+| 8 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`quic` feature for `Transport::Quic`; `iroh` adds co-readers over iroh, `lan` the LAN loop; `file-store` for the redb store) |
 | 9 | `osis-cli` | cli | binary `osis` (osis `file-store` + `quic`, server `bin`) |
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
@@ -56,7 +56,7 @@ Each is a trait (or small trait family) in the named crate with an in-memory or 
 
 ## 4. Build and test performance
 Compile and test time are the bottleneck of agent-driven work.
-- **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `link`, `iroh`, `lan`; `osis-store`: `file-backend`; `osis-server`: `quic`, `file-backend`, `bin`; `osis-node`: `quic`, `iroh`). The default `driver` features of osis-server and osis-node bring tokio, so only crates above them (osis, cli, sim, examples) build it. `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
+- **Narrow crates, narrow deps**: heavy deps are feature-gated, off by default where a lower layer might compile them (`osis-transport`: `quic`, `link`, `iroh`, `lan`, `relay`; `osis-store`: `file-backend`; `osis-server`: `quic`, `file-backend`, `bin`; `osis-node`: `quic`, `iroh`). The default `driver` features of osis-server and osis-node bring tokio, so only crates above them (osis, cli, sim, examples) build it. `cargo test -p osis-crdt` must not build tokio, quinn, redb or ML-KEM. `cargo test -p osis-core` builds blake3 and proptest only.
 - **Profiles** (root Cargo.toml): dev `debug = "line-tables-only"`, all dependencies at `opt-level = 2`, test inherits dev, release `codegen-units = 16`, `lto = "thin"` (incremental left at cargo's defaults). `.cargo/config.toml` has a commented fast-linker line (mold/lld are not required).
 - **Test tiers** (notes/testing.md): (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) nightly: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
 - **Targeted runs**: in crate X run `cargo test -p X` while iterating, `cargo test -p X -p <direct dependents>` before committing; `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` at integration.
@@ -66,7 +66,7 @@ Compile and test time are the bottleneck of agent-driven work.
 ## 5. Dependency allowlist
 One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.
 - `blake3` (core, crypto; `default-features = false, features = ["std"]`; crypto adds `zeroize`, which wipes kdf hasher state): the only hash (spec/crypto.md §1); crypto uses it directly for the kdf XOF and `SeededRng`.
-- `ed25519-dalek` 2.2 (crypto; `std`, `zeroize`, `fast` (curve25519-dalek `precomputed-tables`); no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys.
+- `ed25519-dalek` 2.2 (crypto, transport; `std`, `zeroize`, `fast` (curve25519-dalek `precomputed-tables`); no `rand_core`/`batch`): Ed25519 with `verify_strict`, plus our canonical-encoding check on keys. Transport derives `InProcess` keys with it (Ed25519 like every transport's, so a dialable key verifies LAN announcements).
 - `x25519-dalek` 2.0 (crypto; `static_secrets`, `zeroize`, `precomputed-tables`): X25519 with the contributory check.
 - `libcrux-ml-kem` 0.0.11 (crypto; `mlkem768` only, no `rand` feature): ML-KEM-768. Chosen over RustCrypto `ml-kem` 0.3: keygen from the 64-byte `d || z` seed and encapsulation from 32 explicit bytes are plain array functions, and it is formally verified. Its `libcrux-traits` dependency still compiles `rand` 0.10 and `rand_core` 0.10 (no OS randomness, unused by us). Checked against NIST ACVP FIPS 203 answers (test `mlkem_fips203_acvp`).
 - `chacha20poly1305` 0.10 (crypto; `alloc`): XChaCha20-Poly1305.
@@ -83,6 +83,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `clap` 4.5 (cli only; no default features: `std`, `derive`, `help`, `usage`, `error-context`, `suggestions`, `env`; no colour): the command tree and help of `osis`. Derive pulls proc-macro crates (syn, quote) into the cli build only.
 - `anyhow` 1.0 (cli): command errors; the API's `Error` and the CLI's `Exit` are downcast for exit codes.
 - `iroh` 1.3 (transport, feature `iroh`; `default-features = false`, `tls-ring`; needs Rust 1.91): the P2P transport (notes/networking.md decisions 2-4): dial by key, self-hosted relays, hole punching. Brings ~190 crates (reqwest, noq, a second RustCrypto/dalek generation); `deny.toml` has a `skip-tree` and licence exceptions for it. Never in a default build. Tokio features: transport feature `iroh` and `lan` reuse the `quic` set.
+- `iroh-relay` 1.3 (transport, feature `relay` only, optional; `default-features = false`, `server`, `tls-ring`): a self-hosted relay on localhost for tier-2 tests (`iroh::TestRelay`); never in a non-test path. Adds the relay server's crates (hyper server side) on top of iroh's.
 - Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`; `serve` runs osis-server's runtime through its `bin` feature).
 
 ## 6. Conventions

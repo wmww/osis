@@ -22,7 +22,7 @@ pub use blob::{blob_id, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad
 pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, open_box, open_history, open_symmetric_box, seal_box, seal_history, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
-pub use keys::{KeyActorKeys, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, lan_tag, link_hash, link_tree_hash, role_kem, thing_role_secret};
+pub use keys::{KeyActorKeys, creation_nonce, dedup_secret, delta_hash, key_actor_role_secret, lan_digest, lan_keystream, lan_tag, link_hash, open_lan_sig, seal_lan_sig, link_tree_hash, role_kem, thing_role_secret};
 pub use label::{LabelRole, claim_key, deposit_key, label_id, label_role_key, open_digest, sign_open, static_entry, verify_open};
 pub use rng::SeededRng;
 pub use secret::Secret32;

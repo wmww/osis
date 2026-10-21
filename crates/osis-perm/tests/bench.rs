@@ -49,7 +49,9 @@ fn org(n: usize, rng: &mut Rng) -> (World, Vec<Tid>) {
 #[ignore]
 fn bench_10k_edges() {
     let mut rng = Rng(0x5eed_0401);
-    for n in [1_000, 10_000] {
+    // `OSIS_BENCH_N` picks one size (for profiling).
+    let sizes: Vec<usize> = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).map_or(vec![1_000, 10_000], |n| vec![n]);
+    for n in sizes {
         let (w, nodes) = org(n, &mut rng);
         let held = w.held();
         let t0 = Instant::now();
@@ -66,6 +68,13 @@ fn bench_10k_edges() {
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
+        // a write arriving late, ordered in the middle of the history
+        let mut w3 = w2.clone();
+        w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+        let held3 = w3.held();
+        let tl3 = Instant::now();
+        inc.update(&held3);
+        let late = tl3.elapsed();
         let t3 = Instant::now();
         let r = tl.role(&nodes[200], &doc, At::END);
         let query = t3.elapsed();
@@ -80,10 +89,20 @@ fn bench_10k_edges() {
         let t6 = Instant::now();
         let _ = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
         let valid_warm = t6.elapsed();
+        // what a node re-judges after a change in this component: one content delta per
+        // applied write, by its author on its target, on a fresh timeline (nothing memoized)
+        let fresh = Timeline::evaluate(&held);
+        let deltas: Vec<_> = fresh.applied().values().take(1000).map(|a| (a.point, a.target)).collect();
+        let t7 = Instant::now();
+        for (p, t) in &deltas {
+            let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+        }
+        let rejudge = t7.elapsed();
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?})",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}",
             tl.passes(),
-            tl.dropped().len()
+            tl.dropped().len(),
+            deltas.len()
         );
     }
 }

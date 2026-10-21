@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 /// Whether the index on disk was written by this build.
 const VERSION_KEY: &[u8] = b"i/v";
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 3");
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 4");
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
 const BOX_KEYS: &[u8] = b"node/box keys";
@@ -196,6 +196,16 @@ impl<A: Rec, B: Rec, C: Rec> Rec for (A, B, C) {
         let Value::List(x) = v else { return None };
         let [a, b, c] = x.as_slice() else { return None };
         Some((A::from(a)?, B::from(b)?, C::from(c)?))
+    }
+}
+impl<A: Rec, B: Rec, C: Rec, D: Rec> Rec for (A, B, C, D) {
+    fn to(&self) -> Value {
+        Value::List(vec![self.0.to(), self.1.to(), self.2.to(), self.3.to()])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let [a, b, c, d] = x.as_slice() else { return None };
+        Some((A::from(a)?, B::from(b)?, C::from(c)?, D::from(d)?))
     }
 }
 

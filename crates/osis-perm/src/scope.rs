@@ -30,15 +30,10 @@ impl Timeline {
     /// `author` (the demoter) is never its own subject.
     pub fn demotion_scope(&self, author: &Tid, member: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> DemotionScope {
         let mut out = DemotionScope::default();
-        let now = self.edges_at(None).into_owned();
-        let mut was = now.clone();
-        if let Some(e) = now.get(member, target) {
-            was.set(*member, *target, Some(Edge { until: None, since: None, ..*e }));
-        }
-        let mut after = now.clone();
-        after.set(*member, *target, new);
-        let before_v = View { owners: &self.owners, edges: &was, ts: Some(ts) };
-        let after_v = View { owners: &self.owners, edges: &after, ts: Some(ts) };
+        let now = self.edges_at(None);
+        let was = now.get(member, target).map(|e| Edge { until: None, since: None, ..*e });
+        let before_v = View::new(&self.owners, &now, Some(ts)).patched(*member, *target, was);
+        let after_v = View::new(&self.owners, &now, Some(ts)).patched(*member, *target, new);
         let ns = before_v.reach_forward(target);
         for x in before_v.reach_backward(member) {
             // Only nodes write; an actor's nodes are reached through it.

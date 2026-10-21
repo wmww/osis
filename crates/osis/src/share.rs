@@ -638,6 +638,9 @@ impl Osis {
         drop(key);
         r?;
         let who = *crate::watch::lock(&found);
+        if let Some(p) = who {
+            self.locked(|l| l.sync.set_contact(p, true));
+        }
         who.ok_or(Error::Invalid("contact card: no person".into()))
     }
 

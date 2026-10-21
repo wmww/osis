@@ -201,8 +201,10 @@ impl SyncEngine {
             }
         }
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
-        // written again re-encrypted, one commit for the batch (spec/sync.md §1)
-        if !lost.is_empty() {
+        // written again re-encrypted, one commit for the batch (spec/sync.md §1); not one a
+        // replaced label lost (its content goes, the replacement holds it)
+        let replaced = self.group_of(&l).is_some_and(|g| self.is_replaced(&g, &l));
+        if !lost.is_empty() && !replaced {
             self.relink_pending.extend(lost);
             self.relink_at = 0;
             self.relink_lost()?;
@@ -323,6 +325,11 @@ impl SyncEngine {
         v
     }
 
+    /// Actors whose inbox is `l`.
+    pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
+        self.inbox_of(l).into_iter().map(|(a, _)| a).collect()
+    }
+
     /// Actors whose inbox is `l`, with their held read KEM secrets.
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
         let actors: Vec<Tid> = self.engine.core.secrets.keys().copied().collect();
@@ -412,9 +419,10 @@ impl SyncEngine {
                             self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.clone(), via: None });
                         }
                     }
-                    e.kind = Kind::Inbox;
+                    let c = osis_commit::CommitBlob::decode(&pt).ok();
+                    e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
                     self.state.set_entry(l, b, e);
-                    if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
+                    if let Some(c) = c {
                         commits.push((pt, c));
                     }
                     return Ok(());
@@ -422,6 +430,17 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it names
+    /// (it opens again under the held keys of an actor whose inbox `l` is), if its bytes are
+    /// held.
+    pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
+        let Some(bytes) = self.engine.blob(b)? else { return Ok(None) };
+        let opened = self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
+        let Some((_, payload)) = opened else { return Ok(None) };
+        let Ok(c) = osis_commit::CommitBlob::decode(&osis_core::encode(&payload.commit)) else { return Ok(None) };
+        Ok(Some((c.parts.iter().map(|p| p.ai).collect(), payload.things.iter().map(|t| t.tid).collect())))
     }
 
     /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
@@ -432,7 +451,7 @@ impl SyncEngine {
             return Ok(());
         }
         let things = self.state.forget.clone();
-        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Inbox).map(|(k, _)| *k).collect();
+        let inbox: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|(_, e)| matches!(e.kind, Kind::Inbox(_))).map(|(k, _)| *k).collect();
         let mut gone = Vec::new();
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
@@ -616,6 +635,15 @@ impl SyncEngine {
         out
     }
 
+    /// Fetches the blobs of one large value's tree that are not held yet (`Engine::tree_missing`:
+    /// a read that missed a chunk; spec/sync.md §6), from the open labels holding them; empty
+    /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
+    pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_core::Link) -> Result<Vec<super::Action>> {
+        let ids = self.engine.tree_missing(tid, link)?;
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching.contains_key(b)).collect();
+        Ok(self.fetch(&ids))
+    }
+
     /// Fetches every entry not held yet from the servers holding it (lazy chunks, on demand).
     pub fn fetch_missing(&mut self) -> Vec<super::Action> {
         let ids: Vec<BlobId> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
@@ -675,6 +703,14 @@ impl SyncEngine {
                 }
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("upload refused: code {}", c.0)),
+            }
+            // a refused promotion waits again (`RELAY_MIN_MS`): co-writers refused alike (a step
+            // registered meanwhile) would otherwise all send it at the next pass
+            if code != Code::OK {
+                let raw = self.raw_now();
+                if let Some(t) = self.deposit_seen.get_mut(&(server, l, b)) {
+                    *t = raw;
+                }
             }
         }
         // carriers just went up: deletions waiting for them may go now

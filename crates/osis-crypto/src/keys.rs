@@ -1,7 +1,7 @@
 //! Key derivations per actor kind (spec/crypto.md §3) and keyed content hashes (§6).
 
 use crate::kdf::{self, DEDUP, kdf};
-use crate::{KemSecret, Secret32, SigningSecret};
+use crate::{Domain, KemSecret, Secret32, Signature, SigningSecret, VerifyingKey};
 use osis_core::{Role, Tid};
 
 /// A key actor's keys (node, recovery key, link key), all from its 32-byte seed.
@@ -76,6 +76,53 @@ pub fn lan_tag(lan_secret: &Secret32, unix_ms: u64) -> [u8; 16] {
     t
 }
 
+/// What a LAN announcement's signature covers: BLAKE3(tag (16) || key (32) || be16(port))
+/// (spec/sync.md §10).
+pub fn lan_digest(tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(tag);
+    h.update(key);
+    h.update(&port.to_be_bytes());
+    h.finalize().into()
+}
+
+/// The 64-byte keystream hiding a LAN announcement's signature: `kdf("lan sig", lan secret,
+/// le64(window) || digest)` in the XOF form, `digest` = `lan_digest` (spec/sync.md §10), so
+/// another key or port in the same window never reuses it.
+pub fn lan_keystream(lan_secret: &Secret32, window: u64, digest: &[u8; 32]) -> [u8; 64] {
+    let mut input = [0u8; 40];
+    let (w, d) = input.split_at_mut(8);
+    w.copy_from_slice(&window.to_le_bytes());
+    d.copy_from_slice(digest);
+    let mut k = [0u8; 64];
+    crate::kdf::kdf_xof(kdf::LAN_SIG, lan_secret.expose(), &input, &mut k);
+    k
+}
+
+fn xor64(a: &[u8; 64], b: &[u8; 64]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    for ((o, x), y) in out.iter_mut().zip(a).zip(b) {
+        *o = x ^ y;
+    }
+    out
+}
+
+/// A LAN announcement's sealed signature (spec/sync.md §10): the Ed25519 signature under the
+/// dialable key over `"osis v1 lan announce"` and `lan_digest`, XORed with the window's
+/// keystream, so checking it needs both the lan secret and the dialable key.
+pub fn seal_lan_sig(dialable: &SigningSecret, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 64] {
+    let digest = lan_digest(tag, key, port);
+    let sig = dialable.sign(Domain::LanAnnounce, &digest);
+    xor64(&sig.0, &lan_keystream(lan_secret, window, &digest))
+}
+
+/// Whether `sealed` is `seal_lan_sig` of these inputs under `dialable`'s key.
+pub fn open_lan_sig(dialable: &VerifyingKey, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16, sealed: &[u8; 64]) -> bool {
+    let digest = lan_digest(tag, key, port);
+    let sig = Signature(xor64(sealed, &lan_keystream(lan_secret, window, &digest)));
+    dialable.verify(Domain::LanAnnounce, &digest, &sig).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,5 +162,24 @@ mod tests {
         let s = Secret32::from_bytes([1; 32]);
         assert_eq!(lan_tag(&s, 0), lan_tag(&s, 599_999));
         assert_ne!(lan_tag(&s, 0), lan_tag(&s, 600_000));
+    }
+
+    // spec/sync.md §10: a sealed announcement signature opens only with the same lan secret,
+    // window, dialable key and signed fields.
+    #[test]
+    fn lan_sig_sealed_spec_sync_10() {
+        let d = SigningSecret::from_seed(&Secret32::from_bytes([8; 32]));
+        let lan = Secret32::from_bytes([12; 32]);
+        let (tag, key) = ([1u8; 16], [2u8; 32]);
+        let sealed = seal_lan_sig(&d, &lan, 7, &tag, &key, 9);
+        let vk = d.verifying_key();
+        assert!(open_lan_sig(&vk, &lan, 7, &tag, &key, 9, &sealed));
+        assert!(!open_lan_sig(&vk, &Secret32::from_bytes([13; 32]), 7, &tag, &key, 9, &sealed), "other lan secret");
+        assert!(!open_lan_sig(&vk, &lan, 8, &tag, &key, 9, &sealed), "other window");
+        assert!(!open_lan_sig(&vk, &lan, 7, &tag, &key, 10, &sealed), "other port");
+        let other = SigningSecret::from_seed(&Secret32::from_bytes([9; 32])).verifying_key();
+        assert!(!open_lan_sig(&other, &lan, 7, &tag, &key, 9, &sealed), "other dialable key");
+        let plain = d.sign(Domain::LanAnnounce, &lan_digest(&tag, &key, 9));
+        assert!(!open_lan_sig(&vk, &lan, 7, &tag, &key, 9, &plain.0), "unsealed");
     }
 }

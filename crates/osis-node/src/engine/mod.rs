@@ -142,8 +142,8 @@ pub(crate) struct Core {
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub timelines: Timelines,
-    /// Things whose timeline changed since their deltas were last judged (`rejudge_all`).
-    pub rejudge: BTreeSet<Tid>,
+    /// The running transaction called `touch` (`rollback` drops the caches).
+    pub dirty: bool,
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
@@ -163,6 +163,12 @@ pub(crate) struct Core {
     pub pending: JMap<CommitId, Reason>,
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
+    /// What validity may have changed for since the last `rejudge_all`: things whose timeline
+    /// changed, commits whose other inputs changed (void, required roles, overreach), or
+    /// everything (a rebuild at open).
+    pub stale_things: BTreeSet<Tid>,
+    pub stale_commits: BTreeSet<CommitId>,
+    pub stale_all: bool,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -186,7 +192,7 @@ pub(crate) struct Core {
     pub boxes_to: JSetMap<Tid, (Tid, osis_core::Value)>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
-    pub epoch_intro: JMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
@@ -222,7 +228,21 @@ pub(crate) struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
+    /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
+    /// when the commit's record is written (late parts, drops), when a thing it touches gets
+    /// its creation record, and all when an actor gets secrets of its own (reader actors move);
+    /// only commits whose things' owner chains are known are kept.
+    pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
+    /// `Engine::body_live` per body, cleared by every transaction that changes anything
+    /// (`touch`, `rollback`).
+    pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
+    /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
+    /// derived from them (the sync engine's co-readers) compare it.
+    pub generation: u64,
 }
+
+/// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
+pub(crate) type EpochIntro = JMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
@@ -237,10 +257,10 @@ impl Core {
         let touched = self.held.take_touched();
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.held, &touched);
-            self.rejudge.extend(changed.evaluated);
+            self.stale_things.extend(changed.evaluated);
             // a walk that only went on changed authority only below what it touched
             let below = self.held.reach(&changed.extended);
-            self.rejudge.extend(below);
+            self.stale_things.extend(below);
         }
         self.membership_changed();
     }
@@ -248,21 +268,32 @@ impl Core {
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
+        self.live_bodies.clear();
+        self.generation += 1;
+        self.dirty = true;
     }
 
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
         journaled!(self, commit);
         self.written.clear();
+        self.dirty = false;
     }
 
-    /// Undoes the aborted transaction's changes to the caches and indexes.
+    /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
+    /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
-        self.live_trees.clear();
-        self.membership_changed();
-        for k in std::mem::take(&mut self.written) {
-            self.states.remove(&k);
-            self.pages.remove(&k);
+        if self.dirty || !self.written.is_empty() {
+            self.dirty = false;
+            self.live_trees.clear();
+            self.live_bodies.clear();
+            self.bodies.clear();
+            self.generation += 1;
+            self.membership_changed();
+            for k in std::mem::take(&mut self.written) {
+                self.states.remove(&k);
+                self.pages.remove(&k);
+            }
         }
         journaled!(self, rollback);
         // the timelines follow the restored held set; validity flags are restored with `commits`
@@ -270,7 +301,8 @@ impl Core {
         if !touched.is_empty() {
             self.timelines.update_touched(&self.held, &touched);
         }
-        self.rejudge.clear();
+        self.stale_things.clear();
+        self.stale_commits.clear();
     }
 
     fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
@@ -281,7 +313,10 @@ impl Core {
             pages: HashMap::new(),
             held: held::Held::default(),
             timelines: Timelines::new(),
-            rejudge: BTreeSet::new(),
+            stale_things: BTreeSet::new(),
+            stale_commits: BTreeSet::new(),
+            stale_all: true,
+            dirty: false,
             commits: JMap::default(),
             invalid: JSetMap::default(),
             by_aspect: JSetMap::default(),
@@ -318,6 +353,9 @@ impl Core {
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            live_bodies: BTreeMap::new(),
+            generation: 0,
         }
     }
 
@@ -483,6 +521,7 @@ impl Tx<'_> {
     /// else is written whole (the pages not loaded joined in first). The caller has noted the
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
+        self.core.live_bodies.clear();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
@@ -590,6 +629,7 @@ impl Tx<'_> {
     /// Writes a commit record: what the engine indexes of it (`index::record_head`: received,
     /// origin, dropped parts, per part its validity and roles) and its blob.
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
+        self.core.bodies.remove(id);
         let v = [index::record_head(self.core, id, meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         Ok(())
@@ -760,6 +800,7 @@ impl Engine {
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
+        let stale_all = self.core.stale_all;
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -783,6 +824,7 @@ impl Engine {
             Err(e) => {
                 self.core.events.discard();
                 self.core.rollback();
+                self.core.stale_all = stale_all;
                 Err(e)
             }
         }

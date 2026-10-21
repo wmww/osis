@@ -93,11 +93,10 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
             let gone: Vec<_> = live.iter().filter(|(_, x)| !items.contains(x)).map(|(d, _)| (*d).clone()).collect();
             let mut f = if gone.is_empty() { Frag::Set { c: comp(), elems: BTreeMap::new() } } else { elem_reset(w, 6, &gone) };
             let Frag::Set { elems: de, .. } = &mut f else { unreachable!() };
-            let Ty::Set(et) = ty else { unreachable!() };
             for it in items {
                 if !live.iter().any(|(_, x)| x == it) {
                     let d = w.stamp().dot;
-                    de.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, et, it))) });
+                    de.insert(d, Elem { reset: None, frag: Some(Box::new(crate::ops::register(w, it.clone()))) });
                 }
             }
             f

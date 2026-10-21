@@ -118,6 +118,25 @@ impl Engine {
     /// (an actor synced as a group of itself) also carries the `/label` and `/created` writes of
     /// the labeled groups it is the nearest labeled owner-chain actor of (spec/sync.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
+        let mut out = self.label_bodies_meta(g)?;
+        for b in &mut out {
+            b.plaintext = self.body_plaintext(b)?;
+        }
+        Ok(out)
+    }
+
+    /// The plaintext of a body (`label_bodies_meta` leaves it out): projected again from the
+    /// held commit; empty when that body is not there any more.
+    pub fn body_plaintext(&mut self, b: &Body) -> Result<Vec<u8>> {
+        if !b.plaintext.is_empty() {
+            return Ok(b.plaintext.clone());
+        }
+        Ok(self.bodies(&b.commit)?.into_iter().find(|x| x.parts == b.parts).map(|x| x.plaintext).unwrap_or_default())
+    }
+
+    /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
+    /// change projects only the commits it changed.
+    pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let closure = self.closure(g);
         let x = self.group_actor(g);
         let published = self.published_under(g);
@@ -132,7 +151,22 @@ impl Engine {
         for id in ids {
             let Some(h) = self.header(&id) else { continue };
             let touches = h.aspects.iter().any(|a| closure.contains(&a.tid));
-            for b in self.bodies(&id)? {
+            let bodies = match self.core.bodies.get(&id) {
+                Some(b) => b.clone(),
+                None => {
+                    let mut b = self.bodies(&id)?;
+                    for x in &mut b {
+                        x.plaintext = Vec::new();
+                    }
+                    // kept only while every reader actor is resolved (a missing owner record
+                    // arriving later moves it)
+                    if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
+                        self.core.bodies.insert(id, b.clone());
+                    }
+                    b
+                }
+            };
+            for b in bodies {
                 let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
                 if inside && self.core.may_read(&x, &b.reader) {
                     out.push(b);
@@ -357,6 +391,43 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are
+    // projected per commit once and kept until that commit or the readers change, so one more
+    // commit leaves every other commit's bodies cached.
+    #[test]
+    fn label_bodies_cached_per_commit_spec_sync_6() {
+        use crate::Mutation;
+        let mut lp = crate::local_peer::LocalPeer::new(1, 941, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        e.commit(m).unwrap();
+        let ak = osis_core::Ak::new("/x/a").unwrap();
+        let mut group = ct::Group::default();
+        let add = |e: &mut Engine, group: &mut ct::Group| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, g);
+            m.set(t, &ak, &osis_core::Value::Int(1)).unwrap();
+            group.items.insert(t);
+            m.set(g, &ct::GROUP, group).unwrap();
+            e.commit(m).unwrap().unwrap()
+        };
+        for _ in 0..30 {
+            add(e, &mut group);
+        }
+        let first = e.label_bodies_meta(&g).unwrap();
+        assert!(first.len() >= 30 && first.iter().all(|b| b.plaintext.is_empty()));
+        let cached: Vec<CommitId> = e.core.bodies.keys().copied().collect();
+        assert!(cached.len() >= 30);
+        let c = add(e, &mut group);
+        assert!(cached.iter().all(|x| e.core.bodies.contains_key(x)), "a new commit leaves the others' bodies cached");
+        let again = e.label_bodies_meta(&g).unwrap();
+        assert!(again.iter().any(|b| b.commit == c) && e.core.bodies.contains_key(&c));
+        let b = again.iter().find(|b| b.commit == c).unwrap();
+        assert!(!e.body_plaintext(b).unwrap().is_empty(), "the plaintext is projected on demand");
+    }
 
     // spec/crypto.md §4: a secret learned only from a pending or invalid commit is never
     // encrypted under; signing a stamp or delete is. A reading-only write or admin secret still

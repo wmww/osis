@@ -137,6 +137,11 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
         if rec.tid() == a.tid {
             tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_core::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
+            // the reader actor of the thing's deltas is known now
+            let touching: Vec<CommitId> = tx.core.by_aspect.iter().filter(|((t, _), _)| *t == a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+            for c in touching {
+                tx.core.bodies.remove(&c);
+            }
             any = true;
         }
     }
@@ -168,11 +173,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         held_changed = true;
         for c in ov.iter().chain(std::iter::once(&id)) {
             tx.core.void.insert(*c);
+            tx.core.stale_commits.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
-            if let Some(m) = tx.core.commits.get(c) {
-                let things: Vec<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
-                tx.core.rejudge.extend(things);
-            }
         }
         let now = tx.now();
         tx.core.events.diagnostic(
@@ -266,14 +268,38 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 /// `/members` delta after its `/created` one), and held deltas are re-judged.
 pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Vec<(usize, usize, Decoded)>) -> Result<()> {
     tx.core.touch();
-    let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let mut meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
     let received = tx.now();
     super::receipt::record(tx, &h, id, &parts, received)?;
     let mut held_changed = note_created(tx, &h, &parts)?;
     let edges = h.kind.is_membership() && parts.iter().any(|(ai, _, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
     if h.kind.is_membership() {
-        validity::note_required(tx.core, &h, id, &parts);
+        // judged with the parts held before (a grant's `/members` part names what its
+        // `/secrets` part may box)
+        let mut all = parts.clone();
+        all.extend(super::held_parts_at(tx, id, &|ai| !parts.iter().any(|(x, _, _)| *x == ai))?);
+        validity::note_required(tx.core, &h, id, &all);
+        // what that judged (an overreaching late `/secrets` part) holds for the late parts'
+        // join below; other aspects' flips go through the re-judge (`invalidated`, `revalidated`)
+        let late: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
+        let mut flipped = false;
+        for ai in late {
+            let v = validity::part_valid(tx.core, &h, id, ai);
+            if let Some(x) = meta.valid.get_mut(ai)
+                && *x != v
+            {
+                *x = v;
+                flipped = true;
+            }
+        }
+        if flipped {
+            if let Some(m) = tx.core.commits.get_mut(id) {
+                m.valid = meta.valid.clone();
+            }
+            tx.core.index_validity(id);
+            held_changed = true;
+        }
     }
     // late `/secrets` parts establish epochs like the first ones, with the commit's `/keys`
     // (held parts). The keysets "before" are the current `/keys` state, which already holds this

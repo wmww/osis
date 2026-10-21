@@ -10,6 +10,7 @@ pub mod chunker;
 pub mod commit;
 pub mod inbox;
 pub mod kdf;
+pub mod lan;
 pub mod keys;
 pub mod link;
 pub mod padme;
@@ -59,6 +60,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "inbox/inbox.vec" => Subject { generate: Some(inbox::inbox), check: None },
         "signal/signal.vec" => Subject { generate: Some(signal::signal), check: None },
         "link/link.vec" => Subject { generate: Some(link::links), check: None },
+        "lan/announce.vec" => Subject { generate: Some(lan::announce), check: None },
         "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },
         _ => return None,
     })

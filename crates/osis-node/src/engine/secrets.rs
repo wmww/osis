@@ -180,7 +180,10 @@ impl Core {
     /// Notes `/keys` of `actor`: keysets mean secrets of its own (spec/permissions.md §3).
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
-            self.own_keys.insert(*actor);
+            if self.own_keys.insert(*actor) {
+                // reader actors of things below it change
+                self.bodies.clear();
+            }
             self.membership_changed();
             if let Some(e) = self.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);

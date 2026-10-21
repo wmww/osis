@@ -290,6 +290,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usi
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
 /// `roster_snapshot` refuses it (`Core::frontier_unknown`).
 pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    tx.core.stale_commits.insert(*id);
     let linked = match linked_frontiers(tx, h, parts) {
         Ok(l) => l,
         Err(_) if tx.core.skip_writer_rules && h.author == tx.core.id.tid() => Linked::default(),
@@ -433,8 +434,10 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 }
 
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
-/// of a membership commit that write beyond its grantees' boxes.
+/// of a membership commit that write beyond its grantees' boxes. `parts`: every held part of the
+/// commit (a late `/secrets` part is judged with the `/members` part held before it).
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+    core.stale_commits.insert(*id);
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
@@ -459,8 +462,12 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
-            core.grant_overreach.insert((*id, *ai));
+        if a.ak.as_str() == "/secrets" {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
+                core.grant_overreach.remove(&(*id, *ai));
+            } else {
+                core.grant_overreach.insert((*id, *ai));
+            }
         }
     }
     // one delta per `/secrets` aspect, known from the signed header: a node that never holds a
@@ -680,10 +687,14 @@ pub(crate) fn uncarry(core: &mut Core, h: &Header) {
     }
 }
 
-/// Re-judges the held deltas whose validity may have changed with the held set: those on the
-/// things whose timeline changed since they were last judged (`Core::rejudge`, filled by
-/// `update_timelines`; a voided commit's things are added there too), so the cost follows the
-/// changed components, not the held set. Rebuilds aspects whose validity flipped; returns them.
+
+/// Re-judges the held deltas whose validity may have changed since the last call: those on the
+/// things whose timeline changed (`Core::stale_things`, filled by `update_timelines`: the things
+/// of components evaluated anew, and below what a continued walk touched), the commits whose
+/// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
+/// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Writes
+/// snapshots carry without their commit on those things too. Rebuilds aspects whose validity
+/// flipped; returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
@@ -691,13 +702,20 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
-    let things = std::mem::take(&mut tx.core.rejudge);
-    let ids: BTreeSet<CommitId> = things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()).collect();
+    let things = std::mem::take(&mut tx.core.stale_things);
+    let explicit = std::mem::take(&mut tx.core.stale_commits);
+    let all = std::mem::take(&mut tx.core.stale_all);
+    let mut ids = explicit.clone();
+    if all {
+        ids.extend(tx.core.commits.keys().copied());
+    } else {
+        ids.extend(things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()));
+    }
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
         let h = m.header.clone();
         // parts on things not re-judged keep their flag
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
+        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if all || explicit.contains(&id) || h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
         if tx.core.commits.get(&id).is_some_and(|m| m.valid != now)
             && let Some(m) = tx.core.commits.get_mut(&id)
         {
@@ -719,7 +737,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         }
     }
     // writes carried by snapshots without their commit, on the same things
-    let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| things.contains(t)).cloned().collect();
+    let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
     for k in aspects {
         let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
         let mut any = false;
@@ -734,6 +752,12 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             tx.core.carried.insert(k.clone(), v);
             flipped.insert(k);
         }
+    }
+    // what was not re-judged has not changed
+    #[cfg(debug_assertions)]
+    for (id, m) in tx.core.commits.iter() {
+        let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
+        debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
     }
     if rebuild {
         for (tid, ak) in &flipped {
@@ -762,9 +786,8 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid
     if tl.role(author, member, At::now(ts)) != Some(Role::Admin) {
         return false;
     }
-    let mut edges = tl.edges_at(None).into_owned();
-    edges.set(*member, *target, None);
-    let view = osis_perm::graph::View { owners: tl.owners(), edges: &edges, ts: Some(ts) };
+    let edges = tl.edges_at(None);
+    let view = osis_perm::graph::View::new(tl.owners(), &edges, Some(ts)).patched(*member, *target, None);
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
@@ -886,6 +909,43 @@ mod tests {
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
+    // spec/permissions.md §2, spec/commits.md §4 (late deltas): an invite holder's grant whose
+    // `/secrets` part boxes beyond its grantee is invalid whatever the arrival order; here the
+    // `/members` part arrives first and the overreaching `/secrets` part joins late.
+    #[test]
+    fn overreaching_grant_late_secrets_invalid_spec_perm_2() {
+        let mut lp = LocalPeer::new(4, 905, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        // the invite holder grants c and also writes a box keyed to the admin
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.member == a).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        let w = osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() };
+        crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let id = lp.peers[1].commit(m).unwrap().unwrap();
+        let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let si = blob.header.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
+        let first = osis_commit::rewrite(&blob, |ai, _| ai == si);
+        lp.peers[3].engine.ingest(&first.encode(), pk.blobs.clone()).unwrap();
+        assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.pending.contains_key(&id), "applied without its /secrets part");
+        lp.deliver(3, &pk).unwrap();
+        let m = lp.peers[3].engine.core.commits.get(&id).unwrap();
+        assert!(!m.valid[si], "the late overreaching part is invalid");
+        assert!(lp.peers[3].engine.core.grant_overreach.contains(&(id, si)));
     }
     // spec/permissions.md §2: an invite grant's `/secrets` delta carries only puts of its
     // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)

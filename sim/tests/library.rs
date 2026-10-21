@@ -272,3 +272,11 @@ fn future_format() {
 fn newer_schema() {
     ok("newer_schema", 1);
 }
+
+// spec/sync.md §5, §6: writers online together upload each body once and promote each deposit
+// once.
+#[test]
+#[ignore = "tier 2"]
+fn concurrent_writers() {
+    ok("concurrent_writers", 1);
+}

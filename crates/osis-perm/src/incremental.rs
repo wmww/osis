@@ -87,6 +87,8 @@ pub struct Timelines {
     comps: BTreeMap<u64, (Inputs, Timeline)>,
     next: u64,
     of: BTreeMap<Tid, u64>,
+    /// Things whose component the last update evaluated or continued.
+    changed: BTreeSet<Tid>,
 }
 
 /// The things `t`'s held inputs link it to (the unions of a partition).
@@ -180,7 +182,9 @@ impl Timelines {
             for s in held.roster_snapshots(t) {
                 ids.entry(*t).or_default().insert(s.id);
                 dsu.union(s.author, s.thing);
-                for m in s.roster.keys().chain(s.ledger.iter().flat_map(|x| [&x.member, &x.until.node])) {
+                // an entry with a frontier is a demotion by its key's node (§6)
+                let demoters = s.ledger.iter().filter(|x| x.frontier.is_some()).map(|x| &x.until.node);
+                for m in s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).chain(demoters) {
                     dsu.union(*m, s.thing);
                 }
             }
@@ -198,6 +202,7 @@ impl Timelines {
         }
         let mut evaluated = 0;
         let mut changed = Changed::default();
+        self.changed.clear();
         for (_, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
             let tl = match cache.remove(&inputs) {
@@ -224,10 +229,12 @@ impl Timelines {
                     match from.and_then(|tl| tl.extend(&part)) {
                         Some(tl) => {
                             changed.extended.extend(new);
+                            self.changed.extend(inputs.0.iter().copied());
                             tl
                         }
                         None => {
                             changed.evaluated.extend(inputs.0.iter().copied());
+                            self.changed.extend(inputs.0.iter().copied());
                             Timeline::evaluate(&part)
                         }
                     }
@@ -246,6 +253,12 @@ impl Timelines {
     /// The timeline of the component holding `thing` (and every node with a path to it).
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {
         self.of.get(thing).and_then(|i| self.comps.get(i)).map(|(_, tl)| tl)
+    }
+
+    /// Things whose timeline the last `update` evaluated (or continued): every other thing's
+    /// answers are unchanged.
+    pub fn changed(&self) -> &BTreeSet<Tid> {
+        &self.changed
     }
 
     pub fn components(&self) -> usize {

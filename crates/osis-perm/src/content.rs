@@ -77,7 +77,7 @@ impl Timeline {
     fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let mut edges = self.walked.initial.clone();
         let holds = |edges: &crate::graph::Edges, ts: Option<osis_core::Ts>| {
-            let view = crate::graph::View { owners: &self.owners, edges, ts };
+            let view = crate::graph::View::new(&self.owners, edges, ts);
             view.roles_from(x).get(thing).copied() >= Some(required)
         };
         if holds(&edges, Some(osis_core::Ts::default())) {

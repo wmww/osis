@@ -128,12 +128,14 @@ pub fn frag(f: &m::Frag) -> Fragment {
     }
 }
 
-/// Every cached sequence placement inside `f` equals a whole pass (`seq_lin`); sequences of
-/// more than 10^4 records are skipped (timing tests). Also: the short-circuit presence of every
-/// position equals its presence stamp's (§4.3).
+/// Every cached sequence placement inside `f` equals a whole pass (`seq_lin`), and the early-exit
+/// presence check agrees with `written` (§4.3); sequences of more than 10^4 records are skipped
+/// (timing tests).
 pub fn check_lin(f: &Fragment) {
-    assert_eq!(f.present(), f.written().is_some(), "present");
     let all = |it: &mut dyn Iterator<Item = &Fragment>| it.for_each(check_lin);
+    if !matches!(f, Fragment::Seq(s) if s.elems().len() > 10_000) {
+        assert_eq!(f.present(), f.written().is_some(), "presence");
+    }
     match f {
         Fragment::Seq(s) => {
             if s.elems().len() > 10_000 {
@@ -157,7 +159,9 @@ pub fn ostate(f: &Option<m::Frag>) -> Fragment {
 
 /// The kitchen-sink type without sequences: every encoding crdt-core implements, nested.
 pub fn sink_no_seq() -> Ty {
-    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
+    // a set of structs: elements are registers holding the whole value (§3.2)
+    let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(pair)))].into_iter().collect());
     let cases = [(0, None), (1, Some(Ty::Register)), (2, Some(inner.clone()))].into_iter().collect();
     Ty::Struct(
         [

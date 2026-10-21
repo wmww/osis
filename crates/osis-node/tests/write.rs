@@ -333,11 +333,11 @@ const WIDE_SRC: &str = concat!(
 );
 const WIDE_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/wide", &WIDE);
 
-// spec/commits.md §1 (no size limit), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
-// registers (no field chunked) totalling more than `MAX_BLOB` pages its field map, so the commit
-// is written and reads back whole.
+// spec/commits.md §1 (delta fits a blob), spec/crdt.md §8: a struct of many near-`CHUNK_THRESHOLD`
+// registers (no field chunked) outgrows one blob, so its field map is paged: the write commits,
+// syncs as pages and reads back whole.
 #[test]
-fn wide_struct_pages_spec_crdt_8() {
+fn wide_struct_paged_fits_spec_commits_1() {
     use osis_core::format::{CHUNK_THRESHOLD, MAX_BLOB};
     let mut p = peer(14);
     let me = p.engine.tid();
@@ -346,10 +346,10 @@ fn wide_struct_pages_spec_crdt_8() {
     m.set(t, &ak("/app/x"), &Value::Int(1)).unwrap();
     p.commit(m).unwrap().unwrap();
     let field = "w".repeat(CHUNK_THRESHOLD - 16);
-    let wide = Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(field.clone()))).collect());
-    assert!(65 * field.len() > MAX_BLOB);
+    let wide = |n: i64| Value::Map((0..65).map(|i| (Value::Int(i), Value::Str(if i < n { field.clone() } else { String::new() }))).collect());
+    assert!(65 * field.len() > MAX_BLOB && 63 * field.len() < MAX_BLOB);
     let mut m = Mutation::new();
-    m.set(t, &WIDE_AK, &wide).unwrap();
+    m.set(t, &WIDE_AK, &wide(65)).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert!(!p.engine.package(&id).unwrap().unwrap().blobs.is_empty(), "the field map pages");
     let Some(Value::Map(got)) = p.engine.get(&t, &ak("/w/wide")).unwrap() else { panic!() };

@@ -19,11 +19,6 @@ fn role(r: membership_model::Role) -> Option<Role> {
     }
 }
 
-fn gen_id(n: usize) -> CommitId {
-    let mut c = cid(n as u32);
-    c.0[31] = 2;
-    c
-}
 
 /// A joint-model history as a world: node i is the i-th smallest key-actor tid, genesis edges
 /// are writes by the key actor at the top of the target's chain at t=0.
@@ -250,72 +245,6 @@ fn edges_model_agrees() {
 #[ignore]
 fn edges_model_agrees_large() {
     edges_run(100_000, 0x5eed_0004);
-}
-
-/// A snapshot-model history: key actor K (node 0) owns P, P owns G; genesis edges are K's
-/// writes at t=0; records (layer 2) are left out; writes on G for K are inert in the model and
-/// left out too.
-struct SnapWorld {
-    w: World,
-    nodes: Vec<Tid>,
-    p: Tid,
-    g: Tid,
-    /// Model write index -> commit ID (None: left out).
-    ids: Vec<Option<CommitId>>,
-}
-
-fn snap_world(h: &snapshot::SHist) -> SnapWorld {
-    use snapshot::Thing;
-    let mut w = World::new();
-    let nodes = w.nodes(h.n());
-    let k = nodes[0];
-    let p = w.thing(k);
-    let g = w.thing(p);
-    let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-    let mut gi = 0;
-    for (thing, roles) in [(p, &h.gp), (g, &h.gg)] {
-        for (x, &r) in roles.iter().enumerate().skip(1) {
-            if let Some(r) = role(r) {
-                gi += 1;
-                w.commit_id(gen_id(gi), k, 0, &[(thing, nodes[x], Some(Edge::new(r)))], &all0);
-            }
-        }
-    }
-    let key = |k: (u32, usize)| (k.0 as u64, nodes[k.1]);
-    let mut ids = Vec::new();
-    for (i, sw) in h.writes.iter().enumerate() {
-        let thing = if sw.thing == Thing::P { p } else { g };
-        let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, tn)| (*tn, h.recv[i][n] as u64)).collect();
-        if sw.rec || (sw.snap.is_none() && sw.target == 0) {
-            ids.push(None);
-            continue;
-        }
-        let author = nodes[sw.author];
-        let id = match &sw.snap {
-            None => {
-                let id = cid(i as u32 + 1);
-                w.commit_id(id, author, sw.t as u64, &[(thing, nodes[sw.target], role(sw.role).map(Edge::new))], &recv);
-                id
-            }
-            Some(roster) => {
-                let mut r: Vec<(Tid, Edge)> = Vec::new();
-                for (x, &rl) in roster.iter().enumerate().skip(1) {
-                    if let Some(rl) = role(rl) {
-                        let open = sw.ledger.iter().find(|e| e.member == x && e.until.is_none());
-                        let since = open.and_then(|e| e.since).map(|k| {
-                            let (t, n) = key(k);
-                            osis_perm::EdgeKey { ts: ts(t), node: n }
-                        });
-                        r.push((nodes[x], Edge { since: if rl == Role::Admin { since } else { None }, ..Edge::new(rl) }));
-                    }
-                }
-                let ledger: Vec<_> = sw.ledger.iter().filter_map(|e| e.until.map(|u| (nodes[e.member], Role::Admin, e.since.map(key), key(u), true))).collect();
-                w.snapshot_l(author, thing, &r, &ledger, sw.t as u64, &recv)
-            }
-        };
-        ids.push(Some(id));
-    }
-    SnapWorld { w, nodes, p, g, ids }
 }
 
 fn snap_diff(h: &snapshot::SHist) -> Option<String> {

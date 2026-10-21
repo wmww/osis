@@ -4,9 +4,9 @@
 
 use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
-use crate::linearize::Placement;
+use crate::seq_lin::{Lin, Placement};
 use crate::ops::{Op, Writer};
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem, is_visible, top2, visible};
+use crate::seq::{Anchor, Seq, SeqContent, SeqElem, Vis, is_visible, top2, visible};
 use crate::seq_span::{elem, expand, nth};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
@@ -69,26 +69,35 @@ pub(crate) fn create<V: View>(w: &mut Writer, text: bool, view: &V, v: &Value) -
     Ok(s)
 }
 
-fn anchor_after(vis: &[Dot], at: usize) -> Result<Anchor, Error> {
+/// The anchor of an insert before visible index `at`: the element before it, or HEAD.
+fn anchor_after(vis: &Vis, at: usize) -> Result<Anchor, Error> {
     match at {
         0 => Ok(Anchor::Head),
         i => vis.get(i - 1).cloned().map(Anchor::Dot).ok_or(Error::Mismatch("index out of range")),
     }
 }
 
+/// `anchor_after` in the visible elements outside `inr`.
+fn anchor_outside(vis: &Vis, inr: &HashSet<&Dot>, at: usize) -> Result<Anchor, Error> {
+    match at {
+        0 => Ok(Anchor::Head),
+        i => vis.iter().filter(|d| !inr.contains(d)).nth(i - 1).cloned().map(Anchor::Dot).ok_or(Error::Mismatch("index out of range")),
+    }
+}
+
 /// The range of a selection: the slice of the placement order (node indices) from its first to
 /// its last visible element, hidden anchors inside included (§5.7).
-fn range_of(p: &Placement, vis: &[Dot], at: usize, len: usize) -> Result<Range<usize>, Error> {
+fn range_of(l: &Lin, vis: &Vis, at: usize, len: usize) -> Result<Range<usize>, Error> {
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
     let (Some(first), Some(last)) = (vis.get(at), end.checked_sub(1).and_then(|e| vis.get(e))) else { return Ok(0..0) };
-    let i0 = p.index(first).unwrap_or(0);
-    let i1 = p.index(last).unwrap_or(i0);
+    let i0 = l.index(first).unwrap_or(0);
+    let i1 = l.index(last).unwrap_or(i0);
     Ok(i0..i1 + 1)
 }
 
 /// First dots of the nodes in `r`.
 fn dots_of(p: &Placement, r: Range<usize>) -> Vec<Dot> {
-    p.rows.get(r).unwrap_or_default().iter().map(|r| r.dot.clone()).collect()
+    p.iter_from(r.start).take(r.len()).map(|r| r.dot.clone()).collect()
 }
 
 /// §3.3 rule 7: at most `MAX_DELTA_BARE` content-less elements per delta (the caller splits).
@@ -111,11 +120,11 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 /// root anchors at the last element of the previous root's moved subtree.
 fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
     let inr: HashSet<&Dot> = range.iter().collect();
-    let last_el: HashMap<&Dot, &Dot> = p.rows.iter().map(|r| (&r.dot, &r.last)).collect();
-    let loose: HashMap<&Dot, u64> = p.rows.iter().filter(|r| r.span > 1 && !r.created).map(|r| (&r.dot, r.span)).collect();
-    let parent: HashMap<&Dot, Option<&Dot>> = p.rows.iter().map(|r| (&r.dot, r.parent.as_ref())).collect();
+    let last_el: HashMap<&Dot, &Dot> = p.iter().map(|r| (&r.dot, &r.last)).collect();
+    let loose: HashMap<&Dot, u64> = p.iter().filter(|r| r.span > 1 && !r.created).map(|r| (&r.dot, r.span)).collect();
+    let parent: HashMap<&Dot, Option<&Dot>> = p.iter().map(|r| (&r.dot, r.parent.as_ref())).collect();
     let par = |d: &Dot| parent.get(d).copied().flatten();
-    let order = || p.rows.iter().map(|r| &r.dot);
+    let order = || p.iter().map(|r| &r.dot);
     let roots: Vec<&Dot> = order().filter(|d| inr.contains(d) && !par(d).is_some_and(|x| inr.contains(x))).collect();
     let outside: Vec<&Dot> = order().filter(|d| !inr.contains(d) && par(d).is_some_and(|x| inr.contains(x))).collect();
     // the root whose moved subtree holds each element (preorder: parents come first)
@@ -155,7 +164,7 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
 
 /// The visible element before node `i` in placement order, or HEAD.
 fn pred_of(p: &Placement, i: usize) -> Anchor {
-    p.rows.get(..i).unwrap_or_default().iter().rev().find(|r| r.shown).map_or(Anchor::Head, |r| Anchor::Dot(r.dot.clone()))
+    p.shown_before(i).map_or(Anchor::Head, |r| Anchor::Dot(r.dot.clone()))
 }
 
 /// The dots a cut of `len` visible elements from `at` removes and a paste restores: the visible
@@ -164,7 +173,7 @@ pub fn cut_dots(state: &Fragment, at: usize, len: usize) -> Result<Vec<Dot>, Err
     let crate::state::MemberRef::Frag(Fragment::Seq(s)) = state.chosen_member() else { return Err(Error::Mismatch("not a sequence")) };
     let vis = visible(s);
     let end = at.checked_add(len).filter(|e| *e <= vis.len()).ok_or(Error::Mismatch("range out of range"))?;
-    Ok(vis.get(at..end).map(<[Dot]>::to_vec).unwrap_or_default())
+    Ok(vis.iter().skip(at).take(end - at).cloned().collect())
 }
 
 /// Sequence op against present state `s` (§5.7 Ops); `None` if a no-op.
@@ -182,11 +191,11 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             insert_run(w, &mut out, anchor, cs);
         }
         Op::Delete { at, len } => {
-            let l = s.lin();
-            let (p, vis) = (&l.p, &l.vis);
+            let vis = visible(s);
+            let l = &vis.0;
             let d = w.delta_stamp();
-            let r = range_of(p, vis, *at, *len)?;
-            let rows = p.rows.get(r).unwrap_or_default();
+            let r = range_of(l, &vis, *at, *len)?;
+            let rows: Vec<&crate::seq_lin::Row> = l.p.iter_from(r.start).take(r.len()).collect();
             let n = rows.iter().fold(0u64, |a, r| a.saturating_add(r.span));
             if n > osis_core::format::MAX_DELTA_BARE {
                 // §3.3 rule 7: the caller splits a delete this long across commits
@@ -197,16 +206,15 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             }
         }
         Op::Move { at, len, to } => {
-            let l = s.lin();
-            let (p, vis) = (&l.p, &l.vis);
-            let range = dots_of(p, range_of(p, vis, *at, *len)?);
+            let vis = visible(s);
+            let p = &vis.0.p;
+            let range = dots_of(p, range_of(&vis.0, &vis, *at, *len)?);
             if range.is_empty() {
                 return Ok(None);
             }
             let inr: HashSet<&Dot> = range.iter().collect();
-            let rest: Vec<Dot> = vis.iter().filter(|d| !inr.contains(d)).cloned().collect();
-            let dest = anchor_after(&rest, *to)?;
-            let pred = anchor_after(vis, *at)?;
+            let dest = anchor_outside(&vis, &inr, *to)?;
+            let pred = anchor_after(&vis, *at)?;
             *out.elems_mut() = move_writes(w, p, &range, pred, dest);
             check_bare(&out)?;
         }
@@ -218,10 +226,9 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
-            let l = s.lin();
-            let p = &l.p;
-            let at_of: HashMap<&Dot, usize> = p.rows.iter().enumerate().map(|(i, r)| (&r.dot, i)).collect();
-            let idx: Vec<usize> = dots.iter().filter_map(|d| at_of.get(d).copied()).collect();
+            let vis = visible(s);
+            let p = &vis.0.p;
+            let idx: Vec<usize> = dots.iter().filter_map(|d| vis.0.index(d)).collect();
             let (Some(i0), Some(i1)) = (idx.iter().min(), idx.iter().max()) else { return Err(Error::Mismatch("the clipboard no longer matches")) };
             if idx.len() != dots.len() {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
@@ -233,8 +240,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
             let inr: HashSet<&Dot> = range.iter().collect();
-            let rest: Vec<Dot> = visible(s).iter().filter(|d| !inr.contains(d)).cloned().collect();
-            let dest = anchor_after(&rest, *at)?;
+            let dest = anchor_outside(&vis, &inr, *at)?;
             let pred = pred_of(p, *i0);
             *out.elems_mut() = move_writes(w, p, &range, pred, dest);
             check_bare(&out)?;

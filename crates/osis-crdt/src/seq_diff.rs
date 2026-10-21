@@ -181,6 +181,12 @@ fn items(v: &Value) -> Result<&[Value], Error> {
     }
 }
 
+/// Visible text elements and their chars.
+fn text_view(s: &Seq) -> (Vec<Dot>, Vec<char>) {
+    let vis = visible(s);
+    vis.rows().map(|r| (r.dot.clone(), r.ch.unwrap_or_default())).unzip()
+}
+
 /// Visible list elements: dot, content and projected read (`None`: opaque, §9).
 fn list_view<V: View>(s: &Seq, ev: &V) -> Vec<(Dot, Option<Fragment>, Option<Value>)> {
     visible(s)
@@ -201,8 +207,7 @@ fn flag(out: &mut Seq, d: Dot, w: &Writer) {
 pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Result<Option<Seq>, Error> {
     let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
     if s.text {
-        let vis = visible(s);
-        let old: Vec<char> = vis.iter().filter_map(|d| s.elems().get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
+        let (vis, old) = text_view(s);
         let new = chars(v)?;
         let steps = script(old.len(), new.len(), &lcs(&old, &new, |a, b| a == b), false);
         for st in &steps {
@@ -266,8 +271,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new
     let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
     if s.text {
         let (b, n) = (chars(base)?, chars(new)?);
-        let vis = visible(s);
-        let cur: Vec<char> = vis.iter().filter_map(|d| s.elems().get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
+        let (vis, cur) = text_view(s);
         let to_cur: HashMap<usize, usize> = lcs(&b, &cur, |x, y| x == y).into_iter().collect();
         let steps = script(b.len(), n.len(), &lcs(&b, &n, |x, y| x == y), false);
         for st in &steps {

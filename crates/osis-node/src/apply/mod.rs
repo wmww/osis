@@ -677,10 +677,11 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
     tx.core.groups.rebuild();
     if fast {
         // every delta's validity is persisted: nothing to re-judge
-        tx.core.rejudge.clear();
+        tx.core.stale_things.clear();
+        tx.core.stale_commits.clear();
+        tx.core.stale_all = false;
     } else {
-        let all: Vec<Tid> = tx.core.by_thing.keys().copied().collect();
-        tx.core.rejudge.extend(all);
+        tx.core.stale_all = true;
         validity::rejudge_all(tx, false)?;
     }
     Ok(!fast)

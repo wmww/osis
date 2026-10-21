@@ -138,6 +138,13 @@ fn reg(w: &Writer, v: Value) -> Fragment {
     Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: w.delta_stamp(), value: Some(v) }) })
 }
 
+/// A new set element: a fresh dot and its value register, written only by this creation
+/// (§3.2, §5.5), whatever the element type.
+pub(crate) fn set_elem(w: &mut Writer, v: Value) -> (Dot, Elem) {
+    let d = w.fresh().dot;
+    (d, Elem { reset: None, frag: Some(Box::new(reg(w, v))) })
+}
+
 fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
     let d = w.fresh().dot;
     let elems = BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(reg(w, v))) })]);
@@ -149,12 +156,11 @@ fn with_w(w: &Writer, empty: bool) -> Meta {
 }
 
 /// The writes creating `v` from nothing (§9 "absent S"): composites without content get an
-/// explicit `W`. A link at a struct position is a register (a roster snapshot's linked tenure
-/// frontier, spec/permissions.md §6); anywhere else a link fits only a register.
+/// explicit `W`. A link (a chunked large value) fits only a register position.
 pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, Error> {
     let enc = encoding_for(view, v);
     Ok(match (enc, v) {
-        (Encoding::Register, v) | (Encoding::Struct, v @ Value::Link(_)) => reg(w, v.clone()),
+        (Encoding::Register, v) => reg(w, v.clone()),
         (Encoding::Counter | Encoding::Max | Encoding::Min, v) => {
             number(v)?;
             contribution(w, enc.bag_kind().ok_or(Error::Mismatch("bag"))?, v.clone())
@@ -180,12 +186,7 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
         }
         (Encoding::Set, Value::Set(items)) => {
             let meta = with_w(w, items.is_empty());
-            let ev = view.element().ok_or(Error::Mismatch("set without element type"))?;
-            let mut elems = BTreeMap::new();
-            for it in items {
-                let d = w.fresh().dot;
-                elems.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, &ev, it)?)) });
-            }
+            let elems = items.iter().map(|it| set_elem(w, it.clone())).collect();
             Fragment::Set(Set { meta, elems })
         }
         (Encoding::Map, Value::Map(kv)) => {
@@ -344,8 +345,8 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             }
             for it in items {
                 if !live.iter().any(|(_, p)| p.as_ref() == Some(it)) {
-                    let d = w.fresh().dot;
-                    elems.insert(d, Elem { reset: None, frag: Some(Box::new(create(w, &ev, it)?)) });
+                    let (d, e) = set_elem(w, it.clone());
+                    elems.insert(d, e);
                 }
             }
             Fragment::Set(Set { meta: Meta::default(), elems })
@@ -417,8 +418,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
             {
                 return Ok(None);
             }
-            let d = w.fresh().dot;
-            let elems = BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(create(w, &ev, v)?)) })]);
+            let elems = BTreeMap::from([set_elem(w, v.clone())]);
             Ok(Some(Fragment::Set(Set { meta: Meta::default(), elems })))
         }
         Op::Remove(x) => {
