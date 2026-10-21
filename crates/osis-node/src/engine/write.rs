@@ -407,6 +407,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
+        // a paged state loads what the ops address (map keys, fields), else whole
+        match crate::engine::pages::op_paths(&am.ops) {
+            Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
+            None => tx.load(&tid, &ak)?,
+        }
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
         if kind == Kind::Content {
@@ -421,7 +426,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Form::Commit => next_ctr,
         };
         let w = Writer::new(ts, own_source(m.form, node), lo);
-        tx.load(&tid, &ak)?;
         let empty = Fragment::default();
         let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));

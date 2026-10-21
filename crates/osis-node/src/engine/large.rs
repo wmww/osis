@@ -200,7 +200,8 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
 /// written (ID, prefix salt): the delta's chunk list; reused blobs are not in it. `fresh`: blobs
 /// never reused.
 pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<(BlobId, [u8; 16])>> {
-    tx.load(tid, ak)?;
+    // what the ops address is loaded (`commit_in`)
+    tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
     let mut blobs = TxBlobs::new(&mut tx.txn);
     let rng = &mut *tx.rng;

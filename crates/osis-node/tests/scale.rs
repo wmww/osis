@@ -88,7 +88,7 @@ fn big_map_edit_cost() {
     let a = ak("/app/big");
     let mut n = 10_000;
     while n <= max {
-        let (mut e, batches, bytes) = engine(n as u64);
+        let (mut e, batches, bytes, reopen) = engine_reopenable(n as u64);
         let me = e.tid();
         let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
         let t0 = Instant::now();
@@ -113,6 +113,18 @@ fn big_map_edit_cost() {
             b1 - b0,
             pkg.blobs.len()
         );
+        // a new session: the first read of one key and the first edit load only their pages
+        drop(e);
+        let mut e = reopen.open(&batches, &bytes);
+        let t2 = Instant::now();
+        let v = e.get_at(&t, &a, &[PathSeg::Key(Value::Int(n as i64 / 3))]).unwrap();
+        let read = t2.elapsed();
+        assert_eq!(v, Some(Value::Int(n as i64 / 3)));
+        let t3 = Instant::now();
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![PathSeg::Key(Value::Int(n as i64 / 4))], op: Op::Set(Value::Int(-2)) }).unwrap();
+        e.commit(m).unwrap().unwrap();
+        println!("map {n} keys, new session: first read of one key {read:?}, first edit {:?}", t3.elapsed());
         n *= 10;
     }
 }

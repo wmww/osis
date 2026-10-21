@@ -30,7 +30,15 @@ fn decode_buffer(b: &[u8]) -> Result<Vec<(CommitId, Vec<u8>)>> {
 /// Records the state of `(tid, ak)` before local commit `id` applies: the part undoing `delta`
 /// reads (`Fragment::footprint`), or all of it without one.
 pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta: Option<&Fragment>) -> Result<()> {
-    tx.load(tid, ak)?;
+    // a paged state loads what the delta touches (its footprint lies there)
+    match delta {
+        Some(d) => {
+            tx.load_lazy(tid, ak)?;
+            let touch = crate::engine::pages::touch_of(d, tx.core.pages.get(&(*tid, ak.clone())));
+            tx.ensure_touch(tid, ak, &touch)?;
+        }
+        None => tx.load(tid, ak)?,
+    }
     let pre = match (tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref), delta) {
         (Some(f), Some(d)) => crate::engine::state::encode(&f.footprint(d))?,
         (Some(f), None) => crate::engine::state::encode(f)?,
@@ -110,7 +118,10 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
                 f
             }
         };
-        tx.load(&a.tid, &a.ak)?;
+        // the undo reads the current state along the delta's paths
+        tx.load_lazy(&a.tid, &a.ak)?;
+        let touch = crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())));
+        tx.ensure_touch(&a.tid, &a.ak, &touch)?;
         let lo = tx.txn.counter(&a.tid, &a.ak)?;
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();

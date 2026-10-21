@@ -8,6 +8,7 @@ pub(crate) mod clock;
 pub(crate) mod groups;
 pub(crate) mod held;
 pub(crate) mod journal;
+pub(crate) mod pages;
 pub(crate) mod large;
 mod read;
 pub(crate) mod records;
@@ -132,7 +133,7 @@ pub(crate) struct Core {
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
     /// Page indexes of the cached states kept paged in the store.
-    pub pages: HashMap<(Tid, Ak), state::PageIndex>,
+    pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub timelines: Timelines,
@@ -344,15 +345,16 @@ pub(crate) struct Tx<'a> {
 }
 
 impl Tx<'_> {
-    /// Loads the state of `(tid, ak)` into the cache.
-    pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+    /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages
+    /// as `ensure_*` and `load` need them).
+    pub fn load_lazy(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
         let k = (*tid, ak.clone());
         if self.core.states.contains_key(&k) {
             return Ok(());
         }
         let f = match self.txn.get_aspect(tid, ak)? {
-            Some(u) if state::is_paged(&u.state) => {
-                let (f, idx) = state::load_paged(&mut self.txn, tid, ak, &u.state)?;
+            Some(u) if pages::is_paged(&u.state) => {
+                let (f, idx) = pages::open(&u.state)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
             }
@@ -363,12 +365,76 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// Runs `g` on the cached state of `(tid, ak)` (taken out of the cache meanwhile) and its page
+    /// index; nothing for an unpaged state.
+    fn with_pages<T>(&mut self, tid: &Tid, ak: &Ak, g: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment) -> Result<T>) -> Result<Option<T>> {
+        let k = (*tid, ak.clone());
+        let Some(idx) = self.core.pages.get_mut(&k) else { return Ok(None) };
+        let Some(mut f) = self.core.states.get_mut(&k).and_then(Option::take) else { return Ok(None) };
+        let r = g(&mut self.txn, idx, &mut f);
+        self.core.states.insert(k, Some(f));
+        r.map(Some)
+    }
+
+    /// Loads the whole state of `(tid, ak)` into the cache.
+    pub fn load(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            self.with_pages(tid, ak, |txn, idx, f| pages::load_all(txn, tid, ak, idx, f))?;
+        }
+        Ok(())
+    }
+
+    /// Loads what ops at `paths` (op path segments) read and write (`pages::ensure_path`).
+    pub fn ensure_paths(&mut self, tid: &Tid, ak: &Ak, paths: &[Vec<osis_crdt::PathSeg>]) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            return Ok(());
+        }
+        let ok = self.with_pages(tid, ak, |txn, idx, f| {
+            for p in paths {
+                if !pages::ensure_path(txn, tid, ak, idx, f, p)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        })?;
+        if ok == Some(false) {
+            self.load(tid, ak)?;
+        }
+        Ok(())
+    }
+
+    /// Loads what joining a delta with this touch reads and rewrites (`pages::ensure_touch`;
+    /// `None`: everything).
+    pub fn ensure_touch(&mut self, tid: &Tid, ak: &Ak, touch: &pages::Touch) -> Result<()> {
+        self.load_lazy(tid, ak)?;
+        if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
+            return Ok(());
+        }
+        let ok = match touch {
+            Some(t) => self.with_pages(tid, ak, |txn, idx, f| pages::ensure_touch(txn, tid, ak, idx, f, t))? == Some(true),
+            None => false,
+        };
+        if !ok {
+            self.load(tid, ak)?;
+        }
+        Ok(())
+    }
+
+    /// The cached state as loaded so far (after `load_lazy` and `ensure_*`).
+    pub fn cached(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
+        self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref)
+    }
+
+    /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;
         Ok(self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref))
     }
 
-    /// Writes a state (keeping the unit's undo buffer unless `clear_undo`).
+    /// Writes a whole state (keeping the unit's undo buffer unless `clear_undo`); `f` is the
+    /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
         self.core.touch();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
@@ -376,7 +442,7 @@ impl Tx<'_> {
         }
         self.core.written.push((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
-        let (bytes, idx) = state::write_full(&mut self.txn, tid, ak, f.as_ref(), state::is_paged(&unit.state))?;
+        let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state))?;
         unit.state = bytes;
         match idx {
             Some(idx) => self.core.pages.insert((*tid, ak.clone()), idx),
@@ -396,16 +462,17 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Writes a state a join changed: `touch` (`state::touch_of` the delta) says what it
+    /// Writes a state a join changed: `touch` (`pages::touch_of` the delta) says what it
     /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
-    /// else is written whole. The caller has noted the state as written (`Core::written`).
-    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
+    /// else is written whole (the pages not loaded joined in first). The caller has noted the
+    /// state as written (`Core::written`).
+    pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
         let k = (*tid, ak.clone());
         if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
-            && let Some(unit_state) = state::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
+            && let Some(unit_state) = pages::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
         {
             if let Some(s) = unit_state {
                 let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
@@ -414,6 +481,10 @@ impl Tx<'_> {
             }
             self.core.states.insert(k, f);
             return Ok(());
+        }
+        let mut f = f;
+        if let (Some(st), Some(idx)) = (&mut f, self.core.pages.get_mut(&k)) {
+            pages::load_all(&mut self.txn, tid, ak, idx, st)?;
         }
         self.set_state(tid, ak, f, shred, false)
     }

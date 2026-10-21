@@ -116,7 +116,11 @@ impl Engine {
         if self.core.created(tid).is_none() {
             return Ok(None);
         }
-        let v = self.run(|tx| Ok(tx.state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read())))?;
+        // a paged state loads only the pages on the path
+        let v = self.run(|tx| {
+            tx.ensure_paths(tid, ak, &[path.to_vec()])?;
+            Ok(tx.cached(tid, ak).and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read()))
+        })?;
         Ok(match v {
             Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
             v => v,

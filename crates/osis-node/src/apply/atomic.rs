@@ -52,7 +52,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 
 /// Joins `delta` into the state of `(tid, ak)`, holding value-less what must be.
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
-    tx.load(tid, ak)?;
+    tx.load_lazy(tid, ak)?;
     // writes owned by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too)
     let invalid = invalid_of(tx.core, tid, ak);
@@ -61,7 +61,9 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
     strip_valueless(tx.core, tid, ak, &mut delta);
-    let touch = crate::engine::state::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
+    // a paged state loads only the pages the join touches
+    let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
+    tx.ensure_touch(tid, ak, &touch)?;
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();
@@ -363,7 +365,11 @@ fn observe_touched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, touched: &Touched) -> Re
 /// they reach) teaches this node: O(those entries), not O(boxes). Whether anything was learned.
 pub(crate) fn ingest_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: &[Value]) -> Result<bool> {
     let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;
-    tx.load(actor, &ak)?;
+    // the boxes keyed so, and the history boxes (their chain is followed in memory)
+    use osis_crdt::PathSeg;
+    let mut paths: Vec<Vec<PathSeg>> = boxes.iter().map(|k| vec![PathSeg::Field(0), PathSeg::Key(k.clone())]).collect();
+    paths.push(vec![PathSeg::Field(1)]);
+    tx.ensure_paths(actor, &ak, &paths)?;
     let k = (*actor, ak);
     // taken out of the cache while the core learns from it, then put back
     let Some(st) = tx.core.states.get_mut(&k).and_then(Option::take) else { return Ok(false) };
