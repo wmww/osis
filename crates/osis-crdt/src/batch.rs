@@ -8,6 +8,7 @@ use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf};
 use crate::seq;
 use crate::stamp::{CounterRange, Dot, Stamp, max_opt};
 use crate::view::View;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 /// Does the op's path plus a value it carries nest deeper than `MAX_VALUE_DEPTH` (spec/data-model.md
@@ -30,13 +31,16 @@ pub struct Batch<'s> {
     state: &'s Fragment,
     w: Writer,
     acc: Option<Fragment>,
+    /// `state` joined with `acc`, built once a later op needs it (one copy of the state) and
+    /// kept up by joining each op's delta while that equals the net effect (§4.5; else dropped).
+    seen: Option<Fragment>,
 }
 
 impl<'s> Batch<'s> {
     /// Ops resolve against `state` (the aspect's local state, pruned as join and decode leave
     /// it) and the batch so far.
     pub fn new(state: &'s Fragment, w: Writer) -> Batch<'s> {
-        Batch { state, w, acc: None }
+        Batch { state, w, acc: None, seen: None }
     }
 
     /// Applies `op` under the writer's `view` (of the aspect root).
@@ -44,20 +48,47 @@ impl<'s> Batch<'s> {
         if too_deep(op) {
             return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH"));
         }
-        let d = resolve(&mut self.w, Some(self.state), self.acc.as_ref(), None, &op.path, op, view, true)?;
-        if let Some(d) = d {
-            let acc = self.acc.take();
-            self.acc = Some(match acc {
-                None => d,
-                Some(a) => overlay(a, d, &self.w),
-            });
+        // a path through a map key resolves without a copy (`key_lookup`)
+        if self.acc.is_some() && self.seen.is_none() && !matches!(op.path.first(), Some(PathSeg::Key(_))) {
+            self.seen = joined(Some(self.state), self.acc.as_ref(), None);
+        }
+        let d = match &self.seen {
+            Some(v) => resolve(&mut self.w, Some(v), None, None, &op.path, op, view, true)?,
+            None => resolve(&mut self.w, Some(self.state), self.acc.as_ref(), None, &op.path, op, view, true)?,
+        };
+        let Some(d) = d else { return Ok(()) };
+        let Some(a) = self.acc.take() else {
+            self.acc = Some(d);
+            return Ok(());
+        };
+        let mut exact = None;
+        if self.seen.is_some() {
+            let mut ch = crate::changes::Changes::new();
+            let mut j = a.clone();
+            j.prune(None, &mut ch);
+            j.join_into(d.clone(), None, &mut ch);
+            exact = Some(j);
+        }
+        let next = overlay(a, d.clone(), &self.w);
+        // state ⊔ acc ⊔ d = state ⊔ next when acc ⊔ d is the net effect (associativity)
+        match (&mut self.seen, exact) {
+            (Some(v), Some(j)) if j == next => v.join_into(d, None, &mut crate::changes::Changes::new()),
+            _ => self.seen = None,
+        }
+        self.acc = Some(next);
+        #[cfg(debug_assertions)]
+        if let Some(v) = &self.seen {
+            debug_assert!(Some(v) == joined(Some(self.state), self.acc.as_ref(), None).as_ref(), "batch view differs from state + net effect");
         }
         Ok(())
     }
 
     /// The state as the batch sees it: the local state joined with the batch's writes.
     pub fn view(&self) -> Fragment {
-        joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default()
+        match &self.seen {
+            Some(v) => v.clone(),
+            None => joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default(),
+        }
     }
 
     /// The delta and the counter range it consumes; `None` if the ops changed nothing.
@@ -83,17 +114,22 @@ fn reset_of(f: Option<&Fragment>) -> Option<Stamp> {
     f.and_then(|f| f.meta()).and_then(|m| m.reset.clone())
 }
 
+/// The position's state with the batch's writes: borrowed when there are none.
+fn current<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Option<Cow<'a, Fragment>> {
+    if a.is_none() && e.is_none() {
+        return s.map(Cow::Borrowed);
+    }
+    joined(s, a, e).map(Cow::Owned)
+}
+
 /// Resolves `op` at `path` below the position whose state is `s` and batch writes `a`; `e` is
 /// the batch's effective reset from above. Returns the root-relative delta.
 #[allow(clippy::too_many_arguments)]
 fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool) -> Result<Option<Fragment>, Error> {
     let Some((seg, rest)) = path.split_first() else {
         // nothing of the batch at this position: resolve against the state itself, no clone
-        if a.is_none() && e.is_none() {
-            return leaf(w, s, view, &op.op, root);
-        }
-        let cur = joined(s, a, e.as_ref());
-        return leaf(w, cur.as_ref(), view, &op.op, root);
+        let cur = current(s, a, e.as_ref());
+        return leaf(w, cur.as_deref(), view, &op.op, root);
     };
     let enc = match seg {
         PathSeg::Field(_) => Encoding::Struct,
@@ -114,12 +150,12 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             resolve(w, sc, ac, e, rest, op, &fview, false)?.map(|c| Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, c)]) }))
         }
         PathSeg::Case(id) => {
-            let cur = joined(s, a, e.as_ref());
-            let current = match &cur {
+            let cur = current(s, a, e.as_ref());
+            let case = match cur.as_deref() {
                 Some(Fragment::Enum(x)) => x.case.as_ref().and_then(|c| c.case),
                 _ => None,
             };
-            if current != Some(*id) {
+            if case != Some(*id) {
                 return Err(Error::Mismatch("case is not current"));
             }
             let pview = view.case(*id).ok_or(Error::Mismatch("case has no payload"))?;
@@ -160,9 +196,9 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         }
         PathSeg::Index(i) => {
             let eview = view.element().ok_or(Error::Mismatch("list without element type"))?;
-            let cur = joined(s, a, e.as_ref());
-            let Some(Fragment::Seq(cur)) = cur else { return Err(Error::Mismatch("index out of range")) };
-            let (d, content) = seq::element_at(&cur, *i).ok_or(Error::Mismatch("index out of range"))?;
+            let cur = current(s, a, e.as_ref());
+            let Some(Fragment::Seq(cur)) = cur.as_deref() else { return Err(Error::Mismatch("index out of range")) };
+            let (d, content) = seq::element_at(cur, *i).ok_or(Error::Mismatch("index out of range"))?;
             let c = resolve(w, content.as_ref(), None, None, rest, op, &eview, false)?;
             c.map(|c| Fragment::Seq(seq::wrap_element(d, c)))
         }

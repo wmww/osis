@@ -15,31 +15,6 @@ use crate::stamp::{Dot, SourceKind, Stamp};
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-/// One placed node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Row {
-    /// First element. A visible element is a node of its own.
-    pub dot: Dot,
-    /// Last element (where children anchor).
-    pub last: Dot,
-    /// Elements in the node.
-    pub span: u64,
-    /// Whether the node is created (a chain); else its elements are bare anchors or flag-only,
-    /// each placed on its own.
-    pub created: bool,
-    /// Chosen parent node (by first element): `None` for HEAD and `END`.
-    pub parent: Option<Dot>,
-    /// Whether the node is visible (§5.7 Read).
-    pub shown: bool,
-}
-
-/// The placement of every placed node (deleted, content-less and bare anchors included) in
-/// order; hidden ones (unknown anchor, §6.1) are absent.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Placement {
-    pub rows: Vec<Row>,
-}
-
 /// A record or a piece of a range record.
 pub(crate) struct Node<'a> {
     pub dot: Cow<'a, Dot>,
@@ -96,6 +71,14 @@ impl Graph<'_> {
                 None if c == 0 => Edge::Hidden,
                 None => Edge::End,
             },
+        }
+    }
+    /// `lookup` for an anchor of node `i`: typing anchors at the node just before in dot order.
+    fn lookup_near(&self, x: &Dot, i: usize) -> Option<usize> {
+        let held = |j: usize| j < self.real && self.dots.get(j).zip(self.spans.get(j)).is_some_and(|(d, n)| d.src == x.src && d.ctr <= x.ctr && x.ctr - d.ctr < *n);
+        match i.checked_sub(1) {
+            Some(j) if held(j) => Some(j),
+            _ => self.lookup(x),
         }
     }
     fn parent(&self, i: usize) -> Option<usize> {
@@ -195,16 +178,27 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
         g.dots.push(d);
         g.pos.push(&[]);
     }
-    g.edge = (0..n).map(|i| g.compute(i)).collect();
+    // first edges (`cur`, §6.2 step 1), collecting the anchors that name no element on the way
     let mut waiting = HashSet::new();
-    for p in g.pos.iter().take(real) {
-        for (_, a) in p.iter() {
-            if let Anchor::Dot(x) = a
-                && g.lookup(x).is_none()
-            {
-                waiting.insert(x.clone());
+    g.edge = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut edge = Edge::End;
+        for (k, (_, a)) in g.pos.get(i).copied().unwrap_or_default().iter().enumerate() {
+            let e = match a {
+                Anchor::Head => Edge::Head,
+                Anchor::Dot(x) => match g.lookup_near(x, i) {
+                    Some(j) => Edge::Node(j),
+                    None => {
+                        waiting.insert(x.clone());
+                        Edge::Hidden
+                    }
+                },
+            };
+            if k == 0 {
+                edge = e;
             }
         }
+        g.edge.push(edge);
     }
     break_cycles(&mut g);
     let (order, parent) = traverse(&g);
@@ -214,35 +208,8 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
 
 /// Places the elements of a sequence (§6), by dot.
 #[cfg(test)]
-pub(crate) fn place(elems: &Elems, text: bool) -> Placement {
-    Placement::of(&place_idx(elems), text)
-}
-
-impl Placement {
-    /// By dot, from a placement by index.
-    pub(crate) fn of(p: &Placed, text: bool) -> Placement {
-        let first = |i: usize| p.nodes.get(i).map(|n| n.dot.clone().into_owned());
-        let rows = p
-            .order
-            .iter()
-            .filter_map(|i| {
-                let n = p.nodes.get(*i)?;
-                Some(Row {
-                    dot: n.dot.clone().into_owned(),
-                    last: nth(&n.dot, n.elem.span - 1),
-                    span: n.elem.span,
-                    created: n.elem.created.is_some(),
-                    parent: p.parent.get(*i).copied().flatten().filter(|j| *j < p.nodes.len()).and_then(first),
-                    shown: crate::seq::is_visible(&n.elem, text),
-                })
-            })
-            .collect();
-        Placement { rows }
-    }
-    /// Index of the node starting at `d`.
-    pub(crate) fn index(&self, d: &Dot) -> Option<usize> {
-        self.rows.iter().position(|r| r.dot == *d)
-    }
+pub(crate) fn place(elems: &Elems, text: bool) -> crate::seq_lin::Placement {
+    crate::seq_lin::Placement::of(&place_idx(elems), text)
 }
 
 /// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each

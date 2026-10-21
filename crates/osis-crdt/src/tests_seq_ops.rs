@@ -93,7 +93,7 @@ fn random_text_op(r: &mut Rng, n: usize, st: &Fragment) -> Op {
             // paste a run of cut (deleted) text, adjacent in placement order
             let Fragment::Seq(sq) = st else { return Op::Insert { at: 0, items: vec![s("a")] } };
             let mut runs: Vec<Vec<crate::Dot>> = vec![vec![]];
-            for d in crate::linearize::place(sq.elems(), sq.text).rows.into_iter().map(|r| r.dot) {
+            for d in crate::linearize::place(sq.elems(), sq.text).iter().map(|r| r.dot.clone()) {
                 let e = crate::seq_span::elem(sq.elems(), &d).unwrap();
                 match (e.flag(), &e.content) {
                     (true, crate::seq::SeqContent::Char(_)) => runs.last_mut().unwrap().push(d),
@@ -383,9 +383,10 @@ proptest! {
 }
 
 /// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
-/// through `Batch`, joins (read between or not), snapshot encode/decode.
+/// through `Batch`, joins (insert, delete, older concurrent insert, move), snapshot
+/// encode/decode.
 #[test]
-#[ignore]
+#[ignore = "tier 2"]
 fn budget_big_text_spec_6() {
     use std::time::Instant;
     let mut r = Rng(5);
@@ -418,16 +419,30 @@ fn budget_big_text_spec_6() {
     let two = [op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 50_000, len: 3 })];
     b.commit(1001, &two, &text_view()).unwrap();
     let two_ops = t.elapsed();
-    // a join after a join with no read between drops the cache instead of following it
+    // joins with no read between follow the cache too
     let (d, _, _) = b.commit(1002, &[op(Op::Insert { at: 7000, items: vec![s("w")] })], &text_view()).unwrap();
     let t = Instant::now();
     a.state.join(d);
     let unread_join = t.elapsed();
-    // the next one finds no cache
-    let (d, _, _) = b.commit(1003, &[op(Op::Insert { at: 9000, items: vec![s("v")] })], &text_view()).unwrap();
+    // a delete
+    let (d, _, _) = b.commit(1003, &[op(Op::Delete { at: 9000, len: 5 })], &text_view()).unwrap();
     let t = Instant::now();
     a.state.join(d);
-    let uncached_join = t.elapsed();
+    let delete_join = t.elapsed();
+    // an older concurrent insert at the anchor of a newer one, below it and its subtree
+    let mut c = Replica { state: a.state.clone(), src: node(3), lo: 1 };
+    let (older, _, _) = c.commit(1004, &[op(Op::Insert { at: 20_000, items: vec![s("old")] })], &text_view()).unwrap();
+    let (newer, _, _) = a.commit(1005, &[op(Op::Insert { at: 20_000, items: vec![s("new")] })], &text_view()).unwrap();
+    let _ = newer;
+    let t = Instant::now();
+    a.state.join(older);
+    let older_join = t.elapsed();
+    // a move: the next use places from scratch
+    let (d, _, _) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
+    let t = Instant::now();
+    a.state.join(d);
+    let _ = a.state.read();
+    let move_join = t.elapsed();
     let snap = crate::wire::Snapshot { nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
@@ -437,7 +452,7 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, unread join (drops the cache) {unread_join:?}, uncached join {uncached_join:?}, encode {encode:?}, decode {decode:?}", p.rows.len());
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move join and read {move_join:?}, encode {encode:?}, decode {decode:?}", p.iter().count());
     let _ = v;
 }
 
@@ -462,15 +477,48 @@ fn cached_placement_follows_typing_spec_6() {
         assert_eq!(read_str(&a.state), read_str(&b.state), "after {before:?}");
     }
     assert!(kept >= 199, "kept {kept}");
-    // joins without a read in between: the second drops the cache
-    let cached = |b: &Replica| matches!(&b.state, Fragment::Seq(x) if x.lin_check().is_some());
-    for k in 200..202u64 {
+    // joins without a read in between follow it too
+    let cached = |b: &Replica| matches!(&b.state, Fragment::Seq(x) if x.lin_check() == Some(true));
+    for k in 200..203u64 {
         let (d, _, _) = a.commit(k + 1, &[op(Op::Insert { at: 0, items: vec![s("z")] })], &text_view()).unwrap();
         b.state.join(d);
-        assert_eq!(cached(&b), k == 200);
+        assert!(cached(&b));
     }
     assert_eq!(read_str(&a.state), read_str(&b.state));
-    assert!(cached(&b));
+}
+
+/// §6.1 sibling order (`seq_lin`): two writers typing at one place concurrently (each insert
+/// lands next to the other's, older ones below newer siblings and their subtrees) keep the
+/// cached placement of a third replica receiving both, equal to a whole pass.
+#[test]
+fn cached_placement_follows_concurrent_typing_spec_6() {
+    let mut r = Rng(13);
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(s(&"base text ".repeat(20))))], &text_view());
+    let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    let mut c = Replica { state: a.state.clone(), src: node(3), lo: 1 };
+    let (mut kept, mut joins) = (0, 0);
+    for k in 0..60u64 {
+        // both type a word at the same visible index; b's write is older
+        let n = read_str(&a.state).chars().count();
+        let at = r.below(n + 1);
+        let (db, _, _) = b.commit(2 * k + 2, &[op(Op::Insert { at, items: vec![s("bb")] })], &text_view()).unwrap();
+        let (da, _, _) = a.commit(2 * k + 3, &[op(Op::Insert { at, items: vec![s("aaa")] })], &text_view()).unwrap();
+        for d in if r.chance(1, 2) { [da.clone(), db.clone()] } else { [db.clone(), da.clone()] } {
+            let _ = read_str(&c.state);
+            c.state.join(d);
+            crate::testutil::check_lin(&c.state);
+            joins += 1;
+            if matches!(&c.state, Fragment::Seq(x) if x.lin_check() == Some(true)) {
+                kept += 1;
+            }
+        }
+        a.state.join(db);
+        b.state.join(da);
+        assert_eq!(read_str(&a.state), read_str(&b.state));
+        assert_eq!(read_str(&a.state), read_str(&c.state));
+    }
+    assert!(kept * 10 >= joins * 9, "kept {kept} of {joins}");
 }
 
 /// notes/api.md `edit`: a base element changed concurrently (and a remote insert beside it) is
@@ -627,7 +675,7 @@ fn cut_and_paste_keeps_identity_spec_5_7() {
     // the pasted elements are the cut ones
     let Fragment::Seq(sq) = &a.state else { panic!() };
     let vis = visible(sq);
-    assert_eq!(&vis[9..13], dots.as_slice());
+    assert_eq!(vis.iter().skip(9).take(4).cloned().collect::<Vec<_>>(), dots);
     // a paste whose clipboard no longer matches fails (the caller inserts instead)
     let mut c = Replica::new(3);
     c.commit(1, &[op(Op::Set(s("x")))], &text_view());
