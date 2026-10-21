@@ -90,12 +90,11 @@ impl Owners {
     /// (spec/permissions.md §1: a deeper thing has no owner chain). O(`MAX_OWNER_DEPTH`).
     pub fn chain(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let mut up = Vec::new();
-        let mut seen = BTreeSet::from([*t]);
         let mut cur = *t;
         for _ in 0..=MAX_OWNER_DEPTH {
             match self.owner(&cur) {
                 Some(Owner::Key) => return (up, Some(cur)),
-                Some(Owner::Actor(y)) if seen.insert(y) => {
+                Some(Owner::Actor(y)) if y != *t && !up.contains(&y) => {
                     up.push(y);
                     cur = y;
                 }

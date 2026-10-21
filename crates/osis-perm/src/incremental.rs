@@ -75,6 +75,8 @@ type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
 pub struct Timelines {
     comps: Vec<(Inputs, Timeline)>,
     of: BTreeMap<Tid, usize>,
+    /// Things whose component was evaluated by the last `update`.
+    changed: BTreeSet<Tid>,
 }
 
 impl Timelines {
@@ -128,12 +130,14 @@ impl Timelines {
         let mut cache: BTreeMap<Inputs, Timeline> = std::mem::take(&mut self.comps).into_iter().collect();
         let mut evaluated = 0;
         self.of.clear();
+        self.changed.clear();
         for (_, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
             let tl = match cache.remove(&inputs) {
                 Some(tl) => tl,
                 None => {
                     evaluated += 1;
+                    self.changed.extend(inputs.0.iter().copied());
                     // a component that only gained commits continues its walk when it can
                     let grown = cache.keys().find(|k| k.0 == inputs.0 && k.2 == inputs.2 && k.1.is_subset(&inputs.1)).cloned();
                     match grown.and_then(|k| cache.remove(&k)).and_then(|tl| tl.extend(&part)) {
@@ -154,6 +158,12 @@ impl Timelines {
     /// The timeline of the component holding `thing` (and every node with a path to it).
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {
         self.of.get(thing).and_then(|&i| self.comps.get(i)).map(|(_, tl)| tl)
+    }
+
+    /// Things whose timeline the last `update` evaluated (or continued): every other thing's
+    /// answers are unchanged.
+    pub fn changed(&self) -> &BTreeSet<Tid> {
+        &self.changed
     }
 
     pub fn components(&self) -> usize {

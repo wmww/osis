@@ -657,14 +657,24 @@ impl<'a> Pass<'a> {
                 let best = self.roles(x, ts);
                 let view = self.view(ts);
                 let before = self.view(ts).patched(member, target, Some(restored));
-                let best_was = if wider {
+                let (best_was, raised) = if wider {
+                    let raised = before.roles_raised(&best, &[member]);
                     let mut b = (*best).clone();
-                    b.extend(before.roles_raised(&best, &[member]));
-                    b
+                    b.extend(raised.iter().map(|(t, r)| (*t, *r)));
+                    (b, Some(raised))
                 } else {
-                    before.roles_from(&x)
+                    (before.roles_from(&x), None)
                 };
-                ns.iter().map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect()
+                // A standing reads the role on the thing, on its owner chain and on its members
+                // with an invite; only the target's members differ between the views.
+                let owners = &self.input.owners;
+                let edges = &self.edges;
+                let reads_raised = |n: &Tid| {
+                    raised.as_ref().is_none_or(|r| {
+                        *n == target || r.contains_key(n) || owners.chain(n).0.iter().any(|y| r.contains_key(y)) || edges.members(n).any(|(m, e)| e.invite.is_some() && r.contains_key(m))
+                    })
+                };
+                ns.iter().filter(|n| reads_raised(n)).map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect()
             };
             for (n, now, held) in pairs {
                 for below in [Role::Write, Role::Admin] {

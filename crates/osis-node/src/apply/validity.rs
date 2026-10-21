@@ -290,6 +290,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usi
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
 /// `roster_snapshot` refuses it (`Core::frontier_unknown`).
 pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+    tx.core.stale_commits.insert(*id);
     let linked = match linked_frontiers(tx, h, parts) {
         Ok(l) => l,
         Err(_) if tx.core.skip_writer_rules && h.author == tx.core.id.tid() => Linked::default(),
@@ -450,6 +451,7 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
 /// of a membership commit that write beyond its grantees' boxes.
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+    core.stale_commits.insert(*id);
     for (ai, _, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), fragment(d))
@@ -589,8 +591,9 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
-/// Re-judges every held delta after the held set changed; rebuilds aspects whose validity
-/// flipped. Returns them.
+/// Re-judges the held deltas whose validity may have changed since the last call (on things
+/// whose timeline was evaluated, or with other inputs changed; every one after open or a
+/// rollback); rebuilds aspects whose validity flipped. Returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
@@ -598,7 +601,13 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
-    let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
+    let things = std::mem::take(&mut tx.core.stale_things);
+    let mut ids = std::mem::take(&mut tx.core.stale_commits);
+    if std::mem::take(&mut tx.core.stale_all) {
+        ids.extend(tx.core.commits.keys().copied());
+    } else {
+        ids.extend(tx.core.by_aspect.iter().filter(|((t, _), _)| things.contains(t)).flat_map(|(_, s)| s.iter().map(|x| x.1)));
+    }
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
         let h = m.header.clone();
@@ -622,6 +631,12 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             m.valid = now;
             tx.core.index_validity(&id);
         }
+    }
+    // what was not re-judged has not changed
+    #[cfg(debug_assertions)]
+    for (id, m) in &tx.core.commits {
+        let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
+        debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
     }
     if rebuild {
         for (tid, ak) in &flipped {
