@@ -431,6 +431,17 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
     m
 }
 
+/// Whether `inner_max(s, true)` is some, stopping at the first presence-counting write.
+pub(crate) fn has_valued(s: &Seq) -> bool {
+    s.elems.iter().any(|(d, e)| {
+        let creation = e.creation_counts();
+        (creation && e.created.is_some())
+            || e.pos.iter().any(|p| creation || p.0.dot != *d)
+            || e.reset().is_some()
+            || matches!(&e.content, SeqContent::Frag(f) if f.reset().is_some() || f.present())
+    })
+}
+
 /// Whether any record exists (emptiness, §4.2).
 pub(crate) fn has_records(s: &Seq) -> bool {
     !s.elems.is_empty()

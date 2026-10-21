@@ -404,7 +404,7 @@ impl Tx<'_> {
             self.core.membership_changed();
         }
         let k = (*tid, ak.clone());
-        if let (Some(st), Some(idx)) = (&f, self.core.pages.get_mut(&k))
+        if let (Some(st), Some(idx), Some(touch)) = (&f, self.core.pages.get_mut(&k), touch)
             && let Some(unit_state) = state::write_touched(&mut self.txn, idx, tid, ak, st, touch, shred)?
         {
             if let Some(s) = unit_state {

@@ -61,7 +61,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
     strip_valueless(tx.core, tid, ak, &mut delta);
-    let touch = crate::engine::state::touch_of(&delta);
+    let touch = crate::engine::state::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();

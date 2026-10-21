@@ -36,7 +36,11 @@ impl Fragment {
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.at(rest),
             (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
-            (PathSeg::Key(k), Fragment::Map(m)) => crate::ops::key_state(m, &m.live_dots(k))?.at(rest),
+            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_dots(k).as_slice() {
+                // one live entry: read in place
+                [d] => m.entries.get(*d)?.frag.as_deref()?.at(rest),
+                ds => crate::ops::key_state(m, ds)?.at(rest),
+            },
             (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.at(rest),
             _ => None,
         }

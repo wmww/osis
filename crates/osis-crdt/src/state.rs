@@ -504,9 +504,23 @@ impl Fragment {
         }
     }
 
-    /// Present iff `written` survives (§4.3); a state is pruned, so iff it exists.
+    /// Present iff `written` survives (§4.3); a state is pruned, so iff it exists. Stops at the
+    /// first presence-counting write (a large collection costs O(1), not a scan for the max).
     pub fn present(&self) -> bool {
-        self.written().is_some()
+        let child = |f: &Fragment| f.reset().is_some() || f.present();
+        let elems = |elems: &BTreeMap<Dot, Elem>| elems.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child));
+        if self.meta().is_some_and(|m| m.w.is_some()) {
+            return true;
+        }
+        match self {
+            Fragment::Register(r) => reg_written(r).is_some(),
+            Fragment::Bag(Bag { elems: e, .. }) | Fragment::Set(Set { elems: e, .. }) => elems(e),
+            Fragment::Struct(s) => s.fields.values().any(child),
+            Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()) || s.payloads.values().any(child),
+            Fragment::Map(m) => m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child)),
+            Fragment::Seq(s) => seq::has_valued(s),
+            Fragment::Slots(_) => self.written().is_some(),
+        }
     }
 
     /// Greatest stamp inside (children, elements, case), excluding own reset and `W`. With

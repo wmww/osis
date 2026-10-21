@@ -129,8 +129,10 @@ pub fn frag(f: &m::Frag) -> Fragment {
 }
 
 /// Every cached sequence placement inside `f` equals a whole pass (`seq_lin`); sequences of
-/// more than 10^4 records are skipped (timing tests).
+/// more than 10^4 records are skipped (timing tests). Also: the short-circuit presence of every
+/// position equals its presence stamp's (§4.3).
 pub fn check_lin(f: &Fragment) {
+    assert_eq!(f.present(), f.written().is_some(), "present");
     let all = |it: &mut dyn Iterator<Item = &Fragment>| it.for_each(check_lin);
     match f {
         Fragment::Seq(s) => {
