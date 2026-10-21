@@ -122,6 +122,8 @@ macro_rules! journaled {
         c.epoch_intro.$m();
         c.box_written.$m();
         c.authors.$m();
+        c.lost_due.$m();
+        c.departures.$m();
         c.secrets_unresolved.$m();
     }};
 }
@@ -212,8 +214,8 @@ pub(crate) struct Core {
     /// here (`validity::add_membership`): no roster snapshot of them is written.
     pub frontier_unknown: BTreeSet<Tid>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `membership_changed`. Not journaled: a rollback clears it.
-    pub departures: BTreeMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
+    /// write's future `ts`); cleared by `membership_changed`.
+    pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
     pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
     /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
@@ -230,14 +232,14 @@ pub(crate) struct Core {
     pub skip_writer_rules: bool,
     /// Tests: after each per-entry `/secrets` ingestion, check that ingesting the whole state
     /// learns nothing more (`apply::atomic::observe_secrets_keys`).
+    #[cfg(test)]
     pub check_ingest: bool,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
-    /// The lost-access trigger's work list (`rotation::LOST_DUE`; a superset after a rollback
-    /// is harmless).
-    pub lost_due: BTreeSet<Tid>,
+    /// The lost-access trigger's work list (`rotation::LOST_DUE`).
+    pub lost_due: JSet<Tid>,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
@@ -261,7 +263,9 @@ impl Core {
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn membership_changed(&mut self) {
-        self.departures.clear();
+        if !self.departures.is_empty() {
+            self.departures.retain(|_, _| false);
+        }
     }
 
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
@@ -363,7 +367,7 @@ impl Core {
             epoch_intro: JMap::default(),
             box_written: JMap::default(),
             authors: JMap::default(),
-            departures: BTreeMap::new(),
+            departures: JMap::default(),
             frontiers: BTreeMap::new(),
             frontier_unknown: BTreeSet::new(),
             secrets_unresolved: JMap::default(),
@@ -371,9 +375,10 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            #[cfg(test)]
             check_ingest: false,
             key_actors: BTreeMap::new(),
-            lost_due: BTreeSet::new(),
+            lost_due: JSet::default(),
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -821,13 +826,6 @@ impl Engine {
         self.core.hlc.set_offset(ms);
     }
 
-    /// Tests: check every per-entry `/secrets` ingestion against the whole state's (an operation
-    /// fails with `Misuse` where they differ).
-    #[doc(hidden)]
-    pub fn check_secrets_ingest(&mut self, on: bool) {
-        self.core.check_ingest = on;
-    }
-
     /// A channel of engine events, sent after durability.
     pub fn subscribe(&mut self) -> Receiver<Event> {
         self.core.events.subscribe()
@@ -872,7 +870,7 @@ impl Engine {
 
     /// A fresh `Core` loaded from the store (`rebuild`: ignoring the persisted index); whether
     /// it was rebuilt from the commit records.
-    fn load_fresh(&mut self, rebuild: bool) -> Result<bool> {
+    fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         let id = Identity::from_seed(self.core.id.seed().clone());
         let mut fresh = Core::new(id, self.clock.clone());
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
@@ -881,7 +879,10 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
-        fresh.check_ingest = self.core.check_ingest;
+        #[cfg(test)]
+        {
+            fresh.check_ingest = self.core.check_ingest;
+        }
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -899,9 +900,14 @@ impl Engine {
             Err(Error::Corrupt(_)) => self.load_fresh(true)?,
             Err(e) => return Err(e),
         };
-        if rebuilt {
-            // persisted for the next open
-            self.run(index::write_all)?;
+        if let Some(stale) = rebuilt {
+            // states judged by other rules re-joined, then the index persisted for the next open
+            self.run(|tx| {
+                for (tid, ak) in &stale {
+                    crate::apply::rejoin(tx, tid, ak)?;
+                }
+                index::write_all(tx)
+            })?;
         }
         Ok(())
     }

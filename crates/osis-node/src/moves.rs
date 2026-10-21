@@ -69,7 +69,9 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
     {
         return Some(Dot::new(Source::commit(*c), x.ctr));
     }
+    // a commit that is itself imported (held, valid, kept): its own dot
     if let SourceKind::Node(_) = x.src.kind()
+        && from_own(core, tid, ak, x)
         && let Some(k) = core.commit_of(tid, ak, x)
     {
         return Some(Dot::new(Source::commit(k), x.ctr));

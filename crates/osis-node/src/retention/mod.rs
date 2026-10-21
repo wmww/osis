@@ -454,7 +454,8 @@ impl Engine {
     /// carrier before it leaves a label (spec/sync.md §7). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
-    /// them back). Kept per body until the next change (`Core::live_bodies`).
+    /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
+    /// until the next change (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());
         if let Some(v) = self.core.live_bodies.get(&key) {
@@ -468,13 +469,23 @@ impl Engine {
             for x in members {
                 let Some(a) = h.aspects.get(x) else { continue };
                 let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
-                // the pages holding the body's dots (all of them when the body is not held)
+                // the pages holding the dots of every delta of the body (all pages when one is
+                // not held or not a delta)
                 tx.load_lazy(&a.tid, &a.ak)?;
-                let touch = match crate::apply::held_parts(tx, &c, x)?.into_iter().next() {
-                    Some(osis_commit::Decoded::Delta(d)) => crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone()))),
-                    _ => None,
-                };
-                tx.ensure_touch(&a.tid, &a.ak, &touch)?;
+                let parts = crate::apply::held_parts(tx, &c, x)?;
+                let mut touches = Vec::new();
+                for d in &parts {
+                    match d {
+                        osis_commit::Decoded::Delta(d) => touches.push(crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())))),
+                        osis_commit::Decoded::Snapshot(_) => touches.push(None),
+                    }
+                }
+                if touches.is_empty() {
+                    touches.push(None);
+                }
+                for t in &touches {
+                    tx.ensure_touch(&a.tid, &a.ak, t)?;
+                }
                 let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
                 if st.writes().iter().any(|(d, _)| o.owns(d)) {
                     return Ok(true);

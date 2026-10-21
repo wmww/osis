@@ -524,7 +524,105 @@ impl crate::engine::Engine {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use crate::flows::{Delivery, Demotion, Done, PreSync};
+
+    /// A thing owned by `owner`, made by peer `i`.
+    fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
+        let e = &mut lp.peers[i].engine;
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, owner);
+        m.set(t, &osis_core::Ak::new("/x/reg").unwrap(), &Value::Str("new".into())).unwrap();
+        e.commit(m).unwrap().unwrap();
+        t
+    }
+
+    /// Every peer's commits to every other peer, twice.
+    fn spread(lp: &mut LocalPeer) {
+        let n = lp.peers.len();
+        for _ in 0..2 {
+            for a in 0..n {
+                let ids = lp.peers[a].engine.commit_ids();
+                for b in (0..n).filter(|b| *b != a) {
+                    send(lp, a, b, &ids);
+                }
+            }
+        }
+    }
+
+    fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
+        for id in ids {
+            let pk = lp.peers[from].engine.package(id).unwrap().unwrap();
+            lp.deliver(to, &pk).unwrap();
+        }
+    }
+
+    /// A flow's direct sends and inbox blobs to the peers.
+    fn carry(lp: &mut LocalPeer, from: usize, done: &Done) {
+        for d in &done.deliveries {
+            match d {
+                Delivery::Direct { to, commits } => {
+                    if let Some(i) = lp.peers.iter().position(|p| p.engine.tid() == *to) {
+                        send(lp, from, i, commits);
+                    }
+                }
+                Delivery::Inbox { blob, .. } => {
+                    for i in (0..lp.peers.len()).filter(|i| *i != from) {
+                        let _ = lp.peers[i].engine.accept_inbox(blob);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // spec/crypto.md §4 (opening `/secrets`; reading-only secrets of unchecked boxes; history
+    // keys with several live entries): random grants, demotions and rotations by several admins,
+    // carried by inbox blobs (pending until their chain arrives) and partial deliveries. Every
+    // per-entry ingestion of a `/secrets` change is checked against ingesting the whole state
+    // (the engine fails the operation where the whole state teaches more).
+    #[test]
+    fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
+        let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None };
+        for seed in 0..4u64 {
+            let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
+            let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&servers).unwrap().0.person).collect();
+            spread(&mut lp);
+            for p in &mut lp.peers {
+                p.engine.core.check_ingest = true;
+            }
+            let t = thing_of(&mut lp, 0, ps[0]);
+            let mut rng = osis_crypto::SeededRng::from_u64(seed);
+            let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut rng) % n;
+            let roles = [Role::Read, Role::Write, Role::Admin];
+            for _ in 0..14 {
+                lp.advance(1000);
+                let by = r(4) as usize;
+                let member = ps[1 + r(3) as usize];
+                let done = match r(5) {
+                    0 | 1 => lp.peers[by].engine.grant(&t, &member, &edge(roles[r(3) as usize])),
+                    2 => lp.peers[by].engine.demote(&t, &Demotion { member, new: None, presync: PreSync::Synced }),
+                    3 => lp.peers[by].engine.demote(&t, &Demotion { member, new: Some(edge(Role::Read)), presync: PreSync::Synced }),
+                    _ => lp.peers[by].engine.ensure_rotated(&t).map(|x| x.0),
+                };
+                match done {
+                    Ok(d) => carry(&mut lp, by, &d),
+                    Err(e) => assert!(!format!("{e}").contains("/secrets ingestion"), "seed {seed}: {e}"),
+                }
+                if r(3) == 0 {
+                    spread(&mut lp);
+                } else {
+                    let (a, b) = (r(4) as usize, r(4) as usize);
+                    if a != b {
+                        let ids = lp.peers[a].engine.commit_ids();
+                        send(&mut lp, a, b, &ids);
+                    }
+                }
+            }
+            spread(&mut lp);
+        }
+    }
     use crate::engine::secrets::MAX_READING_ACTORS;
     use crate::local_peer::LocalPeer;
     use crate::Mutation;

@@ -440,6 +440,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
         // boxes sealed to this actor elsewhere open now (membership flows hook)
         crate::flows::reopen_dependents(tx, *actor)?;
     }
+    #[cfg(test)]
     if tx.core.check_ingest {
         // the whole state's ingestion learns nothing the entries' did not
         let ak = Ak::new("/secrets").map_err(|_| Error::Misuse("ak"))?;

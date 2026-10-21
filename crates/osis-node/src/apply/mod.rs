@@ -518,7 +518,17 @@ impl Engine {
 /// indexes derived from membership bodies; only `/members` and `/tenures` parts are decoded,
 /// for perm), else from every commit record, re-judging every delta. Returns whether it rebuilt
 /// (the persisted index is then to be written).
-pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<bool> {
+/// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
+pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_core::Ak) -> Result<()> {
+    atomic::rebuild(tx, tid, ak)?;
+    atomic::observe_state(tx, tid, ak)
+}
+
+/// Loads the in-memory indexes; `Some(aspects)` when they were rebuilt from the commit records:
+/// the aspects whose judgments differ from what the replaced index held (their states follow
+/// the old judgments until rebuilt; every aspect with something invalid when that index does
+/// not decode).
+pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, osis_core::Ak)>>> {
     if let Some(b) = tx.txn.get_local(records::HLC)?
         && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
         && let Some(ts) = osis_core::Ts::from_u64(u64::from_be_bytes(a))
@@ -565,6 +575,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<bool> {
     })?;
     tx.core.secrets.extend(secrets);
     let fast = !rebuild && crate::engine::index::current(tx)?;
+    let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
         crate::engine::index::load(tx)?;
         // perm's inputs: the edge writes of the membership commits, oldest first
@@ -684,7 +695,38 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<bool> {
         tx.core.stale_all = true;
         validity::rejudge_all(tx, false)?;
     }
-    Ok(!fast)
+    if fast {
+        return Ok(None);
+    }
+    // aspects whose judgments changed with the rules (or that hold anything invalid when the
+    // old judgments are unknown)
+    let mut stale: BTreeSet<(Tid, osis_core::Ak)> = BTreeSet::new();
+    for (id, m) in tx.core.commits.iter() {
+        for (ai, a) in m.header.aspects.iter().enumerate() {
+            let now = m.valid.get(ai).copied().unwrap_or(false);
+            let was = old.as_ref().map(|o| o.0.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
+            if was.map_or(!now, |w| w != now) {
+                stale.insert((a.tid, a.ak.clone()));
+            }
+        }
+    }
+    let invalid_of = |v: Option<&Vec<validity::Carried>>| -> BTreeSet<(osis_crdt::Source, u64)> { v.into_iter().flatten().flat_map(|c| c.invalid.iter().map(|x| (c.src.clone(), *x))).collect() };
+    let mut keys: BTreeSet<(Tid, osis_core::Ak)> = tx.core.carried.keys().cloned().collect();
+    if let Some(o) = &old {
+        keys.extend(o.1.keys().cloned());
+    }
+    for k in keys {
+        let now = invalid_of(tx.core.carried.get(&k));
+        let differs = match &old {
+            Some(o) => invalid_of(o.1.get(&k)) != now,
+            None => !now.is_empty(),
+        };
+        if differs {
+            stale.insert(k);
+        }
+    }
+    stale.retain(|(_, ak)| !matches!(ak.as_str(), "/members" | "/tenures" | "/created"));
+    Ok(Some(stale.into_iter().collect()))
 }
 
 /// Decodes a stored (already verified) commit's parts.
