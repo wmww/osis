@@ -229,9 +229,7 @@ impl SyncState for SyncEngine {
             // connection to them is up with the label started and they still read it
             // (spec/permissions.md §3), for at most `peer_pass_wait_ms` after the change
             let waited = self.membership_at.get(actor).is_some_and(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now());
-            let reads = |k: &[u8; 32]| self.peers_cache.as_ref().is_some_and(|p| p.get(k).is_some_and(|x| x.labels.contains(l)));
-            let reachable = |k: &&[u8; 32]| !waited && reads(k) && self.conns.values().any(|c| c.peer && c.up && c.server == **k && c.labels.contains_key(l));
-            let peers = self.peer_received.get(l).into_iter().flatten().filter(reachable);
+            let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited);
             for s in servers.iter().chain(peers) {
                 any = true;
                 if self.passes.get(&(*s, *l)).is_none_or(|p| *p <= since) {

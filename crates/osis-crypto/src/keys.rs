@@ -87,10 +87,15 @@ pub fn lan_digest(tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 32] {
 }
 
 /// The 64-byte keystream hiding a LAN announcement's signature: `kdf("lan sig", lan secret,
-/// le64(window))` in the XOF form (spec/sync.md §10).
-fn lan_keystream(lan_secret: &Secret32, window: u64) -> [u8; 64] {
+/// le64(window) || digest)` in the XOF form, `digest` = `lan_digest` (spec/sync.md §10), so
+/// another key or port in the same window never reuses it.
+pub fn lan_keystream(lan_secret: &Secret32, window: u64, digest: &[u8; 32]) -> [u8; 64] {
+    let mut input = [0u8; 40];
+    let (w, d) = input.split_at_mut(8);
+    w.copy_from_slice(&window.to_le_bytes());
+    d.copy_from_slice(digest);
     let mut k = [0u8; 64];
-    crate::kdf::kdf_xof(kdf::LAN_SIG, lan_secret.expose(), &window.to_le_bytes(), &mut k);
+    crate::kdf::kdf_xof(kdf::LAN_SIG, lan_secret.expose(), &input, &mut k);
     k
 }
 
@@ -106,14 +111,16 @@ fn xor64(a: &[u8; 64], b: &[u8; 64]) -> [u8; 64] {
 /// dialable key over `"osis v1 lan announce"` and `lan_digest`, XORed with the window's
 /// keystream, so checking it needs both the lan secret and the dialable key.
 pub fn seal_lan_sig(dialable: &SigningSecret, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16) -> [u8; 64] {
-    let sig = dialable.sign(Domain::LanAnnounce, &lan_digest(tag, key, port));
-    xor64(&sig.0, &lan_keystream(lan_secret, window))
+    let digest = lan_digest(tag, key, port);
+    let sig = dialable.sign(Domain::LanAnnounce, &digest);
+    xor64(&sig.0, &lan_keystream(lan_secret, window, &digest))
 }
 
 /// Whether `sealed` is `seal_lan_sig` of these inputs under `dialable`'s key.
 pub fn open_lan_sig(dialable: &VerifyingKey, lan_secret: &Secret32, window: u64, tag: &[u8; 16], key: &[u8; 32], port: u16, sealed: &[u8; 64]) -> bool {
-    let sig = Signature(xor64(sealed, &lan_keystream(lan_secret, window)));
-    dialable.verify(Domain::LanAnnounce, &lan_digest(tag, key, port), &sig).is_ok()
+    let digest = lan_digest(tag, key, port);
+    let sig = Signature(xor64(sealed, &lan_keystream(lan_secret, window, &digest)));
+    dialable.verify(Domain::LanAnnounce, &digest, &sig).is_ok()
 }
 
 #[cfg(test)]

@@ -89,8 +89,6 @@ pub struct SyncConfig {
     pub serve_idle_ms: u64,
     /// A served session that opened no label this long after it started is closed.
     pub serve_open_ms: u64,
-    /// Served sessions at once per transport key of the dialer.
-    pub max_served_per_key: usize,
     /// How long a complete pass waits for co-readers after a membership change (then it counts
     /// servers only).
     pub peer_pass_wait_ms: u64,
@@ -118,7 +116,6 @@ impl Default for SyncConfig {
             max_served: 64,
             serve_idle_ms: 120_000,
             serve_open_ms: 30_000,
-            max_served_per_key: 4,
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
         }
@@ -343,6 +340,9 @@ pub struct SyncEngine {
     /// When the last remote membership commit of each actor applied (raw ms; the peer part of
     /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) membership_at: BTreeMap<Tid, u64>,
+    /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
+    /// those still reading it with a connection up that has it started; set by `handle`).
+    pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<ServerKey>>,
     /// A membership or roster change since the last step (`members_changed`).
     pub(crate) members_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
@@ -417,6 +417,7 @@ impl SyncEngine {
             peers_key: (u64::MAX, 0),
             peer_received: BTreeMap::new(),
             membership_at: BTreeMap::new(),
+            pass_peers: BTreeMap::new(),
             members_moved: false,
             prefix_checked: BTreeSet::new(),
         })
@@ -475,6 +476,7 @@ impl SyncEngine {
         if let Err(e) = self.step(ev, &mut out) {
             self.diag(format!("sync: {e}"));
         }
+        self.update_pass_peers();
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
         }

@@ -383,17 +383,28 @@ impl SyncEngine {
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
     /// `peer` the key the transport authenticated for the dialer (budgets are charged to it,
     /// or to the dialable key of its member proof). Returns the session's handle (its bytes come
-    /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello; a Close when
-    /// `SyncConfig.max_served` sessions run, or `max_served_per_key` for this `peer`). Opens are
+    /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
+    /// `SyncConfig.max_served` sessions running, the oldest one that has opened nothing is
+    /// closed to make room (dialer keys are ephemeral, so a per-key cap would bind nothing);
+    /// when every one has opened a label, this one is closed. Opens are
     /// checked as a blind node checks them, plus member proofs by the dialable key of a node
     /// thing currently reading the label (spec/sync.md §5).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
         let conn = self.next_conn;
         self.next_conn += 1;
         let mut out = Vec::new();
-        if self.served.len() >= self.cfg.max_served || self.served.values().filter(|s| s.peer == peer).count() >= self.cfg.max_served_per_key {
-            out.push(Action::Close { conn });
-            return (conn, out);
+        if self.served.len() >= self.cfg.max_served {
+            let idle = self.served.iter().filter(|(_, s)| s.conn.opened().is_empty()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
+            match idle {
+                Some(old) => {
+                    self.served.remove(&old);
+                    out.push(Action::Close { conn: old });
+                }
+                None => {
+                    out.push(Action::Close { conn });
+                    return (conn, out);
+                }
+            }
         }
         self.state.now = self.now();
         let mut challenge = [0u8; 32];

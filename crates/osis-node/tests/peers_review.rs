@@ -122,20 +122,37 @@ fn peer_budget_refuses_spec_sync_5() {
     assert!(net.sync(a).take_diagnostics().iter().any(|d| d.contains("code 12")));
 }
 
-// spec/sync.md §5: served sessions are capped and idle ones closed.
+// spec/sync.md §5: served sessions are capped: a new one evicts the oldest that has opened
+// nothing (so silent sessions cannot starve members), and is refused when every running one
+// opened a label; idle ones are closed.
 #[test]
 fn served_sessions_capped_and_idle_closed_spec_sync_5() {
     let mut net = Net::new();
-    let cfg = SyncConfig { max_served: 1, serve_idle_ms: 1_000, ..SyncConfig::default() };
+    let a = net.node(1, &[]);
+    let cfg = SyncConfig { max_served: 2, serve_idle_ms: 1_000, ..SyncConfig::default() };
     let b = net.add_node(2, cfg);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    net.blocked_peers.insert((a, b));
+    net.group_at(a, &[(b, Role::Read)], vec![]);
+    net.run();
+    let l = net.label(b);
+    let da = SigningSecret::from_seed(&net.sync(a).dialable_secret());
     let (c1, a1) = net.sync(b).accept(LOCAL, [1; 32]);
-    assert!(!a1.contains(&Action::Close { conn: c1 }));
-    let (c2, a2) = net.sync(b).accept(LOCAL, [2; 32]);
-    assert!(a2.contains(&Action::Close { conn: c2 }), "over the cap");
+    assert!(!a1.iter().any(|x| matches!(x, Action::Close { .. })));
+    let (mut m, _) = dial_in(&mut net, b);
+    let evs = command(&mut net, b, &mut m, Command::Open { label: l, key: OpenKey::Member(da) });
+    assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { .. })), "{evs:?}");
+    let (c3, a3) = net.sync(b).accept(LOCAL, [3; 32]);
+    assert!(a3.contains(&Action::Close { conn: c1 }), "the silent session makes room: {a3:?}");
+    assert!(!a3.contains(&Action::Close { conn: c3 }));
+    net.actions(b, a3);
+    let (_, a4) = net.sync(b).accept(LOCAL, [4; 32]);
+    assert!(a4.contains(&Action::Close { conn: c3 }), "the next silent one goes: {a4:?}");
+    assert!(!a4.contains(&Action::Close { conn: m.conn }), "the member stays");
     net.clock.advance(1_001);
     let acts = net.sync(b).handle(Event::Tick);
-    assert!(acts.contains(&Action::Close { conn: c1 }), "idle");
-    assert!(net.sync(b).served_opened().is_empty());
+    assert!(acts.contains(&Action::Close { conn: m.conn }), "idle");
 }
 
 // spec/sync.md §5: a stranger without the label's sync key opens nothing.
@@ -239,6 +256,46 @@ fn lan_candidate_failure_keeps_route_spec_sync_10() {
     assert_eq!(net.read(b, t), Some(s("via peer route")));
     let (_, acts) = net.sync(a).lan_seen(&ann, IP.parse().unwrap());
     assert!(dials(&acts).is_empty());
+}
+
+// spec/sync.md §10: a candidate that fails falls back to the most heard verified source, so a
+// replay from a spoofed source that won the candidate costs one failed dial.
+#[test]
+fn lan_candidate_falls_back_to_most_heard_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, b);
+    net.blocked_peers.insert((a, b));
+    net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let lk = SigningSecret::from_seed(&net.sync(b).lan_secret()).verifying_key().to_bytes();
+    net.lan_keys.insert(lk, b);
+    net.blocked_peers.clear();
+    let ann = net.sync(b).lan_announcement(lk, 5000).unwrap();
+    // a connection to b runs, so nothing is dialed while the sources are heard
+    net.clock.advance(60_001);
+    net.feed(a, Event::Tick);
+    let real: std::net::IpAddr = IP.parse().unwrap();
+    let spoof: std::net::IpAddr = "192.168.7.66".parse().unwrap();
+    for _ in 0..3 {
+        net.sync(a).lan_seen(&ann, real);
+    }
+    net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
+    net.sync(a).lan_seen(&ann, spoof);
+    // the spoofed candidate fails: the real one takes over
+    let spoofed = Address { url: format!("peer://{spoof}:5000"), key: lk };
+    let real_addr = Address { url: format!("peer://{real}:5000"), key: lk };
+    net.set_online(b, false);
+    net.settle(100_000);
+    net.set_online(b, true);
+    net.clock.advance(61_000);
+    let acts = net.sync(a).handle(Event::Tick);
+    assert_eq!(dials(&acts), vec![spoofed.clone()]);
+    let conn = acts.iter().find_map(|x| if let Action::Dial { conn, .. } = x { Some(*conn) } else { None }).unwrap();
+    let acts = net.sync(a).handle(Event::Down { conn });
+    assert_eq!(dials(&acts), vec![real_addr]);
 }
 
 // spec/sync.md §10: a connection through a LAN address that comes up proves the route (the

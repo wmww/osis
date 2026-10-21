@@ -17,4 +17,5 @@ Entry form: `## FC-<n>: <title>`, then the files changed (paths as in MANIFEST) 
 
 ## FC-5: LAN announcement and member open
 - sign/signatures.vec: new signature domains `"osis v1 lan announce"` (a LAN transport key bound to the dialable key, spec/sync.md §10) and `"osis v1 member open"` (open proof 3, a member node's dialable key, spec/sync.md §5, spec/wire.md §11.2); two cases added, the others unchanged.
-- kdf/purposes.vec: a new kdf purpose `"lan sig"` (the keystream sealing the announcement's signature under the lan secret and window, spec/sync.md §10); one case added.
+- kdf/purposes.vec: a new kdf purpose `"lan sig"` (the keystream sealing the announcement's signature under the lan secret, window and digest, spec/sync.md §10); one case added.
+- proto/messages.vec: a new Open case with proof 3 (`[3, dialable_pk, sig]`, a member node's dialable key, spec/wire.md §11.2); the others unchanged.

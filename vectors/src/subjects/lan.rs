@@ -4,7 +4,7 @@
 use super::{case, generated_header, s32};
 use crate::file::VecFile;
 use crate::hex;
-use osis_crypto::{SigningSecret, lan_digest, lan_tag, open_lan_sig, seal_lan_sig};
+use osis_crypto::{Domain, SigningSecret, lan_digest, lan_keystream, lan_tag, open_lan_sig, seal_lan_sig};
 
 const SPEC: &str = "spec/sync.md §10";
 
@@ -17,6 +17,8 @@ pub fn announce() -> VecFile {
     let tag = lan_tag(&lan, ms);
     let digest = lan_digest(&tag, &key, port);
     let sealed = seal_lan_sig(&dialable, &lan, window, &tag, &key, port);
+    let sig = dialable.sign(Domain::LanAnnounce, &digest);
+    let stream = lan_keystream(&lan, window, &digest);
     assert!(open_lan_sig(&dialable.verifying_key(), &lan, window, &tag, &key, port, &sealed));
     let mut datagram = b"osis lan 1".to_vec();
     datagram.extend_from_slice(&tag);
@@ -34,6 +36,9 @@ pub fn announce() -> VecFile {
             .with("port", port.to_string())
             .with("tag", hex(&tag))
             .with("digest", hex(&digest))
+            .with("signature", hex(&sig.0))
+            .with("keystream", hex(&stream))
+            .with("sealed", hex(&sealed))
             .with("datagram", hex(&datagram)),
     ];
     VecFile { header: generated_header("lan", SPEC), cases }

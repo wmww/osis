@@ -433,6 +433,24 @@ fn member_open_spec_sync_5() {
     assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
 }
 
+// spec/sync.md §5, spec/wire.md §11.2: a proof 3 binds the session's challenge: one signed for
+// another session is refused.
+#[test]
+fn member_proof_bound_to_session_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new();
+    net.setup(&l);
+    let d = SigningSecret::from_seed(&s32(97));
+    net.store.member_labels.insert((d.verifying_key().to_bytes(), l.id));
+    // a proof for another session's challenge, sent raw on this one
+    let proof = osis_label::Proof::member(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
+    let open = Message::Open { id: 99, label: l.id, proof };
+    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&open.encode())));
+    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServerOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
+    assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
+    assert!(net.servers[0].opened().is_empty());
+}
+
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
 // spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]

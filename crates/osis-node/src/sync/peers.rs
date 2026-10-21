@@ -65,7 +65,14 @@ pub(crate) struct LanRoute {
     pub changed: Option<u64>,
     /// The last announcement whose signature verified (a repeat is not verified again).
     pub verified: Option<Announce>,
+    /// Verified source addresses and how often each was heard (at most `LAN_HEARD`): a failed
+    /// candidate falls back to the most heard, so a replay from a spoofed source that wins the
+    /// candidate costs one failed dial.
+    pub heard: BTreeMap<Address, u32>,
 }
+
+/// Verified source addresses remembered per co-reader.
+const LAN_HEARD: usize = 4;
 
 /// Co-readers' LAN tags (the cached window and its neighbours) to their dialable key, lan
 /// secret and window.
@@ -289,8 +296,36 @@ impl SyncEngine {
         hit |= r.good.take_if(|(a, _)| a == addr).is_some();
         if hit {
             r.failed.insert(addr.clone(), until);
+            r.heard.remove(addr);
+            // the most heard other address takes over
+            let next = r.heard.iter().filter(|(a, _)| !r.failed.contains_key(*a)).max_by_key(|(_, n)| **n).map(|(a, _)| a.clone());
+            if r.good.is_none()
+                && let Some(a) = next
+            {
+                r.candidate = Some((a, self.clock.now_wall_ms().0));
+            }
         }
         hit
+    }
+
+    /// The co-readers a complete pass of each label waits for now (`pass_peers`): those it
+    /// received the label from that still read it, with a connection up that has it started.
+    pub(crate) fn update_pass_peers(&mut self) {
+        if self.peer_received.is_empty() {
+            self.pass_peers.clear();
+            return;
+        }
+        let peers = self.peers();
+        let mut out: BTreeMap<LabelId, BTreeSet<[u8; 32]>> = BTreeMap::new();
+        for (l, ks) in &self.peer_received {
+            for k in ks {
+                let reads = peers.get(k).is_some_and(|p| p.labels.contains(l));
+                if reads && self.conns.values().any(|c| c.peer && c.up && c.server == *k && c.labels.contains_key(l)) {
+                    out.entry(*l).or_default().insert(*k);
+                }
+            }
+        }
+        self.pass_peers = out;
     }
 
     /// Whether a waiting LAN candidate may skip the peer's retry pause now (at most once per
@@ -342,6 +377,12 @@ impl SyncEngine {
         if r.failed.contains_key(&address) {
             return (Some(k), Vec::new());
         }
+        if !r.heard.contains_key(&address) && r.heard.len() >= LAN_HEARD
+            && let Some(least) = r.heard.iter().min_by_key(|(_, n)| **n).map(|(a, _)| a.clone())
+        {
+            r.heard.remove(&least);
+        }
+        *r.heard.entry(address.clone()).or_default() += 1;
         for x in [&mut r.good, &mut r.candidate] {
             if let Some((a, at)) = x
                 && *a == address
