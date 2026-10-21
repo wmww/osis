@@ -461,11 +461,15 @@ impl Engine {
             for x in members {
                 let Some(a) = h.aspects.get(x) else { continue };
                 let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
-                tx.load(&a.tid, &a.ak)?;
+                // the pages holding the body's dots (all of them when the body is not held)
+                tx.load_lazy(&a.tid, &a.ak)?;
+                let touch = match crate::apply::held_parts(tx, &c, x)?.into_iter().next() {
+                    Some(osis_commit::Decoded::Delta(d)) => crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone()))),
+                    _ => None,
+                };
+                tx.ensure_touch(&a.tid, &a.ak, &touch)?;
                 let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-                let mut g = st.clone();
-                g.strip(&|d| o.owns(d));
-                if &g != st {
+                if st.writes().iter().any(|(d, _)| o.owns(d)) {
                     return Ok(true);
                 }
             }
