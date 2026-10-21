@@ -112,6 +112,55 @@ fn link_race_seed_191() {
     ok("link_race", 191);
 }
 
+// spec/sync.md §3, §7, spec/permissions.md §4: sweep seed 41, the losing redeemer's partial certificate copy promoted alone left the winner pending.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_41() {
+    ok("link_race", 41);
+}
+
+// spec/sync.md §3, §7, spec/permissions.md §4: sweep seed 107, the losing redeemer's partial certificate copy promoted alone left the winner pending.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_107() {
+    ok("link_race", 107);
+}
+
+// spec/sync.md §3, §7, spec/permissions.md §4: sweep seed 120, the losing redeemer's partial certificate copy promoted alone left the winner pending.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_120() {
+    ok("link_race", 120);
+}
+
+// spec/sync.md §3, §7, spec/permissions.md §4: sweep seed 144, the losing redeemer's partial certificate copy promoted alone left the winner pending.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_144() {
+    ok("link_race", 144);
+}
+
+// spec/sync.md §3, §7, spec/permissions.md §4: sweep seed 197, the losing redeemer's partial certificate copy promoted alone left the winner pending.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_197() {
+    ok("link_race", 197);
+}
+
+// spec/sync.md §5, §6, spec/permissions.md §4: sweep seed 46, after the chain-completion fix.
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_46() {
+    ok("link_race", 46);
+}
+
+// spec/sync.md §5, spec/permissions.md §4: sweep seed 50 after the chat-cost fix, the loser's promoted `/keys` copy left pending (same cause as seed 41).
+#[test]
+#[ignore = "tier 2"]
+fn link_race_seed_50() {
+    ok("link_race", 50);
+}
+
 // spec/permissions.md §7: move with import and re-grant.
 #[test]
 #[ignore = "tier 2"]

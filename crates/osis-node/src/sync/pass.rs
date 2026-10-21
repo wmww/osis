@@ -53,6 +53,9 @@ struct Out {
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
+/// A deposited entry due for promotion: (blob, entry, commit, its parts).
+type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
+
 fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::MembershipSnapshot)
 }
@@ -184,7 +187,11 @@ impl SyncEngine {
                 self.certificates(&g, l, true)?;
             }
         }
-        // every certificate copy this node placed here: chain, card, flows' placements
+        if keys.write.is_some() && read_ok {
+            self.complete_chains(conn, server, &g, l)?;
+        }
+        // every certificate copy this node placed here: chain, card, flows' placements,
+        // promoted deposits' chains
         let certs: Vec<(BlobId, Option<CommitId>)> = self
             .state
             .entries
@@ -234,7 +241,7 @@ impl SyncEngine {
             }
         }
         if let Some(w) = &keys.write {
-            self.promote(conn, server, l, w, &mut uploads)?;
+            self.promote(conn, server, &g, l, w, &mut uploads)?;
         }
         if !uploads.is_empty() {
             self.sent.extend(uploads.iter().map(|u| ((conn, l, osis_label::blob_id(&u.blob)), raw)));
@@ -472,9 +479,9 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
-    /// commits, never a heartbeat; per server (a blob may be deposited at several).
-    fn promote(&mut self, conn: ConnId, server: ServerKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+    /// Deposited commit entries at `server` a writer may promote now: past this node's wait
+    /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight, never a heartbeat.
+    fn due_deposits(&mut self, conn: ConnId, server: ServerKey, l: LabelId) -> Vec<Deposit> {
         let ids: Vec<(BlobId, Entry)> = self
             .state
             .entries
@@ -485,20 +492,63 @@ impl SyncEngine {
             .collect();
         let raw = self.raw_now();
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
-        for (id, mut e) in ids {
+        let mut out = Vec::new();
+        for (id, e) in ids {
             if super::in_flight(&self.sent, &(conn, l, id), raw) {
                 continue;
             }
-            // a co-writer may promote it first (`RELAY_MIN_MS`)
             let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
             let due = seen.saturating_add(self.relay_delay(&id.0));
             if raw < due {
                 self.settle_at = Some(self.settle_at.map_or(due, |x| x.min(due)));
                 continue;
             }
-            let Kind::Commit { commit, .. } = &e.kind else { continue };
+            let Kind::Commit { commit, parts } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
-            if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") || uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) {
+            if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") {
+                continue;
+            }
+            let (commit, parts) = (*commit, parts.clone());
+            out.push((id, e, commit, parts));
+        }
+        out
+    }
+
+    /// A promoter completes the chain it holds (spec/sync.md §5; spec/permissions.md §4): for
+    /// each deposit due for promotion whose commit this writer applied, the parts of its
+    /// author's chain no entry under `l` holds go up as this node's certificate copies, when it
+    /// holds them all (else the deposit stays unpromoted).
+    fn complete_chains(&mut self, conn: ConnId, server: ServerKey, g: &Tid, l: LabelId) -> Result<()> {
+        for (_, _, c, parts) in self.due_deposits(conn, server, l) {
+            let Some(missing) = self.chain_missing(server, g, l, &c, &parts)? else { continue };
+            let mut bodies = Vec::new();
+            let mut whole = true;
+            for (x, p) in &missing {
+                let bs = self.engine.part_bodies(x, p)?;
+                let got: BTreeSet<(usize, usize)> = bs.iter().flat_map(|b| b.parts.iter().copied()).collect();
+                whole &= p.is_subset(&got);
+                bodies.push((*x, p.clone(), bs));
+            }
+            if !whole {
+                continue;
+            }
+            for (x, p, bs) in bodies {
+                for b in bs {
+                    self.place(g, l, &b, true)?;
+                }
+                self.place_linked(l, &x, &p)?;
+                self.state.add_cert(l, x);
+            }
+        }
+        Ok(())
+    }
+
+    /// A writer re-uploads stamped the deposited entries it verified (spec/sync.md §5): applied
+    /// commits whose author's chain is under the label (`complete_chains` placed what it held
+    /// of it), never a heartbeat; per server (a blob may be deposited at several).
+    fn promote(&mut self, conn: ConnId, server: ServerKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+        for (id, mut e, c, parts) in self.due_deposits(conn, server, l) {
+            if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.chain_missing(server, g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
                 continue;
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
@@ -510,6 +560,25 @@ impl SyncEngine {
             // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
+    }
+
+    /// The parts of the author's chain for `parts` of commit `c` (`Engine::author_chain`) that
+    /// no entry under `l` holds at `server` (`held_parts_at`: the promotion or deletion is
+    /// that server's); `None` when this node has not applied `c`.
+    fn chain_missing(&mut self, server: ServerKey, g: &Tid, l: LabelId, c: &CommitId, parts: &[(usize, usize)]) -> Result<Option<BTreeMap<CommitId, Parts>>> {
+        let Some(chain) = self.engine.author_chain(c, &parts.iter().copied().collect()) else { return Ok(None) };
+        let closure = self.engine.closure(g);
+        let mut out = BTreeMap::new();
+        for (x, want) in chain {
+            let (_, held) = self.held_parts_at(g, l, &x, &[server])?;
+            // closure bodies carry what is on the label's own things
+            let inside: BTreeSet<usize> = self.engine.header(&x).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
+            let missing: Parts = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
+            if !missing.is_empty() {
+                out.insert(x, missing);
+            }
+        }
+        Ok(Some(out))
     }
 
     /// This node's wait before relaying another node's blob `key` (`RELAY_MIN_MS` to
@@ -871,6 +940,11 @@ impl SyncEngine {
     /// opens under the newest read secret (spec/permissions.md §4).
     fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
         let servers: Vec<ServerKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.server).collect();
+        self.held_parts_at(g, l, c, &servers)
+    }
+
+    /// `held_parts` with another node's entries counted when present at each of `servers`.
+    fn held_parts_at(&mut self, g: &Tid, l: LabelId, c: &CommitId, servers: &[ServerKey]) -> Result<(Parts, Parts)> {
         let newest = self.engine.wrap_secret(g, None)?;
         let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
         let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
@@ -1106,8 +1180,9 @@ impl SyncEngine {
                 // a lagging projection: the superset goes up first
                 return Ok(None);
             } else {
-                // another node's card nobody needs any more goes (spec/permissions.md §4)
-                if settled && self.stale_card(server, l, g, commit, &h, parts) {
+                // another node's card nobody needs any more goes (spec/permissions.md §4), and
+                // a certificate copy nobody completes (`orphan`)
+                if settled && (self.stale_card(server, l, g, commit, &h, parts) || self.orphan(server, l, g, id, commit, &h, parts)?) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
                 // other certificates (membership-class, node cards, heartbeats) are not ours to judge
@@ -1190,6 +1265,21 @@ impl SyncEngine {
             let ids: Vec<BlobId> = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).filter(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id)).map(|((_, id), _)| *id).collect();
             ids.into_iter().any(|id| self.genuine(&id))
         })
+    }
+
+    /// Whether entry `id` of commit `c` holding `parts`, outside the label's closure, is a
+    /// certificate copy whose author no longer reads the label's actor and whose author's chain
+    /// no entry under `l` at `server` completes: outside the required set (spec/sync.md §6),
+    /// since nobody is obliged to complete it and a verifier would hold it pending for ever.
+    /// Judged only on a commit this node applied (it knows the author and the chain), and not on
+    /// a deposit there: promotion completes or leaves those (spec/sync.md §5).
+    #[allow(clippy::too_many_arguments)]
+    fn orphan(&mut self, server: &ServerKey, l: &LabelId, g: &Tid, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+        let actor = self.engine.group_actor(g);
+        if h.author == self.engine.tid() || self.state.deposited.contains(&(*server, *l, *id)) || self.engine.core.may_read(&h.author, &actor) {
+            return Ok(false);
+        }
+        Ok(self.chain_missing(*server, g, *l, c, parts)?.is_some_and(|m| !m.is_empty()))
     }
 
     /// Deletes must-not-hold entries present at the server, carriers first (spec/sync.md §6,

@@ -123,6 +123,51 @@ impl Engine {
         out
     }
 
+    /// What a verifier needs beside `parts` of commit `c` to judge them (spec/permissions.md
+    /// §4): its author's chain certificates to each thing the parts touch, at the commit's
+    /// point, minus `parts` themselves. `None` when `c` is not applied here: a node that cannot
+    /// verify it cannot tell.
+    pub(crate) fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
+        if self.core.pending.contains_key(c) {
+            return None;
+        }
+        let h = self.core.commits.get(c)?.header.clone();
+        let at = Point { ts: h.ts, node: h.author, commit: *c };
+        let things: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
+        let mut found = Vec::new();
+        for t in things.iter().chain([&h.author]) {
+            let mut cs = match self.core.timelines.get(t) {
+                Some(tl) => tl.certificates(&h.author, t, at),
+                None => osis_perm::Certificates::default(),
+            };
+            // the owner chains up to their key actors, timeline or not
+            for x in [t, &h.author] {
+                let mut cur = Some(*x);
+                for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+                    let Some(y) = cur else { break };
+                    cs.created.insert(y);
+                    cur = match self.core.created(&y) {
+                        Some(CreationRecord::Thing { owner, .. }) => {
+                            cs.keys.insert(y);
+                            Some(*owner)
+                        }
+                        _ => None,
+                    };
+                }
+            }
+            found.push(cs);
+        }
+        let mut out = BTreeMap::new();
+        for cs in &found {
+            self.cert_parts(cs, &mut out);
+        }
+        if let Some(p) = out.get_mut(c) {
+            p.retain(|x| !parts.contains(x));
+        }
+        out.retain(|_, p| !p.is_empty());
+        Some(out)
+    }
+
     /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
     /// edge writes projected to their edge deltas on the chain's things, roster snapshots to
     /// their members' entries, the newest `/created` of each thing and `/keys` of each actor.
