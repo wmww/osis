@@ -222,6 +222,32 @@ pub fn open(unit_state: &[u8]) -> Result<(Fragment, PageIndex)> {
     Ok((f, idx))
 }
 
+/// A paged state in an earlier build's layout (`[1]`: a root collection; `[2, skeleton]`: a
+/// struct with paged fields; pages in the state table, each a fragment), joined whole; `None`
+/// for any other unit state.
+pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) -> Result<Option<Fragment>> {
+    let lim = osis_core::Limits { max_depth: 4, max_bytes: unit_state.len() };
+    let Ok(Value::List(items)) = osis_core::decode(unit_state, &lim) else { return Ok(None) };
+    let mut f = match items.as_slice() {
+        [Value::Int(1)] => Fragment::default(),
+        [Value::Int(2), Value::Bytes(s)] => decode(s)?,
+        _ => return Ok(None),
+    };
+    let t = table(txn, tid, ak)?;
+    let mut from = Vec::new();
+    loop {
+        let rows = txn.table_range(t, &from, None, 256)?;
+        let n = rows.len();
+        for (k, v) in rows {
+            from = [k.as_slice(), &[0]].concat();
+            f.join(decode(&v)?);
+        }
+        if n < 256 {
+            return Ok(Some(f));
+        }
+    }
+}
+
 fn table(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak) -> Result<Table> {
     txn.table(tid, ak, STATE_TABLE)?.ok_or(Error::Corrupt("state pages missing"))
 }
@@ -705,6 +731,35 @@ mod tests {
     /// The value of `n` ints keyed 0..n.
     fn ints(n: i64, x: i64) -> Value {
         Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i * x))).collect())
+    }
+
+    // notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
+    // of the root collection by page ID) is read whole and laid out anew.
+    #[test]
+    fn legacy_layout_relaid_spec_requirements_scale() {
+        let mut rng = osis_crypto::SeededRng::from_u64(79);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([4; 15]), osis_core::Ak::new("/app/old").unwrap());
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let st = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let t = txn.create_table(&tid, &ak, STATE_TABLE).unwrap();
+        let dots = st.elem_dots(None, None);
+        let mid = dots.get(dots.len() / 2).cloned();
+        let halves = [st.elem_range(None, mid.as_ref(), true).unwrap(), st.elem_range(mid.as_ref(), None, false).unwrap()];
+        for (i, h) in halves.iter().enumerate() {
+            txn.table_put(t, &[&[0u8][..], &(i as u64).to_be_bytes()].concat(), encode(h).unwrap(), Shred::No).unwrap();
+        }
+        let old = osis_core::encode(&Value::List(vec![Value::Int(1)]));
+        assert!(is_paged(&old));
+        let whole = legacy(&mut txn, &tid, &ak, &old).unwrap().unwrap();
+        assert_eq!(whole, st);
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&whole), true).unwrap();
+        assert!(idx.is_some());
+        assert_eq!(legacy(&mut txn, &tid, &ak, &unit).unwrap(), None, "the new layout is not legacy");
+        let (mut f, mut idx) = open(&unit).unwrap();
+        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        assert_eq!(f, st);
     }
 
     // spec/requirements.md, Scale (a change costs O(change) at any depth, peer input never causes

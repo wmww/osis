@@ -518,7 +518,7 @@ impl Engine {
 /// indexes derived from membership bodies; only `/members` and `/tenures` parts are decoded,
 /// for perm), else from every commit record, re-judging every delta. Returns whether it rebuilt
 /// (the persisted index is then to be written).
-pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
+pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<bool> {
     if let Some(b) = tx.txn.get_local(records::HLC)?
         && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
         && let Some(ts) = osis_core::Ts::from_u64(u64::from_be_bytes(a))
@@ -564,7 +564,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
         Ok(())
     })?;
     tx.core.secrets.extend(secrets);
-    let fast = crate::engine::index::current(tx)?;
+    let fast = !rebuild && crate::engine::index::current(tx)?;
     if fast {
         crate::engine::index::load(tx)?;
         // perm's inputs: the edge writes of the membership commits, oldest first

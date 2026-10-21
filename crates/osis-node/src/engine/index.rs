@@ -1,10 +1,13 @@
 //! The persisted index (notes/local-store.md: a rebuildable index unit): what `apply::load`
 //! would otherwise re-derive at every open by decoding every commit and re-judging every delta.
-//! Each applied commit's meta (header, validity, dropped parts) and the indexes derived from
-//! membership bodies (rotation roles, grant overreach, box keys, epoch introductions, own keys)
-//! are written in the transaction that changes them, from the journal of the in-memory indexes.
-//! Tagged with the build: another build (or a store without it, or one whose commit records
-//! changed outside the indexes, `invalidate`) rebuilds it from the commit records once.
+//! Each applied commit's meta (header and dropped parts in its record's head; per part its
+//! validity, rotation role and overreach in a small table) and the indexes derived from
+//! membership bodies (box keys, epoch introductions, own keys, snapshots, carried writes) are
+//! written in the transaction that changes them, from the journal of the in-memory indexes.
+//! Tagged with a hash of the sources its judgments follow from (`build.rs`): a build with other
+//! rules, a store without the tag, one whose commit records changed outside the indexes
+//! (`invalidate`), or one that fails to decode rebuilds it from the commit records once (a full
+//! re-judge).
 
 use super::journal::{JMap, JSet, JSetMap};
 use super::{Core, Meta, Tx, records};
@@ -16,12 +19,15 @@ use osis_crdt::Dot;
 use osis_schema::Codec;
 use osis_schema::core_types::BoxKey;
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// Whether the index on disk was written by this build.
+/// Whether the index on disk was written by a build with these rules.
 const VERSION_KEY: &[u8] = b"i/v";
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 5");
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/", env!("OSIS_INDEX_RULES"));
+/// Per commit, one byte per part: bit 0 valid, bits 1-2 the rotation role it needs (0 none,
+/// 1 read, 2 write, 3 admin), bit 3 a grant's overreach.
+const PARTS: &[u8] = b"node/parts";
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
 const BOX_KEYS: &[u8] = b"node/box keys";
@@ -267,18 +273,16 @@ fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<
     Ok(())
 }
 
-/// What of a commit the engine indexes, ahead of its blob in its record (version 2): received,
-/// origin, dropped parts, and per part one byte: bit 0 valid, bits 1-2 the rotation role it
-/// needs (0 none, 1 read, 2 write, 3 admin), bit 3 a grant's overreach.
+/// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
+/// parts.
 pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     pub dropped: BTreeSet<(usize, usize)>,
-    pub parts: Vec<u8>,
 }
 
-pub(crate) fn record_head(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
-    let mut w = records::Wr::new().u8(2).u64(m.received.0).u8(match m.origin {
+pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
+    let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match m.origin {
         Origin::Local => 0,
         Origin::Remote => 1,
     });
@@ -286,7 +290,12 @@ pub(crate) fn record_head(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     for (a, d) in &m.dropped {
         w = w.u32(*a as u32).u32(*d as u32);
     }
-    w = w.u32(m.valid.len() as u32);
+    w.take()
+}
+
+/// A commit's `PARTS` row.
+fn parts_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
+    let mut out = Vec::with_capacity(m.valid.len());
     for (ai, v) in m.valid.iter().enumerate() {
         let role = match core.rotation_role.get(&(*id, ai)) {
             None => 0,
@@ -294,12 +303,13 @@ pub(crate) fn record_head(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        w = w.u8(u8::from(*v) | (role << 1) | (u8::from(core.grant_overreach.contains(&(*id, ai))) << 3));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.grant_overreach.contains(&(*id, ai))) << 3));
     }
-    w.take()
+    out
 }
 
-/// A commit record's head and its blob bytes (version 1 records have no part bytes).
+/// A commit record's head and its blob bytes (version 2 heads, of earlier builds, carry part
+/// bytes, skipped).
 pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     let mut r = records::Rd::new(v);
     let version = r.u8()?;
@@ -312,35 +322,19 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
     for _ in 0..r.u32()? {
         dropped.insert((r.u32()? as usize, r.u32()? as usize));
     }
-    let mut parts = Vec::new();
     if version == 2 {
         for _ in 0..r.u32()? {
-            parts.push(r.u8()?);
+            r.u8()?;
         }
     }
-    Ok((RecordHead { received, origin, dropped, parts }, r.rest()))
-}
-
-/// Rewrites the head of commit `id`'s record where what the engine indexes of it changed (its
-/// validity, the roles its parts need): the blob bytes stay.
-fn restamp(txn: &mut Transaction<'_>, core: &Core, id: &CommitId) -> Result<()> {
-    let Some(m) = core.commits.get(id) else { return Ok(()) };
-    let key = records::commit_key(id);
-    let Some(v) = txn.get_local(&key)? else { return Ok(()) };
-    let head = record_head(core, id, m);
-    if v.starts_with(&head) && parse_head(&v)?.0.parts.len() == m.valid.len() {
-        return Ok(());
-    }
-    let (_, blob) = parse_head(&v)?;
-    txn.put_local(&key, &[head.as_slice(), blob].concat(), Shred::No)?;
-    Ok(())
+    Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
 fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let c = &*tx.core;
     let txn = &mut tx.txn;
-    // a commit's meta carries its parts' rotation roles and grant overreach
+    // a commit's parts row carries their validity, rotation roles and grant overreach
     let ids: Vec<CommitId> = if all {
         c.commits.keys().copied().collect()
     } else {
@@ -349,8 +343,14 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
         s.extend(c.grant_overreach.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
-    for id in &ids {
-        restamp(txn, c, id)?;
+    if !ids.is_empty() {
+        let t = txn.index(PARTS)?;
+        for id in &ids {
+            match c.commits.get(id) {
+                Some(m) => txn.table_put(t, &id.0, parts_row(c, id, m), Shred::No)?,
+                None => txn.table_remove(t, &id.0, Shred::No)?,
+            };
+        }
     }
     let k = if all { c.box_keys.keys().cloned().collect() } else { c.box_keys.logged() };
     put_map(txn, BOX_KEYS, &c.box_keys, &k)?;
@@ -428,12 +428,27 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         metas.push((id, head, h));
         Ok(())
     })?;
-    for (id, head, mut h) in metas {
-        if head.parts.len() != h.aspects.len() {
-            return Err(Error::Corrupt("commit record head"));
+    let mut rows: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
+    let t = tx.txn.index(PARTS)?;
+    let mut from = Vec::new();
+    loop {
+        let got = tx.txn.table_range(t, &from, None, 256)?;
+        let n = got.len();
+        for (k, v) in got {
+            from = [k.as_slice(), &[0]].concat();
+            rows.insert(CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("parts row key"))?), v);
         }
-        let mut valid = Vec::with_capacity(head.parts.len());
-        for (ai, p) in head.parts.into_iter().enumerate() {
+        if n < 256 {
+            break;
+        }
+    }
+    for (id, head, mut h) in metas {
+        let parts = rows.remove(&id).ok_or(Error::Corrupt("parts row missing"))?;
+        if parts.len() != h.aspects.len() {
+            return Err(Error::Corrupt("parts row"));
+        }
+        let mut valid = Vec::with_capacity(parts.len());
+        for (ai, p) in parts.into_iter().enumerate() {
             valid.push(p & 1 != 0);
             if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
                 tx.core.rotation_role.insert((id, ai), *r);
@@ -505,6 +520,27 @@ impl super::Engine {
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.member_keys, *c.unresolved, *c.was, *c.moved, c.groups.of);
         let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots, *c.carried);
         out
+    }
+
+    /// Damages the persisted index (tests): `garble` a commit's parts row, else mislabel its tag.
+    #[doc(hidden)]
+    pub fn damage_index(&mut self, garble: bool) -> Result<()> {
+        self.run(|tx| {
+            if garble {
+                let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };
+                let t = tx.txn.index(PARTS)?;
+                tx.txn.table_put(t, &id.0, vec![1; 300], Shred::No)?;
+                Ok(())
+            } else {
+                tx.txn.put_local(VERSION_KEY, b"another build", Shred::No).map_err(Error::from)
+            }
+        })
+    }
+
+    /// Whether the persisted index is tagged as this build's (tests).
+    #[doc(hidden)]
+    pub fn index_current(&mut self) -> Result<bool> {
+        self.run(current)
     }
 
     /// Rebuilds the in-memory indexes from the commit records (and the persisted index), as a

@@ -268,6 +268,11 @@ impl Core {
         self.membership_changed();
     }
 
+    /// Whether some validity waits for `rejudge_all`.
+    pub fn stale(&self) -> bool {
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
+    }
+
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
@@ -410,7 +415,14 @@ impl Tx<'_> {
             return Ok(());
         }
         let f = match self.txn.get_aspect(tid, ak)? {
-            Some(u) if pages::is_paged(&u.state) => {
+            Some(mut u) if pages::is_paged(&u.state) => {
+                // an earlier build's layout is laid out anew, once
+                if let Some(whole) = pages::legacy(&mut self.txn, tid, ak, &u.state)? {
+                    self.core.touch();
+                    self.core.written.push(k.clone());
+                    u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true)?.0;
+                    self.txn.put_aspect(tid, ak, &u, Shred::No)?;
+                }
                 let (f, idx) = pages::open(&u.state)?;
                 self.core.pages.insert(k.clone(), idx);
                 Some(f)
@@ -633,7 +645,7 @@ impl Tx<'_> {
     /// origin, dropped parts, per part its validity and roles) and its blob.
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
         self.core.bodies.remove(id);
-        let v = [index::record_head(self.core, id, meta), blob.encode()].concat();
+        let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         Ok(())
     }
@@ -808,7 +820,10 @@ impl Engine {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
-                match f(&mut tx).and_then(|v| index::persist(&mut tx).map(|_| v)) {
+                let r = f(&mut tx);
+                // every validity change was judged before the index is persisted
+                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
+                match r.and_then(|v| index::persist(&mut tx).map(|_| v)) {
                     Ok(v) => {
                         let Tx { txn, .. } = tx;
                         txn.commit().map(|_| v).map_err(Error::from)
@@ -833,9 +848,9 @@ impl Engine {
         }
     }
 
-    /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
-    /// subscribers).
-    pub(crate) fn reload(&mut self) -> Result<()> {
+    /// A fresh `Core` loaded from the store (`rebuild`: ignoring the persisted index); whether
+    /// it was rebuilt from the commit records.
+    fn load_fresh(&mut self, rebuild: bool) -> Result<bool> {
         let id = Identity::from_seed(self.core.id.seed().clone());
         let mut fresh = Core::new(id, self.clock.clone());
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
@@ -847,8 +862,20 @@ impl Engine {
         self.core = fresh;
         let txn = self.store.transaction(&mut self.store_rng)?;
         let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
-        let rebuilt = crate::apply::load(&mut tx)?;
+        let r = crate::apply::load(&mut tx, rebuild);
         self.core.commit_journal();
+        r
+    }
+
+    /// Rebuilds every in-memory cache and index from the store (keeps identity, clock and
+    /// subscribers).
+    pub(crate) fn reload(&mut self) -> Result<()> {
+        let rebuilt = match self.load_fresh(false) {
+            Ok(r) => r,
+            // a persisted index that does not decode is rebuilt from the commit records
+            Err(Error::Corrupt(_)) => self.load_fresh(true)?,
+            Err(e) => return Err(e),
+        };
         if rebuilt {
             // persisted for the next open
             self.run(index::write_all)?;

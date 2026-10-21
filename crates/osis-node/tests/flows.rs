@@ -242,7 +242,8 @@ fn removal_rotates_spec_perm_3() {
 
 // notes/local-store.md (a rebuildable index): after grants, a removal with its rotation, content
 // by the removed member before and after it (the latter invalid here), the indexes an open reads
-// from the persisted index equal those rebuilt from every commit record, and those in memory.
+// from the persisted index equal those rebuilt from every commit record, and those in memory; a
+// tag of other rules or an index that does not decode is rebuilt.
 #[test]
 fn persisted_index_equals_rebuild_spec_perm_5_2() {
     let (mut lp, ps) = people(3, 509);
@@ -275,6 +276,13 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
     e.reload_index().unwrap();
     assert_eq!(e.index_digest(), before, "the rebuilt index persisted");
+    // another build's tag, then a row that does not decode: each open rebuilds and re-tags
+    for garble in [false, true] {
+        e.damage_index(garble).unwrap();
+        e.reload_index().unwrap();
+        assert_eq!(e.index_digest(), before, "rebuilt after damage (garbled: {garble})");
+        assert!(e.index_current().unwrap());
+    }
 }
 
 /// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not

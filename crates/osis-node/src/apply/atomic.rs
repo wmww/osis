@@ -241,7 +241,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     let mut flipped = Vec::new();
-    if held_changed {
+    if held_changed || tx.core.stale() {
         flipped = validity::rejudge_all(tx, true)?;
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
@@ -355,7 +355,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
     let mut flipped = Vec::new();
-    if held_changed {
+    if held_changed || tx.core.stale() {
         flipped = validity::rejudge_all(tx, true)?;
         for (tid, ak) in &flipped {
             observe_state(tx, tid, ak)?;
