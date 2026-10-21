@@ -122,6 +122,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         tx.load_lazy(&a.tid, &a.ak)?;
         let touch = crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())));
         tx.ensure_touch(&a.tid, &a.ak, &touch)?;
+        // a nested edit reads only its own entries (by dot: `osis_crdt::undo`), on the pages
+        // holding the delta's dots; the pre-commit side comes from the buffer or held bodies
         let lo = tx.txn.counter(&a.tid, &a.ak)?;
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
