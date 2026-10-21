@@ -1066,9 +1066,10 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
     }
 }
 
-/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers]`, `Frontiers := [[Src, ctr]*]` sorted by `Src`,
-/// one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7). Frontier-only
-/// sources come last in `Sources`.
+/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]` sorted
+/// by `Src`, one entry per `Node` source (§8). The caller strips the values of expiring deltas first (§4.7).
+/// Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty here:
+/// the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     let extra: Vec<Source> = frontiers
         .iter()
@@ -1082,13 +1083,16 @@ pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], c
     let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
     fr.sort();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr]))
+    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())]))
 }
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
     let it = cbor::decode(bytes)?;
     match it.array()? {
-        [Item::Bytes(n), sources, commits, f, fr] if n.len() == 16 => {
+        [Item::Bytes(n), sources, commits, f, fr, ab] if n.len() == 16 => {
+            if !ab.array()?.is_empty() {
+                return Err(Error::Bad("absorbed commits (not modeled)"));
+            }
             cx.snapshot = true;
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;

@@ -799,6 +799,46 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
     }
 }
 
+// spec/crdt.md §8 (absorbed commits), spec/commits.md §5, spec/permissions.md §5.1: X's
+// rotation (commit form) reaches late joiner Bob only through Alice's compaction snapshot of
+// `/secrets`, which lists it as absorbed, so Bob counts it received: when Bob removes X, his
+// frontier covers it and nobody un-merges X's old rotation.
+#[test]
+fn late_joiner_covers_compacted_rotation_spec_crdt_8() {
+    let (mut lp, ps) = people(4, 512);
+    let (pa, pb, px, pm) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pm, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    // X removes M: its commit carries X's rotation of t
+    let before = ids(&lp, 2);
+    lp.peers[2].engine.demote(&t, &Demotion { member: pm, new: None, presync: PreSync::Synced }).unwrap();
+    let xr = new_ids(&lp, 2, &before);
+    send(&mut lp, 2, 0, &xr);
+    lp.advance(1000);
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("/secrets")).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&snap).unwrap();
+    assert_eq!(h.form, osis_commit::Form::Node);
+    // Bob joins late: everything Alice holds but X's removal itself
+    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    let to_b: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !xr.contains(c)).collect();
+    send(&mut lp, 0, 1, &to_b);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
+    assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's rotation");
+    lp.advance(1000);
+    let before = ids(&lp, 1);
+    lp.peers[1].engine.demote(&t, &Demotion { member: px, new: None, presync: PreSync::Synced }).unwrap();
+    let br = new_ids(&lp, 1, &before);
+    let r = br.iter().copied().find(|c| lp.peers[1].engine.header(c).unwrap().frontier.is_some()).unwrap();
+    assert!(xr.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "the absorbed rotation is listed");
+    lp.peers[0].drain_events();
+    send(&mut lp, 1, 0, &br);
+    let unmerged = lp.peers[0].drain_events().into_iter().any(|e| matches!(e, osis_node::Event::Changed { cause: osis_node::Cause::Validity, ref changed } if changed.iter().any(|(x, a)| *x == t && (a.as_str() == "/secrets" || a.as_str() == "/keys"))));
+    assert!(!unmerged, "X's old rotation stays valid");
+    assert!(!lp.peers[0].engine.roster(&t).contains_key(&px));
+}
+
 /// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
 fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
     let mut lp = net(3, seed);

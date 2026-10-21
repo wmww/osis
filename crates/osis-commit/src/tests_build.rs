@@ -58,7 +58,7 @@ fn build_content() {
 #[test]
 fn build_membership_and_refusals() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Membership, at, t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.deltas.push(register_delta(t(1), at, 1, "b"));
     a.retention = retention::MEMBERSHIP_RETENTION;

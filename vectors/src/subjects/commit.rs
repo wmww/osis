@@ -76,7 +76,7 @@ fn content() -> CommitBlob {
 
 fn membership() -> CommitBlob {
     let at = ts(1_700_000_001_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Node);
+    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Commit);
     let edge = |m: u8| Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), Value::Int(1))].into_iter().collect());
     let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Membership, at, Source::node(AUTHOR), 1, edge(0x41), 2));
     a.deltas.push(delta(Kind::Membership, at, Source::node(AUTHOR), 1, edge(0x42), 3));
@@ -89,7 +89,7 @@ fn snapshot() -> CommitBlob {
     let at = ts(1_700_000_002_000);
     let mut w = Writer::new(ts(1_700_000_000_000), Source::node(AUTHOR), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let s = Snapshot { nonce: [4; 16], fragment, frontiers: Frontiers([(AUTHOR, 1)].into_iter().collect()) };
+    let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers: Frontiers([(AUTHOR, 1)].into_iter().collect()) };
     let bytes = encode_snapshot(&s, &writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Node);
     let mut a = AspectWrite::new(THING, Ak::new("/app/title").unwrap(), 0, 0, bytes);
@@ -211,7 +211,7 @@ fn more_accepted() -> Vec<Record> {
     out.push(record("purge request; /created kept forever", "spec/wire.md §4; spec/commits.md §5", &built(b)));
     // membership commit with a frontier
     let at = ts(1_700_000_006_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Node);
+    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Membership, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
     a.retention = retention::MEMBERSHIP_RETENTION;
     b.aspects.push(a);

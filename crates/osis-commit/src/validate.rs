@@ -32,6 +32,10 @@ impl Header {
         ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;
+        // membership writes are commit form, so no later commit can void them (spec/commits.md §3)
+        if matches!(kind, Kind::Membership | Kind::RosterSnapshot) && self.form == crate::header::Form::Node {
+            return Err(Error::Invalid("node-form membership commit"));
+        }
         let wall = self.ts.wall_ms().0;
         let mut used = vec![false; self.tokens.len()];
         for a in &self.aspects {
