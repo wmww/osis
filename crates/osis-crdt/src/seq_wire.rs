@@ -199,12 +199,12 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             return Err(Error::Malformed("run length"));
         }
         let last = first.ctr.checked_add(n - 1).ok_or(Error::Malformed("run counter overflow"))?;
-        // before allocating: bare anchors only in snapshots, content-less elements bounded
-        // elsewhere (rule 7)
+        // before allocating: bare anchors only in snapshots and imports, content-less elements
+        // bounded elsewhere (rule 7)
         let empty = |v: &Value| matches!(v, Value::List(x) if x.is_empty());
         if cx.kind() != DeltaKind::Snapshot {
-            if empty(creation) && empty(content) && empty(posw) && empty(flagw) {
-                return Err(Error::Malformed("bare anchors outside a snapshot"));
+            if writer && empty(creation) && empty(content) && empty(posw) && empty(flagw) {
+                return Err(Error::Malformed("bare anchors outside a snapshot or an import"));
             }
             if empty(content) {
                 cx.bare = cx.bare.saturating_add(n);

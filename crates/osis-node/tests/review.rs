@@ -232,3 +232,43 @@ fn resolution_hops_spec_perm_7() {
     let _ = WallMs(0);
 }
 
+
+// spec/crdt.md §3.3 rule 7, spec/permissions.md §7 (a snapshot origin's bare anchors are
+// imported): a text reset while another writer inserted at an element the reset pruned, then
+// compacted (its ordinary bodies dropped), moves complete: the copy reads like the original, at
+// the mover and at a node receiving the import.
+#[test]
+fn move_reset_compacted_text_complete_spec_perm_7() {
+    let mut lp = net(2, 79);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s("abc")).unwrap();
+    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.replace(t, &TEXT, &s("xyz")).unwrap();
+    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    // later, b inserts after `b` without having seen the reset: `b` is a bare anchor after it
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 2, items: vec![s("q")] } }).unwrap();
+    let c3 = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let k = ak("/t/text");
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("xyzq")));
+    let snap = e.snapshot(&t, &k).unwrap().unwrap();
+    for c in [c1, c2, c3] {
+        assert_eq!(e.covered(&snap, &c, &t, &k).unwrap(), Some(true));
+        e.drop_body(&c, &t, &k).unwrap();
+    }
+    let (copy, imports) = e.move_thing(&t, a).unwrap();
+    assert!(imports.iter().any(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == snap))), "the snapshot is an origin");
+    assert_eq!(e.get(&copy, &k).unwrap(), Some(s("xyzq")), "the copy is complete");
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&copy, &k).unwrap(), Some(s("xyzq")), "receivers accept the import");
+}

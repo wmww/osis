@@ -318,8 +318,9 @@ fn rejects_bad_runs_spec_3_3() {
     bad(list_with(vec![run(i(3), 1, created(1), l(vec![l(vec![i(0), l(vec![])])]), vec![], vec![])]));
 }
 
-/// §3.3 rule 7: bare-anchor runs only in snapshots; at most `MAX_DELTA_BARE` content-less
-/// elements per writer or import delta; a writer's flag writes carry the delta stamp.
+/// §3.3 rule 7: no bare-anchor run in a writer's delta (an import's or a snapshot's may carry
+/// them); at most `MAX_DELTA_BARE` content-less elements per writer or import delta, bare
+/// anchors included; a writer's flag writes carry the delta stamp.
 #[test]
 fn rejects_bare_and_oversized_runs_spec_3_3() {
     let other = osis_core::Tid::from_bytes([9; 15]);
@@ -327,9 +328,10 @@ fn rejects_bare_and_oversized_runs_spec_3_3() {
     let flag = || vec![l(vec![i(0), i(65535), i(0), Value::Bool(true)])];
     let runs = |k: i64, f: &dyn Fn() -> Vec<Value>| text_with((0..k).map(|j| run(l(vec![i(1), i(1 + j * 65536)]), 65536, l(vec![]), l(vec![]), vec![], f())).collect());
     let import = DeltaCtx { kind: DeltaKind::Import, ..wcx() };
-    // bare anchors: rejected in writer and import deltas
+    // bare anchors: rejected in a writer's delta, bounded in an import
     rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &wcx(), ErrorClass::BadInput);
-    rejects(&delta(srcs(), vec![], runs(1, &Vec::new)), &import, ErrorClass::BadInput);
+    decode_delta(&delta(srcs(), vec![], runs(4, &Vec::new)), &import, &mut Interner::new(), None).unwrap();
+    rejects(&delta(srcs(), vec![], runs(5, &Vec::new)), &import, ErrorClass::BadInput);
     // 4 · 2^16 = MAX_DELTA_BARE flagged elements pass, 5 · 2^16 do not
     decode_delta(&delta(srcs(), vec![], runs(4, &flag)), &wcx(), &mut Interner::new(), None).unwrap();
     rejects(&delta(srcs(), vec![], runs(5, &flag)), &wcx(), ErrorClass::BadInput);

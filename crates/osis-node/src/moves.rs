@@ -188,10 +188,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     build_and_apply(tx, plan, deltas).map(Some)
 }
 
-/// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped,
-/// whose carried writes the import delta may hold (no bare anchor: only snapshots carry those,
-/// spec/crdt.md §3.3; such an aspect imports from its ordinary commits alone,
-/// issues/import-bare-anchors.md).
+/// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped
+/// (its bare anchors come along: an import may carry them, spec/crdt.md §3.3 rule 7).
 fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
     let mut out = BTreeMap::new();
     let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();
@@ -207,9 +205,6 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
                 continue;
             }
             let Some(Decoded::Snapshot(s)) = crate::apply::held_parts(tx, &id, ai)?.into_iter().next() else { continue };
-            if s.fragment.has_bare_anchors() {
-                break;
-            }
             let carried: BTreeSet<Dot> = s.fragment.writes().into_iter().map(|(d, _)| d).filter(|d| !d.src.is_derived()).collect();
             let rank = carried.into_iter().zip(1u64..).collect();
             out.insert(ak.clone(), Carrier { id, ts, rank, frontiers: s.frontiers });
