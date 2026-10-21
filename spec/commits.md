@@ -32,7 +32,7 @@ Encoding: spec/wire.md §4. Fields:
 
 ## 3. Dot forms
 - **Node form**: dots `(author node, counter)`, counters per (aspect, node), contiguous.
-- **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any author may use it. A key actor whose key is used from more than one device (link key, recovery key) MUST use it.
+- **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any author may use it. A key actor whose key is used from more than one device (link key, recovery key) MUST use it, and every membership commit (roster snapshots included) MUST use it, so no later commit of its author can void it (§4).
 
 ## 4. Verification and application
 - A commit's signature MUST verify; receivers dedup by commit ID. Each **delta** is judged on its own, by its author's authority on that delta's thing (spec/permissions.md §5); an invalid delta is un-merged alone (spec/crdt.md §4.6), the commit's other deltas stand.

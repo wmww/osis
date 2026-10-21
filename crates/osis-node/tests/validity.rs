@@ -183,6 +183,42 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
+// spec/commits.md §3, §4 (counter reuse): membership commits use commit form, so a node that
+// later signs a node-form commit reusing its grant's counters (overlapping node-form ranges
+// void both commits) cannot void that grant: Bob keeps the edge Alice gave him.
+#[test]
+fn reused_counters_never_void_a_grant_spec_commits_4() {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Source, Writer, encode_delta};
+    let mut lp = net(3, 46);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
+    let h = lp.peers[0].engine.header(&g).unwrap();
+    assert_eq!(h.form, Form::Commit, "membership commits use commit form");
+    let members = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "/members").unwrap();
+    // Alice's key signs a node-form commit on d's /members with the grant's range
+    let ts = osis_core::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
+    let empty = osis_crdt::Fragment::default();
+    let mut batch = Batch::new(&empty, Writer::new(ts, Source::node(a), members.lo));
+    batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
+    let (f, range) = batch.finish().unwrap();
+    assert!(range.lo < members.hi && members.lo < range.hi, "the ranges overlap");
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Membership, ts, a, range.lo, range.hi), None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Membership, ts, a, a, Form::Node);
+    let mut aw = AspectWrite::new(d, members.ak.clone(), range.lo, range.hi, bytes);
+    aw.retention = osis_commit::retention::MEMBERSHIP_RETENTION;
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let built = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    lp.peers[1].engine.ingest(&built.commit.encode(), Vec::new()).unwrap();
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
+    assert_eq!(lp.peers[1].engine.roster(&d).get(&c).map(|e| e.role), Some(Role::Read), "the reusing commit applied");
+}
+
 // spec/commits.md §2: a membership commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]

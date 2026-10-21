@@ -395,6 +395,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
+    // membership commits use commit form: a later commit by the same node can never void
+    // them by reusing their counters (spec/commits.md §3)
+    if kind != Kind::Content {
+        m.form = Form::Commit;
+    }
     let ts = tx.core.hlc.next();
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };
     let mut next_ctr = 1u64;
