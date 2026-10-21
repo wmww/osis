@@ -449,7 +449,8 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 }
 
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
-/// of a membership commit that write beyond its grantees' boxes.
+/// of a membership commit that write beyond its grantees' boxes. `parts`: every held part of the
+/// commit (a late `/secrets` part is judged with the `/members` part held before it).
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
     core.stale_commits.insert(*id);
     for (ai, _, d) in parts {
@@ -477,8 +478,12 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/secrets" && !crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
-            core.grant_overreach.insert((*id, *ai));
+        if a.ak.as_str() == "/secrets" {
+            if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, fragment(d), &granted, &own)) {
+                core.grant_overreach.remove(&(*id, *ai));
+            } else {
+                core.grant_overreach.insert((*id, *ai));
+            }
         }
     }
     // one delta per `/secrets` aspect, known from the signed header: a node that never holds a
@@ -788,6 +793,43 @@ mod tests {
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+    }
+    // spec/permissions.md §2, spec/commits.md §4 (late deltas): an invite holder's grant whose
+    // `/secrets` part boxes beyond its grantee is invalid whatever the arrival order; here the
+    // `/members` part arrives first and the overreaching `/secrets` part joins late.
+    #[test]
+    fn overreaching_grant_late_secrets_invalid_spec_perm_2() {
+        let mut lp = LocalPeer::new(4, 905, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
+        let (a, b, c) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        // the invite holder grants c and also writes a box keyed to the admin
+        let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
+        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.member == a).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, c, &read).unwrap();
+        let w = osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() };
+        crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let id = lp.peers[1].commit(m).unwrap().unwrap();
+        let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let si = blob.header.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
+        let first = osis_commit::rewrite(&blob, |ai, _| ai == si);
+        lp.peers[3].engine.ingest(&first.encode(), pk.blobs.clone()).unwrap();
+        assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.pending.contains_key(&id), "applied without its /secrets part");
+        lp.deliver(3, &pk).unwrap();
+        let m = lp.peers[3].engine.core.commits.get(&id).unwrap();
+        assert!(!m.valid[si], "the late overreaching part is invalid");
+        assert!(lp.peers[3].engine.core.grant_overreach.contains(&(id, si)));
     }
     // spec/permissions.md §2: an invite grant's `/secrets` delta carries only puts of its
     // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)

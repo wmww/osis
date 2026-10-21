@@ -45,6 +45,8 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     let r = net.node(2, &[sv]);
     let _g = net.group(a, &[(r, Role::Read)], &[sv]);
     net.run();
+    // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
+    net.advance(30_000);
     diags(&mut net, &[a, r]);
     let l = net.label(a);
     let rt = net.tid(r);
@@ -200,7 +202,7 @@ fn inbox_delivery_spec_sync_3() {
     net.actions(s_, acts);
     net.run();
     diags(&mut net, &[s_, b]);
-    assert!(net.sync(b).entries(&home.id).iter().any(|(_, k)| *k == EntryKind::Inbox));
+    assert!(net.sync(b).entries(&home.id).iter().any(|(_, k)| matches!(k, EntryKind::Inbox(_))));
     assert_eq!(net.read(b, x), Some(s("for P")));
 }
 

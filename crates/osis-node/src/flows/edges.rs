@@ -100,7 +100,8 @@ pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &
     let payload = InboxPayload { commit, things: ts };
     let now = tx.now();
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
-    Ok(vec![Delivery::Inbox { to, inbox, blob }])
+    let resend = super::Resend { member, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
+    Ok(vec![Delivery::Inbox { to, inbox, blob, resend }])
 }
 
 /// A grant or a raise of `member`'s edge on `target` by `who` (this node, or a held key actor

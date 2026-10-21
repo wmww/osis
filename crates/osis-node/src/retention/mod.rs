@@ -404,6 +404,39 @@ impl Engine {
         })
     }
 
+    /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
+    /// dot its deltas own survives there; unknown counts as live). A body without one needs no
+    /// carrier before it leaves a label (spec/sync.md §7). Writes the state does not hold count
+    /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
+    /// are stripped from the state; they count live again once a validity flip or a redo puts
+    /// them back). Kept per body until the next change (`Core::live_bodies`).
+    pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+        let key = (*c, *tid, ak.clone());
+        if let Some(v) = self.core.live_bodies.get(&key) {
+            return Ok(*v);
+        }
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        let live = self.run(|tx| {
+            let Some(ai) = aspect_index(tx, &c, &tid, &ak) else { return Ok(true) };
+            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { return Ok(true) };
+            let (_, members) = body_class(tx.core, &h, &c, ai);
+            for x in members {
+                let Some(a) = h.aspects.get(x) else { continue };
+                let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
+                tx.load(&a.tid, &a.ak)?;
+                let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
+                let mut g = st.clone();
+                g.strip(&|d| o.owns(d));
+                if &g != st {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })?;
+        self.core.live_bodies.insert(key, live);
+        Ok(live)
+    }
+
     /// Whether a body is held (not dropped).
     pub fn holds_body(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.commits.get(c) else { return false };
@@ -530,5 +563,45 @@ fn frag(d: Decoded) -> Fragment {
     match d {
         Decoded::Delta(x) => x.fragment,
         Decoded::Snapshot(x) => x.fragment,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use crate::Mutation;
+    use crate::flows::{Demotion, PreSync};
+    use crate::local_peer::LocalPeer;
+    use osis_core::{Ak, Role, Value, WallMs};
+    use osis_schema::core_types as ct;
+
+    // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
+    // write made invalid (a backdated removal of its author) counts dead; a re-grant that makes
+    // it valid again counts it live again.
+    #[test]
+    fn body_live_follows_validity_spec_sync_7() {
+        let mut lp = LocalPeer::new(2, 951, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let ak = Ak::new("/x/a").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ak, &Value::Int(0)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &w, &write).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.now();
+        lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Int(1)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync(1, 0).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
+        e.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
+        e.grant(&t, &w, &write).unwrap();
+        assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
     }
 }

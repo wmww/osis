@@ -234,6 +234,9 @@ pub struct NetSim {
     pub dishonest: BTreeSet<usize>,
     /// Commits expected to stay parked at quiescence (version skew: a newer format).
     pub parked_ok: BTreeSet<CommitId>,
+    /// Entries each node sent by Upload while `count_uploads` is on: (node, label, blob).
+    pub uploads: Vec<(usize, LabelId, osis_core::BlobId)>,
+    pub count_uploads: bool,
     /// Held-back messages of evil servers per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
     /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
@@ -321,6 +324,8 @@ impl NetSim {
             watch: false,
             dishonest: BTreeSet::new(),
             parked_ok: BTreeSet::new(),
+            uploads: Vec::new(),
+            count_uploads: false,
             held: BTreeMap::new(),
             watched: BTreeSet::new(),
             sent_watched: 0,
@@ -511,6 +516,15 @@ impl NetSim {
                 Action::Send { conn, bytes } => {
                     if let Some(x) = self.nodes.get_mut(n) {
                         x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);
+                    }
+                    if self.count_uploads {
+                        let mut d = osis_proto::FrameDecoder::new();
+                        d.push(&bytes);
+                        while let Ok(Some(body)) = d.next_frame() {
+                            if let Ok(osis_proto::Message::Upload { label, entries, .. }) = osis_proto::Message::decode(&body) {
+                                self.uploads.extend(entries.iter().map(|e| (n, label, osis_label::blob_id(&e.blob))));
+                            }
+                        }
                     }
                     if !self.watched.is_empty() {
                         self.sent_watched = self.sent_watched.saturating_add(watched_in(&self.watched, &bytes));

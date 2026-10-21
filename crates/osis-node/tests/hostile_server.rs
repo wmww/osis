@@ -394,6 +394,8 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let conn = net.conn_to(b, sv).expect("connected");
     net.feed(b, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
     net.settle(10_000);
+    // another node's commit: left to its author for a while (spec/sync.md §6)
+    net.advance(30_000);
     assert!(net.engine(b).header(&c).is_some(), "applied from the forged blob");
     let entries = net.sync(b).entries(&l);
     assert!(entries.iter().any(|(x, k)| *x == id && *k == osis_node::sync::EntryKind::Bad), "the forged blob is bad input");

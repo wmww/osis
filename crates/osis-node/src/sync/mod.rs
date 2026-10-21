@@ -283,8 +283,6 @@ pub struct SyncEngine {
     pub(crate) deleting: BTreeMap<(ConnId, LabelId, osis_core::BlobId), u64>,
     /// Timed deletes sent and not answered yet: recorded once the server says OK.
     pub(crate) timed_sent: BTreeSet<(ConnId, LabelId, osis_core::BlobId)>,
-    /// When a stranded heartbeat last went under each label.
-    pub(crate) stranded_at: BTreeMap<LabelId, u64>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_core::Ak), (u64, u64)>,
@@ -293,16 +291,17 @@ pub struct SyncEngine {
     pub(crate) relink_at: u64,
     /// Servers where a replaced label is done with (`retire_at`).
     pub(crate) retired_at: BTreeSet<(ServerKey, LabelId)>,
-    /// Commits for nodes over a direct connection (`take_direct`).
-    pub(crate) direct: Vec<(Tid, Vec<crate::local_peer::Package>)>,
     /// Certificate copies waiting for a rotation (group, commit, aspects).
     pub(crate) deferred: Vec<(Tid, osis_core::CommitId, BTreeSet<usize>)>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
     /// uploads or justify deleting another entry (`SyncEngine::genuine`).
     pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
-    /// When a certificate left to its author (`SETTLE_MS`) is due again (raw ms).
+    /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
+    /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: Option<u64>,
+    /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
+    pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -399,16 +398,15 @@ impl SyncEngine {
             timed_sent: BTreeSet::new(),
             deleting: BTreeMap::new(),
             missing: BTreeSet::new(),
-            stranded_at: BTreeMap::new(),
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
             relink_at: 0,
             retired_at: BTreeSet::new(),
-            direct: Vec::new(),
             first: BTreeSet::new(),
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
             settle_at: None,
+            deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),
@@ -525,6 +523,7 @@ impl SyncEngine {
                     self.forget_dropped()?;
                 }
                 self.timers(out)?;
+                self.resend_inbox()?;
                 self.serve_timers(out);
                 self.relink_lost()?;
             }
@@ -1094,11 +1093,14 @@ impl SyncEngine {
         if let Some(x) = self.settle_at {
             at(x);
         }
+        let skew = self.now() as i64 - now as i64;
+        if let Some(x) = self.state.sent_inbox.values().map(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS)).min() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
         for o in self.outbox.iter().filter(|o| o.after > now) {
             at(o.after);
         }
-        let skew = self.now() as i64 - now as i64;
         if let Ok(Some(x)) = self.engine.next_timer() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }

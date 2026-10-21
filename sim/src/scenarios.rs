@@ -48,6 +48,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("bundles", library::bundles),
     ("disappearing", library::disappearing),
     ("keep_at_most", library::keep_at_most),
+    ("concurrent_writers", library::concurrent_writers),
     ("evil_server", adversary::evil_server),
     ("evil_server_drops", adversary::evil_server_drops),
     ("removed_replayer", adversary::removed_replayer),

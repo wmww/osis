@@ -83,7 +83,6 @@ impl SyncEngine {
         self.sent.retain(|(_, l, _), _| !gone(l));
         self.deleting.retain(|(_, l, _), _| !gone(l));
         self.timed_sent.retain(|(_, l, _)| !gone(l));
-        self.stranded_at.retain(|l, _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
         self.reopens.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
@@ -117,21 +116,15 @@ impl SyncEngine {
     fn take_deliveries(&mut self, done: Done) -> Result<()> {
         for d in done.deliveries {
             match d {
-                Delivery::Inbox { to, inbox, blob } => {
+                Delivery::Inbox { to, inbox, blob, resend } => {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
                     for server in inbox.servers {
                         self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
                     }
+                    let now = self.now();
+                    self.state.note_sent(resend.member, resend.commit, resend.things, resend.edge_only, now);
                 }
-                Delivery::Direct { to, commits } => {
-                    let mut pks = Vec::new();
-                    for c in commits {
-                        if let Some(p) = self.engine.package(&c)? {
-                            pks.push(p);
-                        }
-                    }
-                    self.direct.push((to, pks));
-                }
+                Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
                 Delivery::First { commits, under } => {
                     for c in &commits {
                         self.first.insert(*c);
@@ -163,7 +156,7 @@ impl SyncEngine {
     /// things outside `g`'s closure as a certificate copy under `g`'s labels; deltas on things
     /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
     /// `/secrets` boxes the label's readers cannot open).
-    fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+    pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let closure = self.engine.closure(g);
         let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| matches!(a.ak.as_str(), "/members" | "/tenures" | "/keys" | "/created") && !closure.contains(&a.tid)).map(|(i, _)| i).collect();
@@ -204,16 +197,25 @@ impl SyncEngine {
     }
 
     /// Commits for nodes over a direct connection (pairing): the app carries them, the
-    /// receiving node `Engine::ingest`s them.
+    /// receiving node `Engine::ingest`s them. Kept durably until taken.
     pub fn take_direct(&mut self) -> Vec<(Tid, Vec<Package>)> {
-        std::mem::take(&mut self.direct)
+        let lists = self.state.take_direct(None);
+        let out = lists.into_iter().map(|(to, cs)| (to, self.packages(&cs))).collect();
+        let _ = self.state.flush(&mut self.engine);
+        out
     }
 
     /// The packages for node `to` only; those for other nodes stay.
     pub fn take_direct_for(&mut self, to: &Tid) -> Vec<Package> {
-        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.direct).into_iter().partition(|(t, _)| t == to);
-        self.direct = rest;
-        mine.into_iter().flat_map(|(_, p)| p).collect()
+        let lists = self.state.take_direct(Some(to));
+        let out = lists.into_iter().flat_map(|(_, cs)| self.packages(&cs)).collect();
+        let _ = self.state.flush(&mut self.engine);
+        out
+    }
+
+    /// Packages of the held commits among `cs`.
+    fn packages(&mut self, cs: &[CommitId]) -> Vec<Package> {
+        cs.iter().filter_map(|c| self.engine.package(c).ok().flatten()).collect()
     }
 }
 

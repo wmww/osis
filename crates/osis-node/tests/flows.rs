@@ -167,7 +167,7 @@ fn grant_by_inbox_spec_perm_2() {
     assert_eq!(done.commits.len(), 2, "own secrets, then the grant");
     let inbox: Vec<&Delivery> = done.deliveries.iter().filter(|d| matches!(d, Delivery::Inbox { .. })).collect();
     assert_eq!(inbox.len(), 1);
-    let Delivery::Inbox { to, inbox: ib, blob } = inbox[0] else { unreachable!() };
+    let Delivery::Inbox { to, inbox: ib, blob, .. } = inbox[0] else { unreachable!() };
     assert_eq!(*to, pb);
     let home = lp.peers[1].engine.label_of(&pb).unwrap().unwrap().0;
     assert_eq!(ib.label, home);

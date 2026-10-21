@@ -43,8 +43,8 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delivery {
     /// An inbox blob for actor `to` (spec/sync.md §3): placed under `inbox.label` by deposit, or
-    /// by upload when the sender holds that label's write key.
-    Inbox { to: Tid, inbox: Inbox, blob: Vec<u8> },
+    /// by upload when the sender holds that label's write key; `resend` seals it again.
+    Inbox { to: Tid, inbox: Inbox, blob: Vec<u8>, resend: Resend },
     /// Commits for node `to` over a direct connection (pairing; a node has no inbox).
     Direct { to: Tid, commits: Vec<CommitId> },
     /// Commits to place, in the same sync and before any other upload, under every label the
@@ -57,6 +57,17 @@ pub enum Delivery {
     /// A commit to place under the label of `under`, by deposit (a non-writer of that label: an
     /// invite grant or self-removal, spec/sync.md §5).
     Deposit { commit: CommitId, under: Tid },
+}
+
+/// What seals an inbox delivery again (spec/sync.md §3: re-sent after `INBOX_LIFETIME` while
+/// the member has not acted): the member, the commit, the things named, whether only its
+/// `/members` parts went (a removal).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resend {
+    pub member: Tid,
+    pub commit: CommitId,
+    pub things: Vec<Tid>,
+    pub edge_only: bool,
 }
 
 /// What node-sync knows that flows need (notes/node.md, hooks).

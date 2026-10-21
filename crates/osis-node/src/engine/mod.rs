@@ -140,7 +140,7 @@ pub(crate) struct Core {
     pub box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
-    pub epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    pub epoch_intro: EpochIntro,
     /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
     pub box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
@@ -178,10 +178,21 @@ pub(crate) struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
+    /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
+    /// when the commit's record is written (late parts, drops), when a thing it touches gets
+    /// its creation record, and all when an actor gets secrets of its own (reader actors move);
+    /// only commits whose things' owner chains are known are kept.
+    pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
+    /// `Engine::body_live` per body, cleared by every transaction that changes anything
+    /// (`touch`, `rollback`).
+    pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
     /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
     /// derived from them (the sync engine's co-readers) compare it.
     pub generation: u64,
 }
+
+/// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
+pub type EpochIntro = BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
 /// re-evaluating the restored held set).
@@ -206,7 +217,7 @@ pub(crate) struct Backup {
     rotation_role: BTreeMap<(CommitId, usize), osis_core::Role>,
     grant_overreach: BTreeSet<(CommitId, usize)>,
     box_keys: BTreeMap<(Tid, Dot), osis_core::Value>,
-    epoch_intro: BTreeMap<(Tid, osis_core::Role, osis_crypto::Epoch), (Ts, Tid, Tid)>,
+    epoch_intro: EpochIntro,
     box_written: BTreeMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     secrets_unresolved: BTreeMap<(CommitId, usize), crate::apply::keys::Unresolved>,
 }
@@ -225,9 +236,17 @@ impl Core {
         self.membership_changed();
     }
 
+    /// The sizes of the indexes `touch` saves (a debug check that a failed transaction changed
+    /// none without it).
+    #[cfg(debug_assertions)]
+    fn shape(&self) -> [usize; 11] {
+        [self.commits.len(), self.pending.len(), self.secrets.len(), self.own_keys.len(), self.by_aspect.len(), self.invalid.len(), self.void.len(), self.valueless.len(), self.groups.len(), self.member_keys.len(), self.box_keys.len()]
+    }
+
     /// Saves the indexes before the running transaction's first change to them.
     pub fn touch(&mut self) {
         self.live_trees.clear();
+        self.live_bodies.clear();
         self.generation += 1;
         if self.backup.is_some() {
             return;
@@ -259,9 +278,15 @@ impl Core {
         }));
     }
 
-    /// Undoes the aborted transaction's changes to the caches.
+    /// Undoes the aborted transaction's changes to the caches (none when it changed nothing:
+    /// a failed read keeps them).
     fn rollback(&mut self) {
+        if self.backup.is_none() && self.written.is_empty() {
+            return;
+        }
         self.live_trees.clear();
+        self.live_bodies.clear();
+        self.bodies.clear();
         self.generation += 1;
         self.membership_changed();
         for k in std::mem::take(&mut self.written) {
@@ -342,6 +367,8 @@ impl Core {
             key_actors: BTreeMap::new(),
             lost_due: BTreeSet::new(),
             live_trees: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            live_bodies: BTreeMap::new(),
             generation: 0,
         }
     }
@@ -447,6 +474,7 @@ impl Tx<'_> {
     /// changed. A paged state rewrites only those pages (and its skeleton if needed); anything
     /// else is written whole. The caller has noted the state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &state::Touch, shred: Shred) -> Result<()> {
+        self.core.live_bodies.clear();
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
@@ -470,6 +498,7 @@ impl Tx<'_> {
     }
 
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
+        self.core.bodies.remove(id);
         let mut w = Wr::new().u8(1).u64(meta.received.0).u8(match meta.origin {
             Origin::Local => 0,
             Origin::Remote => 1,
@@ -652,6 +681,8 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        #[cfg(debug_assertions)]
+        let shape = self.core.shape();
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -673,6 +704,10 @@ impl Engine {
                 Ok(v)
             }
             Err(e) => {
+                // a failed transaction that changed nothing keeps the caches (`rollback`): every
+                // index change must go through `touch` or `written`
+                #[cfg(debug_assertions)]
+                debug_assert!(self.core.backup.is_some() || !self.core.written.is_empty() || self.core.shape() == shape, "an index changed without Core::touch");
                 self.core.events.discard();
                 self.core.rollback();
                 Err(e)
