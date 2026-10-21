@@ -234,3 +234,42 @@ fn undo_redo_spec_commits_7() {
     lp.peers[0].engine.undo(&cb).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
 }
+
+// spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/node.md, Paged state): in a new
+// session, which loads only the pages it touches, undoing an edit of a key of a large map, an
+// edit inside an entry's nested map and a removal restores what a whole state would, and a
+// session loading everything reads the same.
+#[test]
+fn undo_in_lazily_loaded_pages_spec_commits_7() {
+    let mut lp = net(1, 58);
+    let t = new_thing(&mut lp, 0);
+    let fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &BIG, &Value::Map(fill)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let key = |k: &str| osis_crdt::PathSeg::Key(s(k));
+    let edit = |lp: &mut osis_node::local_peer::LocalPeer, op: PathOp| {
+        let mut m = Mutation::new();
+        m.op(t, &BIG, op).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    lp.advance(5);
+    let c1 = edit(&mut lp, PathOp { path: vec![key("k100")], op: Op::Set(s("changed")) });
+    lp.advance(5);
+    let c2 = edit(&mut lp, PathOp { path: Vec::new(), op: Op::Remove(s("k200")) });
+    lp.advance(5);
+    let c3 = edit(&mut lp, PathOp { path: vec![key("new")], op: Op::Set(s("added")) });
+    let before = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap();
+    for (c, k, want) in [(c3, "new", None), (c2, "k200", Some(s(&"v".repeat(300)))), (c1, "k100", Some(s(&"v".repeat(300))))] {
+        lp.peers[0].restart(58).unwrap();
+        lp.advance(5);
+        lp.peers[0].engine.undo(&c).unwrap().unwrap();
+        assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[key(k)]).unwrap(), want, "undo of {k}");
+    }
+    // a whole read after the three undos: the fill again
+    lp.peers[0].restart(59).unwrap();
+    let Some(Value::Map(after)) = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap() else { panic!() };
+    assert_eq!(after.len(), 300);
+    assert!(after.values().all(|v| *v == s(&"v".repeat(300))));
+    assert_ne!(Some(Value::Map(after)), before);
+}
