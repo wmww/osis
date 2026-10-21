@@ -32,6 +32,7 @@ const EPOCH_INTRO: &[u8] = b"i/e/";
 const BOX_WRITTEN: &[u8] = b"i/w/";
 const OWN_KEYS: &[u8] = b"i/k/";
 const SNAPSHOTS: &[u8] = b"i/s/";
+const CARRIED: &[u8] = b"i/c/";
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -161,6 +162,16 @@ impl<T: Rec> Rec for Vec<T> {
         x.iter().map(T::from).collect()
     }
 }
+impl Rec for crate::apply::validity::Carried {
+    fn to(&self) -> Value {
+        Value::List(vec![self.node.to(), self.ts.to(), uint(self.lo), uint(self.hi), Value::Bool(self.valid)])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let [n, ts, Value::Int(lo), Value::Int(hi), Value::Bool(valid)] = x.as_slice() else { return None };
+        Some(crate::apply::validity::Carried { node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, lo: u64::try_from(*lo).ok()?, hi: u64::try_from(*hi).ok()?, valid: *valid })
+    }
+}
 impl Rec for () {
     fn to(&self) -> Value {
         Value::List(Vec::new())
@@ -268,6 +279,8 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_set(txn, OWN_KEYS, &c.own_keys, &k)?;
     let k = if all { c.snapshots.keys().cloned().collect() } else { c.snapshots.logged() };
     put_map(txn, SNAPSHOTS, &c.snapshots, &k)?;
+    let k = if all { c.carried.keys().cloned().collect() } else { c.carried.logged() };
+    put_map(txn, CARRIED, &c.carried, &k)?;
     Ok(())
 }
 
@@ -361,6 +374,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, SNAPSHOTS)? {
         tx.core.snapshots.insert(k, dec(&v)?);
     }
+    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED)? {
+        tx.core.carried.insert(k, dec(&v)?);
+    }
     Ok(())
 }
 
@@ -418,7 +434,7 @@ impl super::Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.rotation_role, *c.grant_overreach, *c.box_keys, *c.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.epoch_intro, *c.box_written, *c.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.member_keys, *c.unresolved, *c.was, *c.moved, c.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots, *c.carried);
         out
     }
 

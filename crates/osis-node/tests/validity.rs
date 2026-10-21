@@ -299,3 +299,48 @@ fn forged_membership_class_unmerged_spec_perm_1() {
     lp.peers[0].engine.ingest(&honest, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(Value::Tid(other)));
 }
+
+// spec/permissions.md §5.2 (a compaction snapshot vouches for nothing): Dave holds Bob's edits
+// only inside Alice's compaction snapshot; Alice's revoke of Bob covers "mon", not "x" (its
+// frontier stops below it): Dave un-merges "x" from the snapshot body as Bob's write and keeps
+// "mon", whether the revoke arrives after the snapshot or before it, across a restart; a re-grant
+// brings "x" back.
+#[test]
+fn snapshot_vouches_for_nothing_spec_perm_5_2() {
+    for revoke_first in [false, true] {
+        let (mut lp, d, b, _) = setup(47);
+        lp.peers.push(osis_node::local_peer::Peer::new(4700, T0).unwrap());
+        lp.sync_all().unwrap();
+        add_tag(&mut lp, 1, d, "mon");
+        sync(&mut lp, 1, 0);
+        let mon = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).max_by_key(|c| lp.peers[1].engine.header(c).unwrap().ts).unwrap();
+        let mon_hi = lp.peers[1].engine.header(&mon).unwrap().aspects.iter().find(|a| a.ak.as_str() == "/t/tags").unwrap().hi;
+        lp.advance(DAY);
+        add_tag(&mut lp, 1, d, "x");
+        sync(&mut lp, 1, 0);
+        let snap = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
+        lp.advance(DAY);
+        // a frontier holding "mon" only
+        let f = osis_schema::core_types::Frontier { writes: BTreeMap::from([(d, BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(b, mon_hi - 1)]))]))]), commits: BTreeSet::new() };
+        let rv = set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+        assert_eq!(tags(&mut lp, 0, d), BTreeSet::from(["mon".to_string()]), "Alice un-merges x");
+        // Dave: everything of Alice's but Bob's own commits
+        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+        let (late, early): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| if revoke_first { p.id == snap } else { p.id == rv });
+        for pk in early.iter().chain(&late) {
+            lp.deliver(3, pk).unwrap();
+        }
+        lp.peers[3].engine.reexamine().unwrap();
+        assert!(lp.peers[3].engine.header(&snap).is_some(), "the snapshot applied");
+        assert!(lp.peers[3].engine.header(&mon).is_none(), "Bob's own commit is not held");
+        assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["mon".to_string()]), "revoke first: {revoke_first}");
+        lp.peers[3].restart(5).unwrap();
+        assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["mon".to_string()]), "after a restart");
+        // a re-grant makes Bob's writes valid again, those carried by the snapshot too
+        lp.advance(DAY);
+        let g = set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == g).unwrap();
+        lp.deliver(3, &pk).unwrap();
+        assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["mon".to_string(), "x".to_string()]), "re-granted");
+    }
+}

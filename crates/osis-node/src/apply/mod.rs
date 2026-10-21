@@ -584,6 +584,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
             Ok(())
         })?;
         let mut bodies = Vec::new();
+        let mut snaps = Vec::new();
         for (received, origin, dropped, mut blob) in recs {
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
@@ -596,18 +597,24 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<bool> {
             atomic::index_commit(tx.core, &id, &h);
             tx.core.commits.insert(id, Meta { header: h, received, origin, valid, dropped });
             if is_kind_snapshot(blob.header.kind) {
-                // the frontiers of its parts (the bodies carrying a write, `retention::carriers`)
-                let mut b = blob.clone();
-                if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
-                    for (ai, _, d) in parts {
-                        if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
-                            atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, s.frontiers);
-                        }
-                    }
-                }
+                snaps.push(blob.clone());
             }
             if blob.header.kind.is_membership() {
                 bodies.push(blob);
+            }
+        }
+        // snapshots: their frontiers (the bodies carrying a write, `retention::carriers`) and
+        // the writes they carry without their commit (judged below with every delta)
+        for blob in snaps {
+            let id = blob.id();
+            let mut b = blob.clone();
+            if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
+                for (ai, _, d) in parts {
+                    if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
+                        validity::note_carried(tx.core, &a.tid, &a.ak, &s.fragment);
+                        atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, s.frontiers);
+                    }
+                }
             }
         }
         // perm inputs from membership bodies, oldest first

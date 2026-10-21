@@ -574,6 +574,113 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
+/// Writes of one commit that held compaction snapshots carry while the commit itself is not held
+/// here: its author node, `ts` and counter range, and whether they are valid as its author's
+/// writes (spec/permissions.md §5.2: a snapshot vouches for nothing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Carried {
+    pub node: Tid,
+    pub ts: osis_core::Ts,
+    pub lo: u64,
+    pub hi: u64,
+    pub valid: bool,
+}
+
+/// The writes of snapshot fragment `f` of `(tid, ak)` whose commit is not held, grouped by
+/// (author node, `ts`): a stamp gives its write's `ts`; an element created without a stamp of its
+/// own joins the group of its node's nearest stamp below it (the same commit's, whose writes have
+/// consecutive counters). An element with no stamp below it is not judged (residue). Commit-form
+/// writes name no author: not judged either.
+pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(Tid, osis_core::Ts, u64, u64)> {
+    let mut groups: BTreeMap<(Tid, osis_core::Ts), (u64, u64)> = BTreeMap::new();
+    let mut bare: Vec<(Tid, u64)> = Vec::new();
+    for (d, ts) in f.writes() {
+        let osis_crdt::SourceKind::Node(n) = d.src.kind() else { continue };
+        if core.commit_of(tid, ak, &d).is_some() {
+            continue;
+        }
+        match ts {
+            Some(ts) => {
+                let g = groups.entry((*n, ts)).or_insert((d.ctr, d.ctr + 1));
+                g.0 = g.0.min(d.ctr);
+                g.1 = g.1.max(d.ctr + 1);
+            }
+            None => bare.push((*n, d.ctr)),
+        }
+    }
+    // counters of one node on one aspect rise with `ts`: a creation belongs to the group with the
+    // greatest low counter at or below it
+    for (n, c) in bare {
+        let best = groups.iter_mut().filter(|((m, _), (lo, _))| *m == n && *lo <= c).max_by_key(|(_, (lo, _))| *lo);
+        if let Some((_, g)) = best {
+            g.1 = g.1.max(c + 1);
+        }
+    }
+    groups.into_iter().map(|((n, ts), (lo, hi))| (n, ts, lo, hi)).collect()
+}
+
+/// Whether the carried writes `c` of `(tid, ak)` are valid as their author's (§5.2), judged at
+/// their `ts` like a delta of theirs.
+pub(crate) fn carried_valid(core: &Core, tid: &Tid, ak: &Ak, node: &Tid, ts: osis_core::Ts, lo: u64, hi: u64) -> bool {
+    if ak.as_str() == "/created" {
+        return true;
+    }
+    if too_deep(core, tid) {
+        return false;
+    }
+    let Some(tl) = core.timelines.get(tid) else { return false };
+    // no commit ID is known: the point sorts before the author's commits at that `ts`
+    let point = Point { ts, node: *node, commit: CommitId([0; 32]) };
+    tl.delta_valid(point, tid, ak.as_str(), Dots::Node { lo, hi }, required_role(ak.as_str())) == Validity::Valid
+}
+
+/// Records and judges the writes snapshot fragment `f` carries without their commit; whether
+/// the aspect's judged set changed.
+pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, f: &Fragment) -> bool {
+    let groups = carried_of(core, tid, ak, f);
+    if groups.is_empty() {
+        return false;
+    }
+    let k = (*tid, ak.clone());
+    let mut cur = core.carried.get(&k).cloned().unwrap_or_default();
+    let before = cur.clone();
+    for (n, ts, lo, hi) in groups {
+        let valid = carried_valid(core, tid, ak, &n, ts, lo, hi);
+        match cur.iter_mut().find(|c| c.node == n && c.ts == ts) {
+            Some(c) => {
+                c.lo = c.lo.min(lo);
+                c.hi = c.hi.max(hi);
+                c.valid = carried_valid(core, tid, ak, &n, ts, c.lo, c.hi);
+            }
+            None => cur.push(Carried { node: n, ts, lo, hi, valid }),
+        }
+    }
+    if cur == before {
+        return false;
+    }
+    core.carried.insert(k, cur);
+    true
+}
+
+/// Drops the carried writes of a commit now held (it is judged itself).
+pub(crate) fn uncarry(core: &mut Core, h: &Header) {
+    if h.form != Form::Node || !h.kind.has_own_writes() {
+        return;
+    }
+    for a in &h.aspects {
+        let k = (a.tid, a.ak.clone());
+        if core.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.node == h.author && c.ts == h.ts)) {
+            let mut v = core.carried.get(&k).cloned().unwrap_or_default();
+            v.retain(|c| !(c.node == h.author && c.ts == h.ts));
+            if v.is_empty() {
+                core.carried.remove(&k);
+            } else {
+                core.carried.insert(k, v);
+            }
+        }
+    }
+}
+
 /// Re-judges the held deltas whose validity may have changed with the held set: those on the
 /// things whose timeline changed since they were last judged (`Core::rejudge`, filled by
 /// `update_timelines`; a voided commit's things are added there too), so the cost follows the
@@ -610,6 +717,23 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             }
             m.valid = now;
             tx.core.index_validity(&id);
+        }
+    }
+    // writes carried by snapshots without their commit, on the same things
+    let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| things.contains(t)).cloned().collect();
+    for k in aspects {
+        let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
+        let mut any = false;
+        for c in v.iter_mut() {
+            let now = carried_valid(tx.core, &k.0, &k.1, &c.node, c.ts, c.lo, c.hi);
+            if now != c.valid {
+                c.valid = now;
+                any = true;
+            }
+        }
+        if any {
+            tx.core.carried.insert(k.clone(), v);
+            flipped.insert(k);
         }
     }
     if rebuild {

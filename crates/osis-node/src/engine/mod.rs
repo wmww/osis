@@ -98,6 +98,7 @@ macro_rules! journaled {
         c.invalid.$m();
         c.by_aspect.$m();
         c.snapshots.$m();
+        c.carried.$m();
         c.by_thing.$m();
         c.ranges.$m();
         c.pending.$m();
@@ -150,6 +151,9 @@ pub(crate) struct Core {
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<(Ts, CommitId, osis_crdt::Frontiers)>>,
+    /// Writes held snapshots carry whose own commit is not held, per aspect, judged as their
+    /// authors' (spec/permissions.md §5.2: a snapshot vouches for nothing).
+    pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
@@ -280,6 +284,7 @@ impl Core {
             invalid: JSetMap::default(),
             by_aspect: JSetMap::default(),
             snapshots: JMap::default(),
+            carried: JMap::default(),
             by_thing: JSetMap::default(),
             ranges: JNested::default(),
             pending: JMap::default(),

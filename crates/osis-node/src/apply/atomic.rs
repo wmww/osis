@@ -102,6 +102,12 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
             out.extend(m.header.origins.iter().map(|o| Owned::Commit(o.commit)));
         }
     }
+    // writes snapshots carry without their commit, invalid as their author's
+    for c in core.carried.get(&(*tid, ak.clone())).into_iter().flatten() {
+        if !c.valid {
+            out.push(Owned::Node { node: c.node, lo: c.lo, hi: c.hi });
+        }
+    }
     out
 }
 
@@ -175,6 +181,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         );
     }
     index_commit(tx.core, &id, &h);
+    validity::uncarry(tx.core, &h);
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let meta = Meta { header: h.clone(), received, origin, valid: valid.clone(), dropped: BTreeSet::new() };
     tx.core.commits.insert(id, meta.clone());
@@ -215,6 +222,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         let (f, fr) = fragment(d);
         if let Some(fr) = fr {
             note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
+            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
         }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
@@ -291,6 +299,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         let (f, fr) = fragment(d);
         if let Some(fr) = fr {
             note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
+            validity::note_carried(tx.core, &a.tid, &a.ak, &f);
         }
         touched.note(&a.tid, &a.ak, &f);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
