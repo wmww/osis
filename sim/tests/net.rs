@@ -132,3 +132,12 @@ fn server_loses_data_seed_41() {
 fn large_edits() {
     ok("large_edits", 1);
 }
+
+// spec/sync.md §6, §7: a relayer whose upload of another node's commit was lost later re-uploaded
+// its own encryption although the author's was present, so the tiebreak deleted the author's after
+// quiescence (fixed: an entry present at the server is the body's entry).
+#[test]
+#[ignore = "tier 2"]
+fn stranded_reseal_seed_23() {
+    ok("stranded_reseal", 23);
+}
