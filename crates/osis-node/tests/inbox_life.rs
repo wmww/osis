@@ -1,7 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! An inbox blob's life (spec/sync.md §3): the grantee's certificate copy, deletion of the
-//! consumed blob by the inbox's admins, re-sending after `INBOX_LIFETIME`; direct packages kept
-//! until the app takes them.
+//! An inbox blob's life (spec/sync.md §3): the grantee's certificate copy, re-sending after
+//! `INBOX_LIFETIME`; direct packages kept until the app takes them.
 
 mod net;
 use net::*;
@@ -54,9 +53,9 @@ fn inbox_at(net: &mut Net, n: usize, sv: usize, l: &LabelId) -> usize {
 }
 
 // spec/sync.md §3: the grantee's device places a certificate copy of the grant under its home
-// label (the inbox), and the inbox's admins then delete the consumed inbox blob.
+// label (the inbox), with the `/label` and `/created` commits of the group it names.
 #[test]
-fn consumed_inbox_blob_deleted_spec_sync_3() {
+fn grantee_copy_placed_spec_sync_3() {
     let (mut net, sv, a, b, _, bob, g, home) = alice_and_bob();
     grant(&mut net, a, g, bob);
     let t = net.item(a, g, g, "for bob");
@@ -68,10 +67,9 @@ fn consumed_inbox_blob_deleted_spec_sync_3() {
     let copies: Vec<(osis_core::BlobId, EntryKind)> = net.sync(b).entries(&home).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { .. })).collect();
     let grant: Vec<osis_core::CommitId> = net.engine(b).commit_ids().into_iter().filter(|c| net.engine(b).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/members"))).collect();
     assert!(copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if grant.contains(commit))), "the grant's copy is under Bob's home label");
-    // the grant reached Bob only as an inbox blob: none is left, every entry is a commit blob
-    assert_eq!(inbox_at(&mut net, b, sv, &home), 0, "the consumed inbox blob is deleted");
-    let known = net.sync(b).entries(&home);
-    assert!(net.server_ids(sv, &home).iter().all(|id| known.iter().any(|(x, k)| x == id && matches!(k, EntryKind::Commit { .. }))));
+    let label = copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(b).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/label"))));
+    assert!(label, "the group's /label commit is copied too");
+    assert_eq!(inbox_at(&mut net, b, sv, &home), 1, "the inbox blob stays until it expires");
 }
 
 // spec/sync.md §3: an inbox blob nobody acts on expires at the server after `INBOX_LIFETIME`;

@@ -699,6 +699,14 @@ impl SyncEngine {
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("upload refused: code {}", c.0)),
             }
+            // a refused promotion waits again (`RELAY_MIN_MS`): co-writers refused alike (a step
+            // registered meanwhile) would otherwise all send it at the next pass
+            if code != Code::OK {
+                let raw = self.raw_now();
+                if let Some(t) = self.deposit_seen.get_mut(&(server, l, b)) {
+                    *t = raw;
+                }
+            }
         }
         // carriers just went up: deletions waiting for them may go now
         if grew && let Some(lc) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)) {

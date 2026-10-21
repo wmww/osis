@@ -737,7 +737,9 @@ impl SyncEngine {
     /// once applied, under that label: every part the inbox blob carried (its boxes included,
     /// sealed to the actor anyway), with the `/label` and `/created` commits of the things it
     /// named, so the actor's other devices find the grant and its labels there (spec/sync.md
-    /// §3); the inbox's admins then delete the consumed blob (`deletions`).
+    /// §3). The consumed inbox blob stays until it expires: its label hints are what a later
+    /// member that cannot apply the copied `/label` yet (the granter's chain pending) opens the
+    /// thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         let opened: Vec<(BlobId, CommitId)> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter_map(|((_, b), e)| if let Kind::Inbox(Some(c)) = e.kind { Some((*b, c)) } else { None }).collect();
         for (b, c) in opened {
@@ -756,22 +758,6 @@ impl SyncEngine {
             self.place_certificate_in(g, &c, &ais)?;
         }
         Ok(())
-    }
-
-    /// Whether the `/label` and `/created` commits of the things inbox blob `b` named are present
-    /// at `server` under `l` (an entry of each commit).
-    fn inbox_labels_copied(&mut self, server: &ServerKey, l: &LabelId, b: &BlobId) -> Result<bool> {
-        let Some((_, things)) = self.inbox_parts(l, b)? else { return Ok(false) };
-        for t in things {
-            for ak in ["/created", "/label"] {
-                let Some((x, _)) = self.engine.aspect_commit(&t, ak) else { continue };
-                let here = self.state.entries.range((*l, BlobId([0; 32]))..).take_while(|((y, _), _)| y == l).any(|((_, id), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == x) && self.state.is_present(server, l, id));
-                if !here {
-                    return Ok(false);
-                }
-            }
-        }
-        Ok(true)
     }
 
     /// This node's chain certificates and node card under `l` (spec/permissions.md §4): the
@@ -1129,8 +1115,16 @@ impl SyncEngine {
         if h.author == me || aks.is_empty() || !all_card {
             return false;
         }
+        // departed: an applied write removed the node's edge, and it reads the actor no more (a
+        // view lacking the node's chain alone proves nothing)
         let actor = self.engine.group_actor(g);
-        let departed = !self.engine.core.may_read(&h.author, &actor);
+        let removed = self.engine.core.timelines.get(&h.author).is_some_and(|tl| {
+            tl.applied().keys().any(|w| match w {
+                osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.member == h.author && op.edge.is_none()),
+                osis_perm::WriteId::Snapshot(_) => false,
+            })
+        });
+        let departed = removed && !self.engine.core.may_read(&h.author, &actor);
         aks.into_iter().all(|ak| {
             if departed && ak != "/keys" {
                 return true;
@@ -1242,27 +1236,6 @@ impl SyncEngine {
                         self.deleting.insert((conn, l, b), raw);
                         items.push(item);
                     }
-                }
-            }
-        }
-        // consumed inbox blobs (spec/sync.md §3): the inbox label's admins delete one whose commit
-        // applied here once a copy of that commit is under the label at this server (the
-        // grantee's certificate copy, which the actor's other devices read instead)
-        if keys.delete.is_some() {
-            for id in self.state.present_at(&server, &l) {
-                let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
-                if !self.engine.core.commits.contains_key(&c) || self.engine.core.pending.contains_key(&c) || super::in_flight(&self.deleting, &(conn, l, id), self.raw_now()) {
-                    continue;
-                }
-                let copied = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).any(|((_, b), e)| matches!(&e.kind, Kind::Commit { commit, .. } if *commit == c) && self.state.is_present(&server, &l, b));
-                // and the labels it named are under the label too (`inbox_copies`)
-                if !copied || !self.inbox_labels_copied(&server, &l, &id)? {
-                    continue;
-                }
-                if let Some(item) = delete_item(keys, &l, id, None, &[]) {
-                    let raw = self.raw_now();
-                    self.deleting.insert((conn, l, id), raw);
-                    items.push(item);
                 }
             }
         }
