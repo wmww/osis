@@ -100,21 +100,24 @@ pub struct Frontier {
     /// tid -> AK -> author node -> counter up to which (inclusive) writes were received
     /// contiguously.
     pub writes: BTreeMap<Tid, BTreeMap<String, BTreeMap<Tid, u64>>>,
-    /// Commit IDs of commit-form writes received.
+    /// Commit IDs of commit-form writes received and of the demoter's chain writes.
     pub commits: BTreeSet<CommitId>,
 }
 
 impl Frontier {
-    /// Whether the frontier covers the dots `dots` of commit `commit` by `node` on `(tid, ak)`.
-    /// A node-form range is covered when its last counter is; an empty range (a commit with no
-    /// own writes, such as an import) only by its commit ID.
+    /// Whether the frontier covers the dots `dots` of commit `commit` by `node` on `(tid, ak)`:
+    /// its commit ID is listed, or it is a node-form range whose last counter is covered (an
+    /// empty range, a commit with no own writes such as an import, only by its ID).
     pub fn covers(&self, tid: &Tid, ak: &str, node: &Tid, dots: Dots, commit: &CommitId) -> bool {
+        if self.commits.contains(commit) {
+            return true;
+        }
         match dots {
             Dots::Node { lo, hi } if lo < hi => {
                 let got = self.writes.get(tid).and_then(|m| m.get(ak)).and_then(|m| m.get(node));
                 got.is_some_and(|&c| c >= hi - 1)
             }
-            _ => self.commits.contains(commit),
+            _ => false,
         }
     }
 }

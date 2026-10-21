@@ -194,7 +194,6 @@ impl SHist {
         audit: bool,
         events: &[Event],
     ) -> ThingOut {
-        let n = self.n();
         let pos_of = pos_of(order);
         // Epoch start: newest applied owner-chain snapshot of this thing. Only a demotion in
         // the chain can drop one, and those drops are known before this walk.
@@ -217,7 +216,6 @@ impl SHist {
                 applied |= 1 << s;
             }
             let mut demotions = Vec::new();
-            let mut chain_of: Vec<Option<usize>> = vec![None; n];
             let mut roles_after = vec![roles.clone(); start_pos.min(order.len()) + 1];
             let mut next_event = 0;
             for pos in start_pos..=order.len() {
@@ -279,7 +277,7 @@ impl SHist {
                             if chain(w.target, pos_of[j]) == Role::Admin {
                                 continue; // made by chain authority, audited by the chain's demotions
                             }
-                            let covered = self.recv[j][a] < w.t || chain_of[a] == Some(j);
+                            let covered = self.recv[j][a] < w.t;
                             if !covered {
                                 dropped |= 1 << j;
                                 grew = true;
@@ -290,8 +288,6 @@ impl SHist {
                         }
                     }
                 }
-                // A chain write is a link of the target's authority: an admin edge.
-                chain_of[w.target] = (w.role == Role::Admin).then_some(i);
                 roles_after.push(roles.clone());
             }
             debug_assert_eq!(roles_after.len(), order.len() + 1);

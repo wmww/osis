@@ -288,8 +288,6 @@ impl Hist {
             let mut applied = 0u64;
             let mut adm_rev = vec![None; n];
             let mut wr_rev = vec![None; n];
-            // Last applied write that set each actor's role: the actor's chain.
-            let mut chain: Vec<Option<usize>> = vec![None; n];
             for &i in &order {
                 let w = &self.writes[i];
                 if dropped >> i & 1 == 1 || w.target == OWNER {
@@ -309,7 +307,8 @@ impl Hist {
                         if applied >> j & 1 == 0 || self.writes[j].author != x || j == i {
                             continue;
                         }
-                        let covered = self.recv[j][w.author] < w.t || chain[w.author] == Some(j);
+                        // Only the frontier covers (spec §5.1): the demoter's own chain too.
+                        let covered = self.recv[j][w.author] < w.t;
                         if !covered {
                             dropped |= 1 << j;
                             grew = true;
@@ -322,7 +321,6 @@ impl Hist {
                 if old >= Role::Write && w.role == Role::None {
                     wr_rev[w.target] = Some(i);
                 }
-                chain[w.target] = Some(i);
             }
             let att_valid = self.att_fixpoint(&roles, &wr_rev, applied);
             return (Walk { roles, applied, adm_rev, wr_rev, att_valid }, passes);
@@ -1089,8 +1087,8 @@ mod tests {
         assert_eq!(passes, 2);
     }
 
-    /// Frontier: the demoter's own chain always counts as received, so an admin can
-    /// remove the admin that granted it without a malformed frontier undoing itself.
+    /// Frontier: the demoter holds its own chain (as certificates), so its frontier covers it
+    /// and an admin can remove the admin that granted it (spec §5.1).
     #[test]
     fn frontier_demoter_chain_is_covered() {
         let g = [Admin, Admin, None];

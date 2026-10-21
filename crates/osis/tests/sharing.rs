@@ -206,3 +206,52 @@ fn waits_time_out_and_roll_back_spec_api_handle() {
     assert_eq!(bob.waiting(), 0, "a dropped future leaves no waiter");
     assert_eq!(bob.engine(|e| e.held_key_actors()), 0, "nor the link key");
 }
+
+// spec/permissions.md §5.1 Frontier (chain-write forgery): Bob removes Carol without having
+// received anything of hers; Carol, offline with a lagging clock, then writes Bob's admin edge
+// with an `until`, stamped before the removal, and hands it over directly. Bob's frontier does not cover it: it drops,
+// Bob keeps admin without `until` and Carol stays removed.
+#[test]
+fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
+    let mut w = World::new();
+    let sv = w.add_server();
+    let (alice, _) = w.person(1, &[sv]);
+    let (bob, _) = w.person(2, &[sv]);
+    // Carol's own clock: kept with the world's, then left behind while she is offline
+    let cl = clock();
+    let mut c = w.cfg(3, &[sv]);
+    c.clock = Some(cl.clone());
+    let carol = Osis::create(c).unwrap().0;
+    w.run();
+    let (bc, cc) = (bob.contact_card().unwrap(), carol.contact_card().unwrap());
+    w.run();
+    let b = w.until(alice.import_contact(&bc), 1000, 10).unwrap();
+    cl.set(osis::WallMs(w.now()));
+    let c = w.until(alice.import_contact(&cc), 1000, 10).unwrap();
+    cl.set(osis::WallMs(w.now()));
+    let g = group(&alice);
+    alice.grant(g, b, Role::Admin, Default::default()).unwrap();
+    alice.grant(g, c, Role::Admin, Default::default()).unwrap();
+    w.run();
+    cl.set(osis::WallMs(w.now()));
+    w.run();
+    assert_eq!((bob.role_on(g), carol.role_on(g)), (Some(Role::Admin), Some(Role::Admin)));
+    w.set_online(&carol, false);
+    w.advance(60_000);
+    w.until(bob.demote(g, c, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None }), 1000, 10).unwrap();
+    w.run();
+    let until = osis::WallMs(w.now() + 3_600_000);
+    carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
+    assert_eq!(carol.roster(g).get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
+    // straight to Alice and Bob (G's servers refuse her stale write key)
+    deliver(&carol, &alice);
+    deliver(&carol, &bob);
+    w.run();
+    w.advance(3_700_000);
+    for db in [&alice, &bob] {
+        let r = db.roster(g);
+        assert_eq!(r.get(&b).map(|e| (e.role, e.until)), Some((Role::Admin, None)));
+        assert!(!r.contains_key(&c));
+    }
+    assert_eq!(bob.role_on(g), Some(Role::Admin));
+}

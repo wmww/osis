@@ -8,7 +8,6 @@ use common::*;
 use membership_model::{edges, joint, snapshot, Rng};
 use osis_core::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
-use std::collections::BTreeSet;
 
 fn role(r: membership_model::Role) -> Option<Role> {
     match r {
@@ -282,14 +281,12 @@ fn snap_diff(h: &snapshot::SHist) -> Option<String> {
     None
 }
 
-/// A drop whose cause was dropped too: sticky residue (notes/permissions.md), where the
-/// two-level model, which settles P before walking G, may discover drops in another order than
-/// the joint walk the spec prescribes.
+/// Sticky residue (`common::sticky_residue`): the two-level model, which settles P before
+/// walking G, may discover drops in another order than the joint walk the spec prescribes.
 static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn residue(tl: &Timeline) -> bool {
-    let dropped: BTreeSet<CommitId> = tl.dropped().keys().map(WriteId::commit).collect();
-    tl.dropped().values().any(|p| dropped.contains(&p.commit))
+    sticky_residue(tl)
 }
 
 fn snap_run(samples: u64, seed: u64) {

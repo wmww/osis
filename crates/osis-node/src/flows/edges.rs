@@ -369,7 +369,11 @@ impl Engine {
                         scope.content.entry(n).or_default().extend(ts);
                     }
                 }
-                Some(osis_schema::Codec::to_value(&self.frontier(&scope, as_of)?))
+                // the writes on this node's own admin paths count only as listed (§5.1)
+                let chain = tl.chain_writes(&who, &t, ts);
+                let mut f = self.frontier(&scope, as_of)?;
+                f.commits.extend(chain);
+                Some(osis_schema::Codec::to_value(&f))
             }
             None => None,
         };

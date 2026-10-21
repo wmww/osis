@@ -602,6 +602,36 @@ fn mutual_removal_spec_perm_5_1() {
     }
 }
 
+// spec/permissions.md §5.1 Frontier: the remover's frontier lists its chain writes by commit
+// ID. C grants D (Bob never gets it), then grants Bob admin (Bob gets only that, so C's
+// counters are not contiguous at Bob); Bob removes C: his own grant stays covered, so the
+// removal stands, while C's grant of D drops.
+#[test]
+fn remover_lists_chain_writes_spec_perm_5_1() {
+    let (mut lp, ps) = people(4, 508);
+    let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    let before: BTreeSet<CommitId> = lp.peers[2].engine.commit_ids().into_iter().collect();
+    lp.peers[2].engine.grant(&t, &pd, &edge_of(Role::Write)).unwrap();
+    let mid: BTreeSet<CommitId> = lp.peers[2].engine.commit_ids().into_iter().collect();
+    lp.peers[2].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
+    let to_b: Vec<CommitId> = lp.peers[2].engine.commit_ids().into_iter().filter(|c| !mid.contains(c)).collect();
+    assert!(mid.len() > before.len() && !to_b.is_empty());
+    send(&mut lp, 2, 1, &to_b);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
+    assert!(!lp.peers[1].engine.roster(&t).contains_key(&pd), "Bob never got C's grant of D");
+    lp.advance(1000);
+    lp.peers[1].engine.demote(&t, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+    spread(&mut lp);
+    for i in 0..4 {
+        let r = lp.peers[i].engine.roster(&t);
+        assert_eq!(r.get(&pb).map(|e| e.role), Some(Role::Admin), "peer {i}");
+        assert!(!r.contains_key(&pc) && !r.contains_key(&pd), "peer {i}: {r:?}");
+    }
+}
+
 /// Peers 0 and 1 are devices of person P (created on 1, 0 paired); peer 2 is Alice (PA).
 fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCard) {
     let mut lp = net(3, seed);
