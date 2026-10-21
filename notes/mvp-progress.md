@@ -37,7 +37,7 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **Peer input bounds** (Scale: "never causes unbounded allocation"): a tiny sequence snapshot run expands to 2^16 records: issues/crdt-run-amplification.md.
 - **Determinism** (Decentralization: "never of arrival order"): an invite grant's `/secrets` resets of entries the node has not seen pass, so validity depends on arrival order: issues/invite-grant-secrets.md.
 - **Chat costs** (Cost goal): measured (`costs_join_message_removal`, tier 2, passes) join 41 KB, message 2.5 KB, removal 26 KB at 4 members (37 KB at 8) with others sending only heartbeats; the waste after flows round 2 was certificate re-copies (fixed: certificates per label). Left: the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) in issues/chat-costs.md.
-- **LAN** (Offline and network: "works over LAN"): the LAN announcement datagram is in spec/sync.md §10 as provisional with the conservative candidate-route rule; the LAN loop, one driver for servers and peers, and the key binding are not built (owner: bind the key when the loop is built). issues/p2p-deferred.md.
+- **LAN** (Offline and network: "works over LAN"): built. The driver's LAN loop (feature `lan`) announces a fresh key per network with a sealed signature under the dialable key (spec/sync.md §10, datagram provisional); one driver (`Multi`) carries servers and peers; tier-2 tests over iroh on localhost and through a self-hosted relay. Follow-ups: issues/p2p-followups.md.
 - **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/header-list-commitments.md (header-list chunk commitments capped at 16, arbitrary cutoff), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
 - **Not checked**: "Runs in browsers" (no wasm build; the lower crates are sans-I/O and take rng and clock as parameters); "pushed, not polled" holds for connected nodes, push wake-ups for sleeping devices are a proposal (notes/networking.md).
@@ -60,13 +60,13 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Until a stable release, spec edits need no owner sign-off; only changes to or conflicts with spec/requirements.md go to the owner (CLAUDE.md).
 - issues/token-admin-secret.md option 1 and issues/header-list-commitments.md (a) for the MVP; better designs post-MVP.
 - issues/reseal-triggers.md (a), within "triggered, never guaranteed".
-- LAN: keep the conservative rule, the datagram format in spec/sync.md §10 as provisional, bind the key when the LAN loop is built.
+- LAN: the datagram format in spec/sync.md §10 stays provisional; the key is bound by a sealed signature under the dialable key (notes/networking.md).
 - deny.toml licence exceptions for the iroh feature approved; permissive licences and compile-time-only advisories need no sign-off.
 
 ## Suggested next plans
 - Query design pass: queries and backlinks (issues/api-deferred.md), which also removes the chat placement cost.
 - Push wake-ups for sleeping devices (notes/networking.md proposal).
-- BLE transport, and the LAN loop with one driver for servers and peers (issues/p2p-deferred.md).
+- BLE transport; P2P follow-ups (issues/p2p-followups.md).
 - Browser build: wasm target for the sans-I/O crates, a browser store backend and transport.
 - Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
 - Chat cost wire-format knobs (issues/chat-costs.md).

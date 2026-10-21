@@ -54,13 +54,14 @@ impl ManualNet {
     }
 }
 
-/// How servers are dialed (spec/sync.md §10).
+/// How servers and co-reader nodes are dialed (spec/sync.md §10).
 #[derive(Clone)]
 pub enum Transport {
-    /// QUIC (feature `quic`).
+    /// Servers over QUIC (feature `quic`); co-readers over iroh (feature `iroh`, through
+    /// `Config.relays`), on the LAN too with feature `lan`. Without `iroh` no co-reader is dialed.
     #[cfg(feature = "quic")]
     Quic,
-    /// In-process endpoints (tests).
+    /// In-process endpoints for servers and co-readers (tests).
     InProcess(osis_transport::InProcess),
 }
 
@@ -136,21 +137,49 @@ impl Net {
         }
     }
 
-    /// Starts the driver task.
-    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, .. } = self else { return Ok(()) };
+    /// Starts the driver task over one transport for servers and co-readers (`Multi`). With
+    /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
+    /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
+    /// the LAN loop. Without a co-reader transport no co-reader is dialed.
+    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
+        let Net::Driver { handle, ctl, .. } = self else { return Ok(()) };
         let host = OsisHost(db);
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
-        match transport {
+        let mut multi = osis_transport::Multi::default();
+        // where the dialable-key listener goes, and whether the LAN loop runs
+        let (reach, lan): (Option<String>, bool) = match transport {
             Some(Transport::InProcess(t)) => {
-                handle.spawn(driver::run_host(host, t, Vec::new(), clock, rx, log));
+                let url = format!("mem://{}-peer", t.name());
+                multi.mem = Some(t);
+                (Some(url), false)
             }
             #[cfg(feature = "quic")]
             Some(Transport::Quic) | None => {
-                handle.spawn(driver::run_host(host, osis_transport::Quic::new(), Vec::new(), clock, rx, log));
+                multi.quic = Some(osis_transport::Quic::new());
+                #[cfg(feature = "iroh")]
+                {
+                    multi.iroh = Some(osis_transport::Iroh::new());
+                    (Some(osis_transport::peer_url(&relays)), cfg!(feature = "lan"))
+                }
+                #[cfg(not(feature = "iroh"))]
+                (None, false)
             }
             #[cfg(not(feature = "quic"))]
             None => return Err(Error::Invalid("a runtime needs a transport (Config.transport; QUIC needs feature `quic`)".into())),
+        };
+        handle.spawn(driver::run_host(host, multi, Vec::new(), clock, rx, log));
+        match reach {
+            Some(url) if p2p => {
+                let _ = ctl.send(Control::Reach { url, relays, reply: None });
+                if lan {
+                    let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+                }
+            }
+            // nothing dials `peer://`: co-readers are not dialed
+            None => {
+                let _ = ctl.send(Control::Call(Box::new(|s| s.set_peers(false))));
+            }
+            Some(_) => {}
         }
         Ok(())
     }
@@ -285,5 +314,22 @@ impl crate::Osis {
             self.inner.net.timer(d);
         }
         Pending { slot }
+    }
+}
+
+/// A group's sync policy (`Osis::sync_policy`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroupPolicy {
+    /// Whether this node's `/reach` (its dialable key) goes under the group's labels, so
+    /// co-readers there can dial it off the LAN (spec/permissions.md §4). `None`: only when
+    /// every reader of the group is this person, a thing it owns or a contact (`import_contact`).
+    pub publish_reach: Option<bool>,
+}
+
+impl crate::Osis {
+    /// Sets `group`'s sync policy (stored). Co-readers of groups without `/reach` are not
+    /// dialed; a `/reach` already placed under a label stays there.
+    pub fn sync_policy(&self, group: osis_core::Tid, policy: GroupPolicy) {
+        self.locked(|l| l.sync.set_reach_policy(group, policy.publish_reach));
     }
 }

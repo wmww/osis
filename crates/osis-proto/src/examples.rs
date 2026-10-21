@@ -110,6 +110,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("open sync key", Message::Open { id: 4, label: l, proof: Proof::sync(&f.sync, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open claim key", Message::Open { id: 5, label: l, proof: Proof::claim(f.genesis.id(), &claim, &l, &CHALLENGE, &STATIC_KEY) }),
         ("open static entry", Message::Open { id: 6, label: l, proof: Proof::static_entry(&f.key_actor, &l, &CHALLENGE, &STATIC_KEY) }),
+        ("open member proof", Message::Open { id: 9, label: l, proof: Proof::member(&SigningSecret::from_seed(&s32(0x7c)), &l, &CHALLENGE, &STATIC_KEY) }),
         ("opened", Message::Opened { id: 4, head: f.child.clone(), entry_box: None }),
         ("opened with entry box", Message::Opened { id: 6, head: f.genesis.clone(), entry_box }),
         ("step", Message::Step { id: 4, step: f.child.clone() }),

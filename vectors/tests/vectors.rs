@@ -44,6 +44,7 @@ vector_files! {
     signal_signal => "signal/signal.vec",
     link_link => "link/link.vec",
     bundle_bundle => "bundle/bundle.vec",
+    lan_announce => "lan/announce.vec",
 }
 
 // spec: none (vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

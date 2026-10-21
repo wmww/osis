@@ -7,7 +7,7 @@ use crate::step::{ClaimSet, Step, StepId};
 use crate::Error;
 use osis_core::cbor::encode;
 use osis_core::{BlobId, LabelId, Value, WallMs};
-use osis_crypto::{Domain, LabelRole, Secret32, Signature, SigningSecret, VerifyingKey, sign_open, static_entry, verify_open};
+use osis_crypto::{Domain, LabelRole, Secret32, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_open};
 use osis_schema::core_types::SecretBox;
 
 fn bytes(b: &[u8]) -> Value {
@@ -49,12 +49,15 @@ pub(crate) fn opt(v: Option<Value>) -> Value {
 }
 
 /// Open proof (spec/wire.md §11.2): `[0, sync_pk, sig] | [1, step_id, claim_pk, sig] |
-/// [2, signing_pk, sig]`.
+/// [2, signing_pk, sig] | [3, dialable_pk, sig]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Proof {
     Sync { pk: VerifyingKey, sig: Signature },
     Claim { step: StepId, pk: VerifyingKey, sig: Signature },
     Static { signing: VerifyingKey, sig: Signature },
+    /// A node's dialable key, to a member peer (spec/sync.md §5): signed under
+    /// `"osis v1 member open"`; blind nodes refuse it.
+    Member { dialable: VerifyingKey, sig: Signature },
 }
 
 impl Proof {
@@ -69,11 +72,17 @@ impl Proof {
         Proof::Static { signing: signing.verifying_key(), sig: sign_open(signing, label, challenge, static_key) }
     }
 
+    /// By a node's dialable key (a member node at a member peer).
+    pub fn member(dialable: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
+        Proof::Member { dialable: dialable.verifying_key(), sig: dialable.sign(Domain::MemberOpen, &open_digest(label, challenge, static_key)) }
+    }
+
     pub fn to_value(&self) -> Value {
         Value::List(match self {
             Proof::Sync { pk, sig } => vec![Value::Int(0), bytes(&pk.to_bytes()), bytes(&sig.0)],
             Proof::Claim { step, pk, sig } => vec![Value::Int(1), bytes(&step.0), bytes(&pk.to_bytes()), bytes(&sig.0)],
             Proof::Static { signing, sig } => vec![Value::Int(2), bytes(&signing.to_bytes()), bytes(&sig.0)],
+            Proof::Member { dialable, sig } => vec![Value::Int(3), bytes(&dialable.to_bytes()), bytes(&sig.0)],
         })
     }
 
@@ -85,6 +94,7 @@ impl Proof {
             [Value::Int(0), pk, s] => Proof::Sync { pk: key(pk)?, sig: sig(s)? },
             [Value::Int(1), step, pk, s] => Proof::Claim { step: StepId(get_bytes(step, "proof step")?), pk: key(pk)?, sig: sig(s)? },
             [Value::Int(2), pk, s] => Proof::Static { signing: key(pk)?, sig: sig(s)? },
+            [Value::Int(3), pk, s] => Proof::Member { dialable: key(pk)?, sig: sig(s)? },
             _ => return Err(Error::Malformed("proof")),
         })
     }
@@ -93,6 +103,7 @@ impl Proof {
     pub fn verify_sig(&self, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<(), Error> {
         let (pk, sig) = match self {
             Proof::Sync { pk, sig } | Proof::Claim { pk, sig, .. } | Proof::Static { signing: pk, sig } => (pk, sig),
+            Proof::Member { dialable, sig } => return dialable.verify(Domain::MemberOpen, &open_digest(label, challenge, static_key), sig).map_err(|_| Error::Verify("open signature")),
         };
         verify_open(pk, label, challenge, static_key, sig).map_err(|_| Error::Verify("open signature"))
     }
@@ -145,6 +156,8 @@ pub fn evaluate_open<'a>(
                 _ => OpenOutcome::Refused,
             }
         }
+        // only a member peer that knows the key's node opens it (`ServerConnection`)
+        Proof::Member { .. } => OpenOutcome::Refused,
     }
 }
 

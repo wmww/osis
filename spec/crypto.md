@@ -10,7 +10,7 @@
 - Every hash osis computes itself is BLAKE3.
 
 ## 2. Signatures
-- Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Domains, one per signed object: `"osis v1 commit"` (input digest: the commit ID), `"osis v1 signal"` (by the sender node), `"osis v1 signal publish"` (by a label write or deposit key), `"osis v1 label register"`, `"osis v1 label open"`, `"osis v1 upload"` (stamps, spec/sync.md §5), `"osis v1 deposit"`, `"osis v1 delete"`. Digests per object: spec/wire.md.
+- Signed input is `domain || digest`: an ASCII domain string, then the 32-byte BLAKE3 digest of the signed canonical bytes. Domains, one per signed object: `"osis v1 commit"` (input digest: the commit ID), `"osis v1 signal"` (by the sender node), `"osis v1 signal publish"` (by a label write or deposit key), `"osis v1 label register"`, `"osis v1 label open"`, `"osis v1 upload"` (stamps, spec/sync.md §5), `"osis v1 deposit"`, `"osis v1 delete"`, `"osis v1 lan announce"` (by a dialable key, spec/sync.md §10), `"osis v1 member open"` (by a dialable key, digest as `"osis v1 label open"`, spec/wire.md §11.2). Digests per object: spec/wire.md.
 - Signers: node keys (commits by the node), recovery keys and link keys (commits signed as that key actor), label role keys (spec/sync.md §5).
 
 ## 3. Keys per actor kind

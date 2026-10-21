@@ -686,7 +686,7 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
-        for (c, want) in self.engine.certificates(g) {
+        for (c, want) in self.card_certificates(g) {
             // the parts entries of `c` under the label hold: this node's copies, and another
             // node's copy or body counted as described above
             let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
