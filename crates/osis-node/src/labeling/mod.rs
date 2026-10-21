@@ -11,3 +11,4 @@ pub mod converge;
 pub use actors::GroupLabel;
 pub use blobs::{Body, HeadKeys, Sealed, delete_item, open_commit, seal_body};
 pub use converge::{Facts, Hold, Why, classify, may_delete};
+pub use certs::Parts;
