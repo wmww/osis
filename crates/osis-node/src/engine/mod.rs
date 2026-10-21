@@ -123,6 +123,9 @@ macro_rules! journaled {
     }};
 }
 
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
+
 /// A scan callback: key (without prefix), value.
 type ScanFn<'f> = dyn FnMut(&[u8], Vec<u8>) -> Result<()> + 'f;
 
@@ -150,7 +153,7 @@ pub(crate) struct Core {
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
-    pub snapshots: JMap<(Tid, Ak), Vec<(Ts, CommitId, osis_crdt::Frontiers)>>,
+    pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Writes held snapshots carry whose own commit is not held, per aspect, judged as their
     /// authors' (spec/permissions.md §5.2: a snapshot vouches for nothing).
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,

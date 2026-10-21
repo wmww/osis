@@ -17,6 +17,9 @@ enum Undo {
     Removed(Vec<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>),
 }
 
+/// What one commit ID holds: its edge commit and its roster snapshots (one per thing).
+type Records = (Option<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>);
+
 #[derive(Debug, Default)]
 pub(crate) struct Held {
     commits: BTreeMap<Tid, Vec<Arc<MembershipCommit>>>,
@@ -27,7 +30,7 @@ pub(crate) struct Held {
     /// Owner -> things it owns (by creation records).
     owned: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> what it holds here (an ID's edge commit and roster snapshots).
-    ids: BTreeMap<CommitId, (Option<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>)>,
+    ids: BTreeMap<CommitId, Records>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
 }

@@ -355,7 +355,10 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
 /// The `/secrets` entries a commit's joins touched, per aspect (`None`: anything may have
 /// changed, read the whole state).
 #[derive(Default)]
-struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<(Vec<Value>, Vec<Value>)>>);
+struct Touched(std::collections::BTreeMap<(Tid, Ak), Option<SecretsKeys>>);
+
+/// Keys of the box and history-box entries a change touched.
+type SecretsKeys = (Vec<Value>, Vec<Value>);
 
 impl Touched {
     fn note(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) {

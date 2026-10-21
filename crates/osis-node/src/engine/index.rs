@@ -396,7 +396,10 @@ fn meta_bytes(m: &Meta) -> Vec<u8> {
     w.raw(&m.header.encode()).take()
 }
 
-fn meta_of(b: &[u8]) -> Result<(WallMs, Origin, BTreeSet<(usize, usize)>, Vec<bool>, osis_commit::Header)> {
+/// A commit meta record: received, origin, dropped parts, validity, header.
+type MetaRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, Vec<bool>, osis_commit::Header);
+
+fn meta_of(b: &[u8]) -> Result<MetaRecord> {
     let mut r = records::Rd::new(b);
     let received = WallMs(r.u64()?);
     let origin = if r.u8()? == 0 { Origin::Local } else { Origin::Remote };

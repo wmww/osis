@@ -6,6 +6,9 @@ use super::Core;
 use osis_core::Tid;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A `/group` definition: (items, subgroups).
+pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
+
 /// The `/group` definitions and what they derive.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Groups {
@@ -18,7 +21,7 @@ pub(crate) struct Groups {
     /// Group -> things it contains, transitively (its closure without itself).
     pub items: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Definitions replaced by the running transaction (`Journaled`).
-    log: Vec<(Tid, Option<(BTreeSet<Tid>, BTreeSet<Tid>)>)>,
+    log: Vec<(Tid, Option<Def>)>,
 }
 
 impl Groups {
