@@ -824,7 +824,7 @@ mod tests {
     }
 
     // notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
-    // of the root collection by page ID) is read whole and laid out anew.
+    // of the root collection by page ID) is read whole and laid out anew. spec: none (store layout)
     #[test]
     fn legacy_layout_relaid_spec_requirements_scale() {
         let mut rng = osis_crypto::SeededRng::from_u64(79);
@@ -858,6 +858,7 @@ mod tests {
     // pages the edit touches (or everything where it does not fit), written page by page: a
     // whole load from the store always gives the reference state back, and reads by key in a
     // fresh session load the pages of that key only and read what the whole state reads.
+    // spec: none (spec/requirements.md has no numbered sections)
     #[test]
     fn lazy_nested_paging_spec_requirements_scale() {
         let mut rng = osis_crypto::SeededRng::from_u64(77);

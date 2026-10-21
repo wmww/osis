@@ -637,9 +637,9 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
     assert!(!statics.contains(&v2), "another held key actor is never named to the server");
 }
 
-// spec/requirements.md (blind nodes: a server cannot link labels or recognise devices), spec/
-// sync.md §5 (a superseded step's child is verified under its parent; a hinted label has none
-// recorded): a server answering a hinted label's open with a step of its choosing gets claims
+// spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
+// none recorded), spec/requirements.md (blind nodes: a server cannot link labels or recognise
+// devices): a server answering a hinted label's open with a step of its choosing gets claims
 // only by the actors the hint is for (the thing's members this node is), never by another
 // actor this node holds secrets of.
 #[test]

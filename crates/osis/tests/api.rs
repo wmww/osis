@@ -608,7 +608,7 @@ fn expiring_placement_api_writes() {
 }
 
 // notes/api.md Reads (`owner_of`, `created`, `now`): the owner fixed at creation, the creating
-// commit with its time and receipt, the corrected clock.
+// commit with its time and receipt, the corrected clock. spec: none (API surface)
 #[test]
 fn owner_created_now_api_reads() {
     let c = clock();
@@ -681,7 +681,7 @@ fn signal_in_group_api_signals() {
     assert!(rx.try_recv().is_err(), "nothing about things outside the group");
 }
 
-// spec/commits.md (`/created` is carried by the first commit and by covering snapshots),
+// spec/commits.md §2 (`/created` is carried by the first commit and by covering snapshots),
 // notes/api.md Reads (`created`): a later compaction snapshot does not replace the creating
 // commit; a device holding the snapshot without that commit reports none.
 #[test]
