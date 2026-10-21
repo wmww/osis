@@ -347,9 +347,13 @@ fn snapshot_vouches_for_nothing_spec_perm_5_2() {
 
 /// A content snapshot of `(t, a)` by peer `by` at `ts` carrying `f` (hand-built, unchecked).
 fn forge_snapshot(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak, ts: osis_core::Ts, f: osis_crdt::Fragment) -> Vec<u8> {
+    forge_snapshot_with(lp, by, t, a, ts, f, Default::default())
+}
+
+fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak, ts: osis_core::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     let author = lp.peers[by].engine.tid();
-    let snap = osis_crdt::Snapshot { nonce: [7; 16], fragment: f, frontiers: Default::default() };
+    let snap = osis_crdt::Snapshot { nonce: [7; 16], fragment: f, frontiers };
     let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), None);
@@ -421,4 +425,29 @@ fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
     assert_eq!(entries(&mut lp), want, "an unauthorized snapshot carries nothing");
     lp.peers[0].restart(53).unwrap();
     assert_eq!(entries(&mut lp), want, "after a restart");
+}
+
+// spec/permissions.md §7 (a write is imported from a snapshot covering it, else its own commit):
+// a writer's snapshot whose frontier claims Bob's write without carrying it does not make a move
+// lose it: the copy imports it from Bob's commit (the current state holds it), and the
+// snapshot's own carried write too.
+#[test]
+fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
+    let (mut lp, d, b, _) = setup(55);
+    let m_ak = ak("/x/m");
+    let mut m = Mutation::new();
+    m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let a = lp.peers[0].engine.tid();
+    let fr = osis_crdt::Frontiers(BTreeMap::from([(b, 1 << 40)]));
+    let snap = forge_snapshot_with(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "alice"), fr);
+    lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
+    let want = Some(Value::Map(BTreeMap::from([(s("c"), s("alice")), (s("k"), s("bob"))])));
+    assert_eq!(lp.peers[0].engine.get(&d, &m_ak).unwrap(), want);
+    lp.advance(1_000);
+    let (copy, _) = lp.peers[0].engine.move_thing(&d, a).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&copy, &m_ak).unwrap(), want, "the copy holds both");
 }
