@@ -630,6 +630,15 @@ impl SyncEngine {
         out
     }
 
+    /// Fetches the blobs of one large value's tree that are not held yet (`Engine::tree_missing`:
+    /// a read that missed a chunk; spec/sync.md §6), from the open labels holding them; empty
+    /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
+    pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_core::Link) -> Result<Vec<super::Action>> {
+        let ids = self.engine.tree_missing(tid, link)?;
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching.contains_key(b)).collect();
+        Ok(self.fetch(&ids))
+    }
+
     /// Fetches every entry not held yet from the servers holding it (lazy chunks, on demand).
     pub fn fetch_missing(&mut self) -> Vec<super::Action> {
         let ids: Vec<BlobId> = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|((_, b), _)| *b).collect();
