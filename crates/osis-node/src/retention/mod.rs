@@ -467,10 +467,8 @@ impl Engine {
             }
             // frontiers cover only counters whose writes this state reflects: applied, valid
             let mut fr = std::collections::BTreeMap::new();
-            for ((t, a, n), ranges) in tx.core.ranges.iter() {
-                if *t != tid || *a != ak {
-                    continue;
-                }
+            let from = (tid, ak.clone(), Tid::from_bytes([0; 15]));
+            for ((_, _, n), ranges) in tx.core.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
                 let mut next = 1u64;
                 for (lo, (hi, c)) in ranges {
                     let ok = tx.core.commits.get(c).is_some_and(|m| m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak));
