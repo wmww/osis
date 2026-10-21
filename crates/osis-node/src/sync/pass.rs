@@ -173,10 +173,16 @@ impl SyncEngine {
                 sends.push(Out { prio: 3, id: *id });
             }
         }
-        if !replaced && read_ok && (keys.is_writer() || keys.deposit.is_some()) {
-            self.inbox_copies(&g, l)?;
-            self.certificates(&g, l)?;
-            self.heartbeat(&g, l, &keys, conn)?;
+        if !replaced && (keys.is_writer() || keys.deposit.is_some()) {
+            if read_ok {
+                self.inbox_copies(&g, l)?;
+                self.certificates(&g, l, false)?;
+                self.heartbeat(&g, l, &keys, conn)?;
+            } else if !self.may_rotate_read(&g) {
+                // revokes only: they tell the label's rotators of the departure that keeps its
+                // epoch uncovered (spec/crypto.md §4 binds nodes that may rotate)
+                self.certificates(&g, l, true)?;
+            }
         }
         // every certificate copy this node placed here: chain, card, flows' placements
         let certs: Vec<(BlobId, Option<CommitId>)> = self
@@ -772,11 +778,28 @@ impl SyncEngine {
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
     /// opens under the newest read secret.
-    fn certificates(&mut self, g: &Tid, l: LabelId) -> Result<()> {
+    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool) -> Result<()> {
         let closure = self.engine.closure(g);
         let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
         let newest = self.engine.wrap_secret(g, None)?;
-        for (c, want) in self.engine.certificates(g) {
+        let mut wanted = if revokes_only { BTreeMap::new() } else { self.engine.certificates(g) };
+        // revokes and roster snapshots about authors seen under the label (spec/permissions.md
+        // §4), so its verifiers judge their writes as this node does
+        let me = self.engine.tid();
+        let mut authors: BTreeSet<Tid> = BTreeSet::new();
+        for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+            if let Kind::Commit { commit, .. } = &e.kind
+                && let Some(h) = self.engine.header(commit)
+            {
+                authors.insert(h.author);
+                authors.insert(h.actor);
+            }
+        }
+        authors.remove(&me);
+        for (c, p) in self.engine.revoke_certificates(&authors, &closure) {
+            wanted.entry(c).or_default().extend(p);
+        }
+        for (c, want) in wanted {
             // the parts entries of `c` under the label hold: this node's copies, and another
             // node's copy or body counted as described above
             let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
@@ -831,6 +854,13 @@ impl SyncEngine {
             self.state.add_cert(l, c);
         }
         Ok(())
+    }
+
+    /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).
+    fn may_rotate_read(&self, g: &Tid) -> bool {
+        let me = self.engine.tid();
+        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        crate::rotation::may_rotate(&self.engine.core, &me, &a).contains(&Role::Read)
     }
 
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),

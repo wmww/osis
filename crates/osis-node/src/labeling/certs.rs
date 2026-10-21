@@ -87,12 +87,15 @@ impl Engine {
                 add(c, self.parts_of(&c, &mine, &[ak]));
             }
         }
-        let mut created: BTreeSet<Tid> = BTreeSet::new();
-        let mut keys: BTreeSet<Tid> = BTreeSet::new();
+        // the owner chain's `/created` records
         let mut cur = Some(*g);
+        let mut seen = BTreeSet::new();
         while let Some(t) = cur {
-            if !created.insert(t) {
+            if !seen.insert(t) {
                 break;
+            }
+            if let Some(c) = self.latest_on(&t, "/created") {
+                add(c, self.parts_of(&c, &BTreeSet::from([t]), &["/created"]));
             }
             cur = match self.core.created(&t) {
                 Some(CreationRecord::Thing { owner, .. }) => Some(*owner),
@@ -102,25 +105,76 @@ impl Engine {
         if let Some(tl) = self.core.timelines.get(g) {
             let ts = osis_core::Ts::make(self.now(), 0xffff).unwrap_or_default();
             let certs = tl.certificates(&me, g, Point { ts, node: me, commit: CommitId([0xff; 32]) });
-            created.extend(certs.created.iter().copied());
-            keys.extend(certs.keys.iter().copied());
-            let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
-            for c in &certs.commits {
-                add(*c, self.parts_of(c, &all, &["/members", "/tenures"]));
-            }
-            for (c, members) in &certs.snapshots {
-                add(*c, self.snapshot_parts(c, &all, members));
-            }
+            self.cert_parts(&certs, &mut out);
         }
-        for t in &created {
+        out
+    }
+
+    /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
+    /// edge writes projected to their edge deltas on the chain's things, roster snapshots to
+    /// their members' entries, the newest `/created` of each thing and `/keys` of each actor.
+    fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
+        let mut add = |c: CommitId, parts: Parts| {
+            if !parts.is_empty() {
+                out.entry(c).or_default().extend(parts);
+            }
+        };
+        let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
+        for c in &certs.commits {
+            add(*c, self.parts_of(c, &all, &["/members", "/tenures"]));
+        }
+        for (c, members) in &certs.snapshots {
+            add(*c, self.snapshot_parts(c, &all, members));
+        }
+        for t in &certs.created {
             if let Some(c) = self.latest_on(t, "/created") {
                 add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["/created"]));
             }
         }
-        for t in &keys {
+        for t in &certs.keys {
             if let Some(c) = self.latest_on(t, "/keys") {
                 add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["/keys"]));
             }
+        }
+    }
+
+    /// Revokes and roster snapshots about `authors` (of entries seen under a label), with what
+    /// a verifier needs to judge them as this node does (their own authors' chain certificates;
+    /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing outside
+    /// `closure` (inside it they are closure bodies), and roster snapshots of such things naming
+    /// an author, projected to the authors.
+    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
+        let mut found: Vec<osis_perm::Certificates> = Vec::new();
+        for m in authors {
+            let Some(tl) = self.core.timelines.get(m) else { continue };
+            for wid in tl.applied().keys() {
+                let about = match wid {
+                    osis_perm::WriteId::Op(c, i) => {
+                        let Some(mc) = tl.membership_commit(c) else { continue };
+                        let Some(op) = mc.ops.get(*i as usize) else { continue };
+                        if op.member != *m || closure.contains(&op.target) {
+                            continue;
+                        }
+                        let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                        let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+                        new < old
+                    }
+                    osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).is_some_and(|s| !closure.contains(&s.thing) && (s.roster.contains_key(m) || s.ledger.iter().any(|t| t.member == *m))),
+                };
+                if !about {
+                    continue;
+                }
+                if let Some(mut cs) = tl.write_certificates(wid) {
+                    for members in cs.snapshots.values_mut() {
+                        members.retain(|x| authors.contains(x));
+                    }
+                    found.push(cs);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        for cs in &found {
+            self.cert_parts(cs, &mut out);
         }
         out
     }

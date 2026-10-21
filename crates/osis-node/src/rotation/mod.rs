@@ -139,11 +139,17 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, path: &mut Vec<Tid>, out: &mut BTreeSet<Dep
 
 /// What the covers rule needs of every actor this node holds secrets of; an actor with secrets
 /// of its own whose secrets it does not hold is judged by its newest `/keys` keysets alone
-/// (spec/crypto.md §4): those epochs, established in this view only, with no boxes.
+/// (spec/crypto.md §4): those epochs, established in this view only, with no boxes. Epochs
+/// observed without any secret (boxes or keysets seen) are not holding: such an actor is judged
+/// by its `/keys` too, or a newer keyset arriving alone never covered its departures.
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.secrets.keys().copied().collect();
     for a in actors {
+        let held = tx.core.secrets.get(&a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).newest_held().is_some()));
+        if !held && tx.core.own_keys.contains(&a) {
+            continue;
+        }
         let s = secrets_in(tx, &a)?;
         if let Some(e) = tx.core.secrets.get(&a) {
             h.map.insert(a, (s, e.clone()));
