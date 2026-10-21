@@ -293,8 +293,11 @@ pub struct SyncEngine {
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
     /// uploads or justify deleting another entry (`SyncEngine::genuine`).
     pub(crate) genuine: BTreeMap<osis_core::BlobId, bool>,
-    /// When a certificate left to its author (`SETTLE_MS`) is due again (raw ms).
+    /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
+    /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: Option<u64>,
+    /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
+    pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
@@ -377,6 +380,7 @@ impl SyncEngine {
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
             settle_at: None,
+            deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
             reopens: BTreeMap::new(),

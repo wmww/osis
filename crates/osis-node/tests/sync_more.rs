@@ -45,6 +45,8 @@ fn certificates_and_heartbeats_spec_permissions_4() {
     let r = net.node(2, &[sv]);
     let _g = net.group(a, &[(r, Role::Read)], &[sv]);
     net.run();
+    // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
+    net.advance(30_000);
     diags(&mut net, &[a, r]);
     let l = net.label(a);
     let rt = net.tid(r);

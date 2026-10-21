@@ -37,6 +37,12 @@ pub struct Verdicts {
 /// places it as its own chain certificate (ms; the periodic pass picks it up after).
 const SETTLE_MS: u64 = 30_000;
 
+/// The least a writer waits, after receiving another node's commit or seeing a deposit, before
+/// it uploads or promotes it itself (ms); the most is `SETTLE_MS`. The point in between is this
+/// node's per blob (`relay_due`), so the author or the first co-writer is usually done and the
+/// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
+const RELAY_MIN_MS: u64 = 5_000;
+
 /// An entry to send, by priority (membership and certificates before content before
 /// heartbeats).
 struct Out {
@@ -129,6 +135,10 @@ impl SyncEngine {
                 continue;
             }
             let entry = self.entry_for(&server, &l, b);
+            // another node's commit not at this server: its author (or a co-writer) first
+            if !entry.is_some_and(|id| self.state.is_present(&server, &l, &id)) && !self.relay_due(&b.commit) {
+                continue;
+            }
             let id = match entry {
                 Some(id) => id,
                 None if read_ok && (keys.is_writer() || self.may_deposit(&keys, b)) => match self.place(&g, l, b, false)? {
@@ -466,8 +476,17 @@ impl SyncEngine {
             .filter(|((_, b), _)| self.state.deposited.contains(&(server, l, *b)))
             .map(|((_, b), e)| (*b, e.clone()))
             .collect();
+        let raw = self.raw_now();
+        self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
         for (id, mut e) in ids {
-            if super::in_flight(&self.sent, &(conn, l, id), self.raw_now()) {
+            if super::in_flight(&self.sent, &(conn, l, id), raw) {
+                continue;
+            }
+            // a co-writer may promote it first (`RELAY_MIN_MS`)
+            let seen = *self.deposit_seen.entry((server, l, id)).or_insert(raw);
+            let due = seen.saturating_add(self.relay_delay(&id.0));
+            if raw < due {
+                self.settle_at = Some(self.settle_at.map_or(due, |x| x.min(due)));
                 continue;
             }
             let Kind::Commit { commit, .. } = &e.kind else { continue };
@@ -484,6 +503,35 @@ impl SyncEngine {
             // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
+    }
+
+    /// This node's wait before relaying another node's blob `key` (`RELAY_MIN_MS` to
+    /// `SETTLE_MS`, fixed per node and blob, so co-writers draw different points).
+    fn relay_delay(&self, key: &[u8]) -> u64 {
+        let mut h = osis_core::hash::Hasher::new();
+        h.update(b"osis relay wait").update(self.engine.tid().as_bytes()).update(key);
+        let mut x = [0u8; 8];
+        h.finalize_xof(&mut x);
+        RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
+    }
+
+    /// Whether this node uploads or relays commit `c` at a server lacking it now: its own (made
+    /// here, a held key actor's included, or placed first by a flow) at once, another node's once `relay_delay` has passed since it
+    /// arrived here (else a wake is set for then).
+    fn relay_due(&mut self, c: &CommitId) -> bool {
+        let me = self.engine.tid();
+        let Some(m) = self.engine.core.commits.get(c) else { return true };
+        if m.origin == crate::events::Origin::Local || m.header.author == me || self.first.contains(c) {
+            return true;
+        }
+        let due = m.received.0.saturating_add(self.relay_delay(&c.0));
+        let now = self.now();
+        if now >= due {
+            return true;
+        }
+        let at = self.raw_now().saturating_add(due - now);
+        self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+        false
     }
 
     /// Whether this node placed the entry (its certificates, heartbeats, membership writes).

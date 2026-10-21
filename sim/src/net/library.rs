@@ -795,3 +795,62 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     expired_absent(&mut sim, &replaced, &k)?;
     sim.finish()
 }
+
+/// Writers online together (spec/sync.md §5, §6): an admin and three writers of one group, all
+/// online, while two readers are granted at once and the admin writes items; time moves a
+/// second at a time (continuous enough for the relay wait). Expected: each content body the
+/// admin wrote goes up as one blob, by the admin alone; no blob is uploaded by two nodes (each
+/// reader deposit is promoted by one writer); then the quiescent invariants.
+pub fn concurrent_writers(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0xc0);
+    let mut sim = NetSim::new("concurrent_writers", seed, super::NetConfig::default());
+    let s = sim.add_server()?;
+    let ns: Vec<usize> = (0..6).map(|_| sim.add_node(&[s], clock(&mut d))).collect::<Res<_>>()?;
+    let [a, w1, w2, w3, r1, r2] = ns[..] else { return Err(sim.fail("nodes")) };
+    let [pa, p1, p2, p3, q1, q2] = persons(&mut sim, [a, w1, w2, w3, r1, r2], [s; 6])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(p1, Role::Write), (p2, Role::Write), (p3, Role::Write)])?;
+    sim.quiet(40)?;
+    sim.count_uploads = true;
+    sim.grant(a, g, q1, Role::Read)?;
+    sim.grant(a, g, q2, Role::Read)?;
+    let mut items = Vec::new();
+    for _ in 0..4 {
+        items.push(sim.item(a, g)?);
+    }
+    for _ in 0..90 {
+        sim.settle()?;
+        sim.advance(1_000)?;
+    }
+    sim.settle()?;
+    sim.count_uploads = false;
+    sim.observe()?;
+    let mut by_blob: std::collections::BTreeMap<(osis_core::LabelId, osis_core::BlobId), BTreeSet<usize>> = Default::default();
+    for (n, l, b) in std::mem::take(&mut sim.uploads) {
+        by_blob.entry((l, b)).or_default().insert(n);
+    }
+    let mut per_body: std::collections::BTreeMap<(osis_core::LabelId, CommitId, Vec<(usize, usize)>), BTreeSet<osis_core::BlobId>> = Default::default();
+    for ((l, b), who) in &by_blob {
+        if who.len() > 1 {
+            return Err(sim.fail(format!("blob {b:?} under {l:?} uploaded by nodes {who:?}")));
+        }
+        if let Some((c, parts)) = sim.known.get(&(*l, *b)).cloned() {
+            per_body.entry((*l, c, parts)).or_default().insert(*b);
+        }
+    }
+    let at = sim.tid(a)?;
+    for ((l, c, _), blobs) in per_body {
+        let h = sim.engine(a)?.header(&c);
+        let Some(h) = h.filter(|h| h.kind == osis_commit::Kind::Content && h.author == at && h.aspects.iter().any(|x| items.contains(&x.tid))) else { continue };
+        let up: BTreeSet<usize> = blobs.iter().filter_map(|b| by_blob.get(&(l, *b))).flatten().copied().collect();
+        if blobs.len() > 1 || up != BTreeSet::from([a]) {
+            return Err(sim.fail(format!("commit {c:?} ({} aspects) went up as {} blobs by nodes {up:?}", h.aspects.len(), blobs.len())));
+        }
+    }
+    for (n, p) in [(r1, q1), (r2, q2)] {
+        if sim.engine(n)?.role_on(&g) != Some(Role::Read) {
+            return Err(sim.fail(format!("node {n} ({p}) is no reader")));
+        }
+    }
+    sim.run_until_quiescent(40)?;
+    sim.finish()
+}
