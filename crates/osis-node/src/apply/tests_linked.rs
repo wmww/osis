@@ -118,7 +118,7 @@ fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
 }
 
 fn tenure(member: Tid, frontier: Option<Value>) -> Value {
-    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member }, frontier: None }.to_value();
+    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member, commit: osis_core::CommitId([0; 32]) }, frontier: None }.to_value();
     if let (Value::Map(m), Some(f)) = (&mut v, frontier) {
         m.insert(Value::Int(4), Value::Enum(1, Some(Box::new(f))));
     }

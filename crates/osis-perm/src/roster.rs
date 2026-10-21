@@ -4,7 +4,7 @@
 //! Readings: tenures are per role level (a promotion ends a write tenure without a frontier
 //! and starts an admin one); an edge that expires by `until` stays in the roster with its
 //! `until` while it is current, and a tenure it ended inside the history gets the key
-//! (first `ts` at `until`, the zero tid), before every write at that `ts`. A tenure ended by an explicit write that audited
+//! (first `ts` at `until`, the zero tid and commit ID), before every write at that `ts`. A tenure ended by an explicit write that audited
 //! (lowered the edge as the walk restores it) carries that write's frontier (empty if it had
 //! none); tenures ended without one stay without, and the next auditing write of that edge
 //! that ends none of them is an entry of its own: `since` = `until` = its key, its frontier,
@@ -12,7 +12,7 @@
 
 use crate::graph::Class;
 use crate::timeline::{At, Timeline};
-use crate::types::{Edge, EdgeKey, Point, Tenure};
+use crate::types::{Edge, Point, Tenure};
 use osis_core::{Role, Tid, Ts};
 use std::collections::BTreeMap;
 
@@ -26,7 +26,7 @@ pub struct RosterState {
 /// One write+ tenure being followed.
 struct Open {
     role: Role,
-    since: Option<EdgeKey>,
+    since: Option<Point>,
 }
 
 impl Timeline {
@@ -60,16 +60,16 @@ impl Timeline {
             let first = start.and_then(|s| s.roster.get(&m)).copied();
             let mut edge: Option<Edge> = first.map(|e| Edge { since: None, ..e });
             // Key of the write that set the current edge.
-            let mut set_key: Option<EdgeKey> = first.and_then(|e| e.since);
+            let mut set_key: Option<Point> = first.and_then(|e| e.since);
             let mut open = first.filter(|e| e.role >= Role::Write).map(|e| Open { role: e.role, since: e.since });
             for c in changes.get(&m).map(|v| v.as_slice()).unwrap_or(&[]) {
-                let key = c.point.key();
+                let key = c.point;
                 // Expiry inside the history ends the tenure at the first ts at `until`.
                 if let Some(u) = edge.and_then(|e| e.until).filter(|u| c.point.ts.wall_ms() >= *u)
                     && let Some(o) = open.take()
                 {
                     let at = Ts::make(u, 0).unwrap_or(c.point.ts).min(c.point.ts);
-                    ledger.push(Tenure { member: m, role: o.role, since: o.since, until: EdgeKey::expiry(at), frontier: None });
+                    ledger.push(Tenure { member: m, role: o.role, since: o.since, until: Point::expiry(at), frontier: None });
                 }
                 // An edge already expired when written grants nothing.
                 let new_role = c.edge.filter(|e| e.alive_at(Some(c.point.ts))).map(|e| e.role).filter(|r| *r >= Role::Write);

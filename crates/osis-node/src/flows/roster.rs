@@ -15,8 +15,8 @@ use osis_schema::core_types::{self as ct, EdgeKey, Members, Tenures};
 /// Held `/members` deltas of a thing after which a roster snapshot is due (local policy).
 pub const ROSTER_SNAPSHOT_AFTER: usize = 64;
 
-fn key(k: osis_perm::EdgeKey) -> EdgeKey {
-    EdgeKey { ts: k.ts, node: k.node }
+fn key(k: osis_perm::Point) -> EdgeKey {
+    EdgeKey { ts: k.ts, node: k.node, commit: k.commit }
 }
 
 fn frontier(f: &osis_perm::Frontier) -> ct::Frontier {

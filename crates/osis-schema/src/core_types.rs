@@ -93,9 +93,9 @@ codec_struct! {
     pub struct Address { 0 url: String, 1 key: [u8; 32] }
 }
 codec_struct! {
-    /// (ts, author node) of a write.
+    /// (ts, author node, commit ID) of a write.
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct EdgeKey { 0 ts: Ts, 1 node: Tid }
+    pub struct EdgeKey { 0 ts: Ts, 1 node: Tid, 2 commit: CommitId }
 }
 codec_struct! {
     /// A membership edge; `since` only in roster snapshots (spec/permissions.md §6).

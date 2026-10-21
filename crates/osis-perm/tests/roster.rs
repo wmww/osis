@@ -45,6 +45,7 @@ static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
     let residue = sticky_residue(&tl);
+    let rejected = rejection_residue(w, &tl);
     let state = tl.roster_state(&thing);
     let mut w2 = w.clone();
     let ledger = state.ledger.clone();
@@ -65,6 +66,14 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     if residue && before.applied.is_subset(&after.applied) && before.applied.is_subset(&compacted.applied) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
+    }
+    // or rejection residue: it then answers as the held set without the dropped writes
+    if rejected {
+        let fixed = answers(&w.held_without(&dropped_commits(&tl)), things, probes, &keep);
+        if after == fixed && compacted == fixed {
+            RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        }
     }
     Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}\ndropped {:?}\nnodes {:?}", tl.dropped(), w.commits.iter().map(|c| (c.id, c.author, c.t, c.ops.clone())).collect::<Vec<_>>()))
 }
@@ -90,11 +99,6 @@ fn run_joint(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
-        // Ledger keys are (ts, node): two commits of one node at one ts (a shared link key)
-        // are not told apart by a tenure end (notes/permissions.md).
-        if h.writes.iter().enumerate().any(|(i, a)| h.writes[..i].iter().any(|b| (a.t, a.author) == (b.t, b.author))) {
-            continue;
-        }
         let mut w = World::new();
         let nodes = w.nodes(h.nodes);
         let (mut actors, mut top) = (Vec::new(), Vec::new());
@@ -132,7 +136,7 @@ fn run_joint(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -152,9 +156,6 @@ fn run_edges(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
-        if h.writes.iter().enumerate().any(|(i, a)| h.writes[..i].iter().any(|b| (a.t, a.author) == (b.t, b.author))) {
-            continue;
-        }
         let mut w = World::new();
         let nodes = w.nodes(h.n());
         let t = w.thing(nodes[0]);
@@ -191,7 +192,7 @@ fn run_edges(samples: u64, seed: u64) {
             panic!("sample {s}: {d}\n{h:?}");
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -257,7 +258,7 @@ fn run_snapshot(samples: u64, seed: u64) {
             }
         }
     }
-    eprintln!("{samples} histories; sticky-residue snapshots that undid drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is
@@ -281,12 +282,12 @@ fn ledger_carried_forward() {
     let (k, d1, d2, d3) = (n[0], n[1], n[2], n[3]);
     let p = w.thing(k);
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(k, p, d1, edge(Admin), 0, &all);
+    let g1 = w.set(k, p, d1, edge(Admin), 0, &all);
     w.set(k, p, d2, edge(Admin), 0, &all);
     w.set(d2, p, d1, None, 5, &[]);
     let s1 = Timeline::evaluate(&w.held()).roster_state(&p);
     assert_eq!(s1.ledger.len(), 1);
-    assert_eq!((s1.ledger[0].member, s1.ledger[0].role, s1.ledger[0].since), (d1, Admin, Some(osis_perm::EdgeKey { ts: ts(0), node: k })));
+    assert_eq!((s1.ledger[0].member, s1.ledger[0].role, s1.ledger[0].since), (d1, Admin, Some(Point { ts: ts(0), node: k, commit: g1 })));
     assert!(s1.ledger[0].frontier.is_some());
     w.snapshot_state(k, p, s1.clone(), 10);
     w.set(k, p, d3, edge(Write), 11, &[]);
@@ -308,19 +309,19 @@ fn later_audit_is_an_entry_spec_permissions_6() {
     let (k, d1) = (n[0], n[1]);
     let (p, a) = (w.thing(k), w.thing(k));
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(k, p, d1, edge(Admin), 0, &all);
+    let g = w.set(k, p, d1, edge(Admin), 0, &all);
     w.set(k, a, d1, edge(Admin), 0, &all);
     w.set(k, p, a, edge(Admin), 0, &all);
     let x = w.content(d1, 1, &[]);
-    w.set(d1, p, d1, None, 2, &all);
+    let leave = w.set(d1, p, d1, None, 2, &all);
     w.set(d1, a, d1, None, 3, &all);
-    w.set(k, p, d1, None, 5, &all);
+    let rm = w.set(k, p, d1, None, 5, &all);
     let tl = Timeline::evaluate(&w.held());
     assert!(matches!(tl.delta_valid(x, &p, "/doc", Dots::Commit, Write), osis_perm::Validity::Invalid { .. }));
     let ledger = tl.roster_state(&p).ledger;
-    let key = |t, node| osis_perm::EdgeKey { ts: ts(t), node };
+    let key = |t, node, commit| Point { ts: ts(t), node, commit };
     let shape: Vec<_> = ledger.iter().filter(|t| t.member == d1).map(|t| (t.role, t.since, t.until, t.frontier.is_some())).collect();
-    assert_eq!(shape, vec![(Admin, Some(key(0, k)), key(2, d1), false), (Admin, Some(key(5, k)), key(5, k), true)]);
+    assert_eq!(shape, vec![(Admin, Some(key(0, k, g)), key(2, d1, leave), false), (Admin, Some(key(5, k, rm)), key(5, k, rm), true)]);
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
 
@@ -349,12 +350,12 @@ fn own_demotion_replayed_spec_permissions_6() {
     assert_eq!(neutral(&w, p, k, &[p, a], &[x]), None);
 }
 
-/// §6 limitation (issues/ledger-same-ts-commits.md): two commits of one node at one ts (a
-/// shared key used from two devices) that demote a member and re-grant it are one ledger key;
-/// the replay sees the re-grant at that key and audits nothing, so the member's dropped edge
-/// write below the thing comes back after a re-snapshot. Pins the documented behaviour.
+/// §6: two commits of one node at one ts (a shared key used from two devices) that demote a
+/// member and re-grant it are told apart by the commit ID in ledger keys: the replay audits at
+/// the demotion, so the member's dropped edge write below the thing stays dropped after a
+/// re-snapshot, compacted or not.
 #[test]
-fn same_ts_demote_regrant_not_replayed_spec_permissions_6() {
+fn same_ts_demote_regrant_replayed_spec_permissions_6() {
     let mut w = World::new();
     let n = w.nodes(3);
     let (k, m, z) = (n[0], n[1], n[2]);
@@ -364,14 +365,49 @@ fn same_ts_demote_regrant_not_replayed_spec_permissions_6() {
     w.set(k, p, m, edge(Admin), 0, &all);
     w.set(m, q, z, edge(Write), 1, &[]);
     // C1 then C2 (IDs ascending): one key actor, one ts
-    w.set(k, p, m, None, 5, &all);
-    w.set(k, p, m, edge(Admin), 5, &all);
+    let c1 = w.set(k, p, m, None, 5, &all);
+    let c2 = w.set(k, p, m, edge(Admin), 5, &all);
     let tl = Timeline::evaluate(&w.held());
     assert_eq!(tl.role(&z, &q, At::END), None, "the walk drops m's grant");
+    let state = tl.roster_state(&p);
+    assert!(state.ledger.iter().any(|t| t.member == m && t.until.commit == c1 && t.frontier.is_some()), "{:?}", state.ledger);
+    assert_eq!(state.roster.get(&m).and_then(|e| e.since).map(|k| k.commit), Some(c2));
     let mut w2 = w.clone();
-    let s = w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
-    let after = Timeline::evaluate(&w2.compacted(p, s));
-    assert_eq!(after.role(&z, &q, At::END), Some(Write), "known limitation: the replay audits nothing");
+    let s = w2.snapshot_state(k, p, state, END_T);
+    for held in [w2.held(), w2.compacted(p, s)] {
+        let after = Timeline::evaluate(&held);
+        assert_eq!(after.role(&z, &q, At::END), None);
+        assert_eq!(after.role(&m, &p, At::END), Some(Admin));
+    }
+    assert_eq!(neutral(&w, p, k, &[p, q], &[]), None);
+}
+
+/// §6 epoch start, known residue (issues/epoch-start-rejection-residue.md): n1 removes n2
+/// from P at 4, so n2's snapshot of G at 6 is rejected; K's removal of n1 at 18 drops that
+/// removal, yet G's snapshot stays rejected, while without the dropped write it is G's epoch
+/// start. A re-snapshot of P repairs it. Pins the behaviour.
+#[test]
+fn rejected_start_residue_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (k, n1, n2, n3) = (n[0], n[1], n[2], n[3]);
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, n1, edge(Admin), 0, &all0);
+    w.set(k, p, n2, edge(Admin), 0, &all0);
+    let r = |v: [u64; 4]| -> Vec<(Tid, u64)> { n.iter().zip(v).map(|(a, b)| (*a, b)).collect() };
+    w.set(k, p, n1, None, 18, &r([18, LATE, LATE, LATE]));
+    let s = w.snapshot(n2, g, &[(n1, Edge::new(Admin)), (n2, Edge::new(Admin)), (n3, Edge::new(Write))], 6, &r([5, LATE, 5, 5]));
+    let rm = w.set(n1, p, n2, None, 4, &r([LATE, 4, LATE, LATE]));
+    let tl = Timeline::evaluate(&w.held());
+    assert!(dropped_commits(&tl).contains(&rm));
+    assert_eq!(tl.epoch_start(&g), None, "residue: the rejection outlives its cause");
+    assert_eq!(Timeline::evaluate(&w.held_without(&[rm].into_iter().collect())).epoch_start(&g), Some(s));
+    assert!(rejection_residue(&w, &tl));
+    let mut w2 = w.clone();
+    w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
+    assert_eq!(Timeline::evaluate(&w2.held()).epoch_start(&g), Some(s), "a re-snapshot of P repairs it");
 }
 
 /// §6: an expiry by `until` is keyed before every write at its ts: an explicit demotion at
@@ -430,11 +466,11 @@ fn adversarial_ledger_grants_nothing_spec_permissions_6() {
     w.set(k, p, m, edge(Admin), 0, &all);
     w.set(m, p, z, edge(Write), 1, &[]);
     let ledger = vec![
-        (m, Admin, Some((0, k)), (3, m), true),
-        (m, Write, Some((4, k)), (4, zero), true),
-        (z, Admin, Some((7, k)), (2, k), true),
-        (z, Write, Some((6, k)), (6, k), true),
-        (m, Admin, None, (8, zero), false),
+        (m, Admin, Some((0, k, None)), (3, m, None), true),
+        (m, Write, Some((4, k, None)), (4, zero, None), true),
+        (z, Admin, Some((7, k, None)), (2, k, None), true),
+        (z, Write, Some((6, k, None)), (6, k, None), true),
+        (m, Admin, None, (8, zero, None), false),
     ];
     w.snapshot_l(k, p, &[], &ledger, 10, &all);
     let tl = Timeline::evaluate(&w.held());

@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{At, Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
+use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,8 +23,12 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
 
 pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     let e = ct::Edge::from_value(&typed(v, "edge")?).ok()?;
-    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(|k| EdgeKey { ts: k.ts, node: k.node }) };
+    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of) };
     edge.well_formed().then_some(edge)
+}
+
+fn point_of(k: ct::EdgeKey) -> Point {
+    Point { ts: k.ts, node: k.node, commit: k.commit }
 }
 
 fn frontier_of(f: ct::Frontier) -> Frontier {
@@ -355,7 +359,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize
                                 Some(osis_schema::Chunked::Link(l)) => linked.frontiers.get(&l.hash).cloned(),
                                 None => None,
                             };
-                            e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(|k| EdgeKey { ts: k.ts, node: k.node }), until: EdgeKey { ts: t.until.ts, node: t.until.node }, frontier });
+                            e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(point_of), until: point_of(t.until), frontier });
                         }
                     }
                     _ => {}

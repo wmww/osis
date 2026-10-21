@@ -15,7 +15,7 @@ A state is a history: commits in generation order, each from the scenario's menu
 - `Probe*`: expected to fail; used by hand to show the instances reach drops, demotions, ledger entries with frontiers, applied snapshots.
 
 ## Instances and results
-TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 nodes; writes at ts 6, 8, 10 after genesis at 2 and 4; snapshots at ts 3–11. `run.sh small` runs `MC_core`, `MC_multi`, `MC_forge` and the four expected failures (about 40 s).
+TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 nodes; writes at ts 6, 8, 10 after genesis at 2 and 4; snapshots at ts 3–11. `run.sh small` runs `MC_core`, `MC_multi`, `MC_forge`, `MC_samets` and the three expected failures (about 30 s at 4 workers).
 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
@@ -30,9 +30,9 @@ TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 node
 | `MC_sticky` | drop order (M2) | **fails** DropOrderFree (expected) | 791 | 1 s |
 | `MC_sticky_snap` | a snapshot repairs a sticky drop (M2) | **fails** Neutral (expected) | 710 | 2 s |
 | `MC_forge` | removed admin backdates a write on its remover's edge (M1, fixed) | all pass | 580 | 3 s |
-| `MC_samets` | n1 stamps two commits at one ts (M3) | **fails** Neutral (expected) | 192 | 3 s |
+| `MC_samets` | n1 stamps two commits at one ts (M3, fixed) | all pass | 8,971 | 13 s (4 workers) |
 
-`MC_samets` trace (issues/ledger-same-ts-commits.md): n1 grants n2 admin of A; n2 grants n3 admin on B at ts 6; n1 removes n2 at ts 8 (frontier empty, so the grant on B drops) and re-grants n2 at ts 8 in another commit. The ledger keys both by (8, n1): the tenure ends and the roster edge starts at one key, the replay sees no demotion, and a snapshot of A after both revives the grant.
+`MC_samets` trace (M3, before the fix): n1 grants n2 admin of A; n2 grants n3 admin on B at ts 6; n1 removes n2 at ts 8 (frontier empty, so the grant on B drops) and re-grants n2 at ts 8 in another commit. With keys (8, n1) the tenure ended and the roster edge started at one key, the replay saw no demotion, and a snapshot of A after both revived the grant. Keys now carry the commit ID (<<ts, node, id>>; a virtual write sits just before the commit its key names), so the replay demotes at the first commit and re-grants at the second.
 
 Probes (`Probe*`, run by hand) confirm that drops, layer-2 demotions, invalid content, ledger entries with frontiers, audit-only entries (`MC_until`), applied snapshots whose ledger drops a write on B (`MC_snapA`) and kept standings (`MC_group`) all occur. Not reached: several drops in one walk outside `MC_sticky` (so `DropOrderFree` only bites there).
 

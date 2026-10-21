@@ -823,7 +823,7 @@ mod tests {
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
     }
 
-    // notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
+    // spec/crdt.md §8, notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
     // of the root collection by page ID) is read whole and laid out anew.
     #[test]
     fn legacy_layout_relaid_spec_requirements_scale() {
@@ -853,7 +853,7 @@ mod tests {
     }
 
     // spec/requirements.md, Scale (a change costs O(change) at any depth, peer input never causes
-    // unbounded work); notes/local-store.md (Units): a state with large collections inside map
+    // unbounded work), spec/crdt.md §8; notes/local-store.md (Units): a state with large collections inside map
     // entries pages each of them. Random edits, each made in a fresh session that loads only the
     // pages the edit touches (or everything where it does not fit), written page by page: a
     // whole load from the store always gives the reference state back, and reads by key in a

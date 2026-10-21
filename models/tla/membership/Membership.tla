@@ -32,7 +32,7 @@ EdgeDom == ({B} \cup Nodes) \X Things
 Depth(n) == IF n = A THEN 1 ELSE 2
 DepthOK(n) == Depth(n) <= MaxDepth
 Inf == 1000
-NONE == <<-1, -1>>
+NONE == <<-1, -1, -1>>
 Absent == [r |-> 0, u |-> 0]
 NoOpen == [r |-> 0, s |-> NONE]
 
@@ -46,7 +46,8 @@ LexLT(a, b, i) == IF i > Len(a) THEN FALSE
                   ELSE IF a[i] > b[i] THEN FALSE
                   ELSE LexLT(a, b, i + 1)
 Before(a, b) == LexLT(a, b, 1)
-KLT(a, b) == a[1] < b[1] \/ (a[1] = b[1] /\ a[2] < b[2])
+\* Keys (§6): <<ts, node, commit ID>>, a commit's ID its generation index.
+KLT(a, b) == LexLT(a, b, 1)
 
 (***************************************************************************)
 (* Scenarios. A template is [kind, au, ops, tg]; an op is [tg, mb, r, u]    *)
@@ -94,7 +95,7 @@ Menu ==
 
 MkCommit(tpl, ts, fr, i) ==
   [kind |-> tpl.kind, id |-> i, gen |-> i, ts |-> ts, au |-> tpl.au,
-   key5 |-> <<ts, tpl.au, 1, i, 0>>, ops |-> tpl.ops, tg |-> tpl.tg, fr |-> fr,
+   key5 |-> <<ts, tpl.au, i, 1, 0>>, ops |-> tpl.ops, tg |-> tpl.tg, fr |-> fr,
    ex |-> FALSE, ro |-> {}]
 
 RECURSIVE GenHist(_)
@@ -183,7 +184,7 @@ UpdW(st, key, t) ==
 \* demoter's chain writes too, §5.1 Frontier).
 Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
   LET old == st.E[e]
-      ck == <<key[1], key[2]>>
+      ck == <<key[1], key[2], key[3]>>
   IN
   IF ~explicit THEN
     [st EXCEPT !.E[e] = nv, !.P[e] = Mx(@, old.r), !.S[e] = cid,
@@ -328,7 +329,7 @@ Led(chs, i, m, cur, open, ents, setKey) ==
   ELSE
     LET t == ch.key[1]
         exp == cur.u # 0 /\ cur.u <= t /\ open.r > 0
-        ents1 == IF exp THEN ents \cup {[m |-> m, r |-> open.r, s |-> open.s, u |-> <<cur.u, 0>>,
+        ents1 == IF exp THEN ents \cup {[m |-> m, r |-> open.r, s |-> open.s, u |-> <<cur.u, 0, 0>>,
                                          hf |-> FALSE, fr |-> {}]} ELSE ents
         open1 == IF exp THEN NoOpen ELSE open
         newR == IF Alive(ch.nv, t) /\ ch.nv.r >= 2 THEN ch.nv.r ELSE 0
@@ -373,7 +374,7 @@ ValueAt(Lm, ro, b, wr) ==
           THEN (CHOOSE q \in ro : TRUE).v ELSE Absent
 
 VEv(N, m, b, j, v, ex, fr) ==
-  [kind |-> "v", id |-> j, gen |-> 0, ts |-> b[1], au |-> b[2], key5 |-> <<b[1], b[2], 0, j, m>>,
+  [kind |-> "v", id |-> j, gen |-> 0, ts |-> b[1], au |-> b[2], key5 |-> <<b[1], b[2], b[3], j - 2, m>>,
    ops |-> <<Op(N, m, v.r, v.u)>>, tg |-> N, fr |-> fr, ex |-> ex, ro |-> {}]
 
 RECURSIVE VFold(_, _, _, _, _, _, _, _)
@@ -403,8 +404,8 @@ RECURSIVE SetToSeq(_)
 SetToSeq(S) == IF S = {} THEN <<>> ELSE LET x == CHOOSE x \in S : TRUE IN <<x>> \o SetToSeq(S \ {x})
 \* The walk of hist with a roster snapshot of N by au at ts s, produced from W0.
 WithSnap(N, s, au) ==
-  LET sk == <<s, au>>
-      sk5 == <<s, au, 1, 99, 0>>
+  LET sk == <<s, au, 99>>
+      sk5 == <<s, au, 99, 1, 0>>
       P == Production(W0, N, sk)
       V == Virtuals(N, P, sk)
       S == [kind |-> "s", id |-> 99, gen |-> 99, ts |-> s, au |-> au, key5 |-> sk5, ops |-> <<>>,
@@ -479,14 +480,14 @@ ProbeNoDem == W0.dem = {}
 ProbeNoKept == ~\E r \in W0.ex : r.auReach /\ r.was = 3 /\ r.m = B
 ProbeNoInvalidContent == \A c \in W0.cinfo : CValid(W0, c)
 ProbeNoRestart == Cardinality(WalkAll(Evs(hist), E00, {})) = 1 /\ Len(Pass(Evs(hist), 1, St0(E00, {}), FALSE).cands) <= 1
-ProbeNoLedger == \A N \in SnapThings, s \in SnapTs : Production(W0, N, <<s, 1>>).ledger = {}
-ProbeNoLedgerFr == \A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1>>).ledger : ~e.hf
+ProbeNoLedger == \A N \in SnapThings, s \in SnapTs : Production(W0, N, <<s, 1, 99>>).ledger = {}
+ProbeNoLedgerFr == \A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1, 99>>).ledger : ~e.hf
 ProbeSnapRejected == \A N \in SnapThings, s \in SnapTs :
   \A au \in (IF N = A THEN {1} ELSE SnapAu) : WithSnap(N, s, au).w.rej
 \* a snapshot that applies while an earlier tenure's frontier drops a write on B
 ProbeLedgerDrops == \A N \in SnapThings, s \in SnapTs :
   \A au \in (IF N = A THEN {1} ELSE SnapAu) :
     LET X == WithSnap(N, s, au) IN X.w.rej \/ ~\E r \in X.w.drec : r.bycid = 0
-ProbeNoAuditOnly ==\A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1>>).ledger : e.s # e.u
+ProbeNoAuditOnly ==\A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1, 99>>).ledger : e.s # e.u
 
 =============================================================================

@@ -47,10 +47,11 @@ pub enum Thing {
     G,
 }
 
-/// A write's position key in the global order.
-pub type Key = (u32, usize);
+/// A write's position key in the global order: (t, node, `SWrite::id`), the id standing for
+/// the commit ID (0 for a ledger key naming no write).
+pub type Key = (u32, usize, usize);
 
-/// The end of a device's P tenure: by a demotion keyed `key` = (t, demoter node).
+/// The end of a device's P tenure: by a demotion keyed `key` = (t, demoter node, commit).
 pub struct Event {
     key: Key,
     member: usize,
@@ -88,6 +89,8 @@ pub struct SWrite {
     pub ledger: Vec<Entry>,
     /// Plain owner-chain write on G touching no roster; `target` is an opaque payload.
     pub rec: bool,
+    /// Stands for the commit ID: orders writes of one (t, author) (unique, from 1).
+    pub id: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -134,7 +137,7 @@ impl SHist {
 
     pub fn order(&self) -> Vec<usize> {
         let mut o: Vec<usize> = (0..self.writes.len()).collect();
-        o.sort_by_key(|&i| (self.writes[i].t, self.writes[i].author));
+        o.sort_by_key(|&i| self.key(i));
         o
     }
 
@@ -157,7 +160,7 @@ impl SHist {
                 let by_ledger = match p.start {
                     Some(s) if pos_of[j] < pos_of[s] => {
                         let k = self.key(j);
-                        self.writes[s].ledger.iter().any(|e| e.member == z && e.until.map_or(false, |(t, d)| k < (t, d) && !(self.recv[j][d] < t)))
+                        self.writes[s].ledger.iter().any(|e| e.member == z && e.until.map_or(false, |u| k < u && !(self.recv[j][u.1] < u.0)))
                     }
                     _ => false,
                 };
@@ -221,7 +224,7 @@ impl SHist {
             for pos in start_pos..=order.len() {
                 // Chain demotions up to this point audit edge-class writes of a member that
                 // holds no admin edge here.
-                let upto = if pos < order.len() { self.key(order[pos]) } else { (u32::MAX, usize::MAX) };
+                let upto = if pos < order.len() { self.key(order[pos]) } else { (u32::MAX, usize::MAX, usize::MAX) };
                 let mut grew = false;
                 while next_event < events.len() && events[next_event].key <= upto {
                     let ev = &events[next_event];
@@ -229,7 +232,7 @@ impl SHist {
                     if roles[ev.member] == Role::Admin {
                         continue;
                     }
-                    let (t, d) = ev.key;
+                    let (t, d, _) = ev.key;
                     for j in 0..self.writes.len() {
                         if applied >> j & 1 == 0 || self.writes[j].author != ev.member || self.key(j) > ev.key {
                             continue;
@@ -296,7 +299,7 @@ impl SHist {
     }
 
     fn key(&self, i: usize) -> Key {
-        (self.writes[i].t, self.writes[i].author)
+        (self.writes[i].t, self.writes[i].author, self.writes[i].id)
     }
 
     /// The closed ledger interval of `z` in snapshot `sw` containing key `k`.
@@ -598,7 +601,7 @@ fn records_agree(h: &SHist, o: &Out, c: &SHist, keep: &[usize], author: Option<u
 /// device): every record keeps its validity and every G write its application.
 pub fn resnapshot_neutral(h: &SHist, o: &Out) -> bool {
     let mut r = h.clone();
-    r.writes.push(SWrite { author: K, thing: Thing::P, target: 0, role: Role::None, t: 100, snap: Some(o.p.roles.clone()), ledger: h.ledger_of(&o.p), rec: false });
+    r.writes.push(SWrite { author: K, thing: Thing::P, target: 0, role: Role::None, t: 100, snap: Some(o.p.roles.clone()), ledger: h.ledger_of(&o.p), rec: false, id: h.writes.len() + 1 });
     r.recv.push(vec![100; h.n()]);
     let or = r.eval(true);
     let n = h.writes.len();
@@ -737,9 +740,11 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
         } else {
             1 + devices + rng.below(gnodes)
         };
-        // Writes at even times; ledger keys at odd times, so no key ties a write's.
+        // Writes at even times; ledger keys at odd times, so no key ties a write's. Usually
+        // one write per (t, author); sometimes two (one key used from two devices), told
+        // apart by `id`.
         let t = 2 * (1 + rng.below(10) as u32);
-        if writes.iter().any(|w: &SWrite| w.t == t && w.author == author) {
+        if rng.below(4) != 0 && writes.iter().any(|w: &SWrite| w.t == t && w.author == author) {
             continue;
         }
         let snap = if rng.below(4) == 0 {
@@ -772,7 +777,7 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
                 times.sort();
                 times.dedup();
                 for (i, pair) in times.chunks(2).enumerate() {
-                    let key = |t: u32, rng: &mut crate::Rng| (t, rng.below(n));
+                    let key = |t: u32, rng: &mut crate::Rng| (t, rng.below(n), 0);
                     let since = if i == 0 && rng.below(2) == 0 { Option::None } else { Some(key(pair[0], rng)) };
                     let until = if pair.len() == 2 && !(i + 1 == times.len() / 2 && rng.below(3) == 0) { Some(key(pair[1], rng)) } else { Option::None };
                     let open = until.is_none();
@@ -783,7 +788,8 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
                 }
             }
         }
-        writes.push(SWrite { author, thing, target, role, t, snap, ledger, rec });
+        let id = writes.len() + 1;
+        writes.push(SWrite { author, thing, target, role, t, snap, ledger, rec, id });
         recv.push(r);
     }
     // honest receipts: a snapshot sets everyone's edges, a record none
@@ -843,7 +849,8 @@ mod tests {
         fn new() -> Self {
             B6(SHist { gp: GP.to_vec(), gg: GG.to_vec(), writes: vec![], recv: vec![] })
         }
-        fn push(&mut self, w: SWrite, recv: &[(usize, u32)]) -> usize {
+        fn push(&mut self, mut w: SWrite, recv: &[(usize, u32)]) -> usize {
+            w.id = self.0.writes.len() + 1;
             let mut r = vec![LATE; 6];
             r[w.author] = w.t;
             for &(m, tm) in recv {
@@ -854,13 +861,13 @@ mod tests {
             self.0.writes.len() - 1
         }
         fn set(&mut self, author: usize, thing: Thing, target: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target, role, t, snap: Option::None, ledger: vec![], rec: false }, recv)
+            self.push(SWrite { author, thing, target, role, t, snap: Option::None, ledger: vec![], rec: false, id: 0 }, recv)
         }
         fn snap(&mut self, author: usize, thing: Thing, roster: [Role; 6], t: u32, recv: &[(usize, u32)]) -> usize {
             self.snap_l(author, thing, roster, vec![], t, recv)
         }
         fn snap_l(&mut self, author: usize, thing: Thing, roster: [Role; 6], ledger: Vec<Entry>, t: u32, recv: &[(usize, u32)]) -> usize {
-            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()), ledger, rec: false }, recv)
+            self.push(SWrite { author, thing, target: 0, role: None, t, snap: Some(roster.to_vec()), ledger, rec: false, id: 0 }, recv)
         }
     }
 
@@ -869,7 +876,7 @@ mod tests {
     }
 
     fn rec(b: &mut B6, author: usize, to: usize, t: u32, recv: &[(usize, u32)]) -> usize {
-        b.push(SWrite { author, thing: G, target: to, role: None, t, snap: Option::None, ledger: vec![], rec: true }, recv)
+        b.push(SWrite { author, thing: G, target: to, role: None, t, snap: Option::None, ledger: vec![], rec: true, id: 0 }, recv)
     }
 
     /// Every actor's projection agrees with the full node.
@@ -1136,13 +1143,13 @@ mod tests {
         let mut b = B6::new();
         let seen = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
         let unseen = rec(&mut b, D1, 8, 4, &[]);
-        b.set(D2, P, D1, None, 5, &[]);
+        let rm = b.set(D2, P, D1, None, 5, &[]);
         let o = b.0.eval(true);
         assert_eq!(b.0.successors(&o), vec![seen]);
         let ledger = b.0.ledger_of(&o.p);
         assert_eq!(
             ledger,
-            vec![Entry { member: D1, since: Option::None, until: Some((5, D2)) }, Entry { member: D2, since: Option::None, until: Option::None }]
+            vec![Entry { member: D1, since: Option::None, until: Some((5, D2, rm + 1)) }, Entry { member: D2, since: Option::None, until: Option::None }]
         );
         assert!(resnapshot_neutral(&b.0, &o));
         let roster = [None, None, Admin, None, None, None];
@@ -1168,12 +1175,12 @@ mod tests {
         let mut b = B6::new();
         b.set(D2, P, D1, None, 2, &[]);
         let gap = rec(&mut b, D1, 9, 3, &[(D2, 3)]);
-        b.set(D2, P, D1, Admin, 4, &[]);
+        let regrant = b.set(D2, P, D1, Admin, 4, &[]);
         let o = b.0.eval(true);
         assert!(!b.0.record_valid(&o, gap));
         assert!(resnapshot_neutral(&b.0, &o));
         let ledger = b.0.ledger_of(&o.p);
-        assert_eq!(ledger.iter().find(|e| e.member == D1 && e.until.is_none()).unwrap().since, Some((4, D2)));
+        assert_eq!(ledger.iter().find(|e| e.member == D1 && e.until.is_none()).unwrap().since, Some((4, D2, regrant + 1)));
         b.snap_l(K, P, [None, Admin, Admin, None, None, None], ledger, 7, &[]);
         assert!(!b.0.record_valid(&b.0.eval(true), gap));
         let mut no_since = B6::new();

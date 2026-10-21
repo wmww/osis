@@ -17,14 +17,14 @@
 //!   (owners, members of what is above, at any time). D is rebuilt whenever
 //!   the epoch starts change, so writes a start ignores leave no drops.
 //! - Before its epoch start S, N's edges follow S's roster and ledger as virtual writes placed
-//!   at their keys (before real writes with that key); an entry with a frontier is the
+//!   at their keys (before a real write at that point); an entry with a frontier is the
 //!   explicit demotion it records, by its key's node (exempt as the author), audit-only
 //!   entries (`since` = `until`) included.
 
 use crate::content::{overlapping, Range};
 use crate::graph::{Class, Edges, Owners, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{lowers, Dots, Edge, EdgeKey, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
+use crate::types::{lowers, Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
 use osis_core::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -244,7 +244,7 @@ struct Auditor<'a> {
 /// Edge state of `s.thing` before `s` by its roster and ledger (spec/permissions.md §6): the
 /// values at the beginning and the changes at keys before `s`.
 fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
-    let skey = s.point().key();
+    let skey = s.point();
     let mut members: BTreeSet<Tid> = s.roster.keys().copied().collect();
     members.extend(s.ledger.iter().map(|t| t.member));
     let mut initial = Vec::new();
@@ -254,7 +254,7 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
         let roster = s.roster.get(&m);
         // The value just after key `b` (`None`: the beginning); `with_roster: false` counts
         // the roster edge only where it starts at `b` itself.
-        let value = |b: Option<EdgeKey>, with_roster: bool| -> Option<Edge> {
+        let value = |b: Option<Point>, with_roster: bool| -> Option<Edge> {
             let inside = tenures
                 .iter()
                 .filter(|t| match (t.since, b) {
@@ -279,25 +279,24 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
             };
             (started && after_tenures).then_some(Edge { since: None, ..*r })
         };
-        let mut keys: BTreeSet<EdgeKey> = tenures.iter().flat_map(|t| t.since.into_iter().chain([t.until])).collect();
+        let mut keys: BTreeSet<Point> = tenures.iter().flat_map(|t| t.since.into_iter().chain([t.until])).collect();
         keys.extend(roster.and_then(|r| r.since));
         let mut prev = value(None, true);
         if let Some(e) = prev {
             initial.push((m, e));
         }
         for b in keys.into_iter().filter(|b| *b < skey) {
-            let point = Point::first_at(b);
             // An entry with a frontier records an explicit demotion by `b`'s node, even where
             // the roster edge takes over at once (end the tenure, then re-grant) or nothing
             // changes (an audit-only entry).
             if let Some(f) = tenures.iter().find(|t| t.until == b && t.frontier.is_some()).and_then(|t| t.frontier.clone()) {
                 let end = value(Some(b), false);
-                out.push(Virtual { thing: s.thing, member: m, edge: end, point, audit: Some((b.node, f)) });
+                out.push(Virtual { thing: s.thing, member: m, edge: end, point: b, audit: Some((b.node, f)) });
                 prev = end;
             }
             let v = value(Some(b), true);
             if v != prev {
-                out.push(Virtual { thing: s.thing, member: m, edge: v, point, audit: None });
+                out.push(Virtual { thing: s.thing, member: m, edge: v, point: b, audit: None });
                 prev = v;
             }
         }

@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use membership_model::Rng;
 use osis_core::{Role, Tid, WallMs};
-use osis_perm::{At, Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
+use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
 use std::sync::Arc;
 
 fn pick<T: Copy>(rng: &mut Rng, v: &[T]) -> T {
@@ -36,7 +36,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             role: pick(rng, &roles),
             until: (rng.below(3) == 0).then(|| WallMs(rng.below(12) as u64)),
             invite: (rng.below(2) == 0).then(|| pick(rng, &roles)),
-            since: (rng.below(3) == 0).then(|| EdgeKey { ts: ts(rng.below(12) as u64), node: pick(rng, &tids) }),
+            since: (rng.below(3) == 0).then(|| Point { ts: ts(rng.below(12) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }),
         })
     };
     let dots = |rng: &mut Rng| match rng.below(3) {
@@ -72,8 +72,8 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             .map(|_| Tenure {
                 member: pick(rng, &tids),
                 role: pick(rng, &roles),
-                since: (rng.below(2) == 0).then(|| EdgeKey { ts: ts(rng.below(14) as u64), node: pick(rng, &tids) }),
-                until: EdgeKey { ts: ts(rng.below(14) as u64), node: pick(rng, &tids) },
+                since: (rng.below(2) == 0).then(|| Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }),
+                until: Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) },
                 frontier: frontier(rng, &tids),
             })
             .collect();
