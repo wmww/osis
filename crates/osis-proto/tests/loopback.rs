@@ -407,6 +407,50 @@ fn stale_sync_key_gets_one_signed_step() {
     assert_eq!(ev, vec![ClientEvent::PathSteps { label: l.id, steps: vec![child], more: false }]);
 }
 
+// spec/sync.md §5 (member peer), spec/wire.md §11.2 (proof 3): a member proof by a dialable key
+// the store knows as a node of a current reader opens the label (no entry box); the same proof
+// before the store knows the key, another dialable key, or a sync key nobody registered is
+// refused.
+#[test]
+fn member_open_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new();
+    net.setup(&l);
+    let d = SigningSecret::from_seed(&s32(97));
+    let member = Command::Open { label: l.id, key: OpenKey::Member(d.clone()) };
+    let stranger = Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(98))) };
+    let ev = net.run(0, member.clone());
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
+    net.store.member_labels.insert((d.verifying_key().to_bytes(), l.id));
+    let other = Command::Open { label: l.id, key: OpenKey::Member(SigningSecret::from_seed(&s32(96))) };
+    let ev = net.run(0, other);
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
+    let ev = net.run(0, stranger);
+    assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]), "{ev:?}");
+    let ev = net.run(0, member);
+    assert!(matches!(&ev[..], [ClientEvent::Opened { head, entry_box: None, .. }] if *head == l.steps[0]), "{ev:?}");
+    let ev = net.run(0, sync(l.id, None, vec![], vec![]));
+    assert!(ev.contains(&ClientEvent::Synced { label: l.id }), "{ev:?}");
+}
+
+// spec/sync.md §5, spec/wire.md §11.2: a proof 3 binds the session's challenge: one signed for
+// another session is refused.
+#[test]
+fn member_proof_bound_to_session_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new();
+    net.setup(&l);
+    let d = SigningSecret::from_seed(&s32(97));
+    net.store.member_labels.insert((d.verifying_key().to_bytes(), l.id));
+    // a proof for another session's challenge, sent raw on this one
+    let proof = osis_label::Proof::member(&d, &l.id, &[0x77; 32], &[0x5e; 32]);
+    let open = Message::Open { id: 99, label: l.id, proof };
+    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&open.encode())));
+    let sent: Vec<Message> = so.into_iter().filter_map(|o| if let ServerOutput::Send(f) = o { Some(Message::decode(&f[4..]).unwrap()) } else { None }).collect();
+    assert_eq!(sent, vec![Message::Error { id: 99, code: Code::REFUSED }]);
+    assert!(net.servers[0].opened().is_empty());
+}
+
 // spec/sync.md §5: claim keys open at the head or get the child; static entries open with the entry box; a dropped set serves no claims
 // spec/sync.md §5 (claim refusals), §5 (dropped claim set)
 #[test]
@@ -468,6 +512,28 @@ fn upload_rules() {
     short.push(0);
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(short)] });
     assert_eq!(statuses(&ev), vec![Code::MALFORMED]);
+}
+
+// spec/sync.md §5 (upload refusals): an oversized blob is refused by the session (the message
+// decoder's cap is the only check: `accept` has none of its own) and nothing is logged
+#[test]
+fn oversized_upload_refused_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new();
+    net.setup(&l);
+    let seq = net.store.log_head(&l.id).unwrap().1;
+    let big = l.entry(blob_sized(1, 0, vec![], osis_core::format::MAX_BLOB));
+    let body = Message::Upload { id: 77, label: l.id, entries: vec![big] }.encode();
+    assert!(body.len() < osis_core::format::MAX_MESSAGE);
+    let so = net.servers[0].handle(T0, &mut net.store, ServerInput::Bytes(encode_frame(&body)));
+    net.server_out(0, so);
+    let reply: Vec<u8> = net.to_client[0].drain(..).flatten().collect();
+    let mut d = FrameDecoder::new();
+    d.set_max(osis_core::format::MAX_MESSAGE);
+    d.push(&reply);
+    let m = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap();
+    assert_eq!(m, Message::Error { id: 77, code: Code::MALFORMED });
+    assert_eq!(net.store.log_head(&l.id).unwrap().1, seq);
 }
 
 // spec/sync.md §5: deposits by the deposit key within the budget (64 + 4 x claim slots), refused when full

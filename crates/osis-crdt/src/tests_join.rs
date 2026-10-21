@@ -29,6 +29,7 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
                 let Some(c) = commits.get(k) else { continue };
                 mapply(&mut model, c.delta.clone());
                 ours.join(frag(&c.delta));
+                crate::testutil::check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining commit {k}");
                 assert_eq!(ours.read(), model.as_ref().and_then(|m| m.read()).map(|v| value(&v)), "read after commit {k}");
             }

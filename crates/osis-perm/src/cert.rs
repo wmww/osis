@@ -33,7 +33,7 @@ impl Timeline {
     /// Things on any path from `node` to `thing` just before `at`.
     fn chain_things(&self, node: &Tid, thing: &Tid, at: Point) -> BTreeSet<Tid> {
         let edges = self.edges_at(Some(at));
-        let view = View { owners: &self.owners, edges: &edges, ts: Some(at.ts) };
+        let view = View::new(&self.owners, &edges, Some(at.ts));
         let reach = view.roles_from(node);
         let to = view.reach_backward(thing);
         let mut c: BTreeSet<Tid> = reach.keys().filter(|t| to.contains(t)).copied().collect();

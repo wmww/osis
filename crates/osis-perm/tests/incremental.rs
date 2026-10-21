@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use membership_model::{edges, joint, Rng};
+use membership_model::{edges, joint, snapshot, Rng};
 use osis_core::Tid;
 use osis_perm::{At, HeldSet, Timeline, Timelines, WriteId};
 use std::collections::BTreeSet;
@@ -32,12 +32,20 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         if part.epoch_start(&t) != full.epoch_start(&t) {
             return Some(format!("epoch start of {t:?}"));
         }
+        // the edge history too: roles before every applied write
+        for a in full.applied().values() {
+            for n in nodes {
+                if part.role(n, &t, At::before(a.point)) != full.role(n, &t, At::before(a.point)) {
+                    return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
+                }
+            }
+        }
         if seen.insert(part as *const Timeline) {
-            dropped.extend(part.dropped().keys().copied());
+            dropped.extend(part.dropped().iter().map(|(w, p)| (*w, *p)));
             applied.extend(part.applied().keys().copied());
         }
     }
-    let fd: BTreeSet<WriteId> = full.dropped().keys().copied().collect();
+    let fd: BTreeSet<(WriteId, osis_perm::Point)> = full.dropped().iter().map(|(w, p)| (*w, *p)).collect();
     let fa: BTreeSet<WriteId> = full.applied().keys().copied().collect();
     if dropped != fd || applied != fa {
         return Some("applied or dropped sets".into());
@@ -48,10 +56,17 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
 fn run(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     for s in 0..samples {
-        // Two or three independent histories in one held set: several components.
+        // Two or three independent histories in one held set: several components; or one
+        // snapshot-model history (its roster snapshots held from the start, epoch starts).
         let mut w = World::new();
         let mut nodes = Vec::new();
-        for k in 0..(2 + rng.below(2)) {
+        let snap = rng.below(3) == 0;
+        if snap {
+            let sw = snap_world(&snapshot::random_hist(&mut rng));
+            w = sw.w;
+            nodes = sw.nodes;
+        }
+        for k in 0..if snap { 0 } else { 2 + rng.below(2) } {
             let salt = 10 + k as u8;
             let (wk, nk) = if rng.below(2) == 0 {
                 let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), salt);

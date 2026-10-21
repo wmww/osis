@@ -364,9 +364,10 @@ pub struct InProcess {
 }
 
 impl InProcess {
-    /// The public key a listener with `secret` presents.
+    /// The public key a listener with `secret` presents: Ed25519 with `secret` as seed, as
+    /// `Quic` and `Iroh` (spec/sync.md §10).
     pub fn public_key(secret: &crate::StaticSecret) -> PublicKey {
-        osis_core::hash::derive_key("osis-transport mem static key", secret.as_bytes())
+        ed25519_dalek::SigningKey::from_bytes(secret.as_bytes()).verifying_key().to_bytes()
     }
 
     pub fn name(&self) -> &str {

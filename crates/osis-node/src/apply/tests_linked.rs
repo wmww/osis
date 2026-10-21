@@ -135,7 +135,8 @@ fn deliver_all(lp: &mut LocalPeer, last: &CommitId) -> crate::Result<Ingested> {
     lp.deliver(1, &pk)
 }
 
-// spec/permissions.md §6: a linked frontier whose value is not a frontier is bad input.
+// spec/permissions.md §6 (linked frontier bounds): a linked frontier whose value is not a frontier
+// is bad input.
 #[test]
 fn malformed_linked_frontier_spec_perm_6() {
     let mut lp = LocalPeer::new(2, 943, T0).unwrap();
@@ -164,7 +165,7 @@ fn unresolvable_linked_frontier_spec_perm_6() {
     assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
 }
 
-// spec/permissions.md §6 (`MAX_LINKED_FRONTIERS`): many tenures linking one frontier read it
+// spec/permissions.md §6 (linked frontier bounds): many tenures linking one frontier read it
 // once; distinct linked frontiers above the bound are bad input.
 #[test]
 fn linked_frontier_amplification_bound_spec_perm_6() {

@@ -26,7 +26,7 @@ impl Fragment {
         Some(match self {
             Fragment::Map(m) => m.entries.len(),
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.len(),
-            Fragment::Seq(s) => s.elems.len(),
+            Fragment::Seq(s) => s.elems().len(),
             _ => return None,
         })
     }
@@ -36,7 +36,7 @@ impl Fragment {
         match self {
             Fragment::Map(m) => range(&m.entries, lo, hi).map(|(d, _)| d.clone()).collect(),
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => range(elems, lo, hi).map(|(d, _)| d.clone()).collect(),
-            Fragment::Seq(s) => range(&s.elems, lo, hi).map(|(d, _)| d.clone()).collect(),
+            Fragment::Seq(s) => range(s.elems(), lo, hi).map(|(d, _)| d.clone()).collect(),
             _ => Vec::new(),
         }
     }
@@ -49,7 +49,7 @@ impl Fragment {
             Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), sub(&x.entries, lo, hi))),
             Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: sub(&x.elems, lo, hi) }),
             Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: sub(&x.elems, lo, hi) }),
-            Fragment::Seq(x) => Fragment::Seq(Seq { text: x.text, meta: m(&x.meta), elems: sub(&x.elems, lo, hi) }),
+            Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), lo, hi))),
             _ => return None,
         })
     }
@@ -68,7 +68,7 @@ impl Fragment {
         Some(match self {
             Fragment::Map(m) => (w, m.entries.keys().cloned().collect()),
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => (w, elems.keys().cloned().collect()),
-            Fragment::Seq(s) => (w, s.elems.iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
+            Fragment::Seq(s) => (w, s.elems().iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
             _ => return None,
         })
     }
@@ -117,7 +117,7 @@ impl Fragment {
             Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), BTreeMap::new())),
             Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: BTreeMap::new() }),
             Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: BTreeMap::new() }),
-            Fragment::Seq(x) => Fragment::Seq(Seq { text: x.text, meta: m(&x.meta), elems: BTreeMap::new() }),
+            Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), BTreeMap::new())),
             _ => return None,
         })
     }

@@ -156,6 +156,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         held_changed = true;
         for c in ov.iter().chain(std::iter::once(&id)) {
             tx.core.void.insert(*c);
+            tx.core.stale_commits.insert(*c);
             tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
         }
         let now = tx.now();

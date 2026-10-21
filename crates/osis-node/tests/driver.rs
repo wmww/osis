@@ -119,45 +119,64 @@ fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }
 
+/// How the nodes of `converge_p2p` find each other besides `/reach`.
+pub enum Direct<'a> {
+    None,
+    /// Each also listens at its URL with a fresh LAN key (`SyncEngine::lan_secret`) and the other hears
+    /// its signed announcement from 127.0.0.1.
+    Heard([&'a str; 2]),
+    /// Each runs the driver's LAN loop.
+    #[allow(dead_code)]
+    Loop([driver::LanConfig; 2]),
+}
+
 /// Two members of a group whose label names no server converge peer to peer under the tokio
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
 /// in `/reach`, dials the other at `peer://` and serves the other's sessions (member peer).
-/// `direct`: each node hears the other's LAN announcement (its tag and listener address), the
-/// way direct addresses reach a peer (spec/sync.md §10); `/reach` carries no address.
-pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, direct: bool) {
+/// `/reach` carries `relays` and no address; `direct` says how else the nodes find each other
+/// (spec/sync.md §10).
+pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>, direct: Direct<'_>) {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
     let a = net.add_node(1, Default::default());
     let b = net.add_node(2, Default::default());
-    let mut listeners = Vec::new();
-    for (n, ep, url) in [(a, &a_ep, a_url), (b, &b_ep, b_url)] {
+    let mut listeners = [Vec::new(), Vec::new()];
+    for (i, n, ep, url) in [(0, a, &a_ep, a_url), (1, b, &b_ep, b_url)] {
         let secret = net.sync(n).dialable_secret();
         let l = ep.listen(ListenConfig { url: url.into(), secret: StaticSecret::from_bytes(*secret.expose()) }).await.unwrap();
-        let acts = net.sync(n).publish_reach(l.address().key, vec![]).unwrap();
+        let acts = net.sync(n).publish_reach(l.address().key, relays.clone()).unwrap();
         net.actions(n, acts);
-        listeners.push(l);
+        listeners[i].push(l);
     }
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     let t = net.item(a, g, g, "first");
     let brx = net.engine(b).subscribe();
-    let heard: Vec<([u8; 16], osis_label::Address)> = [(a, &listeners[0]), (b, &listeners[1])]
-        .into_iter()
-        .map(|(n, l)| {
-            let x = l.address();
-            (net.sync(n).lan_tag_now().unwrap(), osis_label::Address { url: x.url, key: x.key })
-        })
-        .collect();
+    // `Heard`: each listens on the LAN with a fresh key and announces it
+    let mut anns = Vec::new();
+    if let Direct::Heard(urls) = &direct {
+        for (i, n, ep, url) in [(0, a, &a_ep, urls[0]), (1, b, &b_ep, urls[1])] {
+            let secret = StaticSecret::from_bytes(*net.sync(n).lan_secret().expose());
+            let l = ep.listen(ListenConfig { url: url.into(), secret }).await.unwrap();
+            let addr = l.address();
+            let port = addr.url.split_once("://").and_then(|(_, h)| h.split(' ').find_map(|x| x.parse::<std::net::SocketAddr>().ok())).map_or(1, |x| x.port());
+            anns.push(net.sync(n).lan_announcement(addr.key, port).expect("signed announcement"));
+            listeners[i].push(l);
+        }
+    }
     let (sa, sb) = (net.take(a), net.take(b));
     let (actl, arx) = mpsc::unbounded_channel();
     let (bctl, brx2) = mpsc::unbounded_channel();
-    let lb: Vec<_> = listeners.pop().into_iter().collect();
-    let la: Vec<_> = listeners.pop().into_iter().collect();
+    let [la, lb] = listeners;
     let da = tokio::spawn(driver::run_serving(sa, a_ep, la, clock.clone(), arx, log()));
     let db = tokio::spawn(driver::run_serving(sb, b_ep, lb, clock.clone(), brx2, log()));
-    if direct {
+    if let Direct::Loop(cfgs) = direct {
+        for (ctl, cfg) in [&actl, &bctl].into_iter().zip(cfgs) {
+            assert!(ctl.send(Control::Lan(cfg)).is_ok());
+        }
+    } else if !anns.is_empty() {
         // a hears b's announcement and b hears a's
-        for (ctl, (tag, addr)) in [(&actl, heard[1].clone()), (&bctl, heard[0].clone())] {
-            let f: driver::Call = Box::new(move |s: &mut SyncEngine| s.lan_seen(tag, addr).1);
+        for (ctl, ann) in [(&actl, anns[1]), (&bctl, anns[0])] {
+            let f: driver::Call = Box::new(move |s: &mut SyncEngine| s.lan_seen(&ann, std::net::Ipv4Addr::LOCALHOST.into()).1);
             assert!(ctl.send(Control::Call(f)).is_ok());
         }
     }
@@ -181,14 +200,15 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_in_process_spec_sync_5() {
     let tnet = osis_transport::Net::new(4);
-    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", false).await;
+    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::None).await;
 }
 
-// spec/sync.md §10: the same with each node also hearing the other's LAN announcement.
+// spec/sync.md §10: the same with each node also listening with a fresh LAN key and hearing
+// the other's signed announcement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_lan_in_process_spec_sync_10() {
     let tnet = osis_transport::Net::new(5);
-    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", true).await;
+    converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::Heard(["mem://a-lan", "mem://b-lan"])).await;
 }
 
 // spec/sync.md §5, §10: the same over iroh on localhost, no relay (tier 2: touches the network).
@@ -198,5 +218,34 @@ async fn driver_p2p_lan_in_process_spec_sync_10() {
 #[ignore]
 async fn driver_p2p_iroh_localhost_spec_sync_10() {
     use osis_transport::Iroh;
-    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", true).await;
+    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Heard(["peer://127.0.0.1:0", "peer://127.0.0.1:0"])).await;
+}
+
+// spec/sync.md §10: two nodes over iroh find each other only by the driver's LAN loop: fresh
+// keys per network, signed announcements over UDP on localhost (tier 2).
+// Run: `cargo test -p osis-node --features iroh,lan --test driver -- --ignored`.
+#[cfg(all(feature = "iroh", feature = "lan"))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn driver_lan_loop_localhost_spec_sync_10() {
+    use osis_transport::Iroh;
+    // two announcement ports, each node announcing to the other's
+    let base = 40_000 + (std::process::id() % 10_000) as u16 * 2;
+    let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
+    let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into() };
+    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
+}
+
+// spec/sync.md §10: two nodes over iroh reach each other through a self-hosted relay on
+// localhost, the only route `/reach` names (tier 2).
+// Run: `cargo test -p osis-node --features relay --test driver -- --ignored`.
+#[cfg(feature = "relay")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn driver_p2p_relay_localhost_spec_sync_10() {
+    use osis_transport::{Iroh, TestRelay};
+    let relay = TestRelay::spawn().await.unwrap();
+    let r = vec![relay.url.clone()];
+    let url = format!("peer://127.0.0.1:0 {}", relay.url);
+    converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::None).await;
 }

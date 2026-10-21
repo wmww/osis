@@ -8,7 +8,7 @@ use crate::hello::{Hello, PROTOCOL_VERSION, negotiate};
 use crate::msg::*;
 use crate::rbsr;
 use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
-use osis_core::format::{MAX_BLOB, MAX_MESSAGE};
+use osis_core::format::MAX_MESSAGE;
 use osis_core::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, VerifyingKey};
 use osis_label::auth::delete_digest;
@@ -148,6 +148,8 @@ pub struct ServerConnection {
     /// Blobs whose bytes crossed this connection.
     crossed: HashSet<BlobId>,
     cache: HashMap<LabelId, Cached>,
+    /// Dialable key of the last member proof that opened a label.
+    member: Option<[u8; 32]>,
 }
 
 /// Replay cursor ID of a log (spec/wire.md §11.2).
@@ -188,7 +190,13 @@ impl ServerConnection {
             replays: BTreeMap::new(),
             crossed: HashSet::new(),
             cache: HashMap::new(),
+            member: None,
         }
+    }
+
+    /// The dialable key of the last member proof that opened a label here (spec/sync.md §5).
+    pub fn member(&self) -> Option<[u8; 32]> {
+        self.member
     }
 
     /// Labels opened on this connection.
@@ -395,7 +403,21 @@ impl ServerConnection {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
         // The one claim set the proof needs: its step's (claim), the head's (static entry).
+        // a member node's proof: the store knows its dialable key (spec/sync.md §5)
+        if let Proof::Member { dialable, .. } = &proof {
+            let key = dialable.to_bytes();
+            let ok = proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.member_open(&key, &label)?;
+            return Ok(match path.last() {
+                Some(head) if ok => {
+                    self.opened.insert(label);
+                    self.member = Some(key);
+                    Message::Opened { id, head: head.clone(), entry_box: None }
+                }
+                _ => Message::Error { id, code: Code::REFUSED },
+            });
+        }
         let want = match &proof {
+            Proof::Member { .. } => None,
             Proof::Sync { .. } => None,
             Proof::Claim { step, .. } => Some(*step),
             Proof::Static { .. } => Some(head_id),
@@ -657,10 +679,9 @@ impl ServerConnection {
 
     /// Upload (stamp) or deposit (no stamp, already authorized) of one entry (spec/sync.md §5).
     fn accept(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, blob: &[u8], wrap: Wrap, stamp: Option<Signature>) -> Result<Code, StoreError> {
+        // An oversized blob never gets here: the message decoder refuses it (`field_sizes`).
+        debug_assert!(blob.len() <= osis_core::format::MAX_BLOB);
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        if blob.len() > MAX_BLOB {
-            return Ok(Code::TOO_LARGE);
-        }
         let blob_id = osis_label::blob_id(blob);
         if let Some(stamp) = stamp {
             let code = c.check(Key::Write, Domain::Upload, &entry_digest(label, &blob_id, &wrap), &stamp);

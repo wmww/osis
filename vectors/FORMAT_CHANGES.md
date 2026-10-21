@@ -14,3 +14,8 @@ Entry form: `## FC-<n>: <title>`, then the files changed (paths as in MANIFEST) 
 
 ## FC-4: tree-node lengths
 - chunker/tree.vec, keys/seed.vec: a tree node carries the plaintext length under each link (`[level, [LINK+], [len+]]`, spec/wire.md §6) and its content hash covers them (`le64(level) || for each child: hash || le64(len)`, spec/crypto.md §6), so readers seek without fetching what lies before and a content hash pins the lengths; the root hashes of `tree.vec` and the `tree-ab` case of `seed.vec` (which gains `tree-lens`) change.
+
+## FC-5: LAN announcement and member open
+- sign/signatures.vec: new signature domains `"osis v1 lan announce"` (a LAN transport key bound to the dialable key, spec/sync.md §10) and `"osis v1 member open"` (open proof 3, a member node's dialable key, spec/sync.md §5, spec/wire.md §11.2); two cases added, the others unchanged.
+- kdf/purposes.vec: a new kdf purpose `"lan sig"` (the keystream sealing the announcement's signature under the lan secret, window and digest, spec/sync.md §10); one case added.
+- proto/messages.vec: a new Open case with proof 3 (`[3, dialable_pk, sig]`, a member node's dialable key, spec/wire.md §11.2); the others unchanged.

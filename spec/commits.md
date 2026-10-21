@@ -19,7 +19,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
 - **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
 - A commit may touch things of any owners and reader sets.
-- A commit has no size limit: a delta pages (spec/crdt.md §8), the header's lists go by link, a projection splits by size (spec/sync.md §3), and only blobs are bounded (`MAX_BLOB`, spec/data-model.md §6). One delta MUST fit a blob after paging and chunking (only a struct or enum of many near-`CHUNK_THRESHOLD` registers cannot); a writer refuses such a write.
+- A commit has no size limit: a delta pages (spec/crdt.md §8), the header's lists go by link, a projection splits by size (spec/sync.md §3), and only blobs are bounded (`MAX_BLOB`, spec/data-model.md §6). Paging and chunking keep every delta and page within a blob.
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not membership-class.

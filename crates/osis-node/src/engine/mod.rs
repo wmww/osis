@@ -113,6 +113,12 @@ pub(crate) struct Core {
     pub pending: BTreeMap<CommitId, Reason>,
     pub syncing: BTreeSet<Tid>,
     pub void: BTreeSet<CommitId>,
+    /// What validity may have changed for since the last `rejudge_all`: things whose timeline
+    /// was evaluated, commits whose other inputs changed (void, required roles, overreach), or
+    /// everything (open, rollback).
+    pub stale_things: BTreeSet<Tid>,
+    pub stale_commits: BTreeSet<CommitId>,
+    pub stale_all: bool,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: BTreeMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -180,6 +186,9 @@ pub(crate) struct Core {
     /// `Engine::body_live` per body, cleared by every transaction that changes anything
     /// (`touch`, `rollback`).
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
+    /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
+    /// derived from them (the sync engine's co-readers) compare it.
+    pub generation: u64,
 }
 
 /// Index fields of `Core` saved for a rollback (states roll back by eviction, timelines by
@@ -220,6 +229,7 @@ impl Core {
     /// Re-evaluates the timelines over the held set.
     pub fn update_timelines(&mut self) {
         self.timelines.update(&self.held);
+        self.stale_things.extend(self.timelines.changed().iter().copied());
         self.membership_changed();
     }
 
@@ -234,6 +244,7 @@ impl Core {
     pub fn touch(&mut self) {
         self.live_trees.clear();
         self.live_bodies.clear();
+        self.generation += 1;
         if self.backup.is_some() {
             return;
         }
@@ -273,6 +284,7 @@ impl Core {
         self.live_trees.clear();
         self.live_bodies.clear();
         self.bodies.clear();
+        self.generation += 1;
         self.membership_changed();
         for k in std::mem::take(&mut self.written) {
             self.states.remove(&k);
@@ -304,6 +316,7 @@ impl Core {
             self.box_written = b.box_written;
             self.secrets_unresolved = b.secrets_unresolved;
             self.timelines.update(&self.held);
+            self.stale_all = true;
         }
     }
 
@@ -322,6 +335,9 @@ impl Core {
             pending: BTreeMap::new(),
             syncing: BTreeSet::new(),
             void: BTreeSet::new(),
+            stale_things: BTreeSet::new(),
+            stale_commits: BTreeSet::new(),
+            stale_all: true,
             valueless: BTreeMap::new(),
             secrets: BTreeMap::new(),
             own_keys: BTreeSet::new(),
@@ -350,6 +366,7 @@ impl Core {
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
+            generation: 0,
         }
     }
 

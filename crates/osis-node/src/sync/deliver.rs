@@ -83,6 +83,7 @@ impl SyncEngine {
         self.sent.retain(|(_, l, _), _| !gone(l));
         self.deleting.retain(|(_, l, _), _| !gone(l));
         self.timed_sent.retain(|(_, l, _)| !gone(l));
+        self.peer_received.retain(|l, _| !gone(l));
         self.reopens.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
         self.forget_inbox()
@@ -226,7 +227,12 @@ impl SyncState for SyncEngine {
             if a != actor {
                 continue;
             }
-            for s in servers {
+            // the label's servers, and the co-readers it received the label from while a
+            // connection to them is up with the label started and they still read it
+            // (spec/permissions.md §3), for at most `peer_pass_wait_ms` after the change
+            let waited = self.membership_at.get(actor).is_some_and(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now());
+            let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited);
+            for s in servers.iter().chain(peers) {
                 any = true;
                 if self.passes.get(&(*s, *l)).is_none_or(|p| *p <= since) {
                     return false;

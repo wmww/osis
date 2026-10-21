@@ -18,6 +18,7 @@ mod remap;
 mod seq;
 mod shape;
 mod seq_diff;
+mod seq_lin;
 mod seq_ops;
 mod seq_span;
 mod seq_wire;
@@ -45,6 +46,8 @@ mod tests_review;
 mod tests_seq;
 #[cfg(test)]
 mod tests_seq_ops;
+#[cfg(test)]
+mod tests_decoder;
 
 pub use changes::{Changes, Death};
 pub use codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array};

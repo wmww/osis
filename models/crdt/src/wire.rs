@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Runs never exceed this many elements (§3.3 rule 3).
 pub const MAX_RUN: usize = 1 << 16;
+/// A list run closes once its content reaches this many bytes (§3.3 rule 3; spec/wire.md `CHUNK_MAX`).
+pub const CHUNK_MAX: usize = 256 * 1024;
 
 /// What the commit header provides (§2.4) plus the delta's own tables (§3.2).
 #[derive(Clone, Debug)]
@@ -21,6 +23,8 @@ pub struct Ctx {
     pub hi: Option<u64>,
     /// `Sources` of the delta: wire index i is `sources[i-1]`, 0 is `own`.
     pub sources: Vec<Source>,
+    /// Decoding a snapshot (bare-anchor runs allowed, §3.3 rule 7); set by `decode_snapshot`.
+    pub snapshot: bool,
     /// Commit table of the delta: wire index i is `commits[i-1]`; index 0 is (ts, own, lo).
     /// `base` is the counter a bare commit index stands for. Sorted by (source index, ts).
     pub commits: Vec<(Ts, Source, u64)>,
@@ -59,11 +63,11 @@ pub enum Ref<'a> {
 
 impl Ctx {
     pub fn new(ts: Ts, own: Source, lo: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: None, sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: None, snapshot: false, sources: Vec::new(), commits: Vec::new() }
     }
     /// Context of a writer's own delta with range `[lo, hi)`.
     pub fn writer(ts: Ts, own: Source, lo: u64, hi: u64) -> Ctx {
-        Ctx { ts, own, lo, hi: Some(hi), sources: Vec::new(), commits: Vec::new() }
+        Ctx { ts, own, lo, hi: Some(hi), snapshot: false, sources: Vec::new(), commits: Vec::new() }
     }
     fn index(&mut self, s: &Source) -> u64 {
         if *s == self.own {
@@ -588,8 +592,31 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
 fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
     let v: Vec<(&Dot, &SeqElem)> = wire_sorted(elems, &cx.own);
     let mut out = Vec::new();
+    let mut cut: Vec<(&[(&Dot, &SeqElem)], Option<Vec<Item>>)> = Vec::new();
     for (start, n) in runs(text, &v) {
         let run = &v[start..start + n];
+        if text || !run.iter().any(|(_, e)| has_content(e)) {
+            cut.push((run, None));
+            continue;
+        }
+        // a list run also closes once its content reaches CHUNK_MAX bytes (§3.3 rule 3)
+        let (mut from, mut size, mut fs) = (0, 0, Vec::new());
+        for (j, (_, e)) in run.iter().enumerate() {
+            let it = match &e.content {
+                Content::Frag(f) => encode(f, cx),
+                _ => unreachable!("list runs are uniform in content"),
+            };
+            size += cbor::encode(&it).len();
+            fs.push(it);
+            if size >= CHUNK_MAX || j + 1 == run.len() {
+                cut.push((&run[from..=j], Some(std::mem::take(&mut fs))));
+                from = j + 1;
+                size = 0;
+            }
+        }
+    }
+    for (run, fs) in cut {
+        let n = run.len();
         let (d0, e0) = run[0];
         let first = enc_dot(d0, cx);
         let creation_i = match &e0.created {
@@ -608,7 +635,9 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                 Item::Array(vec![enc_anchor(a, cx), Item::Array(segs.into_iter().map(|(c, k)| Item::Array(vec![u(c), u(k)])).collect())])
             }
         };
-        let content = if !run.iter().any(|(_, e)| has_content(e)) {
+        let content = if let Some(fs) = fs {
+            Item::Array(fs)
+        } else if !run.iter().any(|(_, e)| has_content(e)) {
             Item::Array(vec![])
         } else if text {
             Item::Text(run.iter().filter(|(_, e)| has_content(e)).map(|(_, e)| match &e.content {
@@ -616,10 +645,7 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                 _ => unreachable!(),
             }).collect())
         } else {
-            Item::Array(run.iter().map(|(_, e)| match &e.content {
-                Content::Frag(f) => encode(f, cx),
-                _ => unreachable!("list runs are uniform in content"),
-            }).collect())
+            unreachable!("list content is encoded above")
         };
         let mut posw = Vec::new();
         for (k, (d, e)) in run.iter().enumerate() {
@@ -696,7 +722,7 @@ fn dec_anchor(it: &Item, cx: &Ctx) -> Result<Anchor, Error> {
 fn dec_opt_frag(it: &Item, cx: &Ctx) -> Result<Option<Box<Frag>>, Error> {
     match it.array()? {
         [] => Ok(None),
-        [f] => Ok(Some(Box::new(decode(f, cx)?))),
+        [f] => Ok(Some(Box::new(decode_at(f, cx, false)?))),
         _ => Err(Error::Bad("opt frag")),
     }
 }
@@ -720,7 +746,7 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
 fn dec_fields(it: &Item, cx: &Ctx) -> Result<BTreeMap<u64, Frag>, Error> {
     let mut m = BTreeMap::new();
     for (k, v) in it.map()? {
-        m.insert(k.uint()?, decode(v, cx)?);
+        m.insert(k.uint()?, decode_at(v, cx, false)?);
     }
     Ok(m)
 }
@@ -728,8 +754,23 @@ fn composite(a: &[Item], cx: &Ctx) -> Result<Composite, Error> {
     Ok(Composite { reset: dec_opt_stamp(&a[1], cx)?, w: dec_opt_stamp(&a[2], cx)? })
 }
 
-/// Decode a fragment.
+/// Empty in the sense of §4.2 Emptiness: no surviving write and no record at any depth (a struct
+/// or enum whose children are all empty holds none).
+fn deep_empty(f: &Frag) -> bool {
+    match f {
+        Frag::Struct { fields, .. } => f.all_max().is_none() && fields.values().all(deep_empty),
+        Frag::Enum { payloads, .. } => f.all_max().is_none() && payloads.values().all(deep_empty),
+        _ => f.is_empty(),
+    }
+}
+
+/// Decode a fragment at an aspect root.
 pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
+    decode_at(it, cx, true)
+}
+
+/// Decode a fragment; `top`: an aspect root or a `Slots` member, the only registers that carry a reset (§3.3 rule 7).
+fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
     let a = it.array()?;
     if a.is_empty() {
         return Err(Error::Bad("fragment"));
@@ -783,7 +824,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
         (10, 3) => {
             let reg = match a[1].array()? {
                 [] => None,
-                [r] => match decode(r, cx)? {
+                [r] => match decode_at(r, cx, true)? {
                     f @ Frag::Register { .. } => Some(Box::new(f)),
                     _ => return Err(Error::Bad("slots register")),
                 },
@@ -792,7 +833,7 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
             let mut slots = BTreeMap::new();
             let mut last = 0u8;
             for it in a[2].array()? {
-                let f = decode(it, cx)?;
+                let f = decode_at(it, cx, true)?;
                 let e = f.enc();
                 if e == 0 || e == 10 || e <= last {
                     return Err(Error::Bad("slot order"));
@@ -807,12 +848,27 @@ pub fn decode(it: &Item, cx: &Ctx) -> Result<Frag, Error> {
         }
         _ => return Err(Error::Bad("encoding or arity")),
     };
+    if let Frag::Register { reset: Some(_), .. } = &f {
+        if !top {
+            return Err(Error::Bad("nested register reset"));
+        }
+    }
+    if let Frag::Slots { .. } = &f {
+        // §7 canonical form (§3.3 rule 7): pruning changes nothing (every member holds the register's embedding,
+        // none is empty or adds nothing to it, nothing lies below the position's one reset)
+        let mut c = f.clone();
+        c.prune(None);
+        if c != f {
+            return Err(Error::Bad("non-canonical slots"));
+        }
+    }
     Ok(f)
 }
 
 fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, Error> {
     let mut m: BTreeMap<Dot, SeqElem> = BTreeMap::new();
     let mut last: Option<Dot> = None;
+    let mut got: Vec<(Dot, usize)> = Vec::new();
     for r in it.array()? {
         let a = r.array()?;
         if a.len() != 6 {
@@ -825,6 +881,12 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
         }
         if last.as_ref().map_or(false, |l| wire_cmp(l, &first, &cx.own).is_ge()) {
             return Err(Error::Bad("run order"));
+        }
+        got.push((first.clone(), n));
+        // a bare-anchor run (nothing but dots) only in a snapshot (§3.3 rule 7)
+        let empty = |i: usize| a[i].array().map_or(false, |x| x.is_empty());
+        if !cx.snapshot && empty(2) && empty(3) && empty(4) && empty(5) {
+            return Err(Error::Bad("bare anchors outside a snapshot"));
         }
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {
@@ -883,8 +945,13 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 }
             }
             last_pos = Some((i, s.clone()));
+            // the write stamped with the element's own dot is its creation (§3.3 rule 5: never a `PosW`)
+            if s.dot.source == first.source && s.dot.ctr == first.ctr + i as u64 {
+                return Err(Error::Bad("creation as a position write"));
+            }
             elems[i].pos.push((s, dec_anchor(&p[2], cx)?));
         }
+        let mut last_flag: Option<(usize, Stamp, bool)> = None;
         for fl in a[5].array()? {
             let x = fl.array()?;
             if x.len() != 4 {
@@ -902,13 +969,29 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if !text && !b {
                 return Err(Error::Bad("undelete of a list element"));
             }
+            // sorted by `i_from` (ranges never overlap), and maximal: an adjacent range of the same write
+            // continues the previous one (§3.3 rule 2)
+            if let Some((to, ls, lb)) = &last_flag {
+                if i <= *to || (i == *to + 1 && *ls == s && *lb == b) {
+                    return Err(Error::Bad("flagw order"));
+                }
+            }
+            last_flag = Some((j, s.clone(), b));
             for e in &mut elems[i..=j] {
-                e.deleted = crate::state::max_pair(e.deleted.take(), Some((s.clone(), b)));
+                // one surviving flag write per element: canonical ranges never overlap
+                if e.deleted.is_some() {
+                    return Err(Error::Bad("overlapping flag writes"));
+                }
+                e.deleted = Some((s.clone(), b));
             }
         }
         match &a[3] {
             Item::Array(v) if v.is_empty() => {}
             Item::Text(s) if text => {
+                // no char carried is `[]`, never an empty string (§3.2 Content)
+                if s.is_empty() {
+                    return Err(Error::Bad("empty content string"));
+                }
                 let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deleted.as_ref().map_or(false, |d| d.1)).collect();
                 let cs: Vec<char> = s.chars().collect();
                 if cs.len() != live.len() {
@@ -924,19 +1007,35 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                     return Err(Error::Bad("content length"));
                 }
                 for (i, it) in v.iter().enumerate() {
-                    elems[i].content = Content::Frag(Box::new(decode(it, cx)?));
+                    // only non-empty fragments are carried (§3.2 Content, §4.2 Emptiness)
+                    let f = decode_at(it, cx, false)?;
+                    if deep_empty(&f) {
+                        return Err(Error::Bad("empty element fragment"));
+                    }
+                    elems[i].content = Content::Frag(Box::new(f));
                 }
             }
             _ => return Err(Error::Bad("content")),
         }
         for (i, mut e) in elems.into_iter().enumerate() {
             let d = Dot { source: first.source.clone(), ctr: first.ctr + i as u64 };
+            // `pos` is the top two position writes, the creation's included (§5.7); a `PosW` outside them is
+            // not on the wire (the creation stays in `created` once pushed out)
             e.pos.sort_by(|a, b| b.0.cmp(&a.0));
             e.pos.dedup_by(|a, b| a.0 == b.0);
+            if e.pos.iter().skip(2).any(|p| p.0.dot != d) {
+                return Err(Error::Bad("position write outside the top two"));
+            }
             e.pos.truncate(2);
             last = Some(d.clone());
             m.insert(d, e);
         }
+    }
+    // runs are maximal (§3.3 rule 3): the decoded elements regroup into exactly the runs read
+    let v = wire_sorted(&m, &cx.own);
+    let want: Vec<(Dot, usize)> = runs(text, &v).into_iter().map(|(i, n)| (v[i].0.clone(), n)).collect();
+    if want != got {
+        return Err(Error::Bad("runs not maximal"));
     }
     Ok(m)
 }
@@ -985,6 +1084,7 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
     let it = cbor::decode(bytes)?;
     match it.array()? {
         [Item::Bytes(n), sources, commits, f, fr] if n.len() == 16 => {
+            cx.snapshot = true;
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
@@ -1007,6 +1107,12 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             }
             let extra: Vec<Source> = out.iter().map(|x| x.0.clone()).collect();
             cx.check(&frag, &extra)?;
+            // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
+            let mut own = false;
+            frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) if s.dot.source == cx.own && s.ts == cx.ts));
+            if own {
+                return Err(Error::Bad("own write in a snapshot"));
+            }
             Ok((frag, out))
         }
         _ => Err(Error::Bad("snapshot")),

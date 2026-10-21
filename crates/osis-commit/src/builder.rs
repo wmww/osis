@@ -6,7 +6,7 @@ use crate::project::check_fits;
 use crate::tokens::{Prefix, Secrets, TokenSecret, token_secrets};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_COMMITMENTS};
+use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_COMMITMENTS};
 use osis_core::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
 use osis_schema::Retention;
@@ -58,6 +58,8 @@ pub struct CommitBuilder {
     /// The frontier value of an explicit demotion (spec/permissions.md §5).
     pub frontier: Option<Value>,
     pub origins: Vec<Origin>,
+    /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
+    pub(crate) max_blob: usize,
 }
 
 /// A built commit: the blob holding every delta, and the token secrets of each aspect (for
@@ -79,7 +81,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new() }
+        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -221,7 +223,7 @@ impl CommitBuilder {
             }
         }
         let commit = CommitBlob { header, signature, parts };
-        check_fits(&commit)?;
+        check_fits(&commit, self.max_blob)?;
         Ok(Built { commit, aspect_tokens, list_blobs })
     }
 }

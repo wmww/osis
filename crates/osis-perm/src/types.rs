@@ -13,6 +13,14 @@ pub struct EdgeKey {
     pub node: Tid,
 }
 
+impl EdgeKey {
+    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §6): the zero
+    /// tid orders it before every write at that `ts`.
+    pub fn expiry(ts: Ts) -> EdgeKey {
+        EdgeKey { ts, node: Tid::from_bytes([0; 15]) }
+    }
+}
+
 /// Position in the joint order (spec/permissions.md §5.1 step 1): (`ts`, author node, commit ID).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Point {

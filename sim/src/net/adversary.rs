@@ -364,3 +364,173 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
     }
     sim.finish()
 }
+
+/// The dedup secret of one thing (the only secret a hand-built commit with `nobody` retention
+/// needs).
+struct Dedup(osis_core::CreationRecord);
+
+impl osis_commit::Secrets for Dedup {
+    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::dedup_secret(self.0.nonce()))
+    }
+    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        None
+    }
+    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
+        None
+    }
+    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        None
+    }
+}
+
+/// An equivocating writer (spec/commits.md §4: two commits by one node with overlapping
+/// node-form counter ranges on one aspect are both invalid; spec/crdt.md §2.3): writer B writes
+/// `c1` on an aspect, then signs a second commit `c2` reusing that commit's counters on the
+/// same aspect, outside its engine, and uploads it stamped under the label. Expected: every
+/// node, B's own included, ends up reading neither write, holds both commits, and converges.
+pub fn equivocating_writer(seed: u64) -> Res<Report> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    let mut d = Dice::new(seed ^ 0xe9);
+    let mut sim = sim("equivocating_writer", seed, NetWeights::default());
+    let s = sim.add_server()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
+    let t = sim.item(a, g)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    let eq = osis_core::Ak::new("/x/eq").map_err(|e| sim.fail(e.to_string()))?;
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &eq, &osis_core::Value::Str("c1".into())).map_err(|e| sim.fail(e.to_string()))?;
+    let c1 = sim.commit(b, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
+    sim.run(20)?;
+    sim.quiet(40)?;
+    for n in [a, b, c] {
+        if sim.engine(n)?.get(&t, &eq).map_err(|e| sim.fail(e.to_string()))? != Some(osis_core::Value::Str("c1".into())) {
+            return Err(sim.fail(format!("node {n} does not read c1 before the equivocation")));
+        }
+    }
+    // c2: B's key, c1's counters on the same aspect, a later ts
+    let h = sim.engine(b)?.header(&c1).ok_or_else(|| sim.fail("no header of c1"))?;
+    let x = h.aspects.iter().find(|x| x.tid == t && x.ak == eq).ok_or_else(|| sim.fail("c1 does not write the aspect"))?;
+    let (lo, hi) = (x.lo, x.hi);
+    let bt = sim.tid(b)?;
+    let wall = sim.engine(b)?.now().0.max(h.ts.wall_ms().0) + 5;
+    let ts = osis_core::Ts::make(osis_core::WallMs(wall), 0).ok_or_else(|| sim.fail("ts out of range"))?;
+    let mut w = Writer::new(ts, Source::node(bt), lo);
+    let f = create(&mut w, &AnyView, &osis_core::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
+    let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
+    let mut aw = AspectWrite::new(t, eq.clone(), lo, hi, delta);
+    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, Form::Node);
+    cb.aspects.push(aw);
+    let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no /created"))?;
+    let key = sim.engine(b)?.identity().keys().signing.clone();
+    let built = cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
+    let c2 = built.commit.id();
+    let ps = osis_commit::project(&built.commit, |_| ()).map_err(|e| sim.fail(e.to_string()))?;
+    let k = sim.label_keys(b, s, &g)?;
+    let mut entries = Vec::new();
+    for p in ps {
+        let (id, blob, bk) = seal(&mut sim, &p.plaintext)?;
+        entries.push(stamped(&sim, &k, &id, blob, &bk)?);
+    }
+    sim.equivocation(c2);
+    let mut r = sim.rogue(s)?;
+    let up = sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;
+    sim.rogue_close(&mut r);
+    if codes(&up).iter().any(|x| *x != Code::OK) {
+        return Err(sim.fail(format!("the server refused the equivocating commit: {:?}", codes(&up))));
+    }
+    sim.run(60)?;
+    sim.run_until_quiescent(40)?;
+    for n in [a, b, c] {
+        let e = sim.engine(n)?;
+        let (h1, h2) = (e.header(&c1).is_some(), e.header(&c2).is_some());
+        let v = e.get(&t, &eq).map_err(|e| sim.fail(e.to_string()))?;
+        if !h1 || !h2 || v.is_some() {
+            return Err(sim.fail(format!("node {n}: holds c1 {h1}, c2 {h2}, reads {v:?}: both equivocating commits must be held and invalid")));
+        }
+    }
+    sim.finish()
+}
+
+/// A server lying about tombstones (spec/sync.md §5: a tombstoned blob ID is refused; §7: a
+/// purge reaches every copy; spec/requirements.md: "nothing trusts a server's word"): after a
+/// purge is applied and deleted at the server, the server re-announces the purged entry, blob,
+/// wrap and stamp as they were, to every node on its open connections. Expected: no node takes
+/// the body back (purged bodies at no honest node, the purged value stays gone), no node
+/// uploads or deposits it again (counted as nodes send, since the server's tombstone would refuse it), everything converges.
+pub fn tombstone_liar(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x7b);
+    let mut sim = sim("tombstone_liar", seed, NetWeights::default());
+    let s = sim.add_server()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
+    let t = sim.item(a, g)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    let gone = write_gone(&mut sim, a, t, "secret")?;
+    sim.run(20)?;
+    sim.quiet(40)?;
+    sim.observe()?;
+    // what the server will lie with: every live entry of the body, as it held them
+    let label = sim.label_keys(a, s, &g)?.label;
+    let ids: Vec<BlobId> = sim.known.iter().filter(|(k, (cm, _))| k.0 == label && *cm == gone).map(|(k, _)| k.1).collect();
+    let mut events = Vec::new();
+    {
+        let hub = sim.hub(s).ok_or_else(|| sim.fail("server down"))?;
+        let st = hub.store();
+        for id in &ids {
+            let (Some(e), Some(blob)) = (st.entry(&label, id).ok().flatten(), st.blob(id).ok().flatten()) else { continue };
+            events.push(osis_proto::Event::Added { blob_id: *id, blob: Some(blob), wrap: e.wrap, stamp: e.stamp });
+        }
+    }
+    if events.is_empty() {
+        return Err(sim.fail("no entry of the body at the server"));
+    }
+    purge(&mut sim, a, gone, t)?;
+    sim.quiet(40)?;
+    let live = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().live_ids(&label).unwrap_or_default();
+    if ids.iter().any(|id| live.contains(id)) {
+        return Err(sim.fail("the purged body is still live at the server before the lie"));
+    }
+    // the lie, at the label's real log head
+    let (log_id, seq) = sim.hub(s).ok_or_else(|| sim.fail("server down"))?.store().log_head(&label).map_err(|e| sim.fail(e.to_string()))?;
+    let push = osis_proto::encode_frame(&osis_proto::Message::Push { label, events, cursor: osis_proto::Cursor { log_id, seq } }.encode());
+    sim.watched.extend(ids.iter().copied());
+    let mut told = 0;
+    for n in [a, b, c] {
+        told += sim.server_says(s, n, &push);
+    }
+    if told == 0 {
+        return Err(sim.fail("no open connection to lie on"));
+    }
+    sim.note(format!("server {s} re-announced {} purged entries on {told} connections", ids.len()));
+    sim.run(60)?;
+    sim.run_until_quiescent(40)?;
+    let gk = super::scenarios::ak(&sim, &crate::workload::GONE)?;
+    for n in [a, b, c] {
+        let v = sim.engine(n)?.get(&t, &gk).map_err(|e| sim.fail(e.to_string()))?;
+        if v.is_some() {
+            return Err(sim.fail(format!("node {n} reads the purged value again: {v:?}")));
+        }
+        for id in &ids {
+            if sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).is_some_and(|x| x.holds_blob(id)) {
+                return Err(sim.fail(format!("node {n} holds the purged blob {id:?} the server re-announced")));
+            }
+        }
+    }
+    // the honest server would refuse a re-upload (tombstoned): count the attempts instead
+    if sim.sent_watched > 0 {
+        return Err(sim.fail(format!("nodes sent the purged body {} times after the lie", sim.sent_watched)));
+    }
+    sim.finish()
+}

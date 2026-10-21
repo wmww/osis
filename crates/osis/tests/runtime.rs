@@ -27,8 +27,9 @@ fn cfg(seed: u64, servers: Vec<ServerAddr>, t: Transport) -> Config {
 }
 
 /// A person writes into its home group and waits until it is at the server; a fresh device
-/// restores the person from the card and reads it.
-async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Transport, b: Transport) {
+/// restores the person from the card and reads it. `p2p`: the server then stops, and a write
+/// reaches the other device directly (each listens with its dialable key, spec/sync.md §5, §10).
+async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Transport, b: Transport, p2p: bool) {
     let secret = StaticSecret::from_bytes([0x52; 32]);
     let listener = server_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
     let addr = listener.address();
@@ -51,13 +52,30 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
     own.runtime = Runtime::Own;
     let db = tokio::time::timeout(GUARD, Osis::restore(own, &card.unwrap())).await.unwrap().unwrap();
     assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Str("over the wire".into())));
-    assert_eq!(db.status().unwrap().connected, 1);
+    // the server, and the first device as a co-reader once its connection is up
+    assert!(db.status().unwrap().connected >= 1);
+    if p2p {
+        assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+        let mut w = da.write();
+        w.at(t, ak("/t/x")).set(&Value::Str("peer to peer".into())).unwrap();
+        w.commit().unwrap();
+        let want = Some(Value::Str("peer to peer".into()));
+        tokio::time::timeout(GUARD, async {
+            while db.get(t, ak("/t/x")).unwrap() != want {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
     // close() returns once the database is closed (the driver held only a weak reference)
     let weak = da.downgrade();
     da.close().unwrap();
     assert!(weak.upgrade().is_none());
     drop(db);
-    assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    if !p2p {
+        assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
+    }
     server.await.unwrap();
 }
 
@@ -65,7 +83,15 @@ async fn round_trip<T: osis_transport::Transport>(server_ep: T, url: &str, a: Tr
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(3);
-    round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b"))).await;
+    round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), false).await;
+}
+
+// spec/sync.md §5 (member peer), §10, notes/api.md (Config.peers): two devices under the
+// handle's driver keep syncing peer to peer once their server is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_peers_in_process_spec_sync_5() {
+    let net = osis_transport::Net::new(5);
+    round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), true).await;
 }
 
 // spec/sync.md §10: the same over localhost QUIC (tier 2: touches the network).
@@ -74,7 +100,7 @@ async fn runtime_in_process_spec_sync_10() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn runtime_quic_localhost_spec_sync_10() {
-    round_trip(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
+    round_trip(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic, false).await;
 }
 
 /// Bob redeems Alice's write link to a synced group, both on the tokio driver.
@@ -98,6 +124,13 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
+    // spec/permissions.md §4, notes/sync.md: `/reach` under the home group, not under a group
+    // shared with a non-contact, until the policy says so
+    let home = alice.home();
+    assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
+    assert!(!alice.sync_engine(|s| s.publishes_reach(&g)));
+    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true) });
+    assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();

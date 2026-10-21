@@ -81,12 +81,13 @@ pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64
     Ok((c.expires, tokens))
 }
 
-/// Every delta must fit a blob alone (spec/commits.md §1).
-pub(crate) fn check_fits(c: &CommitBlob) -> Result<(), Error> {
+/// Every delta fits a blob of `max` bytes alone (spec/commits.md §1; paging keeps a canonical
+/// delta far below `MAX_BLOB`, so only a caller's mistake fails, such as a value left unchunked).
+pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
     let fixed = fixed_len(c).saturating_add(head_len(1));
     for p in &c.parts {
         let (_, toks) = prefix_inputs(&c.header, &[(p.ai, p.di)])?;
-        if blob_len(fixed.saturating_add(part_len(p)), toks.len()) > MAX_BLOB {
+        if blob_len(fixed.saturating_add(part_len(p)), toks.len()) > max {
             return Err(Error::Build("one delta does not fit a blob"));
         }
     }

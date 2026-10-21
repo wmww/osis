@@ -790,7 +790,7 @@ impl SyncEngine {
             let actor = self.engine.group_actor(g);
             self.engine.inside_member_revokes(&actor, &closure)
         } else {
-            let mut wanted = self.engine.certificates(g);
+            let mut wanted = self.card_certificates(g);
             // revokes and roster snapshots about authors seen under the label (spec/permissions.md
             // §4), so its verifiers judge their writes as this node does
             let me = self.engine.tid();

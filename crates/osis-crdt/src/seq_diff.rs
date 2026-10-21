@@ -160,7 +160,7 @@ fn insert_runs(w: &mut Writer, out: &mut Seq, steps: &[Step], anchor_of: &dyn Fn
         for c in cs {
             let st = w.fresh();
             let d = st.dot.clone();
-            out.elems.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
+            out.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev)], deleted: None, span: 1 });
             prev = Anchor::Dot(d);
         }
     }
@@ -184,25 +184,25 @@ fn items(v: &Value) -> Result<&[Value], Error> {
 /// Visible list elements: dot, content and projected read (`None`: opaque, §9).
 fn list_view<V: View>(s: &Seq, ev: &V) -> Vec<(Dot, Option<Fragment>, Option<Value>)> {
     visible(s)
-        .into_iter()
+        .iter()
         .map(|d| {
-            let f = s.elems.get(&d).and_then(|e| if let SeqContent::Frag(f) = &e.content { Some((**f).clone()) } else { None });
+            let f = s.elems().get(d).and_then(|e| if let SeqContent::Frag(f) = &e.content { Some((**f).clone()) } else { None });
             let p = f.as_ref().and_then(Fragment::read).and_then(|v| ev.project(&v).map(|c| c.into_owned()));
-            (d, f, p)
+            (d.clone(), f, p)
         })
         .collect()
 }
 
 fn flag(out: &mut Seq, d: Dot, w: &Writer) {
-    out.elems.insert(d, SeqElem { deleted: Some((w.delta_stamp(), true)), ..SeqElem::bare() });
+    out.elems_mut().insert(d, SeqElem { deleted: Some((w.delta_stamp(), true)), ..SeqElem::bare() });
 }
 
 /// Structural diff of present state `s` against `v` (§9 list, text); `None` when nothing changes.
 pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq { text: s.text, meta: Meta::default(), elems: BTreeMap::new() };
+    let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
     if s.text {
         let vis = visible(s);
-        let old: Vec<char> = vis.iter().filter_map(|d| s.elems.get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
+        let old: Vec<char> = vis.iter().filter_map(|d| s.elems().get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
         let new = chars(v)?;
         let steps = script(old.len(), new.len(), &lcs(&old, &new, |a, b| a == b), false);
         for st in &steps {
@@ -227,7 +227,7 @@ pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Res
                 Step::Pair(i, j) => {
                     let (Some((d, f, _)), Some(item)) = (old.get(*i), new.get(*j)) else { continue };
                     if let Some(c) = crate::ops::diff(w, f.as_ref(), &ev, item)? {
-                        out.elems.insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
+                        out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
                     }
                 }
                 Step::Del(i) => {
@@ -244,7 +244,7 @@ pub(crate) fn diff<V: View>(w: &mut Writer, s: &Seq, view: &V, v: &Value) -> Res
             Ok(SeqContent::Frag(Box::new(crate::ops::create(w, &ev, item)?)))
         })?;
     }
-    Ok((!out.elems.is_empty()).then_some(out))
+    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// The ops turning sequence value `base` into `new` at `path` (notes/api.md `edit`): one
@@ -263,11 +263,11 @@ pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &
 /// nothing; a list element changed on both sides is edited in place when it is the one unmatched
 /// element of its gap on each side.
 pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq { text: s.text, meta: Meta::default(), elems: BTreeMap::new() };
+    let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
     if s.text {
         let (b, n) = (chars(base)?, chars(new)?);
         let vis = visible(s);
-        let cur: Vec<char> = vis.iter().filter_map(|d| s.elems.get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
+        let cur: Vec<char> = vis.iter().filter_map(|d| s.elems().get(d)).filter_map(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }).collect();
         let to_cur: HashMap<usize, usize> = lcs(&b, &cur, |x, y| x == y).into_iter().collect();
         let steps = script(b.len(), n.len(), &lcs(&b, &n, |x, y| x == y), false);
         for st in &steps {
@@ -303,7 +303,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new
                     let at = to_cur.get(i).or_else(|| changed.get(i));
                     let (Some((d, f, _)), Some(bv), Some(nv)) = (at.and_then(|c| cur.get(*c)), b.get(*i), n.get(*j)) else { continue };
                     if let Some(c) = nested_edit(w, f.as_ref(), &ev, bv, nv)? {
-                        out.elems.insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
+                        out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
                     }
                 }
                 Step::Del(i) => {
@@ -320,7 +320,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new
             Ok(SeqContent::Frag(Box::new(crate::ops::create(w, &ev, item)?)))
         })?;
     }
-    Ok((!out.elems.is_empty()).then_some(out))
+    Ok((!out.elems().is_empty()).then_some(out))
 }
 
 /// The current index of the nearest base element at or before `a` that is still current.

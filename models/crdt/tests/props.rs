@@ -968,3 +968,47 @@ fn embedded_chars_order_right_after_their_write() {
     assert_eq!(a, b);
     assert_eq!(a, c);
 }
+
+/// spec §3.3 rule 3, rule 7, §7 Canonical form: the decoder rejects a register reset below the
+/// root, runs that are not maximal, and `Slots` members that are empty or add nothing to the
+/// register's embedding; the canonical forms decode.
+#[test]
+fn decoder_rejects_rule_7_strict() {
+    use crdt_model::cbor::{encode, Item};
+    use crdt_model::stamp::Stamp;
+    use crdt_model::state::Composite;
+    use std::collections::BTreeMap;
+    let own = Source::node(1);
+    let ts = 3 << 16;
+    let wcx = |hi: u64| Ctx::writer(ts, own.clone(), 1, hi);
+    let enc = |f: &Frag| encode_delta(f, [1; 16], &mut Ctx::new(ts, own.clone(), 1));
+    // a register reset at the root, and below it
+    let reg = Frag::Register { reset: Some(Stamp::new(ts, own.clone(), 1)), write: None };
+    assert!(decode_delta(&enc(&reg), &mut wcx(2)).is_ok());
+    let nested = Frag::Struct { c: Composite::default(), fields: BTreeMap::from([(1, reg.clone())]) };
+    assert!(decode_delta(&enc(&nested), &mut wcx(2)).is_err());
+    // two chars created by one commit, the second anchored at the first: one run, never two
+    let i = |n: i64| Item::Int(n);
+    let a = |v: Vec<Item>| Item::Array(v);
+    let delta = |runs: Vec<Item>| encode(&a(vec![Item::Bytes(vec![1; 16]), a(vec![]), a(vec![]), a(vec![i(9), a(vec![]), a(vec![]), a(runs)])]));
+    let run = |dot: i64, n: i64, anchor: i64, text: &str| a(vec![i(dot), i(n), a(vec![i(anchor), a(vec![a(vec![i(0), i(n)])])]), Item::Text(text.into()), a(vec![]), a(vec![])]);
+    assert!(decode_delta(&delta(vec![run(1, 2, 0, "ab")]), &mut wcx(3)).is_ok());
+    assert!(decode_delta(&delta(vec![run(1, 1, 0, "a"), run(2, 1, 1, "b")]), &mut wcx(3)).is_err());
+    // the second anchored elsewhere (HEAD): two runs are canonical
+    assert!(decode_delta(&delta(vec![run(1, 1, 0, "a"), run(2, 1, 0, "b")]), &mut wcx(3)).is_ok());
+    // a snapshot's `Slots`: a set member equal to the register's embedding adds nothing
+    let s = Stamp::new(ts, Source::node(2), 1);
+    let r = Frag::Register { reset: None, write: Some((s.clone(), Some(Value::Str("x".into())))) };
+    let slots = |set: Frag| Frag::Slots { reg: Some(Box::new(r.clone())), slots: BTreeMap::from([(6u8, set)]) };
+    let snap = |f: &Frag| encode_snapshot(f, &[], [0; 16], &mut Ctx::new(1 << 40, Source::node(250), 1));
+    let dec = |b: &[u8]| decode_snapshot(b, &mut Ctx::new(1 << 40, Source::node(250), 1));
+    let bare = Frag::Set { c: Composite { reset: Some(s.clone()), w: None }, elems: BTreeMap::new() };
+    assert!(dec(&snap(&slots(bare))).is_err());
+    let mut w = Writer::new(Source::node(3), 4 << 16, 1);
+    let set = ops::create(&mut w, &Ty::Set(Box::new(Ty::Register)), &Value::set(vec![Value::Int(1)]));
+    let mut joined = Frag::empty(0);
+    joined.join(r.clone());
+    joined.join(set);
+    assert!(matches!(joined, Frag::Slots { .. }), "{joined:?}");
+    assert!(dec(&snap(&joined)).is_ok());
+}

@@ -95,11 +95,11 @@ pub fn frag(f: &m::Frag) -> Fragment {
                 .map(|(d, e)| (dot(d), Entry { reset: ostamp(&e.reset), key: e.key.as_ref().map(value), frag: e.frag.as_ref().map(|f| Box::new(frag(f))) }))
                 .collect(),
         )),
-        m::Frag::Seq { text, c, elems } => Fragment::Seq(Seq {
-            text: *text,
-            meta: meta(c),
+        m::Frag::Seq { text, c, elems } => Fragment::Seq(Seq::new(
+            *text,
+            meta(c),
             // uniform stretches as range records, so every test meets them
-            elems: crate::seq_span::coalesce(elems
+            crate::seq_span::coalesce(elems
                 .iter()
                 .map(|(d, e)| {
                     let content = match &e.content {
@@ -117,7 +117,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                     (dot(d), el)
                 })
                 .collect()),
-        }),
+        )),
         m::Frag::Slots { reg, slots } => Fragment::Slots(Slots {
             reg: reg.as_ref().map(|r| match frag(r) {
                 Fragment::Register(r) => r,
@@ -125,6 +125,27 @@ pub fn frag(f: &m::Frag) -> Fragment {
             }),
             members: slots.iter().map(|(k, f)| (Encoding::from_id(u64::from(*k)).unwrap(), frag(f))).collect(),
         }),
+    }
+}
+
+/// Every cached sequence placement inside `f` equals a whole pass (`seq_lin`); sequences of
+/// more than 10^4 records are skipped (timing tests).
+pub fn check_lin(f: &Fragment) {
+    let all = |it: &mut dyn Iterator<Item = &Fragment>| it.for_each(check_lin);
+    match f {
+        Fragment::Seq(s) => {
+            if s.elems().len() > 10_000 {
+                return;
+            }
+            assert_ne!(s.lin_check(), Some(false), "cached placement differs from a whole pass");
+            all(&mut s.elems().values().filter_map(|e| if let SeqContent::Frag(x) = &e.content { Some(&**x) } else { None }));
+        }
+        Fragment::Struct(x) => all(&mut x.fields.values()),
+        Fragment::Enum(x) => all(&mut x.payloads.values()),
+        Fragment::Map(x) => all(&mut x.entries.values().filter_map(|e| e.frag.as_deref())),
+        Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => all(&mut elems.values().filter_map(|e| e.frag.as_deref())),
+        Fragment::Slots(x) => all(&mut x.members.values()),
+        Fragment::Register(_) => {}
     }
 }
 
