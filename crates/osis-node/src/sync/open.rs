@@ -32,9 +32,9 @@ pub(crate) enum Try {
     /// A key actor this node holds (a recovery or link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
-    /// Last on a co-reader connection: a fresh key proving nothing, which a peer that
-    /// authenticated this node as a node of a current reader opens all the same (spec/sync.md
-    /// §5, member peer).
+    /// Last on a co-reader connection: a member proof under this node's dialable key, which a
+    /// peer holding this node's `/reach` opens while the node reads the label (spec/sync.md
+    /// §5, member peer). The transport key stays ephemeral.
     Member { key: SigningSecret },
 }
 
@@ -44,7 +44,7 @@ impl Try {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
-            Try::Member { key } => OpenKey::Sync(key.clone()),
+            Try::Member { key } => OpenKey::Member(key.clone()),
         }
     }
     fn step(&self) -> Option<&Step> {
@@ -163,10 +163,8 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((server, peer)) = self.conns.get(&conn).map(|c| (c.server, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&server, &g, &l);
-        if peer {
-            let mut b = [0u8; 32];
-            self.rng.fill_bytes(&mut b);
-            tries.push(Try::Member { key: SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes(b)) });
+        if peer && self.state.reach_secret.is_some() {
+            tries.push(Try::Member { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }
         let lc = LConn {
             group: g,

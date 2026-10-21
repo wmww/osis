@@ -124,6 +124,13 @@ async fn redeem_over<T: osis_transport::Transport>(server_ep: T, url: &str, a: T
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
+    // spec/permissions.md §4, notes/sync.md: `/reach` under the home group, not under a group
+    // shared with a non-contact, until the policy says so
+    let home = alice.home();
+    assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
+    assert!(!alice.sync_engine(|s| s.publishes_reach(&g)));
+    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true) });
+    assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
     assert!(sctl.send(osis_server::Control::Shutdown).await.is_ok());
     server.await.unwrap();

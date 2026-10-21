@@ -1,9 +1,8 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
 //! over osis-transport `link` sessions (one dialed stream per connection, an ephemeral transport
-//! key per server connection, the dialable key to co-readers, the peer's key checked by the
-//! transport, spec/sync.md §10) and fires its timers. Every session a peer opens on one of its
+//! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its timers. Every session a peer opens on one of its
 //! listeners is served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5);
-//! listeners come and go while it runs (`Control::Listen`, `Control::Unlisten`, `Control::Reach`).
+//! more listeners come while it runs (`Control::Reach`, the LAN loop's per-network listener).
 //! With feature `lan`, `Control::Lan` runs the LAN loop (spec/sync.md §10): per network a fresh
 //! transport key and listener, announced on join and every `LAN_ANNOUNCE`; announcements heard go
 //! to `SyncEngine::lan_seen`. No sync logic lives here: every input is an `Event`, every output an
@@ -66,13 +65,9 @@ pub enum Control {
     Call(Call),
     /// Actions the host's own calls produced: carry them out.
     Apply(Vec<Action>),
-    /// Listen and serve the sessions accepted there; the reply is the listener's address. Never
-    /// put its URL into `/reach`: it lists bound IP addresses (spec/sync.md §10).
-    Listen { cfg: ListenConfig, reply: Option<oneshot::Sender<Result<Address, String>>> },
-    /// Stop the listener with this key.
-    Unlisten { key: [u8; 32] },
     /// Listen at `url` with the engine's dialable secret and publish `/reach` with that
-    /// listener's key and `relays` (spec/data-model.md §9).
+    /// listener's key and `relays` (spec/data-model.md §9). For iroh, `url` lists the relays the
+    /// listener registers at (`peer_url(relays)`).
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Run the LAN loop (feature `lan`; ignored without it).
     Lan(LanConfig),
@@ -210,13 +205,12 @@ impl<T: Transport, H: Host> Driver<T, H> {
     fn apply(&mut self, acts: Vec<Action>) {
         for a in acts {
             match a {
-                Action::Dial { conn, address, as_node } => {
-                    let secret = if as_node { self.read(|s| static_secret(&s.dialable_secret())) } else { None };
+                Action::Dial { conn, address } => {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
                     let task = tokio::spawn(async move {
-                        let link = match link::dial(&*t, &addr, secret.as_ref(), FINISH_WAIT).await {
+                        let link = match link::dial(&*t, &addr, None, FINISH_WAIT).await {
                             Ok(l) => l,
                             Err(e) => {
                                 let _ = ev.send(Ev::Failed(conn, e.to_string())).await;
@@ -454,13 +448,6 @@ impl<T: Transport, H: Host> Driver<T, H> {
                 self.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
             }
             Some(Control::Apply(acts)) => self.apply(acts),
-            Some(Control::Listen { cfg, reply }) => {
-                let r = self.listen(cfg).await;
-                if let Some(reply) = reply {
-                    let _ = reply.send(r);
-                }
-            }
-            Some(Control::Unlisten { key }) => self.unlisten(key),
             Some(Control::Reach { url, relays, reply }) => {
                 let r = self.reach(url, relays).await;
                 if let Some(reply) = reply {
@@ -484,7 +471,7 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 }
 
 /// `run`, also serving the peer sessions the `listeners` accept (more come with
-/// `Control::Listen` and `Control::Reach`): one listening with the engine's `dialable_secret`
+/// `Control::Reach` and the LAN loop): one listening with the engine's `dialable_secret`
 /// (publish its `address().key` with `publish_reach`), and one per LAN join with a fresh secret
 /// whose key is announced with the LAN tag (spec/sync.md §10). Never put a listener's
 /// `address().url` into `/reach`: it lists bound IP addresses, which are never published

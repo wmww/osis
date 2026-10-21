@@ -89,8 +89,11 @@ pub struct SyncConfig {
     pub serve_idle_ms: u64,
     /// A served session that opened no label this long after it started is closed.
     pub serve_open_ms: u64,
-    /// Groups whose labels get no `/reach` (open audiences, spec/permissions.md §4).
-    pub no_reach: BTreeSet<Tid>,
+    /// Served sessions at once per transport key of the dialer.
+    pub max_served_per_key: usize,
+    /// How long a complete pass waits for co-readers after a membership change (then it counts
+    /// servers only).
+    pub peer_pass_wait_ms: u64,
     /// Unopened unvouched entries a label may hold per server (an inbox label a sixteenth).
     pub unvouched_cap: usize,
 }
@@ -115,7 +118,8 @@ impl Default for SyncConfig {
             max_served: 64,
             serve_idle_ms: 120_000,
             serve_open_ms: 30_000,
-            no_reach: BTreeSet::new(),
+            max_served_per_key: 4,
+            peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
         }
     }
@@ -140,9 +144,9 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Open a connection to `address` (checking the server's key against it, spec/sync.md §10)
-    /// and report `Up` or `Down`. `as_node`: authenticate with this node's dialable key
-    /// (`dialable_secret`; to a co-reader, spec/sync.md §5, §10), else an ephemeral key.
-    Dial { conn: ConnId, address: Address, as_node: bool },
+    /// and report `Up` or `Down`. Always with an ephemeral transport key; a co-reader learns
+    /// this node by its member proof (spec/sync.md §5).
+    Dial { conn: ConnId, address: Address },
     Send { conn: ConnId, bytes: Vec<u8> },
     Close { conn: ConnId },
     /// Deliver `Event::Tick` at this wall ms (the driver's clock; replaces earlier ones).
@@ -336,6 +340,11 @@ pub struct SyncEngine {
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
     pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<ServerKey>>,
+    /// When the last remote membership commit of each actor applied (raw ms; the peer part of
+    /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
+    pub(crate) membership_at: BTreeMap<Tid, u64>,
+    /// A membership or roster change since the last step (`members_changed`).
+    pub(crate) members_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
     pub(crate) prefix_checked: BTreeSet<osis_core::BlobId>,
@@ -407,6 +416,8 @@ impl SyncEngine {
             reach_index: None,
             peers_key: (u64::MAX, 0),
             peer_received: BTreeMap::new(),
+            membership_at: BTreeMap::new(),
+            members_moved: false,
             prefix_checked: BTreeSet::new(),
         })
         .and_then(|mut s| {
@@ -532,6 +543,10 @@ impl SyncEngine {
             }
         }
         self.engine_events()?;
+        if std::mem::take(&mut self.members_moved) {
+            self.members_changed(out);
+        }
+        self.drop_unwanted_peers(out);
         self.connect(out);
         self.send_outbox(out)?;
         self.run_dirty(out)?;
@@ -559,6 +574,10 @@ impl SyncEngine {
             if c.peer && !c.up && self.lan_failed(c.server, &c.address) {
                 return;
             }
+            // another route failed while a LAN candidate waited: it goes now (once per pause)
+            if c.peer && !c.up && self.lan_cut(c.server) {
+                return;
+            }
             let pause = if c.peer { self.cfg.peer_retry_ms } else { self.cfg.retry_ms };
             self.retry.insert(c.server, (c.address, self.raw_now().saturating_add(pause)));
         }
@@ -574,15 +593,18 @@ impl SyncEngine {
                     changed = true;
                     if self.engine.header(&id).is_some_and(|h| h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label")) {
                         self.served_cache = None;
+                        self.members_moved = true;
                     }
                     if origin == Origin::Remote
                         && let Some(h) = self.engine.header(&id)
                         && h.kind.is_membership()
                     {
                         self.seq += 1;
+                        let at = self.raw_now();
                         for a in &h.aspects {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
                             self.membership_seen.insert(actor, self.seq);
+                            self.membership_at.insert(actor, at);
                         }
                         // new secrets may open a label that failed: retry at the next tick
                         for c in self.conns.values_mut() {
@@ -596,6 +618,7 @@ impl SyncEngine {
                 crate::Event::Roster { .. } => {
                     changed = true;
                     self.served_cache = None;
+                    self.members_moved = true;
                 }
                 _ => {}
             }
@@ -694,6 +717,12 @@ impl SyncEngine {
         self.cfg.servers = servers;
     }
 
+    /// Whether co-readers are dialed (`SyncConfig.peers`; off: running peer connections close).
+    pub fn set_peers(&mut self, on: bool) -> Vec<Action> {
+        self.cfg.peers = on;
+        self.handle(Event::Local)
+    }
+
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
     /// encrypt under.
@@ -759,7 +788,23 @@ impl SyncEngine {
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
             self.conns.insert(conn, Conn { server: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None });
-            out.push(Action::Dial { conn, address: addr, as_node: peer });
+            out.push(Action::Dial { conn, address: addr });
+        }
+    }
+
+    /// Closes connections to co-readers no longer wanted (removed, or sharing only labels
+    /// whose `/reach` this node withholds).
+    fn drop_unwanted_peers(&mut self, out: &mut Vec<Action>) {
+        if self.conns.values().all(|c| !c.peer) {
+            return;
+        }
+        let wanted: BTreeSet<ServerKey> = if self.cfg.peers { self.peers().keys().copied().collect() } else { BTreeSet::new() };
+        let gone: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.peer && !wanted.contains(&c.server)).map(|(id, _)| *id).collect();
+        for conn in gone {
+            out.push(Action::Close { conn });
+            self.fetching.retain(|_, c| *c != conn);
+            self.reopens.retain(|(c, _), _| *c != conn);
+            self.lost(conn);
         }
     }
 

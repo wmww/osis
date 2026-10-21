@@ -193,6 +193,10 @@ fn removed_member_not_dialed_nor_served_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("before")));
 }
 
+fn net_label(net: &mut Net, n: usize, g: osis_core::Tid) -> LabelId {
+    net.engine(n).group_labels(&g).unwrap()[0].id
+}
+
 fn reach_ed(net: &mut Net, n: usize) -> [u8; 32] {
     let secret = net.sync(n).dialable_secret();
     let k = SigningSecret::from_seed(&secret).verifying_key().to_bytes();
@@ -275,28 +279,40 @@ fn lan_route_proven_by_up_spec_sync_10() {
     assert!(dials(&acts).iter().all(|d| *d != Address { url: "peer://192.168.7.8:5000".into(), key: lk }), "{acts:?}");
 }
 
-// spec/sync.md §5 (member peer): a peer authenticated with the dialable key of a node that
-// currently reads the label opens it whatever its proof; another key is refused.
+// spec/sync.md §5 (member peer), spec/wire.md §11.2 (proof 3): a member proof under the dialable
+// key of a node that currently reads the label opens it over an ephemeral transport key; a
+// proof by another key or a sync key nobody registered is refused, and once the node is removed
+// from the group its proof is refused too and its open session closed.
 #[test]
-fn member_node_opens_without_proof_spec_sync_5() {
+fn member_node_opens_with_proof_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
     reach_ed(&mut net, a);
-    let kb = reach_ed(&mut net, b);
-    net.group_at(a, &[(b, Role::Read)], vec![]);
+    reach_ed(&mut net, b);
+    let g = net.group_at(a, &[(b, Role::Read)], vec![]);
     net.run();
     let l: LabelId = net.label(a);
-    let key = || SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
-    let (conn, acts) = net.sync(a).accept(LOCAL, kb);
-    let mut p = Dialer { conn, cs: ClientSession::new(ClientConfig { peer_static_key: LOCAL, challenge: [7; 32] }) };
-    let now = net.now();
-    let outs = p.cs.handle(now, ClientInput::Start);
-    exchange(&mut net, a, &mut p, acts, outs);
-    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Sync(key()) });
+    let db = SigningSecret::from_seed(&net.sync(b).dialable_secret());
+    let stranger = SigningSecret::from_seed(&Secret32::from_bytes([0x99; 32]));
+    let (mut p, _) = dial_in(&mut net, a);
+    let evs = command(&mut net, a, &mut p, Command::Open { label: l, key: OpenKey::Member(db.clone()) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Opened { entry_box: None, .. })), "{evs:?}");
     let (mut q, _) = dial_in(&mut net, a);
-    let evs = command(&mut net, a, &mut q, Command::Open { label: l, key: OpenKey::Sync(key()) });
+    for key in [OpenKey::Member(stranger.clone()), OpenKey::Sync(stranger)] {
+        let evs = command(&mut net, a, &mut q, Command::Open { label: l, key });
+        assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
+    }
+    // b removed from g
+    let (ta, tb) = (net.tid(a), net.tid(b));
+    let e = net.engine(a);
+    let rec = recipients_of(e, &[(ta, Role::Admin)]);
+    remove_member(e, g, tb, &rec, 79);
+    let acts = net.sync(a).handle(Event::Local);
+    assert!(acts.contains(&Action::Close { conn: p.conn }), "the member session closes: {acts:?}");
+    net.actions(a, acts);
+    let (mut r, _) = dial_in(&mut net, a);
+    let evs = command(&mut net, a, &mut r, Command::Open { label: l, key: OpenKey::Member(db) });
     assert!(evs.iter().any(|e| matches!(e, ClientEvent::Refused { .. })), "{evs:?}");
 }
 
@@ -318,7 +334,7 @@ fn silent_session_closed_spec_sync_5() {
 
 // spec/permissions.md §3: a complete pass also waits for every co-reader the node received the
 // label from and can reach: with that peer's replies held back, the server's pass alone is not
-// enough.
+// enough; a node that is no co-reader is never waited for.
 #[test]
 fn complete_pass_counts_peers_spec_permissions_3() {
     let mut net = Net::new();
@@ -326,12 +342,16 @@ fn complete_pass_counts_peers_spec_permissions_3() {
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
+    let x = net.node(4, &[sv]);
     reach_ed(&mut net, a);
     reach_ed(&mut net, b);
+    reach_ed(&mut net, x);
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
     net.item(b, g, g, "from b");
     net.run();
     assert!(net.sync(a).complete_pass(&g));
+    // x shares nothing with a: its replies held back change nothing
+    net.held.insert((x, a));
     net.held.insert((b, a));
     let (tb, tc) = (net.tid(b), net.tid(c));
     let e = net.engine(b);
@@ -344,8 +364,39 @@ fn complete_pass_counts_peers_spec_permissions_3() {
     assert!(net.sync(a).complete_pass(&g));
 }
 
-// spec/permissions.md §4: `/reach` goes under every label except those of groups the app
-// excludes (open audiences): a co-reader learns the dialable key only through the others.
+// spec/permissions.md §3: a co-reader removed from G while still sharing another label with the
+// node no longer holds G's complete pass, even with its replies held back; nor does one that
+// stays silent past `peer_pass_wait_ms`.
+#[test]
+fn complete_pass_drops_removed_coreader_spec_permissions_3() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let x = net.node(2, &[sv]);
+    let b = net.node(3, &[sv]);
+    reach_ed(&mut net, a);
+    reach_ed(&mut net, x);
+    let g = net.group(a, &[(x, Role::Write), (b, Role::Read)], &[sv]);
+    let g2 = net.group_seeded(a, &[(x, Role::Read)], vec![net.address(sv)], 2);
+    net.item(x, g, g, "from x");
+    net.run();
+    assert!(net.sync(a).complete_pass(&g) && net.sync(a).complete_pass(&g2));
+    net.held.insert((x, a));
+    let (ta, tx) = (net.tid(a), net.tid(x));
+    let e = net.engine(a);
+    let rec = recipients_of(e, &[(ta, Role::Admin)]);
+    remove_member(e, g, tx, &rec, 81);
+    // a membership change of g from elsewhere: b's grant
+    let tb = net.tid(b);
+    let e = net.engine(a);
+    set_edge(e, g, tb, Role::Write);
+    net.run();
+    assert!(net.sync(a).peers().get(&net.sync(x).own_reach().unwrap().dialable).is_some_and(|p| !p.labels.contains(&net_label(&mut net, a, g))), "x still shares g2 only");
+    assert!(net.sync(a).complete_pass(&g), "x no longer counts for g");
+}
+
+// spec/permissions.md §4: `/reach` goes under a group's labels unless its policy excludes it
+// (open audiences): a co-reader then neither learns the dialable key there nor is dialed for it.
 #[test]
 fn reach_excluded_per_label_spec_permissions_4() {
     for excluded in [false, true] {
@@ -354,10 +405,12 @@ fn reach_excluded_per_label_spec_permissions_4() {
         let a = net.node(1, &[sv]);
         let b = net.node(2, &[sv]);
         let g = net.group(a, &[(b, Role::Read)], &[sv]);
-        net.sync(a).set_no_reach(g, excluded);
+        net.sync(a).set_reach_policy(g, Some(!excluded));
         let ka = reach_ed(&mut net, a);
+        let kb = reach_ed(&mut net, b);
         net.run();
         assert_eq!(net.sync(b).peers().contains_key(&ka), !excluded, "excluded: {excluded}");
+        assert_eq!(net.sync(a).peers().contains_key(&kb), !excluded, "a dials b: {excluded}");
     }
 }
 

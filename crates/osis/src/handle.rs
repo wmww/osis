@@ -234,7 +234,7 @@ pub(crate) struct Fresh {
 }
 
 fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, servers: &[ServerAddr]) -> Result<SyncEngine> {
-    let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), ..SyncConfig::default() };
+    let scfg = SyncConfig { servers: servers.iter().map(|s| s.0.clone()).collect(), peers: cfg.peers, ..SyncConfig::default() };
     Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
 }
 

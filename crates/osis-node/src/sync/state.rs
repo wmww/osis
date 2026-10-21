@@ -34,6 +34,10 @@ const OUTBOX: &[u8] = b"y/o";
 const FORGET: &[u8] = b"y/f";
 /// Replaced labels this admin is done with (`SyncEngine::retire_at`).
 const RETIRED: &[u8] = b"y/q";
+/// Per-group `/reach` policy set by the app (1 publish, 0 exclude; `SyncEngine::set_reach_policy`).
+const REACH_POLICY: &[u8] = b"y/n";
+/// Persons marked as contacts (`SyncEngine::set_contact`).
+const CONTACT: &[u8] = b"y/a";
 
 /// What an entry's blob is, as far as this node could open it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -130,6 +134,10 @@ pub struct State {
     /// When this admin first saw each replaced label it still syncs (corrected wall ms, `y/q`
     /// with a time): retired after `MEMBERSHIP_KEEP` whatever its servers say.
     pub replaced_seen: BTreeMap<LabelId, u64>,
+    /// `/reach` policy per group the app set (`y/n`).
+    pub reach_policy: BTreeMap<Tid, bool>,
+    /// Persons marked as contacts (`y/a`).
+    pub contacts: BTreeSet<Tid>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -283,6 +291,12 @@ impl State {
                 }
                 b"f" => {
                     s.forget.insert(r.tid()?);
+                }
+                b"n" => {
+                    s.reach_policy.insert(r.tid()?, v.first() == Some(&1));
+                }
+                b"a" => {
+                    s.contacts.insert(r.tid()?);
                 }
                 b"d" => {
                     s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
@@ -452,6 +466,30 @@ impl State {
                 }
             }
             self.del(key(BLOB, &[&id.0]));
+        }
+    }
+
+    /// Sets (or clears, `None`) a group's `/reach` policy.
+    pub fn set_reach_policy(&mut self, g: Tid, publish: Option<bool>) {
+        match publish {
+            Some(p) => {
+                self.put(key(REACH_POLICY, &[g.as_bytes()]), vec![u8::from(p)]);
+                self.reach_policy.insert(g, p);
+            }
+            None => {
+                self.del(key(REACH_POLICY, &[g.as_bytes()]));
+                self.reach_policy.remove(&g);
+            }
+        }
+    }
+
+    pub fn set_contact(&mut self, person: Tid, contact: bool) {
+        if contact {
+            self.put(key(CONTACT, &[person.as_bytes()]), Vec::new());
+            self.contacts.insert(person);
+        } else {
+            self.del(key(CONTACT, &[person.as_bytes()]));
+            self.contacts.remove(&person);
         }
     }
 

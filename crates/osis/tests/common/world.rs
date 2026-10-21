@@ -120,7 +120,7 @@ impl World {
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
-                Action::Dial { conn, address, .. } => {
+                Action::Dial { conn, address } => {
                     let Some(s) = self.servers.iter().position(|x| x.addr.to_string() == ServerAddr::new(&address.url, address.key).to_string()).filter(|_| !self.offline[d]) else {
                         self.queue.push_back(Msg::Down(d, conn));
                         continue;

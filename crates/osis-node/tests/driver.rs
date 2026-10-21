@@ -122,7 +122,7 @@ fn s_(x: &str) -> Value {
 /// How the nodes of `converge_p2p` find each other besides `/reach`.
 pub enum Direct<'a> {
     None,
-    /// Each also listens at its URL with a fresh LAN key (`Control::Listen`) and the other hears
+    /// Each also listens at its URL with a fresh LAN key (`SyncEngine::lan_secret`) and the other hears
     /// its signed announcement from 127.0.0.1.
     Heard([&'a str; 2]),
     /// Each runs the driver's LAN loop.
@@ -140,39 +140,40 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     let clock: Arc<dyn Clock> = net.clock.clone();
     let a = net.add_node(1, Default::default());
     let b = net.add_node(2, Default::default());
-    let mut listeners = Vec::new();
-    for (n, ep, url) in [(a, &a_ep, a_url), (b, &b_ep, b_url)] {
+    let mut listeners = [Vec::new(), Vec::new()];
+    for (i, n, ep, url) in [(0, a, &a_ep, a_url), (1, b, &b_ep, b_url)] {
         let secret = net.sync(n).dialable_secret();
         let l = ep.listen(ListenConfig { url: url.into(), secret: StaticSecret::from_bytes(*secret.expose()) }).await.unwrap();
         let acts = net.sync(n).publish_reach(l.address().key, relays.clone()).unwrap();
         net.actions(n, acts);
-        listeners.push(l);
+        listeners[i].push(l);
     }
     let g = net.group_at(a, &[(b, Role::Write)], vec![]);
     let t = net.item(a, g, g, "first");
     let brx = net.engine(b).subscribe();
+    // `Heard`: each listens on the LAN with a fresh key and announces it
+    let mut anns = Vec::new();
+    if let Direct::Heard(urls) = &direct {
+        for (i, n, ep, url) in [(0, a, &a_ep, urls[0]), (1, b, &b_ep, urls[1])] {
+            let secret = StaticSecret::from_bytes(*net.sync(n).lan_secret().expose());
+            let l = ep.listen(ListenConfig { url: url.into(), secret }).await.unwrap();
+            let addr = l.address();
+            let port = addr.url.split_once("://").and_then(|(_, h)| h.split(' ').find_map(|x| x.parse::<std::net::SocketAddr>().ok())).map_or(1, |x| x.port());
+            anns.push(net.sync(n).lan_announcement(addr.key, port).expect("signed announcement"));
+            listeners[i].push(l);
+        }
+    }
     let (sa, sb) = (net.take(a), net.take(b));
     let (actl, arx) = mpsc::unbounded_channel();
     let (bctl, brx2) = mpsc::unbounded_channel();
-    let lb: Vec<_> = listeners.pop().into_iter().collect();
-    let la: Vec<_> = listeners.pop().into_iter().collect();
+    let [la, lb] = listeners;
     let da = tokio::spawn(driver::run_serving(sa, a_ep, la, clock.clone(), arx, log()));
     let db = tokio::spawn(driver::run_serving(sb, b_ep, lb, clock.clone(), brx2, log()));
     if let Direct::Loop(cfgs) = direct {
         for (ctl, cfg) in [&actl, &bctl].into_iter().zip(cfgs) {
             assert!(ctl.send(Control::Lan(cfg)).is_ok());
         }
-    } else if let Direct::Heard(urls) = direct {
-        let mut anns = Vec::new();
-        for (ctl, url) in [(&actl, urls[0]), (&bctl, urls[1])] {
-            let secret = call(ctl, |s| StaticSecret::from_bytes(*s.lan_secret().expose())).await;
-            let (tx, rx) = oneshot::channel();
-            assert!(ctl.send(Control::Listen { cfg: ListenConfig { url: url.into(), secret }, reply: Some(tx) }).is_ok());
-            let addr = rx.await.unwrap().unwrap();
-            let port = addr.url.split_once("://").and_then(|(_, h)| h.split(' ').find_map(|x| x.parse::<std::net::SocketAddr>().ok())).map_or(1, |x| x.port());
-            let key = addr.key;
-            anns.push(call(ctl, move |s| s.lan_announcement(key, port)).await.expect("signed announcement"));
-        }
+    } else if !anns.is_empty() {
         // a hears b's announcement and b hears a's
         for (ctl, ann) in [(&actl, anns[1]), (&bctl, anns[0])] {
             let f: driver::Call = Box::new(move |s: &mut SyncEngine| s.lan_seen(&ann, std::net::Ipv4Addr::LOCALHOST.into()).1);
@@ -245,5 +246,6 @@ async fn driver_p2p_relay_localhost_spec_sync_10() {
     use osis_transport::{Iroh, TestRelay};
     let relay = TestRelay::spawn().await.unwrap();
     let r = vec![relay.url.clone()];
-    converge_p2p(Iroh::with_relays(r.clone()), "peer://127.0.0.1:0", Iroh::with_relays(r.clone()), "peer://127.0.0.1:0", r, Direct::None).await;
+    let url = format!("peer://127.0.0.1:0 {}", relay.url);
+    converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::None).await;
 }

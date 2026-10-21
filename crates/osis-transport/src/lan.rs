@@ -1,10 +1,11 @@
 //! LAN announcements (spec/sync.md §10; the socket with feature `lan`): a UDP datagram carrying the node's
 //! current LAN tag, the transport key it listens with on this network (fresh per network join,
 //! never the dialable key), that listener's port and a signature under the node's dialable key
-//! binding the three; broadcast on the LAN. A receiver that knows the tag's lan secret checks the
-//! signature and dials `peer://<sender ip>:<port>` with the announced key. Not mDNS: the
-//! announcement carries nothing stable across windows or networks. Tag and signature are made and
-//! checked by the node.
+//! binding the three, sealed under the lan secret and window; broadcast on the LAN. A receiver
+//! that knows the tag's lan secret and the node's dialable key checks the signature and dials
+//! `peer://<sender ip>:<port>` with the announced key. Not mDNS: the announcement carries nothing
+//! stable across windows or networks, nor anything a holder of the dialable key alone can check.
+//! Tag and signature are made and checked by the node (osis-crypto `seal_lan_sig`).
 //!
 //! Datagram (spec/sync.md §10, provisional): `"osis lan 1"` (10 bytes), tag (16), key (32),
 //! port (2, big-endian), signature (64).
@@ -33,7 +34,7 @@ pub struct Announce {
     pub tag: [u8; 16],
     pub key: PublicKey,
     pub port: u16,
-    /// Ed25519 under the announcer's dialable key (spec/sync.md §10).
+    /// The sealed Ed25519 signature under the announcer's dialable key (spec/sync.md §10).
     pub sig: [u8; 64],
 }
 

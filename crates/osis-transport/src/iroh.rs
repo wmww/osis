@@ -2,14 +2,16 @@
 //! `peer://` addresses, a node dialed by its dialable key (the iroh endpoint key: the Ed25519 key
 //! of the 32-byte static secret, as `Quic` derives it), through the relays the URL lists, with
 //! iroh's hole punching. No n0 infrastructure: no address lookup, no default relays; relays are
-//! the self-hosted `iroh-relay` URLs from `/reach` (`Iroh::with_relays` for the listener's home
-//! relays). Items of a `peer://` URL that parse as socket addresses are direct addresses (a LAN
-//! announcement's, a loopback test's); the rest are relay URLs. ALPN `osis`. The authenticated
+//! the self-hosted `iroh-relay` URLs from `/reach`. Items of a `peer://` URL that parse as socket
+//! addresses are direct addresses (a LAN announcement's, a loopback test's); the rest are relay
+//! URLs. A listener binds the addresses its URL lists and registers at the relays it lists, and
+//! nowhere else (a LAN listener lists none: a relay would link its fresh key to the node's). ALPN `osis`. The authenticated
 //! peer key is the iroh endpoint key, checked against `Address::key` by iroh's handshake.
 //!
 //! `dial` binds an endpoint with a fresh key per connection (it lives as long as the
-//! connection); `dial_as` dials from the listening endpoint of that secret when this transport
-//! has one, else binds one with it. Needs a tokio runtime.
+//! connection); `dial_as` dials from the listening endpoint of that secret, and fails when this
+//! transport has none (a second endpoint with a listener's key could take its relay
+//! registration). Needs a tokio runtime.
 
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 use iroh::endpoint::{presets, ConnectionError, QuicTransportConfig, VarInt};
@@ -38,8 +40,6 @@ const MAX_INCOMING: usize = 1024;
 /// The P2P transport. Clones share the listening endpoints.
 #[derive(Clone, Default)]
 pub struct Iroh {
-    /// Home relays of listening endpoints.
-    relays: Vec<String>,
     /// Listening endpoints by key (`dial_as` reuses them).
     listening: Arc<Mutex<HashMap<PublicKey, Endpoint>>>,
 }
@@ -127,11 +127,6 @@ impl Iroh {
         Iroh::default()
     }
 
-    /// A transport whose listeners register at these self-hosted relays (the `/reach` relays).
-    pub fn with_relays(relays: Vec<String>) -> Iroh {
-        Iroh { relays, ..Iroh::default() }
-    }
-
     /// The key a listener with `secret` presents.
     pub fn public_key(secret: &StaticSecret) -> PublicKey {
         *SecretKey::from_bytes(secret.as_bytes()).public().as_bytes()
@@ -142,9 +137,10 @@ impl Iroh {
         let id = iroh::PublicKey::from_bytes(&addr.key).map_err(|_| Error::BadUrl("peer key is not an Ed25519 key".into()))?;
         let target = EndpointAddr::from_parts(id, ips.into_iter().map(TransportAddr::Ip).chain(relays.iter().cloned().map(TransportAddr::Relay)));
         let shared = own.and_then(|s| crate::util::lock(&self.listening).get(&Iroh::public_key(s)).cloned());
-        let (ep, owned) = match shared {
-            Some(ep) => (ep, false),
-            None => (endpoint(own, relays, &[], false).await?, true),
+        let (ep, owned) = match (shared, own) {
+            (Some(ep), _) => (ep, false),
+            (None, Some(_)) => return Err(Error::Unreachable("dial_as: no listener with that key".into())),
+            (None, None) => (endpoint(None, relays, &[], false).await?, true),
         };
         let c = match tokio::time::timeout(HANDSHAKE_TIMEOUT, ep.connect(target, ALPN)).await {
             Ok(Ok(c)) => c,
@@ -167,8 +163,8 @@ impl Iroh {
     }
 
     async fn listen_inner(&self, cfg: ListenConfig) -> Result<IrohListener, Error> {
-        let (bind, _) = hints(&cfg.url)?;
-        let relays = self.relays.iter().map(|r| r.parse::<RelayUrl>().map_err(|_| Error::BadUrl(r.clone()))).collect::<Result<Vec<_>, _>>()?;
+        let (bind, relays) = hints(&cfg.url)?;
+        let home: Vec<String> = relays.iter().map(|r| r.to_string()).collect();
         let ep = endpoint(Some(&cfg.secret), relays, &bind, true).await?;
         let key = *ep.id().as_bytes();
         crate::util::lock(&self.listening).insert(key, ep.clone());
@@ -194,7 +190,7 @@ impl Iroh {
             }
         });
         let mut items: Vec<String> = ep.bound_sockets().iter().map(|a| a.to_string()).collect();
-        items.extend(self.relays.iter().cloned());
+        items.extend(home);
         Ok(IrohListener { ep, rx, addr: Address { url: crate::peer_url(&items), key }, listening: self.listening.clone() })
     }
 }
@@ -313,7 +309,7 @@ impl RecvStream for IrohRecv {
 
 /// A self-hosted `iroh-relay` on localhost for tier-2 tests (feature `relay`): plain HTTP, no
 /// QUIC address discovery; shut down when dropped. `url` is the relay URL for `/reach` and
-/// `Iroh::with_relays`.
+/// a listener's URL.
 #[cfg(feature = "relay")]
 pub struct TestRelay {
     _server: iroh_relay::server::Server,
@@ -382,6 +378,8 @@ mod tests {
             }
             assert_eq!(out, b"hello");
             let me = StaticSecret::from_bytes([8; 32]);
+            assert!(t.dial_as(&addr, &me).await.is_err(), "no listener with that key");
+            let _mine = t.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: me.clone() }).await.unwrap();
             let c2 = t.dial_as(&addr, &me).await.unwrap();
             let (_s2, _r2) = c2.open_stream().await.unwrap();
             let mut s2 = _s2;
@@ -405,9 +403,10 @@ mod tests {
     fn through_relay_spec_sync_10() {
         rt().block_on(async {
             let relay = TestRelay::spawn().await.unwrap();
-            let t = Iroh::with_relays(vec![relay.url.clone()]);
+            let t = Iroh::new();
             let secret = StaticSecret::from_bytes([10; 32]);
-            let mut l = t.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret }).await.unwrap();
+            let mut l = t.listen(ListenConfig { url: format!("peer://127.0.0.1:0 {}", relay.url), secret }).await.unwrap();
+            assert_eq!(l.address().url.split(' ').count(), 2, "the bound socket and the URL's relay");
             let key = l.address().key;
             let srv = tokio::spawn(async move {
                 let c = l.accept().await.unwrap();

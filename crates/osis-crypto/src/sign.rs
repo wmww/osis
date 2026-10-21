@@ -18,10 +18,12 @@ pub enum Domain {
     Delete,
     /// A LAN announcement, by a dialable key (spec/sync.md §10).
     LanAnnounce,
+    /// A member node's open at a member peer, by its dialable key (spec/sync.md §5).
+    MemberOpen,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 9] = [
+    pub const ALL: [Domain; 10] = [
         Domain::Commit,
         Domain::Signal,
         Domain::SignalPublish,
@@ -31,6 +33,7 @@ impl Domain {
         Domain::Deposit,
         Domain::Delete,
         Domain::LanAnnounce,
+        Domain::MemberOpen,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -43,6 +46,7 @@ impl Domain {
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
             Domain::LanAnnounce => "osis v1 lan announce",
+            Domain::MemberOpen => "osis v1 member open",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

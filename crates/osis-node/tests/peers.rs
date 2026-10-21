@@ -6,7 +6,7 @@ mod net;
 use net::*;
 use osis_core::Role;
 use osis_label::Address;
-use osis_crypto::{Domain, SigningSecret};
+use osis_crypto::{Domain, Secret32, SigningSecret};
 use osis_node::sync::peers::{lan_tag, LAN_WINDOW_MS};
 use osis_node::sync::Action;
 use osis_transport::lan::Announce;
@@ -101,12 +101,14 @@ pub fn reach_ed(net: &mut Net, n: usize) -> [u8; 32] {
     k
 }
 
-/// An announcement with `tag`, signed by node `n`'s dialable secret.
-fn signed(net: &mut Net, n: usize, tag: [u8; 16], key: [u8; 32], port: u16) -> Announce {
+/// An announcement with node `of`'s tag at `ms`, signed by node `n`'s dialable secret and sealed
+/// under `of`'s lan secret.
+fn signed(net: &mut Net, n: usize, of: usize, ms: u64, key: [u8; 32], port: u16) -> Announce {
     let sk = SigningSecret::from_seed(&net.sync(n).dialable_secret());
-    let mut a = Announce { tag, key, port, sig: [0; 64] };
-    a.sig = sk.sign(Domain::LanAnnounce, &osis_core::hash::hash(&a.signed())).0;
-    a
+    let lan = net.sync(of).own_reach().unwrap().lan_secret;
+    let tag = lan_tag(&lan, ms);
+    let sig = osis_crypto::seal_lan_sig(&sk, &Secret32::from_bytes(lan), ms / LAN_WINDOW_MS, &tag, &key, port);
+    Announce { tag, key, port, sig }
 }
 
 fn dials(acts: &[Action]) -> Vec<Address> {
@@ -116,8 +118,9 @@ fn dials(acts: &[Action]) -> Vec<Address> {
 // spec/sync.md §10: a co-reader's signed announcement matches for the current and adjacent
 // windows, and the node then dials the announced transport key at the source address and port
 // (not the dialable key), even inside its retry pause (once per pause length); a stranger's tag,
-// one two windows off, a signature by another key, a source that cannot be on the LAN, or a
-// repeat changes nothing.
+// one two windows off, a signature by another key, one not sealed under the lan secret, a
+// changed port, a source that cannot be on the LAN, or a repeat changes nothing; a second new
+// address within `LAN_CHANGE_MS` is ignored.
 #[test]
 fn lan_match_dials_announced_key_spec_sync_10() {
     let mut net = Net::new();
@@ -133,17 +136,21 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     let ip: IpAddr = "192.168.1.5".parse().unwrap();
     let own = net.sync(b).lan_announcement([0x77; 32], 4433).unwrap();
     assert_eq!(own.tag, lan_tag(&lan, now));
-    let stranger = signed(&mut net, b, [9; 16], [0x77; 32], 4433);
+    let mut stranger = own;
+    stranger.tag = [9; 16];
     assert_eq!(net.sync(a).lan_seen(&stranger, ip).0, None);
-    let far = signed(&mut net, b, lan_tag(&lan, now + 2 * LAN_WINDOW_MS), [0x77; 32], 4433);
+    let far = signed(&mut net, b, b, now + 2 * LAN_WINDOW_MS, [0x77; 32], 4433);
     assert_eq!(net.sync(a).lan_seen(&far, ip).0, None);
-    let forged = signed(&mut net, a, lan_tag(&lan, now), [0x77; 32], 4433);
+    let forged = signed(&mut net, a, b, now, [0x77; 32], 4433);
     assert_eq!(net.sync(a).lan_seen(&forged, ip).0, None, "signed by another key");
+    let sk = SigningSecret::from_seed(&net.sync(b).dialable_secret());
+    let plain = Announce { sig: sk.sign(Domain::LanAnnounce, &osis_crypto::lan_digest(&own.tag, &own.key, own.port)).0, ..own };
+    assert_eq!(net.sync(a).lan_seen(&plain, ip).0, None, "not sealed");
     let mut moved = own;
     moved.port = 4434;
     assert_eq!(net.sync(a).lan_seen(&moved, ip).0, None, "port not signed");
     assert_eq!(net.sync(a).lan_seen(&own, "8.8.8.8".parse().unwrap()).0, None, "not on the LAN");
-    let prev = signed(&mut net, b, lan_tag(&lan, now.saturating_sub(LAN_WINDOW_MS)), [0x77; 32], 4433);
+    let prev = signed(&mut net, b, b, now.saturating_sub(LAN_WINDOW_MS), [0x77; 32], 4433);
     let (hit, acts) = net.sync(a).lan_seen(&prev, ip);
     assert_eq!(hit, Some(kb));
     assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.5:4433".into(), key: [0x77; 32] }]);
@@ -153,9 +160,13 @@ fn lan_match_dials_announced_key_spec_sync_10() {
     // candidate waits for the pause
     net.actions(a, acts);
     net.settle(100_000);
-    let (hit, acts) = net.sync(a).lan_seen(&own, "192.168.1.6".parse().unwrap());
+    let other: IpAddr = "192.168.1.6".parse().unwrap();
+    let (hit, acts) = net.sync(a).lan_seen(&own, other);
+    assert_eq!((hit, acts), (Some(kb), Vec::new()), "within LAN_CHANGE_MS");
+    net.clock.advance(osis_node::sync::peers::LAN_CHANGE_MS);
+    let (hit, acts) = net.sync(a).lan_seen(&own, other);
     assert_eq!(hit, Some(kb));
-    assert!(dials(&acts).is_empty(), "{acts:?}");
+    assert!(dials(&acts).is_empty(), "the pause holds: {acts:?}");
     net.clock.advance(60_001);
     let acts = net.sync(a).handle(osis_node::sync::Event::Tick);
     assert_eq!(dials(&acts), vec![Address { url: "peer://192.168.1.6:4433".into(), key: [0x77; 32] }]);

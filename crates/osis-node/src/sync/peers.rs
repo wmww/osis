@@ -9,7 +9,7 @@ use super::{Action, Event, SyncEngine};
 use crate::error::Result;
 use crate::Mutation;
 use osis_core::{LabelId, Tid};
-use osis_crypto::{Domain, Secret32, Signature, SigningSecret, VerifyingKey};
+use osis_crypto::{Secret32, SigningSecret, VerifyingKey};
 use osis_label::Address;
 use osis_schema::core_types::{self as ct, Reach};
 use osis_transport::lan::Announce;
@@ -23,6 +23,8 @@ pub const LAN_WINDOW_MS: u64 = 600_000;
 pub const LAN_FRESH_MS: u64 = 2 * LAN_WINDOW_MS;
 /// Co-readers are computed again at least this often (edges expire with time).
 const PEERS_TTL_MS: u64 = 60_000;
+/// A co-reader's LAN candidate changes at most once in this long (announcement floods).
+pub const LAN_CHANGE_MS: u64 = 5_000;
 
 /// The LAN announcement tag of a lan secret at `unix_ms` (spec/sync.md §10):
 /// `kdf("lan tag", lan secret, le64(floor(unix ms / 600000)))`, first 16 bytes.
@@ -59,15 +61,16 @@ pub(crate) struct LanRoute {
     pub failed: BTreeMap<Address, u64>,
     /// When a new candidate last ended the peer's retry pause (raw ms).
     pub cut: Option<u64>,
+    /// When the candidate last changed (raw ms).
+    pub changed: Option<u64>,
+    /// The last announcement whose signature verified (a repeat is not verified again).
+    pub verified: Option<Announce>,
 }
 
-/// Co-readers' LAN tags (cached window and its neighbours) to their dialable keys.
-pub(crate) type LanTags = BTreeMap<[u8; 16], [u8; 32]>;
+/// Co-readers' LAN tags (the cached window and its neighbours) to their dialable key, lan
+/// secret and window.
+pub(crate) type LanTags = BTreeMap<[u8; 16], ([u8; 32], [u8; 32], u64)>;
 
-/// The digest a LAN announcement's signature covers: BLAKE3(tag || key || port).
-fn announce_digest(a: &Announce) -> [u8; 32] {
-    osis_core::hash::hash(&a.signed())
-}
 
 impl SyncEngine {
     /// This node's dialable transport secret (spec/sync.md §10; separate from its signing key):
@@ -141,8 +144,9 @@ impl SyncEngine {
     }
 
     /// This node's LAN announcement now for a listener with transport key `key` at `port`:
-    /// the current tag, signed under the dialable key (spec/sync.md §10). None before `/reach`
-    /// is published, or when its dialable key is not the Ed25519 key of the dialable secret.
+    /// the current tag and the signature under the dialable key, sealed under the lan secret
+    /// and window (spec/sync.md §10). None before `/reach` is published, or when its dialable
+    /// key is not the Ed25519 key of the dialable secret.
     pub fn lan_announcement(&mut self, key: [u8; 32], port: u16) -> Option<Announce> {
         let r = self.own_reach()?;
         let sk = SigningSecret::from_seed(self.state.reach_secret.as_ref()?);
@@ -150,13 +154,14 @@ impl SyncEngine {
             self.diag("LAN: the published dialable key is not the dialable secret's".into());
             return None;
         }
-        let mut a = Announce { tag: lan_tag(&r.lan_secret, self.now()), key, port, sig: [0; 64] };
-        a.sig = sk.sign(Domain::LanAnnounce, &announce_digest(&a)).0;
-        Some(a)
+        let window = self.now() / LAN_WINDOW_MS;
+        let tag = lan_tag(&r.lan_secret, self.now());
+        let sig = osis_crypto::seal_lan_sig(&sk, &Secret32::from_bytes(r.lan_secret), window, &tag, &key, port);
+        Some(Announce { tag, key, port, sig })
     }
 
     /// Node things with a `/reach` this node holds, other than itself, by dialable key (cached
-    /// until a commit applies).
+    /// until a commit applies). A key two node things claim matches neither.
     pub(crate) fn reach_nodes(&mut self) -> Arc<BTreeMap<[u8; 32], Tid>> {
         self.peers_fresh();
         if let Some(r) = &self.reach_index {
@@ -167,13 +172,16 @@ impl SyncEngine {
         nodes.dedup();
         let own = self.own_reach().map(|r| r.dialable);
         let mut m = BTreeMap::new();
+        let mut twice = BTreeSet::new();
         for n in nodes {
             if let Ok(Some(r)) = self.engine.get_typed(&n, &ct::REACH)
                 && Some(r.dialable) != own
+                && m.insert(r.dialable, n).is_some_and(|x| x != n)
             {
-                m.insert(r.dialable, n);
+                twice.insert(r.dialable);
             }
         }
+        m.retain(|k, _| !twice.contains(k));
         let m = Arc::new(m);
         self.reach_index = Some(m.clone());
         m
@@ -200,6 +208,10 @@ impl SyncEngine {
             // newest heartbeat first, unknown last
             reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
             for (g, l) in self.labels() {
+                // a group whose labels carry no `/reach` of ours: its co-readers are not dialed
+                if !self.publishes_reach(&g) {
+                    continue;
+                }
                 let mut n_label = 0;
                 for (_, n, r) in &reaches {
                     if n_label >= self.cfg.max_peers_per_label {
@@ -281,6 +293,20 @@ impl SyncEngine {
         hit
     }
 
+    /// Whether a waiting LAN candidate may skip the peer's retry pause now (at most once per
+    /// `peer_retry_ms`); records the cut.
+    pub(crate) fn lan_cut(&mut self, peer: [u8; 32]) -> bool {
+        let raw = self.raw_now();
+        let pause = self.cfg.peer_retry_ms;
+        let Some(r) = self.lan.get_mut(&peer) else { return false };
+        let waiting = r.candidate.as_ref().is_some_and(|(a, _)| !r.failed.contains_key(a));
+        if waiting && r.cut.is_none_or(|t| t.saturating_add(pause) <= raw) {
+            r.cut = Some(raw);
+            return true;
+        }
+        false
+    }
+
     /// A LAN announcement heard from `from` (spec/sync.md §10). It counts when the source can be
     /// on the LAN, the tag is a co-reader's for the current or an adjacent window (tags computed
     /// once per window) and the signature verifies under that co-reader's dialable key; the
@@ -296,20 +322,23 @@ impl SyncEngine {
             let mut tags = BTreeMap::new();
             for (k, p) in self.peers().iter() {
                 for w in [window.saturating_sub(1), window, window.saturating_add(1)] {
-                    tags.insert(lan_tag(&p.reach.lan_secret, w.saturating_mul(LAN_WINDOW_MS)), *k);
+                    tags.insert(lan_tag(&p.reach.lan_secret, w.saturating_mul(LAN_WINDOW_MS)), (*k, p.reach.lan_secret, w));
                 }
             }
             self.lan_tags = Some((window, tags));
         }
-        let Some(k) = self.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
-        let signed = VerifyingKey::from_bytes(&k).is_ok_and(|vk| vk.verify(Domain::LanAnnounce, &announce_digest(a), &Signature(a.sig)).is_ok());
-        if !signed {
-            return (None, Vec::new());
+        let Some((k, secret, w)) = self.lan_tags.as_ref().and_then(|(_, t)| t.get(&a.tag)).copied() else { return (None, Vec::new()) };
+        let raw = self.raw_now();
+        let r = self.lan.entry(k).or_default();
+        if r.verified.as_ref() != Some(a) {
+            let ok = VerifyingKey::from_bytes(&k).is_ok_and(|vk| osis_crypto::open_lan_sig(&vk, &Secret32::from_bytes(secret), w, &a.tag, &a.key, a.port, &a.sig));
+            if !ok {
+                return (None, Vec::new());
+            }
+            r.verified = Some(*a);
         }
         let at = a.address(from);
         let address = Address { url: at.url, key: at.key };
-        let raw = self.raw_now();
-        let r = self.lan.entry(k).or_default();
         if r.failed.contains_key(&address) {
             return (Some(k), Vec::new());
         }
@@ -321,10 +350,18 @@ impl SyncEngine {
                 return (Some(k), Vec::new());
             }
         }
+        if r.changed.is_some_and(|t| t.saturating_add(LAN_CHANGE_MS) > raw) {
+            return (Some(k), Vec::new());
+        }
         r.candidate = Some((address, raw));
+        r.changed = Some(raw);
         // dial it now, even inside the retry pause, once per pause length
-        if r.cut.is_none_or(|t| t.saturating_add(self.cfg.peer_retry_ms) <= raw) && self.retry.remove(&k).is_some() {
-            r.cut = Some(raw);
+        if self.retry.contains_key(&k) && self.lan_cut(k) {
+            self.retry.remove(&k);
+        }
+        // nothing to do while a connection to the peer runs or its pause holds
+        if self.conns.values().any(|c| c.server == k) || self.retry.get(&k).is_some_and(|(_, t)| *t > raw) {
+            return (Some(k), Vec::new());
         }
         (Some(k), self.handle(Event::Local))
     }
@@ -337,20 +374,59 @@ impl SyncEngine {
         }
     }
 
-    /// Whether `label`'s group gets no `/reach` (an open audience, spec/permissions.md §4).
-    pub fn set_no_reach(&mut self, group: Tid, excluded: bool) {
-        if excluded {
-            self.cfg.no_reach.insert(group);
-        } else {
-            self.cfg.no_reach.remove(&group);
+    /// Whether `group`'s labels carry this node's `/reach` (spec/permissions.md §4): `Some`
+    /// sets it, `None` returns to the default (`publishes_reach`). Stored.
+    pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) {
+        self.state.set_reach_policy(group, publish);
+        self.peers_cache = None;
+        let _ = self.state.flush(&mut self.engine);
+    }
+
+    /// Marks a person as a contact of this node's person (stored): groups whose readers are only
+    /// contacts get `/reach` by default.
+    pub fn set_contact(&mut self, person: Tid, contact: bool) {
+        self.state.set_contact(person, contact);
+        self.peers_cache = None;
+        let _ = self.state.flush(&mut self.engine);
+    }
+
+    /// Whether `/reach` goes under `g`'s labels: the policy set for `g`, else when everyone who
+    /// reads it is this node's own or a contact (notes/sync.md: excluded by default from labels
+    /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
+    /// member of), or each member of it is this node's own, a contact, or a thing such an actor
+    /// owns whose own members pass the same test (a link's group holds a key actor: it fails).
+    pub fn publishes_reach(&self, g: &Tid) -> bool {
+        if let Some(p) = self.state.reach_policy.get(g) {
+            return *p;
         }
+        self.contacts_only(&self.engine.group_actor(g), 4)
+    }
+
+    fn contacts_only(&self, actor: &Tid, depth: u32) -> bool {
+        let me = self.engine.tid();
+        let own = |x: &Tid| *x == me || self.engine.core.current_members(x).iter().any(|(t, _, _)| *t == me);
+        if own(actor) {
+            return true;
+        }
+        let owned = |t: &Tid| {
+            let mut cur = self.engine.owner(t).filter(|o| o != t);
+            for _ in 0..16 {
+                match cur {
+                    Some(x) if own(&x) => return true,
+                    Some(x) => cur = self.engine.owner(&x).filter(|o| *o != x),
+                    None => return false,
+                }
+            }
+            false
+        };
+        self.engine.core.current_members(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && owned(m) && self.contacts_only(m, depth - 1))
     }
 
     /// This node's chain certificates and node card for `g` (`Engine::certificates`), without
-    /// its `/reach` commit when `g` is in `SyncConfig.no_reach` (spec/permissions.md §4).
+    /// its `/reach` commit where `publishes_reach` says no (spec/permissions.md §4).
     pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_core::CommitId, std::collections::BTreeSet<(usize, usize)>> {
         let mut certs = self.engine.certificates(g);
-        if self.cfg.no_reach.contains(g) {
+        if !self.publishes_reach(g) {
             let me = self.engine.tid();
             certs.retain(|c, _| !self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == me && a.ak.as_str() == "/reach")));
         }

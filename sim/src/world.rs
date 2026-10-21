@@ -195,7 +195,7 @@ impl World {
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
-                Action::Dial { conn, address, .. } => {
+                Action::Dial { conn, address } => {
                     let want = ServerAddr::new(&address.url, address.key).to_string();
                     let s = self.servers.iter().position(|x| x.addr.to_string() == want).filter(|_| !self.is_offline(d));
                     let Some(s) = s else {

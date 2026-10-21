@@ -57,8 +57,8 @@ impl ManualNet {
 /// How servers and co-reader nodes are dialed (spec/sync.md §10).
 #[derive(Clone)]
 pub enum Transport {
-    /// Servers over QUIC (feature `quic`); co-readers over iroh (feature `iroh`, with
-    /// `Config.relays`), on the LAN too with feature `lan`.
+    /// Servers over QUIC (feature `quic`); co-readers over iroh (feature `iroh`, through
+    /// `Config.relays`), on the LAN too with feature `lan`. Without `iroh` no co-reader is dialed.
     #[cfg(feature = "quic")]
     Quic,
     /// In-process endpoints for servers and co-readers (tests).
@@ -138,8 +138,9 @@ impl Net {
     }
 
     /// Starts the driver task over one transport for servers and co-readers (`Multi`). With
-    /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret and
-    /// publishes `/reach` with `relays`; with feature `lan` and QUIC it also runs the LAN loop.
+    /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
+    /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
+    /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, .. } = self else { return Ok(()) };
         let host = OsisHost(db);
@@ -157,8 +158,8 @@ impl Net {
                 multi.quic = Some(osis_transport::Quic::new());
                 #[cfg(feature = "iroh")]
                 {
-                    multi.iroh = Some(osis_transport::Iroh::with_relays(relays.clone()));
-                    (Some(osis_transport::peer_url(&[])), cfg!(feature = "lan"))
+                    multi.iroh = Some(osis_transport::Iroh::new());
+                    (Some(osis_transport::peer_url(&relays)), cfg!(feature = "lan"))
                 }
                 #[cfg(not(feature = "iroh"))]
                 (None, false)
@@ -167,11 +168,18 @@ impl Net {
             None => return Err(Error::Invalid("a runtime needs a transport (Config.transport; QUIC needs feature `quic`)".into())),
         };
         handle.spawn(driver::run_host(host, multi, Vec::new(), clock, rx, log));
-        if p2p && let Some(url) = reach {
-            let _ = ctl.send(Control::Reach { url, relays, reply: None });
-            if lan {
-                let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+        match reach {
+            Some(url) if p2p => {
+                let _ = ctl.send(Control::Reach { url, relays, reply: None });
+                if lan {
+                    let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
+                }
             }
+            // nothing dials `peer://`: co-readers are not dialed
+            None => {
+                let _ = ctl.send(Control::Call(Box::new(|s| s.set_peers(false))));
+            }
+            Some(_) => {}
         }
         Ok(())
     }
@@ -298,12 +306,19 @@ impl crate::Osis {
     }
 }
 
+/// A group's sync policy (`Osis::sync_policy`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroupPolicy {
+    /// Whether this node's `/reach` (its dialable key) goes under the group's labels, so
+    /// co-readers there can dial it off the LAN (spec/permissions.md §4). `None`: only when
+    /// every reader of the group is this person, a thing it owns or a contact (`import_contact`).
+    pub publish_reach: Option<bool>,
+}
+
 impl crate::Osis {
-    /// Keeps this node's `/reach` (its dialable key) out of `group`'s labels, or puts it back:
-    /// for groups whose audience is open (public or bearer-read, spec/permissions.md §4).
-    /// Co-readers of only those labels then cannot dial this node off the LAN. Not stored: set it
-    /// at every open.
-    pub fn exclude_reach(&self, group: osis_core::Tid, excluded: bool) {
-        self.locked(|l| l.sync.set_no_reach(group, excluded));
+    /// Sets `group`'s sync policy (stored). Co-readers of groups without `/reach` are not
+    /// dialed; a `/reach` already placed under a label stays there.
+    pub fn sync_policy(&self, group: osis_core::Tid, policy: GroupPolicy) {
+        self.locked(|l| l.sync.set_reach_policy(group, policy.publish_reach));
     }
 }

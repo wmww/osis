@@ -97,10 +97,10 @@ pub trait LabelStore {
     fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
         Ok(Code::OK)
     }
-    /// Whether this connection's peer is a node of a current reader of the label, authenticated
-    /// by its transport key (a member peer serving it, spec/sync.md §5): an Open whose proof is
-    /// refused then opens the label all the same (no entry box). Blind nodes: never.
-    fn member_open(&self, _label: &LabelId) -> Result<bool, StoreError> {
+    /// Whether `dialable` (a verified member proof's key) is the dialable key of a node of a
+    /// current reader of the label (a member peer serving it, spec/sync.md §5): the label then
+    /// opens (no entry box). Blind nodes: never.
+    fn member_open(&self, _dialable: &[u8; 32], _label: &LabelId) -> Result<bool, StoreError> {
         Ok(false)
     }
     /// Appends a verified step (a child of the head, or a new label's genesis) and logs it.
@@ -164,8 +164,8 @@ pub struct MemoryLabelStore {
     blobs: HashMap<BlobId, (Vec<u8>, usize)>,
     /// Entries per label beyond which uploads get code 12.
     pub entry_cap: Option<usize>,
-    /// Labels every connection's peer may open without a proof (`member_open`; member-peer tests).
-    pub member_labels: BTreeSet<LabelId>,
+    /// (dialable key, label) pairs a member proof opens (`member_open`; member-peer tests).
+    pub member_labels: BTreeSet<([u8; 32], LabelId)>,
 }
 
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
@@ -240,8 +240,8 @@ impl MemoryLabelStore {
 }
 
 impl LabelStore for MemoryLabelStore {
-    fn member_open(&self, label: &LabelId) -> Result<bool, StoreError> {
-        Ok(self.member_labels.contains(label))
+    fn member_open(&self, dialable: &[u8; 32], label: &LabelId) -> Result<bool, StoreError> {
+        Ok(self.member_labels.contains(&(*dialable, *label)))
     }
 
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError> {

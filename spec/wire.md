@@ -175,7 +175,7 @@ Unsubscribe [22, id, [label_id+]]              -> Ok
 Push      [23, 0, label_id, [event+], cursor]
 Signal    [24, 0, label_id, blob, wrap, auth]
 
-proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig]
+proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp]
 item   := [blob_id, Opt(at), Opt(token), sig]
 cursor := [log_id, seq]
@@ -185,7 +185,7 @@ mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `token` 32 bytes; `log_id` 16 bytes.
 
-- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (member peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5). A server MAY answer a genesis step for a new label with Error 12 when it is at its storage cap.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head.

@@ -9,8 +9,9 @@
 //! node dropped stay refused for `TOMBSTONE_LIFETIME` (`State::tombs`). What peers upload or
 //! deposit is charged to the uploading peer key and to a node-wide total (`SyncConfig`
 //! `peer_bytes`, `peer_total_bytes`) until it opens, reaches a server or is dropped; past either,
-//! uploads get code 12 and deposits code 5. A peer whose key is the dialable key of a node that
-//! currently reads a label opens it without a proof (spec/sync.md §5, member peer).
+//! uploads get code 12 and deposits code 5. A member proof by the dialable key of a node that
+//! currently reads a label opens it (spec/sync.md §5, member peer); budgets are then charged to
+//! that dialable key.
 
 use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
@@ -190,8 +191,8 @@ struct PeerStore<'a> {
     tombs: &'a BTreeMap<(LabelId, BlobId), u64>,
     feed: &'a mut Feed,
     labels: &'a BTreeMap<LabelId, ServedLabel>,
-    /// The node thing whose dialable key the peer authenticated with, if any.
-    member: Option<osis_core::Tid>,
+    /// Node things by dialable key (`reach_nodes`): whose member proofs count.
+    reach: &'a BTreeMap<[u8; 32], osis_core::Tid>,
     /// Blob sizes seen (`live` reads a blob only once).
     sizes: RefCell<&'a mut BTreeMap<BlobId, u64>>,
     now: u64,
@@ -238,8 +239,8 @@ impl PeerStore<'_> {
 
 impl LabelStore for PeerStore<'_> {
     /// A node of a current reader of the label (spec/sync.md §5).
-    fn member_open(&self, label: &LabelId) -> std::result::Result<bool, StoreError> {
-        let Some(n) = self.member else { return Ok(false) };
+    fn member_open(&self, dialable: &[u8; 32], label: &LabelId) -> std::result::Result<bool, StoreError> {
+        let Some(n) = self.reach.get(dialable).copied() else { return Ok(false) };
         Ok(self.labels.get(label).is_some_and(|s| self.engine.borrow().may_read(&n, &s.group)))
     }
 
@@ -380,16 +381,17 @@ impl LabelStore for PeerStore<'_> {
 impl SyncEngine {
     /// A peer dialed this node: a session on its listener. `local` is the key this node's
     /// listener presented (its dialable key, or a LAN transport key; open signatures bind it),
-    /// `peer` the key the transport authenticated for the dialer (budgets are charged to it).
-    /// Returns the session's handle (its bytes come as `Event::Bytes`, its end as `Event::Down`)
-    /// and the actions (the Hello; a Close when `SyncConfig.max_served` sessions are running).
-    /// Opens are checked as a blind node checks them; a `peer` that is the dialable key of a node
-    /// thing currently reading a label opens it whatever its proof (spec/sync.md §5).
+    /// `peer` the key the transport authenticated for the dialer (budgets are charged to it,
+    /// or to the dialable key of its member proof). Returns the session's handle (its bytes come
+    /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello; a Close when
+    /// `SyncConfig.max_served` sessions run, or `max_served_per_key` for this `peer`). Opens are
+    /// checked as a blind node checks them, plus member proofs by the dialable key of a node
+    /// thing currently reading the label (spec/sync.md §5).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
         let conn = self.next_conn;
         self.next_conn += 1;
         let mut out = Vec::new();
-        if self.served.len() >= self.cfg.max_served {
+        if self.served.len() >= self.cfg.max_served || self.served.values().filter(|s| s.peer == peer).count() >= self.cfg.max_served_per_key {
             out.push(Action::Close { conn });
             return (conn, out);
         }
@@ -471,9 +473,9 @@ impl SyncEngine {
             self.prune_charges();
         }
         let Some(mut s) = self.served.remove(&conn) else { return Ok(()) };
-        let used = self.charged_per.get(&s.peer).copied().unwrap_or(0);
+        let used = self.charged_per.get(&s.conn.member().unwrap_or(s.peer)).copied().unwrap_or(0);
         let total = self.charged_total;
-        let member = self.reach_nodes().get(&s.peer).copied();
+        let reach = self.reach_nodes();
         self.state.feed.heads(labels);
         if matches!(input, ServerInput::Bytes(_)) {
             s.last = now;
@@ -486,7 +488,7 @@ impl SyncEngine {
                 tombs: &self.state.tombs,
                 feed: &mut self.state.feed,
                 labels,
-                member,
+                reach: &reach,
                 sizes: RefCell::new(&mut self.blob_sizes),
                 now,
                 wall,
@@ -497,7 +499,8 @@ impl SyncEngine {
             let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
         };
-        let peer = s.peer;
+        let peer = s.conn.member().unwrap_or(s.peer);
+        let member = s.conn.member().is_some_and(|k| reach.contains_key(&k));
         if !s.conn.is_closed() {
             self.served.insert(conn, s);
         }
@@ -509,7 +512,7 @@ impl SyncEngine {
             *self.charged_per.entry(peer).or_default() += n;
             self.charged_total = self.charged_total.saturating_add(n);
         }
-        if !acc.entries.is_empty() && self.reach_nodes().contains_key(&peer) {
+        if !acc.entries.is_empty() && member {
             for (l, _) in &acc.entries {
                 self.peer_received.entry(*l).or_default().insert(peer);
             }
@@ -553,6 +556,33 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// After a membership or roster change: co-readers that no longer read a label stop
+    /// counting for its complete pass, and served sessions whose member proof's node no longer
+    /// reads a label they opened are closed.
+    pub(crate) fn members_changed(&mut self, out: &mut Vec<Action>) {
+        let peers = self.peers();
+        for (l, ks) in self.peer_received.iter_mut() {
+            ks.retain(|k| peers.get(k).is_some_and(|p| p.labels.contains(l)));
+        }
+        self.peer_received.retain(|_, ks| !ks.is_empty());
+        let reach = self.reach_nodes();
+        let labels = self.served_labels();
+        let stale: Vec<ConnId> = self
+            .served
+            .iter()
+            .filter(|(_, s)| {
+                let Some(k) = s.conn.member() else { return false };
+                let node = reach.get(&k);
+                s.conn.opened().iter().any(|l| labels.get(l).is_some_and(|x| node.is_none_or(|n| !self.engine.may_read(n, &x.group))))
+            })
+            .map(|(c, _)| *c)
+            .collect();
+        for c in stale {
+            self.served.remove(&c);
+            out.push(Action::Close { conn: c });
+        }
     }
 
     /// Pushes grown logs to subscribed peer sessions.

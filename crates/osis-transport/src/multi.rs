@@ -205,6 +205,7 @@ mod tests {
     // spec/sync.md §10: the URL scheme picks the transport; `peer://` without iroh goes to the
     // in-process listener of that key; a scheme without its transport is unknown (parked).
     #[test]
+    #[allow(clippy::needless_update)] // the other fields exist with features `quic`, `iroh`
     fn dispatch_by_scheme_spec_sync_10() {
         let net = Net::new(3);
         let mut sched = Sched::new(3, Some(net.clone()));

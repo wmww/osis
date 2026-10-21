@@ -225,9 +225,12 @@ impl SyncState for SyncEngine {
             if a != actor {
                 continue;
             }
-            // the label's servers, and the co-readers it received the label from that a
-            // connection is up to (spec/permissions.md §3)
-            let reachable = |k: &&[u8; 32]| self.conns.values().any(|c| c.peer && c.up && c.server == **k);
+            // the label's servers, and the co-readers it received the label from while a
+            // connection to them is up with the label started and they still read it
+            // (spec/permissions.md §3), for at most `peer_pass_wait_ms` after the change
+            let waited = self.membership_at.get(actor).is_some_and(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now());
+            let reads = |k: &[u8; 32]| self.peers_cache.as_ref().is_some_and(|p| p.get(k).is_some_and(|x| x.labels.contains(l)));
+            let reachable = |k: &&[u8; 32]| !waited && reads(k) && self.conns.values().any(|c| c.peer && c.up && c.server == **k && c.labels.contains_key(l));
             let peers = self.peer_received.get(l).into_iter().flatten().filter(reachable);
             for s in servers.iter().chain(peers) {
                 any = true;

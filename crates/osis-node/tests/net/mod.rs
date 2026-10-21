@@ -191,7 +191,7 @@ impl Net {
                 eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
             }
             match a {
-                Action::Dial { conn, address, as_node } if address.url.starts_with("peer://") => {
+                Action::Dial { conn, address } if address.url.starts_with("peer://") => {
                     // by dialable key, or by a LAN transport key a node listens with
                     let lan = self.lan_keys.get(&address.key).copied();
                     let target = lan.filter(|m| self.nodes[*m].online).or_else(|| (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key)));
@@ -199,14 +199,13 @@ impl Net {
                         self.queue.push_back(Msg::Close(n, conn));
                         continue;
                     };
-                    let me = if as_node { self.sync(n).own_reach().map(|r| r.dialable) } else { None };
-                    let (pc, acts) = self.sync(m).accept(address.key, me.unwrap_or([0xd0 + n as u8; 32]));
+                    let (pc, acts) = self.sync(m).accept(address.key, [0xd0 + n as u8; 32]);
                     self.plinks.insert((n, conn), (m, pc));
                     self.plinks.insert((m, pc), (n, conn));
                     self.queue.push_back(Msg::Up(n, conn));
                     self.actions(m, acts);
                 }
-                Action::Dial { conn, address, .. } => {
+                Action::Dial { conn, address } => {
                     let Some(s) = self.servers.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
                         self.queue.push_back(Msg::Close(n, conn));
                         continue;
