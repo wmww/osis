@@ -55,7 +55,7 @@ pub fn persona(db: &Osis, chat: Tid, nick: &str) -> Result<Tid> {
 
 /// A link that makes its redeemer a participant (a writer of the chat).
 pub fn invite(db: &Osis, chat: Tid, single_use: bool) -> Result<ShareLink> {
-    db.make_link(chat, Role::Write, LinkOpts { until: None, single_use })
+    db.make_link(chat, Role::Write, LinkOpts { until: None, single_use, direct: false })
 }
 
 /// Joins a chat by link: (chat actor, own persona).
