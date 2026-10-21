@@ -198,7 +198,7 @@ fn roster_removal_cost() {
     }
 }
 
-// spec/requirements.md, Scale: a change inside a huge value costs O(change), at any depth.
+// spec/crdt.md §5.6; spec/requirements.md, Scale: a change inside a huge value costs O(change), at any depth.
 // One edit of a key of a 10^5-key map held in an entry of a root map (a deep collection).
 #[test]
 #[ignore = "tier 2"]
@@ -261,7 +261,7 @@ fn text_undo_and_first_access_cost() {
     println!("text {n} chars: undo commit {:?}", t4.elapsed());
 }
 
-// spec/requirements.md, Scale (no operation O(history)): a membership change while the node
+// spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node
 // holds 10^4 content commits on other things of its own tree, and opening that store.
 #[test]
 #[ignore = "tier 2"]
