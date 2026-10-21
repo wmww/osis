@@ -29,7 +29,7 @@ How to run:
 - Sim: `cargo run --release -p osis-sim --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `models/tla/run.sh small` (Java); `cargo test -p crdt-model`, `-p membership-model`.
 
-Known open (issues/): large values without chunk reuse (an edit re-sends the whole value), chat costs over budget, P2P without a LAN loop or one driver for servers and peers, cost issues (perm walk, sequences, node passes, deep paging), the security residues (invite-grant resets, re-review residues, snapshot run amplification). Accepted for post-MVP: token-admin-secret, header-list-commitments, reseal-triggers.
+Known open (issues/): owner tradeoffs stated in user terms (token-admin-secret, header-list-commitments, reseal-triggers, store-concurrent-readers, chat-costs wire knobs, ledger-same-ts-commits, crdt-undo-absent-positions, at-most-zero-snapshots, import-bare-anchors); cost residues (perm-eval-cost, node-core-gaps, node-sequences-not-paged, crdt-seq-linearization-cost); rough edges (node-sync-gaps, p2p-followups, reading-candidates-unknown-authors); api-deferred (queries are a design pass); tests-unbuilt (10^4-seed sweep, model refactors).
 
 - MVP scope (owner): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
 - Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.
