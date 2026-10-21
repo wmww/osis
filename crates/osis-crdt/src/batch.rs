@@ -31,9 +31,67 @@ pub struct Batch<'s> {
     state: &'s Fragment,
     w: Writer,
     acc: Option<Fragment>,
-    /// `state` joined with `acc`, built once a later op needs it (one copy of the state) and
-    /// kept up by joining each op's delta while that equals the net effect (§4.5; else dropped).
-    seen: Option<Fragment>,
+    /// The batch's view of the sequence position the last op met, if the batch had writes there.
+    seen: Option<Seen>,
+}
+
+/// State joined with the batch's writes at one sequence position, reached through fields and
+/// cases (`at`; `index`: the list an index segment steps into, else the position an op ends at),
+/// under the batch's reset `e` from above: what `resolve` would copy there. Kept across ops at
+/// that position while joining each op's delta into it equals the net effect (§4.5), dropped by
+/// any other op.
+struct Seen {
+    at: Vec<PathSeg>,
+    index: bool,
+    frag: Fragment,
+}
+
+/// Where `resolve` meets the probed sequence position (`rest` path segments left): it uses
+/// `over` instead of copying state and batch writes there, and hands back what it used in `out`.
+struct Probe {
+    rest: usize,
+    over: Option<Fragment>,
+    out: Option<Fragment>,
+}
+
+/// The sequence position `path` and `op` meet through fields and cases: prefix length and
+/// whether an index steps into it; `None` past a map key (resolved by `key_lookup`, no copy) or
+/// for a non-sequence op.
+fn seq_point(path: &[PathSeg], op: &crate::ops::Op) -> Option<(usize, bool)> {
+    use crate::ops::Op;
+    for (i, s) in path.iter().enumerate() {
+        match s {
+            PathSeg::Field(_) | PathSeg::Case(_) => {}
+            PathSeg::Index(_) => return Some((i, true)),
+            PathSeg::Key(_) => return None,
+        }
+    }
+    matches!(op, Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. }).then_some((path.len(), false))
+}
+
+/// The fragment of `f` at a sequence point and the reset from above there, as `resolve` reaches
+/// it (`e` grows with the batch side's resets only).
+fn at_point<'f>(f: Option<&'f Fragment>, at: &[PathSeg], index: bool, batch: bool) -> (Option<&'f Fragment>, Option<Stamp>) {
+    let mut f = f;
+    let mut e = None;
+    let step = |f: Option<&'f Fragment>, enc: Encoding, e: &mut Option<Stamp>| {
+        let m = member(f, enc);
+        if batch {
+            *e = max_opt(e.take(), reset_of(m));
+        }
+        m
+    };
+    for seg in at {
+        f = match seg {
+            PathSeg::Field(id) => step(f, Encoding::Struct, &mut e).and_then(|x| if let Fragment::Struct(x) = x { x.fields.get(id) } else { None }),
+            PathSeg::Case(id) => step(f, Encoding::Enum, &mut e).and_then(|x| if let Fragment::Enum(x) = x { x.payloads.get(id) } else { None }),
+            _ => None,
+        };
+    }
+    if index {
+        f = step(f, Encoding::List, &mut e);
+    }
+    (f, e)
 }
 
 impl<'s> Batch<'s> {
@@ -48,47 +106,63 @@ impl<'s> Batch<'s> {
         if too_deep(op) {
             return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH"));
         }
-        // a path through a map key resolves without a copy (`key_lookup`)
-        if self.acc.is_some() && self.seen.is_none() && !matches!(op.path.first(), Some(PathSeg::Key(_))) {
-            self.seen = joined(Some(self.state), self.acc.as_ref(), None);
-        }
-        let d = match &self.seen {
-            Some(v) => resolve(&mut self.w, Some(v), None, None, &op.path, op, view, true)?,
-            None => resolve(&mut self.w, Some(self.state), self.acc.as_ref(), None, &op.path, op, view, true)?,
+        let point = seq_point(&op.path, &op.op).map(|(n, index)| (op.path.get(..n).unwrap_or_default().to_vec(), index));
+        let seen = self.seen.take().filter(|x| point.as_ref().is_some_and(|(at, index)| *at == x.at && *index == x.index));
+        let mut probe = point.as_ref().map(|(at, _)| Probe { rest: op.path.len() - at.len(), over: seen.map(|x| x.frag), out: None });
+        let d = resolve(&mut self.w, Some(self.state), self.acc.as_ref(), None, &op.path, op, view, true, probe.as_mut())?;
+        let kept = probe.and_then(|p| p.out);
+        let Some(d) = d else {
+            self.seen = point.zip(kept).map(|((at, index), frag)| Seen { at, index, frag });
+            return Ok(());
         };
-        let Some(d) = d else { return Ok(()) };
         let Some(a) = self.acc.take() else {
             self.acc = Some(d);
             return Ok(());
         };
-        let mut exact = None;
-        if self.seen.is_some() {
-            let mut ch = crate::changes::Changes::new();
-            let mut j = a.clone();
-            j.prune(None, &mut ch);
-            j.join_into(d.clone(), None, &mut ch);
-            exact = Some(j);
+        // the kept view goes on only if state ⊔ acc ⊔ d = state ⊔ next there (associativity)
+        let mut follow = None;
+        if let (Some((at, index)), Some(frag)) = (point, kept) {
+            let (a_at, e) = at_point(Some(&a), &at, index, true);
+            let (d_at, _) = at_point(Some(&d), &at, index, false);
+            follow = Some((at, index, frag, e, a_at.cloned(), d_at.cloned()));
         }
-        let next = overlay(a, d.clone(), &self.w);
-        // state ⊔ acc ⊔ d = state ⊔ next when acc ⊔ d is the net effect (associativity)
-        match (&mut self.seen, exact) {
-            (Some(v), Some(j)) if j == next => v.join_into(d, None, &mut crate::changes::Changes::new()),
-            _ => self.seen = None,
+        let next = overlay(a, d, &self.w);
+        if let Some((at, index, mut frag, e, a_at, d_at)) = follow {
+            let (n_at, ne) = at_point(Some(&next), &at, index, true);
+            let mut ch = crate::changes::Changes::new();
+            let mut j = a_at.unwrap_or_default();
+            j.prune(e.as_ref(), &mut ch);
+            if let Some(d_at) = &d_at {
+                j.join_into(d_at.clone(), e.as_ref(), &mut ch);
+            }
+            let mut n = n_at.cloned().unwrap_or_default();
+            n.prune(e.as_ref(), &mut ch);
+            if ne == e && j == n {
+                if let Some(d_at) = d_at {
+                    frag.join_into(d_at, e.as_ref(), &mut ch);
+                }
+                #[cfg(debug_assertions)]
+                {
+                    // what `resolve` would copy at this position for the next op
+                    let (s_at, _) = at_point(Some(self.state), &at, index, false);
+                    debug_assert!(joined(s_at, n_at, e.as_ref()).unwrap_or_default() == frag, "batch view differs from state + net effect");
+                }
+                self.seen = Some(Seen { at, index, frag });
+            }
         }
         self.acc = Some(next);
-        #[cfg(debug_assertions)]
-        if let Some(v) = &self.seen {
-            debug_assert!(Some(v) == joined(Some(self.state), self.acc.as_ref(), None).as_ref(), "batch view differs from state + net effect");
-        }
         Ok(())
+    }
+
+    /// Whether a view of a sequence position is kept (tests).
+    #[cfg(test)]
+    pub(crate) fn keeps_view(&self) -> bool {
+        self.seen.is_some()
     }
 
     /// The state as the batch sees it: the local state joined with the batch's writes.
     pub fn view(&self) -> Fragment {
-        match &self.seen {
-            Some(v) => v.clone(),
-            None => joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default(),
-        }
+        joined(Some(self.state), self.acc.as_ref(), None).unwrap_or_default()
     }
 
     /// The delta and the counter range it consumes; `None` if the ops changed nothing.
@@ -122,14 +196,33 @@ fn current<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>)
     joined(s, a, e).map(Cow::Owned)
 }
 
+/// `current`, or the probe's kept view where the probe meets the path (`left` segments left).
+fn point<'a>(probe: &mut Option<&mut Probe>, left: usize, s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Option<Cow<'a, Fragment>> {
+    if let Some(p) = probe.as_deref_mut().filter(|p| p.rest == left)
+        && let Some(f) = p.over.take()
+    {
+        return Some(Cow::Owned(f));
+    }
+    current(s, a, e)
+}
+
+/// Hands a copy `point` made (or the kept view) back to the probe.
+fn keep(probe: &mut Option<&mut Probe>, left: usize, cur: Option<Cow<'_, Fragment>>) {
+    if let (Some(p), Some(Cow::Owned(f))) = (probe.as_deref_mut().filter(|p| p.rest == left), cur) {
+        p.out = Some(f);
+    }
+}
+
 /// Resolves `op` at `path` below the position whose state is `s` and batch writes `a`; `e` is
 /// the batch's effective reset from above. Returns the root-relative delta.
 #[allow(clippy::too_many_arguments)]
-fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool) -> Result<Option<Fragment>, Error> {
+fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool, mut probe: Option<&mut Probe>) -> Result<Option<Fragment>, Error> {
     let Some((seg, rest)) = path.split_first() else {
         // nothing of the batch at this position: resolve against the state itself, no clone
-        let cur = current(s, a, e.as_ref());
-        return leaf(w, cur.as_deref(), view, &op.op, root);
+        let cur = point(&mut probe, 0, s, a, e.as_ref());
+        let r = leaf(w, cur.as_deref(), view, &op.op, root);
+        keep(&mut probe, 0, cur);
+        return r;
     };
     let enc = match seg {
         PathSeg::Field(_) => Encoding::Struct,
@@ -147,7 +240,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             let fview = view.field(*id).ok_or(Error::Mismatch("field not in the type"))?;
             let sc = s.and_then(|f| if let Fragment::Struct(x) = f { x.fields.get(id) } else { None });
             let ac = a.and_then(|f| if let Fragment::Struct(x) = f { x.fields.get(id) } else { None });
-            resolve(w, sc, ac, e, rest, op, &fview, false)?.map(|c| Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, c)]) }))
+            resolve(w, sc, ac, e, rest, op, &fview, false, probe)?.map(|c| Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, c)]) }))
         }
         PathSeg::Case(id) => {
             let cur = current(s, a, e.as_ref());
@@ -161,7 +254,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             let pview = view.case(*id).ok_or(Error::Mismatch("case has no payload"))?;
             let sc = s.and_then(|f| if let Fragment::Enum(x) = f { x.payloads.get(id) } else { None });
             let ac = a.and_then(|f| if let Fragment::Enum(x) = f { x.payloads.get(id) } else { None });
-            resolve(w, sc, ac, e, rest, op, &pview, false)?.map(|c| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, c)]) }))
+            resolve(w, sc, ac, e, rest, op, &pview, false, probe)?.map(|c| Fragment::Enum(Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, c)]) }))
         }
         PathSeg::Key(k) => {
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
@@ -172,7 +265,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
             match key_lookup(s, a, e.as_ref(), k).filter(|_| put.is_none()) {
                 Some((d, ks)) => {
                     // against what the key reads as (batch writes included), written into the lowest live dot (§5.6)
-                    resolve(w, ks.as_ref(), None, None, rest, op, &vview, false)?
+                    resolve(w, ks.as_ref(), None, None, rest, op, &vview, false, None)?
                         .map(|c| Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) })]))))
                 }
                 None => {
@@ -186,7 +279,7 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
                     let d = w2.fresh().dot;
                     let c = match (&op.op, put, rest.is_empty()) {
                         (_, Some(v), _) | (crate::ops::Op::Set(v), None, true) => Some(crate::ops::create(&mut w2, &vview, v)?),
-                        _ => resolve(&mut w2, None, None, None, rest, op, &vview, false)?,
+                        _ => resolve(&mut w2, None, None, None, rest, op, &vview, false, None)?,
                     };
                     let Some(c) = c else { return Ok(None) };
                     *w = w2;
@@ -196,10 +289,11 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         }
         PathSeg::Index(i) => {
             let eview = view.element().ok_or(Error::Mismatch("list without element type"))?;
-            let cur = current(s, a, e.as_ref());
-            let Some(Fragment::Seq(cur)) = cur.as_deref() else { return Err(Error::Mismatch("index out of range")) };
-            let (d, content) = seq::element_at(cur, *i).ok_or(Error::Mismatch("index out of range"))?;
-            let c = resolve(w, content.as_ref(), None, None, rest, op, &eview, false)?;
+            let cur = point(&mut probe, path.len(), s, a, e.as_ref());
+            let Some(Fragment::Seq(sq)) = cur.as_deref() else { return Err(Error::Mismatch("index out of range")) };
+            let (d, content) = seq::element_at(sq, *i).ok_or(Error::Mismatch("index out of range"))?;
+            keep(&mut probe, path.len(), cur);
+            let c = resolve(w, content.as_ref(), None, None, rest, op, &eview, false, None)?;
             c.map(|c| Fragment::Seq(seq::wrap_element(d, c)))
         }
     })

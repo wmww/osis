@@ -301,11 +301,10 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
     // how the cached placement follows each record, decided before that record joins
     let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
     for (dot, de) in d.elems {
-        if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get()) {
-            match l.plan(&s.elems, &dot, &de) {
-                Some(p) => ps.push((dot.clone(), p)),
-                None => plans = None,
-            }
+        if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get())
+            && !l.plan(&s.elems, &dot, &de, ps)
+        {
+            plans = None;
         }
         join_one(s, dot, de, e, ch);
     }

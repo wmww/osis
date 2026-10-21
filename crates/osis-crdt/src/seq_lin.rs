@@ -20,8 +20,8 @@ use crate::stamp::{Dot, Stamp};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
-/// Rows per block when built: about √n, at most this; a block splits in two above twice its
-/// build size.
+/// Rows per block: about √n (at most this), growing with the placement; a block splits in two
+/// above twice that.
 const BLOCK: usize = 256;
 /// Rows scanned past an anchor for the end of its newer children's subtrees; more rebuild.
 const SCAN: usize = 4096;
@@ -72,7 +72,7 @@ pub(crate) struct Placement {
     order: Vec<usize>,
     len: usize,
     shown: usize,
-    /// Rows per block when built.
+    /// Rows per block (about √n, raised as rows are added).
     cap: usize,
 }
 
@@ -211,6 +211,7 @@ impl Placement {
         x.rows.splice(o..o, rows);
         x.shown += shown;
         self.len += n;
+        self.cap = self.cap.max(self.len.isqrt().min(BLOCK));
         self.shown += shown;
         if x.rows.len() <= 2 * self.cap {
             return;
@@ -231,7 +232,7 @@ impl Placement {
 }
 
 /// Dot to block, cheap to copy: a shared base plus the entries set since, folded in once they
-/// reach a quarter of it.
+/// pass √n (at least 64), so a copy clones few.
 #[derive(Clone, Debug, Default)]
 struct DotMap {
     base: Arc<HashMap<Dot, usize>>,
@@ -244,7 +245,7 @@ impl DotMap {
     }
     fn set(&mut self, d: Dot, b: usize) {
         self.new.insert(d, b);
-        if self.new.len() > 1024 && self.new.len() * 4 > self.base.len() {
+        if self.new.len() > self.base.len().isqrt().max(64) {
             Arc::make_mut(&mut self.base).extend(self.new.drain());
         }
     }
@@ -322,8 +323,40 @@ impl Lin {
         Some(self.p.base(b) + o)
     }
 
+    /// The plans for joining record `(dot, de)` into `elems`, pushed to `out`; `false`: rebuild.
+    pub(crate) fn plan(&self, elems: &Elems, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
+        match find(elems, dot) {
+            Some((k, r)) if k == dot && r.span < de.span => self.plan_cover(elems, dot, de, out),
+            _ => match self.plan_one(elems, dot, de) {
+                Some(p) => {
+                    out.push((dot.clone(), p));
+                    true
+                }
+                None => false,
+            },
+        }
+    }
+
+    /// A flag-only range record (a decoded delete) over several state records of one source that
+    /// it covers exactly: a flag plan per record (`join_one` cuts it at their bounds).
+    fn plan_cover(&self, elems: &Elems, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
+        if de.created.is_some() || !de.pos.is_empty() || !matches!(de.content, SeqContent::None) {
+            return false;
+        }
+        let last = nth(dot, de.span - 1);
+        let mut next = dot.ctr;
+        for (k, r) in elems.range(dot..=&last) {
+            if k.src != dot.src || k.ctr != next {
+                return false;
+            }
+            next = k.ctr.saturating_add(r.span);
+            out.push((k.clone(), Plan::Flags { span: r.span, pos: r.pos.clone(), created: r.created.is_some() }));
+        }
+        next == last.ctr.saturating_add(1)
+    }
+
     /// The plan for joining record `(dot, de)` into `elems`; `None`: rebuild.
-    pub(crate) fn plan(&self, elems: &Elems, dot: &Dot, de: &SeqElem) -> Option<Plan> {
+    fn plan_one(&self, elems: &Elems, dot: &Dot, de: &SeqElem) -> Option<Plan> {
         match find(elems, dot) {
             None => {
                 if de.span != 1 || dot.src.is_derived() {

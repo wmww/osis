@@ -383,8 +383,8 @@ proptest! {
 }
 
 /// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
-/// through `Batch`, joins (insert, delete, older concurrent insert, move), snapshot
-/// encode/decode.
+/// through `Batch`, joins of decoded deltas (insert, delete, older concurrent insert, move),
+/// snapshot encode/decode.
 #[test]
 #[ignore = "tier 2"]
 fn budget_big_text_spec_6() {
@@ -410,7 +410,8 @@ fn budget_big_text_spec_6() {
     let place = t.elapsed();
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     let t = Instant::now();
-    let (d, _, _) = b.commit(1000, &[op(Op::Insert { at: 5000, items: vec![s("x")] })], &text_view()).unwrap();
+    let (d, src, range) = b.commit(1000, &[op(Op::Insert { at: 5000, items: vec![s("x")] })], &text_view()).unwrap();
+    let d = wired(&d, &src, range, 1000);
     let one_op = t.elapsed();
     let t = Instant::now();
     a.state.join(d);
@@ -420,25 +421,29 @@ fn budget_big_text_spec_6() {
     b.commit(1001, &two, &text_view()).unwrap();
     let two_ops = t.elapsed();
     // joins with no read between follow the cache too
-    let (d, _, _) = b.commit(1002, &[op(Op::Insert { at: 7000, items: vec![s("w")] })], &text_view()).unwrap();
+    let (d, src, range) = b.commit(1002, &[op(Op::Insert { at: 7000, items: vec![s("w")] })], &text_view()).unwrap();
+    let d = wired(&d, &src, range, 1002);
     let t = Instant::now();
     a.state.join(d);
     let unread_join = t.elapsed();
     // a delete
-    let (d, _, _) = b.commit(1003, &[op(Op::Delete { at: 9000, len: 5 })], &text_view()).unwrap();
+    let (d, src, range) = b.commit(1003, &[op(Op::Delete { at: 9000, len: 5 })], &text_view()).unwrap();
+    let d = wired(&d, &src, range, 1003);
     let t = Instant::now();
     a.state.join(d);
     let delete_join = t.elapsed();
     // an older concurrent insert at the anchor of a newer one, below it and its subtree
     let mut c = Replica { state: a.state.clone(), src: node(3), lo: 1 };
-    let (older, _, _) = c.commit(1004, &[op(Op::Insert { at: 20_000, items: vec![s("old")] })], &text_view()).unwrap();
+    let (older, src, range) = c.commit(1004, &[op(Op::Insert { at: 20_000, items: vec![s("old")] })], &text_view()).unwrap();
+    let older = wired(&older, &src, range, 1004);
     let (newer, _, _) = a.commit(1005, &[op(Op::Insert { at: 20_000, items: vec![s("new")] })], &text_view()).unwrap();
     let _ = newer;
     let t = Instant::now();
     a.state.join(older);
     let older_join = t.elapsed();
     // a move: the next use places from scratch
-    let (d, _, _) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
+    let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
+    let d = wired(&d, &src, range, 1006);
     let t = Instant::now();
     a.state.join(d);
     let _ = a.state.read();
@@ -784,4 +789,85 @@ fn move_undo_chain_spec_4_6() {
     let u1 = undo(&mut w, &Undone { delta: &m1, source: &src, range: r1, restored: &restored }, &a.state, &s0, &text_view()).unwrap().unwrap();
     a.state.join(u1);
     assert_eq!(read_str(&a.state), "FOOBAR");
+}
+
+/// A writer's delta through the wire: encoded and decoded under its header range (deletes come
+/// back as range records).
+fn wired(d: &Fragment, src: &Source, range: CounterRange, t: u64) -> Fragment {
+    let cx = DeltaCtx { ts: ts(t << 16), own: src.clone(), range, kind: DeltaKind::Writer };
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, None).unwrap();
+    decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment
+}
+
+/// §6 (`seq_lin`), §3.3 rule 3: deltas joined as received from the wire (a delete of several
+/// elements is one range record over several state records) keep the cached placement, equal
+/// to a whole pass after every join.
+#[test]
+fn cached_placement_follows_wire_deltas_spec_6() {
+    let mut r = Rng(17);
+    let mut a = Replica::new(1);
+    let mut b = Replica::new(2);
+    let (mut kept, mut joins) = (0, 0);
+    for k in 0..150u64 {
+        let n = read_str(&a.state).chars().count();
+        let o = if n > 4 && r.chance(1, 3) {
+            let at = r.below(n - 3);
+            Op::Delete { at, len: 1 + r.below(3) }
+        } else {
+            Op::Insert { at: r.below(n + 1), items: vec![s("abc")] }
+        };
+        let (d, src, range) = a.commit(k + 1, &[op(o)], &text_view()).unwrap();
+        let _ = read_str(&b.state);
+        b.state.join(wired(&d, &src, range, k + 1));
+        crate::testutil::check_lin(&b.state);
+        joins += 1;
+        if matches!(&b.state, Fragment::Seq(x) if x.lin_check() == Some(true)) {
+            kept += 1;
+        }
+        assert_eq!(read_str(&a.state), read_str(&b.state));
+    }
+    assert!(kept + 2 >= joins, "kept {kept} of {joins}");
+}
+
+/// §6.1 sibling order (`seq_lin`): a run anchored where a newer and an older run already hang
+/// lands between them, without a whole pass.
+#[test]
+fn cached_placement_between_siblings_spec_6() {
+    let mut base = Replica::new(1);
+    base.commit(1, &[op(Op::Set(s(&"x".repeat(80))))], &text_view());
+    let fork = |n: u8| Replica { state: base.state.clone(), src: node(n), lo: 1 };
+    let (mut old, mut mid, mut new, mut d) = (fork(2), fork(3), fork(4), fork(5));
+    let at = |o: Op| [op(o)];
+    let (dold, _, _) = old.commit(2, &at(Op::Insert { at: 40, items: vec![s("ooo")] }), &text_view()).unwrap();
+    let (dmid, _, _) = mid.commit(4, &at(Op::Insert { at: 40, items: vec![s("mm")] }), &text_view()).unwrap();
+    let (dnew, _, _) = new.commit(6, &at(Op::Insert { at: 40, items: vec![s("nnnn")] }), &text_view()).unwrap();
+    for x in [dold, dnew, dmid] {
+        let _ = read_str(&d.state);
+        d.state.join(x);
+        crate::testutil::check_lin(&d.state);
+        assert!(matches!(&d.state, Fragment::Seq(q) if q.lin_check() == Some(true)), "followed");
+    }
+    assert_eq!(read_str(&d.state), format!("{}nnnnmmooo{}", "x".repeat(40), "x".repeat(40)));
+}
+
+/// §4.5 (`Batch`): sequence ops at one position resolve against a kept view of it once the
+/// batch has written there; an op elsewhere drops it; the result equals one-by-one commits.
+#[test]
+fn batch_keeps_sequence_view_spec_4_5() {
+    let ty = Ty::Struct([(1, Ty::Text), (2, Ty::Register)].into_iter().collect());
+    let view = TyView(ty);
+    let mut a = Replica::new(1);
+    let f = |text: &str| Value::Map([(Value::Int(1), s(text)), (Value::Int(2), Value::Int(0))].into_iter().collect());
+    a.commit(1, &[op(Op::Set(f("hello world")))], &view);
+    let text = |o: Op| PathOp { path: vec![PathSeg::Field(1)], op: o };
+    let mut bt = Batch::new(&a.state, Writer::new(ts(2 << 16), node(1), a.lo));
+    bt.apply(&text(Op::Insert { at: 5, items: vec![s(",")] }), &view).unwrap();
+    assert!(!bt.keeps_view(), "nothing of the batch there before the first op");
+    bt.apply(&text(Op::Insert { at: 0, items: vec![s(">")] }), &view).unwrap();
+    assert!(bt.keeps_view());
+    bt.apply(&text(Op::Delete { at: 8, len: 2 }), &view).unwrap();
+    assert!(bt.keeps_view());
+    bt.apply(&PathOp { path: vec![PathSeg::Field(2)], op: Op::Set(Value::Int(7)) }, &view).unwrap();
+    assert!(!bt.keeps_view(), "dropped by an op elsewhere");
+    assert_eq!(bt.view().read(), Some(Value::Map([(Value::Int(1), s(">hello, rld")), (Value::Int(2), Value::Int(7))].into_iter().collect())));
 }

@@ -233,3 +233,47 @@ fn unreadable_snapshot_certificate_fails_closed_spec_perm_6() {
     }
     assert!(diag, "a diagnostic says why");
 }
+
+// spec/data-model.md §6, spec/permissions.md §6: a `/tenures` element is never chunked whole,
+// its frontier is: a frontier just under `CHUNK_THRESHOLD` stays inline (no link) while
+// its tenure element is above it, and the snapshot applies elsewhere, judging by that frontier.
+#[test]
+fn tenure_with_frontier_under_threshold_spec_perm_6() {
+    use osis_core::format::CHUNK_THRESHOLD;
+    let mut lp = LocalPeer::new(2, 948, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let x = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &osis_core::Ak::new("/t/reg").unwrap(), &Value::Int(1)).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    edge(&mut lp, t, x, Some(Role::Write), None);
+    lp.sync(0, 1).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &osis_core::Ak::new("/t/tags").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
+    lp.peers[1].commit(m).unwrap();
+    lp.sync(1, 0).unwrap();
+    // the largest frontier of this shape at or under the threshold
+    let tw = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
+    let mut f = ct::Frontier { writes: BTreeMap::from([(t, tw(1))]), commits: BTreeSet::new() };
+    let size = |f: &ct::Frontier| osis_core::encode(&f.to_value()).len();
+    let mut i = 0u32;
+    while size(&f) <= CHUNK_THRESHOLD {
+        let b = i.to_be_bytes();
+        f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tw(5));
+        i += 1;
+    }
+    let b = (i - 1).to_be_bytes();
+    f.writes.remove(&Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
+    assert!(size(&f) <= CHUNK_THRESHOLD && size(&f) + 64 > CHUNK_THRESHOLD);
+    edge(&mut lp, t, x, None, Some(f.to_value()));
+    let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
+    let ledger = lp.peers[0].engine.get(&t, &osis_core::Ak::new("/tenures").unwrap()).unwrap();
+    let Some(Value::Set(ledger)) = ledger else { panic!("no ledger") };
+    let mut links = Vec::new();
+    ledger.iter().for_each(|e| crate::engine::large::links_in(e, &mut links));
+    assert!(links.is_empty() && ledger.iter().any(|e| osis_core::encode(e).len() > CHUNK_THRESHOLD), "the tenure element is above the threshold, inline");
+    deliver_all(&mut lp, &s).unwrap();
+    assert_eq!(tags(&mut lp, 1, t), Some(Value::Set([Value::Str("by x".into())].into())), "judged by the inline frontier");
+}
