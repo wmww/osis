@@ -2,7 +2,7 @@
 
 use crate::header::{FOREVER, Header, Kind};
 use crate::Error;
-use osis_core::format::MEMBERSHIP_KEEP_MS;
+use osis_core::format::{MEMBERSHIP_KEEP_MS, SNAPSHOT_GRACE_MS};
 use osis_core::Ts;
 use osis_schema::core_types::is_membership_class;
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
@@ -116,7 +116,14 @@ pub struct Keep {
 
 /// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
 /// which wins over both. Expiry (applied by the caller) beats everything.
+/// A compaction-snapshot body under at most 0 after replaced keeps to its first death plus
+/// `SNAPSHOT_GRACE_MS` (or the next compaction, which covers it).
 pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
+    let mut r = *r;
+    if h.kind.is_compaction() && r.at_most.rel == Some(0) {
+        r.at_most.rel = Some(SNAPSHOT_GRACE_MS);
+    }
+    let r = &r;
     let most = keep_at_most(r, first_death);
     let mut least = keep_at_least(r, last_death);
     if let Some(m) = most {

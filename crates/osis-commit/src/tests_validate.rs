@@ -192,10 +192,26 @@ fn retention_rules() {
     assert_eq!(keep_at_most(&r, None), Some(400));
     assert_eq!(keep_at_most(&r, Some(20)), Some(30));
     let h = sample_header();
-    assert_eq!(body_keep(&h, &r, Some(20), Some(80)), Keep { at_least: 30, at_most: Some(30) });
+    assert_eq!(crate::retention::body_keep(&h, &r, Some(20), Some(80)), Keep { at_least: 30, at_most: Some(30) });
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/app/title").unwrap() });
     let floor = h.ts.wall_ms().0 + MEMBERSHIP_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
     assert_eq!(body_keep(&p, &r, Some(20), Some(80)), Keep { at_least: floor, at_most: Some(floor) });
+}
+
+// spec/commits.md §5 (keep at most): under at most 0 after replaced, an ordinary body's bound is
+// its first death; a compaction-snapshot body's is its first death plus `SNAPSHOT_GRACE`.
+#[test]
+fn at_most_zero_snapshot_grace_spec_commits_5() {
+    let r = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
+    let h = sample_header();
+    assert_eq!(crate::retention::body_keep(&h, &r, Some(20), Some(80)).at_most, Some(20));
+    let mut s = h.clone();
+    s.kind = Kind::ContentSnapshot;
+    assert_eq!(crate::retention::body_keep(&s, &r, Some(20), Some(80)).at_most, Some(20 + osis_core::format::SNAPSHOT_GRACE_MS));
+    assert_eq!(crate::retention::body_keep(&s, &r, None, None).at_most, None);
+    // a relative bound above 0 is the snapshot's own
+    let d = Retention { at_most: Bound { abs: None, rel: Some(5) }, ..r };
+    assert_eq!(crate::retention::body_keep(&s, &d, Some(20), Some(80)).at_most, Some(25));
 }

@@ -1418,7 +1418,9 @@ impl SyncEngine {
             }
             let Some(h) = self.engine.header(&b.commit) else { continue };
             let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { continue };
-            if a.retention.at_most.rel.is_none() {
+            // a compaction snapshot under at most 0 goes at the next compaction or its bound,
+            // carried then: a timed delete now would re-snapshot on every kill (spec/commits.md §5)
+            if a.retention.at_most.rel.is_none() || (a.retention.at_most.rel == Some(0) && h.kind.is_compaction()) {
                 continue;
             }
             let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { continue };
