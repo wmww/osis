@@ -105,7 +105,7 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     // writes snapshots carry without their commit, invalid as their author's
     for c in core.carried.get(&(*tid, ak.clone())).into_iter().flatten() {
         if !c.valid {
-            out.push(Owned::Node { node: c.node, lo: c.lo, hi: c.hi });
+            out.push(Owned::Dots { node: c.node, ctrs: c.ctrs.clone() });
         }
     }
     out
@@ -513,6 +513,10 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for (_, c) in held {
         let Some(m) = tx.core.commits.get(&c).cloned() else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        // a snapshot its author could not write carries nothing (its own writes are none)
+        if super::is_kind_snapshot(m.header.kind) && !m.valid.get(ai).copied().unwrap_or(false) {
+            continue;
+        }
         for d in super::held_parts(tx, &c, ai)? {
             bodies.push(fragment(d).0);
         }

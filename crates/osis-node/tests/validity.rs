@@ -344,3 +344,81 @@ fn snapshot_vouches_for_nothing_spec_perm_5_2() {
         assert_eq!(tags(&mut lp, 3, d), BTreeSet::from(["mon".to_string(), "x".to_string()]), "re-granted");
     }
 }
+
+/// A content snapshot of `(t, a)` by peer `by` at `ts` carrying `f` (hand-built, unchecked).
+fn forge_snapshot(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak, ts: osis_core::Ts, f: osis_crdt::Fragment) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    let author = lp.peers[by].engine.tid();
+    let snap = osis_crdt::Snapshot { nonce: [7; 16], fragment: f, frontiers: Default::default() };
+    let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
+    let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
+    aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), None);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[by].engine.identity().keys().signing, &Tokens(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+/// Secrets for hand-built commits with `writer` retention: dedup, and made-up write secrets
+/// (delete tokens are servers' business).
+struct Tokens(osis_core::CreationRecord);
+impl osis_commit::Secrets for Tokens {
+    fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::dedup_secret(self.0.nonce()))
+    }
+    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        None
+    }
+    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([1; 32]))
+    }
+    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(osis_crypto::Secret32::from_bytes([2; 32]))
+    }
+}
+
+/// One map entry `k: v` written by `node` at `ts` with counters from `lo`.
+fn entry_by(node: Tid, ts: osis_core::Ts, lo: u64, k: &str, v: &str) -> osis_crdt::Fragment {
+    let mut w = osis_crdt::Writer::new(ts, osis_crdt::Source::node(node), lo);
+    osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s(k), s(v))]))).unwrap()
+}
+
+// spec/permissions.md §5.2 (a compaction snapshot vouches for nothing), spec/commits.md §2
+// (written by a node that may write the aspect): a writer's hostile snapshot carrying two stamps
+// of Bob from before his grant, at counters below and far above his real ones, un-merges exactly
+// those dots, not Bob's held write between them; a snapshot dated before its author's grant is
+// invalid and carries nothing (not even the owner's writes it names).
+#[test]
+fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
+    let (mut lp, d, b, _) = setup(53);
+    let m_ak = ak("/x/m");
+    let mut m = Mutation::new();
+    m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
+    let real = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let lo = lp.peers[1].engine.header(&real).unwrap().aspects[0].lo;
+    assert!(lo >= 1, "room for a forged counter below Bob's");
+    let entries = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&d, &m_ak).unwrap() {
+        Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
+        _ => BTreeSet::new(),
+    };
+    assert_eq!(entries(&mut lp), BTreeSet::from([s("k")]));
+    lp.advance(1_000);
+    let old = osis_core::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
+    let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let mut f = entry_by(b, old, lo - 1, "f1", "x");
+    f.join(entry_by(b, old, 1 << 40, "f2", "y"));
+    // and a valid write of Alice's (the snapshot applies)
+    let a = lp.peers[0].engine.tid();
+    f.join(entry_by(a, now, 1 << 42, "c", "alice"));
+    let snap = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
+    lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
+    let want = BTreeSet::from([s("k"), s("c")]);
+    assert_eq!(entries(&mut lp), want, "Bob's held write stays; the forged ones go");
+    // Carol's snapshot from before her grant, naming an owner's write
+    let early = forge_snapshot(&mut lp, 2, d, &m_ak, old, entry_by(a, old, 1 << 41, "z", "forged"));
+    lp.peers[0].engine.ingest(&early, Vec::new()).unwrap();
+    assert_eq!(entries(&mut lp), want, "an unauthorized snapshot carries nothing");
+    lp.peers[0].restart(53).unwrap();
+    assert_eq!(entries(&mut lp), want, "after a restart");
+}

@@ -63,11 +63,13 @@ pub(crate) struct Meta {
     pub dropped: BTreeSet<(usize, usize)>,
 }
 
-/// Owner of writes: one delta of one node (`[lo, hi)`), or a commit-form commit.
+/// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
+/// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Owned {
     Node { node: Tid, lo: u64, hi: u64 },
     Commit(CommitId),
+    Dots { node: Tid, ctrs: Vec<u64> },
 }
 
 impl Owned {
@@ -83,6 +85,7 @@ impl Owned {
         match (self, d.src.kind()) {
             (Owned::Node { node, lo, hi }, SourceKind::Node(t)) => t == node && *lo <= d.ctr && d.ctr < *hi,
             (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
+            (Owned::Dots { node, ctrs }, SourceKind::Node(t)) => t == node && ctrs.binary_search(&d.ctr).is_ok(),
             _ => false,
         }
     }

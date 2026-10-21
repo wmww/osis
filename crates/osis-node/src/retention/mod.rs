@@ -33,6 +33,13 @@ pub(crate) fn encode_owned(v: &[Owned]) -> Vec<u8> {
         w = match o {
             Owned::Node { node, lo, hi } => w.u8(0).raw(node.as_bytes()).u64(*lo).u64(*hi),
             Owned::Commit(c) => w.u8(1).raw(&c.0),
+            Owned::Dots { node, ctrs } => {
+                let mut w = w.u8(2).raw(node.as_bytes()).u32(ctrs.len() as u32);
+                for c in ctrs {
+                    w = w.u64(*c);
+                }
+                w
+            }
         };
     }
     w.take()
@@ -44,7 +51,15 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
     for _ in 0..r.u32()? {
         out.push(match r.u8()? {
             0 => Owned::Node { node: r.tid()?, lo: r.u64()?, hi: r.u64()? },
-            _ => Owned::Commit(CommitId(r.arr()?)),
+            1 => Owned::Commit(CommitId(r.arr()?)),
+            _ => {
+                let node = r.tid()?;
+                let mut ctrs = Vec::new();
+                for _ in 0..r.u32()? {
+                    ctrs.push(r.u64()?);
+                }
+                Owned::Dots { node, ctrs }
+            }
         });
     }
     r.end()?;
@@ -117,6 +132,8 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
             if *ts < at
                 && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
                 && let Some(ai) = held(s)
+                // a snapshot its author could not write carries nothing
+                && core.commits.get(s).is_some_and(|m| m.valid.get(ai).copied().unwrap_or(false))
             {
                 out.push((*s, ai));
             }

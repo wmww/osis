@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 /// Whether the index on disk was written by this build.
 const VERSION_KEY: &[u8] = b"i/v";
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 4");
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/index 5");
 // The derived indexes live in rebuildable store index tables of their own (a node's local
 // records table is not deepened by them).
 const BOX_KEYS: &[u8] = b"node/box keys";
@@ -162,12 +162,13 @@ impl<T: Rec> Rec for Vec<T> {
 }
 impl Rec for crate::apply::validity::Carried {
     fn to(&self) -> Value {
-        Value::List(vec![self.node.to(), self.ts.to(), uint(self.lo), uint(self.hi), Value::Bool(self.valid)])
+        Value::List(vec![self.node.to(), self.ts.to(), Value::List(self.ctrs.iter().map(|c| uint(*c)).collect()), Value::Bool(self.valid)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [n, ts, Value::Int(lo), Value::Int(hi), Value::Bool(valid)] = x.as_slice() else { return None };
-        Some(crate::apply::validity::Carried { node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, lo: u64::try_from(*lo).ok()?, hi: u64::try_from(*hi).ok()?, valid: *valid })
+        let [n, ts, Value::List(ctrs), Value::Bool(valid)] = x.as_slice() else { return None };
+        let ctrs = ctrs.iter().map(|c| if let Value::Int(c) = c { u64::try_from(*c).ok() } else { None }).collect::<Option<Vec<u64>>>()?;
+        Some(crate::apply::validity::Carried { node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, ctrs, valid: *valid })
     }
 }
 impl Rec for () {
