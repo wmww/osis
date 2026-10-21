@@ -206,8 +206,9 @@ fn moderator_hides() {
 }
 
 // notes/chat.md Costs (budgets): bytes a join, a message and a removal send to the server in a
-// chat of N (`OSIS_CHAT_N`, default 4), against the measured costs with a margin: join ≈ 41 KB
-// (the joiner's chain certificates under two labels, grant, persona, inbox blobs), message
+// chat of N (`OSIS_CHAT_N`, default 4), against the measured costs with a margin: join ≈ 45 KB
+// (the joiner's chain certificates under two labels, grant, persona, inbox blobs, the grant's
+// copy under its home label with K's `/label`; no second copy of K's own inbox grant), message
 // ≈ 2.5 KB (3 projections), removal ≈ 26 KB at 4 and ≈ 3 KB more per member (one K and one C
 // rotation, 2.7 KB of boxes per remaining member), others only heartbeats (≈ 0.5 KB each).
 // Tier 2 (about 18 s in a debug build, 5 s in release): run
@@ -247,7 +248,7 @@ fn costs_join_message_removal() {
     let sum = |t: &std::collections::BTreeMap<String, (u64, u64)>| t.values().map(|v| v.1).sum::<u64>();
     eprintln!("chat of {n}\n join {} B {join:?}\n message {} B {msg:?}\n removal {} B {rm:?}\n others during removal {others_rm} B", sum(&join), sum(&msg), sum(&rm));
     assert!(sum(&msg) < 3_000, "a message: 3 projections, about 2.5 KB");
-    assert!(sum(&join) < 50_000, "join: about 41 KB");
+    assert!(sum(&join) < 47_000, "join: about 45 KB");
     assert!(sum(&rm) < 4_000 * n as u64 + 24_000, "removal: about 26 KB at 4 members, 3 KB per member");
     assert!(others_rm < 1_500 * (n as u64 - 1), "others during a removal: heartbeats");
 }

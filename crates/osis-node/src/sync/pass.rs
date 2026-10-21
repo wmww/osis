@@ -8,7 +8,7 @@
 use super::state::{BlobRec, Entry, Kind, ServerKey};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::{Body, Facts, HeadKeys, Hold, Why, classify, delete_item, may_delete, seal_body};
+use crate::labeling::{Body, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
 use osis_commit::Kind as CKind;
 use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
@@ -839,7 +839,8 @@ impl SyncEngine {
     /// once applied, under that label: every part the inbox blob carried (its boxes included,
     /// sealed to the actor anyway), with the `/label` and `/created` commits of the things it
     /// named, so the actor's other devices find the grant and its labels there (spec/sync.md
-    /// §3). The consumed inbox blob stays until it expires: its label hints are what a later
+    /// §3); not what an entry there already holds (each member of a group actor reads its inbox
+    /// and placed the same copy again). The consumed inbox blob stays until it expires: its label hints are what a later
     /// member that cannot apply the copied `/label` yet (the granter's chain pending) opens the
     /// thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
@@ -860,11 +861,16 @@ impl SyncEngine {
             if !ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
                 continue;
             }
+            // another member's copy is there: done, as if placed here
+            if self.held_whole(g, l, &c, &ais)? {
+                self.state.add_cert(l, c);
+                continue;
+            }
             let touched: BTreeSet<Tid> = m.header.aspects.iter().map(|a| a.tid).collect();
             for t in things.into_iter().filter(|t| touched.contains(t)) {
                 for ak in ["/created", "/label"] {
                     let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
-                    if !self.state.certs.contains(&(l, x)) {
+                    if !self.state.certs.contains(&(l, x)) && !self.held_whole(g, l, &x, &xs)? {
                         self.place_certificate_in(g, &x, &xs)?;
                     }
                 }
@@ -885,8 +891,6 @@ impl SyncEngine {
     /// opens under the newest read secret.
     fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool) -> Result<()> {
         let closure = self.engine.closure(g);
-        let servers: Vec<ServerKey> = self.conns.values().filter(|c| c.labels.contains_key(&l)).map(|c| c.server).collect();
-        let newest = self.engine.wrap_secret(g, None)?;
         let wanted = if revokes_only {
             // under an epoch a departure inside a member leaves uncovered: those revokes only
             let actor = self.engine.group_actor(g);
@@ -894,12 +898,17 @@ impl SyncEngine {
         } else {
             let mut wanted = self.card_certificates(g);
             // revokes and roster snapshots about authors seen under the label (spec/permissions.md
-            // §4), so its verifiers judge their writes as this node does
+            // §4), so its verifiers judge their writes as this node does: authors of an entry
+            // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
+            // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
+            // link actor L, made before L's removal)
             let me = self.engine.tid();
             let mut authors: BTreeSet<Tid> = BTreeSet::new();
             for (_, e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
-                if let Kind::Commit { commit, .. } = &e.kind
+                if let Kind::Commit { commit, parts } = &e.kind
                     && let Some(h) = self.engine.header(commit)
+                    && !authors.contains(&h.author)
+                    && !self.engine.judged_valid(commit, parts)
                 {
                     authors.insert(h.author);
                 }
@@ -911,30 +920,7 @@ impl SyncEngine {
             wanted
         };
         for (c, want) in wanted {
-            // the parts entries of `c` under the label hold: this node's copies, and another
-            // node's copy or body counted as described above
-            let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
-            let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
-            for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
-                let Kind::Commit { commit, parts } = &e.kind else { continue };
-                if *commit != c {
-                    continue;
-                }
-                if e.cert {
-                    mine.extend(parts.iter().copied());
-                } else if !servers.is_empty()
-                    && servers.iter().all(|s| self.state.is_present(s, &l, id))
-                    && (!self.engine.carries_secrets(g, &c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, id, &e.wrap).is_ok()))
-                {
-                    others.push((*id, parts.clone()));
-                }
-            }
-            let mut held = mine.clone();
-            for (id, parts) in others {
-                if self.genuine(&id) {
-                    held.extend(parts);
-                }
-            }
+            let (mine, held) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
             // parts is a strict subset others delete)
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
@@ -965,6 +951,48 @@ impl SyncEngine {
             self.state.add_cert(l, c);
         }
         Ok(())
+    }
+
+    /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another
+    /// member's copy of the same grant counts: spec/permissions.md §4), so a copy would only be
+    /// a duplicate.
+    fn held_whole(&mut self, g: &Tid, l: LabelId, c: &CommitId, ais: &BTreeSet<usize>) -> Result<bool> {
+        let Some(h) = self.engine.header(c) else { return Ok(false) };
+        let want: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().filter(|(i, _)| ais.contains(i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+        let (_, held) = self.held_parts(g, l, c)?;
+        Ok(want.is_subset(&held))
+    }
+
+    /// The parts of commit `c` entries under `l` hold, as (this node's certificate copies, all
+    /// that count): another node's copy or body counts once genuine and present at every server
+    /// this node syncs the label with, and, carrying a rotation of the label's actor, only if it
+    /// opens under the newest read secret (spec/permissions.md §4).
+    fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
+        let servers: Vec<ServerKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.server).collect();
+        let newest = self.engine.wrap_secret(g, None)?;
+        let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
+        let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
+        for ((_, id), e) in self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l) {
+            let Kind::Commit { commit, parts } = &e.kind else { continue };
+            if commit != c {
+                continue;
+            }
+            if e.cert {
+                mine.extend(parts.iter().copied());
+            } else if !servers.is_empty()
+                && servers.iter().all(|s| self.state.is_present(s, &l, id))
+                && (!self.engine.carries_secrets(g, c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, id, &e.wrap).is_ok()))
+            {
+                others.push((*id, parts.clone()));
+            }
+        }
+        let mut held = mine.clone();
+        for (id, parts) in others {
+            if self.genuine(&id) {
+                held.extend(parts);
+            }
+        }
+        Ok((mine, held))
     }
 
     /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).

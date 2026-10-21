@@ -250,6 +250,26 @@ impl Engine {
         out
     }
 
+    /// Whether this node judges the parts `parts` of commit `c` valid (spec/permissions.md
+    /// §5): applied, not pending, each aspect valid, and, for a membership commit, each of its
+    /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
+    /// redemption race keeps its valid removal of L beside its void grant).
+    pub(crate) fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let Some(m) = self.core.commits.get(c) else { return false };
+        if self.core.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
+            return false;
+        }
+        if !m.header.kind.is_membership() {
+            return true;
+        }
+        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid).collect();
+        targets.iter().all(|t| {
+            let Some(tl) = self.core.timelines.get(t) else { return true };
+            let Some(mc) = tl.membership_commit(c) else { return true };
+            mc.ops.iter().enumerate().filter(|(_, op)| op.target == *t).all(|(i, _)| u32::try_from(i).is_ok_and(|i| tl.is_applied(&osis_perm::WriteId::Op(*c, i))))
+        })
+    }
+
     /// Revokes and roster snapshots about `authors` (of entries seen under a label), with what
     /// a verifier needs to judge them as this node does (their own authors' chain certificates;
     /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing outside
