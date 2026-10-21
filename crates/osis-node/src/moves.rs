@@ -159,6 +159,14 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             let out = excluded(tx, &a.tid, &a.ak);
             let (core, s) = (&*tx.core, carrier);
             f.remove_dots(&|d| out.iter().any(|o| o.owns(d)) || (s.is_some_and(|s| !s.covers_dot(d)) && from_own(core, &a.tid, &a.ak, d)));
+            // only the bare anchors imported writes reference (any origin's: the state holds
+            // them all), so an import stays within `MAX_DELTA_BARE` where its writes do
+            tx.load(&a.tid, &a.ak)?;
+            let mut keep = f.anchors();
+            if let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) {
+                keep.extend(st.anchors());
+            }
+            f.drop_bare_except(&keep);
         } else if let (Some(s), Some(o)) = (carrier, Owned::of(&h, c, ai)) {
             // its own writes the snapshot covers and carries come from the snapshot
             let l = live.get(&a.ak);
@@ -189,7 +197,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
 }
 
 /// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped
-/// (its bare anchors come along: an import may carry them, spec/crdt.md §3.3 rule 7).
+/// (the bare anchors imported writes reference come along: an import may carry them,
+/// spec/crdt.md §3.3 rule 7).
 fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
     let mut out = BTreeMap::new();
     let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();

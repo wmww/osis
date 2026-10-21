@@ -116,12 +116,12 @@ pub struct Keep {
 
 /// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
 /// which wins over both. Expiry (applied by the caller) beats everything.
-/// A compaction-snapshot body under at most 0 after replaced keeps to its first death plus
-/// `SNAPSHOT_GRACE_MS` (or the next compaction, which covers it).
+/// A compaction-snapshot body's relative keep at most D counts as D plus `SNAPSHOT_GRACE_MS`
+/// (the next compaction, which covers it, usually drops it first).
 pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>) -> Keep {
     let mut r = *r;
-    if h.kind.is_compaction() && r.at_most.rel == Some(0) {
-        r.at_most.rel = Some(SNAPSHOT_GRACE_MS);
+    if h.kind.is_compaction() {
+        r.at_most.rel = r.at_most.rel.map(|d| d.saturating_add(SNAPSHOT_GRACE_MS));
     }
     let r = &r;
     let most = keep_at_most(r, first_death);

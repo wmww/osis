@@ -272,3 +272,66 @@ fn move_reset_compacted_text_complete_spec_perm_7() {
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get(&copy, &k).unwrap(), Some(s("xyzq")), "receivers accept the import");
 }
+
+// spec/permissions.md §7 (an import carries the bare anchors its imported writes reference): a
+// text reset and compacted, then an insert at an element the reset pruned arrives (beyond the
+// snapshot, imported from its own commit): the snapshot's import keeps that anchor, so the copy
+// places the insert.
+#[test]
+fn move_keeps_anchor_of_later_insert_spec_perm_7() {
+    let mut lp = net(2, 80);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s("abc")).unwrap();
+    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.replace(t, &TEXT, &s("xyz")).unwrap();
+    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    let k = ak("/t/text");
+    let e = &mut lp.peers[0].engine;
+    let snap = e.snapshot(&t, &k).unwrap().unwrap();
+    for c in [c1, c2] {
+        e.drop_body(&c, &t, &k).unwrap();
+    }
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 2, items: vec![s("q")] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("xyzq")));
+    let (copy, imports) = e.move_thing(&t, a).unwrap();
+    assert!(imports.iter().any(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == snap))));
+    assert_eq!(e.get(&copy, &k).unwrap(), Some(s("xyzq")), "the copy places the insert");
+}
+
+// spec/permissions.md §7, spec/crdt.md §3.3 rule 7 (`MAX_DELTA_BARE`): a 100k-character text
+// replaced three times (300k bare anchors nothing anchors at) and compacted moves: the import
+// carries only the referenced bare anchors, so it stays within the bound.
+#[test]
+#[ignore = "tier 2"]
+fn move_many_bare_anchors_spec_perm_7() {
+    let mut lp = net(1, 81);
+    let t = new_thing(&mut lp, 0);
+    let a = lp.peers[0].engine.tid();
+    let k = ak("/t/text");
+    let mut ids = Vec::new();
+    for ch in ["a", "b", "c", "d"] {
+        let mut m = Mutation::new();
+        m.replace(t, &TEXT, &s(&ch.repeat(100_000))).unwrap();
+        ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+        lp.advance(1_000);
+    }
+    let e = &mut lp.peers[0].engine;
+    e.snapshot(&t, &k).unwrap().unwrap();
+    for c in ids {
+        e.drop_body(&c, &t, &k).unwrap();
+    }
+    let (copy, _) = e.move_thing(&t, a).unwrap();
+    assert_eq!(e.get(&copy, &k).unwrap(), Some(s(&"d".repeat(100_000))));
+}

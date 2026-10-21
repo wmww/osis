@@ -913,10 +913,10 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             return Err(Error::Bad("run order"));
         }
         got.push((first.clone(), n));
-        // a bare-anchor run (nothing but dots) only in a snapshot (§3.3 rule 7)
+        // a bare-anchor run (nothing but dots) never in a writer's delta (§3.3 rule 7)
         let empty = |i: usize| a[i].array().map_or(false, |x| x.is_empty());
-        if !cx.snapshot && empty(2) && empty(3) && empty(4) && empty(5) {
-            return Err(Error::Bad("bare anchors outside a snapshot"));
+        if cx.hi.is_some() && empty(2) && empty(3) && empty(4) && empty(5) {
+            return Err(Error::Bad("bare anchors in a writer's delta"));
         }
         let mut elems: Vec<SeqElem> = (0..n).map(|_| SeqElem::write(Content::None, vec![], None)).collect();
         match a[2].array()? {

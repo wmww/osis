@@ -852,7 +852,7 @@ mod tests {
         assert_eq!(f, st);
     }
 
-    // spec: none (local store paging); spec/requirements.md, Scale (a change costs O(change) at any
+    // spec: none (local store paging, for the Scale requirements: a change costs O(change) at any
     // depth, peer input never causes unbounded work); notes/local-store.md (Units): a state with large collections inside map
     // entries pages each of them. Random edits, each made in a fresh session that loads only the
     // pages the edit touches (or everything where it does not fit), written page by page: a

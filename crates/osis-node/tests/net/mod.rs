@@ -451,6 +451,7 @@ aspect /t/brief: string [expires: 1h];
 aspect /t/blob: blob;
 aspect /t/big: map<string, string>;
 aspect /t/gonemap: map<string, string> [by: writer, keep_at_most: 0s];
+aspect /t/shortmap: map<string, string> [by: writer, keep_at_most: 10m];
 "#,
 );
 
@@ -460,6 +461,7 @@ pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/brief
 pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/blob", &TEST);
 pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/big", &TEST);
 pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gonemap", &TEST);
+pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/shortmap", &TEST);
 
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())
