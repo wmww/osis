@@ -202,8 +202,10 @@ fn prune_entry(en: &mut Entry, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_stamp(&mut en.reset, e, ch);
     let ee = max_opt(e.cloned(), en.reset.clone());
     prune_opt(&mut en.frag, ee.as_ref(), ch);
+    prune_stamp(&mut en.created, ee.as_ref(), ch);
     if en.frag.is_none() {
         en.key = None;
+        en.created = None;
     }
     en.reset.is_some() || en.frag.is_some()
 }
@@ -228,9 +230,16 @@ fn join_entry(s: &mut BTreeMap<Dot, Entry>, dot: Dot, mut de: Entry, e: Option<&
                 se.key = de.key;
                 ch.touch();
             }
+            if raised {
+                prune_stamp(&mut se.created, ee.as_ref(), ch);
+            }
             join_opt(&mut se.frag, de.frag, ee.as_ref(), ch);
+            let mut dc = de.created;
+            prune_stamp(&mut dc, ee.as_ref(), ch);
+            join_stamp(&mut se.created, dc, ch);
             if se.frag.is_none() {
                 se.key = None;
+                se.created = None;
             }
             if se.reset.is_none() && se.frag.is_none() {
                 s.remove(&dot);

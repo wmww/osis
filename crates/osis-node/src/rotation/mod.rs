@@ -685,8 +685,9 @@ pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
 
 /// Empties the work list, returning it.
 fn take_due(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    let due = std::mem::take(&mut tx.core.lost_due);
+    let due: BTreeSet<Tid> = tx.core.lost_due.iter().copied().collect();
     for t in &due {
+        tx.core.lost_due.remove(t);
         tx.txn.remove_local(&[LOST_DUE, t.as_bytes()].concat(), osis_store::Shred::No)?;
     }
     Ok(due)

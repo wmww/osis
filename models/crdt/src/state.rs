@@ -30,6 +30,9 @@ pub struct Entry {
     /// `None` for tombstones and entries whose creation is value-less (§4.7, §5.6).
     pub key: Option<Value>,
     pub frag: Option<Box<Frag>>,
+    /// The creation write's stamp (dot = the entry's), while it survives pruning and the entry
+    /// holds content (§5.6).
+    pub created: Option<Stamp>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -352,7 +355,7 @@ impl Frag {
                         }
                         Some(na) => {
                             // Keys of one dot are equal by construction; keep whichever is present.
-                            ea.insert(d, Entry { reset: max_opt(na.reset, nb.reset), key: na.key.or(nb.key), frag: jopt(na.frag, nb.frag) });
+                            ea.insert(d, Entry { reset: max_opt(na.reset, nb.reset), key: na.key.or(nb.key), frag: jopt(na.frag, nb.frag), created: max_opt(na.created, nb.created) });
                         }
                     }
                 }
@@ -484,9 +487,13 @@ impl Frag {
                             en.frag = None;
                         }
                     }
-                    // content-free tombstone: the key goes with the content
+                    if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
+                        en.created = None;
+                    }
+                    // content-free tombstone: the key and creation go with the content
                     if en.frag.is_none() {
                         en.key = None;
+                        en.created = None;
                     }
                     en.reset.is_some() || en.frag.is_some()
                 });
@@ -701,6 +708,7 @@ impl Frag {
                 }
                 if en.frag.is_none() {
                     en.key = None;
+                    en.created = None;
                 }
                 en.reset.is_some() || en.frag.is_some()
             }),

@@ -136,6 +136,7 @@ impl Fragment {
                 }
                 if en.frag.is_none() {
                     en.key = None;
+                    en.created = None;
                 }
                 en.reset.is_some() || en.frag.is_some()
             }),

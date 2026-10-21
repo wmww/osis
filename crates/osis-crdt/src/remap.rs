@@ -99,8 +99,9 @@ impl Writes<'_> {
             self.stamp(s);
         }
     }
-    fn elem(&mut self, d: &Dot) {
-        self.0.push((d.owner().clone(), None));
+    /// An element identity, with its creation's `ts` where the record carries it.
+    fn elem(&mut self, d: &Dot, ts: Option<osis_core::Ts>) {
+        self.0.push((d.owner().clone(), ts));
     }
     fn frag(&mut self, f: &Fragment) {
         match f {
@@ -114,7 +115,12 @@ impl Writes<'_> {
                 self.opt(&m.reset);
                 self.opt(&m.w);
                 for (d, x) in e {
-                    self.elem(d);
+                    // the value register is written only by the element's creation (§5.5)
+                    let ts = match x.frag.as_deref() {
+                        Some(Fragment::Register(r)) => r.write.as_ref().filter(|w| w.stamp.dot.src == d.src).map(|w| w.stamp.ts),
+                        _ => None,
+                    };
+                    self.elem(d, ts);
                     self.opt(&x.reset);
                     if let Some(f) = &x.frag {
                         self.frag(f);
@@ -138,7 +144,7 @@ impl Writes<'_> {
                 self.opt(&mp.meta.reset);
                 self.opt(&mp.meta.w);
                 for (d, e) in &mp.entries {
-                    self.elem(d);
+                    self.elem(d, e.created.as_ref().map(|c| c.ts));
                     self.opt(&e.reset);
                     if let Some(f) = &e.frag {
                         self.frag(f);
@@ -149,7 +155,7 @@ impl Writes<'_> {
                 self.opt(&s.meta.reset);
                 self.opt(&s.meta.w);
                 for (d, e) in crate::seq_span::expand(s.elems().clone()) {
-                    self.elem(&d);
+                    self.elem(&d, e.created.as_ref().map(|(st, _)| st.ts));
                     if let Some((st, _)) = &e.created {
                         self.stamp(st);
                     }
@@ -179,8 +185,9 @@ impl Writes<'_> {
 
 impl Fragment {
     /// Every write in this fragment by its owner dot: stamps with their `ts`, element
-    /// creations (map entries, set and bag elements, sequence elements) without (a sequence
-    /// creation also appears with its creation stamp). For judging a snapshot's writes as their
+    /// creations (map entries, set and bag elements, sequence elements) with their creation's
+    /// `ts` where the record carries it (a map entry's creation, a set or bag element's value
+    /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their
     /// authors' (spec/permissions.md §5.2) and ranking them (§7).
     pub fn writes(&self) -> Vec<(Dot, Option<osis_core::Ts>)> {
         let mut out = Vec::new();
@@ -217,6 +224,7 @@ impl Fragment {
                     .into_iter()
                     .map(|(d, mut e): (Dot, Entry)| {
                         opt(&mut e.reset, f);
+                        opt(&mut e.created, f);
                         if let Some(x) = &mut e.frag {
                             x.map_dots(f);
                         }

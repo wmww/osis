@@ -195,7 +195,8 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
             let mut entries = BTreeMap::new();
             for (k, val) in kv {
                 let d = w.fresh().dot;
-                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vv, val)?)) });
+                let created = Some(Stamp::new(w.ts, d.src.clone(), d.ctr));
+                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vv, val)?)), created });
             }
             Fragment::Map(Map::new(meta, entries))
         }
@@ -223,7 +224,7 @@ pub fn remove(w: &Writer, enc: Encoding) -> Result<Fragment, Error> {
 /// whatever their liveness here (an explicit removal of an edge already removed).
 pub fn reset_entries(w: &Writer, dots: &[Dot]) -> Fragment {
     let r = w.delta_stamp();
-    let entries = dots.iter().map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None })).collect();
+    let entries = dots.iter().map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None })).collect();
     Fragment::Map(Map::new(Meta::default(), entries))
 }
 
@@ -362,7 +363,7 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
             for (k, _, dots) in &keyed {
                 if k.as_ref().is_some_and(|k| !kv.contains_key(k)) {
                     for d in dots.iter() {
-                        entries.insert((*d).clone(), Entry { reset: Some(r.clone()), key: None, frag: None });
+                        entries.insert((*d).clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None });
                     }
                 }
             }
@@ -375,12 +376,13 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                     let Some(d) = dots.first() else { continue };
                     let cur = key_state(m, dots);
                     if let Some(delta) = diff(w, cur.as_ref(), &vview, val)? {
-                        entries.insert((*d).clone(), Entry { reset: None, key: Some((*stored).clone()), frag: Some(Box::new(delta)) });
+                        entries.insert((*d).clone(), Entry { reset: None, key: Some((*stored).clone()), frag: Some(Box::new(delta)), created: None });
                     }
                 }
                 if !matched {
                     let d = w.fresh().dot;
-                    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)) });
+                    let created = Some(Stamp::new(w.ts, d.src.clone(), d.ctr));
+                    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)), created });
                 }
             }
             Fragment::Map(Map::new(Meta::default(), entries))
@@ -441,7 +443,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                         .into_iter()
                         .filter(|(k, _)| projected(&kv, k).as_ref() == Some(x))
                         .flat_map(|(_, ds)| ds)
-                        .map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None }))
+                        .map(|d| (d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None }))
                         .collect();
                     Ok((!entries.is_empty()).then(|| Fragment::Map(Map::new(Meta::default(), entries))))
                 }

@@ -190,7 +190,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut removed: BTreeMap<osis_core::Value, Fragment> = BTreeMap::new();
             for (d, e) in &m.entries {
                 if e.frag.is_some() && u.made(d) {
-                    entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None });
+                    entries.insert(d.clone(), Entry { reset: Some(r.clone()), key: None, frag: None, created: None });
                 } else if let (Some(f), Some(k)) = (&e.frag, &e.key) {
                     // a nested edit into an existing entry
                     path.push(PathSeg::Key(k.clone()));
@@ -199,7 +199,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();
                     if let Some(c) = res? {
-                        entries.insert(d.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)) });
+                        entries.insert(d.clone(), Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(c)), created: None });
                     }
                 } else if e.reset.is_some()
                     && let Some(Fragment::Map(p)) = &prev
@@ -216,8 +216,9 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             for (k, f) in removed {
                 let Some(v) = f.read() else { continue };
-                let nd = w.fresh().dot;
-                entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)) });
+                let st = w.fresh();
+                let nd = st.dot.clone();
+                entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)), created: Some(st) });
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }
@@ -335,7 +336,7 @@ impl Fragment {
                         for ld in s.live_dots(k) {
                             if let Some(x) = s.entries.get(ld) {
                                 let frag = x.frag.as_ref().map(|xf| Box::new(xf.footprint(f)));
-                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), key: x.key.clone(), frag });
+                                keep.insert(ld.clone(), Entry { reset: x.reset.clone(), key: x.key.clone(), frag, created: x.created.clone() });
                             }
                         }
                     }

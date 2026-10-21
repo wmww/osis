@@ -390,6 +390,7 @@ impl Frag {
                 opt(&c.w, f);
                 for (d, en) in wire_sorted(entries, own) {
                     f(Ref::Dot(d));
+                    opt(&en.created, f);
                     opt(&en.reset, f);
                     if let Some(fr) = &en.frag {
                         fr.walk_own(own, f);
@@ -576,7 +577,13 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
             let es = wire_sorted(entries, &cx.own)
                 .into_iter()
                 .map(|(d, e)| {
-                    let mut a = vec![enc_dot(d, cx), enc_opt_stamp(&e.reset, cx)];
+                    let mut a = vec![enc_dot(d, cx)];
+                    // a foreign creation carries its commit (snapshots, imports); this commit's own
+                    // is implied
+                    if let Some(c) = e.created.as_ref().filter(|c| !(c.ts == cx.ts && c.dot.source == cx.own)) {
+                        a.push(u(cx.commit_index(c.ts, &d.source).expect("commit table collected").0));
+                    }
+                    a.push(enc_opt_stamp(&e.reset, cx));
                     a.extend(e.key.iter().map(|k| k.to_item()));
                     a.push(Item::Array(e.frag.iter().map(|f| encode(f, cx)).collect()));
                     Item::Array(a)
@@ -808,6 +815,11 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
             let mut last: Option<Dot> = None;
             for e in a[3].array()? {
                 let x = e.array()?;
+                let ci = match x.get(1) {
+                    Some(Item::Int(_)) => Some(x[1].uint()?),
+                    _ => None,
+                };
+                let x: Vec<Item> = if ci.is_some() { std::iter::once(x[0].clone()).chain(x[2..].iter().cloned()).collect() } else { x.to_vec() };
                 let (key, frag) = match x.len() {
                     3 => (None, dec_opt_frag(&x[2], cx)?),
                     4 => (Some(Value::from_item(&x[2])?), dec_opt_frag(&x[3], cx)?),
@@ -821,7 +833,20 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                     return Err(Error::Bad("entry order"));
                 }
                 last = Some(d.clone());
-                entries.insert(d, Entry { reset: dec_opt_stamp(&x[1], cx)?, key, frag });
+                let created = match (ci, cx.hi) {
+                    (Some(_), Some(_)) => return Err(Error::Bad("creation commit in a writer's delta")),
+                    (Some(_), None) if frag.is_none() => return Err(Error::Bad("creation commit on a tombstone")),
+                    (Some(ci), None) => {
+                        let (ts, src, _) = cx.commit(ci)?;
+                        if ci == 0 || src != d.source {
+                            return Err(Error::Bad("creation commit"));
+                        }
+                        Some(Stamp { ts, dot: d.clone() })
+                    }
+                    (None, Some(hi)) if frag.is_some() && d.source == cx.own && cx.lo <= d.ctr && d.ctr < hi => Some(Stamp { ts: cx.ts, dot: d.clone() }),
+                    _ => None,
+                };
+                entries.insert(d, Entry { reset: dec_opt_stamp(&x[1], cx)?, key, frag, created });
             }
             Frag::Map { c: composite(a, cx)?, entries }
         }
@@ -1071,6 +1096,15 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
 /// Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty here:
 /// the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
+    encode_snapshot_authors(f, frontiers, &BTreeMap::new(), nonce, cx)
+}
+
+/// Per `Commit` source, the node (tid bytes) and `ts` its writes are judged as (§8 `Authors`).
+pub type Authors = BTreeMap<[u8; 32], ([u8; 15], Ts)>;
+
+/// A snapshot with `Authors` (entries for sources the fragment does not hold are dropped; the
+/// array is omitted when empty).
+pub fn encode_snapshot_authors(f: &Frag, frontiers: &[(Source, u64)], authors: &Authors, nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     let extra: Vec<Source> = frontiers
         .iter()
         .map(|(s, c)| {
@@ -1083,16 +1117,38 @@ pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], c
     let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
     fr.sort();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
-    cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())]))
+    let mut top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
+    let au: Vec<Item> = cx
+        .sources
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| match s {
+            Source::Commit(c) => authors.get(c).map(|(n, ts)| Item::Array(vec![u(i as u64 + 1), Item::Bytes(n.to_vec()), u(*ts)])),
+            _ => None,
+        })
+        .collect();
+    if !au.is_empty() {
+        top.push(Item::Array(au));
+    }
+    cbor::encode(&Item::Array(top))
 }
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
+    decode_snapshot_authors(bytes, cx).map(|(f, fr, _)| (f, fr))
+}
+
+pub fn decode_snapshot_authors(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>, Authors), Error> {
     let it = cbor::decode(bytes)?;
-    match it.array()? {
-        [Item::Bytes(n), sources, commits, f, fr, ab] if n.len() == 16 => {
-            if !ab.array()?.is_empty() {
-                return Err(Error::Bad("absorbed commits (not modeled)"));
-            }
+    let (n, sources, commits, f, fr, ab, au) = match it.array()? {
+        [n, sources, commits, f, fr, ab] => (n, sources, commits, f, fr, ab, None),
+        [n, sources, commits, f, fr, ab, au] => (n, sources, commits, f, fr, ab, Some(au)),
+        _ => return Err(Error::Bad("snapshot")),
+    };
+    if !ab.array()?.is_empty() {
+        return Err(Error::Bad("absorbed commits (not modeled)"));
+    }
+    match (n, sources, commits, f, fr) {
+        (Item::Bytes(n), sources, commits, f, fr) if n.len() == 16 => {
             cx.snapshot = true;
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
@@ -1122,7 +1178,26 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             if own {
                 return Err(Error::Bad("own write in a snapshot"));
             }
-            Ok((frag, out))
+            let mut authors = Authors::new();
+            if let Some(au) = au {
+                let mut last = 0u64;
+                let es = au.array()?;
+                if es.is_empty() {
+                    return Err(Error::Bad("empty authors"));
+                }
+                for e in es {
+                    let [i, Item::Bytes(t), ts] = e.array()? else { return Err(Error::Bad("author")) };
+                    let i = i.uint()?;
+                    if i <= last {
+                        return Err(Error::Bad("authors order"));
+                    }
+                    last = i;
+                    let Source::Commit(c) = cx.source(i)? else { return Err(Error::Bad("author of a non-commit source")) };
+                    let t: [u8; 15] = t.as_slice().try_into().map_err(|_| Error::Bad("author tid"))?;
+                    authors.insert(c, (t, ts.uint()?));
+                }
+            }
+            Ok((frag, out, authors))
         }
         _ => Err(Error::Bad("snapshot")),
     }

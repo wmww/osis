@@ -187,8 +187,9 @@ pub fn create(w: &mut Writer, ty: &Ty, v: &Value) -> Frag {
                 c.w = Some(w.delta());
             }
             for (k, v) in kv {
-                let d = w.stamp().dot;
-                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) });
+                let st = w.stamp();
+                let d = st.dot.clone();
+                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))), created: Some(st) });
             }
             Frag::Map { c, entries }
         }
@@ -300,21 +301,23 @@ pub fn map_put(w: &mut Writer, state: Option<&Frag>, vt: &Ty, k: &Value, v: &Val
             let d = dots[0].clone();
             let cur = key_state(st, dots);
             let delta = crate::diff::diff(w, cur.as_ref(), vt, v)?;
-            entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)) });
+            entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(delta)), created: None });
             let f = Frag::Map { c: comp(None), entries };
             return Some(f);
         }
     }
-    let d = w.stamp().dot;
-    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) });
+    let st = w.stamp();
+    let d = st.dot.clone();
+    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))), created: Some(st) });
     let f = Frag::Map { c: comp(None), entries };
     Some(f)
 }
 
 /// `put_new(key, v)`: a new entry whatever is live (spec/crdt.md §5.6).
 pub fn map_put_new(w: &mut Writer, vt: &Ty, k: &Value, v: &Value) -> Frag {
-    let d = w.stamp().dot;
-    let entries = BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))) })]);
+    let st = w.stamp();
+    let d = st.dot.clone();
+    let entries = BTreeMap::from([(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, vt, v))), created: Some(st) })]);
     Frag::Map { c: comp(None), entries }
 }
 
@@ -324,7 +327,7 @@ pub fn map_remove(w: &mut Writer, state: Option<&Frag>, k: &Value) -> Option<Fra
     let s = w.delta();
     let mut entries = BTreeMap::new();
     for d in dots {
-        entries.insert(d, Entry { reset: Some(s.clone()), key: None, frag: None });
+        entries.insert(d, Entry { reset: Some(s.clone()), key: None, frag: None, created: None });
     }
     let f = Frag::Map { c: comp(None), entries };
     Some(f)

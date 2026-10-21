@@ -5,7 +5,7 @@
 
 use crate::fragment::{Bag, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
-use crate::stamp::Dot;
+use crate::stamp::{Dot, Stamp};
 use osis_core::Value;
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -197,15 +197,23 @@ impl Fragment {
         }
     }
 
+    /// The creation stamp of entry `d` of a map (§5.6).
+    pub fn entry_created(&self, d: &Dot) -> Option<&Stamp> {
+        match self {
+            Fragment::Map(m) => m.entries.get(d)?.created.as_ref(),
+            _ => None,
+        }
+    }
+
     /// A fragment holding `inner` at `path` and nothing else; an entry step carries the entry's
-    /// key (so joining it alone restores the entry with its key).
-    pub fn wrap(path: &[(Step, Option<Value>)], inner: Fragment) -> Fragment {
+    /// key and creation (so joining it alone restores the entry with them).
+    pub fn wrap(path: &[(Step, Option<Value>, Option<Stamp>)], inner: Fragment) -> Fragment {
         let mut f = inner;
-        for (s, key) in path.iter().rev() {
+        for (s, key, created) in path.iter().rev() {
             f = match s {
                 Step::Field(id) => Fragment::Struct(Struct { meta: Meta::default(), fields: BTreeMap::from([(*id, f)]) }),
                 Step::Case(id) => Fragment::Enum(crate::fragment::Enum { meta: Meta::default(), case: None, payloads: BTreeMap::from([(*id, f)]) }),
-                Step::Entry(d) => Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d.clone(), crate::fragment::Entry { reset: None, key: key.clone(), frag: Some(Box::new(f)) })]))),
+                Step::Entry(d) => Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(d.clone(), crate::fragment::Entry { reset: None, key: key.clone(), frag: Some(Box::new(f)), created: created.clone() })]))),
             };
         }
         f
@@ -243,8 +251,8 @@ impl Fragment {
                     .map(|(d, e)| {
                         let frag = e.frag.as_ref().map(|f| Box::new(below(&Step::Entry(d.clone()), f))).filter(|f| !f.is_empty());
                         // an entry reduced to nothing keeps no key here: the pages below carry it
-                        let key = if frag.is_some() { e.key.clone() } else { None };
-                        (d.clone(), crate::fragment::Entry { reset: e.reset.clone(), key, frag })
+                        let (key, created) = if frag.is_some() { (e.key.clone(), e.created.clone()) } else { (None, None) };
+                        (d.clone(), crate::fragment::Entry { reset: e.reset.clone(), key, frag, created })
                     })
                     .filter(|(_, e)| e.reset.is_some() || e.frag.is_some())
                     .collect();

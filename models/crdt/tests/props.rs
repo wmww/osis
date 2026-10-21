@@ -1038,3 +1038,31 @@ fn set_element_is_a_register_spec_3_2() {
     let bad = Frag::Set { c: Composite::default(), elems: BTreeMap::from([(d, Elem { reset: None, frag: Some(Box::new(nested)) })]) };
     assert!(decode_delta(&enc(&bad), &mut wcx()).is_err());
 }
+
+/// spec/crdt.md §3.2 (entry creation `Ci`), §8 (`Authors`): a snapshot of a commit-form writer's
+/// map carries each entry's creation commit and the commit's author; both round-trip, an empty
+/// `Authors` is omitted, and a writer's own creations carry no `Ci`.
+#[test]
+fn snapshot_authors_and_creations_round_trip() {
+    use crdt_model::wire::{decode_snapshot_authors, encode_snapshot_authors, Authors};
+    let c = [9u8; 32];
+    let mut w = Writer { source: Source::Commit(c), ts: 7 << 16, lo: 1, next: 1 };
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
+    let v = Value::map(vec![(Value::Int(1), Value::Int(10)), (Value::Int(2), Value::Int(20))]);
+    let f = ops::create(&mut w, &ty, &v);
+    let Frag::Map { entries, .. } = &f else { panic!("a map") };
+    assert!(entries.values().all(|e| e.created.is_some()), "creations recorded");
+    // the writer's own delta: creations implied
+    let own = roundtrip(&f, &w);
+    assert_eq!(own, f);
+    let authors: Authors = [(c, ([1; 15], 7 << 16))].into_iter().collect();
+    let mut cx = Ctx::new(1 << 40, Source::node(250), 1);
+    let bytes = encode_snapshot_authors(&f, &[], &authors, [3; 16], &mut cx);
+    let (g, _, au) = decode_snapshot_authors(&bytes, &mut Ctx::new(1 << 40, Source::node(250), 1)).expect("decodes");
+    assert_eq!(g, f, "creations carried");
+    assert_eq!(au, authors);
+    assert_eq!(encode_snapshot_authors(&g, &[], &au, [3; 16], &mut Ctx::new(1 << 40, Source::node(250), 1)), bytes);
+    let plain = encode_snapshot(&f, &[], [3; 16], &mut Ctx::new(1 << 40, Source::node(250), 1));
+    let (_, _, none) = decode_snapshot_authors(&plain, &mut Ctx::new(1 << 40, Source::node(250), 1)).expect("decodes");
+    assert!(none.is_empty() && plain.len() < bytes.len());
+}

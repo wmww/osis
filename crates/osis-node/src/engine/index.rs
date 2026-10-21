@@ -37,6 +37,7 @@ const BOX_WRITTEN: &[u8] = b"node/box written";
 const OWN_KEYS: &[u8] = b"node/own keys";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 const CARRIED: &[u8] = b"node/carried";
+const AUTHORS: &[u8] = b"node/authors";
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -166,15 +167,37 @@ impl<T: Rec> Rec for Vec<T> {
         x.iter().map(T::from).collect()
     }
 }
+impl Rec for osis_crdt::Source {
+    fn to(&self) -> Value {
+        Value::Bytes(match self.kind() {
+            osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
+            osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
+            osis_crdt::SourceKind::Derived(_) => Vec::new(),
+        })
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::Bytes(b) = v else { return None };
+        if let Ok(t) = <[u8; 15]>::try_from(b.as_slice()) {
+            return Some(osis_crdt::Source::node(Tid::from_bytes(t)));
+        }
+        Some(osis_crdt::Source::commit(CommitId(b.as_slice().try_into().ok()?)))
+    }
+}
+fn uints(v: &[u64]) -> Value {
+    Value::List(v.iter().map(|c| uint(*c)).collect())
+}
+fn uints_of(v: &Value) -> Option<Vec<u64>> {
+    let Value::List(x) = v else { return None };
+    x.iter().map(|c| if let Value::Int(c) = c { u64::try_from(*c).ok() } else { None }).collect()
+}
 impl Rec for crate::apply::validity::Carried {
     fn to(&self) -> Value {
-        Value::List(vec![self.node.to(), self.ts.to(), Value::List(self.ctrs.iter().map(|c| uint(*c)).collect()), Value::Bool(self.valid)])
+        Value::List(vec![self.snap.to(), self.src.to(), self.node.to(), self.ts.to(), uints(&self.ctrs), uints(&self.invalid)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [n, ts, Value::List(ctrs), Value::Bool(valid)] = x.as_slice() else { return None };
-        let ctrs = ctrs.iter().map(|c| if let Value::Int(c) = c { u64::try_from(*c).ok() } else { None }).collect::<Option<Vec<u64>>>()?;
-        Some(crate::apply::validity::Carried { node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, ctrs, valid: *valid })
+        let [snap, src, n, ts, ctrs, invalid] = x.as_slice() else { return None };
+        Some(crate::apply::validity::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, node: <Tid as Rec>::from(n)?, ts: <Ts as Rec>::from(ts)?, ctrs: uints_of(ctrs)?, invalid: uints_of(invalid)? })
     }
 }
 impl Rec for () {
@@ -366,6 +389,8 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, SNAPSHOTS, &c.snapshots, &k)?;
     let k = if all { c.carried.keys().cloned().collect() } else { c.carried.logged() };
     put_map(txn, CARRIED, &c.carried, &k)?;
+    let k = if all { c.authors.keys().cloned().collect() } else { c.authors.logged() };
+    put_map(txn, AUTHORS, &c.authors, &k)?;
     Ok(())
 }
 
@@ -411,6 +436,32 @@ fn scan<T: Rec>(tx: &mut Tx<'_>, name: &[u8]) -> Result<Vec<(T, Vec<u8>)>> {
             return Ok(out);
         }
     }
+}
+
+/// What the persisted index judged, read before a rebuild replaces it: per commit its parts'
+/// validity, per aspect its carried groups. `None` when it does not decode.
+pub(crate) type OldJudgments = (BTreeMap<CommitId, Vec<bool>>, BTreeMap<(Tid, osis_core::Ak), Vec<crate::apply::validity::Carried>>);
+
+pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
+    let mut parts = BTreeMap::new();
+    let t = tx.txn.index(PARTS).ok()?;
+    let mut from = Vec::new();
+    loop {
+        let got = tx.txn.table_range(t, &from, None, 256).ok()?;
+        let n = got.len();
+        for (k, v) in got {
+            from = [k.as_slice(), &[0]].concat();
+            parts.insert(CommitId(k.as_slice().try_into().ok()?), v.iter().map(|p| p & 1 != 0).collect());
+        }
+        if n < 256 {
+            break;
+        }
+    }
+    let mut carried = BTreeMap::new();
+    for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED).ok()? {
+        carried.insert(k, dec(&v).ok()?);
+    }
+    Some((parts, carried))
 }
 
 /// Loads the persisted index into `core`: commit metas (headers resolved), and the indexes
@@ -491,6 +542,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, CARRIED)? {
         tx.core.carried.insert(k, dec(&v)?);
     }
+    for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
+        tx.core.authors.insert(k, dec(&v)?);
+    }
     Ok(())
 }
 
@@ -518,13 +572,45 @@ impl super::Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.rotation_role, *c.grant_overreach, *c.box_keys, *c.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.epoch_intro, *c.box_written, *c.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.member_keys, *c.unresolved, *c.was, *c.moved, c.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots, *c.carried);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots, *c.carried, *c.authors);
         out
     }
 
     /// Damages the persisted index (tests): `garble` a commit's parts row, else mislabel its tag.
     #[doc(hidden)]
     pub fn damage_index(&mut self, garble: bool) -> Result<()> {
+        if !garble {
+            // another build's rules judged differently: every part valid, nothing carried, and
+            // the states joined so
+            return self.run(|tx| {
+                let aspects: Vec<(Tid, osis_core::Ak)> = tx.core.invalid.keys().cloned().chain(tx.core.carried.keys().cloned()).collect();
+                for (tid, ak) in aspects {
+                    let held: Vec<CommitId> = tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+                    let mut st = osis_crdt::Fragment::default();
+                    for c in held {
+                        let Some(ai) = tx.core.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)) else { continue };
+                        for d in crate::apply::held_parts(tx, &c, ai)? {
+                            st.join(match d {
+                                osis_commit::Decoded::Delta(x) => x.fragment,
+                                osis_commit::Decoded::Snapshot(x) => x.fragment,
+                            });
+                        }
+                    }
+                    tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;
+                }
+                let t = tx.txn.index(PARTS)?;
+                let rows: Vec<(CommitId, usize)> = tx.core.commits.iter().map(|(id, m)| (*id, m.valid.len())).collect();
+                for (id, n) in rows {
+                    tx.txn.table_put(t, &id.0, vec![1; n], Shred::No)?;
+                }
+                let t = tx.txn.index(CARRIED)?;
+                let keys: Vec<(Tid, osis_core::Ak)> = tx.core.carried.keys().cloned().collect();
+                for k in keys {
+                    tx.txn.table_remove(t, &enc(&k), Shred::No)?;
+                }
+                tx.txn.put_local(VERSION_KEY, b"another build", Shred::No).map_err(Error::from)
+            });
+        }
         self.run(|tx| {
             if garble {
                 let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };

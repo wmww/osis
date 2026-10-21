@@ -1,12 +1,15 @@
-//! Tags the persisted index (`engine::index`) with a hash of the sources its judgments follow
-//! from: perm, the node's apply rules and the index itself. A build with other rules re-judges
-//! everything once at open.
+//! Tags the persisted index (`engine::index`) with a hash of the sources its judgments may
+//! follow from: every workspace crate's `src` (the node and all its path dependencies, so a
+//! change anywhere that could change a judgment re-judges everything once at open).
 
 use std::path::{Path, PathBuf};
 
 fn files(p: &Path, out: &mut Vec<PathBuf>) {
     if p.is_dir() {
-        let Ok(rd) = std::fs::read_dir(p) else { return };
+        let Ok(rd) = std::fs::read_dir(p) else {
+            println!("cargo:warning=index tag: cannot read {}", p.display());
+            return;
+        };
         for e in rd.flatten() {
             files(&e.path(), out);
         }
@@ -17,18 +20,30 @@ fn files(p: &Path, out: &mut Vec<PathBuf>) {
 
 fn main() {
     let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let roots = [dir.join("../osis-perm/src"), dir.join("src/apply"), dir.join("src/engine/index.rs")];
+    let crates = dir.join("..");
+    let mut roots: Vec<PathBuf> = match std::fs::read_dir(&crates) {
+        Ok(rd) => rd.flatten().map(|e| e.path().join("src")).filter(|p| p.is_dir()).collect(),
+        Err(_) => {
+            println!("cargo:warning=index tag: cannot read {}", crates.display());
+            vec![dir.join("src")]
+        }
+    };
+    roots.sort();
     let mut all = Vec::new();
     for r in &roots {
         println!("cargo:rerun-if-changed={}", r.display());
         files(r, &mut all);
     }
     all.sort();
-    // FNV-1a, 64 bits: names and contents
+    // FNV-1a, 64 bits: names relative to the crates directory, and contents
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for f in &all {
-        let name = f.strip_prefix(&dir).unwrap_or(f).to_string_lossy().into_owned();
-        for b in name.bytes().chain([0]).chain(std::fs::read(f).unwrap_or_default()).chain([0]) {
+        let name = f.strip_prefix(&crates).unwrap_or(f).to_string_lossy().into_owned();
+        let body = std::fs::read(f).unwrap_or_else(|_| {
+            println!("cargo:warning=index tag: cannot read {}", f.display());
+            Vec::new()
+        });
+        for b in name.bytes().chain([0]).chain(body).chain([0]) {
             h = (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
         }
     }

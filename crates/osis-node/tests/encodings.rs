@@ -230,7 +230,7 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
     // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
     let carried = |f: Option<osis_crdt::Fragment>| {
         let cx = osis_crdt::DeltaCtx { ts: osis_core::Ts::from_u64(1 << 40).unwrap(), own: osis_crdt::Source::node(b), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
-        let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.unwrap(), frontiers: Default::default() };
+        let snap = osis_crdt::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: f.unwrap(), frontiers: Default::default() };
         osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
     };
     let before = carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap());

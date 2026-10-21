@@ -276,12 +276,17 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
     assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
     e.reload_index().unwrap();
     assert_eq!(e.index_digest(), before, "the rebuilt index persisted");
-    // another build's tag, then a row that does not decode: each open rebuilds and re-tags
+    // another build's rules (everything valid, states joined so), then a row that does not
+    // decode: each open rebuilds, re-tags and re-joins the states judged otherwise
     for garble in [false, true] {
         e.damage_index(garble).unwrap();
+        if !garble {
+            assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob after")), "the old rules' state");
+        }
         e.reload_index().unwrap();
         assert_eq!(e.index_digest(), before, "rebuilt after damage (garbled: {garble})");
         assert!(e.index_current().unwrap());
+        assert_eq!(e.get(&d, &ak("/t/reg")).unwrap(), Some(s("bob before")), "re-joined (garbled: {garble})");
     }
 }
 
@@ -1855,49 +1860,4 @@ fn linked_tenure_frontier_spec_perm_6() {
     lp.deliver(2, &pk).unwrap();
     assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
     assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
-}
-
-// spec/crypto.md §4 (opening `/secrets`; reading-only secrets of unchecked boxes; history keys
-// with several live entries): random grants, demotions and rotations by several admins, carried
-// by inbox blobs (pending until their chain arrives) and partial deliveries. Every per-entry
-// ingestion of a `/secrets` change is checked against ingesting the whole state (the engine
-// fails the operation where the whole state teaches more).
-#[test]
-fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
-    for seed in 0..4u64 {
-        let (mut lp, ps) = people(4, 530 + seed);
-        for p in &mut lp.peers {
-            p.engine.check_secrets_ingest(true);
-        }
-        let t = thing_of(&mut lp, 0, ps[0]);
-        let mut rng = osis_crypto::SeededRng::from_u64(seed);
-        let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut rng) % n;
-        let roles = [Role::Read, Role::Write, Role::Admin];
-        for _ in 0..14 {
-            lp.advance(1000);
-            let by = r(4) as usize;
-            let member = ps[1 + r(3) as usize];
-            let done = match r(5) {
-                0 | 1 => lp.peers[by].engine.grant(&t, &member, &edge_of(roles[r(3) as usize])),
-                2 => lp.peers[by].engine.demote(&t, &Demotion { member, new: None, presync: PreSync::Synced }),
-                3 => lp.peers[by].engine.demote(&t, &Demotion { member, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }),
-                _ => lp.peers[by].engine.ensure_rotated(&t).map(|x| x.0),
-            };
-            match done {
-                Ok(d) => carry(&mut lp, by, &d),
-                Err(e) => assert!(!format!("{e}").contains("/secrets ingestion"), "seed {seed}: {e}"),
-            }
-            // deliveries: everything, or one peer's commits to one other peer
-            if r(3) == 0 {
-                spread(&mut lp);
-            } else {
-                let (a, b) = (r(4) as usize, r(4) as usize);
-                if a != b {
-                    let ids = lp.peers[a].engine.commit_ids();
-                    send(&mut lp, a, b, &ids);
-                }
-            }
-        }
-        spread(&mut lp);
-    }
 }

@@ -33,8 +33,13 @@ pub(crate) fn encode_owned(v: &[Owned]) -> Vec<u8> {
         w = match o {
             Owned::Node { node, lo, hi } => w.u8(0).raw(node.as_bytes()).u64(*lo).u64(*hi),
             Owned::Commit(c) => w.u8(1).raw(&c.0),
-            Owned::Dots { node, ctrs } => {
-                let mut w = w.u8(2).raw(node.as_bytes()).u32(ctrs.len() as u32);
+            Owned::Dots { src, ctrs } => {
+                let b = match src.kind() {
+                    osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
+                    osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
+                    osis_crdt::SourceKind::Derived(_) => Vec::new(),
+                };
+                let mut w = w.u8(2).u8(b.len() as u8).raw(&b).u32(ctrs.len() as u32);
                 for c in ctrs {
                     w = w.u64(*c);
                 }
@@ -53,12 +58,16 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
             0 => Owned::Node { node: r.tid()?, lo: r.u64()?, hi: r.u64()? },
             1 => Owned::Commit(CommitId(r.arr()?)),
             _ => {
-                let node = r.tid()?;
+                let src = match r.u8()? {
+                    15 => osis_crdt::Source::node(r.tid()?),
+                    32 => osis_crdt::Source::commit(CommitId(r.arr()?)),
+                    _ => return Err(crate::error::Error::Corrupt("owned source")),
+                };
                 let mut ctrs = Vec::new();
                 for _ in 0..r.u32()? {
                     ctrs.push(r.u64()?);
                 }
-                Owned::Dots { node, ctrs }
+                Owned::Dots { src, ctrs }
             }
         });
     }
@@ -132,8 +141,6 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
             if *ts < at
                 && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
                 && let Some(ai) = held(s)
-                // a snapshot its author could not write carries nothing
-                && core.commits.get(s).is_some_and(|m| m.valid.get(ai).copied().unwrap_or(false))
             {
                 out.push((*s, ai));
             }
@@ -447,7 +454,8 @@ impl Engine {
     /// carrier before it leaves a label (spec/sync.md §7). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
-    /// them back). Kept per body until the next change (`Core::live_bodies`).
+    /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
+    /// until the next change (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());
         if let Some(v) = self.core.live_bodies.get(&key) {
@@ -461,13 +469,23 @@ impl Engine {
             for x in members {
                 let Some(a) = h.aspects.get(x) else { continue };
                 let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
-                // the pages holding the body's dots (all of them when the body is not held)
+                // the pages holding the dots of every delta of the body (all pages when one is
+                // not held or not a delta)
                 tx.load_lazy(&a.tid, &a.ak)?;
-                let touch = match crate::apply::held_parts(tx, &c, x)?.into_iter().next() {
-                    Some(osis_commit::Decoded::Delta(d)) => crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone()))),
-                    _ => None,
-                };
-                tx.ensure_touch(&a.tid, &a.ak, &touch)?;
+                let parts = crate::apply::held_parts(tx, &c, x)?;
+                let mut touches = Vec::new();
+                for d in &parts {
+                    match d {
+                        osis_commit::Decoded::Delta(d) => touches.push(crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())))),
+                        osis_commit::Decoded::Snapshot(_) => touches.push(None),
+                    }
+                }
+                if touches.is_empty() {
+                    touches.push(None);
+                }
+                for t in &touches {
+                    tx.ensure_touch(&a.tid, &a.ak, t)?;
+                }
                 let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
                 if st.writes().iter().any(|(d, _)| o.owns(d)) {
                     return Ok(true);

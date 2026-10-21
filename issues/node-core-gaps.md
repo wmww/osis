@@ -10,4 +10,3 @@ Remaining:
 - A change that perm evaluates anew (a member new to the component joins it, an out-of-order or dropping write, an epoch start change) re-judges every delta of the component: for one person's tree, every delta (perm's component granularity; issues/perm-eval-cost.md item 4 would give per-(node, thing) answers).
 - A validity flip rebuilds the aspect from every held body (O(aspect history)); re-merging needs them (a register's earlier value comes back only from its body), un-merging alone would not.
 - Open reads every commit record's head and header and every membership commit's `/members` and `/tenures` parts, and perm evaluates every component from scratch.
-- Snapshot-carried writes without a `ts` of their own: issues/snapshot-unstamped-writes.md.
