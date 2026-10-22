@@ -63,6 +63,59 @@ fn certificates_carry_chain_at_demotion_spec_permissions_4() {
     assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id));
 }
 
+/// §4: as above, but the removal is by an admin d whose own later removal drops it: a demotion
+/// dropped later still drops in a projection that lacks X's other path, so its chain goes along
+/// though it is not applied in the final walk.
+#[test]
+fn certificates_carry_chain_at_dropped_demotion_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (x, a, k, d) = (n[0], n[1], n[2], n[4]);
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(k, g, x, edge(Admin), 0, &all);
+    w.set(k, p, a, edge(Admin), 0, &all);
+    w.set(k, g, d, edge(Admin), 0, &all);
+    w.set(x, g, n[3], edge(Write), 2, &[]);
+    w.set(a, p, x, edge(Admin), 2, &[(x, 2), (k, 2)]);
+    let r = w.set(d, g, x, None, 6, &[]);
+    w.set(k, g, d, None, 8, &[]);
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let id = WriteId::Op(w.commits[3].id, 0);
+    assert!(tl.is_applied(&id) && tl.dropped().contains_key(&WriteId::Op(r, 0)));
+    let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
+    assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id));
+}
+
+/// §4, §6: a ledger entry with a frontier is a demotion at its own key, before its snapshot:
+/// X's chain goes along at that key. X writes on H (owned by G) through its G edge; A then
+/// makes X an admin of P (G's owner) and removes it at 8, covering the write; G's snapshot at
+/// 10 ends X's G tenure at 6 with a frontier missing the write, while P still held X.
+#[test]
+fn certificates_carry_chain_at_ledger_end_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (x, a, k) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let h = w.thing(g);
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(k, g, x, edge(Admin), 0, &all);
+    w.set(k, p, a, edge(Admin), 0, &all);
+    let wr = w.set(x, h, n[3], edge(Write), 2, &[(a, 3)]);
+    w.set(a, p, x, edge(Admin), 2, &[(x, 2), (k, 2)]);
+    w.set(a, p, x, None, 8, &[]);
+    w.snapshot_l(k, g, &[], &[(x, Admin, Some((0, k, None)), (6, k, None), true)], 10, &all);
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let id = WriteId::Op(wr, 0);
+    assert!(tl.is_applied(&id) && !tl.dropped().contains_key(&id), "{:?}", tl.dropped());
+    let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
+    assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id), "{:?}", ct.dropped());
+}
+
 /// §4 projection: for every write of random joint and edges histories, its author's
 /// certificates plus the write give the write the timeline's outcome (applied, dropped) and
 /// the author its standing at the write.
