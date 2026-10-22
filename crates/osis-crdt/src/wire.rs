@@ -152,6 +152,9 @@ pub struct Enc<'p> {
     commits: Vec<CommitEntry>,
     commit_idx: HashMap<(Ts, Source), u64>,
     pub(crate) pages: Option<&'p mut dyn PageSink>,
+    kind: DeltaKind,
+    /// Elements in runs without `Content` so far (§3.3 rule 7), pages included.
+    bare: u64,
 }
 
 impl<'p> Enc<'p> {
@@ -166,7 +169,22 @@ impl<'p> Enc<'p> {
             commits: Vec::new(),
             commit_idx: HashMap::new(),
             pages,
+            kind: cx.kind,
+            bare: 0,
         }
+    }
+
+    /// Counts `n` elements of a run without `Content`: more than `MAX_DELTA_BARE` in a writer's
+    /// or an import delta is refused (§3.3 rule 7).
+    pub(crate) fn note_bare(&mut self, n: u64) -> Result<(), Error> {
+        if self.collecting || self.kind == DeltaKind::Snapshot {
+            return Ok(());
+        }
+        self.bare = self.bare.saturating_add(n);
+        if self.bare > osis_core::format::MAX_DELTA_BARE {
+            return Err(Error::Mismatch("more than MAX_DELTA_BARE elements without content"));
+        }
+        Ok(())
     }
 
     /// Whether `s` is a stamp of this commit.

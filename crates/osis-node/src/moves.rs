@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_commit::{Decoded, Form, Header, Kind, Origin};
 use osis_core::{Ak, CommitId, SchemaId, Tid, Ts};
-use osis_crdt::{Dot, Source, SourceKind};
+use osis_crdt::{Dot, Fragment, Shown, Source, SourceKind};
 use osis_schema::core_types as ct;
 use osis_schema::core_types::is_membership_class;
 use std::collections::{BTreeMap, BTreeSet};
@@ -111,7 +111,7 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
 
 /// One import commit of origin `c` into `m`, its deltas on `aspects` (`None` when nothing of it
 /// is importable).
-fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, live: &mut BTreeMap<Ak, BTreeSet<Dot>>) -> Result<Option<CommitId>> {
+fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Option<CommitId>> {
     let Some(meta) = tx.core.commits.get(c).cloned() else { return Ok(None) };
     let h = meta.header.clone();
     let snapshot = h.kind == Kind::ContentSnapshot;
@@ -159,14 +159,6 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             let out = excluded(tx, &a.tid, &a.ak);
             let (core, s) = (&*tx.core, carrier);
             f.remove_dots(&|d| out.iter().any(|o| o.owns(d)) || (s.is_some_and(|s| !s.covers_dot(d)) && from_own(core, &a.tid, &a.ak, d)));
-            // only the bare anchors imported writes reference (any origin's: the state holds
-            // them all), so an import stays within `MAX_DELTA_BARE` where its writes do
-            tx.load(&a.tid, &a.ak)?;
-            let mut keep = f.anchors();
-            if let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) {
-                keep.extend(st.anchors());
-            }
-            f.drop_bare_except(&keep);
         } else if let (Some(s), Some(o)) = (carrier, Owned::of(&h, c, ai)) {
             // its own writes the snapshot covers and carries come from the snapshot
             let l = live.get(&a.ak);
@@ -174,6 +166,17 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             if claimed && !f.writes().iter().any(|(d, _)| o.owns(d)) {
                 continue;
             }
+        }
+        // only the sequence elements what the state shows needs (deleted elements and bare
+        // anchors nothing shown depends on stay behind), so an import stays within
+        // `MAX_DELTA_BARE` where its shown writes do (spec/permissions.md §7)
+        if !shown.contains_key(&a.ak) {
+            tx.load(&a.tid, &a.ak)?;
+            let n = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).map(Fragment::shown);
+            shown.insert(a.ak.clone(), n);
+        }
+        if let Some(Some(n)) = shown.get(&a.ak) {
+            f.keep_shown(n);
         }
         let core = &*tx.core;
         let (tid, ak, lo, hi, form) = (a.tid, a.ak.clone(), a.lo, a.hi, h.form);
@@ -196,9 +199,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     build_and_apply(tx, plan, deltas).map(Some)
 }
 
-/// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped
-/// (the bare anchors imported writes reference come along: an import may carry them,
-/// spec/crdt.md §3.3 rule 7).
+/// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped.
 fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
     let mut out = BTreeMap::new();
     let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();
@@ -242,12 +243,13 @@ impl Engine {
             crate::engine::write::commit_in(tx, m)?;
             let carriers = carriers(tx, &t)?;
             let mut live = BTreeMap::new();
+            let mut shown = BTreeMap::new();
             let mut origins: Vec<(Ts, CommitId)> = tx.core.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
             origins.sort();
             origins.dedup();
             let mut out = Vec::new();
             for (_, c) in origins {
-                if let Some(id) = import_one(tx, &t, &copy, &c, &carriers, &mut live)? {
+                if let Some(id) = import_one(tx, &t, &copy, &c, &carriers, &mut live, &mut shown)? {
                     out.push(id);
                 }
             }

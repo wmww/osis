@@ -175,6 +175,9 @@ fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut E
         for (i, j, (st, b)) in flagw {
             fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
         }
+        if matches!(&content, Value::List(x) if x.is_empty()) {
+            cx.note_bare(n)?;
+        }
         Ok(Value::List(vec![first, uint(n), creation, content, Value::List(posw), Value::List(fw)]))
     }
 }
