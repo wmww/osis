@@ -183,9 +183,9 @@ pub(crate) struct Core {
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
-    /// Pending commits waiting for deltas, with what their examination read (`apply::Wait`):
-    /// re-examining one needs no decode or signature check while it still waits. A cache:
-    /// cleared on rollback.
+    /// Pending commits waiting for a record or for deltas, with what their examination read
+    /// (`apply::waits`): `reexamine` leaves out those whose inputs did not change. A cache:
+    /// dropped by a rollback that changed anything.
     pub(crate) waits: crate::apply::Waits,
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
@@ -875,6 +875,12 @@ impl Engine {
     /// The corrected wall clock.
     pub fn now(&self) -> WallMs {
         self.core.now()
+    }
+
+    /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
+    #[doc(hidden)]
+    pub fn waits_bytes(&self) -> usize {
+        self.core.waits.bytes()
     }
 
     /// The clock correction from node-sync (spec/sync.md §6).

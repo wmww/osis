@@ -27,7 +27,7 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 [dev-dependencies]
 osis-server.workspace = true
 # phase timers in scale tests
-osis-node = { workspace = true, features = ["cost-stats"] }
+osis-node = { path = ".", default-features = false, features = ["cost-stats"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [features]

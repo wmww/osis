@@ -122,7 +122,7 @@ fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl It
 /// when last examined (`Core::waits`).
 enum Turn {
     Read(Box<CommitBlob>),
-    Waiting(Arc<Header>),
+    Waiting((bool, osis_core::Ts)),
 }
 
 /// Checks a commit and decodes its parts, or says why it waits.
@@ -452,7 +452,7 @@ impl Engine {
                 let mut blobs: Vec<(CommitId, Turn)> = Vec::new();
                 for id in ids {
                     if let Some(w) = tx.core.waits.get(&id) {
-                        blobs.push((id, Turn::Waiting(w.header.clone())));
+                        blobs.push((id, Turn::Waiting(w.key)));
                         continue;
                     }
                     let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
@@ -465,12 +465,9 @@ impl Engine {
                         Err(_) => continue, // still unreadable by this build
                     }
                 }
-                blobs.sort_by_key(|(_, x)| {
-                    let h = match x {
-                        Turn::Read(b) => &b.header,
-                        Turn::Waiting(h) => h,
-                    };
-                    (!h.kind.is_membership(), h.ts)
+                blobs.sort_by_key(|(_, x)| match x {
+                    Turn::Read(b) => (!b.header.kind.is_membership(), b.header.ts),
+                    Turn::Waiting(k) => *k,
                 });
                 tx.core.touch();
                 let mut progressed = false;
