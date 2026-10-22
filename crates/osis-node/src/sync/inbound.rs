@@ -220,6 +220,8 @@ impl SyncEngine {
         {
             lc.dirty = true;
         }
+        // bodies waiting for a linked blob upload it now it is here (`Left::links`)
+        self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         self.engine.put_blobs(blobs)?;
         self.open_entries(l, &touched)?;
         if let Some(s) = server {
@@ -550,10 +552,10 @@ impl SyncEngine {
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
         let dropped = self.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
-        let unused = !self.state.entries.keys().any(|(_, x)| x == b);
+        let unused = !self.state.named(b);
         if dropped || unused && (r.cert || !self.engine.core.commits.contains_key(&r.commit)) {
             // its entries stay (deletes at servers need no copy) with their wraps shredded
-            let ls: Vec<LabelId> = self.state.entries.keys().filter(|(_, x)| x == b).map(|(l, _)| *l).collect();
+            let ls: Vec<LabelId> = self.state.labels_of(b);
             for l in ls {
                 if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
                     e.wrap = [0; osis_crypto::WRAP_LEN];
@@ -575,7 +577,7 @@ impl SyncEngine {
     /// §5); while one does, its prefix salt makes its chunk token.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
         // cheapest first: commit blobs have their own record, most deleted bytes are gone already
-        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.entries.keys().any(|(_, x)| x == b) || !self.dropped_chunks(|x| x == b)?.contains_key(b) {
+        if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.named(b) || !self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b) {
             return Ok(());
         }
         let id = *b;
@@ -586,21 +588,30 @@ impl SyncEngine {
     }
 
     /// Forgets every commit blob holding a delta the engine dropped (purge, expiry, keep at
-    /// most, compaction): key and ciphertext (spec/commits.md §5).
-    pub(crate) fn forget_dropped(&mut self) -> Result<()> {
-        let ids: Vec<BlobId> = self.state.blobs.iter().filter(|(_, r)| self.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)))).map(|(id, _)| *id).collect();
+    /// most, compaction): key and ciphertext (spec/commits.md §5). Only those of `commits`
+    /// when given (the commits a change may have dropped deltas of).
+    pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_core::CommitId>>) -> Result<()> {
+        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let fresh = std::mem::take(&mut self.state.new_blobs);
+        let commits: Option<BTreeSet<osis_core::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
+        let commits = commits.as_ref();
+        let ids: Vec<BlobId> = match commits {
+            None => self.state.blobs.iter().filter(|(_, r)| dropped(self, r)).map(|(id, _)| *id).collect(),
+            Some(cs) => cs.iter().flat_map(|c| self.state.by_commit.get(c).into_iter().flatten()).filter(|id| self.state.blobs.get(id).is_some_and(|r| dropped(self, r))).copied().collect(),
+        };
         for id in ids {
             self.forget_blob(&id)?;
         }
         // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
-        let listed: BTreeSet<BlobId> = self.engine.core.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect();
-        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && self.engine.has_blob(b)).collect();
+        let listed: BTreeSet<BlobId> = match commits {
+            None => self.engine.core.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect(),
+            Some(cs) => cs.iter().filter_map(|c| self.engine.core.commits.get(c)).filter(|m| !m.dropped.is_empty()).flat_map(|m| m.header.chunks.iter().map(|c| c.blob)).collect(),
+        };
+        let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && !self.state.named(b) && self.engine.has_blob(b)).collect();
         if held.is_empty() {
             return Ok(());
         }
-        let named: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).filter(|b| held.contains(b)).collect();
-        let held: BTreeSet<BlobId> = held.difference(&named).copied().collect();
-        let gone: Vec<BlobId> = self.dropped_chunks(|b| held.contains(b))?.into_keys().collect();
+        let gone: Vec<BlobId> = self.dropped_chunks(&held)?.0.into_keys().collect();
         self.engine.run(|tx| {
             for b in &gone {
                 tx.txn.delete_blob(b);

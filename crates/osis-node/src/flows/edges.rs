@@ -149,8 +149,11 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     let secrets = secrets_in(tx, &target)?;
     let rcpt = recipient(tx, member, edge.role)?;
     let boxes = box_member(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the member's keyset is unknown"))?;
+    // an edge past its `until` is out of the roster but still in the state: a set over it would
+    // keep its fields the new edge leaves out (the `until` among them)
+    let held = old.is_some() || tx.core.timelines.get(&target).is_some_and(|tl| tl.edges_at(None).get(&member, &target).is_some());
     let mut m = Mutation::new();
-    if old.is_some() {
+    if held {
         remove_edge(&mut m, target, member)?;
     }
     put_edge(&mut m, target, member, edge)?;

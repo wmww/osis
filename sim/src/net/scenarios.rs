@@ -9,7 +9,7 @@ use crate::harness::{ClockSpec, Report, Res};
 use crate::workload;
 use osis_commit::PurgeItem;
 use osis_core::format::MEMBERSHIP_KEEP_MS;
-use osis_core::{Ak, Role, Tid, Value};
+use osis_core::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::flows::PreSync;
 use osis_node::sync::Event;
@@ -491,5 +491,60 @@ pub fn large_edits(seed: u64) -> Res<Report> {
         }
     }
     sim.run_until_quiescent(40)?;
+    sim.finish()
+}
+
+/// Pass work sets against full passes (spec/sync.md §6, §7): two replicating servers, an admin
+/// and two writers writing at random under faults, then compactions (snapshots), keep-at-most
+/// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
+/// under `with_full_passes`, it must give the same run (`sim/tests/work_sets.rs`).
+pub fn work_sets(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x3e7);
+    let mut sim = sim("work_sets", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });
+    let s0 = sim.add_server()?;
+    let s1 = sim.add_server()?;
+    sim.replicate(s0, s1)?;
+    let a = sim.add_node(&[s0, s1], clock(&mut d))?;
+    let b = sim.add_node(&[s0, s1], clock(&mut d))?;
+    let c = sim.add_node(&[s1], clock(&mut d))?;
+    let [pa, pb, pc] = persons(&mut sim, [a, b, c], [s0, s0, s1])?;
+    let g = shared_group(&mut sim, a, pa, &[s0, s1], &[(pb, Role::Write), (pc, Role::Write)])?;
+    let t = sim.item(a, g)?;
+    sim.item(b, g)?;
+    sim.quiet(40)?;
+    sim.run(60)?;
+    for k in 0..4u64 {
+        let n = match d.below(3) {
+            0 => a,
+            1 => b,
+            _ => c,
+        };
+        let mut m = Mutation::new();
+        m.set(t, &workload::SHORT, &Value::Str(format!("s{k}"))).map_err(|e| sim.fail(e.to_string()))?;
+        let e = sim.engine(n)?;
+        let at = e.now().0 + (10 + d.below(20)) * 60_000;
+        let x = e.new_thing(&mut m, g);
+        m.set(x, &workload::NOTE, &Value::Str(format!("n{k}"))).map_err(|e| sim.fail(e.to_string()))?;
+        m.expires(x, &workload::NOTE, WallMs(at)).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?;
+        sim.run(15)?;
+    }
+    sim.quiet(40)?;
+    for (n, a_) in [(a, &workload::REG), (b, &workload::TAGS)] {
+        let k = ak(&sim, a_)?;
+        let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
+        sim.actions(n, acts)?;
+        sim.run(20)?;
+    }
+    let gone = write_gone(&mut sim, b, t, "gone")?;
+    sim.quiet(40)?;
+    purge(&mut sim, a, gone, t)?;
+    sim.run(30)?;
+    sim.remove(a, g, pc)?;
+    sim.excused.insert(c);
+    sim.run(40)?;
+    sim.advance(3_600_000)?;
+    sim.run(30)?;
+    sim.run_until_quiescent(60)?;
     sim.finish()
 }

@@ -159,3 +159,174 @@ fn linked_blobs_of_gone_copy_deleted_spec_sync_3() {
     let ids = net.server_ids(sv, &l);
     assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
 }
+
+/// Node `n`'s person with its home label at server `sv`.
+fn person(net: &mut Net, n: usize, sv: usize) -> Tid {
+    let addr = net.address(sv);
+    let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(n).carry_out(done).unwrap();
+    net.actions(n, acts);
+    net.run();
+    p.person
+}
+
+/// Admin node `a`'s group at `sv`, granted to node `r`'s person (read, until `until`), `r`'s
+/// card under the group's label: (group, person, label).
+fn person_reader(net: &mut Net, a: usize, r: usize, sv: usize, until: Option<osis_core::WallMs>) -> (Tid, Tid, LabelId) {
+    let g = net.group(a, &[], &[sv]);
+    let p = person(net, r, sv);
+    net.pair(r, a);
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &p, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    // the group has a member who is no contact of the reader: its `/reach` goes there by choice
+    let acts = net.sync(r).set_reach_policy(g, Some(true));
+    net.actions(r, acts);
+    let acts = net.sync(r).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(r, acts);
+    settle(net);
+    let l = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    (g, p, l)
+}
+
+// spec/permissions.md §4, spec/sync.md §6 (required set): a node that departs through its
+// person's removal (its own edge on the person stands) leaves the label's `/reach` and `/node`;
+// its `/keys` stays.
+#[test]
+fn person_removed_node_card_deleted_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let (g, p, l) = person_reader(&mut net, a, r, sv, None);
+    let rt = net.tid(r);
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
+    let done = net.engine(a).demote(&g, &Demotion { member: p, new: None, presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    settle(&mut net);
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/node").is_empty(), "and its /node");
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/keys").is_empty(), "its /keys stays");
+}
+
+// spec/permissions.md §4, spec/sync.md §6: a node whose person's edge passes its `until` leaves
+// the label's `/reach` and `/node` once the clock passes it (no write says so).
+#[test]
+fn until_expired_node_card_deleted_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let until = osis_core::WallMs(net.now() + 3_600_000);
+    let (_, _, l) = person_reader(&mut net, a, r, sv, Some(until));
+    let rt = net.tid(r);
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the reader's card is under the group's label");
+    net.clock.advance(3_600_000);
+    settle(&mut net);
+    settle(&mut net);
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the departed node's /reach went");
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/node").is_empty(), "and its /node");
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/keys").is_empty(), "its /keys stays");
+}
+
+// spec/permissions.md §4, spec/sync.md §6: when a person is removed, a device of it whose chain
+// this view does not hold (its edge on the person never reached the admin) keeps its card: "reads
+// no more" alone proves nothing; the device whose chain is held loses its `/reach`.
+#[test]
+fn unheld_chain_card_kept_spec_permissions_4() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let r2 = net.node(3, &[sv]);
+    // through the server only (a co-reader would serve the admin the chain)
+    for n in [a, r, r2] {
+        let acts = net.sync(n).set_peers(false);
+        net.actions(n, acts);
+    }
+    let (g, p, l) = person_reader(&mut net, a, r, sv, None);
+    // a second device of the person, paired by r while the admin is away
+    net.set_online(a, false);
+    net.pair(r2, r);
+    let r2t = net.tid(r2);
+    let done = net.engine(r).pair(&p, &r2t).unwrap();
+    let grant = done.commits[0];
+    let acts = net.sync(r).carry_out(done).unwrap();
+    net.actions(r, acts);
+    for (_, pks) in net.sync(r).take_direct() {
+        for pk in pks {
+            let _ = net.engine(r2).ingest(&pk.bytes, pk.blobs);
+        }
+    }
+    let done = net.engine(r2).paired(&p, &grant).unwrap();
+    let acts = net.sync(r2).carry_out(done).unwrap();
+    net.actions(r2, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let acts = net.sync(r2).set_reach_policy(g, Some(true));
+    net.actions(r2, acts);
+    let acts = net.sync(r2).publish_reach([2; 32], Vec::new()).unwrap();
+    net.actions(r2, acts);
+    settle(&mut net);
+    // the copies of r2's edge on the person go from the server before the admin is back
+    let copies: Vec<BlobId> = net.sync(r2).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == grant)).map(|(id, _)| id).collect();
+    assert!(!copies.is_empty(), "r2 placed its chain under the group's label");
+    let now = net.now();
+    for id in &copies {
+        use osis_proto::LabelStore;
+        net.servers[sv].hub.store_mut().delete(&l, id, now).unwrap();
+    }
+    net.set_online(a, true);
+    settle(&mut net);
+    assert!(!net.engine(a).may_read(&r2t, &p), "the admin does not hold r2's edge on the person");
+    assert!(!card_entries(&mut net, a, sv, &l, r2t, "/reach").is_empty(), "r2's card is under the group's label");
+    // the admin's timelines know r2 otherwise: an edge on another thing of the admin's
+    let at = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_node::Mutation::new();
+    let h = e.new_thing(&mut m, at);
+    m.set(h, &REG, &s("h")).unwrap();
+    e.commit(m).unwrap();
+    set_edge(e, h, r2t, Role::Read);
+    let done = net.engine(a).demote(&g, &Demotion { member: p, new: None, presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    settle(&mut net);
+    let rt = net.tid(r);
+    assert!(card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the node whose chain is held lost its /reach");
+    assert!(!card_entries(&mut net, a, sv, &l, r2t, "/reach").is_empty(), "the node whose chain is not held keeps its card");
+}
+
+// spec/permissions.md §2 (edges, `until`): a member re-granted after its edge passed its
+// `until` reads again; the expired edge's fields do not outlive the re-grant (the grant
+// removes the old entry first). Then its card goes back under the label.
+#[test]
+fn regrant_after_until_reads_again_spec_permissions_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let until = osis_core::WallMs(net.now() + 3_600_000);
+    let (g, p, l) = person_reader(&mut net, a, r, sv, Some(until));
+    let rt = net.tid(r);
+    net.clock.advance(3_600_000);
+    settle(&mut net);
+    assert!(!net.engine(a).may_read(&p, &g), "the edge passed its until");
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &p, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    assert!(net.engine(a).may_read(&p, &g), "the re-grant restores read access in the admin's view");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    settle(&mut net);
+    assert!(net.engine(r).may_read(&p, &g), "and at the member's device");
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "its card is under the label again");
+}

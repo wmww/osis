@@ -24,6 +24,8 @@ pub struct Server {
     pub hub: Hub<MemoryBackend>,
     pub backend: MemoryBackend,
     pub address: Address,
+    /// Added to the wall clock this server reports (handshakes, pongs) and acts on.
+    pub skew: i64,
 }
 
 pub struct Node {
@@ -95,7 +97,7 @@ impl Net {
         let backend = MemoryBackend::new();
         let store = BackendStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(900 + i as u64)).unwrap();
         let hub = Hub::new(store, server_key(i), Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.servers.push(Server { hub, backend, address: Address { url: format!("quic://server{i}:1"), key: server_key(i) } });
+        self.servers.push(Server { hub, backend, address: Address { url: format!("quic://server{i}:1"), key: server_key(i) }, skew: 0 });
         i
     }
 
@@ -104,8 +106,13 @@ impl Net {
         let backend = MemoryBackend::new();
         let store = BackendStore::open(backend.clone(), self.clock.clone(), Policy::default(), &mut SeededRng::from_u64(990 + s as u64)).unwrap();
         let hub = Hub::new(store, server_key(s), Box::new(SeededRng::from_u64(995 + s as u64)));
-        let address = self.servers[s].address.clone();
-        self.servers[s] = Server { hub, backend, address };
+        let (address, skew) = (self.servers[s].address.clone(), self.servers[s].skew);
+        self.servers[s] = Server { hub, backend, address, skew };
+    }
+
+    /// Server `s`'s wall clock.
+    pub fn now_at(&self, s: usize) -> u64 {
+        self.now().saturating_add_signed(self.servers[s].skew)
     }
 
     pub fn address(&self, s: usize) -> Address {
@@ -226,7 +233,7 @@ impl Net {
                     self.next_hub_conn += 1;
                     self.links.insert((n, conn), (s, hc));
                     self.queue.push_back(Msg::Up(n, conn));
-                    let now = self.now();
+                    let now = self.now_at(s);
                     let out = self.servers[s].hub.accept(now, hc, [0xe0; 32]);
                     self.hub_out(s, out);
                 }
@@ -300,10 +307,10 @@ impl Net {
             i += 1;
             self.steps += 1;
             assert!(i < max, "no quiescence after {max} messages");
-            let now = self.now();
             match m {
                 Msg::Up(n, c) => self.feed(n, Event::Up { conn: c }),
                 Msg::ToHub(s, hc, b) => {
+                    let now = self.now_at(s);
                     let t = std::time::Instant::now();
                     let out = self.servers[s].hub.input(now, hc, b);
                     self.hub_busy += t.elapsed();
@@ -313,6 +320,7 @@ impl Net {
                 Msg::Close(n, c) => self.feed(n, Event::Down { conn: c }),
             }
             for s in 0..self.servers.len() {
+                let now = self.now_at(s);
                 if self.servers[s].hub.next_due(now).is_some_and(|t| t <= now) {
                     let out = self.servers[s].hub.tick(now);
                     self.hub_out(s, out);
@@ -336,8 +344,8 @@ impl Net {
     /// Moves time on by `ms`, firing node wakes and server ticks, then settles.
     pub fn advance(&mut self, ms: u64) {
         self.clock.advance(ms);
-        let now = self.now();
         for s in 0..self.servers.len() {
+            let now = self.now_at(s);
             let out = self.servers[s].hub.tick(now);
             self.hub_out(s, out);
         }

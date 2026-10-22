@@ -391,6 +391,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             tx.core.events.queue(Event::Roster { thing });
         }
     }
+    tx.core.events.queue(Event::Joined { id: *id });
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
     }

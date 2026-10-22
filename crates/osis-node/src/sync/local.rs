@@ -7,6 +7,7 @@ use super::state::{Entry, Kind};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
+use osis_core::format::MAX_DRIFT_MS;
 use osis_core::{Ak, CommitId, LabelId, Role, Tid, Ts, Value};
 use osis_label::{Address, InboxPayload, InboxThing, PublishAuth, PublishKey, SignalBody};
 use osis_perm::{At, PurgeBy};
@@ -114,28 +115,50 @@ impl SyncEngine {
     }
 
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
-    /// drops the bodies it covers that this node may purge and whose keep-at-least bound has
-    /// passed; the next pass uploads the snapshot and deletes the dropped bodies at servers once
+    /// drops the bodies it covers that this node may purge and whose keep-at-least bound is
+    /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at servers once
     /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
-        self.drop_covered(t, ak, &s)?;
+        let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?.into_iter().collect();
+        // a dropped body's key and ciphertext go with it (spec/commits.md §5)
+        self.forget_dropped(Some(&dropped))?;
         Ok(self.handle(super::Event::Local))
     }
 
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
-    /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
+    /// whose keep-at-least bound is `MAX_DRIFT` past (spec/sync.md §7: the compactor, and every other
     /// right holder as it holds the snapshot); `s` carries them. A body is judged against `s`
     /// again until it is dropped or settled kept (established uncovered, or the lower of two
     /// covered-equal snapshots: `covered_judged`), so what a node drops follows what it holds,
-    /// not when the snapshot or the body arrived.
-    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
+    /// not when the snapshot or the body arrived. Only the bodies `only` names when given (a
+    /// pass's work set: the others were judged before and nothing changed for them); what is
+    /// judged again later goes into `left` (not established yet: next pass; keep-at-least: at
+    /// its bound). Returns the bodies dropped.
+    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId, only: Option<&[CommitId]>, left: &mut super::work::Left) -> Result<Vec<CommitId>> {
         let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
-        let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
+        let held: Vec<CommitId> = match only {
+            Some(o) => o.to_vec(),
+            None => self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default(),
+        };
+        let mut dropped = Vec::new();
         for c in held {
-            if c == s || self.covered_judged.contains(&(s, c, *t, ak.clone())) || !self.engine.holds_body(&c, t, ak) {
+            if c == s {
+                continue;
+            }
+            // a settled judgment holds while both bodies are held (a pair goes once either is
+            // dropped: a drop is a trigger, so the pair is looked at then)
+            let k = (s, c, *t, ak.clone());
+            let both = self.engine.holds_body(&s, t, ak) && self.engine.holds_body(&c, t, ak);
+            if self.covered_judged.contains(&k) {
+                if both {
+                    continue;
+                }
+                self.covered_judged.remove(&k);
+            }
+            if !self.engine.holds_body(&c, t, ak) {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
@@ -146,12 +169,22 @@ impl SyncEngine {
                 Some(tl) => tl.may_purge(&me, t, by, &h.actor, At::now(ts)),
                 None => by != PurgeBy::Nobody && self.engine.role_on(t) >= Some(Role::Admin),
             };
-            if !may || self.engine.body_keep(&c, t, ak)?.at_least > now.0 {
+            if !may {
+                continue;
+            }
+            // MAX_DRIFT past the bound: a node whose clock lags by up to that still holds the
+            // body must-hold and would place it again
+            let due = self.engine.body_keep(&c, t, ak)?.at_least.saturating_add(MAX_DRIFT_MS);
+            if due > now.0 {
+                left.at(due, c);
                 continue;
             }
             match self.engine.covered(&s, &c, t, ak)? {
                 // not established yet: judged again
-                None => continue,
+                None => {
+                    left.commits.insert(c);
+                    continue;
+                }
                 Some(false) => {
                     self.covered_judged.insert((s, c, *t, ak.clone()));
                     continue;
@@ -167,8 +200,10 @@ impl SyncEngine {
             }
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
+            self.touched.commits.insert(c);
+            dropped.push(c);
         }
-        Ok(())
+        Ok(dropped)
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`

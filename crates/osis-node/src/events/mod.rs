@@ -32,6 +32,8 @@ pub enum Cause {
 pub enum Event {
     /// A commit applied. `changed`: every `(tid, ak)` whose read may have changed.
     Applied { id: CommitId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)> },
+    /// Late deltas of applied commit `id` joined (reads they changed come as `Changed`).
+    Joined { id: CommitId },
     /// Aspects changed outside a commit's application.
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
     /// The membership timeline's roster of `thing` may have changed.
