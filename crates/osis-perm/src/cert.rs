@@ -102,7 +102,8 @@ impl Timeline {
     fn closure(&self, seeds: Vec<(Tid, Tid, Point)>) -> Certificates {
         let mut out = Certificates::default();
         let index = self.cert_index();
-        // latest point first, so each point's edge state is built once
+        // latest point first, keeping the edge state while the point stays the same; a step
+        // can queue a later point, so a point's state may be built again when the walk returns
         let mut todo: BTreeSet<(Point, Tid, Tid)> = seeds.into_iter().map(|(n, t, p)| (p, n, t)).collect();
         let mut seen: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
         let mut at: Option<(Point, Cow<'_, Edges>, Reach)> = None;

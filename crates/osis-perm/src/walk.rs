@@ -17,7 +17,7 @@
 //!   (owners, members of what is above, at any time). D is rebuilt whenever
 //!   the epoch starts change, so writes a start ignores leave no drops.
 //! - Before its epoch start S, N's edges follow S's roster and ledger as virtual writes placed
-//!   at their keys (before a real write at that point); an entry with a frontier is the
+//!   at their keys (just after the commit at that point); an entry with a frontier is the
 //!   explicit demotion it records, by its key's node (exempt as the author), audit-only
 //!   entries (`since` = `until`) included.
 
@@ -841,7 +841,9 @@ fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
             if v.member == *thing || input.owners.owner_actor(thing) == Some(v.member) || v.edge.is_some_and(|e| !e.well_formed()) {
                 continue;
             }
-            list.push((v.point, 0, v.thing, v.member, Item::Virtual(v)));
+            // just after the commit its key names (whose writes on the thing S ignores), so
+            // that commit's writes on other things are judged as in the full history
+            list.push((v.point, 2, v.thing, v.member, Item::Virtual(v)));
         }
     }
     for c in input.commits.values() {

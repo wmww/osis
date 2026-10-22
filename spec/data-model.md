@@ -87,7 +87,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/tid` | tid | synthetic, guaranteed |
 | `/aspects` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `/created` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
-| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<struct { ts, node: tid }> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
+| `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key> }> | membership edges (`since` only in roster snapshots, spec/permissions.md §6); read as the membership timeline's roster (spec/permissions.md §5) |
 | `/keys` | struct { read, write, admin: { epoch, kem_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `/secrets` | struct { boxes: map<(member, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
 | `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |

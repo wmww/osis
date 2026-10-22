@@ -184,11 +184,16 @@ impl World {
 
     /// Without `thing`'s edge writes and roster snapshots other than `keep` (a node that
     /// compacted `thing` at `keep`).
+    /// A commit that also writes other things keeps those writes.
     pub fn compacted(&self, thing: Tid, keep: CommitId) -> MemoryHeldSet {
-        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().any(|o| o.0 == thing)).map(|c| c.id).collect();
+        let mut w = self.clone();
+        for c in &mut w.commits {
+            c.ops.retain(|o| o.0 != thing);
+        }
+        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().all(|o| o.0 == thing) && !c.ops.is_empty()).map(|c| c.id).collect();
         skip.extend(self.snaps.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
         skip.extend(self.raw.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
-        self.held_without(&skip)
+        w.held_without(&skip)
     }
 
     fn recv_of(&self, id: &CommitId) -> Option<&BTreeMap<Tid, u64>> {
@@ -266,10 +271,17 @@ pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
 
 /// Rejection residue (issues/epoch-start-rejection-residue.md): an epoch start rejected for a
 /// write that was dropped later stays rejected, so the epoch starts differ from those of the
-/// held set without the dropped writes, and a roster snapshot above can repair it.
-pub fn rejection_residue(w: &World, tl: &osis_perm::Timeline) -> bool {
+/// held set without the dropped writes; a roster snapshot of `above` (the thing or one above
+/// each differing start) can repair it.
+pub fn rejection_residue(w: &World, tl: &osis_perm::Timeline, above: &Tid) -> bool {
     let d = dropped_commits(tl);
-    !d.is_empty() && osis_perm::Timeline::evaluate(&w.held_without(&d)).epoch_starts() != tl.epoch_starts()
+    if d.is_empty() {
+        return false;
+    }
+    let fixed = osis_perm::Timeline::evaluate(&w.held_without(&d));
+    let (a, b) = (tl.epoch_starts(), fixed.epoch_starts());
+    let differ: BTreeSet<Tid> = a.keys().chain(b.keys()).filter(|t| a.get(t) != b.get(t)).copied().collect();
+    !differ.is_empty() && differ.iter().all(|t| t == above || tl.owners().chain(t).0.contains(above))
 }
 
 pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {

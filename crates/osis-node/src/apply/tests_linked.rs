@@ -277,3 +277,26 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     deliver_all(&mut lp, &s).unwrap();
     assert_eq!(tags(&mut lp, 1, t), Some(Value::Set([Value::Str("by x".into())].into())), "judged by the inline frontier");
 }
+
+// spec/commits.md §2, spec/permissions.md §9: a redemption's grant and self-removal are both on
+// K; the writer refuses a self-removal on one thing plus a grant on another (two edges).
+#[test]
+fn redemption_on_two_targets_refused_spec_commits_2() {
+    let mut lp = LocalPeer::new(2, 950, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let a = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let n = lp.peers[0].engine.new_thing(&mut m, me);
+    let k = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    edge(&mut lp, n, a, Some(Role::Admin), None);
+    edge(&mut lp, k, a, Some(Role::Admin), None);
+    lp.sync_all().unwrap();
+    let x = Tid::from_bytes([9; 15]);
+    let mut mu = Mutation::new();
+    mu.op(n, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(a)) }).unwrap();
+    mu.op(k, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    let r = lp.peers[1].commit(mu);
+    assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
+}

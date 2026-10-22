@@ -358,7 +358,8 @@ Production(W, N, sk) ==
 
 (***************************************************************************)
 (* Replay (§6 epoch start): N's edges before S as virtual writes at their   *)
-(* keys, an entry with a frontier an explicit demotion by its key's node.  *)
+(* keys just after the commit a key names, an entry with a frontier an     *)
+(* explicit demotion by its key's node.                                    *)
 (***************************************************************************)
 RECURSIVE SortKeys(_)
 SortKeys(S) == IF S = {} THEN <<>>
@@ -374,7 +375,7 @@ ValueAt(Lm, ro, b, wr) ==
           THEN (CHOOSE q \in ro : TRUE).v ELSE Absent
 
 VEv(N, m, b, j, v, ex, fr) ==
-  [kind |-> "v", id |-> j, gen |-> 0, ts |-> b[1], au |-> b[2], key5 |-> <<b[1], b[2], b[3], j - 2, m>>,
+  [kind |-> "v", id |-> j, gen |-> 0, ts |-> b[1], au |-> b[2], key5 |-> <<b[1], b[2], b[3], j + 2, m>>,
    ops |-> <<Op(N, m, v.r, v.u)>>, tg |-> N, fr |-> fr, ex |-> ex, ro |-> {}]
 
 RECURSIVE VFold(_, _, _, _, _, _, _, _)

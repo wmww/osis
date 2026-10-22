@@ -32,7 +32,7 @@ TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 node
 | `MC_forge` | removed admin backdates a write on its remover's edge (M1, fixed) | all pass | 580 | 3 s |
 | `MC_samets` | n1 stamps two commits at one ts (M3, fixed) | all pass | 8,971 | 13 s (4 workers) |
 
-`MC_samets` trace (M3, before the fix): n1 grants n2 admin of A; n2 grants n3 admin on B at ts 6; n1 removes n2 at ts 8 (frontier empty, so the grant on B drops) and re-grants n2 at ts 8 in another commit. With keys (8, n1) the tenure ended and the roster edge started at one key, the replay saw no demotion, and a snapshot of A after both revived the grant. Keys now carry the commit ID (<<ts, node, id>>; a virtual write sits just before the commit its key names), so the replay demotes at the first commit and re-grants at the second.
+`MC_samets` trace (M3, before the fix): n1 grants n2 admin of A; n2 grants n3 admin on B at ts 6; n1 removes n2 at ts 8 (frontier empty, so the grant on B drops) and re-grants n2 at ts 8 in another commit. With keys (8, n1) the tenure ended and the roster edge started at one key, the replay saw no demotion, and a snapshot of A after both revived the grant. Keys now carry the commit ID (<<ts, node, id>>; a virtual write sits just after the commit its key names, as spec §6 places it), so the replay demotes at the first commit and re-grants at the second.
 
 Probes (`Probe*`, run by hand) confirm that drops, layer-2 demotions, invalid content, ledger entries with frontiers, audit-only entries (`MC_until`), applied snapshots whose ledger drops a write on B (`MC_snapA`) and kept standings (`MC_group`) all occur. Not reached: several drops in one walk outside `MC_sticky` (so `DropOrderFree` only bites there).
 

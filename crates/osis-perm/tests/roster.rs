@@ -45,7 +45,6 @@ static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point]) -> Option<String> {
     let tl = Timeline::evaluate(&w.held());
     let residue = sticky_residue(&tl);
-    let rejected = rejection_residue(w, &tl);
     let state = tl.roster_state(&thing);
     let mut w2 = w.clone();
     let ledger = state.ledger.clone();
@@ -68,7 +67,7 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
         return None;
     }
     // or rejection residue: it then answers as the held set without the dropped writes
-    if rejected {
+    if rejection_residue(w, &tl, &thing) {
         let fixed = answers(&w.held_without(&dropped_commits(&tl)), things, probes, &keep);
         if after == fixed && compacted == fixed {
             RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -404,10 +403,28 @@ fn rejected_start_residue_spec_permissions_6() {
     assert!(dropped_commits(&tl).contains(&rm));
     assert_eq!(tl.epoch_start(&g), None, "residue: the rejection outlives its cause");
     assert_eq!(Timeline::evaluate(&w.held_without(&[rm].into_iter().collect())).epoch_start(&g), Some(s));
-    assert!(rejection_residue(&w, &tl));
+    assert!(rejection_residue(&w, &tl, &p));
     let mut w2 = w.clone();
     w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
     assert_eq!(Timeline::evaluate(&w2.held()).epoch_start(&g), Some(s), "a re-snapshot of P repairs it");
+}
+
+/// §6: a ledger entry replays just after the commit its key names: A's self-removal from N
+/// and grant of X on M in one commit (A admin of M through N) keeps X's grant after a
+/// re-snapshot of N, as in the full history.
+#[test]
+fn ledger_entry_after_its_commit_spec_permissions_6() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, a, x) = (n[0], n[1], n[2]);
+    let (tn, tm) = (w.thing(k), w.thing(k));
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(k, tn, a, edge(Admin), 0, &all);
+    w.set(k, tm, tn, edge(Admin), 0, &all);
+    w.commit(a, 2, &[(tn, a, None), (tm, x, edge(Write))], &all);
+    let tl = Timeline::evaluate(&w.held());
+    assert_eq!(tl.role(&x, &tm, At::END), Some(Write));
+    assert_eq!(neutral(&w, tn, k, &[tn, tm], &[]), None);
 }
 
 /// §6: an expiry by `until` is keyed before every write at its ts: an explicit demotion at
