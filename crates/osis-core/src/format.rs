@@ -81,8 +81,8 @@ pub const MAX_OWNER_DEPTH: usize = 64;
 pub const MAX_LINKED_FRONTIERS: usize = 64 * MIB;
 /// Core schema ID (spec/wire.md §2, spec/data-model.md §9). fixed.
 pub const CORE_SCHEMA_ID: SchemaId = SchemaId([0; 16]);
-/// Core schema revision of format version 1 (spec/wire.md §2). fixed.
-pub const CORE_SCHEMA_REVISION: u64 = 1;
+/// Current core schema revision (spec/wire.md §2, spec/data-model.md §9); bumped on each core publish.
+pub const CORE_SCHEMA_REVISION: u64 = 2;
 
 /// Blind-node policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;

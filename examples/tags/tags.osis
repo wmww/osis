@@ -1,0 +1,6 @@
+//! Tags example (examples/tags, notes/tags.md): cards organized and shared through tags.
+schema 0x3512c94b34d3ef06fc689f718e7b945e;
+revision 2;
+
+/// A card's text.
+aspect /card/text: string;

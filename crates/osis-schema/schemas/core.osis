@@ -1,6 +1,6 @@
 //! Core schema (spec/data-model.md §9). Agility enums and the creation record: spec/wire.md §3.
 schema 0x00000000000000000000000000000000;
-revision 1;
+revision 2;
 
 type signing_key = enum { 1 ed25519(blob) };          // 32 bytes
 type kem_key = enum { 1 x25519_mlkem768(blob) };      // pk_x || pk_m, 1216 bytes
@@ -53,3 +53,9 @@ aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: 
 aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };
 aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect /groups: set<tid> [synthetic, guaranteed];
+
+/// What humans call the thing.
+aspect /name: string;
+aspect /description: markdown;
+/// Marks a group as a user-facing tag (notes/tags.md): its items are the tag's contents, its subgroups its sub-tags.
+aspect /tag: struct { 0 color: option<string> };

@@ -24,7 +24,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membersh
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 9 | `osis-sim` (`sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
-| 9 | `notes-app`, `chat`, `folder` (`examples/*`) | (notes/apps.md) | example apps: scenario libraries plus a tiny binary each, default members so they keep compiling; depend on osis (osis-schema to build, osis-sim to test) |
+| 9 | `notes-app`, `chat`, `tags` (`examples/*`) | (notes/apps.md) | example apps: scenario libraries plus a tiny binary each, default members so they keep compiling; depend on osis (osis-schema to build, osis-sim to test) |
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
 

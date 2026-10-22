@@ -22,3 +22,6 @@ Entry form: `## FC-<n>: <title>`, then the files changed (paths as in MANIFEST) 
 
 ## FC-6: commit ID in edge keys
 - schema/core.vec: the core type `edge_key` (roster `since`, tenure `since` and `until`) gains field `2 commit: blob`, the 32-byte commit ID of the write (spec/data-model.md §9, spec/permissions.md §6), so two commits of one node at one ts (one key used from two devices) are distinct ledger keys; the core schema value and hash and the `/members` and `/tenures` samples change.
+
+## FC-7: core revision 2
+- schema/core.vec: the core schema gains `/name: string`, `/description: markdown` and `/tag: struct { 0 color: option<string> }` (spec/data-model.md §9, notes/tags.md) and goes to revision 2; the schema value and hash change, and cases `name` and `tag` are added. Earlier cases unchanged.

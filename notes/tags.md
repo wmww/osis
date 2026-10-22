@@ -1,5 +1,5 @@
 # Tags and the standard core aspects
-> Summary: The user-facing organization layer decided with the owner: toplevel core aspects (`/name`, `/description`, `/icon`, `/tag`), tags as marked groups in a graph (not a tree), sharing a tag per item through one nested roster, recursive sharing semantics, the "only share what you may share" property, the confirmation guideline for first-party apps, the logical-document convention, costs, and what is still open. Proposal stage: not yet in spec/data-model.md §9 or core.osis.
+> Summary: The user-facing organization layer decided with the owner: toplevel core aspects (`/name`, `/description`, `/tag`; core revision 2), tags as marked groups in a graph (not a tree), sharing a tag per item through one nested roster, recursive sharing semantics, the "only share what you may share" property, the confirmation guideline for first-party apps, the logical-document convention, costs, what examples/tags and notes-app show, and what is still open.
 
 ## Direction (owner)
 - No standard schema existed; the example apps minted four aspects for "name". The foundation should be settled before stabilizing.
@@ -9,13 +9,13 @@
 - No user-visible "space". Moving a thing to another owner is a copy with a new tid, so users must never be expected to move things between containers; a share is per item, through one roster (below).
 - Chat is deferred (fiddly, important to get right); notes/chat.md stands as built.
 
-## Core revision 2 (proposed shapes, to confirm)
+## Core revision 2 (spec/data-model.md §9, core.osis, vectors FC-7)
 ```
 aspect /name: string;                 // what humans call the thing
 aspect /description: markdown;
-aspect /icon: struct { 0 emoji: option<string>, 1 image: option<tid> };   // image: a thing with a blob
 aspect /tag: struct { 0 color: option<string> };   // marks a group as a user-facing tag
 ```
+- No `/icon` for now (owner): added when an app needs it. Typed keys `osis::core::{NAME, DESCRIPTION, TAG, Tag}`.
 - `/tag` on a group thing makes it a tag; its items and subgroups are the tag's contents and sub-tags. Default retention `author`, no bounds, like `/group`.
 - No order or position inside a tag in core (owner): apps keep their own, since one wants a list, another a 2D canvas position.
 
@@ -26,7 +26,7 @@ aspect /tag: struct { 0 color: option<string> };   // marks a group as a user-fa
 - Internal groups (buckets, app indexes) have no `/tag`; generic tools list only tags.
 
 ## Sharing a tag
-Built from the mirrored-edges pattern of notes/permissions.md Patterns (examples/folder `add_mirrored`):
+Built from the mirrored-edges pattern of notes/permissions.md Patterns; examples/tags builds it (`add` = place plus grant, `new_sub_tag`, `remove`):
 - The tag becomes an actor (secrets of its own, a label, a roster). Each direct item gets one edge for the tag's actor at the share's role or lower; a sub-tag gets the same edge and is made a shared actor itself if it is not one yet. Rights chain through membership edges (spec/permissions.md §1): a member of T reaches an item of sub-tag U by the path T → U → item, role = the minimum along it.
 - Items keep tid and owner; an item in several shared tags has one edge per tag; moving between tags is an edge change, never a copy. Everything under the tag travels under the tag's one label (entitlement holds through the chain).
 - Rosters nest: U's roster lists T as one member actor. Removing Bob from T rotates T, then lazily each sub-tag and item below it once (the cascade of spec/permissions.md §3), whatever the graph shape.
@@ -46,10 +46,9 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 - Shared roots (a shared tag, a chat) are created `Unsynced` and synced under their own label, not placed in the home group (notes/api.md `create`); the notes-app's notebook currently is placed in home and should follow.
 - "Shared with me": a foreign thing placed in a home-private group mirrors to all my devices through entitlement (I hold an edge). The home group should hold small person-private index things, not shared roots.
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
-- Files: `blob` plus a mime string on a file thing (examples/folder's `/folder/content: string` is wrong for binary).
+- Files: `blob` plus a mime string on a file thing.
 
 ## Open
-- Confirm the shapes above, then: spec/data-model.md §9 and core.osis revision 2, `osis::core` constants, examples/notes-app and folder moved onto `/name` and tags. No "share tag" API helper (owner: avoid convenience functions that only save calling existing ones; `place` plus `grant` is the operation).
+- No "share tag" API helper (owner: avoid convenience functions that only save calling existing ones; `place` plus `grant` is the operation).
 - Admin-only aspects on shared actors: a chat moderation question, not a tag one (writers may rename a shared tag, owner); issues/admin-only-aspects.md, decided with the chat redesign.
-- Whether `/icon.image` should be a tid or an inline small blob.
 - Chat redesign (notes/chat.md) after tags land.

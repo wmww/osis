@@ -11,7 +11,8 @@ fn main() {
     notes_app::type_text(&db, note, 0, "milk, eggs").unwrap();
     notes_app::type_text(&db, note, 10, ", tea").unwrap();
     notes_app::undo(&db, note).unwrap();
-    notes_app::tag(&db, note, "home").unwrap();
+    let home = notes_app::new_tag(&db, "home").unwrap();
+    notes_app::tag(&db, note, home).unwrap();
     notes_app::attach(&db, note, "# Recipes\n".repeat(10_000).as_bytes()).unwrap();
     let mut head = [0u8; 9];
     notes_app::attachment(&db, note).unwrap().unwrap().read_exact(&mut head).unwrap();
