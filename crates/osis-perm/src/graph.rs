@@ -213,6 +213,30 @@ impl<'a> EdgesAt<'a> {
     }
 }
 
+/// What a standing on a thing reads besides the node's roles: the thing's owner chain (and
+/// the key actor at its top) and its members holding an invite (edges alive).
+pub struct Reads {
+    pub up: Vec<Tid>,
+    pub top: Option<Tid>,
+    pub invites: Vec<(Tid, Edge)>,
+}
+
+impl Reads {
+    /// Standing of `x` on the thing `n` these are of, given `x`'s roles.
+    pub fn standing(&self, x: &Tid, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
+        let role = best.get(n).copied();
+        let class = if self.top == Some(*x) || self.up.iter().any(|y| best.get(y) == Some(&Role::Admin)) {
+            Class::Chain
+        } else if role == Some(Role::Admin) {
+            Class::Edge
+        } else {
+            let inv = self.invites.iter().filter_map(|(m, e)| Some(e.invite?.min(*best.get(m)?).min(e.role))).max();
+            inv.map_or(Class::None, Class::Invite)
+        };
+        Standing { class, role }
+    }
+}
+
 /// One edge set to a value over an edge state: (member, target, value).
 pub type Patch = (Tid, Tid, Option<Edge>);
 
@@ -396,9 +420,19 @@ impl<'a> View<'a> {
 
     /// Standing of `x` on `n` given `x`'s roles.
     pub fn standing(&self, x: &Tid, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
+        self.reads(n).standing(x, best, n)
+    }
+
+    /// What a standing on `n` reads besides the node's roles.
+    pub fn reads(&self, n: &Tid) -> Reads {
         let (up, top) = self.owners.chain(n);
-        let chain = top == Some(*x) || up.iter().any(|y| best.get(y) == Some(&Role::Admin));
-        self.standing_from(chain, best.get(n).copied(), best, n)
+        let mut invites = Vec::new();
+        self.each_member(n, |m, e| {
+            if e.invite.is_some() && e.alive_at(self.ts) {
+                invites.push((*m, *e));
+            }
+        });
+        Reads { up, top, invites }
     }
 
     /// Standing on `n` from its parts: whether the node is admin on `n`'s owner chain, its role

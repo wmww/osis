@@ -22,7 +22,7 @@
 //!   entries (`since` = `until`) included.
 
 use crate::content::{overlapping, Range};
-use crate::graph::{Class, Edges, Owners, Standing, View};
+use crate::graph::{Class, Edges, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{lowers, Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
 use osis_core::{CommitId, Role, Tid, Ts, WallMs};
@@ -147,6 +147,10 @@ impl Input {
         Input { owners, commits, snaps, nodes, ever_admins }
     }
 }
+
+/// At most this many nodes to audit read their roles forward (`Pass::roles`), more by
+/// backward searches from what their standings read (a cost choice: the values are equal).
+const FORWARD_MAX: usize = 4;
 
 /// One change to the edge state in the final walk, for time queries.
 #[derive(Clone, Debug)]
@@ -682,13 +686,19 @@ impl<'a> Pass<'a> {
         let ns = view.reach_forward(&target);
         let cur = self.edges.get(&member, &target).copied().filter(|e| e.alive_at(Some(ts)));
         // Every x's roles on what its standing on the target reads (the member, the target,
-        // members with an invite, admin anywhere on its owner chain), by backward searches.
+        // members with an invite, admin anywhere on its owner chain): by backward searches, or
+        // for a few x by their (cached) forward roles, the same values.
         let mut keys: BTreeSet<Tid> = BTreeSet::from([member, target]);
         keys.extend(self.edges.members(&target).filter(|(_, e)| e.invite.is_some()).map(|(m, _)| *m));
-        let to: BTreeMap<Tid, BTreeMap<Tid, Role>> = keys.iter().map(|k| (*k, view.roles_to(k))).collect();
-        let role_on = |x: &Tid, k: &Tid| to.get(k).and_then(|m| m.get(x)).copied();
         let (up, top) = self.input.owners.chain(&target);
-        let on_chain = view.roles_to_any(&up);
+        let forward = xs.len() <= FORWARD_MAX;
+        let (to, on_chain): (BTreeMap<Tid, BTreeMap<Tid, Role>>, _) = if forward {
+            (BTreeMap::new(), BTreeMap::new())
+        } else {
+            (keys.iter().map(|k| (*k, view.roles_to(k))).collect(), view.roles_to_any(&up))
+        };
+        // what standings on each thing read, for every x
+        let reads: BTreeMap<Tid, Reads> = ns.iter().map(|n| (*n, view.reads(n))).collect();
         let mut grew = false;
         for x in xs {
             let restored = match (base, mine.get(&x)) {
@@ -696,6 +706,15 @@ impl<'a> Pass<'a> {
                 (Some(b), None) => Edge { until: None, since: None, ..b },
                 (None, None) => continue,
             };
+            let fwd = forward.then(|| self.roles(x, ts));
+            let role_on = |x: &Tid, k: &Tid| match &fwd {
+                Some(b) => b.get(k).copied(),
+                None => to.get(k).and_then(|m| m.get(x)).copied(),
+            };
+            let chain_admin = match &fwd {
+                Some(b) => up.iter().filter_map(|y| b.get(y)).max().copied(),
+                None => on_chain.get(&x).copied(),
+            } == Some(Role::Admin);
             // An edge x does not reach (alive) confers nothing on x either way.
             let Some(on_member) = role_on(&x, &member) else { continue };
             // The restored edge (alive) is usually at least as wide as the current one; when
@@ -704,14 +723,13 @@ impl<'a> Pass<'a> {
             let wider = cur.is_none_or(|c| c.role <= restored.role);
             let pairs: Vec<(Tid, Standing, Standing)> = if wider && Some(on_member.min(restored.role)) <= role_on(&x, &target) {
                 let small: BTreeMap<Tid, Role> = keys.iter().filter_map(|k| role_on(&x, k).map(|r| (*k, r))).collect();
-                let chain = top == Some(x) || on_chain.get(&x) == Some(&Role::Admin);
+                let chain = top == Some(x) || chain_admin;
                 let role = role_on(&x, &target);
                 let view = self.view(ts);
                 let before = self.view(ts).patched(member, target, Some(restored));
                 vec![(target, view.standing_from(chain, role, &small, &target), before.standing_from(chain, role, &small, &target))]
             } else {
                 let best = self.roles(x, ts);
-                let view = self.view(ts);
                 let before = self.view(ts).patched(member, target, Some(restored));
                 let (best_was, raised) = if wider {
                     let raised = before.roles_raised(&best, &[member]);
@@ -723,14 +741,12 @@ impl<'a> Pass<'a> {
                 };
                 // A standing reads the role on the thing, on its owner chain and on its members
                 // with an invite; only the target's members differ between the views.
-                let owners = &self.input.owners;
-                let edges = &self.edges;
-                let reads_raised = |n: &Tid| {
-                    raised.as_ref().is_none_or(|r| {
-                        *n == target || r.contains_key(n) || owners.chain(n).0.iter().any(|y| r.contains_key(y)) || edges.members(n).any(|(m, e)| e.invite.is_some() && r.contains_key(m))
-                    })
+                let target_before = before.reads(&target);
+                let reads_raised = |n: &Tid, rd: &Reads| {
+                    raised.as_ref().is_none_or(|r| *n == target || r.contains_key(n) || rd.up.iter().any(|y| r.contains_key(y)) || rd.invites.iter().any(|(m, _)| r.contains_key(m)))
                 };
-                ns.iter().filter(|n| reads_raised(n)).map(|n| (*n, view.standing(&x, &best, n), before.standing(&x, &best_was, n))).collect()
+                let reads = ns.iter().filter_map(|n| reads.get(n).map(|rd| (n, rd))).filter(|(n, rd)| reads_raised(n, rd));
+                reads.map(|(n, rd)| (*n, rd.standing(&x, &best, n), if *n == target { &target_before } else { rd }.standing(&x, &best_was, n))).collect()
             };
             for (n, now, held) in pairs {
                 for below in [Role::Write, Role::Admin] {

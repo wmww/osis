@@ -222,7 +222,10 @@ fn bench_certificates() {
     let tl = Timeline::evaluate(&held);
     let doc = *w.created.keys().last().unwrap();
     let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
+    let mid = tl.applied().values().nth(tl.applied().len() / 2).map(|a| a.point).unwrap();
     let t0 = Instant::now();
     let certs = tl.certificates(&nodes[1], &doc, end);
-    eprintln!("{n} edge writes: chain certificates at the end {:?} ({} commits)", t0.elapsed(), certs.commits.len());
+    let t1 = Instant::now();
+    let certs_mid = tl.certificates(&nodes[2], &doc, mid);
+    eprintln!("{n} edge writes: chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
 }
