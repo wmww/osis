@@ -1665,8 +1665,8 @@ impl SyncEngine {
     /// Whether an entry of commit `c` holding `parts` is another node's card that no member
     /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
-    /// `/node` and `/reach`, the node reads the label's actor no more (a departed node is never
-    /// dialed; its `/keys` stays while chains of its old writes may need it).
+    /// `/node` and `/reach`, the node departed (a departed node is never dialed; its `/keys`
+    /// stays while chains of its old writes may need it).
     fn stale_card(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
         let me = self.engine.tid();
         let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
@@ -1674,18 +1674,25 @@ impl SyncEngine {
         if h.author == me || aks.is_empty() || !all_card {
             return false;
         }
-        // departed: an applied write removed the node's edge on a thing on its way to the actor,
-        // and it reads the actor no more (a view lacking the node's chain alone proves nothing)
+        // departed: it reads the actor no more, and an applied write removed an edge on its way
+        // to the actor, or one there passed its `until`: its own, or that of an actor it reads
+        // through (its person). A view lacking the node's chain holds no such write on its way
+        // and proves nothing ("reads no more" alone misjudged such members, spec/sync.md §6)
         let actor = self.engine.group_actor(g);
         let core = &self.engine.core;
-        let removed = core.timelines.get(&h.author).is_some_and(|tl| {
-            tl.applied().keys().any(|w| match w {
-                osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.member == h.author && op.edge.is_none() && (op.target == actor || core.may_read(&op.target, &actor))),
-                osis_perm::WriteId::Snapshot(_) => false,
-            })
-        });
-        let departed = removed && !core.may_read(&h.author, &actor);
+        let now = osis_core::Ts::make(WallMs(self.now()), 0).unwrap_or_default();
         let author = h.author;
+        let departed = !core.may_read(&author, &actor)
+            && core.timelines.get(&author).is_some_and(|tl| {
+                tl.applied().keys().any(|w| match w {
+                    osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| {
+                        let ended = op.edge.is_none_or(|e| !e.alive_at(Some(now)));
+                        let way = (op.member == author || core.may_read(&author, &op.member)) && (op.target == actor || core.may_read(&op.target, &actor));
+                        ended && way
+                    }),
+                    osis_perm::WriteId::Snapshot(_) => false,
+                })
+            });
         aks.into_iter().all(|ak| {
             if departed && ak != "/keys" {
                 return true;
