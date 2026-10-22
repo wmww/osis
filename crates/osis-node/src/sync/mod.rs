@@ -368,6 +368,9 @@ pub struct SyncEngine {
     /// When the last remote membership commit of each actor applied (raw ms; the peer part of
     /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
     pub(crate) membership_at: BTreeMap<Tid, u64>,
+    /// When the last remote membership commit writing an actor's `/secrets` (a rotation, the
+    /// only change its author registers a step for) applied (raw ms; `step_settled`).
+    pub(crate) rotation_at: BTreeMap<Tid, u64>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<ServerKey>>,
@@ -452,6 +455,7 @@ impl SyncEngine {
             peers_key: (u64::MAX, 0),
             peer_received: BTreeMap::new(),
             membership_at: BTreeMap::new(),
+            rotation_at: BTreeMap::new(),
             pass_peers: BTreeMap::new(),
             members_moved: false,
             prefix_checked: BTreeSet::new(),
@@ -653,6 +657,9 @@ impl SyncEngine {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
                             self.membership_seen.insert(actor, self.seq);
                             self.membership_at.insert(actor, at);
+                            if a.ak.as_str() == "/secrets" {
+                                self.rotation_at.insert(actor, at);
+                            }
                         }
                         // new secrets may open a label that failed: retry at the next tick
                         for c in self.conns.values_mut() {

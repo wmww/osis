@@ -161,6 +161,34 @@ fn link_race_seed_50() {
     ok("link_race", 50);
 }
 
+// spec/sync.md §3, §5: sweep seed 1792, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+#[test]
+#[ignore = "issues/link-race-edge-only-pending.md"]
+fn link_race_seed_1792() {
+    ok("link_race", 1792);
+}
+
+// spec/sync.md §3, §5: sweep seed 2255, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+#[test]
+#[ignore = "issues/link-race-edge-only-pending.md"]
+fn link_race_seed_2255() {
+    ok("link_race", 2255);
+}
+
+// spec/sync.md §3, §5: sweep seed 2898, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+#[test]
+#[ignore = "issues/link-race-edge-only-pending.md"]
+fn link_race_seed_2898() {
+    ok("link_race", 2898);
+}
+
+// spec/sync.md §3, §5: sweep seed 3926, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+#[test]
+#[ignore = "issues/link-race-edge-only-pending.md"]
+fn link_race_seed_3926() {
+    ok("link_race", 3926);
+}
+
 // spec/permissions.md §7: move with import and re-grant.
 #[test]
 #[ignore = "tier 2"]
@@ -336,4 +364,18 @@ fn newer_schema() {
 #[ignore = "tier 2"]
 fn concurrent_writers() {
     ok("concurrent_writers", 1);
+}
+
+// spec/sync.md §6: sweep seeds 804 and 1002, the evil server had nothing to misbehave on in 200 steps (the scenario runs on until it has).
+#[test]
+#[ignore = "tier 2"]
+fn evil_server_seed_804() {
+    ok("evil_server", 804);
+}
+
+// spec/sync.md §5: sweep seeds 1962, 3237 and 4084, all four writers' promotion points fell in one 1 s sim step for one blob (tolerated once per run).
+#[test]
+#[ignore = "tier 2"]
+fn concurrent_writers_seed_1962() {
+    ok("concurrent_writers", 1962);
 }
