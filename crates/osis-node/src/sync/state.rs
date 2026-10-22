@@ -107,7 +107,8 @@ pub struct OutRec {
 }
 
 /// A membership commit delivered by inbox to `member` (spec/sync.md §3): re-sealed and sent
-/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the member acted.
+/// again once `INBOX_LIFETIME` passed since `at` (corrected wall ms) unless the member acted;
+/// `at` 0: not sent yet (`SyncEngine::send_inbox`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SentInbox {
     pub member: Tid,
@@ -180,6 +181,9 @@ pub struct State {
     pub contacts: BTreeSet<Tid>,
     /// Sharer nodes of followed links by K (`y/l`).
     pub link_peers: BTreeMap<Tid, LinkPeer>,
+    /// Bumped by every change of entries, presence or the outbox (`SyncEngine::placed` caches
+    /// by it; in memory).
+    pub version: u64,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -433,10 +437,12 @@ impl State {
         self.put(key(ENTRY, &[&l.0, &b.0]), encode_entry(&e));
         self.entries.insert((l, b), e);
         self.feed.added(l, b);
+        self.version += 1;
     }
 
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
         if self.entries.remove(&(l, b)).is_some() {
+            self.version += 1;
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.feed.deleted(l, b);
             self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
@@ -447,6 +453,7 @@ impl State {
     /// Forgets an entry that never counted (junk a server announced): no tombstone.
     pub fn drop_entry(&mut self, l: LabelId, b: BlobId) {
         if self.entries.remove(&(l, b)).is_some() {
+            self.version += 1;
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.feed.deleted(l, b);
         }
@@ -470,9 +477,11 @@ impl State {
         let k = key(PRESENT, &[&s, &l.0, &b.0]);
         if on {
             if self.present.insert((s, l, b)) {
+                self.version += 1;
                 self.put(k, Vec::new());
             }
         } else if self.present.remove(&(s, l, b)) {
+            self.version += 1;
             self.deposited.remove(&(s, l, b));
             self.del(k);
         }
@@ -601,9 +610,22 @@ impl State {
     /// Records an inbox delivery, or a re-send of one (counted).
     pub fn note_sent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool, at: u64) {
         let x = match self.sent_inbox.get(&(member, commit)) {
+            // the first send of a delivery queued unsent (`at` 0) is no re-send
+            Some(old) if old.at == 0 => SentInbox { at, ..old.clone() },
             Some(old) => SentInbox { at, tries: old.tries.saturating_add(1), ..old.clone() },
             None => SentInbox { member, commit, things, edge_only, at, tries: 0 },
         };
+        self.put(key(SENT_INBOX, &[member.as_bytes(), &commit.0]), encode_sent(&x));
+        self.sent_inbox.insert((member, commit), x);
+    }
+
+    /// Records an inbox delivery not sent yet (`at` 0; `SyncEngine::send_inbox` seals and sends
+    /// it once its commit is placed), unless one is recorded already.
+    pub fn note_unsent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) {
+        if self.sent_inbox.contains_key(&(member, commit)) {
+            return;
+        }
+        let x = SentInbox { member, commit, things, edge_only, at: 0, tries: 0 };
         self.put(key(SENT_INBOX, &[member.as_bytes(), &commit.0]), encode_sent(&x));
         self.sent_inbox.insert((member, commit), x);
     }
@@ -686,10 +708,12 @@ impl State {
         let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob).take();
         self.put(key(OUTBOX, &[&o.server.key, &id.0]), v);
         self.outbox.insert((o.server.key, id), o);
+        self.version += 1;
     }
 
     pub fn remove_out(&mut self, s: &ServerKey, b: &BlobId) {
         if self.outbox.remove(&(*s, *b)).is_some() {
+            self.version += 1;
             self.del(key(OUTBOX, &[s, &b.0]));
         }
     }
@@ -813,6 +837,17 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
         w = w.raw(t.as_bytes());
     }
     w.take()
+}
+
+/// `State::note_unsent` inside a flow's transaction (the commit's own): a crash before
+/// `SyncEngine::carry_out` loses no inbox delivery.
+pub(crate) fn note_unsent_tx(tx: &mut Tx<'_>, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
+    let k = key(SENT_INBOX, &[member.as_bytes(), &commit.0]);
+    if tx.txn.get_local(&k)?.is_none() {
+        let x = SentInbox { member, commit, things, edge_only, at: 0, tries: 0 };
+        tx.txn.put_local(&k, &encode_sent(&x), Shred::No)?;
+    }
+    Ok(())
 }
 
 fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, BlobId), OutRec)> {

@@ -1,17 +1,10 @@
-# A commit's partial copy pends for ever when the whole commit never reaches its things' labels
-> Summary: A node that syncs thing K and receives only part of a commit on K (a chain certificate projected to its `/members` deltas, spec/permissions.md §4, or an edge-only inbox blob) waits (`Reason::WaitDeltas`, atomic apply) for the rest, which only the author can place under K's label; if the whole commit never gets there, it pends for ever.
-> Tags: node, sync, tests
+# A commit's partial copy can still pend for ever in a few residual cases
+> Summary: A node that syncs thing K and receives only part of a commit on K (a chain certificate projected to its `/members` deltas, an edge-only inbox blob) waits for the rest from K's label; authors now place the full commit there before any projection elsewhere (spec/sync.md §5 Order, notes/sync.md Placement order), leaving the residues below.
+> Tags: node, sync
 
-Seen: `link_race` 1792, 2255, 2898, 3926 (production round 1 sweep). 2898 (a losing redeemer forgot K before its deposit landed, after its `/members`-only copy reached the target's label) is fixed by queuing a non-writer's copies of its own writes in the outbox (notes/sync.md); 1792, 2255, 3926 pass on main since. Tier-2 seed tests in sim/tests/library.rs.
-
-## Technical details
-The `/members`-only copy is legitimate: chain certificates go projected to their edge deltas (spec/permissions.md §4). A receiver that syncs K must then get the full commit from K's label, and nothing guarantees it is there. Ways it never arrives:
-- the queued deposit dropped after `MAX_INBOX_TRIES` refusals (budget full, rate limit);
-- an admin of K refreshed K's deposit seed before the deposit was answered (signature no longer matches);
-- `place_certificate_in` deferred for an uncovered epoch and the node lost the label (or restarted: `deferred` is in memory) before the rotation;
-- a crash between `Engine::commit` and `carry_out` (the deliveries are not durable);
-- disk loss of the author.
-
-Options:
-- Author side: place the full commit under the labels of its things before any partial copy elsewhere (copies wait until the full body is present at a server); the crash and disk-loss cases still need the deliveries durable.
-- Receiver side: a rule that a part on a synced thing that no reachable entry can supply (author departed, no holder) is treated as never coming (apply the commit without it, as for dropped parts), with a bound so a slow author is not cut off.
+## Residues
+- The wait is bounded (`PLACE_WAIT_MS`, 5 min after the commit): if the full commit is still not at a server of its things' labels then (server down, deposit refused for good at every server), the copies go anyway with a diagnostic and receivers that sync K pend until it arrives, as before.
+- Exempt by design: removals and `/keys` writes (spec/permissions.md §3), and every `carry_out` placement (a removal's First copies, a grantee's home copy, L's card). Their partial copies can still precede the full commit.
+- A single-use redemption whose `carry_out` was lost to a crash: after restart the self-removal of L leaves K's epoch uncovered (`SyncEngine::leaving`, the cover exemption, is in memory), so the redeemer places nothing under K until a sharer device rotates K. A fix: derive the exemption from the commit (an own commit removing its signer's own edge).
+- Copies by non-authors (a grantee's chain naming the grant) are not ordered; they rely on the author's order (the grantee received the commit after it was placed). Disk loss of the author before the commit is accepted anywhere leaves them pending.
+- Rejected: the receiver-side rule (treat a part no reachable entry supplies as never coming): a timeout state.
