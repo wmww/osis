@@ -91,16 +91,16 @@ fn compaction() {
     ok("compaction", 1);
 }
 
-// spec/sync.md §6, §7: sweep seed 2887, two writers with different drop sets of one commit delete each other's bodies (message storm).
+// spec/sync.md §6, §7: sweep seed 2887, two writers each dropped what the other's carrier snapshot covered, not what their own did, and deleted each other's bodies of one commit (message storm).
 #[test]
-#[ignore = "issues/drop-view-pingpong.md"]
+#[ignore = "tier 2"]
 fn compaction_seed_2887() {
     ok("compaction", 2887);
 }
 
-// spec/sync.md §6, §7: sweep seed 3914, the same churn (not quiescent after 40 rounds).
+// spec/sync.md §6, §7: sweep seed 3914, the same churn as seed 2887 (not quiescent after 40 rounds).
 #[test]
-#[ignore = "issues/drop-view-pingpong.md"]
+#[ignore = "tier 2"]
 fn compaction_seed_3914() {
     ok("compaction", 3914);
 }

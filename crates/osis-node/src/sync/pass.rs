@@ -123,7 +123,7 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
-        let snaps = self.drop_others_covered(&l)?;
+        let snaps = self.drop_label_covered(&l)?;
         let bodies = self.bodies_under(&g, &l)?;
         let replaced = self.is_replaced(&g, &l);
         let mut sends: Vec<Out> = Vec::new();
@@ -306,7 +306,7 @@ impl SyncEngine {
                 self.engine.set_syncing(t, true)?;
             }
         }
-        let snaps = self.drop_others_covered(&l)?;
+        let snaps = self.drop_label_covered(&l)?;
         let snapping = self.unsettled_hold(&l, &g)?;
         let bodies = self.bodies_under(&g, &l)?;
         let sends = self.body_sends(None, &g, l, &keys, read_ok, &bodies, &snaps, &snapping)?;
@@ -402,20 +402,21 @@ impl SyncEngine {
         })
     }
 
-    /// Others' content snapshots under `l`: drops the bodies they cover (spec/sync.md §7; this
-    /// node's own were a compaction, or a carrier written for a keep-at-most bound). Returns
-    /// the label's snapshots by aspect.
-    fn drop_others_covered(&mut self, l: &LabelId) -> Result<BTreeMap<(Tid, Ak), Vec<CommitId>>> {
+    /// The content snapshots under `l`, this node's own included (a carrier it wrote for a
+    /// body it must delete covers others too): drops the bodies they cover (spec/sync.md §7), so
+    /// every right holder holding the same snapshots drops alike. Returns the label's snapshots
+    /// by aspect.
+    fn drop_label_covered(&mut self, l: &LabelId) -> Result<BTreeMap<(Tid, Ak), Vec<CommitId>>> {
         let snaps = self.snapshots_at(l);
         let mut done = Vec::new();
-        let me = self.engine.tid();
         for ((t, a), ss) in &snaps {
             for s in ss {
-                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot && m.header.author != me) {
+                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
                     continue;
                 }
-                self.drop_covered(t, a, s)?;
-                done.push(*s);
+                if !self.drop_covered(t, a, s)? {
+                    done.push(*s);
+                }
             }
         }
         self.snapshots_seen.extend(done);

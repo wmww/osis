@@ -125,11 +125,15 @@ impl SyncEngine {
 
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
     /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
-    /// right holder as it sees the snapshot); `s` carries them.
-    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
+    /// right holder as it sees the snapshot); `s` carries them. Returns whether a body may still
+    /// go later (its keep-at-least bound ahead, or not established covered or uncovered yet):
+    /// the snapshot is judged again, so what a node drops depends on what it holds, not on when
+    /// it first saw the snapshot.
+    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<bool> {
         let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
+        let mut later = false;
         let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
         for c in held {
             if c == s || !self.engine.holds_body(&c, t, ak) {
@@ -143,7 +147,15 @@ impl SyncEngine {
                 Some(tl) => tl.may_purge(&me, t, by, &h.actor, At::now(ts)),
                 None => by != PurgeBy::Nobody && self.engine.role_on(t) >= Some(Role::Admin),
             };
-            if !may || self.engine.body_keep(&c, t, ak)?.at_least > now.0 || self.engine.covered(&s, &c, t, ak)? != Some(true) {
+            if !may {
+                continue;
+            }
+            let covered = self.engine.covered(&s, &c, t, ak)?;
+            if covered.is_none() || covered == Some(true) && self.engine.body_keep(&c, t, ak)?.at_least > now.0 {
+                later = true;
+                continue;
+            }
+            if covered != Some(true) {
                 continue;
             }
             // covered-equal snapshots: only the higher commit ID goes (spec/sync.md §7), as in
@@ -155,7 +167,7 @@ impl SyncEngine {
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
         }
-        Ok(())
+        Ok(later)
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
