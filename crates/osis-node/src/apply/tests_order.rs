@@ -28,7 +28,7 @@ fn reg() -> Ak {
     Ak::new("/t/reg").unwrap()
 }
 
-fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
+fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
     let mut mu = Mutation::new();
     let op = match role {
         Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None }.to_value()) },
@@ -38,7 +38,7 @@ fn edge(lp: &mut LocalPeer, t: Tid, m: Tid, role: Option<Role>, frontier: Option
     if let Some(f) = frontier {
         mu.frontier(f);
     }
-    lp.peers[0].commit(mu).unwrap().unwrap()
+    lp.peers[by].commit(mu).unwrap().unwrap()
 }
 
 fn write(p: &mut Peer, t: Tid, v: &str) -> CommitId {
@@ -73,65 +73,88 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 }
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
-/// backdated; 1 between them; the last: after them) and what follows the demotion (0 nothing,
-/// 1 B writes again unaware, 2 A grants B again).
+/// backdated; 1 between them; the last: after them), the demoter (0: A, the owner; 2: C, an
+/// admin of G), whether a grandchild of G is created, and what follows the
+/// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
+/// item: a commit naming a former leaf).
 struct Shape {
     writes: usize,
     at: usize,
+    by: usize,
+    sub: bool,
     tail: usize,
 }
 
-/// One history of `shape`, the rest random. Peer 0 (A) owns G and gives peer 1 (B) write; A
-/// creates an item under G; B writes on the item or on G, A receiving each at once or not
-/// before the demotion; A removes B with a frontier as of `shape.at`; then the tail. Returns
-/// how many orders ran.
+/// One history of `shape`, the rest random. Peer 0 (A) owns G, gives peer 1 (B) write and
+/// peer 2 (C) admin; A creates two items under G in one commit, then an item under the first
+/// (a grandchild of G); B writes on G or on one of them, the demoter receiving each at once or not
+/// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
+/// Returns how many orders ran.
 fn sample(seed: u64, shape: Shape) -> usize {
     let mut rng = Rng(seed | 1);
-    let mut lp = LocalPeer::new(2, seed, T0).unwrap();
+    let mut lp = LocalPeer::new(3, seed, T0).unwrap();
     lp.sync_all().unwrap();
-    let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, a);
     m.set(g, &reg(), &Value::Str("g".into())).unwrap();
     lp.peers[0].commit(m).unwrap();
-    edge(&mut lp, g, b, Some(Role::Write), None);
-    lp.sync(0, 1).unwrap();
+    edge(&mut lp, 0, g, b, Some(Role::Write), None);
+    edge(&mut lp, 0, g, c, Some(Role::Admin), None);
+    lp.sync_all().unwrap();
     let base: Vec<CommitId> = lp.peers[0].engine.commit_ids();
     lp.advance(1_000);
     let mut m = Mutation::new();
     let item = lp.peers[0].engine.new_thing(&mut m, g);
+    let item2 = lp.peers[0].engine.new_thing(&mut m, g);
     m.set(item, &reg(), &Value::Str("v0".into())).unwrap();
+    m.set(item2, &reg(), &Value::Str("w0".into())).unwrap();
     lp.peers[0].commit(m).unwrap();
-    lp.sync(0, 1).unwrap();
-    let mut marks = vec![lp.peers[0].clock.now_wall_ms()];
+    // a thing owned by one created in the same commit fails the writer-side check
+    let sub = if shape.sub {
+        let mut m = Mutation::new();
+        let sub = lp.peers[0].engine.new_thing(&mut m, item);
+        m.set(sub, &reg(), &Value::Str("s0".into())).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        sub
+    } else {
+        item2
+    };
+    lp.sync_all().unwrap();
+    let by = shape.by;
+    let mut marks = vec![lp.peers[by].clock.now_wall_ms()];
     for k in 0..shape.writes {
         lp.advance(1_000);
-        let on = if rng.below(2) == 0 { item } else { g };
+        let on = [g, item, item2, sub][rng.below(4)];
         let id = write(&mut lp.peers[1], on, &format!("b{k}"));
         if rng.below(2) == 0 {
             let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-            lp.deliver(0, &pk).unwrap();
+            lp.deliver(by, &pk).unwrap();
         }
         marks.push(lp.peers[1].clock.now_wall_ms());
     }
     lp.advance(1_000);
     let as_of = marks[shape.at.min(shape.writes)];
-    let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item]))]) };
-    let f = lp.peers[0].engine.frontier(&scope, as_of).unwrap();
-    edge(&mut lp, g, b, None, Some(f.to_value()));
+    let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
+    let f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
+    edge(&mut lp, by, g, b, None, Some(f.to_value()));
     lp.advance(1_000);
     match shape.tail {
         1 => {
-            write(&mut lp.peers[1], item, "late");
+            write(&mut lp.peers[1], sub, "late");
         }
         2 => {
-            edge(&mut lp, g, b, Some(Role::Write), None);
+            lp.sync(by, 0).unwrap();
+            edge(&mut lp, 0, g, b, Some(Role::Write), None);
+        }
+        3 => {
+            edge(&mut lp, 0, item, b, Some(Role::Read), None);
         }
         _ => {}
     }
     lp.sync_all().unwrap();
     let mut packs: BTreeMap<CommitId, Package> = BTreeMap::new();
-    for i in [0, 1] {
+    for i in [0, 1, 2] {
         for pk in lp.packages(i).unwrap() {
             packs.entry(pk.id).or_insert(pk);
         }
@@ -139,10 +162,11 @@ fn sample(seed: u64, shape: Shape) -> usize {
     let base: Vec<Package> = base.iter().filter_map(|id| packs.get(id).cloned()).collect();
     let rest: Vec<Package> = packs.values().filter(|p| !base.iter().any(|q| q.id == p.id)).cloned().collect();
     let ids: Vec<CommitId> = packs.keys().copied().collect();
-    let things = [g, item];
+    let things = [g, item, item2, sub];
     let want = seen(&mut lp.peers[0], &ids, &things);
     assert_eq!(want.1, 0, "seed {seed}: A holds everything");
     assert_eq!(seen(&mut lp.peers[1], &ids, &things), want, "seed {seed}: B judges as A");
+    assert_eq!(seen(&mut lp.peers[2], &ids, &things), want, "seed {seed}: C judges as A");
     let now = lp.peers[0].clock.now_wall_ms();
     let orders = perms(rest.len());
     for order in &orders {
@@ -157,22 +181,25 @@ fn sample(seed: u64, shape: Shape) -> usize {
 
 // spec/permissions.md §5 (validity is a deterministic function of the held set), §5.2 (a write
 // a demotion's frontier misses is invalid whatever order it arrives in), spec/crdt.md §4.6:
-// frontiers before (backdated), inside and after the writer's writes.
+// frontiers before (backdated), inside and after the writer's writes; children and a
+// grandchild of the demoted actor created in one commit; a demotion by an admin other than the
+// owner; a commit naming a former leaf.
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
-    for at in 0..3 {
-        assert_eq!(sample(0x0de5_0000 + at as u64, Shape { writes: 2, at, tail: 0 }), 24);
+    let cases = [(1, 0, 0, true, 0), (1, 1, 2, true, 0), (2, 1, 0, false, 0), (1, 0, 2, false, 3)];
+    for (i, (writes, at, by, sub, tail)) in cases.into_iter().enumerate() {
+        assert_eq!(sample(0x0de5_0000 + i as u64, Shape { writes, at, by, sub, tail }), 24);
     }
 }
 
-// The same over random shapes with a tail (up to 120 orders each).
+// The same over random shapes (up to 720 orders each).
 #[test]
 #[ignore = "tier 2"]
 fn validity_alike_in_every_arrival_order_random_spec_permissions_5_2() {
     let mut rng = Rng(0x0de5_1111);
     for seed in 0..40 {
         let writes = 1 + rng.below(2);
-        let shape = Shape { writes, at: rng.below(writes + 1), tail: rng.below(3) };
+        let shape = Shape { writes, at: rng.below(writes + 1), by: [0, 2][rng.below(2)], sub: rng.below(2) == 0, tail: rng.below(4) };
         sample(0x0de5_1000 + seed, shape);
     }
 }

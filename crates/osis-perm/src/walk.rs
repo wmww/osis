@@ -173,6 +173,70 @@ pub(crate) struct Walked {
     pub rest: Rest,
 }
 
+impl Walked {
+    /// New leaves (thing, owner): things no edge write names, so every node's role on one is
+    /// its role on its owner at every point and a from-scratch walk records on it exactly the
+    /// owner's demotions, in the same items. Copies them and their undo entries. `None`: an
+    /// owner neither known nor a new leaf (cycle).
+    pub(crate) fn alias_leaves(&mut self, leaves: &[(Tid, Tid)], nodes: &BTreeSet<Tid>) -> Option<()> {
+        if leaves.is_empty() {
+            return Some(());
+        }
+        let pending: BTreeSet<Tid> = leaves.iter().map(|l| l.0).collect();
+        let mut deps: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
+        for (l, o) in leaves {
+            deps.entry(*o).or_default().push(*l);
+        }
+        // top-down: owners before their leaves
+        let mut done: BTreeSet<Tid> = BTreeSet::new();
+        let mut order = Vec::new();
+        while order.len() < leaves.len() {
+            let before = order.len();
+            for (l, o) in leaves {
+                if !done.contains(l) && (!pending.contains(o) || done.contains(o)) {
+                    done.insert(*l);
+                    order.push((*l, *o));
+                }
+            }
+            if order.len() == before {
+                return None;
+            }
+        }
+        for (l, o) in &order {
+            for x in nodes {
+                if let Some(v) = self.demotions.get(&(*x, *o)).cloned() {
+                    self.demotions.insert((*x, *l), v);
+                }
+            }
+        }
+        let has = self.rest.log.iter().any(|u| matches!(u, Undo::Demotion((_, n)) if deps.contains_key(n)));
+        if !has {
+            return Some(());
+        }
+        let old = std::mem::take(&mut self.rest.log);
+        let mut at = Vec::with_capacity(old.len() + 1);
+        let mut log = Vec::with_capacity(old.len());
+        for u in old {
+            at.push(log.len());
+            let k = if let Undo::Demotion(k) = &u { Some(*k) } else { None };
+            log.push(u);
+            if let Some((x, n)) = k {
+                let mut stack: Vec<Tid> = deps.get(&n).cloned().unwrap_or_default();
+                while let Some(l) = stack.pop() {
+                    log.push(Undo::Demotion((x, l)));
+                    stack.extend(deps.get(&l).into_iter().flatten().copied());
+                }
+            }
+        }
+        at.push(log.len());
+        for m in &mut self.rest.marks {
+            m.0 = at.get(m.0).copied().unwrap_or(log.len());
+        }
+        self.rest.log = log;
+        Some(())
+    }
+}
+
 /// Walk state beyond what queries read (see `Pass`), and the undo log that rolls it back.
 #[derive(Default)]
 pub(crate) struct Rest {

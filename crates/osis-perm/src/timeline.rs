@@ -111,12 +111,12 @@ impl Timeline {
     }
 
     /// This timeline for `held`, which holds the same things, `/created` records and roster
-    /// snapshots plus more membership commits: the final walk is rolled back to the earliest
+    /// snapshots plus more membership commits and new leaves (things only their `/created`
+    /// names among the held commits and snapshots): the leaves first take their owner's
+    /// demotions (`Walked::alias_leaves`), then the final walk is rolled back to the earliest
     /// new commit and goes on from there instead of starting over (equal to `evaluate`).
-    /// `None` when that does not hold (another walk reached that point, or the inputs differ
-    /// otherwise): evaluate. The inputs may add leaves instead (`/created` of things nothing
-    /// held names, `Timelines`): the walk goes on from the first demotion above one
-    /// (`leaf_from`), else is kept as it is.
+    /// `None` when that does not hold (another walk reached that point, a new thing an earlier
+    /// write names, or the inputs differ otherwise): evaluate.
     pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
         // a new author or member could have changed how earlier writes were walked
@@ -126,46 +126,44 @@ impl Timeline {
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
             return None;
         }
+        let leaves = self.leaves(&input)?;
         let added = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
-        // `Timelines` adds commits or leaves, never both
-        let from = match added {
-            Some(p) => Some(p),
-            None => self.leaf_from(&input)?,
-        };
-        let Some(from) = from else {
-            let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
+        let Timeline { mut walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
+        walked.alias_leaves(&leaves, &input.nodes)?;
+        let Some(from) = added else {
             let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach };
             return Some(Timeline::from_outcome(input, out));
         };
         // after epoch changes, going on from the old starts finds the same ones only when they
         // have a unique fixed point (walk::drive)
-        if self.reach.is_some_and(|r| r >= from) || (self.epoch_changed && input.cyclic()) {
+        if reach.is_some_and(|r| r >= from) || (epoch_changed && input.cyclic()) {
             return None;
         }
-        let Timeline { walked, dropped, epoch_starts, epoch_changed, reach, .. } = self;
         let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from });
         Some(Timeline::from_outcome(input, out))
     }
-    /// For `extend` over new leaves (things `input` adds by their `/created` alone): the
-    /// earliest demotion the walk recorded on the nearest thing it knew above one (`Some(None)`:
-    /// none). The walk records demotions (§5.2 input) only on the things it reached, so one
-    /// on a leaf's owner arriving before the leaf left the leaf without it (a revoked writer's
-    /// write on it judged by arrival order). A leaf has no edges, so every node's role on it
-    /// is its role on its owner at every point: the walk before that demotion is unchanged and
-    /// goes on from there. `None`: no known thing above a leaf (evaluate).
-    fn leaf_from(&self, input: &Input) -> Option<Option<Point>> {
-        let new = |t: &Tid| self.owners.owner(t).is_none() && input.owners.owner(t).is_some();
-        let mut from: Option<Point> = None;
-        for (t, _) in input.owners.links().filter(|(t, _)| new(t)) {
-            let (up, _) = input.owners.chain(t);
-            let a = up.into_iter().find(|a| !new(a))?;
-            for x in &input.nodes {
-                for d in self.demotions(x, &a) {
-                    from = Some(from.map_or(d.point, |f| f.min(d.point)));
-                }
+
+    /// The things `input` adds by their `/created`, with their owners: leaves the walk never
+    /// met, so before any new commit naming one, every node's role on it is its role on its
+    /// owner. `None` when one is not a leaf of the walk (a key actor, or named by a walked
+    /// commit or snapshot).
+    fn leaves(&self, input: &Input) -> Option<Vec<(Tid, Tid)>> {
+        let mut out = Vec::new();
+        for (t, _) in input.owners.links().filter(|(t, _)| self.owners.owner(t).is_none()) {
+            out.push((*t, input.owners.owner_actor(t)?));
+        }
+        if out.is_empty() {
+            return Some(out);
+        }
+        let new: BTreeSet<Tid> = out.iter().map(|l| l.0).collect();
+        let named = self.commits.values().flat_map(|c| c.ops.iter().flat_map(|o| [o.member, o.target]))
+            .chain(self.snaps.values().flat_map(|s| std::iter::once(s.thing).chain(s.roster.keys().copied()).chain(s.ledger.iter().map(|x| x.member))));
+        for t in named {
+            if new.contains(&t) {
+                return None;
             }
         }
-        Some(from)
+        Some(out)
     }
 
     /// Walks the last evaluation or `extend` made (1 when nothing was dropped and no epoch

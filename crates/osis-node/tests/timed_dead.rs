@@ -122,7 +122,8 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         assert!(snaps > 0, "a carrier snapshot holds v1");
         net.set_online(late, true);
         net.run();
-        net.advance(net.sync(a).config().resync_ms);
+        let resync = net.sync(a).config().resync_ms;
+        net.advance(resync);
         assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a member offline throughout");
     }
 }

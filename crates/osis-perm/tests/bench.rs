@@ -130,6 +130,22 @@ fn bench_10k_edges() {
         stale.update_touched_cached(&held4, &all4, &mut |r| saved.get(r).cloned(), b"rules");
         let restore_stale = t12.elapsed();
         assert_eq!(stale.restored(), 1);
+        // a new thing (a leaf: only its `/created`) under the team and under the doc with the
+        // most demotions recorded
+        inc.update(&held4);
+        let tl4 = Timeline::evaluate(&held4);
+        let most = |things: Vec<Tid>| things.into_iter().map(|t| (nodes.iter().map(|x| tl4.demotions(x, &t).len()).sum::<usize>(), t)).max().unwrap();
+        let teams: Vec<Tid> = w.created.iter().filter(|(_, r)| matches!(r, osis_core::CreationRecord::Thing { owner, .. } if w.created.get(owner).is_some_and(|o| matches!(o, osis_core::CreationRecord::Thing { owner: oo, .. } if !w.created.get(oo).is_some_and(|x| matches!(x, osis_core::CreationRecord::Thing { .. })))))).map(|(t, _)| *t).collect();
+        let docs: Vec<Tid> = w.created.iter().filter(|(t, r)| !teams.contains(t) && matches!(r, osis_core::CreationRecord::Thing { owner, .. } if teams.contains(owner))).map(|(t, _)| *t).collect();
+        for (what, (dn, owner)) in [("team", most(teams)), ("doc", most(docs))] {
+            let mut w5 = w4.clone();
+            let leaf = w5.thing(owner);
+            let held5 = w5.held();
+            let t13 = Instant::now();
+            inc.update_touched(&held5, &std::collections::BTreeSet::from([leaf]));
+            eprintln!("{n} edge writes: a new thing under a {what} with {dn} demotions {:?}", t13.elapsed());
+            inc.update(&held4);
+        }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
             "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",

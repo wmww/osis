@@ -349,7 +349,17 @@ fn run_restarts(samples: u64, seed: u64) {
         inc.update(&prev);
         let mut disk = Disk::new();
         let min = 1 + rng.below(4);
+        // half the samples deliver the leaves of a step alone, before its commit
+        let alone = rng.below(2) == 0;
         for (step, &i) in order.iter().enumerate() {
+            if alone && leaves.iter().any(|l| l.1 == step + 1) {
+                let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
+                inc.update_touched(&held, &touched(&prev, &held));
+                prev = held.clone();
+                if let Some(d) = check(&held, &inc, &nodes) {
+                    panic!("seed {seed:#x} sample {s} step {step} (leaves alone): {d}");
+                }
+            }
             held_ids.insert(w.commits[i].id);
             let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
             inc.update_touched(&held, &touched(&prev, &held));
@@ -438,4 +448,46 @@ fn damaged_or_foreign_saved_walk_is_ignored() {
             assert!(s.put.iter().any(|(r, _)| *r == root) || s.delete.contains(&root), "{what}: not replaced");
         }
     }
+}
+
+/// §5.1 step 5: `Timeline::extend` given new commits and new leaves at once (some named by the
+/// new commits) equals an evaluation from scratch, or declines.
+#[test]
+fn extend_over_commits_and_leaves_together() {
+    let mut rng = Rng(seeded(0x5eed_0306));
+    let mut extended = 0;
+    for s in 0..60 {
+        let (mut w, nodes, _) = edges_world(&edges::random_hist(&mut rng), 10);
+        let mut order: Vec<usize> = (0..w.commits.len()).collect();
+        order.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+        let leaves = add_leaves(&mut w, &mut rng, 0);
+        // later commits, some naming a leaf
+        let tmax = w.commits.iter().map(|c| c.t).max().unwrap_or(0);
+        let authors: Vec<Tid> = w.commits.iter().map(|c| c.author).collect();
+        for (k, (leaf, _)) in leaves.iter().enumerate() {
+            if rng.below(2) == 0 && !authors.is_empty() {
+                let a = authors[rng.below(authors.len())];
+                let m = nodes[rng.below(nodes.len())];
+                w.set(a, *leaf, m, edge(osis_core::Role::Write), tmax + 1 + k as u64, &[]);
+            }
+        }
+        let split = rng.below(order.len() + 1);
+        let skip: BTreeSet<_> = w.commits.iter().map(|c| c.id).filter(|id| order[..split].iter().all(|&i| w.commits[i].id != *id)).collect();
+        let mut before = w.held_without(&skip);
+        for (l, _) in &leaves {
+            before.created.remove(l);
+        }
+        let after = w.held();
+        let Some(tl) = Timeline::evaluate(&before).extend(&after) else { continue };
+        extended += 1;
+        let full = Timeline::evaluate(&after);
+        for t in after.things() {
+            for n in &nodes {
+                assert_eq!(tl.demotions(n, &t), full.demotions(n, &t), "sample {s}: demotions of {n:?} on {t:?}");
+                assert_eq!(tl.standing(n, &t, At::END), full.standing(n, &t, At::END), "sample {s}");
+            }
+        }
+        assert_eq!(tl.dropped(), full.dropped(), "sample {s}");
+    }
+    assert!(extended > 10, "{extended}");
 }
