@@ -72,7 +72,7 @@ impl Fixture {
         Fixture::blob_with(n, None, vec![])
     }
 
-    pub fn blob_with(n: u8, expiry: Option<u64>, commitments: Vec<[u8; 17]>) -> Vec<u8> {
+    pub fn blob_with(n: u8, expiry: Option<u64>, commitments: Vec<[u8; 33]>) -> Vec<u8> {
         let p = Prefix::new([n; 16], expiry.map(WallMs), commitments).expect("fixed prefix");
         osis_label::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
     }
@@ -98,8 +98,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
     let deposited = Fixture::blob(2);
     let dep_wrap = [0x78; WRAP_LEN];
     let dep_sig = osis_label::sign_deposit(&f.deposit, &l, &osis_label::blob_id(&deposited), &dep_wrap);
-    let token = s32(0x7a);
-    let del = |blob, at, token| DeleteItem::sign(&f.delete, &l, blob, at, token).expect("fixed delete");
+    let dk = osis_crypto::DeleteSecret::derive(&s32(0x7a));
     let envelope = vec![0x5a; 40];
     let auth = PublishAuth::sign(PublishKey::Deposit, &f.deposit, &l, &osis_label::blob_id(&envelope), &[0x7b; WRAP_LEN]);
     vec![
@@ -121,7 +120,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD], head: Some(f.child.clone()) }),
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, entries_left: 63, bytes_left: 2_064_384, head: None }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![del(id(0xd1), None, None), del(id(0xd2), Some(WallMs(1_700_000_100_000)), Some(&token))] }),
+        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
         ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
         ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] }),
         (

@@ -42,7 +42,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     w.run(a, Command::Upload { label: l.id, entries: blobs[..2].iter().map(|b| l.entry(b.clone())).collect() });
     w.run(a, l.deposit(blobs[2].clone(), &l.head_keys().deposit.clone()));
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blobs[3].clone())] });
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&blobs[0]), None, None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, osis_label::blob_id(&blobs[0]), None).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     let env = osis_label::frame(&Prefix::new([9; 16], None, vec![]).unwrap(), &plaintext, &mut rng).unwrap().1;
     let auth = PublishAuth::sign(PublishKey::Write, &l.head_keys().write, &l.id, &osis_label::blob_id(&env), &[1; 49]);

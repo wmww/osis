@@ -43,7 +43,7 @@ fn stale_sync_key_gets_exactly_one_step() {
     assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, head: Some(h), .. }] if *codes == vec![Code::NOT_HEAD] && h.id() == l.steps[2].id()), "{ev:?}");
 }
 
-// spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a token
+// spec/sync.md §5 Stamp, Deposit: a reader (sync key only) cannot upload or deposit, nor sign deletes without a delete key
 // spec/sync.md §5 (upload refusals), §5 (delete keys), §5 (register)
 #[test]
 fn reader_cannot_write() {
@@ -54,7 +54,7 @@ fn reader_cannot_write() {
     assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(1), &sk)] })), vec![Code::REFUSED]);
     assert_eq!(statuses(&w.run(c, l.deposit(blob(2), &sk))), vec![Code::REFUSED]);
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(3))] });
-    let item = DeleteItem::sign(&sk, &l.id, bid(3), None, None).unwrap();
+    let item = DeleteItem::sign(&sk, &l.id, bid(3), None).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::REFUSED]);
     // a register under a reader's key: answered with the head
     let mut fork = Label::new(3);
@@ -65,25 +65,29 @@ fn reader_cannot_write() {
     assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if head.id() == l.steps[0].id()), "{ev:?}");
 }
 
-// spec/sync.md §5 Delete, spec/crypto.md §7: a token deletes only the body whose prefix commits to it, at the level it was issued for
+// spec/sync.md §5 Delete, spec/crypto.md §7: a delete-key signature deletes only the body whose prefix commits to it (under that body's salt), at its level
 // spec/sync.md §5 (delete keys)
 #[test]
-fn token_deletes_only_its_own_body() {
+fn delete_key_deletes_only_its_own_body() {
     let (mut w, c) = world();
     let l = Label::new(3);
     w.setup(c, &l);
-    let t = s32(1);
-    let commit = |level: u8, n: u64| osis_crypto::commitment(level, &osis_crypto::token_hash(t.expose()), &salt(n)).unwrap();
+    let dk = osis_crypto::DeleteSecret::derive(&s32(1));
+    let commit = |level: u8, n: u64| osis_crypto::commitment(level, &dk.verifying_key(), &salt(n)).unwrap();
     let mine = blob_with(10, 0, vec![commit(1, 10)]);
     let other = blob_with(11, 0, vec![commit(1, 99)]);
     let plain = blob(12);
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(mine.clone()), l.entry(other.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8]| DeleteItem::sign(&k.sync, &l.id, osis_label::blob_id(b), None, Some(&t)).unwrap();
-    let ev = w.run(c, Command::Delete { label: l.id, items: vec![item(&other), item(&plain), item(&mine)] });
-    assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK]);
-    // a token for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)
-    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item(&mine)] })), vec![Code::REFUSED]);
+    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &dk, level, &salt(n), &l.id, osis_label::blob_id(b), None).unwrap();
+    // hostile deletes: a forged delete key; the right key under the write label key (level 1
+    // needs the sync key); the right key at another level; another blob's salt
+    let forged = DeleteItem::sign_by(&k.sync, &osis_crypto::DeleteSecret::derive(&s32(2)), 1, &salt(10), &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let wrong_label_key = DeleteItem::sign_by(&k.write, &dk, 1, &salt(10), &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let ev = w.run(c, Command::Delete { label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
+    assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
+    // a delete for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)
+    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item(&mine, 10, 1)] })), vec![Code::REFUSED]);
     // the same body under another label is untouched
     let l2 = Label::new(4);
     w.setup(c, &l2);
@@ -108,7 +112,7 @@ fn budget_tombstone_and_fetch_scope() {
         assert_eq!(statuses(&w.run(c, l.deposit(blob(n), &dk))), vec![Code::OK]);
     }
     assert_eq!(statuses(&w.run(c, l.deposit(blob(max), &dk))), vec![Code::BUDGET_FULL]);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None, None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None).unwrap();
     assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items: vec![item] })), vec![Code::OK]);
     assert_eq!(statuses(&w.run(c, l.deposit(blob(0), &dk))), vec![Code::TOMBSTONED]);
     assert_eq!(statuses(&w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(blob(0))] })), vec![Code::TOMBSTONED]);

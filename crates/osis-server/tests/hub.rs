@@ -88,7 +88,7 @@ fn deposits_and_budget() {
     assert_eq!(deposited, max);
 }
 
-// spec/sync.md §5, spec/crypto.md §7: deletes by the delete key and by token (level 3: write key, levels 1-2: sync key); tombstones refuse the identical blob for TOMBSTONE_LIFETIME
+// spec/sync.md §5, spec/crypto.md §7: deletes by the delete key and by a level's delete key (level 3: write key, levels 1-2: sync key); tombstones refuse the identical blob for TOMBSTONE_LIFETIME
 // spec/sync.md §5 (delete keys)
 #[test]
 fn deletes_and_tombstones() {
@@ -98,20 +98,22 @@ fn deletes_and_tombstones() {
     let l = Label::new(3);
     w.setup(a, &l);
     w.open(a, &l);
-    let commit = |level: u8, t: &osis_crypto::Secret32, n: u64| osis_crypto::commitment(level, &osis_crypto::token_hash(t.expose()), &salt(n)).unwrap();
+    let dk = |t: &osis_crypto::Secret32| osis_crypto::DeleteSecret::derive(t);
+    let commit = |level: u8, t: &osis_crypto::Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n)).unwrap();
     let (t1, t3) = (s32(1), s32(3));
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
     let plain = blob(12);
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], t: Option<&osis_crypto::Secret32>, signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(b), None, t).unwrap();
-    let ev = w.run(a, Command::Delete { label: l.id, items: vec![item(&b3, Some(&t3), &k.sync), item(&b3, Some(&t1), &k.write), item(&b1, Some(&t1), &k.sync), item(&plain, None, &k.write)] });
+    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(t), level, &salt(n), &l.id, osis_label::blob_id(b), None).unwrap();
+    let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain), None).unwrap();
+    let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);
-    let ev = w.run(a, Command::Delete { label: l.id, items: vec![item(&b3, Some(&t3), &k.write), item(&plain, None, &k.delete)] });
+    let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.write), plain_by(&k.delete)] });
     assert_eq!(statuses(&ev), vec![Code::OK, Code::OK]);
     // deleting again is fine; the identical blob is refused while tombstoned, accepted after
-    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(&plain, None, &k.delete)] })), vec![Code::OK]);
+    assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![plain_by(&k.delete)] })), vec![Code::OK]);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain.clone())] })), vec![Code::TOMBSTONED]);
     w.advance(osis_core::format::TOMBSTONE_LIFETIME_MS);
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(plain)] })), vec![Code::OK]);
@@ -137,7 +139,7 @@ fn timed_deletes_and_expiry() {
     w.run(b, Command::Subscribe { labels: vec![l.id] });
     let dk = l.head_keys().delete.clone();
     let tid = osis_label::blob_id(&timed);
-    let item = |at: u64| DeleteItem::sign(&dk, &l.id, tid, Some(WallMs(at)), None).unwrap();
+    let item = |at: u64| DeleteItem::sign(&dk, &l.id, tid, Some(WallMs(at))).unwrap();
     assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(now + 10_000), item(now + 5_000)] })), vec![Code::OK, Code::OK]);
     assert_eq!(statuses(&w.run(a, Command::Delete { label: l.id, items: vec![item(now + 8_000)] })), vec![Code::OK]);
     let (pushed, _) = events_of(&w.take(b));
@@ -253,7 +255,7 @@ fn two_servers_replicate() {
     assert_eq!(added(&pushed[1..]), vec![bid(10)]);
     // deletes are not relayed
     w.open(a, &l);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None, None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), None).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     assert!(w.take(b).is_empty());
     // the acknowledged position is kept: a new connection sends nothing new
@@ -304,7 +306,7 @@ fn restart_keeps_state() {
     w.open(a, &l);
     w.run(a, Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() });
     let now = w.now();
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), Some(WallMs(now + 1_000)), None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(0), Some(WallMs(now + 1_000))).unwrap();
     w.run(a, Command::Delete { label: l.id, items: vec![item] });
     let (_, cursor) = events_of(&w.run(a, sync(l.id, None, vec![], vec![])));
     w.restart(h, Policy::default());
