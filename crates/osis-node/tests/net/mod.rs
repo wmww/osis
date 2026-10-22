@@ -68,6 +68,9 @@ pub struct Net {
     pub sent_bytes: usize,
     /// Every dial: (node, address).
     pub dialed: Vec<(usize, Address)>,
+    /// Time spent in each node's `handle` and in the hubs (scale tests).
+    pub busy: BTreeMap<usize, std::time::Duration>,
+    pub hub_busy: std::time::Duration,
 }
 
 pub fn server_key(i: usize) -> [u8; 32] {
@@ -76,7 +79,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
     }
 
     pub fn now(&self) -> u64 {
@@ -185,7 +188,9 @@ impl Net {
         if !self.nodes[n].online {
             return;
         }
+        let t = std::time::Instant::now();
         let acts = self.sync(n).handle(ev);
+        *self.busy.entry(n).or_default() += t.elapsed();
         self.actions(n, acts);
     }
 
@@ -299,7 +304,9 @@ impl Net {
             match m {
                 Msg::Up(n, c) => self.feed(n, Event::Up { conn: c }),
                 Msg::ToHub(s, hc, b) => {
+                    let t = std::time::Instant::now();
                     let out = self.servers[s].hub.input(now, hc, b);
+                    self.hub_busy += t.elapsed();
                     self.hub_out(s, out);
                 }
                 Msg::ToNode(n, c, b) => self.feed(n, Event::Bytes { conn: c, bytes: b }),

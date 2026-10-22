@@ -442,6 +442,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
             if !b.chunks(32).any(|x| x == id.0) {
                 b.extend_from_slice(&id.0);
                 tx.txn.put_local(&key, &b, Shred::No)?;
+                tx.core.waits.wake(item.tid(), item.ak());
             }
         }
     }

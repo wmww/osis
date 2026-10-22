@@ -823,6 +823,7 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
 /// snapshots carry without their commit on those things too. Rebuilds aspects whose validity
 /// flipped; returns them.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
+    let _s = crate::costs::span("rejudge");
     if resolve_unresolved(tx)? {
         tx.core.update_timelines();
     }

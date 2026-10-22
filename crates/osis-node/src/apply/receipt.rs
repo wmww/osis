@@ -118,6 +118,7 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
 }
 
 fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
+    tx.core.waits.wake(tid, ak);
     Ok(tx.txn.put_local(&records::aspect_key(records::RECEIPT, tid, ak), &r.encode(), Shred::No)?)
 }
 

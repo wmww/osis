@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod apply;
+pub mod costs;
 pub mod engine;
 mod error;
 pub mod events;

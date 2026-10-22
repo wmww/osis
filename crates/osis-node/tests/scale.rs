@@ -412,3 +412,55 @@ fn demotion_heavy_open() {
     println!("owner's open, walk evaluated anew: {:?} ({} restored)", t2.elapsed(), lp.peers[0].engine.walks_restored());
     assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
 }
+
+mod net;
+
+// spec/sync.md §6; spec/requirements.md, Scale: a first sync of N commits costs O(N). A writer
+// writes N content commits (100 things, N/100 writes each) in a label at one server while a
+// fresh reader syncs: the time at the reader, the writer and the hub, and the engine phases
+// (`osis_node::costs`); then another fresh reader ingests every commit directly (`Engine::ingest`,
+// no sync). `OSIS_SCALE_N` sets N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn first_sync_cost() {
+    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let mut net = net::Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[]);
+    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[sv]);
+    let things: Vec<Tid> = (0..100).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+    net.set_online(c, false);
+    let t0 = Instant::now();
+    for i in 0..n {
+        net.write(a, things[i % things.len()], &format!("v{i}"));
+    }
+    let fill = t0.elapsed();
+    net.busy.clear();
+    osis_node::costs::take();
+    let t1 = Instant::now();
+    net.run();
+    let first = t1.elapsed();
+    let phases = osis_node::costs::take();
+    let last = Some(net::s(&format!("v{}", n - 1)));
+    assert_eq!(net.read(b, things[(n - 1) % 100]), last);
+    let held = net.engine(b).commit_ids().len();
+    assert!(held >= n, "{held} commits at the reader");
+    let (rb, wa, hub) = (net.busy.get(&b).copied().unwrap_or_default(), net.busy.get(&a).copied().unwrap_or_default(), net.hub_busy);
+    let ids = net.engine(a).commit_ids();
+    let t2 = Instant::now();
+    for id in &ids {
+        let pk = net.engine(a).package(id).unwrap().unwrap();
+        net.engine(c).ingest(&pk.bytes, pk.blobs).unwrap();
+    }
+    let direct = t2.elapsed();
+    assert_eq!(net.read(c, things[(n - 1) % 100]), last);
+    println!("first sync of {n} commits: {first:?} (reader {rb:?}, writer {wa:?}, hub {hub:?}); writing them {fill:?}; {} commits ingested directly: {direct:?}", ids.len());
+    println!("engine phases during the sync, both nodes (inclusive; calls):");
+    for (k, d, c) in phases {
+        println!("  {k}: {d:?} ({c})");
+    }
+    // O(N²) at 10^4 took 580 s
+    assert!(first.as_secs() < 60 * n as u64 / 10_000, "first sync of {n} commits took {first:?}");
+}

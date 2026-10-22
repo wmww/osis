@@ -4,6 +4,7 @@
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 mod atomic;
+mod waits;
 pub(crate) mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
@@ -12,6 +13,7 @@ mod tests_linked;
 #[cfg(test)]
 mod tests_order;
 
+pub(crate) use waits::Waits;
 pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, invalid_of, rebuild};
 
 use crate::engine::blobs::TxBlobs;
@@ -99,6 +101,30 @@ fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTree
     Ok(out)
 }
 
+/// Whether a missing delta of commit `id` makes it wait (atomic apply, spec/commits.md §4).
+fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl Iterator<Item = (usize, usize)>) -> Result<bool> {
+    for (ai, _) in missing {
+        // expired, purged or dropped deltas count as held (dropped: an applied snapshot's
+        // frontier already holds its counters, spec/crdt.md §8)
+        if let Some(a) = h.aspects.get(ai)
+            && tx.core.syncing.contains(&a.tid)
+            && !a.expires.is_some_and(|t| t <= tx.now().0)
+            && !crate::retention::known_purged(tx, h, id, ai)?
+            && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && receipt::get(tx, &a.tid, &a.ak)?.holds(&h.author, a.lo, a.hi))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// A pending commit in `Engine::reexamine`: read and decoded, or still waiting for deltas
+/// when last examined (`Core::waits`).
+enum Turn {
+    Read(Box<CommitBlob>),
+    Waiting(Arc<Header>),
+}
+
 /// Checks a commit and decodes its parts, or says why it waits.
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
     if !blob.header.is_resolved() {
@@ -117,7 +143,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author))) };
     let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
     let vk = VerifyingKey::from_slice(public_key)?;
-    osis_commit::verify_signature(id, &blob.signature, &vk)?;
+    {
+        let _s = crate::costs::span("examine: signature");
+        osis_commit::verify_signature(id, &blob.signature, &vk)?;
+    }
     h.validate()?;
     // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
     // as its HLC, which a clock correction moving back must not turn against them
@@ -180,20 +209,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    for (ai, di) in blob.missing() {
-        if skip.contains(&(ai, di)) {
-            continue;
-        }
-        // expired, purged or dropped deltas count as held (dropped: an applied snapshot's
-        // frontier already holds its counters, spec/crdt.md §8)
-        if let Some(a) = h.aspects.get(ai)
-            && tx.core.syncing.contains(&a.tid)
-            && !a.expires.is_some_and(|t| t <= tx.now().0)
-            && !crate::retention::known_purged(tx, &h, id, ai)?
-            && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && receipt::get(tx, &a.tid, &a.ak)?.holds(&h.author, a.lo, a.hi))
-        {
-            return Ok(Exam::Pending(Reason::WaitDeltas));
-        }
+    if waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
+        return Ok(Exam::Pending(Reason::WaitDeltas));
     }
     let mut out = Vec::with_capacity(blob.parts.len());
     let mut interner = Interner::new();
@@ -236,6 +253,9 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
         blob = merge_parts(old, blob);
     }
     let received = tx.now();
+    let inline = blob.header.is_resolved();
+    tx.core.waits.remove(&id);
+    let _s = crate::costs::span("examine");
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
             tx.core.touch();
@@ -254,6 +274,8 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
             tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
             tx.core.pending.insert(id, r.clone());
             keys::read_pending_boxes(tx, &blob, &id)?;
+            let now = tx.now().0;
+            waits::note(tx.core, id, &blob, inline, &r, now);
             Ok(Ingested::Pending(id, r))
         }
         Exam::Parked => {
@@ -278,6 +300,7 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 /// §4); dropped parts stay dropped. Late deltas that wait (their thing's `/created`, chain or
 /// pages) are kept pending under the commit's ID and joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
+    tx.core.waits.remove(id);
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
@@ -298,6 +321,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     }
     let mut merged = merge_parts(held, blob.clone());
     merged.header = (*meta.header).clone();
+    let _s = crate::costs::span("examine");
     match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
             if tx.core.pending.remove(id).is_some() {
@@ -369,6 +393,7 @@ impl Engine {
 
     /// `ingest`, attributing diagnostics to `peer`.
     pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
+        let _s = crate::costs::span("ingest");
         let r = self.run(|tx| {
             for (id, b) in blobs {
                 if osis_label::blob_id(&b) == id {
@@ -400,30 +425,63 @@ impl Engine {
 
     /// Re-examines pending and parked commits until none applies (after new certificates or
     /// `/created` records, a change of what this node syncs, time passing, or an upgrade).
-    /// Membership commits are tried first.
+    /// Membership commits are tried first. A commit whose examination's inputs have not changed
+    /// since it was last examined is left out (`apply::waits`).
     pub fn reexamine(&mut self) -> Result<()> {
+        let _s = crate::costs::span("reexamine");
         loop {
-            let ids: Vec<CommitId> = self.core.pending.keys().copied().collect();
+            let now = self.core.now().0;
+            let (ids, unchanged): (Vec<CommitId>, Vec<CommitId>) = self.core.pending.keys().partition(|id| !waits::unchanged(&self.core, id, now));
+            #[cfg(debug_assertions)]
+            self.check_unchanged(&unchanged);
+            #[cfg(not(debug_assertions))]
+            let _ = unchanged;
             if ids.is_empty() {
                 return Ok(());
             }
             let progressed = self.run(|tx| {
-                let mut blobs = Vec::new();
+                // a delta wait (`Core::waits`) is judged where its turn comes, without reading
+                // it; the others are read and decoded first
+                let mut blobs: Vec<(CommitId, Turn)> = Vec::new();
                 for id in ids {
+                    if let Some(w) = tx.core.waits.get(&id) {
+                        blobs.push((id, Turn::Waiting(w.header.clone())));
+                        continue;
+                    }
                     let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
                         tx.core.pending.remove(&id);
                         continue;
                     };
                     match CommitBlob::decode(&bytes) {
-                        Ok(b) => blobs.push(b),
+                        Ok(b) => blobs.push((id, Turn::Read(Box::new(b)))),
                         Err(_) => continue, // still unreadable by this build
                     }
                 }
-                blobs.sort_by_key(|b| (!b.header.kind.is_membership(), b.header.ts));
+                blobs.sort_by_key(|(_, x)| {
+                    let h = match x {
+                        Turn::Read(b) => &b.header,
+                        Turn::Waiting(h) => h,
+                    };
+                    (!h.kind.is_membership(), h.ts)
+                });
                 tx.core.touch();
                 let mut progressed = false;
-                for b in blobs {
-                    let id = b.id();
+                for (id, b) in blobs {
+                    let b = match b {
+                        Turn::Read(b) => *b,
+                        Turn::Waiting(_) if waits::still_waits(tx, &id)? => continue,
+                        Turn::Waiting(_) => {
+                            tx.core.waits.remove(&id);
+                            let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
+                                tx.core.pending.remove(&id);
+                                continue;
+                            };
+                            match CommitBlob::decode(&bytes) {
+                                Ok(b) => b,
+                                Err(_) => continue,
+                            }
+                        }
+                    };
                     let things: Vec<Tid> = if b.header.kind.is_membership() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
                     match ingest_blob(tx, b, Origin::Remote) {
                         Ok(Ingested::Applied(_)) => progressed = true,
@@ -440,6 +498,8 @@ impl Engine {
                         Err(e) => return Err(e),
                     }
                 }
+                let pending = &tx.core.pending;
+                tx.core.waits.retain(|id| pending.contains_key(id));
                 Ok(progressed)
             })?;
             if !progressed {
@@ -448,11 +508,39 @@ impl Engine {
         }
     }
 
+    /// Checks that examining each of `ids` again (in a transaction rolled back) gives the
+    /// reason `Core::waits` kept it waiting for.
+    #[cfg(debug_assertions)]
+    fn check_unchanged(&mut self, ids: &[CommitId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let r: Result<()> = self.run(|tx| {
+            for id in ids {
+                let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
+                let Ok(mut b) = CommitBlob::decode(&bytes) else { continue };
+                let want = tx.core.pending.get(id).cloned();
+                match examine(tx, &mut b, id, &BTreeSet::new()) {
+                    Ok(Exam::Pending(r)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
+                    Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
+                    Ok(Exam::Parked) => debug_assert!(false, "pending commit {id:?} left out of reexamine would park"),
+                    Err(e) => debug_assert!(false, "pending commit {id:?} left out of reexamine: {e}"),
+                }
+            }
+            Err(Error::Misuse("check only"))
+        });
+        debug_assert!(matches!(r, Err(Error::Misuse(_))), "{r:?}");
+    }
+
     /// Starts or stops syncing `tid`: atomic apply waits only for deltas of synced things
     /// (spec/commits.md §4). Re-examines pending commits.
     pub fn set_syncing(&mut self, tid: Tid, on: bool) -> Result<()> {
         self.run(|tx| {
             tx.core.touch();
+            // what pending commits wait for depends on what this node syncs
+            if tx.core.syncing.contains(&tid) != on {
+                tx.core.waits.wake_thing(&tid);
+            }
             let k = [records::SYNCING, tid.as_bytes()].concat();
             if on {
                 tx.txn.put_local(&k, &[], Shred::No)?;

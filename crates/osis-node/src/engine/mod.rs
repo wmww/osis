@@ -183,6 +183,10 @@ pub(crate) struct Core {
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
+    /// Pending commits waiting for deltas, with what their examination read (`apply::Wait`):
+    /// re-examining one needs no decode or signature check while it still waits. A cache:
+    /// cleared on rollback.
+    pub(crate) waits: crate::apply::Waits,
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
     /// What validity may have changed for since the last `rejudge_all`: things whose timeline
@@ -287,6 +291,7 @@ impl Core {
     /// Re-evaluates the timelines around the things whose held inputs changed; the things of
     /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
+        let _s = crate::costs::span("timelines");
         let touched = self.held.take_touched();
         if !touched.is_empty() {
             let changed = self.timelines.update_touched(&self.held, &touched);
@@ -333,6 +338,7 @@ impl Core {
     /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
         if self.dirty || !self.written.is_empty() {
+            self.waits.clear();
             self.dirty = false;
             self.live_trees.clear();
             self.live_bodies.clear();
@@ -378,6 +384,7 @@ impl Core {
             by_thing: JSetMap::default(),
             ranges: JNested::default(),
             pending: JMap::default(),
+            waits: crate::apply::Waits::default(),
             syncing: JSet::default(),
             void: JSet::default(),
             valueless: JMap::default(),
@@ -873,6 +880,8 @@ impl Engine {
     /// The clock correction from node-sync (spec/sync.md §6).
     pub fn set_clock_offset(&mut self, ms: i64) {
         self.core.hlc.set_offset(ms);
+        // pending commits were judged against the clock (drift, expiry)
+        self.core.waits.clear();
     }
 
     /// A channel of engine events, sent after durability.
@@ -882,6 +891,7 @@ impl Engine {
 
     /// Runs `f` in one store transaction; events go out once it is durable.
     pub(crate) fn run<T>(&mut self, f: impl FnOnce(&mut Tx<'_>) -> Result<T>) -> Result<T> {
+        let _s = crate::costs::span("tx");
         // changes made outside a transaction are not this one's to undo
         self.core.commit_journal();
         let stale_all = self.core.stale_all;
@@ -892,9 +902,14 @@ impl Engine {
                 let r = f(&mut tx);
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
-                match r.and_then(|v| index::persist(&mut tx).map(|_| v)) {
+                let persisted = {
+                    let _s = crate::costs::span("tx: persist index");
+                    r.and_then(|v| index::persist(&mut tx).map(|_| v))
+                };
+                match persisted {
                     Ok(v) => {
                         let Tx { txn, .. } = tx;
+                        let _s = crate::costs::span("tx: store commit");
                         txn.commit().map(|_| v).map_err(Error::from)
                     }
                     Err(e) => Err(e),

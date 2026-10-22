@@ -33,6 +33,10 @@ pub(crate) struct Held {
     ids: BTreeMap<CommitId, Records>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
+    /// Count changes (rollbacks included), of anything and of the edge writes or a record
+    /// replaced or removed (`apply::waits`).
+    generation: u64,
+    edges: u64,
 }
 
 fn named(c: &MembershipCommit) -> Vec<(Tid, Tid)> {
@@ -46,6 +50,12 @@ fn named_snapshot(s: &RosterSnapshot) -> Vec<(Tid, Tid)> {
 impl Held {
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
         self.created.get(t)
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn edges(&self) -> u64 {
+        self.edges
     }
     pub fn snapshots_of(&self, t: &Tid) -> &[Arc<RosterSnapshot>] {
         self.snapshots.get(t).map(Vec::as_slice).unwrap_or_default()
@@ -88,6 +98,10 @@ impl Held {
             s.remove(&t);
         }
         self.touched.insert(t);
+        self.generation += 1;
+        if old.is_some() {
+            self.edges += 1;
+        }
         old
     }
 
@@ -117,6 +131,8 @@ impl Held {
         self.touched.extend(targets);
         self.touched.insert(c.author);
         self.count(named(&c), true);
+        self.generation += 1;
+        self.edges += 1;
         let id = c.id;
         self.ids.entry(id).or_default().0 = Some(c);
     }
@@ -125,12 +141,16 @@ impl Held {
         self.snapshots.entry(s.thing).or_default().push(s.clone());
         self.touched.insert(s.thing);
         self.count(named_snapshot(&s), true);
+        self.generation += 1;
+        self.edges += 1;
         self.ids.entry(s.id).or_default().1.push(s);
     }
 
     /// Takes out every commit and snapshot with this ID (exactly these Arcs).
     fn take(&mut self, id: &CommitId) -> (Vec<Arc<MembershipCommit>>, Vec<Arc<RosterSnapshot>>) {
         let Some((c, ss)) = self.ids.remove(id) else { return (Vec::new(), Vec::new()) };
+        self.generation += 1;
+        self.edges += 1;
         let mut cs = Vec::new();
         if let Some(c) = c {
             for o in &c.ops {

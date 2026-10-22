@@ -93,6 +93,43 @@ fn pending_until_created_spec_commits_4() {
     assert_eq!(lp2.peers[0].engine.pending().len(), 1);
 }
 
+// spec/commits.md §4: commits waiting for a thing's `/created` apply once it arrives; while
+// they wait, commits applied in between re-examine none of them (spec/requirements.md, Scale:
+// a first sync is O(commits), not O(commits × pending)).
+#[test]
+fn pending_not_reexamined_while_unchanged_spec_commits_4() {
+    let mut lp = net(2, 28);
+    let u = new_thing(&mut lp, 0);
+    let t = new_thing(&mut lp, 0);
+    for i in 0..40 {
+        for x in [t, u] {
+            let mut m = Mutation::new();
+            m.set(x, &REG, &s(&format!("v{i}"))).unwrap();
+            lp.peers[0].commit(m).unwrap();
+        }
+    }
+    let pks = packages(&mut lp, 0);
+    // node commits and u's creation; t's creation (pks[3]) last
+    for p in &pks[..3] {
+        lp.deliver(1, p).unwrap();
+    }
+    osis_node::costs::take();
+    for (i, p) in pks[4..].iter().enumerate() {
+        let r = lp.deliver(1, p).unwrap();
+        if i % 2 == 0 {
+            assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
+        } else {
+            assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
+        }
+    }
+    let examined = |c: &[(&str, std::time::Duration, u64)]| c.iter().find(|x| x.0 == "examine").map_or(0, |x| x.2);
+    assert_eq!(examined(&osis_node::costs::take()), 80, "each commit examined once");
+    lp.deliver(1, &pks[3]).unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("v39")));
+    assert_eq!(examined(&osis_node::costs::take()), 41);
+}
+
 // spec/crdt.md §2.2: a commit more than MAX_DRIFT ahead is parked until local time catches
 // up; then it applies and advances the clock.
 #[test]

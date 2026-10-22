@@ -62,6 +62,7 @@ fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
 
 /// Joins `delta` into the state of `(tid, ak)`, holding value-less what must be.
 pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
+    let _s = crate::costs::span("apply: join");
     tx.load_lazy(tid, ak)?;
     // writes owned by deltas invalid here go from every body before it joins (un-merge is a
     // function of the held set: another's nested write under an invalid creation goes too)
@@ -152,6 +153,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
 
 /// Applies a verified commit (`parts` decoded) in this transaction.
 pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usize, usize, Decoded)>, origin: Origin, received: WallMs) -> Result<()> {
+    let _s = crate::costs::span("apply");
     tx.core.touch();
     let id = blob.id();
     let h = Arc::new(blob.header.clone());
@@ -193,7 +195,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     tx.core.index_validity(&id);
 
     // receipt record (spec/permissions.md §5.1; spec/crdt.md §8)
-    super::receipt::record(tx, &h, &id, &parts, received)?;
+    {
+        let _s = crate::costs::span("apply: receipt");
+        super::receipt::record(tx, &h, &id, &parts, received)?;
+    }
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         for (ai, a) in h.aspects.iter().enumerate() {
@@ -241,11 +246,20 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             crate::retention::note_earlier_deaths(tx, &id, &a.tid, &a.ak, &f)?;
         }
     }
-    tx.put_commit(&id, blob, &meta, Shred::No, None)?;
-    crate::retention::on_apply(tx, &id, &mut changed)?;
+    {
+        let _s = crate::costs::span("apply: put_commit");
+        tx.put_commit(&id, blob, &meta, Shred::No, None)?;
+    }
+    {
+        let _s = crate::costs::span("apply: retention");
+        crate::retention::on_apply(tx, &id, &mut changed)?;
+    }
 
-    for (tid, ak) in &changed {
-        observe_touched(tx, tid, ak, &touched)?;
+    {
+        let _s = crate::costs::span("apply: observe");
+        for (tid, ak) in &changed {
+            observe_touched(tx, tid, ak, &touched)?;
+        }
     }
     super::keys::after_join(tx, &h, &parts, &valid, pend)?;
     let mut flipped = Vec::new();
