@@ -17,7 +17,7 @@ Owner's goal: event-stream-like apps on the same infrastructure, first-class if 
 - Expiry is death by timer (spec/crdt.md §4.8): the values die at T and the body follows, whatever the deltas' keep bounds. "Keep at least until T" is a retention bound (spec/commits.md §5), a different thing.
 - Covers disappearing messages (write-based timer in core; read-based timers and earlier deletion are app writes; core expiry is the hard upper bound and lets a server wipe them unattended) and buffered events (a list aspect with a one-hour default). Cheaper than keep-at-most 0: nothing has to be deleted by hand, and the server does it unattended.
 - Leak accepted by owner: a blind node learns which entries expire and when.
-- Not provided: server-enforced minimum retention (legal hold). Keep-at-least binds honest nodes; a blind node deletes whatever a token or its label delete key tells it to.
+- Not provided: server-enforced minimum retention (legal hold). Keep-at-least binds honest nodes; a blind node deletes whatever a delete key or its label delete key tells it to.
 
 ## The all-nodes predicate
 "All nodes a thing syncs to" is a state predicate computable at trusted nodes, never a protocol condition. Per label: the nodes with a valid chain that published `/node` under the thing's label (not "every node of every member", which needs rosters readers never see).

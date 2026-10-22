@@ -43,7 +43,7 @@ A reader checks that every own-source **write** (stamp) in a delta lies in `[lo,
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges). Import marker (spec/permissions.md §7): likewise, with re-sourced foreign stamps.
 - `expires: T` (wall ms) per aspect, optional (§4.7).
 - `undoes: commit id` for undo commits (§4.6).
-Every other header field (author, actor, retention, purge request, delete tokens, signature) is outside merge.
+Every other header field (author, actor, retention, purge request, delete keys, signature) is outside merge.
 
 ## 3. Wire grammar
 

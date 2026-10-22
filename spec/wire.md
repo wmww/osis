@@ -4,7 +4,7 @@
 ## 1. Conventions
 - Every structure below is canonical CBOR in the profile of spec/data-model.md §5 unless it is given as a fixed byte layout. `[a, b]` is an array with exactly those positions; `Opt(X) := [] | [X]`; `X*` repeats X zero or more times, `X+` one or more. A decoder rejects any other length, a wrong major type, or an item outside its stated size.
 - Inside structures (not values): a tid is a 15-byte byte string, a commit ID, blob ID, step ID or hash a 32-byte byte string, a label ID a 16-byte byte string, a time (wall ms) or `ts` an unsigned integer. A **value** (spec/data-model.md §4) embedded in a structure keeps its value encoding (tags included).
-- A role in a structure is a uint: 0 read, 1 write, 2 admin. A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author`, 3 `writer`. A token level: 1, 2, 3 (spec/crypto.md §7).
+- A role in a structure is a uint: 0 read, 1 write, 2 admin. A purgeable-by class: 0 `nobody`, 1 `admin`, 2 `author`, 3 `writer`. A delete level: 1, 2, 3 (spec/crypto.md §7).
 - An epoch in a structure is `[n, nonce]` (uint, 16-byte byte string).
 - **AD tuples**: an AEAD associated-data tuple `(a, b, ...)` written in spec/crypto.md is the canonical CBOR array of its items in the encodings of this section; layouts below give each one.
 - Signed digests: a signature's digest (spec/crypto.md §2) is BLAKE3 of the canonical bytes of the array the layout names.
@@ -21,7 +21,6 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `PAGE_TARGET` | 64 KiB (65 536 bytes) |
 | chunker | `CHUNK_MIN` 16 KiB, `CHUNK_MAX` 256 KiB, gear table and boundary rule §6 |
 | tree fan-out | at most 512 links per interior node or link page (§6) |
-| `MAX_COMMITMENTS` | 16 token commitments per blob prefix |
 | `MAX_CLAIMS` | 65 536 keys per claim set |
 | `MAX_DELTA_BARE` | 262 144 (2^18) sequence elements in runs without `Content` per writer or import delta, pages included (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
@@ -44,12 +43,12 @@ Blind-node policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget sp
 ## 4. Commits
 ```
 Header    := [version, author, actor, kind, ts, form, schemas, aspects, chunks, purge,
-              undoes, salt, tokens, frontier, origins]
-Aspect    := [tid, ak, lo, hi, Retention, expires, schema, tokens, hashes]
+              undoes, keys, frontier, origins]
+Aspect    := [tid, ak, lo, hi, Retention, expires, schema, keys, hashes]
 Retention := [by, at_least, at_most]
 Bound     := {? 0: abs, ? 1: rel}
-Token     := [level, token_hash]
-Chunk     := [blob_id, [[ti, token_hash]*]]
+DeleteKey := [level, pk]
+Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak]
 Origin    := [commit_id, author, actor, ts]
 CommitBlobPlaintext := [Header, signature, [Part*]]
@@ -62,19 +61,18 @@ Header fields by position:
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 node form, 1 commit form (spec/commits.md §3).
 6. `schemas`: `[[schema_id (16 bytes), revision]*]`, sorted by schema ID, distinct, at most 256.
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
-8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce, with its chunk token hashes; `ti` is an index into `tokens`, ascending, one per token secret of the delta that created the blob.
+8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
 9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`.
 10. `undoes`: `Opt(commit_id)`.
-11. `salt`: 16 random bytes (spec/crypto.md §7).
-12. `tokens`: `[Token*]` sorted by canonical bytes, distinct: one per token secret of the commit's deltas, `token_hash` 16 bytes; a token no aspect lists is bad input.
-13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
-14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
+11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1); a key no aspect lists is bad input.
+12. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
+13. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
 
-Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `tokens`: `[ti*]`, ascending indices into the header's `tokens`, the token secrets this aspect's deltas call for; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
+Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 
-- **Inline or link**: `aspects`, `chunks`, `purge`, `tokens`, `origins` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link below it. Header-list chunks carry the token commitments of §5.
+- **Inline or link**: `aspects`, `chunks`, `purge`, `keys`, `origins` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link below it. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
-- **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the tokens its parts' aspects list (§5); its expiry is their common `expires`.
+- **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the delete keys its parts' aspects list (§5); its expiry is their common `expires`.
 - A header violating a rule of spec/commits.md §2 (an aspect of the wrong class for its kind, `expires` or a purge item on a membership commit, `expires` on a commit with a purge request (spec/commits.md §5), a frontier outside a demotion, more than one hash for a kind with one delta per aspect) is bad input.
 
 ## 5. Blob framing
@@ -85,13 +83,13 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 | 0 | 1 | framing version: 1 |
 | 1 | 16 | salt, random per encryption |
 | 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
-| 25 | 1 | n: number of commitments, 0..`MAX_COMMITMENTS` |
-| 26 | 17·n | commitments: level byte (1..3) `||` 16 bytes (spec/crypto.md §7), strictly ascending as 17-byte strings |
+| 25 | 1 | n: number of commitments, 0..3 |
+| 26 | 33·n | commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending |
 
-- The ciphertext runs from offset `26 + 17n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
+- The ciphertext runs from offset `26 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above); signal envelope: §9.
-- Commitments: a commit blob, chunk, tree node or page carries one commitment per token of the deltas it serves (spec/crypto.md §7): at most one per level. A chunk or tree node of a linked header list (§4) carries the commitments of the commit's level-2 tokens only. A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
+- Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt: one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only (none for an import). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32)`: 49 bytes. A filler is 49 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a blob with no expiry and no commitments.
 
@@ -178,20 +176,20 @@ Signal    [24, 0, label_id, blob, wrap, auth]
 
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp]
-item   := [blob_id, Opt(at), Opt(token), sig]
+item   := [blob_id, Opt(at), Opt([level, dsig]), sig]
 cursor := [log_id, seq]
 event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]
 range  := [lower, upper, mode]
 mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
-Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `token` 32 bytes; `log_id` 16 bytes.
+Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `log_id` 16 bytes.
 
 - **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (member peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok, or Step with the head when the step is not accepted (spec/sync.md §5). A server MAY answer a genesis step for a new label with Error 12 when it is at its storage cap.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order; when any code is 9 it carries the head.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request.
-- **Delete**: per item, `sig` under `"osis v1 delete"`, digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(token)]`): by the head's delete key without a token; with a token, by the head's write key for a level-3 commitment and its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
+- **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(level)]`): without a level, `sig` by the head's delete key; with one, `dsig` by that level's delete key under the blob prefix's commitment at that level (spec/crypto.md §7) and `sig` by the head's write key for level 3, its sync key for level 1 or 2 (spec/sync.md §5). `at` requests a timed delete.
 - **Sync** (cursor sync and download, spec/sync.md §6): `cursor` is the peer's log position for the label (`log_id` names the log instance; a peer whose log no longer reaches `seq` or has another `log_id` answers Error 10); without a cursor the reply replays the label's live entries as add events, in ascending blob ID order. While such a replay has `more`, its cursor is `[replay_id, pos]`: `replay_id` the first 16 bytes of BLAKE3(`"osis v1 replay"` || `log_id`), `pos` the first 8 bytes of the last blob ID sent as a big-endian integer; a Sync carrying it continues with the IDs above that position, and the last page returns the log cursor taken when the replay started (a peer that no longer holds that replay answers Error 10). `entry` lists the requester's new stamped entries (status per entry in `[code*]`), `gained` the blob IDs gained from other sources since the cursor (at most 4096), `want` those the peer lacks. A blob's bytes travel inline in an add event iff its size is at most `inline_limit` and it has not crossed this connection yet. `more` true: repeat with the returned cursor.
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
@@ -218,4 +216,4 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; signal envelope 64 KiB; AK and signal kind 1024 bytes; URL 256 bytes.
-- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: `MAX_COMMITMENTS`. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `2^16` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: 256 schemas; each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `2^16` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

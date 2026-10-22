@@ -9,7 +9,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 - spec/versioning.md: format version, extension points, the parking rule, schema identity and evolution rules.
 - spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
 - spec/commits.md: commits: header, kinds, dot forms, atomic apply, retention, purge, expiry, undo.
-- spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete tokens, agility.
+- spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete keys, agility.
 - spec/permissions.md: actors, membership, ownership, rotation, certificates, the validity rules, roster snapshots, moving a thing, purge rights, links.
 - spec/wire.md: byte layouts of everything on the wire, format constants, the node-to-node protocol, bundles, decoder limits.
 - spec/sync.md: blobs, labels, labeling, inbox blobs, blind-node operations (stamps, deposits, claims), the sync protocol, convergence and compaction, subscriptions, signals, transports, bundles.
