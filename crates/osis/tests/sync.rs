@@ -187,6 +187,32 @@ fn link_redeem_spec_permissions_9() {
     assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
 
+// spec/permissions.md §9, spec/sync.md §5: a used single-use link refuses a second redeemer
+// at once and later (0, 10, 20 s after the first redemption settled): the sharer registers a
+// step without L as soon as L's departure is covered, whoever rotated K.
+#[test]
+fn used_link_refused_at_once_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, others, _) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    item(&alice, g, g, "before the link");
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
+    w.run();
+    let link: osis::ShareLink = link.to_string().parse().unwrap();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
+    w.run();
+    for (i, wait) in [0, 10_000, 10_000].into_iter().enumerate() {
+        w.advance(wait);
+        let mut c = w.cfg(20 + i as u64, &[0]);
+        c.wait_timeout = Duration::from_secs(5);
+        let carol = Osis::create(c).unwrap().0;
+        w.run();
+        assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Network(_))), "refused, attempt {i}");
+        assert_eq!(carol.role_on(g), None);
+    }
+}
+
 /// Alice's synced group with a multi-use read link redeemed by Bob and Carol: (world, alice,
 /// bob, carol, group, link actor K, link key L).
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {

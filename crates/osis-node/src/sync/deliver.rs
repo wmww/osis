@@ -4,7 +4,7 @@
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
-use super::{Action, SyncEngine};
+use super::{Action, PLACE_WAIT_MS, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
 use crate::local_peer::Package;
@@ -115,12 +115,8 @@ impl SyncEngine {
     fn take_deliveries(&mut self, done: Done) -> Result<()> {
         for d in done.deliveries {
             match d {
-                Delivery::Inbox { to, inbox, blob, resend } => {
-                    let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob)?;
-                    let now = self.now();
-                    self.state.note_sent(resend.member, resend.commit, resend.things, resend.edge_only, now);
-                }
+                // sealed and sent from its record once its commit is placed (`send_inbox`)
+                Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.member, resend.commit, resend.things, resend.edge_only),
                 Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
                 Delivery::First { commits, under } => {
                     for c in &commits {
@@ -170,6 +166,112 @@ impl SyncEngine {
         self.place_certificate_in(g, c, &all)
     }
 
+    /// Whether commit `c` is this node's own (made here, a held key actor's included).
+    pub(crate) fn own(&self, c: &CommitId) -> bool {
+        self.engine.core.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local || m.header.author == self.engine.tid())
+    }
+
+    /// Whether `g`'s closure holds a thing commit `c` touches (its labels are `c`'s own).
+    pub(crate) fn under_own_label(&self, g: &Tid, c: &CommitId) -> bool {
+        let Some(h) = self.engine.header(c) else { return false };
+        let closure = self.engine.closure(g);
+        h.aspects.iter().any(|a| closure.contains(&a.tid))
+    }
+
+    /// Whether a projection of commit `c` outside its things' labels (a certificate copy, an
+    /// inbox blob) waits (spec/sync.md §5): `c` is this node's, writes no `/keys` and lowers
+    /// nobody else's edge (removals and new keys go at once, spec/permissions.md §3), is not
+    /// placed yet (`placed`) and is younger than `PLACE_WAIT_MS`; past that it goes anyway, with
+    /// a diagnostic. A wake is set for the bound.
+    pub(crate) fn hold(&mut self, c: &CommitId) -> Result<bool> {
+        let Some(h) = self.engine.header(c) else { return Ok(false) };
+        if !self.own(c) || h.frontier.is_some() || h.aspects.iter().any(|a| a.ak.as_str() == "/keys") {
+            return Ok(false);
+        }
+        let until = h.ts.wall_ms().0.saturating_add(PLACE_WAIT_MS);
+        let now = self.now();
+        if until <= now {
+            if !self.placed(c)? && self.late.insert(*c) {
+                self.diag(format!("commit {c:?} not placed under its things' labels after {} s: its copies go anyway", PLACE_WAIT_MS / 1000));
+            }
+            return Ok(false);
+        }
+        if self.placed(c)? {
+            return Ok(false);
+        }
+        let at = self.raw_now().saturating_add(until - now);
+        self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+        Ok(true)
+    }
+
+    /// Whether this node's commit `c` is placed (spec/sync.md §5): no deposit of it queued here
+    /// under a label where no entry of it is present yet, and under every label this node syncs
+    /// of the things it touches, each body of it the label must hold is in an entry present at
+    /// one of the label's servers (a label with no server: an entry this node serves, if it
+    /// serves any) or covered by a snapshot there. Cached until entries, presence, the outbox or
+    /// the engine change.
+    pub(crate) fn placed(&mut self, c: &CommitId) -> Result<bool> {
+        if self.placed_cache.0 != self.state.version {
+            self.placed_cache = (self.state.version, Default::default());
+        }
+        if let Some(x) = self.placed_cache.1.get(c) {
+            return Ok(*x);
+        }
+        let x = self.placed_now(c)?;
+        self.placed_cache.1.insert(*c, x);
+        Ok(x)
+    }
+
+    fn placed_now(&mut self, c: &CommitId) -> Result<bool> {
+        let queued: Vec<LabelId> = self.state.outbox.iter().filter(|((_, b), _)| self.state.blobs.get(b).is_some_and(|r| r.commit == *c)).map(|(_, o)| o.label).collect();
+        for l in queued {
+            if !self.held_at(&l, c, None, true) {
+                return Ok(false);
+            }
+        }
+        let Some(h) = self.engine.header(c) else { return Ok(true) };
+        let bodies = self.engine.bodies(c)?;
+        for (g, gl) in self.labels() {
+            if gl.replaced || !self.under_own_label(&g, c) {
+                continue;
+            }
+            let local = gl.servers.iter().all(super::peers::is_peer);
+            if local && self.own_reach().is_none() {
+                continue;
+            }
+            let closure = self.engine.closure(&g);
+            let x = self.engine.group_actor(&g);
+            for b in &bodies {
+                let inside = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| closure.contains(&a.tid));
+                if !inside || !self.engine.may_read(&x, &b.reader) {
+                    continue;
+                }
+                if !self.held_at(&gl.id, c, Some(&b.parts), !local) && !self.parts_covered(&gl.id, c, &h, &b.parts)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether entries of `c` under `l` (present at a server when `present`) hold `parts`
+    /// (any part when `None`).
+    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[(usize, usize)]>, present: bool) -> bool {
+        let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for ((_, id), e) in self.state.entries.range((*l, osis_core::BlobId([0; 32]))..).take_while(|((x, _), _)| x == l) {
+            if let super::state::Kind::Commit { commit, parts: p } = &e.kind
+                && commit == c
+                && (!present || self.state.present_anywhere(l, id))
+            {
+                held.extend(p.iter().copied());
+            }
+        }
+        match parts {
+            Some(ps) => ps.iter().all(|p| held.contains(p)),
+            None => !held.is_empty(),
+        }
+    }
+
     /// Groups with a label whose closure holds `t` (the thing itself when labeled).
     fn groups_holding(&mut self, t: &Tid) -> Vec<Tid> {
         let mut out: Vec<Tid> = self.engine.labeled_groups().into_iter().filter(|g| g == t || self.engine.groups_of(t).contains(g)).collect();
@@ -179,7 +281,7 @@ impl SyncEngine {
 
     /// The actor up `to`'s owner chain whose `/keys` names `label` as its inbox (its deposit
     /// seed signs the deposit).
-    fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
+    pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
         let mut cur = *to;
         for _ in 0..64 {
             if self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) {

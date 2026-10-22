@@ -691,8 +691,12 @@ impl SyncEngine {
             self.sent.remove(&(conn, l, b));
             match code {
                 Code::OK => {
-                    grew |= !self.state.is_present(&server, &l, &b);
+                    let new = !self.state.is_present(&server, &l, &b);
+                    grew |= new;
                     self.state.set_present(server, l, b, true);
+                    if new {
+                        self.reached(&l, &b);
+                    }
                     // a stamped upload of a deposited entry promoted it
                     self.state.set_deposited(server, l, b, false);
                 }
@@ -764,6 +768,15 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Entry `b` under `l` reached a server: when it holds a membership commit of this node,
+    /// every label passes again (its held copies may go now, spec/sync.md §5).
+    fn reached(&mut self, l: &LabelId, b: &BlobId) {
+        let Some(Kind::Commit { commit, .. }) = self.state.entries.get(&(*l, *b)).map(|e| &e.kind) else { return };
+        if self.own(commit) && self.engine.header(commit).is_some_and(|h| h.kind.is_membership()) {
+            self.mark_dirty();
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
@@ -787,7 +800,10 @@ impl SyncEngine {
             }
         }
         match code {
-            Code::OK => self.state.set_present(server, l, b, true),
+            Code::OK => {
+                self.state.set_present(server, l, b, true);
+                self.reached(&l, &b);
+            }
             Code::NOT_HEAD => {
                 if let Some(h) = head {
                     self.new_head(conn, l, h, out)?;

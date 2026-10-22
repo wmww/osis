@@ -55,6 +55,9 @@ fn tracing() -> bool {
 
 /// The earliest Tick asked for after any event (ms).
 const MIN_WAKE_MS: u64 = 1_000;
+/// How long a projection of this node's commit outside its things' labels waits for the
+/// commit's placement there (spec/sync.md §5; local policy).
+pub(crate) const PLACE_WAIT_MS: u64 = 5 * 60_000;
 
 /// A connection's handle, chosen by the sync engine.
 pub type ConnId = u64;
@@ -373,6 +376,11 @@ pub struct SyncEngine {
     /// When the last remote membership commit writing an actor's `/secrets` (a rotation, the
     /// only change its author registers a step for) applied (raw ms; `step_settled`).
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
+    /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
+    /// no engine change came (in memory).
+    pub(crate) placed_cache: (u64, BTreeMap<osis_core::CommitId, bool>),
+    /// Commits whose projections went unplaced past `PLACE_WAIT_MS` (one diagnostic each).
+    pub(crate) late: BTreeSet<osis_core::CommitId>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<ServerKey>>,
@@ -458,6 +466,8 @@ impl SyncEngine {
             peer_received: BTreeMap::new(),
             membership_at: BTreeMap::new(),
             rotation_at: BTreeMap::new(),
+            placed_cache: (u64::MAX, BTreeMap::new()),
+            late: BTreeSet::new(),
             pass_peers: BTreeMap::new(),
             members_moved: false,
             prefix_checked: BTreeSet::new(),
@@ -556,7 +566,6 @@ impl SyncEngine {
                     self.forget_dropped()?;
                 }
                 self.timers(out)?;
-                self.resend_inbox()?;
                 self.serve_timers(out);
                 self.relink_lost()?;
             }
@@ -602,6 +611,7 @@ impl SyncEngine {
         }
         self.drop_unwanted_peers(out);
         self.connect(out);
+        self.send_inbox()?;
         self.send_outbox(out)?;
         self.run_dirty(out)?;
         self.notify_served(out)?;
@@ -645,6 +655,7 @@ impl SyncEngine {
             match e {
                 crate::Event::Applied { id, origin, .. } => {
                     changed = true;
+                    self.placed_cache.0 = u64::MAX;
                     if self.engine.header(&id).is_some_and(|h| h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label")) {
                         self.served_cache = None;
                         self.members_moved = true;
@@ -659,7 +670,9 @@ impl SyncEngine {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
                             self.membership_seen.insert(actor, self.seq);
                             self.membership_at.insert(actor, at);
-                            if a.ak.as_str() == "/secrets" {
+                            // only an admin registers its rotation's step: another's (a writer
+                            // rotating for a departure) is this admin's to register at once
+                            if a.ak.as_str() == "/secrets" && self.engine.core.role_now(&h.author, &actor) == Some(osis_core::Role::Admin) {
                                 self.rotation_at.insert(actor, at);
                             }
                         }
@@ -688,7 +701,7 @@ impl SyncEngine {
     }
 
     /// Every label on every connection wants a pass.
-    fn mark_dirty(&mut self) {
+    pub(crate) fn mark_dirty(&mut self) {
         self.local_dirty = true;
         for c in self.conns.values_mut() {
             for l in c.labels.values_mut() {
@@ -1154,7 +1167,8 @@ impl SyncEngine {
             at(self.local_last.saturating_add(self.cfg.resync_ms));
         }
         let skew = self.now() as i64 - now as i64;
-        if let Some(x) = self.state.sent_inbox.values().map(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS)).min() {
+        // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
+        if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS)).min() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         // a due inbox blob goes once its server's connection is ready (an event of its own)
@@ -1167,10 +1181,10 @@ impl SyncEngine {
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
 
-    /// Inbox blobs (grants, notices) not yet answered by a server (the outbox is stored and
-    /// restored at open); `wait_synced` waits for none.
+    /// Inbox blobs (grants, notices) not yet sent or not yet answered by a server (the outbox
+    /// and the delivery records are stored and restored at open); `wait_synced` waits for none.
     pub fn deliveries_pending(&self) -> usize {
-        self.outbox.len() + self.inbox_sent.len()
+        self.outbox.len() + self.inbox_sent.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
     }
 
     /// Asks every connection to sync every open label now.
