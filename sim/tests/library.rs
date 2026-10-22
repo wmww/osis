@@ -161,30 +161,30 @@ fn link_race_seed_50() {
     ok("link_race", 50);
 }
 
-// spec/sync.md §3, §5: sweep seed 1792, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 1792, a redemption reached the sharer without its `/secrets` part (WaitDeltas); this run no longer reaches that state, kept for the same cause as seed 2898.
 #[test]
-#[ignore = "issues/link-race-edge-only-pending.md"]
+#[ignore = "tier 2"]
 fn link_race_seed_1792() {
     ok("link_race", 1792);
 }
 
-// spec/sync.md §3, §5: sweep seed 2255, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 2255, a redemption reached the sharer without its `/secrets` part (WaitDeltas); this run no longer reaches that state, kept for the same cause as seed 2898.
 #[test]
-#[ignore = "issues/link-race-edge-only-pending.md"]
+#[ignore = "tier 2"]
 fn link_race_seed_2255() {
     ok("link_race", 2255);
 }
 
-// spec/sync.md §3, §5: sweep seed 2898, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 2898, the losing redeemer forgot K before its deposit of the redemption reached the server; its partial copy under the target left the sharer pending (WaitDeltas).
 #[test]
-#[ignore = "issues/link-race-edge-only-pending.md"]
+#[ignore = "tier 2"]
 fn link_race_seed_2898() {
     ok("link_race", 2898);
 }
 
-// spec/sync.md §3, §5: sweep seed 3926, a redemption reaches K's label as its `/members` part only; the sharer pends (WaitDeltas).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 3926, a redemption reached the sharer without its `/secrets` part (WaitDeltas); this run no longer reaches that state, kept for the same cause as seed 2898.
 #[test]
-#[ignore = "issues/link-race-edge-only-pending.md"]
+#[ignore = "tier 2"]
 fn link_race_seed_3926() {
     ok("link_race", 3926);
 }

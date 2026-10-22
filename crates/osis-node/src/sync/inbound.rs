@@ -777,7 +777,7 @@ impl SyncEngine {
             if !retry {
                 self.state.remove_out(&server, &b);
             } else if o.tries > super::local::MAX_INBOX_TRIES {
-                self.diag(format!("inbox blob for {l:?} dropped after {} refusals (code {})", o.tries - 1, code.0));
+                self.diag(format!("deposit under {l:?} dropped after {} refusals (code {})", o.tries - 1, code.0));
                 self.state.remove_out(&server, &b);
             } else {
                 // retry_ms, doubling per refusal, at most an hour

@@ -265,12 +265,13 @@ pub struct SyncEngine {
     pub(crate) signals: Vec<osis_label::SignalBody>,
     /// Recent diagnostics (also sent as engine events).
     diagnostics: Vec<String>,
-    /// Inbox blobs waiting for a connection to their server.
+    /// Deposits (inbox blobs, a non-writer's membership writes) waiting for a connection to
+    /// their server.
     pub(crate) outbox: Vec<local::Outgoing>,
-    /// Inbox blobs for a label this node syncs with nobody: deposited here, as a peer's deposit
-    /// would be (`send_outbox`).
-    pub(crate) local_inbox: Vec<(LabelId, Vec<u8>)>,
-    /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
+    /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
+    /// be (`send_outbox`).
+    pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
+    /// Deposits sent and not answered yet (a label not registered yet, or a rate
     /// limit, sends them again after `retry_ms`).
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), (ConnId, local::Outgoing)>,
     /// Blobs asked for and not received yet.
@@ -387,8 +388,8 @@ impl SyncEngine {
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
         let mut state = State::load(&mut engine)?;
-        // inbox blobs not answered before a restart go again
-        let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), owner: o.owner, after: 0, tries: 0 }).collect();
+        // deposits not answered before a restart go again
+        let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), wrap: o.wrap, sig: o.sig, after: 0, tries: 0 }).collect();
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
         Ok(SyncEngine {

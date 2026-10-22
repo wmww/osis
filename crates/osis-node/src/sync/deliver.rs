@@ -4,7 +4,6 @@
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
-use super::local::Outgoing;
 use super::{Action, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
@@ -118,13 +117,7 @@ impl SyncEngine {
             match d {
                 Delivery::Inbox { to, inbox, blob, resend } => {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    // an inbox this node serves to nobody else's server: deposited here
-                    if inbox.servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == inbox.label) {
-                        self.local_inbox.push((inbox.label, blob.clone()));
-                    }
-                    for server in inbox.servers {
-                        self.queue_inbox(Outgoing { label: inbox.label, server, blob: blob.clone(), owner, after: 0, tries: 0 });
-                    }
+                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob)?;
                     let now = self.now();
                     self.state.note_sent(resend.member, resend.commit, resend.things, resend.edge_only, now);
                 }
@@ -148,7 +141,7 @@ impl SyncEngine {
                 }
                 Delivery::Deposit { commit, under } => {
                     for g in self.groups_holding(&under) {
-                        self.place_all(&g, &commit)?;
+                        self.deposit_commit(&g, &commit)?;
                     }
                 }
             }
@@ -170,11 +163,37 @@ impl SyncEngine {
         self.place_certificate_in(g, c, &ais)
     }
 
-    /// Places every aspect of `c` as a certificate copy under the labels of `g`.
-    fn place_all(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+    /// Deposits a non-writer's membership write `c` under the labels of `g` (spec/sync.md §5):
+    /// its projections and the blobs they link, sealed, wrapped and signed now and queued like
+    /// inbox blobs, so they reach the label even when this node loses `g` before its server
+    /// answers (other nodes may hold parts of `c` from certificate copies or inbox blobs and
+    /// wait for the rest from the label). Not under an epoch that does not cover a known
+    /// departure: the label's writers carry it there.
+    fn deposit_commit(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let all: BTreeSet<usize> = (0..h.aspects.len()).collect();
-        self.place_certificate_in(g, c, &all)
+        let parts: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+        if self.uncovered_now(g)?.contains(&osis_core::Role::Read) {
+            self.diag(format!("deposit of {c:?}: an uncovered epoch"));
+            return Ok(());
+        }
+        let Some(seed) = self.engine.deposit_seed(g)? else { return Ok(()) };
+        for l in self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced) {
+            let d = osis_crypto::deposit_key(&seed, &l.id);
+            for b in self.engine.partial_bodies(c, &all)? {
+                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
+                let s = crate::labeling::seal_body(&b, &mut *self.rng)?;
+                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+                self.queue_deposit(l.id, &l.servers, &d, s.blob, wrap);
+            }
+            for id in self.engine.linked_blobs(c, &parts)? {
+                if let Some(blob) = self.engine.blob(&id)? {
+                    let wrap = osis_crypto::filler_wrap(&mut *self.rng);
+                    self.queue_deposit(l.id, &l.servers, &d, blob, wrap);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Groups with a label whose closure holds `t` (the thing itself when labeled).

@@ -95,13 +95,15 @@ pub struct BlobRec {
     pub cert: bool,
 }
 
-/// An inbox blob to deposit at a server, kept until the server answers (spec/sync.md §3).
+/// A deposit (an inbox blob, a non-writer's membership write) sealed, wrapped and signed, kept
+/// until its server answers (spec/sync.md §3, §5).
 #[derive(Clone, Debug)]
 pub struct OutRec {
     pub label: LabelId,
     pub server: Address,
-    pub owner: Tid,
     pub blob: Vec<u8>,
+    pub wrap: [u8; WRAP_LEN],
+    pub sig: Signature,
 }
 
 /// A membership commit delivered by inbox to `member` (spec/sync.md §3): re-sealed and sent
@@ -319,9 +321,10 @@ impl State {
                     let label = LabelId(x.arr()?);
                     let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
                     let server = Address { url, key: x.arr()? };
-                    let owner = x.tid()?;
+                    let wrap = x.arr()?;
+                    let sig = Signature(x.arr()?);
                     let blob = x.bytes()?.to_vec();
-                    s.outbox.insert(k, OutRec { label, server, owner, blob });
+                    s.outbox.insert(k, OutRec { label, server, blob, wrap, sig });
                 }
                 b"q" => {
                     let l = LabelId(r.arr()?);
@@ -683,7 +686,7 @@ impl State {
 
     pub fn add_out(&mut self, o: OutRec) {
         let id = osis_label::blob_id(&o.blob);
-        let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(o.owner.as_bytes()).bytes(&o.blob).take();
+        let v = Wr::new().raw(&o.label.0).bytes(o.server.url.as_bytes()).raw(&o.server.key).raw(&o.wrap).raw(&o.sig.0).bytes(&o.blob).take();
         self.put(key(OUTBOX, &[&o.server.key, &id.0]), v);
         self.outbox.insert((o.server.key, id), o);
     }
@@ -787,7 +790,8 @@ pub(crate) fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things
                 gone
             }
             b"s" => commits.contains(&CommitId(Rd::new(rest).arr()?)),
-            b"o" => lab(&v)?,
+            // a queued deposit is sealed and signed already: forgetting does not recall it
+            b"o" => false,
             b"u" => lab(rest)?,
             b"v" => decode_sent(&v).is_ok_and(|x| commits.contains(&x.commit) || things.contains(&x.member)),
             b"i" => lab(rest)? || things.contains(&Rd::new(&v).tid()?),
