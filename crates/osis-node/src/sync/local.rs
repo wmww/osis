@@ -7,6 +7,7 @@ use super::state::{Entry, Kind};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
+use osis_core::format::MAX_DRIFT_MS;
 use osis_core::{Ak, CommitId, LabelId, Role, Tid, Ts, Value};
 use osis_label::{Address, InboxPayload, InboxThing, PublishAuth, PublishKey, SignalBody};
 use osis_perm::{At, PurgeBy};
@@ -114,8 +115,8 @@ impl SyncEngine {
     }
 
     /// Compacts `(t, ak)` (spec/sync.md §7): writes a snapshot from this node's state, then
-    /// drops the bodies it covers that this node may purge and whose keep-at-least bound has
-    /// passed; the next pass uploads the snapshot and deletes the dropped bodies at servers once
+    /// drops the bodies it covers that this node may purge and whose keep-at-least bound is
+    /// `MAX_DRIFT` past; the next pass uploads the snapshot and deletes the dropped bodies at servers once
     /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
@@ -126,7 +127,7 @@ impl SyncEngine {
     }
 
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
-    /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
+    /// whose keep-at-least bound is `MAX_DRIFT` past (spec/sync.md §7: the compactor, and every other
     /// right holder as it holds the snapshot); `s` carries them. A body is judged against `s`
     /// again until it is dropped or settled kept (established uncovered, or the lower of two
     /// covered-equal snapshots: `covered_judged`), so what a node drops follows what it holds,
@@ -171,9 +172,11 @@ impl SyncEngine {
             if !may {
                 continue;
             }
-            let at_least = self.engine.body_keep(&c, t, ak)?.at_least;
-            if at_least > now.0 {
-                left.at(at_least, c);
+            // MAX_DRIFT past the bound: a node whose clock lags by up to that still holds the
+            // body must-hold and would place it again
+            let due = self.engine.body_keep(&c, t, ak)?.at_least.saturating_add(MAX_DRIFT_MS);
+            if due > now.0 {
+                left.at(due, c);
                 continue;
             }
             match self.engine.covered(&s, &c, t, ak)? {
