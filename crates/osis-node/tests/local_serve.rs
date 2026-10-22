@@ -10,6 +10,16 @@ use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 use osis_schema::AspectKey;
 
+static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
+    "keep.osis",
+    r#"
+schema 0x5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f;
+revision 1;
+aspect /k/pairs: map<string, string> [by: writer, keep_at_most: 1h];
+"#,
+);
+const KMAP: osis_schema::Aspect<osis_core::Value> = osis_schema::Aspect::new("/k/pairs", &KEEP);
+
 /// Node `a` (dialable: `/reach` published) with group `g` labeled at no server, and `b` a
 /// writer of it.
 fn setup() -> (Net, usize, usize, Tid, LabelId) {
@@ -99,4 +109,71 @@ fn expired_body_leaves_local_label_spec_sync_5() {
     net.advance(31_000);
     assert!(of_c(&mut net).is_empty(), "the expired body's entry went");
     assert!(ids.iter().all(|id| !net.sync(a).holds_blob(id)), "and its bytes");
+}
+
+// spec/sync.md §7 (a right holder that must delete a body with live writes and finds no carrier
+// writes a covering snapshot first), spec/commits.md §5 (relative keep-at-most): a map body
+// partly replaced, its other key still live, leaves the label served with no server only with
+// a snapshot carrying that key under it.
+#[test]
+fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut net, a, _, g, l) = setup();
+    let t = net.item(a, g, g, "x");
+    let k = |x: &str| osis_core::Value::Str(x.into());
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &KMAP, &osis_core::Value::Map([(k("k1"), k("v1")), (k("k2"), k("v2"))].into_iter().collect())).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let mut m = osis_node::Mutation::new();
+    m.op(t, &KMAP, PathOp { path: vec![PathSeg::Key(k("k1"))], op: Op::Set(k("v1b")) }).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let kmap = Ak::new(KMAP.ak()).unwrap();
+    for _ in 0..4 {
+        net.advance(1_000_000);
+    }
+    let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
+    assert_eq!(v, osis_core::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
+    let entries = net.sync(a).entries(&l);
+    let c1_held = entries.iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
+    let snap = entries.iter().any(|(_, x)| match x {
+        EntryKind::Commit { commit, .. } => net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.tid == t && x.ak == kmap)),
+        _ => false,
+    });
+    assert!(c1_held || snap, "k2 is carried under the label: by its body or a snapshot");
+    assert!(!net.engine(a).holds_body(&c1, &t, &kmap) || c1_held, "a body the node still holds is still served");
+}
+
+// spec/sync.md §5 (re-registration issues a child of the head; a recorded path is registered
+// before a new step): three co-readers with no server, two of them admins; a removal's
+// rotation gives the label one new step at every node, not one per admin or per connection.
+#[test]
+fn one_step_per_rotation_without_server_spec_sync_5() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    for (n, k) in [(a, 0xa3), (b, 0xb3), (c, 0xc3)] {
+        let acts = net.sync(n).publish_reach([k; 32], Vec::new()).unwrap();
+        net.actions(n, acts);
+    }
+    let g = net.group_at(a, &[(b, Role::Admin), (c, Role::Write)], vec![]);
+    net.run();
+    let l = net.label(a);
+    let shape = |net: &mut Net, n: usize| {
+        let gl = net.engine(n).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap();
+        (gl.steps.len(), gl.tips().len())
+    };
+    assert_eq!(shape(&mut net, a), (1, 1));
+    let ct = net.tid(c);
+    let done = net.engine(a).demote(&g, &Demotion { member: ct, new: None, presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    for n in [a, b] {
+        assert_eq!(shape(&mut net, n), (2, 1), "node {n}: one new step, one tip");
+    }
 }

@@ -312,6 +312,8 @@ pub struct SyncEngine {
     pub(crate) local_dirty: bool,
     pub(crate) local_last: u64,
     pub(crate) local_any: bool,
+    /// Prefix expiries of entries under labels synced with nobody (raw unix ms; read once).
+    pub(crate) local_expiry: BTreeMap<osis_core::BlobId, Option<u64>>,
     /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
@@ -425,6 +427,7 @@ impl SyncEngine {
             local_dirty: true,
             local_last: 0,
             local_any: false,
+            local_expiry: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),

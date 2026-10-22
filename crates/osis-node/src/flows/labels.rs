@@ -208,7 +208,15 @@ impl Engine {
             }
             let admin_secret = epochs.role(Role::Admin).secret(&head_admin).cloned().ok_or(Error::Misuse("head admin secret"))?;
             let deposit = deposit_seed(tx, &g)?;
-            let [(re, _), _, _] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+            let [(re, _), (we, _), (ae, _)] = registration_epochs(&epochs).ok_or(Error::Misuse("an admin registers: every role's newest secret is needed"))?;
+            // a child of the head already recorded at these epochs (another admin's, or this
+            // node's own for another server): reused, so one rotation gives one step
+            if !fresh {
+                let current = |c: &Step| [(Role::Read, re), (Role::Write, we), (Role::Admin, ae)].into_iter().all(|(r, e)| osis_keys::registered_epoch(epochs.role(r), r, rec.index, c.keys.get(osis_keys::label_role(r))) == Some(e));
+                if let Some((c, Some(set))) = steps.values().filter(|(c, _)| c.prev == Some(h) && current(c)).min_by_key(|(c, _)| c.id()) {
+                    return Ok(Some((c.clone(), set.clone())));
+                }
+            }
             let rs = readers(tx, &g, &re)?;
             let (step, set) = issue(tx, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();

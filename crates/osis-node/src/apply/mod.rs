@@ -470,17 +470,20 @@ impl Engine {
     }
 
     /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
-    /// step not verified yet): the members of `thing` that held pending membership commits grant
-    /// or box, its applied members and the members its applied `/secrets` boxes (one may read it
-    /// through an actor boxed by a rotation whose grant it does not hold), those this node is or
-    /// holds secrets of.
-    pub fn hint_actors(&mut self, thing: &Tid) -> Result<std::collections::BTreeSet<Tid>> {
+    /// step not verified yet): its applied members and the members its applied `/secrets` boxes
+    /// (one may read it through an actor a rotation boxed, with no grant held), and those that
+    /// `inbox`, the pending commits of the inbox blobs that named the label, grant or box on it;
+    /// those this node is or holds secrets of.
+    pub fn hint_actors(&mut self, thing: &Tid, inbox: &[CommitId]) -> Result<std::collections::BTreeSet<Tid>> {
         let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::MEMBERS)?.unwrap_or_default().into_keys().collect();
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.member));
-        for (c, _) in self.pending() {
-            if let Some(b) = self.commit_bytes(&c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
-                out.extend(keys::pending_grantees(&b, &c, Some(thing)));
-                for (a, w) in keys::pending_secrets_writes(&self.core, &b, &c) {
+        for c in inbox {
+            if !self.core.pending.contains_key(c) {
+                continue;
+            }
+            if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
+                out.extend(keys::pending_grantees(&b, c, Some(thing)));
+                for (a, w) in keys::pending_secrets_writes(&self.core, &b, c) {
                     if a == *thing {
                         out.extend(w.boxes.into_keys().map(|k| k.member));
                     }

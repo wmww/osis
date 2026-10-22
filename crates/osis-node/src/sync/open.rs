@@ -426,12 +426,25 @@ impl SyncEngine {
 
     /// Continues a walk at `step` (verified): its sync key if held, else claims on it. On a
     /// hinted label's walk the step is the server's word until the path verifies (`opened`):
-    /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`),
+    /// claims there go only with the keys of the actors the hint is for (`Engine::hint_actors`,
+    /// pending sources only the commits of inbox blobs naming the thing),
     /// so a server handing out a step of its choosing learns no other actor's pseudonym.
     fn walk_on(&mut self, conn: ConnId, l: LabelId, step: Step, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(lc) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)) else { return Ok(()) };
         let (g, index, hinted) = (lc.group, lc.index.unwrap_or(0), lc.walk.is_some());
-        let only = if hinted { Some(self.engine.hint_actors(&g)?) } else { None };
+        let only = if hinted {
+            // the pending commits of the inbox blobs naming the thing: nothing else unverified
+            let inbox: Vec<(LabelId, osis_core::BlobId, osis_core::CommitId)> = self.state.entries.iter().filter_map(|((x, id), e)| if let super::state::Kind::Inbox(Some(c)) = e.kind { Some((*x, *id, c)) } else { None }).collect();
+            let mut commits = Vec::new();
+            for (x, id, c) in inbox {
+                if self.inbox_parts(&x, &id)?.is_some_and(|(_, things)| things.contains(&g)) {
+                    commits.push(c);
+                }
+            }
+            Some(self.engine.hint_actors(&g, &commits)?)
+        } else {
+            None
+        };
         let mut front = Vec::new();
         if let Some(e) = self.engine.epochs(&g)
             && let Some(s) = e.read.held_newest_first().into_iter().map(|(_, s)| label_role_key(LabelRole::Sync, s, index)).find(|k| k.verifying_key() == step.keys.sync)

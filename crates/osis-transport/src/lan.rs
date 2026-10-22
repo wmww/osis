@@ -194,9 +194,10 @@ impl Lan {
     /// announcement port, or one host) on the socket of its family. The all-nodes group with no
     /// interface named goes out every up interface with IPv6, each with its scope (`targets`,
     /// `v6_scopes`, looked up at each call: interfaces come and go); if every one of those
-    /// sends fails, it goes out the default multicast interface. Nothing is joined per
-    /// interface: every IPv6 interface is in the all-nodes group, and an unconnected socket
-    /// bound to the port hears it there (Linux: `IPV6_MULTICAST_ALL`, on by default).
+    /// sends fails, it goes out the default multicast interface. The socket joins the group on
+    /// each of those interfaces at each call ("already joined" ignored): Linux delivers to it
+    /// anyway (`IPV6_MULTICAST_ALL`), BSD stacks only on interfaces it joined, and interfaces
+    /// come and go under one socket.
     pub async fn announce(&self, a: &Announce, to: SocketAddr) -> Result<(), Error> {
         let s = match (to, &self.v6) {
             (SocketAddr::V4(_), _) => &self.v4,
@@ -204,6 +205,9 @@ impl Lan {
             (SocketAddr::V6(_), None) => return Err(Error::Unreachable("no IPv6 socket".into())),
         };
         let scopes = if to == multicast(to.port()) { v6_scopes().await } else { Vec::new() };
+        for sc in &scopes {
+            let _ = s.join_multicast_v6(&ALL_NODES, *sc);
+        }
         let bytes = a.encode();
         let mut res = Ok(());
         let mut sent = false;
