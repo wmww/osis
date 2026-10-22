@@ -37,6 +37,10 @@ impl Changes {
     pub(crate) fn touch(&mut self) {
         self.changed = true;
     }
+    /// `is_changed`, cleared.
+    pub(crate) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
     /// Records that the write stamped `stamp` died at `at`.
     pub(crate) fn died(&mut self, stamp: &Stamp, at: Ts) {
         self.changed = true;

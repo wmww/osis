@@ -9,7 +9,7 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
-use crate::seq_lin::Lin;
+use crate::seq_lin::{Lin, Plan};
 use crate::seq_span::{Elems, Recs, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
@@ -316,12 +316,25 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
     // how the cached placement follows each record, decided before that record joins
     let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
     for (dot, de) in d.elems {
+        let n = plans.as_ref().map_or(0, Vec::len);
         if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get())
             && !l.plan(&s.elems, &dot, &de, ps)
         {
             plans = None;
         }
+        let was = ch.take_changed();
         join_one(s, dot, de, e, ch);
+        // a record that changed nothing (a duplicate, a re-embedding) moves nothing; only the
+        // records it split need their rows cut
+        if !ch.is_changed()
+            && let Some(ps) = plans.as_mut()
+        {
+            let tail = ps.split_off(n);
+            ps.extend(tail.into_iter().filter(|p| matches!(p.1, Plan::Cut)));
+        }
+        if was {
+            ch.touch();
+        }
     }
     let ok = match (plans, s.lin.get_mut()) {
         (Some(ps), Some(l)) => Arc::make_mut(l).follow(&s.elems, s.text, ps),
@@ -522,9 +535,6 @@ impl<'s> Layered<'s> {
         let mut plans = Vec::with_capacity(d.elems.len());
         let mut ch = Changes::new();
         for (dot, de) in d.elems {
-            if dot.src.is_derived() {
-                return false;
-            }
             match self.top.get(&dot) {
                 Some(r) if r.span != de.span => return false,
                 Some(_) => {}
@@ -613,7 +623,23 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
     Some(if s.text {
         Value::Str(vis.rows().filter_map(|r| r.ch).collect())
     } else {
-        Value::List(vis.iter().filter_map(|d| s.elems.get(d)).filter_map(|e| if let SeqContent::Frag(f) = &e.content { f.read() } else { None }).collect())
+        // visible elements mostly follow each other in dot order (a run typed or pasted): step
+        // to the next record, searching only where the order jumps
+        let mut it = s.elems.range::<Dot, _>(..);
+        let mut out = Vec::with_capacity(vis.len());
+        for d in vis.iter() {
+            let mut cur = it.next();
+            if cur.is_none_or(|c| c.0 != d) {
+                it = s.elems.range::<Dot, _>(d..);
+                cur = it.next().filter(|c| c.0 == d);
+            }
+            if let Some((_, SeqElem { content: SeqContent::Frag(f), .. })) = cur
+                && let Some(v) = f.read()
+            {
+                out.push(v);
+            }
+        }
+        Value::List(out)
     })
 }
 
