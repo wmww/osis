@@ -266,7 +266,7 @@ impl Ctx {
                 return Err(e);
             }
             let mut used = BTreeSet::new();
-            f.check_writer(&self.own, &mut used)?;
+            f.check_writer(&self.own, hi, &mut used)?;
         }
         Ok(())
     }
@@ -442,9 +442,9 @@ impl Frag {
         });
     }
 
-    /// Writer-only rules (§2.3, §3.3 rule 7): no `Slots`, no `Derived` creation runs, and the writer's creations
-    /// and position writes use distinct counters.
-    fn check_writer(&self, own: &Source, used: &mut BTreeSet<u64>) -> Result<(), Error> {
+    /// Writer-only rules (§2.3, §3.3 rule 7): no `Slots`, no `Derived` creation runs, own sequence element dots
+    /// below `hi`, and the writer's creations and position writes use distinct counters.
+    fn check_writer(&self, own: &Source, hi: u64, used: &mut BTreeSet<u64>) -> Result<(), Error> {
         fn take(used: &mut BTreeSet<u64>, ctr: u64) -> Result<(), Error> {
             if used.insert(ctr) {
                 Ok(())
@@ -461,18 +461,18 @@ impl Frag {
                         take(used, d.ctr)?;
                     }
                     if let Some(f) = &el.frag {
-                        f.check_writer(own, used)?;
+                        f.check_writer(own, hi, used)?;
                     }
                 }
             }
             Frag::Struct { fields, .. } => {
                 for f in fields.values() {
-                    f.check_writer(own, used)?;
+                    f.check_writer(own, hi, used)?;
                 }
             }
             Frag::Enum { payloads, .. } => {
                 for f in payloads.values() {
-                    f.check_writer(own, used)?;
+                    f.check_writer(own, hi, used)?;
                 }
             }
             Frag::Map { entries, .. } => {
@@ -481,12 +481,16 @@ impl Frag {
                         take(used, d.ctr)?;
                     }
                     if let Some(f) = &en.frag {
-                        f.check_writer(own, used)?;
+                        f.check_writer(own, hi, used)?;
                     }
                 }
             }
             Frag::Seq { elems, .. } => {
                 for (d, el) in elems {
+                    // §2.3: every element of a run is an identity (`walk` yields only a run's first dot)
+                    if d.source == *own && d.ctr >= hi {
+                        return Err(Error::Bad("own counter out of range"));
+                    }
                     if el.created.is_some() {
                         if matches!(d.source, Source::Derived(_)) {
                             return Err(Error::Bad("derived creation in a writer's delta"));
@@ -501,7 +505,7 @@ impl Frag {
                         }
                     }
                     if let Content::Frag(f) = &el.content {
-                        f.check_writer(own, used)?;
+                        f.check_writer(own, hi, used)?;
                     }
                 }
             }

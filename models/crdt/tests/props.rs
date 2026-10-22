@@ -912,6 +912,14 @@ fn decoder_rejects_writer_rule_violations() {
     let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::node(2), 1), Some(Value::Int(1)))) };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
+    // a run of own elements reaching hi, though its first dot is below lo (§2.3)
+    let flags = |n: u64| {
+        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)) };
+        let elems = (0..n).map(|i| (Dot { source: own.clone(), ctr: 3 + i }, el())).collect();
+        enc(&Frag::Seq { text: true, c: Default::default(), elems })
+    };
+    assert!(decode_delta(&flags(2), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_ok());
+    assert!(decode_delta(&flags(4), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
     // repeated own counter: two set elements created with one counter
     let mut elems = std::collections::BTreeMap::new();
     let reg = |v: i64| Some(Box::new(Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(v)))) }));

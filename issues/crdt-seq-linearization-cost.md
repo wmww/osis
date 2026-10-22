@@ -11,3 +11,5 @@ Remains:
 - List `read` looks up each visible element's record (text reads chars from the cache).
 - A writer-side batch of thousands of moves on one text takes seconds (4000 moves: 4-8 s): each op clones the batch's net effect so far, and `Layered::present` clones the layer's records per op.
 - The placement cache's dot map folds its added entries into its base past √n; when the base is shared (a copied state, a batch's layered view) that fold copies all n entries.
+
+- `tests_seq_ops::hostile_moves_join_bounded_spec_6` (tier 1, passes in debug) fails in release on a 4000-char text: join about 0.9 ms against a 0.28 ms whole pass (bound 3x). Not investigated: likely the 1000-move join itself (before the rebuild) outweighs a pass this small; the bound or the test's size needs revisiting.

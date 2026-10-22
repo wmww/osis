@@ -204,6 +204,29 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
     Ok(())
 }
 
+// spec/crdt.md §2.3, §3.3 rule 7: every element of a writer's run is an own-source identity, so
+// one past `hi` is out of range even when the run's first dot is not (shrunk from seed
+// 2814254534854219504: the model checked only a run's first dot).
+#[test]
+fn run_past_counter_range_rejected_spec_2_3() {
+    let w = crdt_model::ops::Writer::new(MSource::node(1), 3 << 16, 7); // range [7, 8)
+    let l = |v: Vec<Value>| Value::List(v);
+    let int = Value::Int;
+    // a text delta deleting own elements first..first+n-1 at the delta stamp
+    let delta = |first: i64, n: i64| {
+        let flag = l(vec![int(0), int(n - 1), int(0), Value::Bool(true)]);
+        let run = l(vec![int(first), int(n), l(vec![]), l(vec![]), l(vec![]), l(vec![flag])]);
+        osis_core::encode(&l(vec![Value::Bytes(vec![7; 16]), l(vec![]), l(vec![]), l(vec![int(9), l(vec![]), l(vec![]), l(vec![run])])]))
+    };
+    let both = |b: &[u8]| {
+        let imp = decode_delta(b, &writer_cx(&w), &mut Interner::new(), None).is_ok();
+        let model = m_decode_delta(b, &mut Ctx::writer(w.ts, w.source.clone(), w.lo, w.hi())).is_ok();
+        (imp, model)
+    };
+    assert_eq!(both(&delta(5, 2)), (true, true), "elements 5, 6 lie below lo");
+    assert_eq!(both(&delta(5, 4)), (false, false), "element 8 lies at hi");
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
