@@ -59,7 +59,8 @@ fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
 // spec/requirements.md (Offline and network: every operation completes offline; Data model:
 // collaborative text), notes/api.md Undo (per actor, across devices): two devices of one person
 // see each other's notes; offline edits on both merge on reconnect; undo on one device undoes
-// the person's last change wherever it was made.
+// the person's last change wherever it was made (spec/crdt.md §4.6: undo is per actor, derived
+// from its commits).
 #[test]
 fn two_devices_offline_edits_and_undo() {
     let mut w = World::new();
@@ -160,8 +161,9 @@ fn large_body_streams() {
     assert!(got == doc, "streamed content equals what was written");
 }
 
-// notes/api.md Undo (history lists everyone's changes; undo and redo own ones), offline: one
-// device without servers keeps a full local history. The stack here walks two aspects.
+// spec/crdt.md §4.6 (undo and redo); notes/api.md Undo (history lists everyone's changes; undo
+// and redo own ones), offline: one device without servers keeps a full local history. The stack
+// here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {
     let db = Osis::create(osis::Config::memory()).unwrap().0;

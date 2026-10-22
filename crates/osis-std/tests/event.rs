@@ -42,6 +42,7 @@ fn new_event(db: &Osis, calendar: Tid, name: &str, start: Start, end: Option<End
     })
 }
 
+// spec/data-model.md §3 (`date` = days since 1970-01-01, proleptic Gregorian, no zone).
 #[test]
 fn civil_dates_are_days_since_the_epoch() {
     assert_eq!(date(1970, 1, 1), 0);
