@@ -14,7 +14,6 @@ type annual = struct { 0 month: int, 1 day: int, 2 year: option<int> };
 aspect /contact/profile: tid;
 aspect /contact/names: struct { 0 given: option<string>, 1 family: option<string>, 2 middle: option<string>, 3 prefix: option<string>, 4 suffix: option<string> };
 aspect /contact/nickname: string;
-aspect /contact/photo: struct { 0 mime: string, 1 data: blob };
 /// Keyed by the address.
 aspect /contact/emails: map<string, labeled>;
 /// Keyed by the number as entered.
