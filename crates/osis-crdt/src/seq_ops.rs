@@ -4,7 +4,7 @@
 
 use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
-use crate::seq_lin::{Lin, Placement};
+use crate::seq_lin::{Lin, Placement, Row};
 use crate::ops::{Op, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, top2, visible};
 use crate::seq_span::{elem, expand, nth};
@@ -77,12 +77,14 @@ fn anchor_after(vis: &Vis, at: usize) -> Result<Anchor, Error> {
     }
 }
 
-/// `anchor_after` in the visible elements outside `inr`.
-fn anchor_outside(vis: &Vis, inr: &HashSet<&Dot>, at: usize) -> Result<Anchor, Error> {
-    match at {
-        0 => Ok(Anchor::Head),
-        i => vis.iter().filter(|d| !inr.contains(d)).nth(i - 1).cloned().map(Anchor::Dot).ok_or(Error::Mismatch("index out of range")),
-    }
+/// `anchor_after` in the visible elements outside the nodes `r` (placement positions).
+fn anchor_outside(vis: &Vis, r: Range<usize>, at: usize) -> Result<Anchor, Error> {
+    let Some(i) = at.checked_sub(1) else { return Ok(Anchor::Head) };
+    let p = &vis.0.p;
+    let first = p.rank(r.start);
+    let inside = p.iter_from(r.start).take(r.len()).filter(|x| x.shown).count();
+    let i = if i >= first { i + inside } else { i };
+    vis.get(i).cloned().map(Anchor::Dot).ok_or(Error::Mismatch("index out of range"))
 }
 
 /// The range of a selection: the slice of the placement order (node indices) from its first to
@@ -113,37 +115,30 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
     SeqElem { pos: vec![(w.fresh(), a)], ..SeqElem::bare() }
 }
 
-/// The position writes moving `range` (placement order, by node) to `dest`, re-anchoring the
-/// nodes outside it that hang below it at `pred` (§5.7 move). A creation chain's first element
-/// carries its edge; the elements of a range without creation are each a root (bare anchors and
-/// flag-only elements sit on END one by one), so each gets a write, chained in order. The next
-/// root anchors at the last element of the previous root's moved subtree.
-fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
-    let inr: HashSet<&Dot> = range.iter().collect();
-    let spans: HashMap<&Dot, u64> = p.iter().map(|r| (&r.dot, r.span)).collect();
-    let loose: HashMap<&Dot, u64> = p.iter().filter(|r| r.span > 1 && !r.created).map(|r| (&r.dot, r.span)).collect();
-    let parent: HashMap<&Dot, Option<&Dot>> = p.iter().map(|r| (&r.dot, r.parent.as_ref())).collect();
-    let par = |d: &Dot| parent.get(d).copied().flatten();
-    let order = || p.iter().map(|r| &r.dot);
-    let roots: Vec<&Dot> = order().filter(|d| inr.contains(d) && !par(d).is_some_and(|x| inr.contains(x))).collect();
-    let outside: Vec<&Dot> = order().filter(|d| !inr.contains(d) && par(d).is_some_and(|x| inr.contains(x))).collect();
-    // the root whose moved subtree holds each element (preorder: parents come first)
-    let rootset: HashSet<&Dot> = roots.iter().copied().collect();
-    let outset: HashSet<&Dot> = outside.iter().copied().collect();
+/// The position writes moving the nodes `range` (placement positions) to `dest`, re-anchoring
+/// the nodes outside it that hang below it at `pred` (§5.7 move). A creation chain's first
+/// element carries its edge; the elements of a range without creation are each a root (bare
+/// anchors and flag-only elements sit on END one by one), so each gets a write, chained in
+/// order. The next root anchors at the last element of the previous root's moved subtree.
+fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
+    let rows: Vec<&Row> = p.iter_from(range.start).take(range.len()).collect();
+    let inr: HashSet<&Dot> = rows.iter().map(|r| &r.dot).collect();
+    let outside = p.hanging(range, &inr);
+    // the roots in order, and the last node of each root's moved subtree (preorder: parents
+    // come first)
+    let mut roots: Vec<&Row> = Vec::new();
     let mut root_of: HashMap<&Dot, &Dot> = HashMap::new();
-    let mut last: HashMap<&Dot, &Dot> = HashMap::new();
-    for d in order() {
-        let r = if outset.contains(d) || !inr.contains(d) && !rootset.contains(d) {
-            None
-        } else if rootset.contains(d) {
-            Some(d)
-        } else {
-            par(d).and_then(|x| root_of.get(x).copied())
+    let mut last: HashMap<&Dot, &Row> = HashMap::new();
+    for r in &rows {
+        let root = match r.parent.as_ref().filter(|x| inr.contains(x)) {
+            Some(x) => root_of.get(x).copied().unwrap_or(&r.dot),
+            None => {
+                roots.push(r);
+                &r.dot
+            }
         };
-        if let Some(r) = r {
-            root_of.insert(d, r);
-            last.insert(r, d);
-        }
+        root_of.insert(&r.dot, root);
+        last.insert(root, r);
     }
     let mut out = BTreeMap::new();
     for o in outside.iter().rev() {
@@ -151,13 +146,15 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
     }
     let mut anchor = dest;
     for r in roots {
-        out.insert(r.clone(), position(w, anchor));
-        for i in 1..loose.get(r).copied().unwrap_or(1) {
-            let a = Anchor::Dot(nth(r, i - 1));
-            out.insert(nth(r, i), position(w, a));
+        out.insert(r.dot.clone(), position(w, anchor));
+        if !r.created {
+            for i in 1..r.span {
+                let a = Anchor::Dot(nth(&r.dot, i - 1));
+                out.insert(nth(&r.dot, i), position(w, a));
+            }
         }
-        let l = last.get(r).copied().unwrap_or(r);
-        anchor = Anchor::Dot(nth(l, spans.get(l).copied().unwrap_or(1).saturating_sub(1)));
+        let l = last.get(&r.dot).copied().unwrap_or(r);
+        anchor = Anchor::Dot(nth(&l.dot, l.span - 1));
     }
     out
 }
@@ -208,14 +205,13 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
         Op::Move { at, len, to } => {
             let vis = visible(s);
             let p = &vis.0.p;
-            let range = dots_of(p, range_of(&vis.0, &vis, *at, *len)?);
+            let range = range_of(&vis.0, &vis, *at, *len)?;
             if range.is_empty() {
                 return Ok(None);
             }
-            let inr: HashSet<&Dot> = range.iter().collect();
-            let dest = anchor_outside(&vis, &inr, *to)?;
+            let dest = anchor_outside(&vis, range.clone(), *to)?;
             let pred = anchor_after(&vis, *at)?;
-            *out.elems_mut() = move_writes(w, p, &range, pred, dest);
+            *out.elems_mut() = move_writes(w, p, range, pred, dest);
             check_bare(&out)?;
         }
         Op::Paste { dots, at } => {
@@ -239,10 +235,9 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             if range.iter().any(|d| !clip.contains(d) && s.rec(d).is_some_and(|e| is_visible(e, text))) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
-            let inr: HashSet<&Dot> = range.iter().collect();
-            let dest = anchor_outside(&vis, &inr, *at)?;
+            let dest = anchor_outside(&vis, *i0..*i1 + 1, *at)?;
             let pred = pred_of(p, *i0);
-            *out.elems_mut() = move_writes(w, p, &range, pred, dest);
+            *out.elems_mut() = move_writes(w, p, *i0..*i1 + 1, pred, dest);
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {

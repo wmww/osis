@@ -425,7 +425,7 @@ proptest! {
 }
 
 /// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
-/// through `Batch`, joins of decoded deltas (insert, delete, older concurrent insert, move),
+/// through `Batch`, a move op, joins of decoded deltas (insert, delete, older concurrent insert, move),
 /// snapshot encode/decode.
 #[test]
 #[ignore = "tier 2"]
@@ -484,7 +484,9 @@ fn budget_big_text_spec_6() {
     a.state.join(older);
     let older_join = t.elapsed();
     // a move: the moved subtrees are re-placed
+    let t = Instant::now();
     let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
+    let move_op = t.elapsed();
     let d = wired(&d, &src, range, 1006);
     let t = Instant::now();
     a.state.join(d);
@@ -500,7 +502,7 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}", p.iter().count());
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}", p.iter().count());
     let _ = v;
 }
 
@@ -705,6 +707,41 @@ fn ops_match_model_spec_5_7() {
         let d = crate::ops::leaf(&mut w, Some(&st), &text_view(), &Op::Insert { at, items: vec![s("q")] }, true).unwrap().unwrap();
         assert_eq!(d, frag(&md));
     }
+}
+
+/// §5.7 move: on states from random concurrent histories (hidden anchors, outside subtrees,
+/// several roots, earlier moves) a move writes what the model's does, write for write.
+#[test]
+fn move_matches_model_over_histories_spec_5_7() {
+    let mut r = Rng(29);
+    let mut checked = 0;
+    for _ in 0..60 {
+        let commits = crate::testutil::history(&mut r, &[Ty::Text], 3, 6);
+        let mut ms = None;
+        for c in &commits {
+            mapply(&mut ms, c.delta.clone());
+        }
+        let Some(mut ms) = ms else { continue };
+        ms.prune(None);
+        let st = frag(&ms);
+        let n = read_str(&st).chars().count();
+        if n < 2 || !matches!(st, Fragment::Seq(_)) {
+            continue;
+        }
+        for _ in 0..4 {
+            let at = r.below(n - 1);
+            let len = 1 + r.below((n - at).min(4));
+            let to = r.below(n - len + 1);
+            let mut mw = MWriter::new(crdt_model::stamp::Source::node(9), 1 << 16, 1);
+            mw.next_commit(100 << 16);
+            let mut w = writer(&mw);
+            let md = mops::seq_move(&mut mw, &ms, at, len, to);
+            let d = crate::ops::leaf(&mut w, Some(&st), &text_view(), &Op::Move { at, len, to }, true).unwrap();
+            assert_eq!(d, md.as_ref().map(frag), "move {at} {len} {to}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 100, "checked {checked}");
 }
 
 /// §5.7 cut, paste: a paste of cut text moves the original elements back and undeletes them, so
@@ -947,6 +984,39 @@ fn cached_placement_follows_moves_spec_6_2() {
     }
     eprintln!("moves followed: {kept} of {moves}");
     assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
+}
+
+/// §6.1 sibling order (`seq_lin`): an older insert at HEAD below a newer HEAD child, two runs
+/// anchored at one element in one delta, and an older insert below a newer sibling whose
+/// subtree is thousands of rows all keep the cached placement, equal to a whole pass.
+#[test]
+fn cached_placement_follows_siblings_spec_6_1() {
+    let mut base = Replica::new(1);
+    base.commit(1, &[op(Op::Set(s("ab")))], &text_view());
+    let fork = |n: u8| Replica { state: base.state.clone(), src: node(n), lo: 1 };
+    let (mut old, mut new, mut d) = (fork(2), fork(3), fork(4));
+    let ins = |r: &mut Replica, t: u64, ops: &[(usize, &str)]| {
+        let ops: Vec<PathOp> = ops.iter().map(|(at, x)| op(Op::Insert { at: *at, items: vec![s(x)] })).collect();
+        r.commit(t, &ops, &text_view()).unwrap().0
+    };
+    let big = "y".repeat(5000);
+    let joins = [
+        // at HEAD: the older insert arrives after the newer one
+        ins(&mut old, 2, &[(0, "o")]),
+        ins(&mut new, 3, &[(0, "n")]),
+        // after 'a': a big newer subtree, then an older single char
+        ins(&mut old, 4, &[(2, "X")]),
+        ins(&mut new, 5, &[(2, &big)]),
+        // two runs at one element in one commit
+        ins(&mut new, 6, &[(1, "PQ"), (1, "RS")]),
+    ];
+    for k in [1, 0, 3, 2, 4] {
+        let _ = read_str(&d.state);
+        d.state.join(joins[k].clone());
+        crate::testutil::check_lin(&d.state);
+        assert!(matches!(&d.state, Fragment::Seq(q) if q.lin_check() == Some(true)), "join {k} followed");
+    }
+    assert_eq!(read_str(&d.state), format!("nRSPQoa{}Xb", "y".repeat(5000)));
 }
 
 /// §6.1 sibling order (`seq_lin`): a run anchored where a newer and an older run already hang

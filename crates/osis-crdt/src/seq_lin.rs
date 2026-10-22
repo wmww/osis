@@ -178,6 +178,7 @@ impl Placement {
     }
 
     /// Every node in order.
+    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Row> + '_ {
         self.order.iter().flat_map(|b| self.block(*b))
     }
@@ -243,6 +244,29 @@ impl Placement {
     /// Visible nodes in order.
     pub(crate) fn vis(&self) -> impl Iterator<Item = &Row> + '_ {
         self.order.iter().filter_map(|b| self.blocks.get(*b)).filter(|x| x.shown > 0).flat_map(|x| x.rows.iter().filter(|r| r.shown))
+    }
+
+    /// Visible nodes before position `i`.
+    pub(crate) fn rank(&self, i: usize) -> usize {
+        let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
+        let before: usize = self.order.get(..k).unwrap_or_default().iter().filter_map(|b| self.blocks.get(*b)).map(|x| x.shown).sum();
+        let here = self.order.get(k).map_or(0, |b| self.block(*b).iter().take(o).filter(|r| r.shown).count());
+        before + here
+    }
+
+    /// The nodes after rows `r` whose parent is one of them (`inr`), in order: the subtrees
+    /// hanging below a range from outside it (§5.7 move, `outside`), each skipped whole.
+    pub(crate) fn hanging(&self, r: Range<usize>, inr: &HashSet<&Dot>) -> Vec<Dot> {
+        let mut out = Vec::new();
+        let mut j = r.end;
+        while let Some((row, d)) = self.row_at(j) {
+            if !row.parent.as_ref().is_some_and(|x| inr.contains(x)) {
+                break;
+            }
+            out.push(row.dot.clone());
+            j = self.end_of(j, d);
+        }
+        out
     }
 
     /// The last visible node before position `i`.

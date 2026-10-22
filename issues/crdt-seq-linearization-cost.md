@@ -1,10 +1,11 @@
-# Moves and multi-edit commits on long texts still cost a whole pass or a copy
-> Summary: On a 100,000-character text, receiving typing, deletes and concurrent typing at one spot costs about 10-30 µs per edit, but a received move (cut and paste, drag) costs about 21 ms before the next read, and a local commit holding two or more edits of the text costs about 20 ms for the second edit (a copy of the text's state); both grow linearly with text size.
+# Some edits of long texts still cost a whole placement pass
+> Summary: On a 100,000-character text, typing, deletes, moves and multi-edit commits now cost tens of µs, but a write that splits a range record (common on a text bootstrapped from a snapshot), a reset, or a move of elements caught in an earlier move cycle still costs a whole pass (~23 ms at 10^5) before the next read.
 > Tags: performance, crdt
 
 Repro: `cargo test --release -p osis-crdt --lib -- --ignored budget_big_text_spec_6 --nocapture` prints the times (notes/crdt.md Timing; received deltas go through encode and decode).
 
 Remains:
-- Fallbacks to a whole pass (~23 ms at 10^5): moves (position writes on existing elements), resets, range-record splits (a write covering part of a state range record, e.g. on text bootstrapped from a snapshot), `Derived` dots, an older insert at HEAD below a newer HEAD child, two runs anchored at one existing node in one delta, an older insert whose newer siblings' subtrees span more than 4096 rows. Moves are the common one: re-placing the moved subtrees (remove their rows, re-insert at the new anchor, detect a cycle by walking the new anchor's parents) is not built.
-- `Batch`: the second op at a sequence position the batch already wrote copies that position's state joined with the batch (~12 ms to make, ~8 ms to drop at 10^5); later ops at the same position reuse the copy, but an op elsewhere drops it and the next one copies again. Avoiding the copy needs a layered view (state records under the batch's) that seq ops and the cache can read, or a `Batch` owning the state.
-- List `read` still looks up each visible element's record (text reads chars from the cache).
+- Fallbacks to a whole pass: range-record splits (a write covering part of a state range record; splitting a row would need, for a creation chain, the rest of its subtree one level deeper, which `Placement::reshift` already does), resets, `Derived` dots, a move of an element on a cycle a demotion broke (`Lin::cyc`) or one closing a cycle, more than 256 newer siblings at one anchor.
+- `Batch` still copies the position's state where its records do not line up with the state's (the same range splits) or a reset of the batch lies above the position.
+- List `read` looks up each visible element's record (text reads chars from the cache).
+- The placement cache's dot map folds its added entries into its base past √n; when the base is shared (a copied state, a batch's layered view) that fold copies all n entries.
