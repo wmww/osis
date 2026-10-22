@@ -65,21 +65,23 @@ pub(crate) struct Input {
     pub snaps: BTreeMap<CommitId, Arc<RosterSnapshot>>,
     /// Key actors and every author: who can hold a class.
     pub nodes: BTreeSet<Tid>,
-    /// Every member any held write or roster names, per target (edges at any time).
-    pub ever_members: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Every member any held write, roster or ledger gives admin, per target (edges at any
+    /// time): owner-chain authority comes only through admin edges.
+    pub ever_admins: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 impl Input {
-    /// Whether authority on some thing with a roster snapshot may come through that thing
-    /// itself (mutual membership): through its owners and the members of anything on the way,
-    /// transitively, at any time. Otherwise the epoch starts have a unique fixed point (`drive`).
+    /// Whether owner-chain authority on some thing with a roster snapshot may come through that
+    /// thing itself (mutual membership): through its owners and the members with an admin edge
+    /// of anything on the way, transitively, at any time. Otherwise the epoch starts have a
+    /// unique fixed point (`drive`).
     pub fn cyclic(&self) -> bool {
         let things: BTreeSet<Tid> = self.snaps.values().map(|s| s.thing).collect();
         things.iter().any(|t| {
             let mut seen = BTreeSet::new();
             let mut stack = vec![*t];
             while let Some(e) = stack.pop() {
-                let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_members.get(&e).into_iter().flatten().copied());
+                let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_admins.get(&e).into_iter().flatten().copied());
                 for y in up {
                     if y == *t {
                         return true;
@@ -130,16 +132,19 @@ impl Input {
             .flat_map(|c| c.ops.iter().map(|o| o.member))
             .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.member))));
         nodes.extend(members.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
-        let mut ever_members: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        // An invite of admin needs an admin edge, so admin edges carry all admin authority.
+        let mut ever_admins: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for c in commits.values() {
-            for o in &c.ops {
-                ever_members.entry(o.target).or_default().insert(o.member);
+            for o in c.ops.iter().filter(|o| o.edge.is_some_and(|e| e.role == Role::Admin)) {
+                ever_admins.entry(o.target).or_default().insert(o.member);
             }
         }
         for s in snaps.values() {
-            ever_members.entry(s.thing).or_default().extend(s.roster.keys().chain(s.ledger.iter().map(|t| &t.member)).copied());
+            let roster = s.roster.iter().filter(|(_, e)| e.role == Role::Admin).map(|(m, _)| *m);
+            let ledger = s.ledger.iter().filter(|t| t.role == Role::Admin).map(|t| t.member);
+            ever_admins.entry(s.thing).or_default().extend(roster.chain(ledger));
         }
-        Input { owners, commits, snaps, nodes, ever_members }
+        Input { owners, commits, snaps, nodes, ever_admins }
     }
 }
 
@@ -199,8 +204,8 @@ pub(crate) struct Outcome {
     pub walked: Walked,
     pub dropped: BTreeMap<WriteId, Point>,
     pub epoch_starts: BTreeMap<Tid, CommitId>,
+    /// Walks this evaluation (or continuation) made.
     pub passes: usize,
-    pub converged: bool,
     /// Whether the epoch starts ever changed.
     pub epoch_changed: bool,
     /// The furthest point a walk under the final starts other than the final walk reached
@@ -214,7 +219,6 @@ pub(crate) struct Resume {
     pub walked: Walked,
     pub dropped: BTreeMap<WriteId, Point>,
     pub epoch_starts: BTreeMap<Tid, CommitId>,
-    pub passes: usize,
     pub epoch_changed: bool,
     pub reach: Option<Point>,
     pub from: Point,
@@ -935,44 +939,45 @@ pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
     drive(input, Some(r))
 }
 
-/// Termination. A walk under fixed starts restarts only when D grew, and D only grows, so it
-/// settles within one walk per write. A round maps starts E to F(E), each thing's newest
-/// snapshot that applied in the settled walk under E. A snapshot of N applies by authority
-/// through what is above N (owners, members of anything on the way, at any time), and E acts
-/// on the walk only through each start's thing. So unless authority on N may come through N
-/// itself (`Input::cyclic`), F(E) on N depends only on E above N: the rounds settle from the
-/// top down, from any E, in at most one round per thing with snapshots plus one, at the
-/// unique fixed point (so `Timeline::extend` may go on from the old starts). Through mutual
-/// membership a start can withdraw its own author's authority (a fixed point need not
-/// exist): the starts then return to an assignment seen before without settling, and every
-/// snapshot that is a start in some but not all of the assignments since is never a start
-/// again. Each return bans at least one snapshot (the assignments differ, and all are free of
-/// bans), bans are never lifted, and between returns the finitely many assignments must
-/// repeat; so a start is not accepted and rejected forever. `cap` is a safety net.
+/// Epoch starts in rounds (spec/permissions.md §6). A walk under fixed starts restarts only
+/// when D grew, and D only grows, so a round settles within one walk per write. A round maps
+/// starts E to F(E): each thing's newest snapshot that applied in the settled walk under E,
+/// excluded ones aside. Every snapshot is judged at its position whatever its thing's own
+/// start is (one ordered before the start too), by authority through what is above its thing
+/// (owners, members with an admin edge of anything on the way, at any time), and E acts on
+/// the walk only through each start's own thing. So unless owner-chain authority on N may
+/// come through N itself (`Input::cyclic`), F(E) on N depends only on E above N: from any E
+/// the rounds settle from the top down, at the unique fixed point, by round T+1 (T things
+/// with snapshots, at most T levels). That is why `Timeline::extend` may go on from the old
+/// starts. Through mutual membership a start can withdraw its own author's authority, and
+/// the rounds need not settle: if round T+1 since the last restart has not settled, the
+/// snapshots that are a start in exactly one of its starts and the next are excluded (at
+/// least one: the two differ and neither holds an excluded snapshot) and the rounds restart
+/// from none. Exclusions are never lifted, so at most one restart per snapshot plus one, each
+/// of at most T+1 rounds: the evaluation terminates and no start is accepted and rejected
+/// forever.
 fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
-    let ns = input.snaps.len();
-    let writes = input.commits.values().map(|c| c.ops.len()).sum::<usize>() + ns;
-    let cap = (writes + 2).saturating_mul(ns.saturating_mul(ns + 2) + 1).saturating_mul(4);
-    let (mut epoch, mut passes, mut epoch_changed, mut reach, mut it, mut p, mut from);
+    let limit = input.snaps.values().map(|s| s.thing).collect::<BTreeSet<_>>().len() + 1;
+    let (mut epoch, mut epoch_changed, mut reach, mut it, mut p, mut from);
     match resume {
         None => {
             epoch = BTreeMap::new();
-            (passes, epoch_changed, reach) = (0, false, None);
+            (epoch_changed, reach) = (false, None);
             it = items(input, &epoch);
             p = Pass::new(input, epoch.clone(), BTreeMap::new(), it.initial.clone());
             from = 0;
         }
         Some(r) => {
-            (epoch, passes, epoch_changed, reach) = (r.epoch_starts, r.passes, r.epoch_changed, r.reach);
+            (epoch, epoch_changed, reach) = (r.epoch_starts, r.epoch_changed, r.reach);
             it = items(input, &epoch);
             from = it.list.partition_point(|x| x.0 < r.from);
             p = Pass::resume(input, epoch.clone(), r.dropped, r.walked);
         }
     }
-    // assignments since the last ban, and the bans
-    let mut seen: Vec<BTreeMap<Tid, CommitId>> = Vec::new();
-    let mut banned: BTreeSet<CommitId> = BTreeSet::new();
+    let (mut passes, mut round) = (0, 0);
+    let mut excluded: BTreeSet<CommitId> = BTreeSet::new();
     loop {
+        round += 1;
         // §5.1 step 5 under `epoch`
         loop {
             passes += 1;
@@ -984,22 +989,19 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
                 }
             }
         }
-        let mut next = p.choose(&banned);
-        if next != epoch
-            && let Some(cycle) = seen.iter().position(|e| *e == next).and_then(|i| seen.get(i..))
-        {
-            let cycle: Vec<&BTreeMap<Tid, CommitId>> = cycle.iter().chain([&epoch]).collect();
-            let some: BTreeSet<CommitId> = cycle.iter().flat_map(|e| e.values().copied()).collect();
-            banned.extend(some.into_iter().filter(|c| !cycle.iter().all(|e| e.values().any(|v| v == c))));
-            seen.clear();
-            next = p.choose(&banned);
-        }
-        let converged = next == epoch;
-        if converged || passes >= cap {
+        let next = p.choose(&excluded);
+        if next == epoch {
             let (walked, dropped) = p.finish();
-            return Outcome { walked, dropped, epoch_starts: epoch, passes, converged, epoch_changed, reach };
+            return Outcome { walked, dropped, epoch_starts: epoch, passes, epoch_changed, reach };
         }
-        seen.push(std::mem::replace(&mut epoch, next));
+        if round >= limit {
+            let (a, b): (BTreeSet<CommitId>, BTreeSet<CommitId>) = (epoch.values().copied().collect(), next.values().copied().collect());
+            excluded.extend(a.symmetric_difference(&b));
+            epoch = BTreeMap::new();
+            round = 0;
+        } else {
+            epoch = next;
+        }
         epoch_changed = true;
         it = items(input, &epoch);
         // D is rebuilt, so writes a new start ignores leave no drops behind

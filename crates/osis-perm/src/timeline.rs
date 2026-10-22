@@ -44,7 +44,6 @@ pub struct Timeline {
     dropped: BTreeMap<WriteId, Point>,
     epoch_starts: BTreeMap<Tid, CommitId>,
     passes: usize,
-    converged: bool,
     /// Inputs `extend` must find unchanged.
     nodes: BTreeSet<Tid>,
     epoch_changed: bool,
@@ -103,7 +102,6 @@ impl Timeline {
             dropped: out.dropped,
             epoch_starts: out.epoch_starts,
             passes: out.passes,
-            converged: out.converged,
             nodes: input.nodes,
             epoch_changed: out.epoch_changed,
             reach: out.reach,
@@ -119,14 +117,9 @@ impl Timeline {
     /// otherwise): evaluate. With no new commit the inputs may add only leaves (`/created` of
     /// things nothing held names, `Timelines`): the walk is kept as it is.
     pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
-        if !self.converged {
-            return None;
-        }
         let input = Input::gather(held);
-        // a new author or member could have changed how earlier writes were walked; after epoch
-        // changes, going on from the old starts finds the same ones only when they have a
-        // unique fixed point (walk::drive)
-        if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes || (self.epoch_changed && input.cyclic()) {
+        // a new author or member could have changed how earlier writes were walked
+        if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes {
             return None;
         }
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
@@ -134,23 +127,22 @@ impl Timeline {
         }
         let Some(from) = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min() else {
             let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
-            let out = walk::Outcome { walked, dropped, epoch_starts, passes, converged: true, epoch_changed, reach };
+            let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach };
             return Some(Timeline::from_outcome(input, out));
         };
-        if self.reach.is_some_and(|r| r >= from) {
+        // after epoch changes, going on from the old starts finds the same ones only when they
+        // have a unique fixed point (walk::drive)
+        if self.reach.is_some_and(|r| r >= from) || (self.epoch_changed && input.cyclic()) {
             return None;
         }
-        let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, passes, epoch_changed, reach, from });
+        let Timeline { walked, dropped, epoch_starts, epoch_changed, reach, .. } = self;
+        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from });
         Some(Timeline::from_outcome(input, out))
     }
-    /// Walks evaluated (1 when nothing was dropped and no epoch start applied).
+    /// Walks the last evaluation or `extend` made (1 when nothing was dropped and no epoch
+    /// start applied).
     pub fn passes(&self) -> usize {
         self.passes
-    }
-    /// False only if the pass bound was hit (never observed; the result is then the last walk).
-    pub fn converged(&self) -> bool {
-        self.converged
     }
     pub fn owners(&self) -> &Owners {
         &self.owners

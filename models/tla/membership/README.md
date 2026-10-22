@@ -37,4 +37,4 @@ TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 node
 Probes (`Probe*`, run by hand) confirm that drops, layer-2 demotions, invalid content, ledger entries with frontiers, audit-only entries (`MC_until`), applied snapshots whose ledger drops a write on B (`MC_snapA`) and kept standings (`MC_group`) all occur. Not reached: several drops in one walk outside `MC_sticky` (so `DropOrderFree` only bites there).
 
 ## Not covered
-Invites and invite grants, links, read-level tenures, a second snapshot (carried-forward ledger), more than two things or longer owner chains (the depth cap is checked at 1), frontiers by counter range, pending commits, certificates and projections.
+Invites and invite grants, links, read-level tenures, a second snapshot (carried-forward ledger), epoch-start rounds and exclusions (spec §6: `WithSnap` makes one snapshot the start and judges it in its own settled walk), more than two things or longer owner chains (the depth cap is checked at 1), frontiers by counter range, pending commits, certificates and projections.

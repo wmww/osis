@@ -87,7 +87,8 @@ fn probes(w: &mut World, nodes: &[Tid], rng: &mut Rng) -> Vec<Point> {
 }
 
 fn run_joint(samples: u64, seed: u64) {
-    let mut rng = Rng(seeded(seed));
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
         let mut w = World::new();
@@ -123,7 +124,7 @@ fn run_joint(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for x in 0..actors.len() {
             if let Some(d) = neutral(&w, actors[x], top[x], &actors, &ps) {
-                panic!("sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
             }
         }
     }
@@ -144,7 +145,8 @@ fn joint_resnapshot_neutral_large() {
 }
 
 fn run_edges(samples: u64, seed: u64) {
-    let mut rng = Rng(seeded(seed));
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
         let mut w = World::new();
@@ -180,7 +182,7 @@ fn run_edges(samples: u64, seed: u64) {
         }
         let ps = probes(&mut w, &nodes, &mut rng);
         if let Some(d) = neutral(&w, t, nodes[0], &[t], &ps) {
-            panic!("sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
         }
     }
     eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
@@ -199,7 +201,8 @@ fn edges_resnapshot_neutral_large() {
 }
 
 fn run_snapshot(samples: u64, seed: u64) {
-    let mut rng = Rng(seeded(seed));
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
     for s in 0..samples {
         let mut h = snapshot::random_hist(&mut rng);
         // Only ledgers perm produced are well formed; drop the model's random ones and its
@@ -245,7 +248,7 @@ fn run_snapshot(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for thing in [p, g] {
             if let Some(d) = neutral(&w, thing, k, &[p, g], &ps) {
-                panic!("sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
             }
         }
     }
@@ -402,12 +405,13 @@ fn start_after_dropped_write_spec_permissions_6() {
 }
 
 /// §6 epoch start through mutual membership: B (owned by A) is an admin of A, so n2, admin
-/// of B, has owner-chain authority on B through B itself. Its snapshot of B leaving n2 out
-/// applies only while it is not B's start, so the rounds return to no start and the
-/// snapshot is excluded; one keeping n2 is the start.
+/// of B, has owner-chain authority on B through B itself. Its snapshot of B at 5 leaving n2
+/// out applies only while it is not B's start, so the rounds do not settle and it is
+/// excluded: with no other snapshot B has no start; with an older one keeping n2 (at 3), that
+/// one is the start. A snapshot keeping n2 is the start at once.
 #[test]
 fn self_withdrawing_start_excluded_spec_permissions_6() {
-    for keep in [false, true] {
+    for (newest_keeps, older) in [(false, false), (false, true), (true, false)] {
         let mut w = World::new();
         let n = w.nodes(3);
         let (k, n2, n3) = (n[0], n[1], n[2]);
@@ -416,16 +420,13 @@ fn self_withdrawing_start_excluded_spec_permissions_6() {
         let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
         w.set(k, a, b, edge(Admin), 0, &all);
         w.set(k, b, n2, edge(Admin), 0, &all);
-        let mut roster = vec![(n3, Edge::new(Write))];
-        if keep {
-            roster.push((n2, Edge::new(Admin)));
-        }
-        let s = w.snapshot(n2, b, &roster, 5, &all);
+        let keeping = [(n3, Edge::new(Write)), (n2, Edge::new(Admin))];
+        let s0 = older.then(|| w.snapshot(n2, b, &keeping, 3, &all));
+        let s1 = w.snapshot(n2, b, if newest_keeps { &keeping } else { &keeping[..1] }, 5, &all);
         let tl = Timeline::evaluate(&w.held());
-        assert!(tl.converged());
-        assert_eq!(tl.epoch_start(&b), keep.then_some(s), "keep n2: {keep}");
-        // one walk per round: none, S, then none again (S excluded) or settled
-        assert_eq!(tl.passes(), if keep { 2 } else { 3 });
+        let want = if newest_keeps { Some(s1) } else { s0 };
+        assert_eq!(tl.epoch_start(&b), want, "newest keeps n2: {newest_keeps}, older: {older}");
+        assert_eq!(tl.role(&n2, &b, At::END), Some(Admin));
     }
 }
 

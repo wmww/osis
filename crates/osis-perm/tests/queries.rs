@@ -43,7 +43,8 @@ fn certificates_carry_demotions() {
 /// certificates plus the write give the write the timeline's outcome (applied, dropped) and
 /// the author its standing at the write.
 fn cert_run_joint(samples: u64, seed: u64) {
-    let mut rng = Rng(seeded(seed));
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
         let mut w = World::new();
@@ -77,7 +78,7 @@ fn cert_run_joint(samples: u64, seed: u64) {
             w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), e)], &recv);
         }
         if let Some(d) = cert_check(&w) {
-            panic!("sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
         }
     }
 }
@@ -119,7 +120,8 @@ fn certificates_project_joint_large() {
 }
 
 fn cert_run_edges(samples: u64, seed: u64) {
-    let mut rng = Rng(seeded(seed));
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
         let mut w = World::new();
@@ -154,7 +156,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
             w.commit_id(cid(ew.id), nodes[ew.author], ew.t as u64, &ops, &recv);
         }
         if let Some(d) = cert_check(&w) {
-            panic!("sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
         }
     }
 }
