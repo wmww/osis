@@ -122,7 +122,7 @@ fn p_resnapshot_keeps_former_device_records() {
     let tl = Timeline::evaluate(&w.held());
     assert_eq!((valid(&tl, seen, g, Admin), valid(&tl, unseen, g, Admin)), (true, false));
     let mut with = w.clone();
-    with.snapshot_l(k, p, &[(d2, Edge::new(Admin))], &[(d1, Admin, None, (5, d2), true)], 7, &[]);
+    with.snapshot_l(k, p, &[(d2, Edge::new(Admin))], &[(d1, Admin, None, (5, d2, None), true)], 7, &[]);
     let compacted = with.held_without(&[g1, g2, rm].into_iter().collect());
     for held in [with.held(), compacted] {
         let tl = Timeline::evaluate(&held);

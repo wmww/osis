@@ -15,7 +15,7 @@ fn epoch(n: u64) -> Epoch {
     Epoch { n, nonce: [8; 16] }
 }
 fn edge_key() -> EdgeKey {
-    EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6) }
+    EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6), commit: osis_core::CommitId([7; 32]) }
 }
 
 /// (vector name, AK, encoded sample) per core aspect a commit can write.

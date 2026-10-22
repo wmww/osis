@@ -6,22 +6,8 @@ use osis_core::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// (`ts`, author node) of a write: `edge_key` (spec/data-model.md §9).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct EdgeKey {
-    pub ts: Ts,
-    pub node: Tid,
-}
-
-impl EdgeKey {
-    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §6): the zero
-    /// tid orders it before every write at that `ts`.
-    pub fn expiry(ts: Ts) -> EdgeKey {
-        EdgeKey { ts, node: Tid::from_bytes([0; 15]) }
-    }
-}
-
-/// Position in the joint order (spec/permissions.md §5.1 step 1): (`ts`, author node, commit ID).
+/// Position in the joint order (spec/permissions.md §5.1 step 1): (`ts`, author node, commit
+/// ID). Also the key of a write in rosters and ledgers: `edge_key` (spec/data-model.md §9).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Point {
     pub ts: Ts,
@@ -30,12 +16,10 @@ pub struct Point {
 }
 
 impl Point {
-    pub fn key(&self) -> EdgeKey {
-        EdgeKey { ts: self.ts, node: self.node }
-    }
-    /// The first position with this edge key: where perm places a ledger event keyed by it.
-    pub fn first_at(key: EdgeKey) -> Point {
-        Point { ts: key.ts, node: key.node, commit: CommitId([0; 32]) }
+    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §6): the zero
+    /// tid and commit ID order it before every write at that `ts`.
+    pub fn expiry(ts: Ts) -> Point {
+        Point { ts, node: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]) }
     }
 }
 
@@ -47,7 +31,7 @@ pub struct Edge {
     pub until: Option<WallMs>,
     pub invite: Option<Role>,
     /// Roster snapshots only: key of the write that established a write+ edge.
-    pub since: Option<EdgeKey>,
+    pub since: Option<Point>,
 }
 
 impl Edge {
@@ -158,8 +142,8 @@ impl MembershipCommit {
 pub struct Tenure {
     pub member: Tid,
     pub role: Role,
-    pub since: Option<EdgeKey>,
-    pub until: EdgeKey,
+    pub since: Option<Point>,
+    pub until: Point,
     pub frontier: Option<Arc<Frontier>>,
 }
 

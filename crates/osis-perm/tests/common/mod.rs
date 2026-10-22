@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
-use osis_perm::{Dots, Edge, EdgeKey, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
+use osis_perm::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -58,8 +58,10 @@ pub struct CSpec {
     pub recv: BTreeMap<Tid, u64>,
 }
 
+/// A ledger key (t, node, commit ID); `None`: the commit of that node at t (`World::key`).
+pub type KeySpec = (u64, Tid, Option<CommitId>);
 /// A ledger entry: (member, role, since, until, audited).
-pub type LedgerSpec = (Tid, Role, Option<(u64, Tid)>, (u64, Tid), bool);
+pub type LedgerSpec = (Tid, Role, Option<KeySpec>, KeySpec, bool);
 
 #[derive(Clone, Debug)]
 pub struct SSpec {
@@ -153,6 +155,20 @@ impl World {
         recv: &[(Tid, u64)],
     ) -> CommitId {
         let id = self.fresh_id();
+        self.snapshot_id(id, author, thing, roster, ledger, t, recv)
+    }
+    /// A roster snapshot with a chosen ID.
+    #[allow(clippy::too_many_arguments)]
+    pub fn snapshot_id(
+        &mut self,
+        id: CommitId,
+        author: Tid,
+        thing: Tid,
+        roster: &[(Tid, Edge)],
+        ledger: &[LedgerSpec],
+        t: u64,
+        recv: &[(Tid, u64)],
+    ) -> CommitId {
         let mut r: BTreeMap<Tid, u64> = recv.iter().copied().collect();
         r.insert(author, t);
         self.snaps.push(SSpec { id, author, t, thing, roster: roster.iter().copied().collect(), ledger: ledger.to_vec(), recv: r });
@@ -168,11 +184,16 @@ impl World {
 
     /// Without `thing`'s edge writes and roster snapshots other than `keep` (a node that
     /// compacted `thing` at `keep`).
+    /// A commit that also writes other things keeps those writes.
     pub fn compacted(&self, thing: Tid, keep: CommitId) -> MemoryHeldSet {
-        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().any(|o| o.0 == thing)).map(|c| c.id).collect();
+        let mut w = self.clone();
+        for c in &mut w.commits {
+            c.ops.retain(|o| o.0 != thing);
+        }
+        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().all(|o| o.0 == thing) && !c.ops.is_empty()).map(|c| c.id).collect();
         skip.extend(self.snaps.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
         skip.extend(self.raw.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
-        self.held_without(&skip)
+        w.held_without(&skip)
     }
 
     fn recv_of(&self, id: &CommitId) -> Option<&BTreeMap<Tid, u64>> {
@@ -188,6 +209,14 @@ impl World {
             }
         }
         f
+    }
+
+    /// A ledger key; without a commit ID, that of `node`'s commit at `t` (the first by ID;
+    /// the zero commit ID if none).
+    pub fn key(&self, (t, node, commit): KeySpec) -> osis_perm::Point {
+        let ids = self.commits.iter().map(|c| (c.id, c.author, c.t)).chain(self.snaps.iter().map(|s| (s.id, s.author, s.t)));
+        let found = || ids.filter(|&(_, a, ct)| a == node && ct == t).map(|x| x.0).min().unwrap_or(CommitId([0; 32]));
+        osis_perm::Point { ts: ts(t), node, commit: commit.unwrap_or_else(found) }
     }
 
     /// The held set, every commit carrying the frontier its receipts imply.
@@ -220,8 +249,8 @@ impl World {
                 .map(|&(member, role, since, until, audited)| Tenure {
                     member,
                     role,
-                    since: since.map(|(t, node)| EdgeKey { ts: ts(t), node }),
-                    until: EdgeKey { ts: ts(until.0), node: until.1 },
+                    since: since.map(|k| self.key(k)),
+                    until: self.key(until),
                     frontier: audited.then(|| Arc::new(self.frontier(until.1, until.0))),
                 })
                 .collect();
@@ -238,6 +267,21 @@ impl World {
 pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
     let dropped: BTreeSet<CommitId> = tl.dropped().keys().map(WriteId::commit).collect();
     tl.dropped().values().any(|p| dropped.contains(&p.commit))
+}
+
+/// Rejection residue (issues/epoch-start-rejection-residue.md): an epoch start rejected for a
+/// write that was dropped later stays rejected, so the epoch starts differ from those of the
+/// held set without the dropped writes; a roster snapshot of `above` (the thing or one above
+/// each differing start) can repair it.
+pub fn rejection_residue(w: &World, tl: &osis_perm::Timeline, above: &Tid) -> bool {
+    let d = dropped_commits(tl);
+    if d.is_empty() {
+        return false;
+    }
+    let fixed = osis_perm::Timeline::evaluate(&w.held_without(&d));
+    let (a, b) = (tl.epoch_starts(), fixed.epoch_starts());
+    let differ: BTreeSet<Tid> = a.keys().chain(b.keys()).filter(|t| a.get(t) != b.get(t)).copied().collect();
+    !differ.is_empty() && differ.iter().all(|t| t == above || tl.owners().chain(t).0.contains(above))
 }
 
 pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {
@@ -347,7 +391,9 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
             }
         }
     }
-    let key = |k: (u32, usize)| (k.0 as u64, nodes[k.1]);
+    // the model's write id stands for the commit ID (0: no write)
+    let mid = |id: usize| if id == 0 { CommitId([0; 32]) } else { cid(id as u32) };
+    let key = |k: (u32, usize, usize)| (k.0 as u64, nodes[k.1], Some(mid(k.2)));
     let mut ids = Vec::new();
     for (i, sw) in h.writes.iter().enumerate() {
         let thing = if sw.thing == Thing::P { p } else { g };
@@ -359,7 +405,7 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
         let author = nodes[sw.author];
         let id = match &sw.snap {
             None => {
-                let id = cid(i as u32 + 1);
+                let id = mid(sw.id);
                 w.commit_id(id, author, sw.t as u64, &[(thing, nodes[sw.target], model_role(sw.role).map(Edge::new))], &recv);
                 id
             }
@@ -368,15 +414,12 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
                 for (x, &rl) in roster.iter().enumerate().skip(1) {
                     if let Some(rl) = model_role(rl) {
                         let open = sw.ledger.iter().find(|e| e.member == x && e.until.is_none());
-                        let since = open.and_then(|e| e.since).map(|k| {
-                            let (t, n) = key(k);
-                            osis_perm::EdgeKey { ts: ts(t), node: n }
-                        });
+                        let since = open.and_then(|e| e.since).map(|k| w.key(key(k)));
                         r.push((nodes[x], Edge { since: if rl == Role::Admin { since } else { None }, ..Edge::new(rl) }));
                     }
                 }
                 let ledger: Vec<_> = sw.ledger.iter().filter_map(|e| e.until.map(|u| (nodes[e.member], Role::Admin, e.since.map(key), key(u), true))).collect();
-                w.snapshot_l(author, thing, &r, &ledger, sw.t as u64, &recv)
+                w.snapshot_id(mid(sw.id), author, thing, &r, &ledger, sw.t as u64, &recv)
             }
         };
         ids.push(Some(id));

@@ -44,7 +44,7 @@ fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(|k| ct::EdgeKey { ts: k.ts, node: k.node }) }.to_value()
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit }) }.to_value()
 }
 
 impl Core {

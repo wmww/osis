@@ -19,3 +19,6 @@ Entry form: `## FC-<n>: <title>`, then the files changed (paths as in MANIFEST) 
 - sign/signatures.vec: new signature domains `"osis v1 lan announce"` (a LAN transport key bound to the dialable key, spec/sync.md §10) and `"osis v1 member open"` (open proof 3, a member node's dialable key, spec/sync.md §5, spec/wire.md §11.2); two cases added, the others unchanged.
 - kdf/purposes.vec: a new kdf purpose `"lan sig"` (the keystream sealing the announcement's signature under the lan secret, window and digest, spec/sync.md §10); one case added.
 - proto/messages.vec: a new Open case with proof 3 (`[3, dialable_pk, sig]`, a member node's dialable key, spec/wire.md §11.2); the others unchanged.
+
+## FC-6: commit ID in edge keys
+- schema/core.vec: the core type `edge_key` (roster `since`, tenure `since` and `until`) gains field `2 commit: blob`, the 32-byte commit ID of the write (spec/data-model.md §9, spec/permissions.md §6), so two commits of one node at one ts (one key used from two devices) are distinct ledger keys; the core schema value and hash and the `/members` and `/tenures` samples change.

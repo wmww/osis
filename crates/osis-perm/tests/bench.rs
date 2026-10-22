@@ -98,11 +98,22 @@ fn bench_10k_edges() {
             let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
         }
         let rejudge = t7.elapsed();
+        // what a demotion's frontier lists (§5.1): an admin's chain certificates on a doc, at
+        // the end and at the middle
+        let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
+        let t8 = Instant::now();
+        let certs = tl.certificates(&nodes[1], &doc, end);
+        let cert = t8.elapsed();
+        let t9 = Instant::now();
+        let _ = tl.certificates(&nodes[2], &doc, mid);
+        let cert_mid = t9.elapsed();
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
             tl.passes(),
             tl.dropped().len(),
-            deltas.len()
+            deltas.len(),
+            certs.commits.len(),
+            certs.snapshots.len()
         );
     }
 }

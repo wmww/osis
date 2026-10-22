@@ -71,6 +71,8 @@ pub(crate) struct Memo {
     pub valid: Mutex<Valid>,
     /// `roles_of` at `At::END`, per node.
     pub roles_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
+    /// Held records by the edges and things they write, for certificates.
+    pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
 }
 
 fn checkpoints(w: &walk::Walked) -> Vec<Edges> {

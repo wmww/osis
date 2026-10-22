@@ -22,7 +22,7 @@ fn edge_key() -> EdgeKey {
         Some(t) => t,
         None => unreachable!("fixed input in range"),
     };
-    EdgeKey { ts, node: tid(6) }
+    EdgeKey { ts, node: tid(6), commit: CommitId([7; 32]) }
 }
 
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
