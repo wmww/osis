@@ -298,9 +298,16 @@ impl Core {
         self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
     }
 
-    /// Forgets the cached liveness of the bodies of `(tid, ak)` (its state changed).
+    /// Forgets the cached liveness of every body with a delta on `(tid, ak)` (its state
+    /// changed): a body's liveness spans every aspect of its class, whichever one was asked.
     pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
-        self.live_bodies.retain(|(_, t, a), _| t != tid || a != ak);
+        let commits = &self.commits;
+        self.live_bodies.retain(|(c, t, a), _| {
+            if t == tid && a == ak {
+                return false;
+            }
+            !commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|x| x.tid == *tid && x.ak == *ak))
+        });
     }
 
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).

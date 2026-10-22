@@ -426,3 +426,28 @@ fn move_over_max_delta_bare_fails_spec_perm_7() {
     assert!(err.to_string().contains("MAX_DELTA_BARE"), "{err}");
     assert_eq!(e.commit_ids().len(), before, "nothing written");
 }
+
+// spec/commits.md §5 (a body's live writes span every aspect of its class): a body on two
+// aspects asked by one of them, then changed through the other, is judged afresh whichever
+// aspect is asked (liveness is not cached per asked aspect alone: a stale answer gave a timed
+// delete with no carrier, or a carrier for nothing).
+#[test]
+fn body_live_spans_its_class_spec_commits_5() {
+    let mut lp = net(1, 84);
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &SHORT, &s("a")).unwrap();
+    m.set(t, &SHORT2, &s("a2")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    set(&mut lp, 0, t, &SHORT, "b");
+    let (a1, a2) = (ak("/t/short"), ak("/t/short2"));
+    let e = &mut lp.peers[0].engine;
+    assert!(e.body_live(&c, &t, &a1).unwrap(), "its /t/short2 write is live");
+    lp.advance(10);
+    set(&mut lp, 0, t, &SHORT2, "b2");
+    let e = &mut lp.peers[0].engine;
+    assert!(e.holds_body(&c, &t, &a1), "dead, kept to first death plus 10 min");
+    assert!(!e.body_live(&c, &t, &a2).unwrap());
+    assert!(!e.body_live(&c, &t, &a1).unwrap(), "asked by the other aspect of the body");
+}

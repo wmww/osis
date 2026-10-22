@@ -487,9 +487,10 @@ impl Engine {
         Ok(n)
     }
 
-    /// The bodies the due keep-at-most timers will drop with a live write, as (commit, thing,
-    /// aspect): a node that may write the aspect snapshots them first (spec/commits.md §5).
-    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<(CommitId, Tid, Ak)>> {
+    /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
+    /// aspect of the body): a node that may write them snapshots them first (spec/commits.md
+    /// §5).
+    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<(CommitId, Vec<(Tid, Ak)>)>> {
         let due = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
@@ -500,12 +501,20 @@ impl Engine {
                 }
                 Ok(())
             })?;
-            Ok(due.into_iter().filter_map(|(c, ai)| tx.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).map(|a| (c, a.tid, a.ak.clone()))).collect::<Vec<_>>())
+            let mut out = Vec::new();
+            for (c, ai) in due {
+                let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
+                let (_, members) = body_class(tx.core, &h, &c, ai);
+                let aspects: Vec<(Tid, Ak)> = members.iter().filter_map(|x| h.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect();
+                out.push((c, aspects));
+            }
+            Ok(out)
         })?;
         let mut out = Vec::new();
-        for (c, t, a) in due {
+        for (c, aspects) in due {
+            let Some((t, a)) = aspects.first().cloned() else { continue };
             if self.holds_body(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
-                out.push((c, t, a));
+                out.push((c, aspects));
             }
         }
         Ok(out)
