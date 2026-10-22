@@ -1,6 +1,6 @@
 //! The cached placement of a sequence (spec/crdt.md §6): built by one whole pass
-//! (`linearize::place_idx`), then followed through joins that add elements or change flags and
-//! content; any other change drops it and the next use rebuilds it.
+//! (`linearize::place_idx`), then followed through joins that add elements, move them or change
+//! flags and content; any other change drops it and the next use rebuilds it.
 //!
 //! Rows sit in blocks of a few hundred with their visible counts, so finding a row by dot (a map
 //! to its block, built on first use), by position or by visible index, and splicing a run in,
@@ -13,10 +13,25 @@
 //! past the anchor's children whose edge stamps beat its own, with their subtrees. It closes no
 //! cycle (nothing anchors at it unless a write waits for its dot, which falls back), so no
 //! demotion changes. A single element whose chosen edge changes (a move) has its subtree cut out
-//! and put in the same way at its new anchor; a cycle (the anchor inside the subtree) and an
-//! element on a cycle broken before fall back, so the demotions stay those of a whole pass. A
-//! flag or content write moves nothing; only visibility changes. Everything else (resets, range
-//! splits, `Derived` dots) falls back to a whole pass.
+//! and put in the same way at its new anchor, in write-stamp order. A flag or content write
+//! moves nothing; only visibility changes.
+//!
+//! Whole-pass fallbacks (the cache is dropped):
+//! - a record that is not new or held whole: a reset, a range split (a write covering part of a
+//!   range record), a `Derived` dot, a new record of more than one element or not a plain
+//!   creation, a new element anchored at a `Derived` dot or inside a range record, position
+//!   writes on a range record (`plan`, `plan_one`, `plan_cover`);
+//! - a new element some write was waiting for, one anchored at a new element other than the end
+//!   of a run (`follow`);
+//! - more new runs and moves in one delta than max(√n, 64), or their placements costing more
+//!   than about a whole pass (max(n, 1024) rows and blocks looked at; `follow`, `slot`);
+//! - a move of an element on a cycle a demotion broke (`Lin::cyc`; otherwise the old demotions
+//!   stay forced, §6.2), a `Derived` element, or one gaining or losing a write that names an
+//!   unknown, `Derived` or range-record element (the nodes would split differently) (`moved`);
+//! - a move of an element or to an anchor that is not placed, or one closing a cycle (the anchor
+//!   inside the subtree, checked per step) (`place_moved`);
+//! - 256 or more newer siblings at the anchor (`slot`), or a sibling there whose old write fell
+//!   out of its top two (a move in the same delta; `child_stamp`).
 
 use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, SeqContent, SeqElem, is_visible};
@@ -29,8 +44,10 @@ use std::sync::{Arc, OnceLock};
 /// Rows per block: about √n (at most this), growing with the placement; a block splits in two
 /// above twice that.
 const BLOCK: usize = 256;
+/// Work units (rows or blocks looked at) charged per sibling skipped by `slot`.
+const STEP: usize = 8;
 /// Newer siblings (with their subtrees) skipped past an anchor to place a run or a moved
-/// subtree; more rebuild.
+/// subtree; this many or more rebuild.
 const SIBS: usize = 256;
 
 /// One placed node.
@@ -215,13 +232,6 @@ impl Placement {
         (b, 0)
     }
 
-    /// The row at position `i` and its depth.
-    fn row_at(&self, i: usize) -> Option<(&Row, i64)> {
-        let (k, o) = self.locate(i)?;
-        let b = *self.order.get(k)?;
-        self.block(b).get(o).map(|r| (r, r.depth + self.shift_of(b)))
-    }
-
     /// The nodes from position `i` on.
     pub(crate) fn iter_from(&self, i: usize) -> impl Iterator<Item = &Row> + '_ {
         let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
@@ -258,13 +268,13 @@ impl Placement {
     /// hanging below a range from outside it (§5.7 move, `outside`), each skipped whole.
     pub(crate) fn hanging(&self, r: Range<usize>, inr: &HashSet<&Dot>) -> Vec<Dot> {
         let mut out = Vec::new();
-        let mut j = r.end;
-        while let Some((row, d)) = self.row_at(j) {
+        let mut c = self.norm(self.cursor(r.end));
+        while let Some((row, d)) = self.row_c(c) {
             if !row.parent.as_ref().is_some_and(|x| inr.contains(x)) {
                 break;
             }
             out.push(row.dot.clone());
-            j = self.end_of(j, d);
+            c = self.past(c, d, &mut 0);
         }
         out
     }
@@ -287,19 +297,51 @@ impl Placement {
     /// The first position after `i` whose depth is at most `d` (with `d` the depth at `i`: the
     /// end of its subtree), or the end. Skips blocks whose rows are all deeper.
     fn end_of(&self, i: usize, d: i64) -> usize {
-        let Some((k, o)) = self.locate(i) else { return self.len };
-        let mut at = i - o;
-        for (j, b) in self.order.iter().enumerate().skip(k) {
+        self.past(self.cursor(i), d, &mut 0).at
+    }
+
+    /// The cursor at position `i` (past the last row at the end).
+    fn cursor(&self, i: usize) -> Cursor {
+        let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
+        Cursor { k, o, at: i.min(self.len) }
+    }
+
+    /// `c`, moved off the end of its block.
+    fn norm(&self, mut c: Cursor) -> Cursor {
+        while let Some(b) = self.order.get(c.k)
+            && c.o >= self.block(*b).len()
+        {
+            c.k += 1;
+            c.o = 0;
+        }
+        c
+    }
+
+    /// The row at `c` (normalized) and its depth.
+    fn row_c(&self, c: Cursor) -> Option<(&Row, i64)> {
+        let b = *self.order.get(c.k)?;
+        self.block(b).get(c.o).map(|r| (r, r.depth + self.shift_of(b)))
+    }
+
+    /// From the row at `c` (normalized), the first later row whose depth is at most `d`, or the
+    /// end; blocks whose rows are all deeper are skipped. Adds the blocks and rows looked at to
+    /// `work`.
+    fn past(&self, c: Cursor, d: i64, work: &mut usize) -> Cursor {
+        let mut at = c.at - c.o;
+        for (j, b) in self.order.iter().enumerate().skip(c.k) {
             let (Some(x), s) = (self.blocks.get(*b), self.shift_of(*b)) else { continue };
-            if j == k || x.min.saturating_add(s) <= d {
-                let from = if j == k { o + 1 } else { 0 };
-                if let Some(q) = x.rows.iter().skip(from).position(|r| r.depth + s <= d) {
-                    return at + from + q;
+            *work += 1;
+            if j == c.k || x.min.saturating_add(s) <= d {
+                let from = if j == c.k { c.o + 1 } else { 0 };
+                let found = x.rows.iter().skip(from).position(|r| r.depth + s <= d);
+                *work += found.map_or(x.rows.len().saturating_sub(from), |q| q + 1);
+                if let Some(q) = found {
+                    return self.norm(Cursor { k: j, o: from + q, at: at + from + q });
                 }
             }
             at += x.rows.len();
         }
-        self.len
+        Cursor { k: self.order.len(), o: 0, at: self.len }
     }
 
     /// A new arena block.
@@ -380,13 +422,13 @@ impl Placement {
         let y = if q < x.start { q..x.start } else { x.end..q };
         if n <= y.len() && n <= self.cap {
             let q = if q > x.end { q - n } else { q };
-            let rows: Vec<Row> = self.take(x).into_iter().map(|r| Row { depth: r.depth + dd, ..r }).collect();
+            let rows: Vec<Row> = self.take(x, at.as_deref_mut()).into_iter().map(|r| Row { depth: r.depth + dd, ..r }).collect();
             let (b, o) = self.at_pos(q);
             self.insert(b, o, rows, at);
         } else if y.len() <= self.cap {
             self.reshift(x.clone(), dd);
             let to = if q < x.start { x.end - y.len() } else { x.start };
-            let rows = self.take(y);
+            let rows = self.take(y, at.as_deref_mut());
             let (b, o) = self.at_pos(to);
             self.insert(b, o, rows, at);
         } else {
@@ -426,8 +468,9 @@ impl Placement {
     }
 
     /// Takes the rows `x` out (depths unshifted); the dot map keeps naming their old blocks
-    /// until they are put back.
-    fn take(&mut self, x: Range<usize>) -> Vec<Row> {
+    /// until they are put back. A block left below half the block size merges with a
+    /// neighbour where both fit in one.
+    fn take(&mut self, x: Range<usize>, mut at: Option<&mut DotMap>) -> Vec<Row> {
         let mut out = Vec::with_capacity(x.len());
         while out.len() < x.len() {
             let Some((k, o)) = self.locate(x.start) else { break };
@@ -441,9 +484,18 @@ impl Placement {
             blk.recount();
             self.shown -= before - blk.shown;
             self.len -= end - o;
-            if blk.rows.is_empty() {
+            let left = blk.rows.len();
+            if left == 0 {
                 self.order.remove(k);
                 self.free.push(b);
+            } else if left < self.cap / 2 {
+                let n = self.order.len();
+                if k > 0 {
+                    self.merge(k - 1, at.as_deref_mut());
+                }
+                if self.order.len() == n {
+                    self.merge(k, at.as_deref_mut());
+                }
             }
         }
         out
@@ -488,7 +540,8 @@ impl Placement {
         }
     }
 
-    /// Splices `rows` in before offset `o` of block `b`, splitting it when it grows too big;
+    /// Splices `rows` in before offset `o` of block `b`, splitting it when it grows past twice the
+    /// block size;
     /// `at` (dot to block) follows. Row depths are absolute.
     fn insert(&mut self, b: usize, o: usize, rows: Vec<Row>, at: Option<&mut DotMap>) {
         let n = rows.len();
@@ -511,17 +564,33 @@ impl Placement {
         if x.rows.len() <= 2 * self.cap {
             return;
         }
-        let tail = x.rows.split_off(x.rows.len() / 2);
-        x.recount();
-        let id = self.alloc(Block::new(tail), s);
-        if let Some(m) = at {
-            for r in self.block(id) {
-                m.set(r.dot.clone(), id);
-            }
+        // into pieces of about `cap` rows (a long run would otherwise leave one huge block)
+        let pieces = x.rows.len().div_ceil(self.cap);
+        let size = x.rows.len().div_ceil(pieces);
+        let mut tails = Vec::new();
+        while x.rows.len() > size {
+            tails.push(x.rows.split_off(x.rows.len() - size));
         }
-        let k = self.order.iter().position(|y| *y == b).map_or(self.order.len(), |k| k + 1);
-        self.order.insert(k, id);
+        x.recount();
+        let first = self.order.iter().position(|y| *y == b).map_or(self.order.len(), |k| k + 1);
+        for (k, tail) in (first..).zip(tails.into_iter().rev()) {
+            let id = self.alloc(Block::new(tail), s);
+            if let Some(m) = at.as_deref_mut() {
+                for r in self.block(id) {
+                    m.set(r.dot.clone(), id);
+                }
+            }
+            self.order.insert(k, id);
+        }
     }
+}
+
+/// A place in the placement: order index, offset in that block, position.
+#[derive(Clone, Copy)]
+struct Cursor {
+    k: usize,
+    o: usize,
+    at: usize,
 }
 
 /// Dot to block, cheap to copy: a shared base plus the entries set since, folded in once they
@@ -754,8 +823,16 @@ impl Lin {
                 }
             }
         }
+        // a bounded number of placements, each O(√n) plus the sibling subtrees it skips: past
+        // about a whole pass's worth of rows and blocks looked at a rebuild is cheaper
+        if runs.len() + moves.len() > self.p.len.isqrt().max(64) {
+            return false;
+        }
+        let mut work = 0;
+        let each = self.p.order.len() + self.p.cap;
         for (key, stamp, run) in runs {
-            let Some(slot) = self.slot(elems, &key, &stamp, usize::MAX..usize::MAX) else { return false };
+            work += each;
+            let Some(slot) = self.slot(elems, &key, &stamp, usize::MAX..usize::MAX, &mut work) else { return false };
             // below a hidden node: hidden too
             let Some(q) = slot else { continue };
             let Some(d0) = self.depth_below(&key) else { return false };
@@ -777,7 +854,8 @@ impl Lin {
         // in the order the writes were made (a mover re-anchors the outside nodes first)
         moves.sort();
         for (stamp, dot, anchor) in moves {
-            if !self.place_moved(elems, &dot, stamp, anchor) {
+            work += each;
+            if !self.place_moved(elems, &dot, stamp, anchor, &mut work) {
                 return false;
             }
         }
@@ -832,7 +910,7 @@ impl Lin {
 
     /// Moves the subtree of `dot` below `anchor` with edge stamp `stamp`; `false`: rebuild (the
     /// element or the anchor is not placed, or the anchor is in the subtree: a cycle).
-    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor) -> bool {
+    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor, work: &mut usize) -> bool {
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(d) = self.p.block(b).get(o).map(|r| r.depth + self.p.shift_of(b)) else { return false };
         let i = self.p.base(b) + o;
@@ -847,7 +925,7 @@ impl Lin {
                 Some(x)
             }
         };
-        let (Some(Some(q)), Some(nd)) = (self.slot(elems, &key, &stamp, i..e), self.depth_below(&key)) else { return false };
+        let (Some(Some(q)), Some(nd)) = (self.slot(elems, &key, &stamp, i..e, work), self.depth_below(&key)) else { return false };
         self.p.relocate(i..e, q, nd - d, self.at.get_mut());
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(row) = self.p.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o)) else { return false };
@@ -860,25 +938,31 @@ impl Lin {
     /// and its children with greater edge stamps, with their subtrees (§6.1 sibling order), and
     /// at HEAD before the `END` nodes, as if the rows `skip` (the node's own subtree) were out;
     /// `None`: rebuild.
-    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, skip: Range<usize>) -> Option<Slot> {
-        let (mut j, d, want) = match key {
-            None => (0, -1, Anchor::Head),
+    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, skip: Range<usize>, work: &mut usize) -> Option<Slot> {
+        let (mut c, d, want) = match key {
+            None => (self.p.norm(Cursor { k: 0, o: 0, at: 0 }), -1, Anchor::Head),
             Some(x) => {
                 let Some((b, o)) = self.loc(x) else { return Some(None) };
                 let d = self.p.block(b).get(o)?.depth + self.p.shift_of(b);
-                (self.p.base(b) + o + 1, d, Anchor::Dot(x.clone()))
+                let k = self.p.order.iter().position(|y| *y == b)?;
+                (self.p.norm(Cursor { k, o: o + 1, at: self.p.base(b) + o + 1 }), d, Anchor::Dot(x.clone()))
             }
         };
         for _ in 0..SIBS {
-            if j == skip.start {
-                j = skip.end;
+            if c.at == skip.start {
+                c = self.p.norm(self.p.cursor(skip.end));
             }
-            let Some((r, rd)) = self.p.row_at(j) else { return Some(Some(j)) };
+            let Some((r, rd)) = self.p.row_c(c) else { return Some(Some(c.at)) };
             // past the anchor's subtree, or (at HEAD) at the `END` nodes
             if rd <= d || key.is_none() && !r.head || child_stamp(elems, r, &want)? < *stamp {
-                return Some(Some(j));
+                return Some(Some(c.at));
             }
-            j = self.p.end_of(j, rd);
+            // a record lookup per sibling: about as dear as a few rows of a whole pass
+            *work += STEP;
+            c = self.p.past(c, rd, work);
+            if *work > self.p.len.max(1024) {
+                return None;
+            }
         }
         None
     }

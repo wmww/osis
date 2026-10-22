@@ -424,6 +424,25 @@ proptest! {
     }
 }
 
+/// Text `base`, `sibs` newer inserts at HEAD by another writer, and a delta (as a receiver
+/// gets it) moving 1000 elements spread over the text to HEAD, older than those inserts:
+/// (state with its placement cached, the delta).
+fn hostile_moves(base: &Fragment, sibs: usize) -> (Fragment, Fragment) {
+    let a = Replica { state: base.clone(), src: node(1), lo: 1 };
+    let n = read_str(base).chars().count();
+    let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    for k in 0..sibs as u64 {
+        b.commit(5000 + k, &[op(Op::Insert { at: 0, items: vec![s("h")] })], &text_view());
+    }
+    let Fragment::Seq(sq) = &a.state else { panic!() };
+    let mut w = Writer::new(ts(4000 << 16), node(7), 1);
+    let step = n / 1000;
+    let elems = visible(sq).iter().step_by(step.max(1)).take(1000).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head)], ..crate::seq::SeqElem::bare() })).collect();
+    let d = Fragment::Seq(crate::seq::Seq::new(true, crate::fragment::Meta::default(), elems));
+    let _ = read_str(&b.state);
+    (b.state, d)
+}
+
 /// Tier 2 timing: a 10^5-char text built from ~5000 insert runs; read, a small join, one op
 /// through `Batch`, a move op, joins of decoded deltas (insert, delete, older concurrent insert, move),
 /// snapshot encode/decode.
@@ -493,6 +512,19 @@ fn budget_big_text_spec_6() {
     let move_join = t.elapsed();
     let _ = a.state.read();
     let move_read = t.elapsed() - move_join;
+    // hostile deltas: 1000 moves to HEAD, without and with 250 newer HEAD siblings
+    let mut hostile = Vec::new();
+    for sibs in [0, 250] {
+        let (mut st, d) = hostile_moves(&a.state, sibs);
+        let t = Instant::now();
+        st.join(d);
+        let Fragment::Seq(q) = &st else { panic!() };
+        let _ = q.lin();
+        let join = t.elapsed();
+        let t = Instant::now();
+        let _ = crate::linearize::place(q.elems(), q.text);
+        hostile.push(format!("{sibs} siblings: join and placement {join:?}, whole pass {:?}", t.elapsed()));
+    }
     let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
@@ -502,7 +534,7 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}", p.iter().count());
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}; 1000 moves to HEAD with {}", p.iter().count(), hostile.join(", with "));
     let _ = v;
 }
 
@@ -984,6 +1016,27 @@ fn cached_placement_follows_moves_spec_6_2() {
     }
     eprintln!("moves followed: {kept} of {moves}");
     assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
+}
+
+/// §6 (`seq_lin`): a delta of 1000 moves to HEAD below 250 newer HEAD siblings joins and
+/// places in about a whole pass's time, not 1000 sibling scans (bounded, not exact: under three
+/// passes).
+#[test]
+fn hostile_moves_join_bounded_spec_6() {
+    let mut a = Replica::new(1);
+    for k in 0..4u64 {
+        a.commit(1 + k, &[op(Op::Insert { at: 0, items: vec![s(&"x".repeat(1000))] })], &text_view());
+    }
+    let (mut st, d) = hostile_moves(&a.state, 250);
+    let t = std::time::Instant::now();
+    st.join(d);
+    let Fragment::Seq(q) = &st else { panic!() };
+    let _ = q.lin();
+    let join = t.elapsed();
+    let t = std::time::Instant::now();
+    let _ = crate::linearize::place(q.elems(), q.text);
+    let pass = t.elapsed();
+    assert!(join < pass * 3, "join {join:?}, whole pass {pass:?}");
 }
 
 /// §6.1 sibling order (`seq_lin`): an older insert at HEAD below a newer HEAD child, two runs
