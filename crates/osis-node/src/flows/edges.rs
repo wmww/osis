@@ -101,6 +101,9 @@ pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &
     let now = tx.now();
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
     let resend = super::Resend { member, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
+    // its record in the commit's own transaction: node-sync sends it from there, also after a
+    // crash before `carry_out` (spec/sync.md §3, §5)
+    crate::sync::state::note_unsent_tx(tx, member, c, things.to_vec(), parts == Parts::Edge)?;
     Ok(vec![Delivery::Inbox { to, inbox, blob, resend }])
 }
 

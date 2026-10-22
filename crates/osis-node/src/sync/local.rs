@@ -314,27 +314,46 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
-    /// Inbox deliveries `INBOX_LIFETIME` old whose member has not acted are sealed again (to its
-    /// newest keyset) and sent again (spec/sync.md §3), at most `MAX_INBOX_RESENDS` times; one
-    /// whose commit is gone, or whose member acted, is forgotten.
-    pub(crate) fn resend_inbox(&mut self) -> Result<()> {
+    /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
+    /// sealed and sent once its commit is placed (`hold`); one `INBOX_LIFETIME` old whose member
+    /// has not acted is sealed again (to its newest keyset) and sent again, at most
+    /// `MAX_INBOX_RESENDS` times; one whose commit is gone, or whose member acted or (for a grant
+    /// or re-seal) left, is forgotten.
+    pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
-        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
+        let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
         for s in due {
+            let first = s.at == 0;
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
-            if !ts.is_some_and(|ts| s.tries < MAX_INBOX_RESENDS && !self.acted(&s.member, ts)) || !s.edge_only && !self.still_member(&s.member, &s.commit) {
+            let gone = match ts {
+                None => true,
+                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.member, ts)),
+            };
+            if gone || !s.edge_only && !self.still_member(&s.member, &s.commit) {
                 self.state.remove_sent(&s.member, &s.commit);
                 continue;
             }
+            if first && !s.edge_only && self.hold(&s.commit)? {
+                continue;
+            }
             let parts = if s.edge_only { crate::flows::edges::Parts::Edge } else { crate::flows::edges::Parts::All };
-            // a removal notice names no label: a removed member must not learn the target's
-            // current one
-            let things = if s.edge_only { Vec::new() } else { s.things.clone() };
+            // a re-sent removal notice names no label: a removed member must not learn the
+            // target's current one
+            let things = if s.edge_only && !first { Vec::new() } else { s.things.clone() };
             let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &things, parts));
-            match r {
-                Ok(deliveries) if !deliveries.is_empty() => self.take_done(crate::flows::Done { deliveries, ..Default::default() })?,
+            let mut sent = false;
+            for d in r.unwrap_or_default() {
+                if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
+                    let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
+                    self.queue_inbox(&owner, inbox.label, &inbox.servers, blob)?;
+                    sent = true;
+                }
+            }
+            if sent {
+                self.state.note_sent(s.member, s.commit, s.things.clone(), s.edge_only, now);
+            } else {
                 // no inbox or keys for the member any more
-                _ => self.state.remove_sent(&s.member, &s.commit),
+                self.state.remove_sent(&s.member, &s.commit);
             }
         }
         Ok(())

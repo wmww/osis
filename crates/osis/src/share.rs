@@ -481,9 +481,11 @@ impl Osis {
         let key = self.follow_link(&link)?;
         let l = key.l;
         let t = Some(self.inner.wait_timeout);
+        // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
+        // for its chain may be (or follow) an earlier redemption that removed L
         self.wait_until(t, Box::new(move |s, _| {
             let e = s.engine_mut();
-            (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())).then_some(Ok(()))
+            (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && !pending_on(e, &k)).then_some(Ok(()))
         }))
         .await?;
         let me = self.me();
@@ -493,7 +495,12 @@ impl Osis {
         key.link = None;
         drop(key);
         self.carry(done)?;
-        self.wait_until(t, Box::new(move |s, _| s.engine().knows(&target).then_some(Ok(())))).await?;
+        // joined: the grant stands in a view with nothing on K pending
+        self.wait_until(t, Box::new(move |s, _| {
+            let e = s.engine_mut();
+            (e.knows(&target) && e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
+        }))
+        .await?;
         Ok(target)
     }
 
@@ -1045,4 +1052,10 @@ impl Drop for KeyGuard {
             }
         }
     }
+}
+
+/// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
+fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
+    let ids: Vec<osis_core::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
+    ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))
 }

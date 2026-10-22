@@ -138,16 +138,17 @@ impl SyncEngine {
                 sends.push(Out { prio: 3, id: *id, fresh: false });
             }
         }
+        let mut held = BTreeSet::new();
         if !replaced && (keys.is_writer() || keys.deposit.is_some()) {
             if read_ok {
                 self.inbox_copies(&g, l)?;
-                self.certificates(&g, l, false)?;
+                held = self.certificates(&g, l, false)?;
                 let tight = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
                 self.heartbeat(&g, l, &keys, tight)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside members only: they tell the label's rotators
                 // what keeps its epoch uncovered (spec/permissions.md §4 exception)
-                self.certificates(&g, l, true)?;
+                held = self.certificates(&g, l, true)?;
             }
         }
         if keys.write.is_some() && read_ok {
@@ -181,11 +182,23 @@ impl SyncEngine {
         let mut seen = BTreeSet::new();
         let mut uploads = Vec::new();
         let mut deposits = Vec::new();
+        let mut queue = Vec::new();
         for o in sends {
             if !seen.insert(o.id) || self.state.is_present(&server, &l, &o.id) || self.state.gone.contains(&(server, l, o.id)) || super::in_flight(&self.sent, &(conn, l, o.id), raw) {
                 continue;
             }
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
+            // this node's write here waits while a certificate copy of its chain is held
+            // (`hold`): it never goes before its chain (removals excepted, spec/sync.md §5)
+            if !held.is_empty()
+                && !e.cert
+                && let Kind::Commit { commit, parts } = &e.kind
+                && self.own(commit)
+                && self.engine.header(commit).is_some_and(|h| h.frontier.is_none())
+                && self.engine.author_chain(commit, &parts.iter().copied().collect()).is_some_and(|ch| ch.keys().any(|x| held.contains(x)))
+            {
+                continue;
+            }
             let Some(blob) = self.engine.blob(&o.id)? else { continue };
             if let Some(w) = &keys.write {
                 let stamp = osis_label::sign_stamp(w, &l, &o.id, &e.wrap);
@@ -201,9 +214,24 @@ impl SyncEngine {
                 // a queued deposit goes from the outbox
                 && !self.state.outbox.contains_key(&(server, o.id))
             {
-                let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
-                deposits.push((blob, e.wrap, sig));
+                if e.cert || !matches!(e.kind, Kind::Commit { .. }) {
+                    let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
+                    deposits.push((blob, e.wrap, sig));
+                } else {
+                    // this node's own membership write: queued, so neither a crash nor
+                    // forgetting the label recalls it
+                    queue.push((blob, e.wrap, d.clone()));
+                }
             }
+        }
+        if !queue.is_empty() {
+            let servers: Vec<osis_label::Address> = self.engine.group_labels(&g)?.into_iter().find(|x| x.id == l).map(|x| x.servers).unwrap_or_default();
+            for (blob, wrap, d) in queue {
+                let id = osis_label::blob_id(&blob);
+                let at: Vec<osis_label::Address> = servers.iter().filter(|a| !self.state.is_present(&a.key, &l, &id)).cloned().collect();
+                self.queue_deposit(l, &at, &d, blob, wrap);
+            }
+            self.send_outbox(out)?;
         }
         if let Some(w) = &keys.write {
             self.promote(conn, server, &g, l, w, &mut uploads)?;
@@ -870,13 +898,13 @@ impl SyncEngine {
 
     /// Whether this node placed the entry (its certificates, heartbeats, membership writes).
     fn mine(&self, e: &Entry) -> bool {
-        e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.engine.header(commit).is_some_and(|h| h.author == self.engine.tid()))
+        e.cert || matches!(&e.kind, Kind::Commit { commit, .. } if self.own(commit))
     }
 
     /// A non-writer deposits its own membership writes (an invite grant, a self-removal,
     /// spec/sync.md §3).
     fn may_deposit(&self, keys: &HeadKeys, b: &Body) -> bool {
-        keys.deposit.is_some() && b.membership && self.engine.header(&b.commit).is_some_and(|h| h.author == self.engine.tid())
+        keys.deposit.is_some() && b.membership && self.own(&b.commit)
     }
 
     /// Snapshot commits under the label, by aspect.
@@ -935,7 +963,7 @@ impl SyncEngine {
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
-    fn parts_covered(&mut self, l: &LabelId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+    pub(super) fn parts_covered(&mut self, l: &LabelId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
         let snaps = self.snapshots_at(l);
         for (ai, _) in parts {
             let Some(a) = h.aspects.get(*ai) else { return Ok(false) };
@@ -1120,8 +1148,8 @@ impl SyncEngine {
     /// boxes with its grant (spec/crypto.md §4) and opens entries under older epochs like the
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
-    /// opens under the newest read secret.
-    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool) -> Result<()> {
+    /// opens under the newest read secret. Returns the commits whose copies wait (`hold`).
+    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool) -> Result<BTreeSet<CommitId>> {
         let closure = self.engine.closure(g);
         let wanted = if revokes_only {
             // under an epoch a departure inside a member leaves uncovered: those revokes only
@@ -1151,12 +1179,13 @@ impl SyncEngine {
             }
             wanted
         };
+        let mut held = BTreeSet::new();
         for (c, want) in wanted {
-            let (mine, held) = self.held_parts(g, l, &c)?;
+            let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure
             // parts is a strict subset others delete)
             let inside: BTreeSet<usize> = self.engine.header(&c).map(|h| h.aspects.iter().enumerate().filter(|(_, a)| closure.contains(&a.tid)).map(|(i, _)| i).collect()).unwrap_or_default();
-            let missing: BTreeSet<(usize, usize)> = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
+            let missing: BTreeSet<(usize, usize)> = want.difference(&have).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the server): not
             // placed again, but for its own card while it reads the label's actor (admins delete
             // a departed node's card; a re-grant wants it back, spec/permissions.md §4)
@@ -1177,13 +1206,19 @@ impl SyncEngine {
                 self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
                 continue;
             }
+            // a copy of this node's commit waits for the commit under its things' labels
+            // (spec/sync.md §5)
+            if !self.under_own_label(g, &c) && self.hold(&c)? {
+                held.insert(c);
+                continue;
+            }
             for b in self.engine.part_bodies(&c, &missing)? {
                 self.place(g, l, &b, true)?;
             }
             self.place_linked(l, &c, &missing)?;
             self.state.add_cert(l, c);
         }
-        Ok(())
+        Ok(held)
     }
 
     /// Whether `parts` of `c` are this node's own card (its `/node`, `/reach`, `/keys` writes)
