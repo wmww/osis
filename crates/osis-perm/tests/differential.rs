@@ -108,6 +108,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
 }
 
 fn joint_run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
     let mut with_drops = 0u64;
@@ -116,7 +117,7 @@ fn joint_run(samples: u64, seed: u64) {
         // histories where an audit dropped something (late forgeries, unseen writes)
         with_drops += u64::from(joint::walk(&h).dropped != 0);
         if let Some(d) = joint_diff(&h) {
-            fails.push(format!("sample {s}: {d}\n{h:?}"));
+            fails.push(format!("seed {seed:#x} sample {s}: {d}\n{h:?}"));
             if fails.len() >= 3 {
                 break;
             }
@@ -222,12 +223,13 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
 }
 
 fn edges_run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
         if let Some(d) = edges_diff(&h) {
-            fails.push(format!("sample {s}: {d}\n{h:?}"));
+            fails.push(format!("seed {seed:#x} sample {s}: {d}\n{h:?}"));
             if fails.len() >= 3 {
                 break;
             }
@@ -294,6 +296,7 @@ fn residue(tl: &Timeline) -> bool {
 }
 
 fn snap_run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
     for s in 0..samples {
@@ -315,7 +318,7 @@ fn snap_run(samples: u64, seed: u64) {
         }
         for (name, c) in cases {
             if let Some(d) = snap_diff(&c) {
-                fails.push(format!("sample {s} ({name}): {d}\n{c:?}"));
+                fails.push(format!("seed {seed:#x} sample {s} ({name}): {d}\n{c:?}"));
                 break;
             }
         }
