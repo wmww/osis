@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Rotation planner, wrap epochs, label epochs and token secrets (spec/permissions.md §3,
+//! Rotation planner, wrap epochs, label epochs and delete keys (spec/permissions.md §3,
 //! spec/crypto.md §5, §7, spec/sync.md §2, §5).
 
 mod common;
@@ -7,11 +7,10 @@ use common::*;
 use osis_core::{CommitId, CreationRecord, Role, Tid, Ts};
 use osis_crypto::{Secret32, label_role_key};
 use osis_keys::{
-    ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, levels, lost_access, newer_than_head, plan_departure, plan_inside,
-    registered_epoch, registration_epochs, roles_up_to, token_candidates, token_secrets, wrap_epoch,
+    ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside,
+    registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
 use osis_perm::{At, Dots, Edge, EdgeOp, MembershipCommit, MemoryHeldSet, Timeline};
-use osis_schema::PurgeBy;
 use std::collections::BTreeSet;
 
 fn set(r: &[Role]) -> BTreeSet<Role> {
@@ -168,34 +167,27 @@ fn label_epochs() {
     assert!(registration_epochs(&a).is_none());
 }
 
-// spec/crypto.md §7: token secrets per level by retention; imports have no level 2; holders try
-// every epoch.
+// spec/crypto.md §7: delete keys per level from the newest held secret; level 2 from the
+// author's actor; holders try every epoch; the published keyset names the same key.
 #[test]
-fn tokens() {
-    assert_eq!(levels(PurgeBy::Nobody, false), Vec::<u8>::new());
-    assert_eq!(levels(PurgeBy::Admin, false), vec![1]);
-    assert_eq!(levels(PurgeBy::Author, false), vec![1, 2]);
-    assert_eq!(levels(PurgeBy::Writer, false), vec![1, 2, 3]);
-    assert_eq!(levels(PurgeBy::Writer, true), vec![1, 3]);
+fn delete_keys() {
+    let dk = |s: &Secret32| osis_crypto::DeleteSecret::derive(s).verifying_key();
     let (mut thing, author) = (person(0x20), person(0x30));
-    let t = token_secrets(PurgeBy::Writer, &thing, Some(&author)).unwrap();
-    assert_eq!(t.iter().map(|x| x.0).collect::<Vec<_>>(), vec![1, 2, 3]);
-    assert_eq!(&t[0].2, thing.admin.secret(&ep(1, 0x20)).unwrap());
-    assert_eq!(&t[1].2, author.write.secret(&ep(1, 0x30)).unwrap());
-    assert_eq!(&t[2].2, thing.write.secret(&ep(1, 0x20)).unwrap());
-    assert_eq!(token_secrets(PurgeBy::Author, &thing, None).unwrap().len(), 1);
+    assert_eq!(delete_key(1, &thing, Some(&author)), Some(dk(thing.admin.secret(&ep(1, 0x20)).unwrap())));
+    assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(author.write.secret(&ep(1, 0x30)).unwrap())));
+    assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(thing.write.secret(&ep(1, 0x20)).unwrap())));
+    assert_eq!(delete_key(2, &thing, None), None);
+    let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap());
+    assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
     thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
     thing.write.set_established(ep(2, 0), osis_keys::Provenance::Own);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
-    let c: Vec<_> = token_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();
+    assert_eq!(delete_key(3, &thing, None), Some(dk(&Secret32::from_bytes([5; 32]))));
+    let c: Vec<_> = delete_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();
     assert_eq!(c, vec![ep(2, 0), ep(1, 0x20)]);
-    assert!(token_candidates(2, &thing, None).is_empty());
-    // spec/crypto.md §7 (issues/token-admin-secret.md): no admin secret held, no level 1.
+    assert!(delete_candidates(2, &thing, None).is_empty());
+    // no admin secret held, no level-1 key (a writer takes the published one)
     let mut writer = person(0x40);
     writer.admin = Default::default();
-    let t = token_secrets(PurgeBy::Writer, &writer, Some(&author)).unwrap();
-    assert_eq!(t.iter().map(|x| x.0).collect::<Vec<_>>(), vec![2, 3]);
-    assert!(token_secrets(PurgeBy::Admin, &writer, None).unwrap().is_empty());
-    writer.write = Default::default();
-    assert!(token_secrets(PurgeBy::Writer, &writer, None).is_err());
+    assert_eq!(delete_key(1, &writer, None), None);
 }
