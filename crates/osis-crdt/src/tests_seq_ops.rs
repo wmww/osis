@@ -548,7 +548,48 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; 1000 moves to HEAD with {}", p.iter().count(), hostile.join(", with "));
+    // a text bootstrapped from a snapshot: a deleted stretch arrives as one range record; an
+    // undelete of part of it and an insert anchored inside it split the record
+    let gone = crate::cut_dots(&a.state, 30_000, 100).unwrap();
+    a.commit(3000, &[op(Op::Delete { at: 30_000, len: 100 })], &text_view());
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
+    let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
+    let mut boot = crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment;
+    let Fragment::Seq(full) = &a.state else { panic!() };
+    let undel = {
+        let src = node(5);
+        let st = crate::stamp::Stamp::new(ts(3001 << 16), src.clone(), 1);
+        let mut d = crate::seq::Seq::empty(true);
+        for x in &gone[45..55] {
+            let mut e = crate::seq::SeqElem::bare();
+            e.deleted = Some((st.clone(), false));
+            e.content = full.elems()[x].content.clone();
+            d.elems_mut().insert(x.clone(), e);
+        }
+        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3001)
+    };
+    let inside = {
+        let src = node(6);
+        let st = crate::stamp::Stamp::new(ts(3002 << 16), src.clone(), 1);
+        let a = crate::seq::Anchor::Dot(gone[70].clone());
+        let mut d = crate::seq::Seq::empty(true);
+        d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), a.clone())), content: crate::seq::SeqContent::Char('q'), pos: vec![(st, a)], deleted: None, span: 1 });
+        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3002)
+    };
+    let mut splits = Vec::new();
+    for d in [undel, inside] {
+        let _ = read_str(&boot);
+        let _ = crate::seq_lin::probe();
+        let t = Instant::now();
+        boot.join(d);
+        let join = t.elapsed();
+        let passes = crate::seq_lin::probe().1;
+        let t = Instant::now();
+        let _ = read_str(&boot);
+        splits.push(format!("join {join:?} ({passes} passes), then read {:?}", t.elapsed()));
+    }
+    assert!(read_str(&boot).contains('q'));
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; bootstrapped from a snapshot, undelete splitting a range record: {}, insert anchored inside it: {}; 1000 moves to HEAD with {}", p.iter().count(), splits[0], splits[1], hostile.join(", with "));
     let _ = v;
 }
 

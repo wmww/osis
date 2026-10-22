@@ -10,7 +10,7 @@ use crate::seq_span::{expand, nth};
 use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
-use crate::testutil::{frag, history_with, mapply, source, ts};
+use crate::testutil::{frag, history, history_with, mapply, source, ts};
 use crate::tests_join::lockstep;
 use crate::tests_wire::{delta, i, l, rejects, snap_cx, wcx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
@@ -179,6 +179,112 @@ fn cycle_breaking_is_linear_spec_6_2() {
     assert_eq!(p.order.len(), (len + 2 * k) as usize);
     // linear: well under a second in release; a generous bound for a loaded debug build
     assert!(took.as_secs() < 10, "cycle breaking took {took:?}");
+}
+
+/// Text (`types`: writers of these, the text slot edited after) built by a random history,
+/// bootstrapped from a snapshot (deleted stretches arrive as range records), then edited by a
+/// new writer through the wire: an insert anchored at each of up to `n` placed elements in turn
+/// (hidden ones inside range records included), each followed by a random text op (undelete of
+/// part of a deleted run, delete, move, insert, and now and then a replace). After every join the
+/// read equals the model's and the cached placement a whole pass (`check_lin`). Returns joins,
+/// joins the cache followed (no whole pass), and joins that split a range record or anchored
+/// inside one, followed and not.
+pub(crate) fn snapshot_then_edit(seed: u64, types: &[Ty], n: usize) -> (usize, usize, usize, usize) {
+    use crdt_model::stamp::Dot as MDot;
+    use crdt_model::state::{Anchor as MAnchor, Composite};
+    let mut r = Rng(seed | 1);
+    let commits = history(&mut r, types, 3, 8);
+    let mut m = None;
+    for c in &commits {
+        mapply(&mut m, c.delta.clone());
+    }
+    let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: crate::testutil::ostate(&m), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
+    let mut ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let seq = |f: &Fragment| -> Option<Seq> {
+        match f {
+            Fragment::Seq(x) => Some(x.clone()),
+            Fragment::Slots(x) => x.members.values().find_map(|f| if let Fragment::Seq(x) = f { Some(x.clone()) } else { None }),
+            _ => None,
+        }
+    };
+    let mut w = MWriter::new(MSource::node(9), 1 << 30, 1);
+    let (mut joins, mut kept, mut split, mut missed) = (0, 0, 0, 0);
+    let mut deliver = |d: MFrag, w: &MWriter, m: &mut Option<MFrag>, ours: &mut Fragment| {
+        mapply(m, d.clone());
+        let cx = writer_cx(w);
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&d) }, &cx, None).unwrap();
+        let d = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        // whether a record lands inside a state range record, or anchors inside one
+        let before = seq(ours);
+        let splits = match (&before, &d) {
+            (Some(st), Fragment::Seq(ds)) => ds.elems().iter().any(|(dot, de)| {
+                let inside = |x: &Dot| crate::seq_span::find(st.elems(), x).is_some_and(|(k, _)| k != x);
+                inside(dot) || inside(&nth(dot, de.span)) || de.pos.iter().any(|(_, a)| matches!(a, Anchor::Dot(x) if crate::seq_span::find(st.elems(), x).is_some_and(|(k, e)| x.ctr - k.ctr + 1 < e.span)))
+            }),
+            _ => false,
+        };
+        let cached = before.as_ref().is_some_and(|x| x.lin_check().is_some());
+        let _ = crate::seq_lin::probe();
+        ours.join(d);
+        // followed: no whole pass in the join, and still cached
+        let after = crate::seq_lin::probe().1 == 0 && seq(ours).is_some_and(|x| x.lin_check().is_some());
+        crate::testutil::check_lin(ours);
+        assert_eq!(ours.read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)));
+        joins += 1;
+        kept += usize::from(cached && after);
+        split += usize::from(cached && after && splits);
+        missed += usize::from(cached && !after && splits);
+    };
+    let text = Ty::Text;
+    for k in 0..n as u64 {
+        // the placement read before each join, so the join has a cache to follow
+        let _ = ours.read();
+        let order = match m.as_ref().and_then(|x| x.slot(9)) {
+            Some(MFrag::Seq { elems, .. }) => crdt_model::seq::linearize_full(elems).0,
+            _ => Vec::new(),
+        };
+        w.next_commit((1 << 30) + 2 * k + 1);
+        let anchor: Option<&MDot> = order.get(r.below(order.len() + 1));
+        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None }, elems: Default::default() };
+        let cs = crdt_model::r#gen::random_text(&mut r, 3);
+        if !cs.is_empty() {
+            crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), cs.chars().map(Content::Char).collect());
+            deliver(d, &w, &mut m, &mut ours);
+        }
+        let _ = ours.read();
+        w.next_commit((1 << 30) + 2 * k + 2);
+        if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &text, m.as_ref()) {
+            deliver(d, &w, &mut m, &mut ours);
+        }
+    }
+    (joins, kept, split, missed)
+}
+
+proptest! {
+    /// §5.7, §6 (`seq_lin`): a text bootstrapped from a snapshot takes inserts anchored at every
+    /// kind of element, undeletes of parts of deleted runs, deletes and moves like the model, and
+    /// the cached placement follows writes that split a range record.
+    #[test]
+    fn snapshot_text_edits_match_model_spec_6(seed in any::<u64>()) {
+        snapshot_then_edit(seed, &[Ty::Text], 30);
+    }
+}
+
+/// §6 (`seq_lin`): writes splitting a range record of a snapshot-bootstrapped text, or anchoring
+/// inside one, are followed by the cached placement, not rebuilt (fixed seeds).
+#[test]
+fn range_splits_follow_cache_spec_6() {
+    let (mut joins, mut kept, mut split, mut missed) = (0, 0, 0, 0);
+    for seed in 0..24 {
+        let x = snapshot_then_edit(seed, &[Ty::Text], 30);
+        joins += x.0;
+        kept += x.1;
+        split += x.2;
+        missed += x.3;
+    }
+    assert!(split >= 50 && missed * 50 <= split, "followed {split} splits, rebuilt {missed}");
+    assert!(kept * 10 >= joins * 9, "followed {kept} of {joins} joins");
 }
 
 /// Tier 2: the differential suite at size (more writers, rounds and seeds).
