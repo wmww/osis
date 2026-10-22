@@ -171,8 +171,12 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     let db = tokio::spawn(driver::run_serving(sb, b_ep, lb, clock.clone(), brx2, log()));
     let lan_loop = matches!(direct, Direct::Loop(_));
     if let Direct::Loop(cfgs) = direct {
+        // a's announcement socket is bound before b announces (the driver handles controls in
+        // order, so a call answered after `Lan` means a joined): with the test's manual clock
+        // nobody announces again, and an announcement to a port not bound yet is lost
         for (ctl, cfg) in [&actl, &bctl].into_iter().zip(cfgs) {
             assert!(ctl.send(Control::Lan(cfg)).is_ok());
+            call(ctl, |_| ()).await;
         }
     } else if !anns.is_empty() {
         // a hears b's announcement and b hears a's
