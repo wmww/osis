@@ -1,10 +1,10 @@
-//! Tokens, commit blobs, delta verification (spec/crypto.md §7, spec/wire.md §4, spec/commits.md §4).
+//! Delete keys, commit blobs, delta verification (spec/crypto.md §7, spec/wire.md §4, spec/commits.md §4).
 
-use crate::tests::{sample_header, t, ts};
+use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
 use osis_core::{Classified, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Interner, Source, Writer, create, encode_delta};
-use osis_crypto::{Secret32, SigningSecret, delta_hash, verify_presented_token};
+use osis_crypto::{DeleteSecret, Secret32, SigningSecret, VerifyingKey, delta_hash};
 use osis_schema::{PurgeBy, Retention};
 
 pub(crate) struct TestSecrets {
@@ -21,14 +21,14 @@ impl Secrets for TestSecrets {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         Some(sec(0xd0, tid))
     }
-    fn admin(&self, tid: &Tid) -> Option<Secret32> {
-        self.admin.then(|| sec(0xa1, tid))
+    fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        self.admin.then(|| DeleteSecret::derive(&sec(0xa1, tid)).verifying_key())
     }
-    fn chain_write(&self) -> Option<Secret32> {
-        Some(Secret32::from_bytes([0xc2; 32]))
+    fn chain_key(&self) -> Option<VerifyingKey> {
+        Some(DeleteSecret::derive(&Secret32::from_bytes([0xc2; 32])).verifying_key())
     }
-    fn write(&self, tid: &Tid) -> Option<Secret32> {
-        Some(sec(0x33, tid))
+    fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        Some(DeleteSecret::derive(&sec(0x33, tid)).verifying_key())
     }
 }
 
@@ -40,38 +40,33 @@ pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
     encode_delta(&d, &writer_ctx(Kind::Content, at, author, lo, lo + 1), None).unwrap()
 }
 
-// spec/crypto.md §7: token secrets by retention level; level 2 omitted for imports; a writer
-// without the admin secret omits level 1 (provisional, issues/token-admin-secret.md).
+// spec/crypto.md §7: delete keys by retention level; level 2 omitted for imports; a missing
+// key is an error, level 1 included.
 #[test]
-fn token_levels_by_retention() {
+fn delete_levels_by_retention() {
     let s = TestSecrets { admin: true };
-    let lv = |by, kind| token_secrets(&s, &t(3), &Retention { by, ..Default::default() }, kind).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
+    let lv = |by, kind| delete_keys(&s, &t(3), &Retention { by, ..Default::default() }, kind).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
     assert_eq!(lv(PurgeBy::Nobody, Kind::Content), Vec::<u8>::new());
     assert_eq!(lv(PurgeBy::Admin, Kind::Content), vec![1]);
     assert_eq!(lv(PurgeBy::Author, Kind::Content), vec![1, 2]);
     assert_eq!(lv(PurgeBy::Writer, Kind::Content), vec![1, 2, 3]);
     assert_eq!(lv(PurgeBy::Writer, Kind::Import), vec![1, 3]);
-    let w = TestSecrets { admin: false };
-    let got = token_secrets(&w, &t(3), &Retention::default(), Kind::Content).unwrap();
-    assert_eq!(got.iter().map(|x| x.level).collect::<Vec<_>>(), vec![2]);
+    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default(), Kind::Content).is_err());
 }
 
-// spec/crypto.md §7, spec/wire.md §5: commitments from token hashes and the prefix salt; a
-// token verifies against its commitment.
+// spec/crypto.md §7, spec/wire.md §5: commitments are the delete keys blinded by the prefix
+// salt, levels ascending; a signature by the delete key under that salt verifies.
 #[test]
 fn prefix_commitments() {
-    let ts_ = TokenSecret { level: 2, secret: Secret32::from_bytes([1; 32]) };
-    let hsalt = [7u8; 16];
-    let tok = ts_.hash(&hsalt);
-    let p = Prefix::from_tokens([9; 16], Some(5), &[tok, TokenSecret { level: 1, secret: Secret32::from_bytes([2; 32]) }.hash(&hsalt)]).unwrap();
+    let d = DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
+    let p = Prefix::from_keys([9; 16], Some(5), &[DeleteKey::new(2, &d.verifying_key()), dkey(1, 2)]).unwrap();
     assert_eq!(p.commitments.len(), 2);
-    assert!(p.commitments[0] < p.commitments[1]);
-    let token = osis_crypto::delete_token(&ts_.secret, &hsalt);
-    assert!(p.commitments.iter().any(|c| verify_presented_token(token.expose(), c, &p.salt)));
-    // a chunk's tokens use the chunk's own salt
-    let c = Prefix::for_chunk([3; 16], None, std::slice::from_ref(&ts_)).unwrap();
-    let ctoken = osis_crypto::delete_token(&ts_.secret, &[3; 16]);
-    assert!(verify_presented_token(ctoken.expose(), &c.commitments[0], &[3; 16]));
+    assert_eq!((p.commitments[0][0], p.commitments[1][0]), (1, 2));
+    let key: [u8; 32] = p.commitments[1][1..].try_into().unwrap();
+    osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &[4; 32])).unwrap();
+    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[3; 16], &[4; 32])).is_err());
+    // two keys at one level cannot share a blob
+    assert!(Prefix::from_keys([9; 16], None, &[dkey(2, 1), dkey(2, 2)]).is_err());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and author key.

@@ -1,6 +1,6 @@
 //! Property tests (spec/wire.md §4, spec/sync.md §3).
 
-use crate::tests::{t, ts};
+use crate::tests::{dkey, t, ts};
 use crate::tests_build::{key, rng};
 use crate::tests_verify::{TestSecrets, register_delta};
 use crate::*;
@@ -22,7 +22,7 @@ fn tid() -> impl Strategy<Value = Tid> {
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
     (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::option::of(0u64..1 << 50), proptest::option::of(0usize..4), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
-        .prop_map(|(tid, ak, lo, hi, retention, expires, schema, tokens, hashes)| AspectEntry { tid, ak: Ak::new(format!("/{ak}")).unwrap(), lo, hi, retention, expires, schema, tokens, hashes })
+        .prop_map(|(tid, ak, lo, hi, retention, expires, schema, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("/{ak}")).unwrap(), lo, hi, retention, expires, schema, keys, hashes })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -34,11 +34,10 @@ prop_compose! {
         author in tid(), actor in tid(), kind in 0u64..6, wall in 0u64..1 << 46, form in any::<bool>(),
         schemas in proptest::collection::vec((any::<[u8; 16]>(), 0u64..9), 0..3),
         aspects in proptest::collection::vec(aspect(), 0..4),
-        chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec((0usize..5, any::<[u8; 16]>()), 0..3)), 0..3),
+        chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
         undoes in proptest::option::of(any::<[u8; 32]>()),
-        salt in any::<[u8; 16]>(),
-        tokens in proptest::collection::vec((1u8..4, any::<[u8; 16]>()), 0..4),
+        keys in proptest::collection::vec((1u8..4, any::<u8>()), 0..4),
         frontier in proptest::option::of(any::<i64>()),
         origins in proptest::collection::vec((any::<[u8; 32]>(), tid(), tid(), 0u64..1 << 40), 0..2),
         links in proptest::collection::vec(proptest::option::of(link()), 6),
@@ -52,13 +51,13 @@ prop_compose! {
             form: if form { Form::Commit } else { Form::Node },
             schemas: schemas.into_iter().map(|(i, r)| (SchemaId(i), r)).collect(),
             aspects,
-            chunks: chunks.into_iter().map(|(b, tokens)| ChunkEntry { blob: BlobId(b), tokens }).collect(),
+            chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
                 Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("/p").unwrap() },
                 None => PurgeItem::Aspect { tid, ak: Ak::new("/p").unwrap() },
             }).collect(),
-            undoes: undoes.map(CommitId), salt,
-            tokens: tokens.into_iter().map(|(level, hash)| Token { level, hash }).collect(),
+            undoes: undoes.map(CommitId),
+            keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),
             frontier: frontier.map(|n| Value::Map([(Value::Int(0), Value::Int(n))].into_iter().collect())),
             origins: origins.into_iter().map(|(c, author, actor, w)| Origin { commit: CommitId(c), author, actor, ts: ts(w) }).collect(),
             links: l,
@@ -70,7 +69,7 @@ prop_compose! {
                     ListField::Aspects => h.aspects.clear(),
                     ListField::Chunks => h.chunks.clear(),
                     ListField::Purge => h.purge.clear(),
-                    ListField::Tokens => h.tokens.clear(),
+                    ListField::Keys => h.keys.clear(),
                     ListField::Frontier => h.frontier = None,
                     ListField::Origins => h.origins.clear(),
                 }
@@ -116,7 +115,7 @@ proptest! {
             let blob = CommitBlob::decode(&p.plaintext).unwrap();
             prop_assert_eq!(blob.id(), c.id());
             verify_blob(&blob, &key().verifying_key(), &dedup, None).unwrap();
-            prop_assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.tokens.clone()));
+            prop_assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.keys.clone()));
             for (ai, _) in &p.parts {
                 let a = &c.header.aspects[*ai];
                 prop_assert_eq!((a.retention, a.expires, ai % split), (p.retention, p.expires, p.readers));

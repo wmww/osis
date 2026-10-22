@@ -439,7 +439,11 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), tokens: vec![(3, Secret32::from_bytes([3; 32]))] }
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(3, dk(3))] }
+    }
+
+    fn dk(b: u8) -> osis_crypto::VerifyingKey {
+        osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key()
     }
 
     fn write_bytes(store: &mut MemoryBlobs, f: &Framing, rng: &mut SeededRng, d: &[u8], piece: usize) -> Value {
@@ -848,12 +852,11 @@ mod tests {
     }
 
     // spec/sync.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
-    // expiry is earlier than the new delta's or its thing-secret tokens are not exactly the new
-    // delta's; author-chain tokens need not match.
+    // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
+    // not exactly the new delta's; author-chain commitments need not match.
     #[test]
     fn reencryption_rule() {
-        let s = |b: u8| Secret32::from_bytes([b; 32]);
-        let fr = |expiry: Option<u64>, tokens: Vec<(u8, u8)>| Framing { dedup: s(7), expiry: expiry.map(WallMs), tokens: tokens.into_iter().map(|(l, b)| (l, s(b))).collect() };
+        let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect() };
         let base = fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]);
         let d = data(5_000, 9);
         let cases = [

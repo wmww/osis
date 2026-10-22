@@ -37,7 +37,7 @@ fn build(b: CommitBuilder, sink: &mut MemoryBlobs) -> Result<Built, Error> {
     b.build(&key(), &TestSecrets { admin: true }, sink, &mut rng())
 }
 
-// spec/commits.md §1, spec/wire.md §4: a built content commit verifies; its tokens follow the
+// spec/commits.md §1, spec/wire.md §4: a built content commit verifies; its delete keys follow the
 // untyped `author` retention (levels 1 and 2).
 #[test]
 fn build_content() {
@@ -46,8 +46,8 @@ fn build_content() {
     let c = &built.commit;
     assert!(sink.blobs.is_empty());
     assert_eq!(c.header.aspects.len(), 3);
-    assert_eq!(c.header.tokens.iter().filter(|t| t.level == 2).count(), 1);
-    assert_eq!(c.header.tokens.len(), 4);
+    assert_eq!(c.header.keys.iter().filter(|t| t.level == 2).count(), 1);
+    assert_eq!(c.header.keys.len(), 4);
     let back = CommitBlob::decode(&c.encode()).unwrap();
     assert_eq!(&back, c);
     assert_eq!(verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap().len(), 3);
@@ -66,7 +66,7 @@ fn build_membership_and_refusals() {
     let mut sink = MemoryBlobs::default();
     let built = build(b.clone(), &mut sink).unwrap();
     assert_eq!(built.commit.header.aspects[0].hashes.len(), 2);
-    assert_eq!(built.commit.header.tokens.len(), 1);
+    assert_eq!(built.commit.header.keys.len(), 1);
     verify_blob(&built.commit, &key().verifying_key(), &dedup, None).unwrap();
     let mut bad = b.clone();
     bad.aspects[0].expires = Some(at.wall_ms().0 + 10);
@@ -88,7 +88,7 @@ fn list_overflow_links() {
     let built = build(content(2000), &mut sink).unwrap();
     let h = &built.commit.header;
     assert!(h.links.aspects.is_some());
-    assert!(h.links.tokens.is_none());
+    assert!(h.links.keys.is_none());
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
     assert!(h.encode().len() < CHUNK_THRESHOLD);
@@ -133,7 +133,7 @@ fn small_linked_list_rejected() {
 fn mixed() -> CommitBlob {
     let mut b = content(6);
     for (i, a) in b.aspects.iter_mut().enumerate() {
-        // one thing, so the token sets differ only by retention
+        // one thing, so the key sets differ only by retention
         a.tid = t(3);
         a.ak = Ak::new(format!("/app/f{i}")).unwrap();
         if i % 2 == 1 {
@@ -161,8 +161,8 @@ fn projection_partitions() {
         let blob = CommitBlob::decode(&p.plaintext).unwrap();
         assert_eq!(blob.id(), c.id());
         verify_blob(&blob, &key().verifying_key(), &dedup, None).unwrap();
-        assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.tokens.clone()));
-        let levels: Vec<u8> = p.tokens.iter().map(|t| t.level).collect();
+        assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.keys.clone()));
+        let levels: Vec<u8> = p.keys.iter().map(|t| t.level).collect();
         assert!(levels.windows(2).all(|w| w[0] < w[1]), "at most one commitment per level");
         for (ai, _) in &p.parts {
             assert_eq!(readers(*ai), p.readers);
@@ -272,7 +272,7 @@ fn purge_rewrite() {
 }
 
 // spec/permissions.md §7, spec/wire.md §4: an import carries its origins table, empty ranges,
-// no level-2 token; its deltas re-source writes to `Commit(origin)`.
+// no level-2 key; its deltas re-source writes to `Commit(origin)`.
 #[test]
 fn build_import() {
     let at = ts(2_000_000);
@@ -287,33 +287,30 @@ fn build_import() {
     b.aspects.push(a);
     b.origins.push(Origin { commit: origin, author: t(5), actor: t(6), ts: ots });
     let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
-    assert_eq!(c.header.tokens.iter().map(|t| t.level).collect::<Vec<_>>().len(), 2);
-    assert!(c.header.tokens.iter().all(|t| t.level != 2));
+    assert_eq!(c.header.keys.iter().map(|t| t.level).collect::<Vec<_>>().len(), 2);
+    assert!(c.header.keys.iter().all(|t| t.level != 2));
     assert_eq!(c.header.origins.len(), 1);
     verify_blob(&c, &key().verifying_key(), &dedup, None).unwrap();
 }
 
-// spec/wire.md §4, spec/crypto.md §7: the chunk list holds, per introduced blob, one chunk
-// token hash per token secret of its delta under the chunk's own prefix salt, indexed into the
-// header tokens; the chunk's prefix commitments verify those tokens.
+// spec/wire.md §4, §5, spec/crypto.md §7: the chunk list holds, per introduced blob, the
+// indices of its delta's delete keys in the header; a chunk framed with those keys commits to
+// each blinded by its own salt.
 #[test]
 fn chunk_list() {
     let mut b = content(1);
     b.aspects[0].retention = Retention { by: PurgeBy::Writer, ..Default::default() };
-    b.aspects[0].chunks = vec![(osis_core::BlobId([9; 32]), [1; 16]), (osis_core::BlobId([3; 32]), [2; 16])];
+    b.aspects[0].chunks = vec![osis_core::BlobId([9; 32]), osis_core::BlobId([3; 32])];
     let built = build(b, &mut MemoryBlobs::default()).unwrap();
     let h = &built.commit.header;
     assert_eq!(h.chunks.iter().map(|c| c.blob.0[0]).collect::<Vec<_>>(), vec![3, 9]);
-    let secs = &built.aspect_tokens[0];
-    assert_eq!(secs.len(), 3);
-    for (c, salt) in h.chunks.iter().zip([[2u8; 16], [1; 16]]) {
-        assert_eq!(c.tokens.len(), 3);
-        let prefix = Prefix::for_chunk(salt, None, secs).unwrap();
-        for ((ti, th), s) in c.tokens.iter().zip(secs) {
-            assert_eq!(h.tokens[*ti].level, s.level);
-            assert_eq!(*th, s.hash(&salt).hash);
-            let token = osis_crypto::delete_token(&s.secret, &salt);
-            assert!(prefix.commitments.iter().any(|x| osis_crypto::verify_presented_token(token.expose(), x, &salt)));
+    for c in &h.chunks {
+        assert_eq!(c.keys, h.aspects[0].keys);
+        let keys: Vec<DeleteKey> = c.keys.iter().map(|i| h.keys[*i]).collect();
+        assert_eq!(keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1, 2, 3]);
+        let prefix = Prefix::from_keys([1; 16], None, &keys).unwrap();
+        for (x, k) in prefix.commitments.iter().zip(&keys) {
+            assert_eq!(x[1..], osis_crypto::blind(&k.verifying_key().unwrap(), &[1; 16]).to_bytes());
         }
     }
 }

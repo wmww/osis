@@ -3,7 +3,7 @@
 //! (osis-label frames, encrypts and stores the blobs).
 
 use crate::header::{Header, ListField};
-use crate::tokens::Prefix;
+use crate::keys::Prefix;
 use crate::tree::{self, LinkSource, TreeSink, node_plaintext};
 use crate::Error;
 use osis_core::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH};

@@ -82,24 +82,33 @@ pub struct AspectEntry {
     pub expires: Option<u64>,
     /// Index into the schema table; `None` for an untyped write.
     pub schema: Option<usize>,
-    /// Ascending indices into the header's tokens.
-    pub tokens: Vec<usize>,
+    /// Ascending indices into the header's delete keys.
+    pub keys: Vec<usize>,
     pub hashes: Vec<[u8; 32]>,
 }
 
-/// A token hash with its level (spec/crypto.md §7).
+/// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Token {
+pub struct DeleteKey {
     pub level: u8,
-    pub hash: [u8; 16],
+    pub key: [u8; 32],
 }
 
-/// A chunk, tree-node or page blob the deltas introduce, with its chunk token hashes.
+impl DeleteKey {
+    pub fn new(level: u8, key: &VerifyingKey) -> DeleteKey {
+        DeleteKey { level, key: key.to_bytes() }
+    }
+    pub fn verifying_key(&self) -> Result<VerifyingKey, Error> {
+        VerifyingKey::from_bytes(&self.key).map_err(|_| Error::Malformed("delete key"))
+    }
+}
+
+/// A chunk, tree-node or page blob the deltas introduce, with the delete keys its prefix commits to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChunkEntry {
     pub blob: BlobId,
-    /// `(index into the header's tokens, chunk token hash)`, ascending by index.
-    pub tokens: Vec<(usize, [u8; 16])>,
+    /// Ascending indices into the header's delete keys.
+    pub keys: Vec<usize>,
 }
 
 /// A purge request item (spec/wire.md §4).
@@ -139,13 +148,13 @@ pub enum ListField {
     Aspects,
     Chunks,
     Purge,
-    Tokens,
+    Keys,
     Frontier,
     Origins,
 }
 
 impl ListField {
-    pub const ALL: [ListField; 6] = [ListField::Aspects, ListField::Chunks, ListField::Purge, ListField::Tokens, ListField::Frontier, ListField::Origins];
+    pub const ALL: [ListField; 6] = [ListField::Aspects, ListField::Chunks, ListField::Purge, ListField::Keys, ListField::Frontier, ListField::Origins];
 }
 
 /// Root links of the lists that go by link; `None` = inline.
@@ -154,7 +163,7 @@ pub struct Links {
     pub aspects: Option<Link>,
     pub chunks: Option<Link>,
     pub purge: Option<Link>,
-    pub tokens: Option<Link>,
+    pub keys: Option<Link>,
     pub frontier: Option<Link>,
     pub origins: Option<Link>,
 }
@@ -165,7 +174,7 @@ impl Links {
             ListField::Aspects => self.aspects.as_ref(),
             ListField::Chunks => self.chunks.as_ref(),
             ListField::Purge => self.purge.as_ref(),
-            ListField::Tokens => self.tokens.as_ref(),
+            ListField::Keys => self.keys.as_ref(),
             ListField::Frontier => self.frontier.as_ref(),
             ListField::Origins => self.origins.as_ref(),
         }
@@ -175,7 +184,7 @@ impl Links {
             ListField::Aspects => &mut self.aspects,
             ListField::Chunks => &mut self.chunks,
             ListField::Purge => &mut self.purge,
-            ListField::Tokens => &mut self.tokens,
+            ListField::Keys => &mut self.keys,
             ListField::Frontier => &mut self.frontier,
             ListField::Origins => &mut self.origins,
         };
@@ -198,8 +207,7 @@ pub struct Header {
     pub chunks: Vec<ChunkEntry>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
-    pub salt: [u8; 16],
-    pub tokens: Vec<Token>,
+    pub keys: Vec<DeleteKey>,
     /// The frontier value (spec/data-model.md §9), typed by osis-perm.
     pub frontier: Option<Value>,
     pub origins: Vec<Origin>,
@@ -232,18 +240,17 @@ fn aspect_value(a: &AspectEntry) -> Value {
         retention_value(&a.retention),
         opt(a.expires.map(uint)),
         opt(a.schema.map(uidx)),
-        Value::List(a.tokens.iter().map(|i| uidx(*i)).collect()),
+        Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
         Value::List(a.hashes.iter().map(|h| bytes(h)).collect()),
     ])
 }
 
-pub(crate) fn token_value(t: &Token) -> Value {
-    Value::List(vec![uint(u64::from(t.level)), bytes(&t.hash)])
+pub(crate) fn key_value(t: &DeleteKey) -> Value {
+    Value::List(vec![uint(u64::from(t.level)), bytes(&t.key)])
 }
 
 fn chunk_value(c: &ChunkEntry) -> Value {
-    let toks = c.tokens.iter().map(|(i, h)| Value::List(vec![uidx(*i), bytes(h)])).collect();
-    Value::List(vec![bytes(&c.blob.0), Value::List(toks)])
+    Value::List(vec![bytes(&c.blob.0), Value::List(c.keys.iter().map(|i| uidx(*i)).collect())])
 }
 
 pub(crate) fn purge_value(p: &PurgeItem) -> Value {
@@ -269,7 +276,7 @@ impl Header {
             ListField::Aspects => Value::List(self.aspects.iter().map(aspect_value).collect()),
             ListField::Chunks => Value::List(self.chunks.iter().map(chunk_value).collect()),
             ListField::Purge => Value::List(self.purge.iter().map(purge_value).collect()),
-            ListField::Tokens => Value::List(self.tokens.iter().map(token_value).collect()),
+            ListField::Keys => Value::List(self.keys.iter().map(key_value).collect()),
             ListField::Frontier => return self.frontier.clone(),
             ListField::Origins => Value::List(self.origins.iter().map(origin_value).collect()),
         })
@@ -298,8 +305,7 @@ impl Header {
             self.position(ListField::Chunks),
             self.position(ListField::Purge),
             opt(self.undoes.map(|c| bytes(&c.0))),
-            bytes(&self.salt),
-            self.position(ListField::Tokens),
+            self.position(ListField::Keys),
             self.position(ListField::Frontier),
             self.position(ListField::Origins),
         ])
@@ -330,7 +336,7 @@ impl Header {
             ListField::Aspects => self.aspects.is_empty(),
             ListField::Chunks => self.chunks.is_empty(),
             ListField::Purge => self.purge.is_empty(),
-            ListField::Tokens => self.tokens.is_empty(),
+            ListField::Keys => self.keys.is_empty(),
             ListField::Frontier => self.frontier.is_none(),
             ListField::Origins => self.origins.is_empty(),
         }
@@ -377,27 +383,22 @@ fn as_aspect(v: &Value) -> Result<AspectEntry, Error> {
         retention: as_retention(r)?,
         expires: as_opt(exp)?.map(as_uint).transpose()?,
         schema: as_opt(schema)?.map(as_idx).transpose()?,
-        tokens: as_list(toks)?.iter().map(as_idx).collect::<Result<_, _>>()?,
+        keys: as_list(toks)?.iter().map(as_idx).collect::<Result<_, _>>()?,
         hashes,
     })
 }
 
-pub(crate) fn as_token(v: &Value) -> Result<Token, Error> {
-    let [l, h] = as_list(v)? else { return Err(Error::Malformed("token arity")) };
-    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("token level"))?;
-    Ok(Token { level, hash: as_bytes(h)? })
+pub(crate) fn as_key(v: &Value) -> Result<DeleteKey, Error> {
+    let [l, k] = as_list(v)? else { return Err(Error::Malformed("delete key arity")) };
+    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("delete level"))?;
+    let key = DeleteKey { level, key: as_bytes(k)? };
+    key.verifying_key()?;
+    Ok(key)
 }
 
 fn as_chunk(v: &Value) -> Result<ChunkEntry, Error> {
-    let [b, toks] = as_list(v)? else { return Err(Error::Malformed("chunk arity")) };
-    let tokens = as_list(toks)?
-        .iter()
-        .map(|t| match as_list(t)? {
-            [i, h] => Ok((as_idx(i)?, as_bytes(h)?)),
-            _ => Err(Error::Malformed("chunk token arity")),
-        })
-        .collect::<Result<_, Error>>()?;
-    Ok(ChunkEntry { blob: BlobId(as_bytes(b)?), tokens })
+    let [b, keys] = as_list(v)? else { return Err(Error::Malformed("chunk arity")) };
+    Ok(ChunkEntry { blob: BlobId(as_bytes(b)?), keys: as_list(keys)?.iter().map(as_idx).collect::<Result<_, _>>()? })
 }
 
 fn as_purge(v: &Value) -> Result<PurgeItem, Error> {
@@ -428,7 +429,7 @@ impl Header {
             ListField::Aspects => self.aspects = items(v, as_aspect)?,
             ListField::Chunks => self.chunks = items(v, as_chunk)?,
             ListField::Purge => self.purge = items(v, as_purge)?,
-            ListField::Tokens => self.tokens = items(v, as_token)?,
+            ListField::Keys => self.keys = items(v, as_key)?,
             ListField::Frontier => self.frontier = Some(v.clone()),
             ListField::Origins => self.origins = items(v, as_origin)?,
         }
@@ -464,7 +465,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, salt, tokens, frontier, origins] = items else {
+        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, keys, frontier, origins] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let schemas = as_list(schemas)?;
@@ -494,8 +495,7 @@ impl Header {
             chunks: Vec::new(),
             purge: Vec::new(),
             undoes: as_opt(undoes)?.map(|c| as_bytes(c).map(CommitId)).transpose()?,
-            salt: as_bytes(salt)?,
-            tokens: Vec::new(),
+            keys: Vec::new(),
             frontier: None,
             origins: Vec::new(),
             links: Links::default(),
@@ -503,7 +503,7 @@ impl Header {
         h.take_position(ListField::Aspects, aspects)?;
         h.take_position(ListField::Chunks, chunks)?;
         h.take_position(ListField::Purge, purge)?;
-        h.take_position(ListField::Tokens, tokens)?;
+        h.take_position(ListField::Keys, keys)?;
         h.take_position(ListField::Frontier, frontier)?;
         h.take_position(ListField::Origins, origins)?;
         Ok(h)

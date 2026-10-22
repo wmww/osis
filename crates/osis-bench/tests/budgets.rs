@@ -21,14 +21,14 @@ impl osis_commit::Secrets for Secrets {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
         Some(osis_crypto::Secret32::from_bytes([1; 32]))
     }
-    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::Secret32::from_bytes([2; 32]))
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
-    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::Secret32::from_bytes([3; 32]))
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::Secret32::from_bytes([4; 32]))
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([4; 32])).verifying_key())
     }
 }
 
