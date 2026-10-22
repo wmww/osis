@@ -50,6 +50,19 @@ const STEP: usize = 8;
 /// subtree; this many or more rebuild.
 const SIBS: usize = 256;
 
+#[cfg(test)]
+thread_local! {
+    /// Work units charged by `follow` and `Lin::build` calls on this thread (tests).
+    static PROBE: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Work units `follow` charged and whole passes `Lin::build` made on this thread since the last
+/// call; resets both (tests).
+#[cfg(test)]
+pub(crate) fn probe() -> (usize, usize) {
+    PROBE.with(|p| p.replace((0, 0)))
+}
+
 /// One placed node.
 #[derive(Clone, Debug)]
 pub(crate) struct Row {
@@ -649,10 +662,18 @@ type Slot = Option<usize>;
 
 impl Lin {
     pub(crate) fn build(elems: &Elems, text: bool) -> Lin {
+        #[cfg(test)]
+        PROBE.with(|p| p.set((p.get().0, p.get().1 + 1)));
         let placed = place_idx(elems);
         let p = Placement::of(&placed, text);
         let cyc = placed.cyc.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect();
         Lin { p, waiting: placed.waiting, cyc, at: OnceLock::new() }
+    }
+
+    /// Rows, blocks and block size (tests).
+    #[cfg(test)]
+    pub(crate) fn shape(&self) -> (usize, usize, usize) {
+        (self.p.len, self.p.order.len(), self.p.cap)
     }
 
     fn map(&self) -> &DotMap {
@@ -760,6 +781,15 @@ impl Lin {
     /// elements are spliced in as runs where they place, moved elements' subtrees are cut out
     /// and put in where they now place, flag and content writes flip visibility.
     pub(crate) fn follow(&mut self, elems: &dyn Recs, text: bool, plans: Vec<(Dot, Plan)>) -> bool {
+        let mut work = 0;
+        let ok = self.follow_in(elems, text, plans, &mut work);
+        #[cfg(test)]
+        PROBE.with(|p| p.set((p.get().0 + work, p.get().1)));
+        ok
+    }
+
+    /// `follow`, charging the rows and blocks it looks at to `work`.
+    fn follow_in(&mut self, elems: &dyn Recs, text: bool, plans: Vec<(Dot, Plan)>, work: &mut usize) -> bool {
         // runs of new elements by the existing node (`None`: HEAD) they follow, with the first
         // element's edge stamp
         let mut runs: Vec<(Option<Dot>, Stamp, Vec<Dot>)> = Vec::new();
@@ -828,11 +858,10 @@ impl Lin {
         if runs.len() + moves.len() > self.p.len.isqrt().max(64) {
             return false;
         }
-        let mut work = 0;
         let each = self.p.order.len() + self.p.cap;
         for (key, stamp, run) in runs {
-            work += each;
-            let Some(slot) = self.slot(elems, &key, &stamp, usize::MAX..usize::MAX, &mut work) else { return false };
+            *work += each;
+            let Some(slot) = self.slot(elems, &key, &stamp, usize::MAX..usize::MAX, work) else { return false };
             // below a hidden node: hidden too
             let Some(q) = slot else { continue };
             let Some(d0) = self.depth_below(&key) else { return false };
@@ -854,8 +883,8 @@ impl Lin {
         // in the order the writes were made (a mover re-anchors the outside nodes first)
         moves.sort();
         for (stamp, dot, anchor) in moves {
-            work += each;
-            if !self.place_moved(elems, &dot, stamp, anchor, &mut work) {
+            *work += each;
+            if !self.place_moved(elems, &dot, stamp, anchor, work) {
                 return false;
             }
         }

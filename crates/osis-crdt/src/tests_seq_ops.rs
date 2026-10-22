@@ -425,9 +425,9 @@ proptest! {
 }
 
 /// Text `base`, `sibs` newer inserts at HEAD by another writer, and a delta (as a receiver
-/// gets it) moving 1000 elements spread over the text to HEAD, older than those inserts:
+/// gets it) moving `moves` elements spread over the text to HEAD, older than those inserts:
 /// (state with its placement cached, the delta).
-fn hostile_moves(base: &Fragment, sibs: usize) -> (Fragment, Fragment) {
+fn hostile_moves(base: &Fragment, sibs: usize, moves: usize) -> (Fragment, Fragment) {
     let a = Replica { state: base.clone(), src: node(1), lo: 1 };
     let n = read_str(base).chars().count();
     let mut b = Replica { state: a.state.clone(), src: node(2), lo: 1 };
@@ -436,8 +436,8 @@ fn hostile_moves(base: &Fragment, sibs: usize) -> (Fragment, Fragment) {
     }
     let Fragment::Seq(sq) = &a.state else { panic!() };
     let mut w = Writer::new(ts(4000 << 16), node(7), 1);
-    let step = n / 1000;
-    let elems = visible(sq).iter().step_by(step.max(1)).take(1000).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head)], ..crate::seq::SeqElem::bare() })).collect();
+    let step = n / moves;
+    let elems = visible(sq).iter().step_by(step.max(1)).take(moves).map(|d| (d.clone(), crate::seq::SeqElem { pos: vec![(w.fresh(), crate::seq::Anchor::Head)], ..crate::seq::SeqElem::bare() })).collect();
     let d = Fragment::Seq(crate::seq::Seq::new(true, crate::fragment::Meta::default(), elems));
     let _ = read_str(&b.state);
     (b.state, d)
@@ -515,7 +515,7 @@ fn budget_big_text_spec_6() {
     // hostile deltas: 1000 moves to HEAD, without and with 250 newer HEAD siblings
     let mut hostile = Vec::new();
     for sibs in [0, 250] {
-        let (mut st, d) = hostile_moves(&a.state, sibs);
+        let (mut st, d) = hostile_moves(&a.state, sibs, 1000);
         let t = Instant::now();
         st.join(d);
         let Fragment::Seq(q) = &st else { panic!() };
@@ -1018,16 +1018,49 @@ fn cached_placement_follows_moves_spec_6_2() {
     assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
 }
 
-/// §6 (`seq_lin`): a delta of 1000 moves to HEAD below 250 newer HEAD siblings joins and
-/// places in about a whole pass's time, not 1000 sibling scans (bounded, not exact: under three
-/// passes).
+/// §6 (`seq_lin`): hostile deltas of moves to HEAD below 250 newer HEAD siblings cost about a
+/// whole pass in placement work, counted in `follow`'s work units (rows and blocks looked at, a
+/// skipped sibling 8) and whole passes: more than max(√n, 64) moves rebuild at once; fewer
+/// stop at the work budget max(n, 1024) and rebuild. Either way at most one pass, and the
+/// units charged stay under the budget plus a per-placement charge and one step's overshoot.
+/// Wall-clock at 4000 chars says little: joining the delta's 1000 records alone (no cache)
+/// costs about 1.6 passes there, so the timing check is the tier-2 one below at 10^5.
 #[test]
 fn hostile_moves_join_bounded_spec_6() {
     let mut a = Replica::new(1);
     for k in 0..4u64 {
         a.commit(1 + k, &[op(Op::Insert { at: 0, items: vec![s(&"x".repeat(1000))] })], &text_view());
     }
-    let (mut st, d) = hostile_moves(&a.state, 250);
+    for moves in [1000, 60] {
+        let (mut st, d) = hostile_moves(&a.state, 250, moves);
+        let Fragment::Seq(q) = &st else { panic!() };
+        let (len, blocks, cap) = q.lin().shape();
+        let _ = crate::seq_lin::probe();
+        st.join(d);
+        let Fragment::Seq(q) = &st else { panic!() };
+        let _ = q.lin();
+        let (work, passes) = crate::seq_lin::probe();
+        let count = len.isqrt().max(64);
+        assert_eq!(moves > count, work == 0, "{moves} moves: the count cap ({count}) rebuilds before any work");
+        // budget, an `each` charge per placement, and the last sibling step past the budget
+        // (a block walk: every block, two partial blocks of at most 2 * cap rows)
+        let bound = len.max(1024) + count.min(moves) * (blocks + cap) + 8 + blocks + 4 * cap;
+        assert!(work <= bound, "{moves} moves: {work} units, bound {bound}");
+        assert!(passes <= 1, "{moves} moves: {passes} whole passes");
+        crate::testutil::check_lin(&st);
+    }
+}
+
+/// §6 (`seq_lin`), tier 2 timing: on a 10^5-char text a delta of 1000 moves to HEAD below 250
+/// newer HEAD siblings joins and places in about a whole pass's time (under three passes).
+#[test]
+#[ignore = "tier 2"]
+fn hostile_moves_join_time_spec_6() {
+    let mut a = Replica::new(1);
+    for k in 0..100u64 {
+        a.commit(1 + k, &[op(Op::Insert { at: 0, items: vec![s(&"x".repeat(1000))] })], &text_view());
+    }
+    let (mut st, d) = hostile_moves(&a.state, 250, 1000);
     let t = std::time::Instant::now();
     st.join(d);
     let Fragment::Seq(q) = &st else { panic!() };
