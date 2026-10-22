@@ -33,6 +33,13 @@ proptest! {
         lockstep(seed, &[Ty::Text], 3, 5);
     }
 
+    /// §5.7 Read, §6: a list's read (elements in placement order, which moves and inserts at
+    /// random places take far from dot order) equals the model's after every join.
+    #[test]
+    fn list_read_order_matches_model_spec_5_7(seed in any::<u64>()) {
+        lockstep(seed, &[Ty::List(Box::new(Ty::Register))], 4, 10);
+    }
+
     /// §5.7: list join (element resets, nested fragments) equals the model's.
     #[test]
     fn list_join_matches_model_spec_5_7(seed in any::<u64>()) {

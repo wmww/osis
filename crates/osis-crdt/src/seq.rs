@@ -623,7 +623,23 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
     Some(if s.text {
         Value::Str(vis.rows().filter_map(|r| r.ch).collect())
     } else {
-        Value::List(vis.iter().filter_map(|d| s.elems.get(d)).filter_map(|e| if let SeqContent::Frag(f) = &e.content { f.read() } else { None }).collect())
+        // visible elements mostly follow each other in dot order (a run typed or pasted): step
+        // to the next record, searching only where the order jumps
+        let mut it = s.elems.range::<Dot, _>(..);
+        let mut out = Vec::with_capacity(vis.len());
+        for d in vis.iter() {
+            let mut cur = it.next();
+            if cur.is_none_or(|c| c.0 != d) {
+                it = s.elems.range::<Dot, _>(d..);
+                cur = it.next().filter(|c| c.0 == d);
+            }
+            if let Some((_, SeqElem { content: SeqContent::Frag(f), .. })) = cur
+                && let Some(v) = f.read()
+            {
+                out.push(v);
+            }
+        }
+        Value::List(out)
     })
 }
 

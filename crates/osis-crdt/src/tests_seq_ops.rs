@@ -562,6 +562,21 @@ fn budget_big_text_spec_6() {
         u.commit(4, &[op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 60_000, len: 3 })], &text_view()).unwrap();
         format!("received insert join {join:?} ({passes} passes), then read {read:?}, two-op batch {:?}", t.elapsed())
     };
+    // a 10^5-element list built from 100 insert runs at random places: its read
+    let list_read = {
+        let view = TyView(Ty::List(Box::new(Ty::Register)));
+        let mut l = Replica::new(4);
+        let mut len = 0usize;
+        for k in 0..100u64 {
+            let at = r.below(len + 1);
+            len += 1000;
+            l.commit(k + 1, &[op(Op::Insert { at, items: (0..1000).map(Value::Int).collect() })], &view);
+        }
+        let _ = l.state.read();
+        let t = Instant::now();
+        assert!(matches!(l.state.read(), Some(Value::List(x)) if x.len() == 100_000));
+        t.elapsed()
+    };
     let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
@@ -630,7 +645,7 @@ fn budget_big_text_spec_6() {
         assert_eq!(read_str(&st), "fresh");
         whole.push(format!("join {join:?} ({p0} passes), then read {:?} ({} passes)", t.elapsed(), crate::seq_lin::probe().1));
     }
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; bootstrapped from a snapshot, undelete splitting a range record: {}, insert anchored inside it: {}; received set to a new value: {}, received replace: {}; upgraded text: {upgraded}; 1000 moves to HEAD with {}", p.iter().count(), splits[0], splits[1], whole[0], whole[1], hostile.join(", with "));
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; bootstrapped from a snapshot, undelete splitting a range record: {}, insert anchored inside it: {}; received set to a new value: {}, received replace: {}; upgraded text: {upgraded}; 10^5-element list read {list_read:?}; 1000 moves to HEAD with {}", p.iter().count(), splits[0], splits[1], whole[0], whole[1], hostile.join(", with "));
     let _ = v;
 }
 
@@ -1269,4 +1284,5 @@ fn batch_keeps_sequence_view_spec_4_5() {
     assert!(!bt.keeps_view(), "dropped by an op elsewhere");
     assert_eq!(bt.view().read(), Some(Value::Map([(Value::Int(1), s(">hello, rld")), (Value::Int(2), Value::Int(7))].into_iter().collect())));
 }
+
 
