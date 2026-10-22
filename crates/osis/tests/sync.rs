@@ -213,6 +213,37 @@ fn used_link_refused_at_once_spec_permissions_9() {
     }
 }
 
+// spec/permissions.md §9, §5.1: with the sharer offline, a second redeemer of a used
+// single-use link whose view still lists L (the first redemption not applied there: the
+// joiner's rotation of K pends its chain) is not told it joined: refused, or admitted only
+// once the first redemption is applied in its view (then its grant is void).
+#[test]
+fn used_link_with_sharer_offline_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, others, _) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    item(&alice, g, g, "before the link");
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
+    w.run();
+    let link: osis::ShareLink = link.to_string().parse().unwrap();
+    w.set_online(&alice, false);
+    assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
+    item(bob, g, g, "from the joiner");
+    w.run();
+    let mut c = w.cfg(30, &[0]);
+    c.wait_timeout = Duration::from_secs(5);
+    let carol = Osis::create(c).unwrap().0;
+    w.run();
+    let r = w.until(carol.redeem(&link), 1000, 10);
+    assert!(r.is_err(), "refused while the first redemption is not applied: {r:?}");
+    assert_eq!(carol.role_on(g), None);
+    w.set_online(&alice, true);
+    w.advance(600_000);
+    w.run();
+    assert_eq!(carol.role_on(g), None, "still no role once the sharer is back");
+}
+
 /// Alice's synced group with a multi-use read link redeemed by Bob and Carol: (world, alice,
 /// bob, carol, group, link actor K, link key L).
 fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {

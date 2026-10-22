@@ -379,6 +379,9 @@ pub struct SyncEngine {
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
     /// no engine change came (in memory).
     pub(crate) placed_cache: (u64, BTreeMap<osis_core::CommitId, bool>),
+    /// When (raw ms) this node, connected, first found each of its commits not placed
+    /// (`hold`; in memory, so the wait starts again after a restart).
+    pub(crate) wait_since: BTreeMap<osis_core::CommitId, u64>,
     /// Commits whose projections went unplaced past `PLACE_WAIT_MS` (one diagnostic each).
     pub(crate) late: BTreeSet<osis_core::CommitId>,
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
@@ -467,6 +470,7 @@ impl SyncEngine {
             membership_at: BTreeMap::new(),
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
+            wait_since: BTreeMap::new(),
             late: BTreeSet::new(),
             pass_peers: BTreeMap::new(),
             members_moved: false,

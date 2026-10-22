@@ -179,28 +179,32 @@ impl SyncEngine {
     }
 
     /// Whether a projection of commit `c` outside its things' labels (a certificate copy, an
-    /// inbox blob) waits (spec/sync.md §5): `c` is this node's, writes no `/keys` and lowers
-    /// nobody else's edge (removals and new keys go at once, spec/permissions.md §3), is not
-    /// placed yet (`placed`) and is younger than `PLACE_WAIT_MS`; past that it goes anyway, with
-    /// a diagnostic. A wake is set for the bound.
+    /// inbox blob) waits (spec/sync.md §5): `c` is this node's, writes no `/keys` and carries no
+    /// frontier (removals, demotions and new keys go at once, spec/permissions.md §3), and is
+    /// not placed yet (`placed`), for at most `PLACE_WAIT_MS` from when this node, connected,
+    /// first found it not placed (in memory: a commit made offline waits from its first sync);
+    /// past that it goes anyway, with a diagnostic. A wake is set for the bound.
     pub(crate) fn hold(&mut self, c: &CommitId) -> Result<bool> {
         let Some(h) = self.engine.header(c) else { return Ok(false) };
         if !self.own(c) || h.frontier.is_some() || h.aspects.iter().any(|a| a.ak.as_str() == "/keys") {
             return Ok(false);
         }
-        let until = h.ts.wall_ms().0.saturating_add(PLACE_WAIT_MS);
-        let now = self.now();
+        if self.placed(c)? {
+            self.wait_since.remove(c);
+            return Ok(false);
+        }
+        let now = self.raw_now();
+        if !self.conns.values().any(|x| x.up) {
+            return Ok(true);
+        }
+        let until = self.wait_since.entry(*c).or_insert(now).saturating_add(PLACE_WAIT_MS);
         if until <= now {
-            if !self.placed(c)? && self.late.insert(*c) {
+            if self.late.insert(*c) {
                 self.diag(format!("commit {c:?} not placed under its things' labels after {} s: its copies go anyway", PLACE_WAIT_MS / 1000));
             }
             return Ok(false);
         }
-        if self.placed(c)? {
-            return Ok(false);
-        }
-        let at = self.raw_now().saturating_add(until - now);
-        self.settle_at = Some(self.settle_at.map_or(at, |x| x.min(at)));
+        self.settle_at = Some(self.settle_at.map_or(until, |x| x.min(until)));
         Ok(true)
     }
 
