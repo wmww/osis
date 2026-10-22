@@ -17,7 +17,7 @@ aspect /icon: struct { 0 emoji: option<string>, 1 image: option<tid> };   // ima
 aspect /tag: struct { 0 color: option<string> };   // marks a group as a user-facing tag
 ```
 - `/tag` on a group thing makes it a tag; its items and subgroups are the tag's contents and sub-tags. Default retention `author`, no bounds, like `/group`.
-- Ordering inside a tag is not core (apps keep their own order aspects where they need one); open.
+- No order or position inside a tag in core (owner): apps keep their own, since one wants a list, another a 2D canvas position.
 
 ## Tags
 - A tag is a group thing with `/tag` and usually `/name`. Membership of a thing in a tag is placement (`/group.items`), nesting is `/group.subgroups`. Graph, cycles allowed, a thing or tag may be in many tags.
@@ -49,7 +49,7 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 - Files: `blob` plus a mime string on a file thing (examples/folder's `/folder/content: string` is wrong for binary).
 
 ## Open
-- Confirm the shapes above, then: spec/data-model.md §9 and core.osis revision 2, `osis::core` constants, an API helper for "share tag" / "add to shared tag" (writes placement and edge together; the helper notes/sync.md Why already asks for), examples/notes-app and folder moved onto `/name` and tags.
+- Confirm the shapes above, then: spec/data-model.md §9 and core.osis revision 2, `osis::core` constants, examples/notes-app and folder moved onto `/name` and tags. No "share tag" API helper (owner: avoid convenience functions that only save calling existing ones; `place` plus `grant` is the operation).
 - Admin-only aspects on shared actors (tag settings today, chat moderation later): issues/admin-only-aspects.md (owner-call).
-- Order inside a tag; whether `/icon.image` should be a tid or an inline small blob.
+- Whether `/icon.image` should be a tid or an inline small blob.
 - Chat redesign (notes/chat.md) after tags land.
