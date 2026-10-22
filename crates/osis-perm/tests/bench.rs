@@ -210,3 +210,19 @@ fn bench_deep_owner_chain() {
         eprintln!("owner chain depth {depth}, 100 edge writes at the leaf: evaluate {eval:?} ({} passes), role query at the leaf {query:?}", tl.passes());
     }
 }
+
+// spec: none (cost measurement, issues/perm-eval-cost.md): chain certificates alone on the org
+// history (`OSIS_BENCH_N`, default 10^4), for profiling.
+#[test]
+#[ignore]
+fn bench_certificates() {
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let (w, nodes) = org(n, &mut Rng(0x5eed_0401));
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let doc = *w.created.keys().last().unwrap();
+    let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
+    let t0 = Instant::now();
+    let certs = tl.certificates(&nodes[1], &doc, end);
+    eprintln!("{n} edge writes: chain certificates at the end {:?} ({} commits)", t0.elapsed(), certs.commits.len());
+}
