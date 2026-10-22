@@ -21,6 +21,7 @@ mod pass;
 pub mod peers;
 mod serve;
 pub(crate) mod state;
+mod work;
 
 use crate::engine::Engine;
 use crate::error::Result;
@@ -103,6 +104,8 @@ pub struct SyncConfig {
     pub peer_pass_wait_ms: u64,
     /// Unopened unvouched entries a label may hold per server (an inbox label a sixteenth).
     pub unvouched_cap: usize,
+    /// Every pass judges everything (no work sets): a check that the work sets miss no trigger.
+    pub full_passes: bool,
 }
 
 impl Default for SyncConfig {
@@ -127,6 +130,7 @@ impl Default for SyncConfig {
             serve_open_ms: 30_000,
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
+            full_passes: false,
         }
     }
 }
@@ -177,6 +181,17 @@ pub(crate) enum Phase {
     Failed,
 }
 
+/// Counters of the work passes did (`SyncEngine::pass_stats`; scale checks).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassStats {
+    /// Passes at servers, and how many judged everything.
+    pub passes: u64,
+    pub full: u64,
+    /// Bodies judged for upload, entries judged for deletion.
+    pub bodies: u64,
+    pub entries: u64,
+}
+
 /// One label on one connection.
 pub(crate) struct LConn {
     pub group: Tid,
@@ -194,6 +209,8 @@ pub(crate) struct LConn {
     pub dirty: bool,
     /// A child step sent for registration.
     pub registering: Option<(Step, osis_label::ClaimSet)>,
+    /// What the next pass judges (`work`).
+    pub work: work::Work,
     pub budget: Option<u64>,
     pub last_sync: u64,
     pub path: Vec<Step>,
@@ -337,6 +354,13 @@ pub struct SyncEngine {
     /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
     /// goes once either body is dropped.
     pub(crate) covered_judged: BTreeSet<(osis_core::CommitId, osis_core::CommitId, Tid, osis_core::Ak)>,
+    /// What passes did so far (`pass_stats`).
+    pub(crate) stats: PassStats,
+    /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
+    pub(crate) touched: work::Touched,
+    /// The commits whose headers list each chunk blob (`dropped_chunks`; built on first use,
+    /// kept by applied commits).
+    pub(crate) listers: Option<BTreeMap<osis_core::BlobId, BTreeSet<osis_core::CommitId>>>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
@@ -451,6 +475,9 @@ impl SyncEngine {
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
+            stats: PassStats::default(),
+            touched: work::Touched::default(),
+            listers: None,
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
             lan_rotate: false,
@@ -560,14 +587,16 @@ impl SyncEngine {
         match ev {
             Event::Tick => {
                 // keep-at-most drops change no read, so no engine event says so: forget the
-                // dropped bodies' blobs and let every label judge again (spec/commits.md §5)
+                // dropped bodies' blobs and let the labels judge them again (spec/commits.md §5)
                 // the carrier of a live write goes before its body (spec/commits.md §5)
                 for (c, aspects) in self.engine.due_live_drops()? {
                     self.snapshot_first(&aspects, &c)?;
                 }
+                let due = self.due_timers()?;
                 if self.engine.tick_drops()? > 0 {
+                    self.touched.commits.extend(due.iter().copied());
                     self.mark_dirty();
-                    self.forget_dropped()?;
+                    self.forget_dropped(Some(&due))?;
                 }
                 self.timers(out)?;
                 self.serve_timers(out);
@@ -655,14 +684,30 @@ impl SyncEngine {
     /// commits restart `complete_pass` for the actors they touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
+        let mut dropped: BTreeSet<osis_core::CommitId> = BTreeSet::new();
         while let Ok(e) = self.events.try_recv() {
             match e {
-                crate::Event::Applied { id, origin, .. } => {
+                crate::Event::Applied { id, origin, changed: aspects, .. } => {
                     changed = true;
+                    dropped.insert(id);
                     self.placed_cache.0 = u64::MAX;
+                    self.touched.commits.insert(id);
+                    self.touched.states.extend(aspects);
+                    if let Some(h) = self.engine.header(&id) {
+                        // a creation record moves the reader actors of the thing's bodies
+                        self.touched.things.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                        // its chunks may have come with it
+                        self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
+                        if let Some(ls) = self.listers.as_mut() {
+                            for ch in &h.chunks {
+                                ls.entry(ch.blob).or_default().insert(id);
+                            }
+                        }
+                    }
                     if self.engine.header(&id).is_some_and(|h| h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label")) {
                         self.served_cache = None;
                         self.members_moved = true;
+                        self.touched.full = true;
                     }
                     if origin == Origin::Remote
                         && let Some(h) = self.engine.header(&id)
@@ -688,20 +733,73 @@ impl SyncEngine {
                         }
                     }
                 }
-                crate::Event::Changed { .. } => changed = true,
+                crate::Event::Changed { cause, changed: aspects } => {
+                    changed = true;
+                    if cause == crate::events::Cause::LostAccess {
+                        self.touched.full = true;
+                    }
+                    for (t, a) in &aspects {
+                        dropped.extend(self.engine.core.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
+                    }
+                    self.touched.aspects.extend(aspects);
+                }
                 crate::Event::Roster { .. } => {
                     changed = true;
                     self.served_cache = None;
                     self.members_moved = true;
+                    self.touched.full = true;
                 }
                 _ => {}
             }
         }
         if changed {
             self.mark_dirty();
-            self.forget_dropped()?;
+            let all = self.touched.full || self.cfg.full_passes;
+            self.forget_dropped(if all { None } else { Some(&dropped) })?;
         }
         Ok(())
+    }
+
+    /// The commits of the expiry and keep-at-most timers due now (`Engine::tick_drops` drops
+    /// their bodies without an event).
+    fn due_timers(&mut self) -> Result<BTreeSet<osis_core::CommitId>> {
+        self.engine.run(|tx| {
+            let now = tx.now().0;
+            let mut due = BTreeSet::new();
+            tx.scan(crate::engine::records::TIMER, |k, _| {
+                let (t, c, _) = crate::engine::records::parse_timer(k)?;
+                if t <= now {
+                    due.insert(c);
+                }
+                Ok(())
+            })?;
+            Ok(due)
+        })
+    }
+
+    /// Hands the changes noted since the last pass to every label's work set: the engine's
+    /// (`touched`) to all, the sync state's to the label's (`State::touched`).
+    pub(crate) fn spread_touches(&mut self) {
+        let t = std::mem::take(&mut self.touched);
+        let st = std::mem::take(&mut self.state.touched);
+        let carriers = std::mem::take(&mut self.state.touched_commits);
+        for c in self.conns.values_mut() {
+            for (l, lc) in c.labels.iter_mut() {
+                let w = &mut lc.work;
+                w.full |= t.full;
+                w.commits.extend(t.commits.iter().chain(&carriers).copied());
+                w.aspects.extend(t.aspects.iter().cloned());
+                w.states.extend(t.states.iter().cloned());
+                w.things.extend(t.things.iter().copied());
+                w.blobs.extend(t.blobs.iter().copied());
+                for (_, x) in st.range((*l, state::Touch::Commit(osis_core::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
+                    match x {
+                        state::Touch::Commit(c) => w.commits.insert(*c),
+                        state::Touch::Blob(b) => w.blobs.insert(*b),
+                    };
+                }
+            }
+        }
     }
 
     /// Every label on every connection wants a pass.
@@ -790,11 +888,13 @@ impl SyncEngine {
     /// Replaces the servers kept connected besides those the labels name.
     pub fn set_servers(&mut self, servers: Vec<Address>) {
         self.cfg.servers = servers;
+        self.touched.full = true;
     }
 
     /// Whether co-readers are dialed (`SyncConfig.peers`; off: running peer connections close).
     pub fn set_peers(&mut self, on: bool) -> Vec<Action> {
         self.cfg.peers = on;
+        self.touched.full = true;
         self.handle(Event::Local)
     }
 
@@ -1231,6 +1331,11 @@ impl SyncEngine {
 
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
+    /// What passes did so far (scale checks).
+    pub fn pass_stats(&self) -> PassStats {
+        self.stats
+    }
+
     pub fn is_idle(&self) -> bool {
         self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || (l.synced && !l.syncing && !l.dirty && l.registering.is_none())))
     }

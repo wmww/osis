@@ -131,9 +131,46 @@ pub struct Hint {
     pub via: Option<Tid>,
 }
 
+/// What changed under a label since its passes last looked (`SyncEngine::spread_touches`): a
+/// commit's entries, or a blob that is no commit entry (a chunk, an inbox or parked blob).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Touch {
+    Commit(CommitId),
+    Blob(BlobId),
+}
+
+impl Kind {
+    /// The index tag of a kind other than `Commit` (`State::by_kind`).
+    pub fn tag(&self) -> Option<u8> {
+        match self {
+            Kind::Unknown => Some(0),
+            Kind::Commit { .. } => None,
+            Kind::Inbox(_) => Some(2),
+            Kind::Bad => Some(3),
+            Kind::Parked(_) => Some(4),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct State {
     pub entries: BTreeMap<(LabelId, BlobId), Entry>,
+    /// Indexes over `entries`, kept by the setters (`index`): commit entries by (label,
+    /// commit), other kinds by (label, `Kind::tag`), certificate copies, labels naming a blob.
+    pub by_label_commit: BTreeMap<(LabelId, CommitId), BTreeSet<BlobId>>,
+    pub by_kind: BTreeSet<(LabelId, u8, BlobId)>,
+    pub cert_entries: BTreeSet<(LabelId, BlobId)>,
+    pub blob_labels: BTreeSet<(BlobId, LabelId)>,
+    /// `present` and `gone` by (label, blob, server).
+    present_by: BTreeSet<(LabelId, BlobId, ServerKey)>,
+    gone_by: BTreeSet<(LabelId, BlobId, ServerKey)>,
+    /// Entries, presence and certificates changed since the passes last looked, by label; and
+    /// commits whose carriers changed (any label). In memory.
+    pub touched: BTreeSet<(LabelId, Touch)>,
+    pub touched_commits: BTreeSet<CommitId>,
+    /// Commits whose blob records were added since `SyncEngine::forget_dropped` last looked (a
+    /// dropped body's blob that came back).
+    pub new_blobs: BTreeSet<CommitId>,
     pub present: BTreeSet<(ServerKey, LabelId, BlobId)>,
     /// Present entries the server holds deposited (no stamp there; spec/sync.md §5): a writer
     /// promotes them at that server, whatever stamp this node knows.
@@ -393,7 +430,77 @@ impl State {
                 _ => {}
             }
         }
+        let all: Vec<((LabelId, BlobId), Entry)> = s.entries.iter().map(|(k, e)| (*k, e.clone())).collect();
+        for ((l, b), e) in all {
+            s.index(l, b, &e, true);
+        }
+        for (sv, l, b) in s.present.clone() {
+            s.present_by.insert((l, b, sv));
+        }
+        for (sv, l, b) in s.gone.clone() {
+            s.gone_by.insert((l, b, sv));
+        }
         Ok(s)
+    }
+
+    /// Adds (or removes) an entry to (from) the indexes over `entries`.
+    fn index(&mut self, l: LabelId, b: BlobId, e: &Entry, add: bool) {
+        fn set<T: Ord>(s: &mut BTreeSet<T>, x: T, add: bool) {
+            if add {
+                s.insert(x);
+            } else {
+                s.remove(&x);
+            }
+        }
+        match (&e.kind, e.kind.tag()) {
+            (Kind::Commit { commit, .. }, _) => {
+                let k = (l, *commit);
+                if add {
+                    self.by_label_commit.entry(k).or_default().insert(b);
+                } else if let Some(x) = self.by_label_commit.get_mut(&k) {
+                    x.remove(&b);
+                    if x.is_empty() {
+                        self.by_label_commit.remove(&k);
+                    }
+                }
+            }
+            (_, Some(t)) => set(&mut self.by_kind, (l, t, b), add),
+            _ => {}
+        }
+        if e.cert {
+            set(&mut self.cert_entries, (l, b), add);
+        }
+        set(&mut self.blob_labels, (b, l), add);
+    }
+
+    /// Notes that what is known of entry `b` under `l` changed (its passes judge it again).
+    fn touch(&mut self, l: LabelId, b: BlobId) {
+        let t = match self.entries.get(&(l, b)).map(|e| &e.kind) {
+            Some(Kind::Commit { commit, .. }) => Touch::Commit(*commit),
+            _ => Touch::Blob(b),
+        };
+        self.touched.insert((l, t));
+    }
+
+    /// The commit entries under `l` of commit `c`.
+    pub fn entries_of<'a>(&'a self, l: &LabelId, c: &CommitId) -> impl Iterator<Item = (BlobId, &'a Entry)> + 'a {
+        let l = *l;
+        self.by_label_commit.get(&(l, *c)).into_iter().flatten().filter_map(move |b| self.entries.get(&(l, *b)).map(|e| (*b, e)))
+    }
+
+    /// The entries under `l` of a kind other than `Commit` (`Kind::tag`).
+    pub fn of_kind(&self, l: &LabelId, tag: u8) -> Vec<BlobId> {
+        self.by_kind.range((*l, tag, BlobId([0; 32]))..=(*l, tag, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
+    }
+
+    /// Whether any label has an entry of blob `b`.
+    pub fn named(&self, b: &BlobId) -> bool {
+        self.blob_labels.range((*b, LabelId([0; 16]))..=(*b, LabelId([0xff; 16]))).next().is_some()
+    }
+
+    /// The labels with an entry of blob `b`.
+    pub fn labels_of(&self, b: &BlobId) -> Vec<LabelId> {
+        self.blob_labels.range((*b, LabelId([0; 16]))..=(*b, LabelId([0xff; 16]))).map(|(_, l)| *l).collect()
     }
 
     /// Writes the records changed since the last flush in one transaction (wraps and blob keys
@@ -435,13 +542,21 @@ impl State {
 
     pub fn set_entry(&mut self, l: LabelId, b: BlobId, e: Entry) {
         self.put(key(ENTRY, &[&l.0, &b.0]), encode_entry(&e));
+        self.touch(l, b);
+        if let Some(old) = self.entries.get(&(l, b)).cloned() {
+            self.index(l, b, &old, false);
+        }
+        self.index(l, b, &e, true);
         self.entries.insert((l, b), e);
+        self.touch(l, b);
         self.feed.added(l, b);
         self.version += 1;
     }
 
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
-        if self.entries.remove(&(l, b)).is_some() {
+        self.touch(l, b);
+        if let Some(e) = self.entries.remove(&(l, b)) {
+            self.index(l, b, &e, false);
             self.version += 1;
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.feed.deleted(l, b);
@@ -452,7 +567,9 @@ impl State {
 
     /// Forgets an entry that never counted (junk a server announced): no tombstone.
     pub fn drop_entry(&mut self, l: LabelId, b: BlobId) {
-        if self.entries.remove(&(l, b)).is_some() {
+        self.touch(l, b);
+        if let Some(e) = self.entries.remove(&(l, b)) {
+            self.index(l, b, &e, false);
             self.version += 1;
             self.del(key(ENTRY, &[&l.0, &b.0]));
             self.feed.deleted(l, b);
@@ -477,10 +594,14 @@ impl State {
         let k = key(PRESENT, &[&s, &l.0, &b.0]);
         if on {
             if self.present.insert((s, l, b)) {
+                self.present_by.insert((l, b, s));
+                self.touch(l, b);
                 self.version += 1;
                 self.put(k, Vec::new());
             }
         } else if self.present.remove(&(s, l, b)) {
+            self.present_by.remove(&(l, b, s));
+            self.touch(l, b);
             self.version += 1;
             self.deposited.remove(&(s, l, b));
             self.del(k);
@@ -494,6 +615,7 @@ impl State {
         }
         let changed = if on { self.deposited.insert((s, l, b)) } else { self.deposited.remove(&(s, l, b)) };
         if changed {
+            self.touch(l, b);
             self.put(key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
     }
@@ -504,12 +626,17 @@ impl State {
 
     /// Whether any server holds the entry.
     pub fn present_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.present.iter().any(|(_, x, y)| x == l && y == b)
+        self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
     }
 
     /// Entry IDs known present at a server for a label.
     pub fn present_at(&self, s: &ServerKey, l: &LabelId) -> Vec<BlobId> {
-        self.present.iter().filter(|(x, y, _)| x == s && y == l).map(|(_, _, b)| *b).collect()
+        self.present.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
+    }
+
+    /// Entries deposited at a server under a label.
+    pub fn deposited_at(&self, s: &ServerKey, l: &LabelId) -> Vec<BlobId> {
+        self.deposited.range((*s, *l, BlobId([0; 32]))..=(*s, *l, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
     }
 
     pub fn set_cursor(&mut self, s: ServerKey, l: LabelId, c: Option<Cursor>) {
@@ -535,6 +662,7 @@ impl State {
         let v = encode_parts(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert)), &rec.parts).take();
         self.put(key(BLOB, &[&id.0]), v);
         self.by_commit.entry(rec.commit).or_default().insert(id);
+        self.new_blobs.insert(rec.commit);
         self.blobs.insert(id, rec);
     }
 
@@ -668,6 +796,7 @@ impl State {
 
     pub fn add_cert(&mut self, l: LabelId, c: CommitId) {
         if self.certs.insert((l, c)) {
+            self.touched.insert((l, Touch::Commit(c)));
             self.put(key(CERT, &[&l.0, &c.0]), Vec::new());
         }
     }
@@ -679,16 +808,19 @@ impl State {
 
     pub fn set_gone(&mut self, s: ServerKey, l: LabelId, b: BlobId) {
         if self.gone.insert((s, l, b)) {
+            self.gone_by.insert((l, b, s));
+            self.touch(l, b);
             self.put(key(GONE, &[&s, &l.0, &b.0]), Vec::new());
         }
     }
 
     pub fn is_gone(&self, l: &LabelId, b: &BlobId) -> bool {
-        self.gone.iter().any(|(_, x, y)| x == l && y == b)
+        self.gone_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
     }
 
     /// Adds a carrier of `body` (a snapshot of one of its aspects).
     pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
+        self.touched_commits.insert(body);
         let list = self.carriers.entry(body).or_default();
         if !list.contains(&snapshot) {
             list.push(snapshot);
@@ -699,6 +831,7 @@ impl State {
 
     pub fn set_timed(&mut self, s: ServerKey, l: LabelId, b: BlobId) {
         if self.timed.insert((s, l, b)) {
+            self.touch(l, b);
             self.put(key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
         }
     }

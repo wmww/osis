@@ -1,0 +1,413 @@
+//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one server
+//! judges again. A verdict on a commit's bodies and entries changes only through a trigger:
+//! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
+//! the engine applied it or changed one of its aspects (validity, expiry, purge, a late delta),
+//! a snapshot or a newer card write of its aspects changed under the label, its thing got its
+//! creation record or entered or left the closure, a drop (compaction, keep at most), a time
+//! bound passed (keep at least, expiry), or the state of an aspect its verdict waits on changed
+//! (liveness, a keep-at-most bound). Anything else (open, a membership or `/label` change, lost
+//! access, a forget, other inputs of the pass: keys, unsettled aspects, the home label's
+//! published things) judges everything. A commit or blob leaves the set only once its pass did
+//! nothing for it and found nothing waiting (no send, delete or relay wait outstanding); so a
+//! pass over the set acts as a full pass would.
+
+use crate::labeling::HeadKeys;
+use osis_core::{Ak, BlobId, CommitId, Tid};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Changes the engine reported, for every label (`SyncEngine::engine_events`).
+#[derive(Default)]
+pub(crate) struct Touched {
+    pub full: bool,
+    pub commits: BTreeSet<CommitId>,
+    /// Every commit on these aspects (a validity flip, expiry, purge, late delta).
+    pub aspects: BTreeSet<(Tid, Ak)>,
+    /// Aspects whose state changed (an applied write): the commits waiting on them.
+    pub states: BTreeSet<(Tid, Ak)>,
+    /// Things whose creation record arrived: every commit on them.
+    pub things: BTreeSet<Tid>,
+    /// Blobs that arrived (a body linking them uploads them now).
+    pub blobs: BTreeSet<BlobId>,
+}
+
+/// What the pass's verdicts depend on beyond single commits: a change judges everything.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Inputs {
+    pub head: Option<osis_label::StepId>,
+    pub epochs: [Option<osis_crypto::Epoch>; 3],
+    pub roles: (bool, bool, bool, bool, bool),
+    pub replaced: bool,
+    pub actor: Tid,
+    pub published: BTreeSet<Tid>,
+    pub may_rotate: bool,
+    /// Whether anything is unsettled, every aspect (`None`) is, every aspect is for holding.
+    pub unsettled: (bool, bool, bool),
+}
+
+impl Inputs {
+    pub fn roles(keys: &HeadKeys, read_ok: bool) -> (bool, bool, bool, bool, bool) {
+        (keys.write.is_some(), keys.delete.is_some(), keys.deposit.is_some(), keys.sync_established, read_ok)
+    }
+}
+
+/// One label's work set at one connection's server (`LConn::work`).
+pub(crate) struct Work {
+    /// Judge everything next pass.
+    pub full: bool,
+    pub commits: BTreeSet<CommitId>,
+    pub blobs: BTreeSet<BlobId>,
+    pub aspects: BTreeSet<(Tid, Ak)>,
+    pub states: BTreeSet<(Tid, Ak)>,
+    pub things: BTreeSet<Tid>,
+    /// Commits whose verdict changes at a time (raw-free corrected wall ms).
+    pub due: BTreeMap<u64, BTreeSet<CommitId>>,
+    /// Commits whose verdict waits on an aspect's state (liveness, a keep-at-most bound).
+    pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    /// Blobs a body links that this node neither holds nor has an entry of: the commits that
+    /// upload them once they arrive.
+    pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
+    pub inputs: Option<Inputs>,
+    /// When the clock alone next changes a role the verdicts read (an edge's `until`, a
+    /// membership write ahead of the clock): everything is judged then.
+    pub until: Option<u64>,
+    /// Aggregates over the label's entries, kept by the touches (rebuilt by a full pass).
+    pub closure: BTreeSet<Tid>,
+    pub unsettled: BTreeSet<Option<(Tid, Ak)>>,
+    pub snaps: BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>,
+    /// Entries that unwrap under a held read secret and are not opened.
+    pub unopened: BTreeSet<BlobId>,
+    /// Commit entries judged invalid or not judged yet, with their authors.
+    pub unjudged: BTreeMap<CommitId, Tid>,
+    /// Other nodes' heartbeats under the label.
+    pub beats: BTreeMap<Tid, BTreeSet<(osis_core::Ts, CommitId)>>,
+}
+
+impl Default for Work {
+    fn default() -> Work {
+        Work::idle(true)
+    }
+}
+
+impl Work {
+    pub fn idle(full: bool) -> Work {
+        Work {
+            full,
+            commits: BTreeSet::new(),
+            blobs: BTreeSet::new(),
+            aspects: BTreeSet::new(),
+            states: BTreeSet::new(),
+            things: BTreeSet::new(),
+            due: BTreeMap::new(),
+            waits: BTreeMap::new(),
+            links: BTreeMap::new(),
+            inputs: None,
+            until: None,
+            closure: BTreeSet::new(),
+            unsettled: BTreeSet::new(),
+            snaps: BTreeMap::new(),
+            unopened: BTreeSet::new(),
+            unjudged: BTreeMap::new(),
+            beats: BTreeMap::new(),
+        }
+    }
+
+    /// Takes in what another set collected meanwhile (a pass's own touches).
+    pub fn merge(&mut self, o: Work) {
+        self.full |= o.full;
+        self.commits.extend(o.commits);
+        self.blobs.extend(o.blobs);
+        self.aspects.extend(o.aspects);
+        self.states.extend(o.states);
+        self.things.extend(o.things);
+    }
+}
+
+/// What a pass judges: everything, or these commits and blobs.
+pub(crate) enum Scope {
+    All,
+    Some { commits: BTreeSet<CommitId>, blobs: BTreeSet<BlobId> },
+}
+
+impl Scope {
+    pub fn all(&self) -> bool {
+        matches!(self, Scope::All)
+    }
+
+    pub fn has(&self, c: &CommitId) -> bool {
+        match self {
+            Scope::All => true,
+            Scope::Some { commits, .. } => commits.contains(c),
+        }
+    }
+}
+
+/// What a pass left to do: judged again next pass, at a time, or when an aspect's state
+/// changes.
+#[derive(Default)]
+pub(crate) struct Left {
+    pub commits: BTreeSet<CommitId>,
+    pub blobs: BTreeSet<BlobId>,
+    pub due: BTreeMap<u64, BTreeSet<CommitId>>,
+    pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
+}
+
+impl Left {
+    pub fn at(&mut self, t: u64, c: CommitId) {
+        self.due.entry(t).or_default().insert(c);
+    }
+
+    pub fn wait(&mut self, t: Tid, a: Ak, c: CommitId) {
+        self.waits.entry((t, a)).or_default().insert(c);
+    }
+}
+
+/// Notes a judgment makes for the work set (`Left`): its answer may change without a trigger
+/// (`unsure`), at a time, or with an aspect's state.
+#[derive(Default)]
+pub(crate) struct Note {
+    pub unsure: bool,
+    pub at: Option<u64>,
+    pub waits: Vec<(Tid, Ak)>,
+}
+
+impl Note {
+    pub fn at(&mut self, t: u64) {
+        self.at = Some(self.at.map_or(t, |x| x.min(t)));
+    }
+
+    /// Moves the note into `left` for commit `c`.
+    pub fn leave(&mut self, c: CommitId, left: &mut Left) {
+        if std::mem::take(&mut self.unsure) {
+            left.commits.insert(c);
+        }
+        if let Some(t) = self.at.take() {
+            left.at(t, c);
+        }
+        for (t, a) in std::mem::take(&mut self.waits) {
+            left.wait(t, a, c);
+        }
+    }
+}
+
+use super::state::Kind;
+use super::{ConnId, SyncEngine};
+use crate::error::Result;
+use crate::labeling::Body;
+use osis_core::LabelId;
+
+impl SyncEngine {
+    /// Readies work set `w` of label `l` of `g` for a pass: due times and waited-on aspect
+    /// states move their commits in, touched aspects, things and the closure's changes expand
+    /// to their commits, the aggregates follow. Returns whether the pass judges everything.
+    pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work) -> bool {
+        let now = self.now();
+        let later = w.due.split_off(&now.saturating_add(1));
+        for (_, cs) in std::mem::replace(&mut w.due, later) {
+            w.commits.extend(cs);
+        }
+        for k in std::mem::take(&mut w.states).into_iter().chain(w.aspects.iter().cloned()) {
+            if let Some(cs) = w.waits.remove(&k) {
+                w.commits.extend(cs);
+            }
+        }
+        for b in &w.blobs {
+            if let Some(cs) = w.links.remove(b) {
+                w.commits.extend(cs);
+            }
+        }
+        w.commits.extend(self.commits_of(l, &w.blobs));
+        let closure = self.engine.closure(g);
+        let full = w.full || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
+        if full {
+            w.commits.clear();
+            w.blobs.clear();
+            w.aspects.clear();
+            w.things.clear();
+            w.waits.clear();
+            w.links.clear();
+            w.due.clear();
+            self.rebuild(g, l, w);
+            w.until = self.roster_horizon(&closure, g);
+        } else {
+            w.things.extend(closure.symmetric_difference(&w.closure).copied());
+            // a snapshot changes coverage of its aspects; a node's newer card write makes its
+            // older card stale (spec/permissions.md §4)
+            let me = self.engine.tid();
+            for c in &w.commits {
+                let Some(h) = self.engine.header(c) else { continue };
+                let snapshot = matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot);
+                for a in &h.aspects {
+                    let card = a.tid == h.author && h.author != me && matches!(a.ak.as_str(), "/node" | "/reach" | "/keys");
+                    if snapshot || card {
+                        w.aspects.insert((a.tid, a.ak.clone()));
+                    }
+                }
+            }
+            for (t, a) in std::mem::take(&mut w.aspects) {
+                w.commits.extend(self.engine.core.by_aspect.get(&(t, a)).into_iter().flatten().map(|x| x.1));
+            }
+            for t in std::mem::take(&mut w.things) {
+                w.commits.extend(self.commits_on_thing(&t));
+            }
+            let (cs, bs) = (w.commits.clone(), w.blobs.clone());
+            self.aggregate(g, l, w, &cs, &bs);
+        }
+        w.closure = closure;
+        full
+    }
+
+    /// The commits of the entries among `bs` under `l` (a blob touched before it opened).
+    fn commits_of(&self, l: &LabelId, bs: &BTreeSet<BlobId>) -> Vec<CommitId> {
+        bs.iter().filter_map(|b| match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
+            Some(Kind::Commit { commit, .. }) => Some(*commit),
+            _ => None,
+        }).collect()
+    }
+
+    /// The next time the clock alone changes a roster that entitlement and departures under a
+    /// label of `g` read (`rotation::direct_departures` has the same horizon per actor): the
+    /// components of its actor and of its closure's reader actors.
+    pub(super) fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
+        let now = self.now();
+        let core = &self.engine.core;
+        let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
+        let mut out: Option<u64> = None;
+        let mut later = |t: u64| {
+            if t > now {
+                out = Some(out.map_or(t, |x| x.min(t)));
+            }
+        };
+        for t in closure.iter().chain([g]).map(|t| core.reader_of(t)).collect::<BTreeSet<Tid>>() {
+            let Some(tl) = core.timelines.get(&t) else { continue };
+            if seen.contains(&std::ptr::from_ref(tl)) {
+                continue;
+            }
+            seen.push(std::ptr::from_ref(tl));
+            for (_, _, e) in tl.edges_at(None).iter() {
+                if let Some(u) = e.until {
+                    later(u.0);
+                }
+            }
+            for wid in tl.applied().keys() {
+                let ts = match wid {
+                    osis_perm::WriteId::Op(c, _) => tl.membership_commit(c).map(|m| m.ts),
+                    osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.ts),
+                };
+                if let Some(ts) = ts {
+                    later(ts.wall_ms().0);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every commit with a delta on thing `t`.
+    fn commits_on_thing(&self, t: &Tid) -> BTreeSet<CommitId> {
+        let Ok(min) = Ak::new("/\0") else { return BTreeSet::new() };
+        self.engine.core.by_aspect.range((*t, min)..).take_while(|((x, _), _)| x == t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect()
+    }
+
+    /// The aggregates of `w` from every entry under `l`.
+    pub(super) fn rebuild(&mut self, g: &Tid, l: &LabelId, w: &mut Work) {
+        w.snaps.clear();
+        w.unopened.clear();
+        w.unjudged.clear();
+        w.beats.clear();
+        let cs: BTreeSet<CommitId> = self.state.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect();
+        let bs: BTreeSet<BlobId> = self.state.of_kind(l, 0).into_iter().collect();
+        self.aggregate(g, l, w, &cs, &bs);
+    }
+
+    /// Brings the aggregates of `w` up to date for commits `cs` and blobs `bs`.
+    fn aggregate(&mut self, g: &Tid, l: &LabelId, w: &mut Work, cs: &BTreeSet<CommitId>, bs: &BTreeSet<BlobId>) {
+        let me = self.engine.tid();
+        for c in cs {
+            let entries: Vec<Vec<(usize, usize)>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
+            let blobs: Vec<BlobId> = self.state.entries_of(l, c).map(|(b, _)| b).collect();
+            let Some(h) = self.engine.header(c) else {
+                w.unjudged.remove(c);
+                continue;
+            };
+            if matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot) {
+                for a in &h.aspects {
+                    let set = w.snaps.entry((a.tid, a.ak.clone())).or_default();
+                    set.retain(|(_, x)| x != c);
+                    set.extend(blobs.iter().map(|b| (*b, *c)));
+                    if set.is_empty() {
+                        w.snaps.remove(&(a.tid, a.ak.clone()));
+                    }
+                }
+            }
+            if entries.iter().any(|p| !self.engine.judged_valid(c, p)) {
+                w.unjudged.insert(*c, h.author);
+            } else {
+                w.unjudged.remove(c);
+            }
+            if h.author != me && h.aspects.iter().any(|x| x.ak.as_str() == "/seen" && x.tid == h.author) {
+                let set = w.beats.entry(h.author).or_default();
+                set.retain(|(_, x)| x != c);
+                if !blobs.is_empty() {
+                    set.insert((h.ts, *c));
+                }
+                if set.is_empty() {
+                    w.beats.remove(&h.author);
+                }
+            }
+        }
+        if bs.is_empty() {
+            return;
+        }
+        let secrets = self.read_secrets(g);
+        for b in bs {
+            let open = self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown && osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some());
+            if open {
+                w.unopened.insert(*b);
+            } else {
+                w.unopened.remove(b);
+            }
+        }
+    }
+
+    /// Takes in what changed during this pass so far (entries opened, copies placed): judged
+    /// in the rest of the pass, and again by the next.
+    pub(super) fn pull(&mut self, conn: ConnId, g: &Tid, l: LabelId, scope: &mut Scope, w: &mut Work) {
+        self.spread_touches();
+        let Some((mut cs, bs)) = self.conns.get(&conn).and_then(|c| c.labels.get(&l)).map(|lc| (lc.work.commits.clone(), lc.work.blobs.clone())) else { return };
+        cs.extend(self.commits_of(&l, &bs));
+        self.aggregate(g, &l, w, &cs, &bs);
+        if let Scope::Some { commits, blobs } = scope {
+            commits.extend(cs);
+            blobs.extend(bs);
+        }
+    }
+
+    /// The certificate copies this node placed under `l` in `scope`, by blob.
+    pub(super) fn cert_entries(&self, l: &LabelId, scope: &Scope) -> BTreeSet<BlobId> {
+        match scope {
+            Scope::All => self.state.cert_entries.range((*l, BlobId([0; 32]))..=(*l, BlobId([0xff; 32]))).map(|(_, b)| *b).collect(),
+            Scope::Some { commits, blobs } => {
+                let mut out: BTreeSet<BlobId> = commits.iter().flat_map(|c| self.state.entries_of(l, c).filter(|(_, e)| e.cert).map(|(b, _)| b)).collect();
+                out.extend(blobs.iter().filter(|b| self.state.cert_entries.contains(&(*l, **b))));
+                out
+            }
+        }
+    }
+
+    /// The bodies label `l` of `g` should hold among the commits of `scope`
+    /// (`bodies_under`).
+    pub(super) fn bodies_in(&mut self, g: &Tid, l: &LabelId, scope: &Scope) -> Result<Vec<Body>> {
+        let Scope::Some { commits, .. } = scope else { return self.bodies_under(g, l) };
+        let ctx = self.engine.body_ctx(g);
+        let replaced = self.is_replaced(g, l);
+        let mut out = Vec::new();
+        for c in commits {
+            let mut bs = self.engine.commit_bodies_under(&ctx, c)?;
+            if replaced {
+                bs.retain(|b| b.membership);
+            }
+            out.extend(bs);
+        }
+        Ok(out)
+    }
+}

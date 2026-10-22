@@ -82,6 +82,19 @@ impl Default for NetConfig {
     }
 }
 
+thread_local! {
+    static FULL_PASSES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` with every node added meanwhile on this thread judging everything at each pass
+/// (`SyncConfig::full_passes`): the reference the work sets are compared against.
+pub fn with_full_passes<T>(f: impl FnOnce() -> T) -> T {
+    let was = FULL_PASSES.with(|x| x.replace(true));
+    let r = f();
+    FULL_PASSES.with(|x| x.set(was));
+    r
+}
+
 /// One simulated device.
 pub struct NetNode {
     pub sync: Option<SyncEngine>,
@@ -413,7 +426,8 @@ impl NetSim {
         self.add_node_with(cfg, spec)
     }
 
-    pub fn add_node_with(&mut self, cfg: SyncConfig, spec: ClockSpec) -> Res<usize> {
+    pub fn add_node_with(&mut self, mut cfg: SyncConfig, spec: ClockSpec) -> Res<usize> {
+        cfg.full_passes |= FULL_PASSES.with(|x| x.get());
         let i = self.nodes.len();
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
@@ -1412,6 +1426,15 @@ impl NetSim {
             for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
                 for b in hub.store().live_ids(&l).unwrap_or_default() {
                     h.update(&b.0);
+                }
+                // the whole log: every upload and delete, in order
+                let mut after = 0;
+                while let Ok(Some(recs)) = hub.store().log_after(&l, after, 1024) {
+                    let Some(last) = recs.last().map(|x| x.0) else { break };
+                    for r in &recs {
+                        h.update(format!("{r:?}").as_bytes());
+                    }
+                    after = last;
                 }
             }
         }

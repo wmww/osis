@@ -194,6 +194,7 @@ impl SyncEngine {
             walk: None,
             entry_box: None,
             writers: Vec::new(),
+            work: super::work::Work::default(),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.labels.insert(l, lc);

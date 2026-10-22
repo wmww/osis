@@ -412,3 +412,46 @@ fn demotion_heavy_open() {
     println!("owner's open, walk evaluated anew: {:?} ({} restored)", t2.elapsed(), lp.peers[0].engine.walks_restored());
     assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
 }
+
+mod net;
+
+// spec/sync.md §6, §7; spec/requirements.md, Scale: a change costs O(change). A label holding N
+// content commits (100 things, N/100 writes each) at one server, synced by a writer and a
+// reader; then one more write: the passes it causes at both nodes (time, and the entries and
+// bodies they judge) do not grow with N. `OSIS_SCALE_MAX` caps N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn sync_pass_cost() {
+    let max: usize = std::env::var("OSIS_SCALE_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let mut n = 1_000;
+    while n <= max {
+        let mut net = net::Net::new();
+        let sv = net.add_server();
+        let a = net.node(1, &[sv]);
+        let b = net.node(2, &[sv]);
+        let g = net.group(a, &[(b, Role::Read)], &[sv]);
+        let things: Vec<Tid> = (0..100).map(|i| net.item(a, g, g, &format!("t{i}"))).collect();
+        let t0 = Instant::now();
+        for i in 0..n {
+            net.write(a, things[i % things.len()], &format!("v{i}"));
+        }
+        let fill = t0.elapsed();
+        let t1 = Instant::now();
+        net.run();
+        let first = t1.elapsed();
+        let l = net.label(a);
+        let held = net.server_ids(sv, &l).len();
+        assert!(held >= n, "{held} entries at the server");
+        // settled: a quiet round, then one new write
+        net.advance(61_000);
+        let before = (net.sync(a).pass_stats(), net.sync(b).pass_stats());
+        let t2 = Instant::now();
+        net.write(a, things[0], "one more");
+        net.run();
+        let one = t2.elapsed();
+        let after = (net.sync(a).pass_stats(), net.sync(b).pass_stats());
+        assert_eq!(net.read(b, things[0]), Some(net::s("one more")));
+        println!("sync {n} commits ({held} entries): writes {fill:?}, first sync {first:?}; one more write synced in {one:?}, passes before/after (writer, reader): {before:?} / {after:?}");
+        n *= 10;
+    }
+}
