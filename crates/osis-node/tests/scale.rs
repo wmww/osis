@@ -325,4 +325,90 @@ fn membership_change_and_open_cost() {
         println!("open {k} with {n} edge writes held: {:?} ({} membership components restored from their saved walks)", t6.elapsed(), e.walks_restored());
         assert_eq!(e.roster(&things[1]), roster);
     }
+    demotion_heavy_open();
+}
+
+/// Several admins writing edges on 20 docs of one org, the owner demoting and re-granting
+/// them all along (their writes it had not received drop), commits reaching the owner in
+/// batches: the owner's open restored from its saved walk against evaluated anew.
+fn demotion_heavy_open() {
+    use osis_node::local_peer::LocalPeer;
+    let n: usize = std::env::var("OSIS_SCALE_DEMOTE").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let mut lp = LocalPeer::new(6, 77, WallMs(1_700_000_000_000)).unwrap();
+    let admins: Vec<Tid> = (1..6).map(|i| lp.peers[i].engine.tid()).collect();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let org = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].engine.commit(m).unwrap();
+    let mut m = Mutation::new();
+    let docs: Vec<Tid> = (0..20).map(|_| lp.peers[0].engine.new_thing(&mut m, org)).collect();
+    lp.peers[0].engine.commit(m).unwrap();
+    let set = |e: &mut Engine, t: Tid, member: Tid, role: Option<Role>| -> Option<osis_core::CommitId> {
+        let mut m = Mutation::new();
+        let op = match role {
+            Some(r) => PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None }.to_value()) },
+            None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) },
+        };
+        m.op(t, &ct::MEMBERS, op).unwrap();
+        e.commit(m).ok().flatten()
+    };
+    for a in &admins {
+        set(&mut lp.peers[0].engine, org, *a, Some(Role::Admin)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let members: Vec<Tid> = (0..30u8).map(|i| Tid::from_bytes([150 + i; 15])).collect();
+    let mut x: u64 = 0x5eed;
+    let mut rnd = |k: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x % k
+    };
+    let mut queue: Vec<(usize, osis_core::CommitId)> = Vec::new();
+    let t0 = Instant::now();
+    for i in 0..n {
+        for p in &lp.peers {
+            p.clock.advance(1);
+        }
+        if i % 40 == 39 {
+            // the owner demotes an admin to write on the org, and re-grants it 20 writes later
+            let a = admins[(i / 40) % 5];
+            set(&mut lp.peers[0].engine, org, a, Some(Role::Write));
+        } else if i % 40 == 19 && i > 40 {
+            let a = admins[(i / 40 - 1) % 5];
+            set(&mut lp.peers[0].engine, org, a, Some(Role::Admin));
+        } else {
+            let w = 1 + rnd(5) as usize;
+            let roles = [None, Some(Role::Read), Some(Role::Write)];
+            let (d, mem, r) = (docs[rnd(20) as usize], members[rnd(30) as usize], roles[rnd(3) as usize]);
+            if let Some(id) = set(&mut lp.peers[w].engine, d, mem, r) {
+                queue.push((w, id));
+            }
+        }
+        // the admins' commits reach the owner in batches, a few late
+        if i % 50 == 49 {
+            let keep = queue.len() / 10;
+            let (now, late): (Vec<_>, Vec<_>) = queue.drain(..).enumerate().partition(|(j, _)| !j.is_multiple_of(10) || keep == 0);
+            queue = late.into_iter().map(|(_, x)| x).collect();
+            for (_, (w, id)) in now {
+                let pk = lp.peers[w].engine.package(&id).unwrap().unwrap();
+                let _ = lp.deliver(0, &pk);
+            }
+        }
+    }
+    for (w, id) in std::mem::take(&mut queue) {
+        let pk = lp.peers[w].engine.package(&id).unwrap().unwrap();
+        let _ = lp.deliver(0, &pk);
+    }
+    println!("{n} edge writes by 5 admins with demotions every 40, delivered to the owner: {:?}", t0.elapsed());
+    let roster = lp.peers[0].engine.roster(&docs[0]);
+    let t1 = Instant::now();
+    lp.peers[0].restart(1).unwrap();
+    println!("owner's open, walk restored: {:?} ({} restored)", t1.elapsed(), lp.peers[0].engine.walks_restored());
+    assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
+    lp.peers[0].engine.damage_walks(0).unwrap();
+    let t2 = Instant::now();
+    lp.peers[0].restart(2).unwrap();
+    println!("owner's open, walk evaluated anew: {:?} ({} restored)", t2.elapsed(), lp.peers[0].engine.walks_restored());
+    assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
 }

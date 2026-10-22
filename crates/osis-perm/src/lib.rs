@@ -23,7 +23,7 @@ pub use cert::{project, verify, Certificates};
 pub use content::{overlapping, Range, Validity};
 pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
-pub use incremental::{Changed, Saves, Timelines};
+pub use incremental::{Changed, SaveDone, Saves, Timelines};
 pub use moves::{MoveIndex, RESOLUTION_HOPS};
 pub use purge::PurgeBy;
 pub use roster::RosterState;

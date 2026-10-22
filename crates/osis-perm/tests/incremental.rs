@@ -322,7 +322,8 @@ fn run_restarts(samples: u64, seed: u64) {
             prev = held.clone();
             let saved_all = rng.below(4) == 0;
             if saved_all || rng.below(3) == 0 {
-                let saves = inc.to_save(SALT, min, saved_all);
+                let mut saves = inc.to_save(SALT, min, saved_all);
+                inc.saved(std::mem::take(&mut saves.done));
                 if saved_all {
                     disk.clear();
                 }
@@ -399,7 +400,6 @@ fn damaged_or_foreign_saved_walk_is_ignored() {
             assert!(inc.restored() <= n, "{what}: used");
             assert_eq!(check(&held, &inc, &nodes), None, "{what}");
             // the unusable walk is overwritten
-            let mut inc = inc;
             let s = inc.to_save(salt, 1, false);
             assert!(s.put.iter().any(|(r, _)| *r == root) || s.delete.contains(&root), "{what}: not replaced");
         }

@@ -43,14 +43,11 @@ pub struct Config {
     /// `/node` software revision.
     pub software: String,
     pub store: StoreConfig,
-    /// Membership components with fewer commits and snapshots are evaluated from scratch at
-    /// open rather than saved (`engine::index`, walk cache).
-    pub walk_cache_min: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default(), walk_cache_min: 64 }
+        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
     }
 }
 
@@ -160,8 +157,11 @@ pub(crate) struct Core {
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub timelines: Timelines,
-    /// `Config::walk_cache_min`.
+    /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
+    /// tests lower it).
     pub walk_cache_min: usize,
+    /// Saved walks the running transaction writes, for `Timelines::saved` once it is durable.
+    pub walks_done: Option<osis_perm::SaveDone>,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
     /// The paged maps' key index hash key, derived from the node's seed.
@@ -363,7 +363,8 @@ impl Core {
             pages: HashMap::new(),
             held: held::Held::default(),
             timelines: Timelines::new(),
-            walk_cache_min: Config::default().walk_cache_min,
+            walk_cache_min: index::WALK_CACHE_MIN,
+            walks_done: None,
             stale_things: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -757,7 +758,6 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
-        e.core.walk_cache_min = e.cfg.walk_cache_min;
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -781,7 +781,6 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
-        e.core.walk_cache_min = e.cfg.walk_cache_min;
         e.reload()?;
         e.reexamine()?;
         Ok(e)
@@ -886,11 +885,15 @@ impl Engine {
         };
         match r {
             Ok(v) => {
+                if let Some(d) = self.core.walks_done.take() {
+                    self.core.timelines.saved(d);
+                }
                 self.core.commit_journal();
                 self.core.events.flush();
                 Ok(v)
             }
             Err(e) => {
+                self.core.walks_done = None;
                 self.core.events.discard();
                 self.core.rollback();
                 self.core.stale_all = stale_all;

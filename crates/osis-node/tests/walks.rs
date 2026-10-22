@@ -143,22 +143,23 @@ struct Dev {
 }
 
 impl Dev {
-    fn cfg() -> Config {
-        Config { walk_cache_min: 1, ..Config::default() }
-    }
     fn create(&self) -> Engine {
         let c: Arc<dyn Clock> = self.clock.clone();
-        Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), Dev::cfg(), c, Box::new(SeededRng::from_u64(9))).unwrap()
+        let mut e = Engine::create(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(9))).unwrap();
+        e.set_walk_cache_min(1);
+        e
     }
     fn open(&self) -> osis_node::Result<Engine> {
         let c: Arc<dyn Clock> = self.clock.clone();
-        Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Dev::cfg(), c, Box::new(SeededRng::from_u64(10)))
+        let mut e = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(10)))?;
+        e.set_walk_cache_min(1);
+        Ok(e)
     }
 }
 
 // spec/commits.md §4 (all or none); spec: none (local store cache, notes/local-store.md): a crash
-// at any durable write of edge writes that save their component's walk, then open: the open's
-// timelines equal a from-scratch evaluation of what landed
+// at any durable write of edge writes that save their component's walk, then open: the open
+// resumes a saved walk, and its timelines equal a from-scratch evaluation of what landed
 #[test]
 fn crash_at_every_write_keeps_saved_walks_exact() {
     let mut crashed_any = false;
@@ -183,10 +184,42 @@ fn crash_at_every_write_keeps_saved_walks_exact() {
         dev.faults.revive();
         let e = dev.open().unwrap();
         assert_eq!(e.perm_digest(false), e.perm_digest(true), "crash at write {n}");
+        // the first grants saved the walk before the faults: every open resumes it
+        assert!(e.walks_restored() > 0, "crash at write {n}: the saved walk was not used");
         if !crashed {
             break;
         }
         crashed_any = true;
     }
     assert!(crashed_any);
+}
+
+// spec/permissions.md §5.1 step 5; spec: none (local store cache, notes/local-store.md): new
+// things in a saved component between opens (leaves by their `/created`, one of them with a
+// smaller tid than the saved root, then edges on them) still resume its walk
+#[test]
+fn new_things_between_opens_still_restore() {
+    let mut lp = LocalPeer::new(1, 0x7e57, T0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    for i in 0..80u8 {
+        try_edge(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
+    }
+    reopen_same(e, "saved");
+    assert_eq!(reopen_same(e, "restored"), 1);
+    let mut smaller = false;
+    for k in 0..12 {
+        let mut m = Mutation::new();
+        let d = e.new_thing(&mut m, me);
+        e.commit(m).unwrap();
+        smaller |= d < t;
+        if k % 3 == 0 {
+            try_edge(e, d, Tid::from_bytes([60; 15]), Some(Role::Read));
+        }
+        assert_eq!(reopen_same(e, &format!("new thing {k}")), 1, "new thing {k}: evaluated from scratch");
+    }
+    assert!(smaller, "no new thing below the saved root");
 }

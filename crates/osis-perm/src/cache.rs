@@ -643,32 +643,41 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Saved<'_>> {
     Some(Saved { tag, body, inputs: (things, ids, created), tids, walk: r.b })
 }
 
-/// The held set of `held` restricted to commits and snapshots in `ids`.
-struct Only<'a> {
-    held: &'a dyn HeldSet,
-    ids: &'a BTreeSet<CommitId>,
+/// The held set of `held` restricted to `things`, the `/created` records of `created` and
+/// the commits and snapshots in `ids`.
+pub(crate) struct Only<'a> {
+    pub held: &'a dyn HeldSet,
+    pub things: &'a BTreeSet<Tid>,
+    pub created: &'a BTreeSet<Tid>,
+    pub ids: &'a BTreeSet<CommitId>,
 }
 
 impl HeldSet for Only<'_> {
     fn things(&self) -> Vec<Tid> {
-        self.held.things()
+        self.things.iter().copied().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<MembershipCommit>> {
+        if !self.things.contains(thing) {
+            return Vec::new();
+        }
         self.held.edge_commits(thing).into_iter().filter(|c| self.ids.contains(&c.id)).collect()
     }
     fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
+        if !self.things.contains(thing) {
+            return Vec::new();
+        }
         self.held.roster_snapshots(thing).into_iter().filter(|s| self.ids.contains(&s.id)).collect()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
-        self.held.created(thing)
+        if self.created.contains(thing) { self.held.created(thing) } else { None }
     }
 }
 
-/// The timeline `s` saved, over `held` (a component's held set holding the saved inputs'
-/// things and `/created` records and at least its commits): `None` unless its tag matches
-/// `salt` and the input `held` gives for those commits.
+/// The timeline `s` saved, over `held` (a held set holding at least the saved inputs: their
+/// things, `/created` records and commits): `None` unless its tag matches `salt` and the input
+/// `held` gives for exactly those.
 pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<Timeline> {
-    let input = Input::gather(&Only { held, ids: &s.inputs.1 });
+    let input = Input::gather(&Only { held, things: &s.inputs.0, created: &s.inputs.2, ids: &s.inputs.1 });
     if tag(salt, &input.owners, &input.commits, &input.snaps, s.body)[..] != *s.tag {
         return None;
     }

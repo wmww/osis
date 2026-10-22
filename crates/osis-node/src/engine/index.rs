@@ -41,6 +41,8 @@ const AUTHORS: &[u8] = b"node/authors";
 /// Saved membership walks (osis-perm `Timelines::to_save`), by component root: a cache unit
 /// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
 const WALKS: &[u8] = b"node/walks";
+/// Components with fewer commits and snapshots are evaluated at open rather than saved.
+pub(crate) const WALK_CACHE_MIN: usize = 64;
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -397,7 +399,9 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
-    let saves = tx.core.timelines.to_save(VERSION.as_bytes(), min, all);
+    let mut saves = tx.core.timelines.to_save(VERSION.as_bytes(), min, all);
+    // `Timelines::saved` once the transaction is durable (`Engine::run`)
+    tx.core.walks_done = Some(std::mem::take(&mut saves.done));
     if !saves.put.is_empty() || !saves.delete.is_empty() {
         // shredded: a walk may name writes no longer held (rare, amortized: one root write)
         let t = tx.txn.index(WALKS)?;
@@ -680,7 +684,7 @@ impl super::Engine {
         out
     }
 
-    /// Sets `Config::walk_cache_min` for this session (tests).
+    /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).
     #[doc(hidden)]
     pub fn set_walk_cache_min(&mut self, n: usize) {
         self.core.walk_cache_min = n;
