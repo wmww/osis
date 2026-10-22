@@ -55,6 +55,15 @@ fn stranded_reseal() {
     ok("stranded_reseal", 1);
 }
 
+// spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4: sweep seed 0, an admin's
+// `/label` record of the first step held back the second rotation's step (the settle rule), so
+// both rotations shared one step and the stale device claimed through.
+#[test]
+#[ignore = "tier 2"]
+fn stranded_reseal_seed_0() {
+    ok("stranded_reseal", 0);
+}
+
 // spec/sync.md §6: a server that lost its data gets every must-hold body back from writers.
 #[test]
 fn server_loses_data() {
@@ -80,6 +89,20 @@ fn replay_is_exact() {
 #[ignore = "tier 2"]
 fn compaction() {
     ok("compaction", 1);
+}
+
+// spec/sync.md §6, §7: sweep seed 2887, two writers with different drop sets of one commit delete each other's bodies (message storm).
+#[test]
+#[ignore = "issues/drop-view-pingpong.md"]
+fn compaction_seed_2887() {
+    ok("compaction", 2887);
+}
+
+// spec/sync.md §6, §7: sweep seed 3914, the same churn (not quiescent after 40 rounds).
+#[test]
+#[ignore = "issues/drop-view-pingpong.md"]
+fn compaction_seed_3914() {
+    ok("compaction", 3914);
 }
 
 // spec/permissions.md §9: disk loss and recovery from the card.

@@ -265,13 +265,14 @@ impl SyncEngine {
         Ok((keys, !still.contains(&Role::Read)))
     }
 
-    /// Whether this node may issue a new step for a label of `g` now: another node's membership
-    /// change of the actor received less than `SETTLE_MS` ago is its author's to register first
-    /// (a second admin's step, issued before the author's reaches it, would be a sibling); a
-    /// wake brings the pass back then.
+    /// Whether this node may issue a new step for a label of `g` now: another node's rotation
+    /// of the actor (a `/secrets` write) received less than `SETTLE_MS` ago is its author's to
+    /// register first (a second admin's step, issued before the author's reaches it, would be a
+    /// sibling); a wake brings the pass back then. Other membership writes (an admin recording
+    /// a step in `/label`, a `/keys` update) get no step from their author and delay nothing.
     fn step_settled(&mut self, g: &Tid) -> bool {
         let a = self.engine.core.secret_actor(g).unwrap_or(*g);
-        let Some(t) = self.membership_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
+        let Some(t) = self.rotation_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
         if t <= self.raw_now() {
             return true;
         }

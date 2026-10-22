@@ -1,0 +1,8 @@
+# A redemption commit pends for ever (WaitDeltas) after the race
+> Summary: In `link_race`, a redemption commit on K (`/members` + `/secrets`) reaches the sharer and another node only as its `/members` part, deposited under K's label by a node that holds just that part (an edge-only inbox delivery); nothing ever carries the `/secrets` part, so both wait for it (`Reason::WaitDeltas`) at quiescence. Rare (4 of 4181 sweep seeds).
+> Tags: node, sync, tests
+
+Repro: `osis_sim::replay("link_race", 2255)` (also 2898, 3926, which fail on the pre-round main 46b7da7 too; 1792 fails only after production round 1, same signature). Ignored tests `link_race_seed_{1792,2255,2898,3926}` in sim/tests/library.rs.
+
+## Technical details
+Seed 2255: the commit's author is a link actor L. Node 2 (`bodies` lists only `[(0,0)] reader K`) holds the commit without its `/secrets` part, consistent with `deliver_parts(.., Parts::Edge)` (`flows/edges.rs`, keeps only `/members`); the full blob `[(0,0),(1,0)]` is only under node 2's home label. Node 2 deposits its body `[(0,0)]` under K's label; nodes 0 and 1 (who sync K) apply-check it, find `(1,0)` on a synced thing missing, not expired, purged or dropped (`apply/mod.rs` `examine`), and pend with `WaitDeltas`. Not yet known: why the author's full projection for K never reaches K's label (the loser excused from K after its rotation? L dropped by both redeemers right after `redeem`). Options: a node holding a commit only by edge delivery does not deposit or relay that partial body; or a receiver treats parts it cannot be sent (author departed, no holder) as never coming.

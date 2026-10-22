@@ -832,10 +832,12 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
     type BodyKey = (osis_core::LabelId, CommitId, Vec<(usize, usize)>);
     let mut per_body: std::collections::BTreeMap<BodyKey, BTreeSet<osis_core::BlobId>> = Default::default();
     // the wait is a spread, not an election: a writer whose view of a promotion lags (its
-    // session reopened for a new step) may send too; rare, and never every writer
+    // session reopened for a new step) may send too; rare. Every writer's point may fall in
+    // one of the sim's 1 s steps (about 1 in 10^4 runs for some blob): never for two blobs
     let twice = by_blob.values().filter(|w| w.len() > 1).count();
+    let all = by_blob.values().filter(|w| w.len() > 3).count();
     for ((l, b), who) in &by_blob {
-        if who.len() > 3 || twice * 4 > by_blob.len().max(4) {
+        if who.len() > 3 && all > 1 || twice * 4 > by_blob.len().max(4) {
             let what = sim.known.get(&(*l, *b)).cloned();
             let author = match &what {
                 Some((c, _)) => sim.engine(a)?.header(c).map(|h| (h.author, h.kind, h.aspects.iter().map(|x| x.ak.as_str().to_string()).collect::<Vec<_>>())),

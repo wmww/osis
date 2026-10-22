@@ -85,6 +85,13 @@ fn evil(name: &str, seed: u64, e: Evil) -> Res<Report> {
     }
     sim.dishonest.insert(s1);
     sim.run(200)?;
+    // a quiet stretch can leave the server nothing to misbehave on: run on until it has
+    for _ in 0..10 {
+        if sim.report.evil > 0 {
+            break;
+        }
+        sim.run(40)?;
+    }
     sim.run_until_quiescent(60)?;
     if sim.report.evil == 0 {
         return Err(sim.fail("the evil server never misbehaved"));

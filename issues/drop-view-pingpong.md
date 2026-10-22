@@ -1,0 +1,8 @@
+# Two writers that dropped different parts of one commit delete each other's bodies
+> Summary: When two writers' drop sets for one multi-aspect commit differ (each dropped a different covered part), each judges the other's projection must-not-hold (`Why::Dropped`, not live) and deletes it, then places its own again: a delete/re-place loop at network speed until the views agree. Seen as a message storm in `compaction` (2 of 4181 sweep seeds).
+> Tags: sync, node, retention, tests
+
+Repro: `osis_sim::replay("compaction", 2887)` (fails on the pre-round main 46b7da7 too; 3914, the same churn as "not quiescent", only after production round 1). Ignored tests `compaction_seed_2887`, `compaction_seed_3914` in sim/tests/net.rs.
+
+## Technical details
+Commit 173e has parts `(0,0)` /s/map, `(1,0)` /s/reg, `(2,0)` /s/tags in one body class. Node SGq dropped `(1,0)` and places `[(0,0),(2,0)]`; node Z8u dropped `(0,0)` and places `[(1,0),(2,0)]`; each deletes the other's (about 540 deletions each before the storm bound; `deletable` → `Fate::Delete(Dropped)` with live = false, carried = false). The sim never advances time during the storm, so a drop timer that would align the views never fires; in a real network the loop runs until it does. Not yet known why the views differ at that moment (death records or timers per node, `retention::check_at_most`). Options: never delete an entry for parts dropped only here while this node still places a body of that commit (judge on the intersection of dropped parts), or a node whose own body of a commit was deleted at the server waits (`SETTLE_MS`) before placing it again. Related: issues/keep-at-most-partial-bodies.md (liveness judged alike at every node).
