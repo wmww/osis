@@ -1,13 +1,13 @@
 //! notes-app: a headless notes app over the `osis` API, as scenario functions the tests and the
-//! binary drive. A notebook is a group owned by the person, synced on its servers; its notes
-//! are owned by the notebook (notes/permissions.md Patterns: share a set of things through one
-//! actor), so sharing the notebook shares every note in it. Typed keys come from notes.osis by
-//! codegen (build.rs). Plan: plans/apps-e2e.md.
+//! binary drive. A notebook is a tag (notes/tags.md) owned by the person, synced under its own
+//! label; its notes are owned by the notebook (notes/permissions.md Patterns: share a set of
+//! things through one actor), so sharing the notebook shares every note in it. Names are the
+//! core `/name`; a person's own tags on notes are private groups in its home. Typed keys come
+//! from notes.osis by codegen (build.rs).
 #![forbid(unsafe_code)]
 
-use osis::core::GROUP;
+use osis::core::{GROUP, NAME, TAG, Tag};
 use osis::{Demotion, EdgeOpts, Lower, Osis, Path, Place, Result, Role, Tid, UndoScope, ValueStream};
-use std::collections::BTreeSet;
 use std::io::Read;
 
 /// Typed keys generated from notes.osis.
@@ -16,14 +16,15 @@ pub mod schema {
     use osis::schema as osis_schema;
     include!(concat!(env!("OUT_DIR"), "/notes.rs"));
 }
-pub use schema::{ATTACHMENT, BODY, NAME, TAGS, TITLE};
+pub use schema::{ATTACHMENT, BODY};
 
-/// A new notebook named `name`, in the person's home group and synced on the database's
-/// servers.
+/// A new notebook named `name`: a tag owned by the person, synced under its own label on the
+/// database's servers (not placed in home: its rotations stay out of the home label).
 pub fn new_notebook(db: &Osis, name: &str) -> Result<Tid> {
     let nb = db.write_with(|w| {
-        let nb = w.create(db.me(), Place::In(db.home()))?;
+        let nb = w.create(db.me(), Place::Unsynced)?;
         w.make_group(nb)?;
+        w.at(nb, TAG).set(&Tag::default())?;
         w.at(nb, NAME).set(&name.to_string())?;
         Ok(nb)
     })?;
@@ -35,7 +36,7 @@ pub fn new_notebook(db: &Osis, name: &str) -> Result<Tid> {
 pub fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
     db.write_with(|w| {
         let note = w.create(notebook, Place::In(notebook))?;
-        w.at(note, TITLE).set(&title.to_string())?;
+        w.at(note, NAME).set(&title.to_string())?;
         Ok(note)
     })
 }
@@ -46,21 +47,41 @@ pub fn notes(db: &Osis, notebook: Tid) -> Result<Vec<Tid>> {
 }
 
 pub fn title(db: &Osis, note: Tid) -> Result<Option<String>> {
-    db.get(note, TITLE)
+    db.get(note, NAME)
 }
 
 /// Renames a note from what the user saw (`shown`) to `new`: only the change is written, so a
 /// concurrent rename elsewhere is merged, not clobbered blindly.
 pub fn rename(db: &Osis, note: Tid, shown: &str, new: &str) -> Result<()> {
-    db.write_with(|w| w.at(note, TITLE).edit(&shown.to_string(), &new.to_string()))
+    db.write_with(|w| w.at(note, NAME).edit(&shown.to_string(), &new.to_string()))
 }
 
-pub fn tag(db: &Osis, note: Tid, tag: &str) -> Result<()> {
-    db.write_with(|w| w.at(note, TAGS).path(Path::root()).add(&tag.to_string()))
+/// A person's own tag: a tag group in its home, so every device has it and nobody else does.
+pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
+    db.write_with(|w| {
+        let t = w.create(db.me(), Place::In(db.home()))?;
+        w.make_group(t)?;
+        w.at(t, TAG).set(&Tag::default())?;
+        w.at(t, NAME).set(&name.to_string())?;
+        Ok(t)
+    })
 }
 
-pub fn tags(db: &Osis, note: Tid) -> Result<BTreeSet<String>> {
-    Ok(db.get(note, TAGS)?.unwrap_or_default())
+/// Tags a note: a placement written on the tag, so it works on notes the person cannot write.
+pub fn tag(db: &Osis, note: Tid, tag: Tid) -> Result<()> {
+    db.write_with(|w| w.place(note, tag))
+}
+
+/// The names of the tags a note is in, as this node knows them (a notebook is a tag too).
+pub fn tags(db: &Osis, note: Tid) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for g in db.groups_of(note) {
+        if db.get(g, TAG)?.is_some() {
+            out.push(db.get(g, NAME)?.unwrap_or_default());
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// The body text (empty when unwritten).

@@ -66,14 +66,6 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
-    // or rejection residue: it then answers as the held set without the dropped writes
-    if rejection_residue(w, &tl, &thing) {
-        let fixed = answers(&w.held_without(&dropped_commits(&tl)), things, probes, &keep);
-        if after == fixed && compacted == fixed {
-            RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return None;
-        }
-    }
     Some(format!("snapshot of {thing:?} changed\nbefore {before:?}\nafter  {after:?}\ncompacted {compacted:?}\nledger {ledger:#?}\ndropped {:?}\nnodes {:?}", tl.dropped(), w.commits.iter().map(|c| (c.id, c.author, c.t, c.ops.clone())).collect::<Vec<_>>()))
 }
 
@@ -95,6 +87,7 @@ fn probes(w: &mut World, nodes: &[Tid], rng: &mut Rng) -> Vec<Point> {
 }
 
 fn run_joint(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
@@ -131,11 +124,11 @@ fn run_joint(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for x in 0..actors.len() {
             if let Some(d) = neutral(&w, actors[x], top[x], &actors, &ps) {
-                panic!("sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
             }
         }
     }
-    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting any actor of a random joint history (mutual membership, owner chains)
@@ -152,6 +145,7 @@ fn joint_resnapshot_neutral_large() {
 }
 
 fn run_edges(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
@@ -188,10 +182,10 @@ fn run_edges(samples: u64, seed: u64) {
         }
         let ps = probes(&mut w, &nodes, &mut rng);
         if let Some(d) = neutral(&w, t, nodes[0], &[t], &ps) {
-            panic!("sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
         }
     }
-    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting a thing with `until`, invites, links and self-removals is neutral.
@@ -207,6 +201,7 @@ fn edges_resnapshot_neutral_large() {
 }
 
 fn run_snapshot(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
         let mut h = snapshot::random_hist(&mut rng);
@@ -253,11 +248,11 @@ fn run_snapshot(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for thing in [p, g] {
             if let Some(d) = neutral(&w, thing, k, &[p, g], &ps) {
-                panic!("sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
             }
         }
     }
-    eprintln!("{samples} histories; residue snapshots that repaired drops or rejections so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
 /// §6: re-snapshotting P (owning G) or G after churn, demotions and earlier snapshots is
@@ -381,12 +376,11 @@ fn same_ts_demote_regrant_replayed_spec_permissions_6() {
     assert_eq!(neutral(&w, p, k, &[p, q], &[]), None);
 }
 
-/// §6 epoch start, known residue (issues/epoch-start-rejection-residue.md): n1 removes n2
-/// from P at 4, so n2's snapshot of G at 6 is rejected; K's removal of n1 at 18 drops that
-/// removal, yet G's snapshot stays rejected, while without the dropped write it is G's epoch
-/// start. A re-snapshot of P repairs it. Pins the behaviour.
+/// §6 epoch start: n1 removes n2 from P at 4, but K's removal of n1 at 18 drops that removal,
+/// so n2's snapshot of G at 6 is G's epoch start, as without the dropped write (it used to be
+/// rejected for good when found inapplicable before the drop), and a re-snapshot of P keeps it.
 #[test]
-fn rejected_start_residue_spec_permissions_6() {
+fn start_after_dropped_write_spec_permissions_6() {
     let mut w = World::new();
     let n = w.nodes(4);
     let (k, n1, n2, n3) = (n[0], n[1], n[2], n[3]);
@@ -401,12 +395,39 @@ fn rejected_start_residue_spec_permissions_6() {
     let rm = w.set(n1, p, n2, None, 4, &r([LATE, 4, LATE, LATE]));
     let tl = Timeline::evaluate(&w.held());
     assert!(dropped_commits(&tl).contains(&rm));
-    assert_eq!(tl.epoch_start(&g), None, "residue: the rejection outlives its cause");
+    assert_eq!(tl.epoch_start(&g), Some(s));
     assert_eq!(Timeline::evaluate(&w.held_without(&[rm].into_iter().collect())).epoch_start(&g), Some(s));
-    assert!(rejection_residue(&w, &tl, &p));
     let mut w2 = w.clone();
     w2.snapshot_state(k, p, tl.roster_state(&p), END_T);
-    assert_eq!(Timeline::evaluate(&w2.held()).epoch_start(&g), Some(s), "a re-snapshot of P repairs it");
+    assert_eq!(Timeline::evaluate(&w2.held()).epoch_start(&g), Some(s));
+    assert_eq!(neutral(&w, p, k, &[p, g], &[]), None);
+    assert_eq!(neutral(&w, g, k, &[p, g], &[]), None);
+}
+
+/// §6 epoch start through mutual membership: B (owned by A) is an admin of A, so n2, admin
+/// of B, has owner-chain authority on B through B itself. Its snapshot of B at 5 leaving n2
+/// out applies only while it is not B's start, so the rounds do not settle and it is
+/// excluded: with no other snapshot B has no start; with an older one keeping n2 (at 3), that
+/// one is the start. A snapshot keeping n2 is the start at once.
+#[test]
+fn self_withdrawing_start_excluded_spec_permissions_6() {
+    for (newest_keeps, older) in [(false, false), (false, true), (true, false)] {
+        let mut w = World::new();
+        let n = w.nodes(3);
+        let (k, n2, n3) = (n[0], n[1], n[2]);
+        let a = w.thing(k);
+        let b = w.thing(a);
+        let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+        w.set(k, a, b, edge(Admin), 0, &all);
+        w.set(k, b, n2, edge(Admin), 0, &all);
+        let keeping = [(n3, Edge::new(Write)), (n2, Edge::new(Admin))];
+        let s0 = older.then(|| w.snapshot(n2, b, &keeping, 3, &all));
+        let s1 = w.snapshot(n2, b, if newest_keeps { &keeping } else { &keeping[..1] }, 5, &all);
+        let tl = Timeline::evaluate(&w.held());
+        let want = if newest_keeps { Some(s1) } else { s0 };
+        assert_eq!(tl.epoch_start(&b), want, "newest keeps n2: {newest_keeps}, older: {older}");
+        assert_eq!(tl.role(&n2, &b, At::END), Some(Admin));
+    }
 }
 
 /// §6: a ledger entry replays just after the commit its key names: A's self-removal from N

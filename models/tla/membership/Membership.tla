@@ -274,17 +274,19 @@ Step(ev, st) ==
          LET o == ev.ops[1]
          IN UpdW(Change(st, <<o.mb, o.tg>>, [r |-> o.r, u |-> o.u], t, ev.key5, ev.au, ev.ex,
                         ev.fr, 0, 0), ev.key5, t)
+    \* The epoch start: its roster applies either way; whether the snapshot applies
+    \* (rej) counts only in the walk where D settles (§6).
     [] ev.kind = "s" ->
-         IF Class(R, ev.au, ev.tg) < 3 \/ <<ev.id, 1>> \in st.D THEN [st EXCEPT !.rej = TRUE]
-         ELSE LET st1 == [st EXCEPT !.app = @ \cup {[w |-> <<ev.id, 1>>, cid |-> ev.id, au |-> ev.au,
+         LET st1 == IF Class(R, ev.au, ev.tg) < 3 \/ <<ev.id, 1>> \in st.D THEN [st EXCEPT !.rej = TRUE]
+                    ELSE [st EXCEPT !.app = @ \cup {[w |-> <<ev.id, 1>>, cid |-> ev.id, au |-> ev.au,
                             tg |-> ev.tg, attr |-> 3, key |-> ev.key5, gen |-> ev.gen]}]
-              IN UpdW(ApplyRo(st1, ev, MemSeq(ev.tg), 1, t), ev.key5, t)
+         IN UpdW(ApplyRo(st1, ev, MemSeq(ev.tg), 1, t), ev.key5, t)
 
 \* One walk. stop: restart at the first write that adds to D (the spec);
 \* else record each such write's additions in cands and go on.
 RECURSIVE Pass(_, _, _, _)
 Pass(evs, i, st, stop) ==
-  IF i > Len(evs) \/ st.rej THEN st
+  IF i > Len(evs) THEN st
   ELSE LET s2 == Step(evs[i], st)
        IN IF s2.grow = {} THEN Pass(evs, i + 1, s2, stop)
           ELSE IF stop THEN s2
@@ -294,7 +296,7 @@ Pass(evs, i, st, stop) ==
 RECURSIVE WalkD(_, _, _, _)
 WalkD(evs, E0, D, acc) ==
   LET p == Pass(evs, 1, St0(E0, D), TRUE)
-  IN IF p.rej \/ p.grow = {} THEN [p EXCEPT !.drec = acc \cup @]
+  IN IF p.grow = {} THEN [p EXCEPT !.drec = acc \cup @]
      ELSE WalkD(evs, E0, D \cup p.grow, acc \cup p.drec)
 
 LTev(a, b) == Before(a.key5, b.key5)

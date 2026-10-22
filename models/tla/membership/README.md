@@ -8,7 +8,7 @@ A state is a history: commits in generation order, each from the scenario's menu
 
 ## Properties
 - `DropOrderFree` (1): every order of finding the writes that add to D gives the same verdicts as the spec's restart at the first one. The walk is otherwise a function of the held set by construction (sorted by (ts, node, commit ID), D rebuilt from scratch), so this is the part of determinism that can fail.
-- `Neutral` (2): for each snapshot point, author and thing in `SnapThings`, the walk with the snapshot as epoch start gives the same applied edge writes (those not ignored), valid content and end roles as without it (§6). A snapshot whose author lacks owner-chain authority, or that is dropped, is rejected and not compared.
+- `Neutral` (2): for each snapshot point, author and thing in `SnapThings`, the walk with the snapshot as epoch start gives the same applied edge writes (those not ignored), valid content and end roles as without it (§6). A snapshot whose author lacks owner-chain authority, or that is dropped, in the walk where D settles (its roster applies meanwhile) is not an epoch start and is not compared.
 - `LateEdge`, `LateContent` (3): a member's edge write generated after a valid explicit demotion that took its class, and ordered before it, is not applied; its content generated after its newest demotion, with no regain and no re-grant, is invalid.
 - `NoSelfDrop`, `StandingAudited` (4): no write is dropped by its author's own demotion; when a node demotes itself by removing actor B's admin edge, the next explicit removal of that edge by another node drops its uncovered edge-admin writes made before (its kept standing is audited).
 - `ChainContent`, `DepthCap` (5): content by an owner-chain node is valid unless a later demotion; nothing on a thing below `MaxDepth` owner links is valid.
@@ -37,4 +37,4 @@ TLC 2.19, 1 worker, shared 16-core machine at load ~15–20 (wall clock). 3 node
 Probes (`Probe*`, run by hand) confirm that drops, layer-2 demotions, invalid content, ledger entries with frontiers, audit-only entries (`MC_until`), applied snapshots whose ledger drops a write on B (`MC_snapA`) and kept standings (`MC_group`) all occur. Not reached: several drops in one walk outside `MC_sticky` (so `DropOrderFree` only bites there).
 
 ## Not covered
-Invites and invite grants, links, read-level tenures, a second snapshot (carried-forward ledger), more than two things or longer owner chains (the depth cap is checked at 1), frontiers by counter range, pending commits, certificates and projections.
+Invites and invite grants, links, read-level tenures, a second snapshot (carried-forward ledger), epoch-start rounds and exclusions (spec §6: `WithSnap` makes one snapshot the start and judges it in its own settled walk), more than two things or longer owner chains (the depth cap is checked at 1), frontiers by counter range, pending commits, certificates and projections.

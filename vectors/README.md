@@ -39,7 +39,7 @@ Byte strings are lowercase hex. Inputs too large to inline are written as `xof("
 - Further subjects are documented here as they land; MANIFEST lists them.
 
 ## Manifest and freezing
-`MANIFEST` lists every file: `provisional` (checked; may change with the implementation), `pending` (named, not yet producible), or `frozen <blake3> <FC-n>`. A frozen file's bytes must hash to the listed BLAKE3; changing one is a format change: add a `## FC-<n>: <title>` entry to `FORMAT_CHANGES.md` naming the file and the reason, then run `gen-vectors freeze <path> FC-<n>` to record the new hash. The runner fails on an unlisted file, a missing listed file, a changed frozen file, or an entry that does not name the file.
+`MANIFEST` lists every file: `provisional` (checked; may change with the implementation), `pending` (named, not yet producible), or `frozen <blake3> <FC-n>`. Nothing is frozen before the first stable release: every file is provisional and changes with the implementation. At a release, files are frozen (`gen-vectors freeze <path> FC-<n>`), and from then on a frozen file's bytes must hash to the listed BLAKE3; changing one is a format change logged as a `## FC-<n>: <title>` entry in `FORMAT_CHANGES.md` naming the file and the reason. The runner fails on an unlisted file, a missing listed file, a changed frozen file, or an entry that does not name the file.
 
 ## Running (osis)
 - `cargo test -p osis-vectors`: one test per file, plus the manifest policy.

@@ -1,14 +1,8 @@
-//! Notes app (examples/notes-app): notebooks are groups that own their notes.
+//! Notes app (examples/notes-app): notebooks are tags that own their notes; names are the core `/name`.
 schema 0xf27e9991e5ed93dd6d0dfe427b584bde;
-revision 1;
+revision 2;
 
-/// A notebook's name (on the notebook group).
-aspect /notes/name: string;
-/// A note's title.
-aspect /notes/title: string;
 /// A note's body, edited in text sessions.
 aspect /notes/body: text;
-/// A note's tags.
-aspect /notes/tags: set<string>;
 /// A large markdown document attached to a note, written and read as a stream.
 aspect /notes/attachment: markdown;

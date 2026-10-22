@@ -1,6 +1,6 @@
 [package]
-name = "folder"
-description = "Example: shared folders with rights over the osis API (folder actor, subfolders, roles, invites, demotion, moving out, mirrored edges)"
+name = "tags"
+description = "Example: tags over the osis API (tags as marked groups, sharing a tag per item through one roster, sub-tags, roles, invites, demotion, ownership transfer)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -103,7 +103,7 @@ fn generated_meta_reads_schema_values_spec_data_model_10() {
     // The schema of schemas, generated, reads every schema value (recursive type_expr boxed).
     let v = core_schema().to_value();
     let s = meta::Schema::try_from(&v).unwrap();
-    assert_eq!(s.revision, 1);
+    assert_eq!(s.revision, 2);
     assert!(s.aspects.contains_key("/members"));
     let ty = &s.aspects["/members"].r#type;
     assert!(matches!(ty.as_ref(), meta::TypeExpr::Map(_)));

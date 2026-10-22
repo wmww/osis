@@ -62,9 +62,10 @@ fn two_devices_offline_edits_and_undo() {
 }
 
 // spec/permissions.md §2 (grants), §3 (removal), notes/permissions.md Patterns (share a set of
-// things through one actor), notes/api.md Writes (edit merges concurrent changes): Alice shares
-// a notebook with Bob; both edit one note at once without clobbering; Bob's new note reaches
-// Alice; after Bob's removal he reads nothing new and what he wrote stays.
+// things through one actor), notes/api.md Writes (edit merges concurrent changes), notes/tags.md
+// (a reader's tags are its own): Alice shares a notebook with Bob; both edit one note at once
+// without clobbering; Alice's tag on it stays hers; Bob's new note reaches Alice; after Bob's
+// removal he reads nothing new and what he wrote stays.
 #[test]
 fn share_notebook_with_a_second_person() {
     let mut w = World::new();
@@ -80,14 +81,16 @@ fn share_notebook_with_a_second_person() {
     assert_eq!(bob.role_on(plan), Some(Role::Write));
 
     rename(&bob, plan, "Plan", "Plan: Lisbon").unwrap();
-    tag(&alice, plan, "travel").unwrap();
+    let travel = new_tag(&alice, "travel").unwrap();
+    tag(&alice, plan, travel).unwrap();
     type_text(&alice, plan, 0, "flights").unwrap();
     w.run();
     for db in [&alice, &bob] {
         assert_eq!(title(db, plan).unwrap().as_deref(), Some("Plan: Lisbon"));
-        assert_eq!(tags(db, plan).unwrap().into_iter().collect::<Vec<_>>(), vec!["travel".to_string()]);
         assert_eq!(body(db, plan).unwrap(), "flights");
     }
+    assert_eq!(tags(&alice, plan).unwrap(), ["Trip", "travel"]);
+    assert_eq!(tags(&bob, plan).unwrap(), ["Trip"], "Alice's tag is her own");
     let packing = new_note(&bob, nb, "Packing").unwrap();
     w.run();
     assert!(notes(&alice, nb).unwrap().contains(&packing));
@@ -132,14 +135,14 @@ fn local_undo_redo_and_history() {
     let nb = new_notebook(&db, "Local").unwrap();
     let note = new_note(&db, nb, "a").unwrap();
     rename(&db, note, "a", "b").unwrap();
-    tag(&db, note, "x").unwrap();
+    type_text(&db, note, 0, "x").unwrap();
     assert!(undo(&db, note).unwrap());
-    assert!(tags(&db, note).unwrap().is_empty());
+    assert_eq!(body(&db, note).unwrap(), "");
     assert!(undo(&db, note).unwrap());
     assert_eq!(title(&db, note).unwrap().as_deref(), Some("a"));
     assert!(redo(&db, note).unwrap());
     assert_eq!(title(&db, note).unwrap().as_deref(), Some("b"));
-    tag(&db, note, "y").unwrap();
+    type_text(&db, note, 0, "y").unwrap();
     assert!(!redo(&db, note).unwrap(), "a new change clears redo");
     let h = db.history(&osis::UndoScope::Thing(note), Default::default()).unwrap();
     assert!(h.len() >= 4, "{h:?}");

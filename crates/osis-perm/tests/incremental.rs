@@ -66,6 +66,7 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
 }
 
 fn run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
         // Two or three independent histories in one held set: several components; or one
@@ -119,12 +120,57 @@ fn run(samples: u64, seed: u64) {
             }
             prev = held.clone();
             if let Some(d) = check(&held, &inc, &nodes) {
-                panic!("sample {s} step {step}: {d}");
+                panic!("seed {seed:#x} sample {s} step {step}: {d}");
             }
         }
         // Nothing changed: nothing is evaluated again.
         assert_eq!(inc.update(&w.held()), 0);
     }
+}
+
+/// §5.1 step 5, §6: two sibling teams that are admins of each other (owner-chain authority on
+/// each may come through the other), with a snapshot that is never a start: each write in
+/// timeline order continues the walk (`extend`), equal to evaluating from scratch.
+#[test]
+fn mutual_admin_teams_extend() {
+    use osis_core::Role::{Admin, Write};
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (k, n1, n2, n3) = (n[0], n[1], n[2], n[3]);
+    let (a, b) = (w.thing(k), w.thing(k));
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, a, b, edge(Admin), 0, &all);
+    w.set(k, b, a, edge(Admin), 0, &all);
+    w.set(k, a, n1, edge(Admin), 0, &all);
+    // n1 holds no owner-chain authority on A: never an epoch start
+    w.snapshot(n1, a, &[(n1, osis_perm::Edge::new(Admin))], 1, &all);
+    w.set(n1, b, n2, edge(Admin), 2, &all);
+    w.set(n2, a, n3, edge(Write), 3, &all);
+    w.set(n1, a, n2, None, 4, &[]);
+    w.set(k, a, n1, None, 5, &[]);
+    w.set(n2, b, n3, edge(Admin), 6, &all);
+    let mut order: Vec<usize> = (0..w.commits.len()).collect();
+    order.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+    let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+    let mut held_ids = BTreeSet::new();
+    let mut tl: Option<Timeline> = None;
+    for i in order {
+        held_ids.insert(w.commits[i].id);
+        let held = w.held_without(&all_ids.difference(&held_ids).copied().collect());
+        let next = match tl.take() {
+            None => Timeline::evaluate(&held),
+            Some(t) => t.extend(&held).expect("the walk goes on"),
+        };
+        let full = Timeline::evaluate(&held);
+        assert_eq!(next.epoch_starts(), full.epoch_starts());
+        assert_eq!(next.dropped(), full.dropped());
+        assert_eq!(next.applied().keys().collect::<Vec<_>>(), full.applied().keys().collect::<Vec<_>>());
+        for t in [a, b] {
+            assert_eq!(next.roster(&t, At::END), full.roster(&t, At::END));
+        }
+        tl = Some(next);
+    }
+    assert!(tl.unwrap().epoch_starts().is_empty());
 }
 
 /// §5.1 step 5: incremental equals from scratch.

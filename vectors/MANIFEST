@@ -2,28 +2,28 @@
 #   <path> provisional
 #   <path> frozen <blake3 of the file> <FORMAT_CHANGES.md entry>
 #   <path> pending <who or what produces it>
-cbor/values.vec frozen cf26a942c92f37c55a1ac573a8ca67741404dd4546147a60e526c4d5b0b89e5a FC-1
-padme/padme.vec frozen 3968cc336abb427d04373c5a6c874e0776d555d0a7c0c440599a94cf05564254 FC-2
-tid/thing.vec frozen 9a28a5e80177714560c586ac807cdd9f75d3643eabab8fc068f6b0668691332a FC-1
-tid/key-actor.vec frozen de61d0220a012a68949719a6d31350281c90c86da5dcb20e5ce8782e0c3a9573 FC-2
-kdf/purposes.vec frozen 4f142fabe2a78714a33ac5cf0c8d21ca97f14329755346eafe020811c65955f0 FC-5
-keys/seed.vec frozen 4dbbcf4374ac014ab43cf6eef40d26e92c9a6df548122f61ead458b0d6496d91 FC-4
-box/boxes.vec frozen 025521c29736dd95dcb49cdd2f7f76f50d00239e02fc1496ef05166d5d041a16 FC-2
-wrap/wrap.vec frozen f0a78e5ba17e54e2baa24313ba5286a35f45e73802a60548c53ddc9d42c8b2eb FC-2
-token/tokens.vec frozen d1c22389c58ea436bb3ba381e9043ad82f109d82e39a19291b1b7e59e2f3aa81 FC-2
-sign/signatures.vec frozen c87ad209ec2da2575b184599dc2a8f5b4a6c1e572b3dba4c712d11975e07ad0a FC-5
-blob/prefix.vec frozen c8f0a3c39676d0faeed6baa176385e4c5955c4f82644d4f05a9dcaf0f5a24d77 FC-2
+cbor/values.vec provisional
+padme/padme.vec provisional
+tid/thing.vec provisional
+tid/key-actor.vec provisional
+kdf/purposes.vec provisional
+keys/seed.vec provisional
+box/boxes.vec provisional
+wrap/wrap.vec provisional
+token/tokens.vec provisional
+sign/signatures.vec provisional
+blob/prefix.vec provisional
 blob/blobs.vec provisional
-chunker/gear.vec frozen c813b35539e04d0b0bcd6957028b3efe5e17d7d113c400298f44ddf4296e14a6 FC-1
-chunker/tree.vec frozen 9689e6d93b03d8d77d0a5b03eeeefafb8e4a77a0ec88cf87138dc57fbf7b99d5 FC-4
-chunker/pages.vec frozen 9176149efa574033be60f730b362c9e4d28f9bddaa595a37719ee36ce536b9e1 FC-2
+chunker/gear.vec provisional
+chunker/tree.vec provisional
+chunker/pages.vec provisional
 commit/headers.vec provisional
-step/steps.vec frozen c8b9ba48951ad9b774c2d891b0538eac8b28b03aada2be8719f2d119bc019ea5 FC-2
+step/steps.vec provisional
 inbox/inbox.vec provisional
-signal/signal.vec frozen bc5002b1b1bee58a7aae4363da8e79c6f072512f5c03f07764c1bf4e8c249ada FC-2
-link/link.vec frozen a9e3d706c02c6f023ca7c616a471fb0614d548a8954f544d5df55eb06c9b7ee2 FC-3
-schema/core.vec frozen 95aa5305bdadea98c8951e14d5fd86cf61aa3b580dfe2389b8ac032056aad5e6 FC-6
-proto/messages.vec frozen d9fe4dcd754a5bd293c05fa56ec70ae77f6c1fabb43d3ec716e83751e4cd6a33 FC-5
-proto/reconcile.vec frozen 8c121e7dce9a2479f91d6c0b30f3d7d38cc5cb10ddabbda7842bc117e526335b FC-2
-bundle/bundle.vec frozen 63d6222fd9f27b6fac6d9ea31b3740437e9c22bc2a8df373a93832418948435d FC-2
+signal/signal.vec provisional
+link/link.vec provisional
+schema/core.vec provisional
+proto/messages.vec provisional
+proto/reconcile.vec provisional
+bundle/bundle.vec provisional
 lan/announce.vec provisional
