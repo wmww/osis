@@ -242,40 +242,47 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
 
-// spec/commits.md §5 (keep at most 0: a compaction-snapshot body keeps to the next compaction
-// or its first death plus `SNAPSHOT_GRACE`), spec/requirements.md (Scale: cost per change): an
-// erasing edit of a compacted big record writes O(change) and keeps the snapshot; at the bound
-// the snapshot is dropped and no local copy of the erased entry survives
+// spec/commits.md §5 (keep at most 0: a body with a live write keeps to the next compaction or
+// its first death plus `AT_MOST_GRACE`), spec/requirements.md (Scale: cost per change): an
+// erasing edit of a big record (compacted, or an ordinary commit) writes O(change) and keeps
+// the body; at the bound the body is dropped and no local copy of the erased entry survives
 #[test]
-fn at_most_zero_snapshot_dropped_at_bound_unrecoverable_spec_commits_5() {
-    let mut lp = net2(77);
-    let t = new_thing(&mut lp, 0);
-    let marker = "SNAP-ATMOST-MARK-c90d";
-    let mut fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-    fill.insert(s("secret"), s(&big(marker)));
-    let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
-    let c0 = lp.peers[0].commit(m).unwrap().unwrap();
-    let k = ak("/t/gonemap");
-    // compaction: a snapshot, then the covered body dropped
-    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-    lp.peers[0].engine.drop_body(&c0, &t, &k).unwrap();
-    filler(&mut lp, 0, 6);
-    lp.advance(5);
-    let written = |p: &mut osis_node::local_peer::Peer| p.backend.history().iter().map(|(r, v)| r.len() + v.len()).sum::<usize>();
-    let before = written(&mut lp.peers[0]);
-    let mut m = Mutation::new();
-    m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let cost = written(&mut lp.peers[0]) - before;
-    assert!(cost < 96 * 1024, "an erasing edit wrote {cost} bytes (the record is about 330 KB)");
-    let e = &mut lp.peers[0].engine;
-    assert!(e.holds_body(&s1, &t, &k), "the snapshot keeps to the next compaction");
-    let first = e.deaths(&s1, &t, &k).unwrap().unwrap().0.wall_ms().0;
-    assert_eq!(e.body_keep(&s1, &t, &k).unwrap().at_most, Some(first + osis_core::format::SNAPSHOT_GRACE_MS));
-    lp.advance(osis_core::format::SNAPSHOT_GRACE_MS + 1);
-    lp.peers[0].engine.tick().unwrap();
-    assert!(!lp.peers[0].engine.holds_body(&s1, &t, &k));
-    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "erased content recovered");
-    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
+fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
+    for compact in [true, false] {
+        let mut lp = net2(77);
+        let t = new_thing(&mut lp, 0);
+        let marker = "LIVE-ATMOST-MARK-c90d";
+        let mut fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+        fill.insert(s("secret"), s(&big(marker)));
+        let mut m = Mutation::new();
+        m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+        let c0 = lp.peers[0].commit(m).unwrap().unwrap();
+        let k = ak("/t/gonemap");
+        // compaction: a snapshot, then the covered body dropped
+        let body = if compact {
+            let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+            lp.peers[0].engine.drop_body(&c0, &t, &k).unwrap();
+            s1
+        } else {
+            c0
+        };
+        filler(&mut lp, 0, 6);
+        lp.advance(5);
+        let written = |p: &mut osis_node::local_peer::Peer| p.backend.history().iter().map(|(r, v)| r.len() + v.len()).sum::<usize>();
+        let before = written(&mut lp.peers[0]);
+        let mut m = Mutation::new();
+        m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("secret")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let cost = written(&mut lp.peers[0]) - before;
+        assert!(cost < 96 * 1024, "compact {compact}: an erasing edit wrote {cost} bytes (the record is about 330 KB)");
+        let e = &mut lp.peers[0].engine;
+        assert!(e.holds_body(&body, &t, &k), "compact {compact}: the body keeps to the next compaction");
+        let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
+        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first + osis_core::format::AT_MOST_GRACE_MS));
+        lp.advance(osis_core::format::AT_MOST_GRACE_MS + 1);
+        lp.peers[0].engine.tick().unwrap();
+        assert!(!lp.peers[0].engine.holds_body(&body, &t, &k), "compact {compact}");
+        assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "compact {compact}: erased content recovered");
+        assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
+    }
 }

@@ -127,7 +127,9 @@ fn purge_drops_snapshots_spec_commits_5() {
 }
 
 // spec/commits.md §5: a body is one projection class: its deltas share deaths and are dropped
-// together; keep at most 0 drops at apply even when the killing `ts` is ahead of the clock.
+// together; while one of them has a live write the class is kept (`AT_MOST_GRACE`); keep at
+// most 0 drops at apply the kill that leaves it none, even when the killing `ts` is ahead of
+// the clock.
 #[test]
 fn body_is_a_class_spec_commits_5() {
     let mut lp = net(2, 75);
@@ -137,14 +139,18 @@ fn body_is_a_class_spec_commits_5() {
     m.set(t, &GONE2, &s("a2")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     sync(&mut lp, 0, 1);
-    // node 0's clock is ahead; its kill of /t/gone reaches node 1
+    // node 0's clock is ahead; its kills reach node 1
     lp.peers[0].clock.advance(600_000);
     set(&mut lp, 0, t, &GONE, "b");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
+    assert!(e.holds_body(&c, &t, &ak("/t/gone")) && e.holds_body(&c, &t, &ak("/t/gone2")), "/t/gone2 is still live");
+    set(&mut lp, 0, t, &GONE2, "b2");
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
     assert!(!e.holds_body(&c, &t, &ak("/t/gone")));
     assert!(!e.holds_body(&c, &t, &ak("/t/gone2")));
-    assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("a2")));
+    assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
@@ -334,4 +340,89 @@ fn move_many_bare_anchors_spec_perm_7() {
     }
     let (copy, _) = e.move_thing(&t, a).unwrap();
     assert_eq!(e.get(&copy, &k).unwrap(), Some(s(&"d".repeat(100_000))));
+}
+
+/// Text `t` on peer 0: "headtail", then `n` characters typed between, then deleted (two
+/// commits: a delete is at most `MAX_DELTA_BARE` elements), all but the last `kept` of them;
+/// then "SECRETmid" typed after "head" and "SECRET" deleted (shown "mid" anchors at it);
+/// compacted (the snapshot carries the deleted elements content-less, its bodies dropped) when
+/// `compact`.
+fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_core::Tid, n: usize, kept: usize, compact: bool) {
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s("headtail")).unwrap();
+    let mut ids = vec![lp.peers[0].commit(m).unwrap().unwrap()];
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 4, items: vec![s(&"x".repeat(n))] } }).unwrap();
+    ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+    let gone = n - kept;
+    for len in [gone / 2, gone - gone / 2] {
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 4, len } }).unwrap();
+        ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
+    for op in [Op::Insert { at: 4, items: vec![s("SECRETmid")] }, Op::Delete { at: 4, len: 6 }] {
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: Vec::new(), op }).unwrap();
+        ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
+    if compact {
+        let k = ak("/t/text");
+        let e = &mut lp.peers[0].engine;
+        e.snapshot(&t, &k).unwrap().unwrap();
+        for c in ids {
+            e.drop_body(&c, &t, &k).unwrap();
+        }
+    }
+}
+
+// spec/permissions.md §7 (an import carries only the sequence elements the importer's state
+// shows and those they anchor at, the latter without content), spec/crdt.md §3.3 rule 7
+// (`MAX_DELTA_BARE`): a text with 300k characters deleted and a word erased inside shown text
+// moves, from its commits or compacted: the copy reads like the original, the imports are
+// small and hold no erased text, and a receiver accepts them.
+#[test]
+#[ignore = "tier 2"]
+fn move_deleted_text_small_import_spec_perm_7() {
+    for compact in [false, true] {
+        let mut lp = net(2, 82);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let a = lp.peers[0].engine.tid();
+        deleted_text(&mut lp, t, 300_000, 0, compact);
+        let k = ak("/t/text");
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidtail")));
+        let (copy, imports) = e.move_thing(&t, a).unwrap();
+        assert_eq!(e.get(&copy, &k).unwrap(), Some(s("headmidtail")), "compact {compact}: the copy is complete");
+        let mut size = 0;
+        for i in &imports {
+            let pk = e.package(i).unwrap().unwrap();
+            size += pk.bytes.len() + pk.blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+            for b in std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)) {
+                assert!(!b.windows(6).any(|w| w == b"SECRET"), "compact {compact}: erased text in an import");
+            }
+        }
+        assert!(size < 16 * 1024, "compact {compact}: imports of {size} bytes");
+        sync(&mut lp, 0, 1);
+        assert_eq!(lp.peers[1].engine.get(&copy, &k).unwrap(), Some(s("headmidtail")), "compact {compact}: receivers accept the import");
+    }
+}
+
+// spec/permissions.md §7, spec/crdt.md §3.3 rule 7 (`MAX_DELTA_BARE`): a compacted text whose
+// shown last character is typed after 400k deleted ones (its placement anchors at all of them)
+// still needs an import over the bound: the move fails cleanly, creating nothing.
+#[test]
+#[ignore = "tier 2"]
+fn move_over_max_delta_bare_fails_spec_perm_7() {
+    let mut lp = net(1, 83);
+    let t = new_thing(&mut lp, 0);
+    let a = lp.peers[0].engine.tid();
+    deleted_text(&mut lp, t, 400_000, 1, true);
+    let k = ak("/t/text");
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidxtail")));
+    let before = e.commit_ids().len();
+    let err = e.move_thing(&t, a).unwrap_err();
+    assert!(err.to_string().contains("MAX_DELTA_BARE"), "{err}");
+    assert_eq!(e.commit_ids().len(), before, "nothing written");
 }

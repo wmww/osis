@@ -183,6 +183,57 @@ impl Writes<'_> {
     }
 }
 
+/// `Fragment::holds_owned`: owner dot ranges against a predicate, stopping at the first hit.
+struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool);
+
+impl Any<'_> {
+    /// Owner dots of elements `d..d + n` (a `Derived` range has one owner).
+    fn range(&self, d: &Dot, n: u64) -> bool {
+        match d.src.kind() {
+            SourceKind::Derived(o) => (self.0)(&o.src, o.ctr, o.ctr.saturating_add(1)),
+            _ => (self.0)(&d.src, d.ctr, d.ctr.saturating_add(n)),
+        }
+    }
+    fn stamp(&self, s: &Stamp) -> bool {
+        self.range(&s.dot, 1)
+    }
+    fn opt(&self, s: &Option<Stamp>) -> bool {
+        s.as_ref().is_some_and(|s| self.stamp(s))
+    }
+    fn frag(&self, f: &Fragment) -> bool {
+        match f {
+            Fragment::Register(r) => self.opt(&r.reset) || r.write.as_ref().is_some_and(|w| self.stamp(&w.stamp)),
+            Fragment::Bag(Bag { meta: m, elems: e, .. }) | Fragment::Set(Set { meta: m, elems: e }) => {
+                self.opt(&m.reset) || self.opt(&m.w) || e.iter().any(|(d, x)| self.range(d, 1) || self.opt(&x.reset) || x.frag.as_deref().is_some_and(|f| self.frag(f)))
+            }
+            Fragment::Struct(Struct { meta: m, fields }) => self.opt(&m.reset) || self.opt(&m.w) || fields.values().any(|f| self.frag(f)),
+            Fragment::Enum(Enum { meta: m, case, payloads }) => self.opt(&m.reset) || self.opt(&m.w) || case.as_ref().is_some_and(|c| self.stamp(&c.stamp)) || payloads.values().any(|f| self.frag(f)),
+            Fragment::Map(mp) => self.opt(&mp.meta.reset) || self.opt(&mp.meta.w) || mp.entries.iter().any(|(d, e)| self.range(d, 1) || self.opt(&e.reset) || e.frag.as_deref().is_some_and(|f| self.frag(f))),
+            Fragment::Seq(s) => {
+                // a range record's creations are its elements' dots, its other stamps shared
+                self.opt(&s.meta.reset)
+                    || self.opt(&s.meta.w)
+                    || s.elems().iter().any(|(d, e)| {
+                        self.range(d, e.span)
+                            || e.pos.iter().any(|(st, _)| st.dot != *d && self.stamp(st))
+                            || e.deleted.as_ref().is_some_and(|(st, _)| self.stamp(st))
+                            || matches!(&e.content, SeqContent::Frag(x) if self.frag(x))
+                    })
+            }
+            Fragment::Slots(Slots { reg, members }) => reg.as_ref().is_some_and(|r| self.opt(&r.reset) || r.write.as_ref().is_some_and(|w| self.stamp(&w.stamp))) || members.values().any(|f| self.frag(f)),
+        }
+    }
+}
+
+impl Fragment {
+    /// Whether some write's owner dot (as `writes` lists them) lies in a range `owned(src, lo,
+    /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
+    /// records.
+    pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
+        Any(owned).frag(self)
+    }
+}
+
 impl Fragment {
     /// Every write in this fragment by its owner dot: stamps with their `ts`, element
     /// creations (map entries, set and bag elements, sequence elements) with their creation's

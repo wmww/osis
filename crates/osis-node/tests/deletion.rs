@@ -124,8 +124,8 @@ fn reregistration_after_rotation_spec_sync_5() {
 }
 
 // spec/commits.md §5, spec/sync.md §5 (timed delete): replacing a body under a relative
-// keep-at-most sends the timed delete with the replacing upload, after a covering snapshot; the
-// server deletes it at the bound with nobody online.
+// keep-at-most whole sends the timed delete with the replacing upload; the server deletes it at
+// the bound with nobody online.
 #[test]
 fn timed_delete_spec_sync_5() {
     let mut net = Net::new();
@@ -153,21 +153,26 @@ fn timed_delete_spec_sync_5() {
     assert_eq!(after + 1, before, "the replaced body went at its bound, nobody online");
 }
 
-/// A record (about 330 KB) with a secret entry on aspect `asp` (a keep-at-most map), compacted
-/// into one snapshot that is at the server: (item, aspect, label, the snapshot).
-fn compacted_record(net: &mut Net, a: usize, g: osis_core::Tid, asp: &osis_schema::Aspect<osis_core::Value>, marker: &str) -> (osis_core::Tid, Ak, osis_core::LabelId, osis_core::CommitId) {
+/// A record (about 330 KB) with a secret entry on aspect `asp` (a keep-at-most map) in one
+/// commit at the server, compacted into one snapshot at the server when `compact`: (item,
+/// aspect, label, the body carrying the record: the snapshot, else the commit).
+fn kept_record(net: &mut Net, a: usize, g: osis_core::Tid, asp: &osis_schema::Aspect<osis_core::Value>, marker: &str, compact: bool) -> (osis_core::Tid, Ak, osis_core::LabelId, osis_core::CommitId) {
     let t = net.item(a, g, g, "x");
     let mut v: std::collections::BTreeMap<osis_core::Value, osis_core::Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     v.insert(s("secret"), s(marker));
     let mut m = Mutation::new();
     m.set(t, asp, &osis_core::Value::Map(v)).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
+    let c0 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let ak = Ak::new(asp.ak()).unwrap();
+    let l = net.label(a);
+    if !compact {
+        assert!(blobs(net, a, &l, &c0).iter().any(|b| net.server_ids(0, &l).contains(b)), "the commit is at the server");
+        return (t, ak, l, c0);
+    }
     let acts = net.sync(a).compact(&t, &ak).unwrap();
     net.actions(a, acts);
     net.run();
-    let l = net.label(a);
     let snaps = snapshots(net, a, &t, &ak);
     assert_eq!(snaps.len(), 1);
     let s1 = snaps[0];
@@ -197,28 +202,35 @@ fn kept_maps() -> [(&'static osis_schema::Aspect<osis_core::Value>, u64); 2] {
     [(&GONEMAP, 0), (&SHORTMAP, 600_000)]
 }
 
-// spec/commits.md §5 (keep at most: a compaction-snapshot body's bound is first death plus D
-// plus `SNAPSHOT_GRACE`, the next compaction drops it first), spec/requirements.md (Scale: cost
-// per change): under keep at most 0 and 10 min, an erasing edit of a big compacted record sends
-// O(change), with no new snapshot; the next compaction drops the old snapshot here and at the
-// server, and a member joining afterwards reads the record without the erased entry.
+/// The cases of the keep-at-most tests: (aspect, D, compacted first).
+fn kept_cases() -> Vec<(&'static osis_schema::Aspect<osis_core::Value>, u64, bool)> {
+    kept_maps().into_iter().flat_map(|(asp, d)| [(asp, d, true), (asp, d, false)]).collect()
+}
+
+// spec/commits.md §5 (keep at most: a body with a live write keeps to its first death plus D
+// plus `AT_MOST_GRACE`, the next compaction drops it first), spec/requirements.md (Scale: cost
+// per change): under keep at most 0 and 10 min, an erasing edit of a big record (a snapshot or
+// an ordinary commit) sends O(change), with no new snapshot; the next compaction drops the old
+// body here and at the server, and a member joining afterwards reads the record without the
+// erased entry.
 #[test]
-fn snapshot_erasing_edit_then_compaction_spec_commits_5() {
-    for (i, (asp, _)) in kept_maps().into_iter().enumerate() {
+fn erasing_edit_then_compaction_spec_commits_5() {
+    for (i, (asp, _, compact)) in kept_cases().into_iter().enumerate() {
         let mut net = Net::new();
         let sv = net.add_server();
         let a = net.node(1, &[sv]);
         let c = net.node(3, &[sv]);
         net.blocked.insert((c, sv));
         let g = net.group(a, &[(c, Role::Read)], &[sv]);
-        let (t, ak, l, s1) = compacted_record(&mut net, a, g, asp, "ERASED-7d1e");
+        let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-7d1e", compact);
+        let before = snapshots(&mut net, a, &t, &ak);
         net.sent_bytes = 0;
         erase_secret(&mut net, a, t, asp);
         net.run();
         let sent = net.sent_bytes;
         assert!(sent < 32 * 1024, "case {i}: an erasing edit sent {sent} bytes (the record is about 330 KB)");
-        assert_eq!(snapshots(&mut net, a, &t, &ak), vec![s1], "case {i}: no re-snapshot per erasing edit");
-        assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: the old snapshot keeps to the next compaction");
+        assert_eq!(snapshots(&mut net, a, &t, &ak), before, "case {i}: no re-snapshot per erasing edit");
+        assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: the old body keeps to the next compaction");
         assert!(net.engine(a).deaths(&s1, &t, &ak).unwrap().is_some());
         let at_server = blobs(&mut net, a, &l, &s1);
         let acts = net.sync(a).compact(&t, &ak).unwrap();
@@ -226,7 +238,7 @@ fn snapshot_erasing_edit_then_compaction_spec_commits_5() {
         net.run();
         assert!(!net.engine(a).holds_body(&s1, &t, &ak), "case {i}");
         let ids = net.server_ids(sv, &l);
-        assert!(at_server.iter().all(|b| !ids.contains(b)), "case {i}: the old snapshot deleted at the server");
+        assert!(at_server.iter().all(|b| !ids.contains(b)), "case {i}: the old body deleted at the server");
         net.blocked.clear();
         net.advance(10_000);
         let ec = net.engine(c);
@@ -236,33 +248,36 @@ fn snapshot_erasing_edit_then_compaction_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (a compaction-snapshot body's bound is first death plus D plus
-// `SNAPSHOT_GRACE`), spec/sync.md §7 (snapshot first): with no compaction, under keep at most 0
-// and 10 min, the old snapshot is kept to its bound, then goes here and at the server after a
-// covering snapshot is there; a member joining after the bound reads every live entry.
+// spec/commits.md §5 (a body with a live write keeps to its first death plus D plus
+// `AT_MOST_GRACE`), spec/sync.md §7 (snapshot first): with no compaction, under keep at most 0
+// and 10 min, the old body (a snapshot or an ordinary commit) is kept to its bound, with no
+// timed delete, then goes here and at the server after a covering snapshot is there; a member
+// joining after the bound reads every live entry.
 #[test]
-fn snapshot_goes_at_grace_bound_spec_commits_5() {
-    for (i, (asp, d)) in kept_maps().into_iter().enumerate() {
+fn live_body_goes_at_grace_bound_spec_commits_5() {
+    for (i, (asp, d, compact)) in kept_cases().into_iter().enumerate() {
         let mut net = Net::new();
         let sv = net.add_server();
         let a = net.node(1, &[sv]);
         let c = net.node(3, &[sv]);
         net.blocked.insert((c, sv));
         let g = net.group(a, &[(c, Role::Read)], &[sv]);
-        let (t, ak, l, s1) = compacted_record(&mut net, a, g, asp, "ERASED-90b4");
+        let (t, ak, l, s1) = kept_record(&mut net, a, g, asp, "ERASED-90b4", compact);
+        let n = snapshots(&mut net, a, &t, &ak).len();
         erase_secret(&mut net, a, t, asp);
         net.run();
         let at_server = blobs(&mut net, a, &l, &s1);
-        let bound = d + osis_core::format::SNAPSHOT_GRACE_MS;
+        let bound = d + osis_core::format::AT_MOST_GRACE_MS;
         net.advance(bound / 2);
         assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: kept before the bound");
         assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "case {i}: no timed delete");
+        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n, "case {i}: no carrier before the bound");
         net.advance(bound - bound / 2 + 1);
         net.run();
         assert!(!net.engine(a).holds_body(&s1, &t, &ak), "case {i}: dropped at the bound");
         let ids = net.server_ids(sv, &l);
         assert!(at_server.iter().all(|b| !ids.contains(b)), "case {i}: deleted at the server");
-        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), 2, "case {i}: one carrier written at the bound");
+        assert_eq!(snapshots(&mut net, a, &t, &ak).len(), n + 1, "case {i}: one carrier written at the bound");
         net.blocked.clear();
         net.advance(10_000);
         let ec = net.engine(c);
@@ -271,4 +286,108 @@ fn snapshot_goes_at_grace_bound_spec_commits_5() {
         }
         assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None, "case {i}");
     }
+}
+
+// spec/commits.md §5 (keep at most 0: a body with a live write keeps to the next compaction or
+// its first death plus `AT_MOST_GRACE`; one with none goes at the kill), spec/requirements.md
+// (Scale: cost per change): a text typed in several commits, then a delete of part of an older
+// commit's text: the next pass sends O(change) and writes no snapshot; after the next
+// compaction the old body is gone here and at the server, and a reader joining then cannot read
+// the erased text.
+#[test]
+fn text_partly_erased_kept_to_compaction_spec_commits_5() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let c = net.node(3, &[sv]);
+    net.blocked.insert((c, sv));
+    let g = net.group(a, &[(c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(GONETEXT.ak()).unwrap();
+    let marker = "ERASED-TEXT-3f8a";
+    let chunk = 60_000;
+    let mut ids = Vec::new();
+    for k in 0..5 {
+        let text = if k == 1 { format!("{}{marker}{}", "a".repeat(chunk / 2), "a".repeat(chunk / 2)) } else { "b".repeat(chunk) };
+        let at = k * chunk + if k > 1 { marker.len() } else { 0 };
+        let mut m = Mutation::new();
+        m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Insert { at, items: vec![s(&text)] } }).unwrap();
+        ids.push(net.engine(a).commit(m).unwrap().unwrap());
+        net.run();
+    }
+    let l = net.label(a);
+    let old = ids[1];
+    let at_server = blobs(&mut net, a, &l, &old);
+    assert!(!at_server.is_empty() && at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)));
+    net.sent_bytes = 0;
+    let mut m = Mutation::new();
+    m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: chunk + chunk / 2 - 10, len: marker.len() + 20 } }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let sent = net.sent_bytes;
+    assert!(sent < 16 * 1024, "a partial delete sent {sent} bytes (the text is about 300 KB)");
+    assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no whole-state snapshot");
+    assert!(net.engine(a).holds_body(&old, &t, &ak), "the partly erased body keeps to the next compaction");
+    assert!(net.engine(a).body_live(&old, &t, &ak).unwrap());
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).holds_body(&old, &t, &ak), "the old body goes at the compaction");
+    let ids_now = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|b| !ids_now.contains(b)), "and at the server");
+    let want = net.engine(a).get(&t, &ak).unwrap().unwrap();
+    net.blocked.clear();
+    net.advance(10_000);
+    let ec = net.engine(c);
+    let got = ec.get(&t, &ak).unwrap().unwrap();
+    assert_eq!(got, want);
+    let osis_core::Value::Str(text) = got else { panic!("a text reads as a string") };
+    assert_eq!(text.len(), 5 * chunk - 20);
+    assert!(!text.contains(marker));
+    assert!(!ec.holds_body(&old, &t, &ak));
+}
+
+// spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose
+// text was all erased keeps to the next compaction or its first death plus `AT_MOST_GRACE`;
+// the erased data may persist that long), spec/crdt.md §4.8: under keep at most 0, a word
+// typed then wholly deleted is kept before the bound with no snapshot, gone here and at the
+// server after it, and a reader joining then cannot read it.
+#[test]
+fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let c = net.node(3, &[sv]);
+    net.blocked.insert((c, sv));
+    let g = net.group(a, &[(c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(GONETEXT.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![s("SECRET")] } }).unwrap();
+    let typed = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_server = blobs(&mut net, a, &l, &typed);
+    let mut m = Mutation::new();
+    m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 6 } }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(a).get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
+    assert!(net.engine(a).body_live(&typed, &t, &ak).unwrap(), "a deleted char's creation is a live write");
+    net.advance(30 * 60_000);
+    assert!(net.engine(a).holds_body(&typed, &t, &ak), "held before the bound");
+    assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "and at the server");
+    assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no snapshot before the bound");
+    net.advance(31 * 60_000);
+    net.run();
+    assert!(!net.engine(a).holds_body(&typed, &t, &ak), "dropped at the bound");
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|b| !ids.contains(b)), "deleted at the server");
+    net.blocked.clear();
+    net.advance(10_000);
+    let ec = net.engine(c);
+    assert_eq!(ec.get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
+    assert!(!ec.holds_body(&typed, &t, &ak));
 }

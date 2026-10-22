@@ -322,12 +322,6 @@ impl SyncEngine {
                 self.state.set_entry(l, id, e);
             }
         }
-        // carriers before keep-at-most bounds (spec/sync.md §7), as at a server
-        for b in &bodies {
-            if let Some(id) = self.entry_for(None, &l, b) {
-                self.keep_at_most_due(None, &l, b, &id, &snaps)?;
-            }
-        }
         let settled = self.unsettled(&l, &g)?.is_empty();
         self.local_deletions(&g, l, &keys, &bodies, &snaps, settled)
     }
@@ -512,27 +506,22 @@ impl SyncEngine {
         })
     }
 
-    /// A body under a relative keep-at-most with a known bound, held by entry `id` under `l`
-    /// (spec/commits.md §5): its entry and bound once nothing needs it past the bound; while
-    /// its live writes have no carrier under the label, a covering snapshot is asked for first
-    /// (spec/sync.md §7) and `None`.
-    fn keep_at_most_due(&mut self, server: Option<&ServerKey>, l: &LabelId, b: &Body, id: &BlobId, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<Option<(Entry, u64)>> {
+    /// A body under a relative keep-at-most with a known bound and no live write, held by entry
+    /// `id` under `l` (spec/commits.md §5): its entry and bound, for a timed delete. A body with
+    /// a live write gets none: it goes at the next compaction or its bound, carried then
+    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect.
+    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(Entry, u64)>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
-        // a compaction snapshot goes at the next compaction or its bound, carried then: a
-        // timed delete now would re-snapshot on every kill (spec/commits.md §5)
-        if a.retention.at_most.rel.is_none() || h.kind.is_compaction() {
+        if a.retention.at_most.rel.is_none() {
             return Ok(None);
         }
+        // deaths and bound first: liveness costs a look through the state (cached per aspect)
         let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { return Ok(None) };
-        let aspects = vec![(a.tid, a.ak.clone())];
-        let Some(e) = self.state.entries.get(&(*l, *id)).cloned() else { return Ok(None) };
-        // a body whose writes all died needs no carrier (spec/sync.md §7)
-        if !self.carried(server, l, &e, &aspects, snaps)? && self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
-            self.snapshot_first(&aspects, &b.commit)?;
+        if self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
             return Ok(None);
         }
-        Ok(Some((e, t)))
+        Ok(self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
@@ -1703,7 +1692,7 @@ impl SyncEngine {
             if !self.state.is_present(&server, &l, &id) || self.state.timed.contains(&(server, l, id)) || self.timed_sent.contains(&(conn, l, id)) {
                 continue;
             }
-            let Some((e, t)) = self.keep_at_most_due(Some(&server), &l, b, &id, snaps)? else { continue };
+            let Some((e, t)) = self.keep_at_most_due(&l, b, &id)? else { continue };
             if let Some(item) = self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
                 self.timed_sent.insert((conn, l, id));
                 items.push(item);
@@ -1753,7 +1742,7 @@ impl SyncEngine {
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a
     /// covering snapshot first when it may write the aspect (spec/sync.md §7).
-    fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
+    pub(super) fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
         if aspects.iter().all(|(t, a)| self.carrier_of(body, t, a).is_some()) {
             return Ok(());
         }

@@ -829,3 +829,34 @@ fn rejects_overlapping_runs_spec_3_3() {
     let e = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap_err();
     assert_eq!(osis_core::Classified::class(&e), ErrorClass::BadInput, "{e}");
 }
+
+proptest! {
+    /// spec/commits.md §5 (a body's live writes, judged by owner dot): `holds_owned` answers as
+    /// `writes` does, over range records and `Derived` dots too (random histories, as held and
+    /// through a snapshot).
+    #[test]
+    fn holds_owned_like_writes_spec_commits_5(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let types: &[Ty] = if seed % 2 == 0 { &[Ty::Text, Ty::List(Box::new(inner()))] } else { &[Ty::Register, Ty::Text] };
+        let commits = crate::testutil::history(&mut r, types, 3, 6);
+        let mut state = None;
+        for c in &commits {
+            mapply(&mut state, c.delta.clone());
+        }
+        let Some(st) = state.as_ref() else { return Ok(()) };
+        let f = frag(st);
+        for g in [f.clone(), via_snapshot(&f)] {
+            let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
+            for n in 1..=3u8 {
+                let src = crate::stamp::Source::node(osis_core::Tid::from_bytes([n; 15]));
+                for lo in [1u64, 2, 5, 9, 20] {
+                    for len in [1u64, 3, 50] {
+                        let want = ws.iter().any(|d| d.src == src && lo <= d.ctr && d.ctr < lo + len);
+                        let got = g.holds_owned(&|s, a, b| *s == src && a < lo + len && lo < b);
+                        prop_assert_eq!(got, want, "src {} lo {} len {}", n, lo, len);
+                    }
+                }
+            }
+        }
+    }
+}

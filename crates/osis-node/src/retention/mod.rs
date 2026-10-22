@@ -1,6 +1,7 @@
 //! Retention (spec/commits.md §5–§6; spec/crdt.md §4.7, §4.8, §8): deaths per body from the
 //! crdt change summary, keep-at-most drops (in the killing transaction for at most 0 but for
-//! compaction snapshots, which get `SNAPSHOT_GRACE` more, else by timer), expiry at T (value-less, body dropped), purge requests judged by perm at the
+//! bodies with a live write, which get `AT_MOST_GRACE` more, else by timer), expiry at T
+//! (value-less, body dropped), purge requests judged by perm at the
 //! request's time (also against deltas arriving later), compaction snapshots and the covered
 //! test. node-sync judges what to delete at blind nodes and what to re-snapshot from the commit
 //! index (dropped parts, `covered`), so no queue is kept here.
@@ -225,18 +226,35 @@ pub(crate) fn note_earlier_deaths(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: 
     Ok(())
 }
 
+/// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
+/// again: its state changed other than by a join (a validity flip), so a body may have gained
+/// or lost its live writes (spec/commits.md §5).
+pub(crate) fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for c in held {
+        let Some(m) = tx.core.commits.get(&c) else { continue };
+        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        if m.dropped.contains(&(ai, 0)) || m.header.aspects.get(ai).is_none_or(|a| a.retention.at_most.rel.is_none()) {
+            continue;
+        }
+        check_at_most(tx, &c, ai)?;
+    }
+    Ok(())
+}
+
 fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (body, members) = body_class(tx.core, &m.header, c, ai);
     let d = class_deaths(tx, &m.header, &body, &members)?;
-    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
+    let live = a.retention.at_most.rel.is_some() && d.is_some() && live(tx, c, ai)?;
+    let keep = osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live);
     if let Some(t) = keep.at_most {
-        // at most 0: the replacing node drops in the killing transaction, even when the
-        // killing `ts` is ahead of its clock; a compaction snapshot keeps to the next
-        // compaction or its first death plus D plus `SNAPSHOT_GRACE` (`body_keep`), so an
-        // erasing edit does not re-snapshot the aspect
-        let zero = a.retention.at_most.rel == Some(0) && d.is_some() && !m.header.kind.is_compaction();
+        // at most 0: the replacing node drops a body with no live write in the killing
+        // transaction, even when the killing `ts` is ahead of its clock; one with a live write
+        // keeps to the next compaction or its bound (`body_keep`), so an edit erasing part of
+        // it does not re-snapshot the aspect
+        let zero = a.retention.at_most.rel == Some(0) && d.is_some() && !live;
         if t <= tx.now().0 || zero {
             for x in members {
                 drop_part(tx, c, x)?;
@@ -271,6 +289,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
+    tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
@@ -455,7 +474,8 @@ impl Engine {
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
                     T_EXPIRY => expire(tx, &c, ai, &mut changed)?,
-                    _ => drop_part(tx, &c, ai)?,
+                    // judged again: liveness may have changed since the timer was set
+                    _ => check_at_most(tx, &c, ai)?,
                 }
             }
             if !changed.is_empty() {
@@ -465,6 +485,30 @@ impl Engine {
         })?;
         self.reexamine()?;
         Ok(n)
+    }
+
+    /// The bodies the due keep-at-most timers will drop with a live write, as (commit, thing,
+    /// aspect): a node that may write the aspect snapshots them first (spec/commits.md §5).
+    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<(CommitId, Tid, Ak)>> {
+        let due = self.run(|tx| {
+            let now = tx.now().0;
+            let mut due = Vec::new();
+            tx.scan(records::TIMER, |k, v| {
+                let (t, c, ai) = records::parse_timer(k)?;
+                if t <= now && v.first() == Some(&T_AT_MOST) {
+                    due.push((c, ai));
+                }
+                Ok(())
+            })?;
+            Ok(due.into_iter().filter_map(|(c, ai)| tx.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).map(|a| (c, a.tid, a.ak.clone()))).collect::<Vec<_>>())
+        })?;
+        let mut out = Vec::new();
+        for (c, t, a) in due {
+            if self.holds_body(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
+                out.push((c, t, a));
+            }
+        }
+        Ok(out)
     }
 
     /// When the next expiry or keep-at-most timer is due (corrected wall ms).
@@ -488,14 +532,16 @@ impl Engine {
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| {
+        let (h, r, d) = self.run(|tx| {
             let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
-            let m = tx.core.commits.get(&c).cloned().ok_or(Error::UnknownCommit(c))?;
-            let a = m.header.aspects.get(ai).ok_or(Error::UnknownCommit(c))?;
-            let (body, members) = body_class(tx.core, &m.header, &c, ai);
-            let d = class_deaths(tx, &m.header, &body, &members)?;
-            Ok(osis_commit::retention::body_keep(&m.header, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
-        })
+            let h = tx.core.commits.get(&c).map(|m| m.header.clone()).ok_or(Error::UnknownCommit(c))?;
+            let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(c))?.retention;
+            let (body, members) = body_class(tx.core, &h, &c, ai);
+            let d = class_deaths(tx, &h, &body, &members)?;
+            Ok((h, r, d))
+        })?;
+        let live = r.at_most.rel.is_some() && d.is_some() && self.body_live(&c, &tid, &ak)?;
+        Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
     }
 
     /// First and last death so far of the writes of the body holding aspect `ak` of `c`.
@@ -511,51 +557,24 @@ impl Engine {
 
     /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
     /// dot its deltas own survives there; unknown counts as live). A body without one needs no
-    /// carrier before it leaves a label (spec/sync.md §7). Writes the state does not hold count
+    /// carrier before it leaves a label (spec/sync.md §7); one with one gets `AT_MOST_GRACE`
+    /// (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
     /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
-    /// until the next change (`Core::live_bodies`).
+    /// until its aspect's state changes (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());
         if let Some(v) = self.core.live_bodies.get(&key) {
             return Ok(*v);
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        let live = self.run(|tx| {
-            let Some(ai) = aspect_index(tx, &c, &tid, &ak) else { return Ok(true) };
-            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { return Ok(true) };
-            let (_, members) = body_class(tx.core, &h, &c, ai);
-            if h.kind.is_compaction() {
-                return snapshot_live(tx, &h, &c, &members);
-            }
-            for x in members {
-                let Some(a) = h.aspects.get(x) else { continue };
-                let Some(o) = Owned::of(&h, &c, x) else { return Ok(true) };
-                // the pages holding the dots of every delta of the body (all pages when one is
-                // not held or not a delta)
-                tx.load_lazy(&a.tid, &a.ak)?;
-                let parts = crate::apply::held_parts(tx, &c, x)?;
-                let mut touches = Vec::new();
-                for d in &parts {
-                    match d {
-                        osis_commit::Decoded::Delta(d) => touches.push(crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())))),
-                        osis_commit::Decoded::Snapshot(_) => touches.push(None),
-                    }
-                }
-                if touches.is_empty() {
-                    touches.push(None);
-                }
-                for t in &touches {
-                    tx.ensure_touch(&a.tid, &a.ak, t)?;
-                }
-                let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-                if st.writes().iter().any(|(d, _)| o.owns(d)) {
-                    return Ok(true);
-                }
-            }
-            Ok(false)
+        let live = self.run(|tx| match aspect_index(tx, &c, &tid, &ak) {
+            Some(ai) => live(tx, &c, ai).map(Some),
+            None => Ok(None),
         })?;
+        // an unknown commit counts live, uncached (its apply may change nothing here)
+        let Some(live) = live else { return Ok(true) };
         self.core.live_bodies.insert(key, live);
         Ok(live)
     }
@@ -685,6 +704,43 @@ impl Engine {
 /// a write it carries (by dot) is there; dropped, a node-form write within its frontiers
 /// or a commit-form write is there (it carried every write live at its time up to them; unknown
 /// counts as live).
+/// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
+/// `tx`: a function of the commits applied (the join's), so alike at nodes that applied the
+/// same ones.
+fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(true) };
+    let (_, members) = body_class(tx.core, &h, c, ai);
+    if h.kind.is_compaction() {
+        return snapshot_live(tx, &h, c, &members);
+    }
+    for x in members {
+        let Some(a) = h.aspects.get(x) else { continue };
+        let Some(o) = Owned::of(&h, c, x) else { return Ok(true) };
+        // the pages holding the dots of every delta of the body (all pages when one is not
+        // held or not a delta)
+        tx.load_lazy(&a.tid, &a.ak)?;
+        let parts = crate::apply::held_parts(tx, c, x)?;
+        let mut touches = Vec::new();
+        for d in &parts {
+            match d {
+                osis_commit::Decoded::Delta(d) => touches.push(crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())))),
+                osis_commit::Decoded::Snapshot(_) => touches.push(None),
+            }
+        }
+        if touches.is_empty() {
+            touches.push(None);
+        }
+        for t in &touches {
+            tx.ensure_touch(&a.tid, &a.ak, t)?;
+        }
+        let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
+        if st.holds_owned(&|src, lo, hi| o.owns_range(src, lo, hi)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
     for x in members {
         let Some(a) = h.aspects.get(*x) else { continue };

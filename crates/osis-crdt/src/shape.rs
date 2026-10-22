@@ -1,7 +1,7 @@
 //! Delta shape checks for writers' rules on typed aspects (spec/permissions.md §3).
 
 use crate::fragment::{Fragment, Slots};
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+use crate::seq::{Anchor, Seq, SeqContent};
 use crate::stamp::Dot;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,42 +38,64 @@ impl Fragment {
 }
 
 impl Fragment {
-    /// Every dot a sequence record anywhere in it anchors at (creation and position writes).
-    pub fn anchors(&self) -> BTreeSet<Dot> {
-        let mut out = BTreeSet::new();
+    /// The sequence elements a copy of this state needs to place what it shows (spec/crdt.md
+    /// §6): every element it shows, and every element their creation and position writes
+    /// anchor at, transitively (a creation chain's earlier elements included).
+    pub fn shown(&self) -> Shown {
+        let mut recs = BTreeMap::new();
+        let mut work = Vec::new();
         self.walk_seqs(&mut |s| {
-            for e in s.elems().values() {
-                for (_, a) in e.created.iter().chain(e.pos.iter()) {
-                    if let Anchor::Dot(d) = a {
-                        out.insert(d.clone());
-                    }
+            for (d, e) in s.elems() {
+                let anchors: Vec<Dot> = e.created.iter().chain(e.pos.iter()).filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x.clone()) } else { None }).collect();
+                let shown = crate::seq::is_visible(e, s.text);
+                if shown {
+                    work.extend(anchors.iter().cloned());
                 }
+                recs.insert(d.clone(), Rec { span: e.span, shown, chain: e.created.is_some(), anchors, prefix: if shown { e.span } else { 0 }, single: BTreeSet::new() });
             }
         });
+        let mut out = Shown { recs };
+        while let Some(x) = work.pop() {
+            let Some((d, r)) = out.find_mut(&x) else { continue };
+            let j = x.ctr - d.ctr;
+            if r.chain {
+                if r.prefix > j {
+                    continue;
+                }
+                let first = r.prefix == 0;
+                r.prefix = j + 1;
+                if first {
+                    work.extend(r.anchors.iter().cloned());
+                }
+            } else if r.single.insert(j) && j == 0 {
+                work.extend(r.anchors.iter().cloned());
+            }
+        }
         out
     }
 
-    /// Drops the bare anchors (records whose writes were all pruned, §5.7) whose dot is not in
-    /// `keep`: an import carries only those its writes reference (spec/permissions.md §7).
-    pub fn drop_bare_except(&mut self, keep: &BTreeSet<Dot>) {
+    /// Drops the sequence elements `shown` (of the importer's state) does not need, and the
+    /// content of those it keeps only as anchors (not shown there): an import carries no
+    /// element nothing it shows depends on, and no erased content (spec/permissions.md §7).
+    pub fn keep_shown(&mut self, shown: &Shown) {
         self.walk_seqs_mut(&mut |s| {
-            let bare = |e: &SeqElem| e.created.is_none() && matches!(e.content, SeqContent::None) && e.pos.is_empty() && e.deleted.is_none();
-            if !s.elems().values().any(bare) {
+            if s.elems().iter().all(|(d, e)| shown.all_kept(d, e.span, !matches!(e.content, SeqContent::None))) {
                 return;
             }
             let old = std::mem::take(s.elems_mut());
             let mut out = BTreeMap::new();
             for (d, e) in old {
-                if !bare(&e) {
-                    out.insert(d, e);
-                    continue;
-                }
-                let last = Dot::new(d.src.clone(), d.ctr.saturating_add(e.span - 1));
-                for k in keep.range(d.clone()..=last) {
-                    if k.src == d.src {
-                        let (x, y) = crate::seq_span::piece(&d, &e, k.ctr - d.ctr, 1);
+                let mut off = 0;
+                while off < e.span {
+                    let (keep, len, hidden) = shown.stretch(&crate::seq_span::nth(&d, off), e.span - off);
+                    if keep {
+                        let (x, mut y) = crate::seq_span::piece(&d, &e, off, len);
+                        if hidden {
+                            y.content = SeqContent::None;
+                        }
                         out.insert(x, y);
                     }
+                    off += len;
                 }
             }
             *s.elems_mut() = out;
@@ -119,3 +141,60 @@ impl Fragment {
     }
 }
 
+
+/// A state record for `Fragment::shown`.
+struct Rec {
+    span: u64,
+    /// The state shows it (one element).
+    shown: bool,
+    /// A creation chain: element `j > 0` anchors at element `j - 1`.
+    chain: bool,
+    /// The first element's anchors.
+    anchors: Vec<Dot>,
+    /// Chain: the needed prefix length (all of it for a shown element).
+    prefix: u64,
+    /// Not a chain: the needed offsets.
+    single: BTreeSet<u64>,
+}
+
+/// The elements of a state a copy needs (`Fragment::shown`).
+pub struct Shown {
+    recs: BTreeMap<Dot, Rec>,
+}
+
+impl Shown {
+    fn find_mut(&mut self, x: &Dot) -> Option<(&Dot, &mut Rec)> {
+        let (d, r) = self.recs.range_mut(..=x.clone()).next_back()?;
+        (d.src == x.src && x.ctr - d.ctr < r.span).then_some((d, r))
+    }
+
+    fn find(&self, x: &Dot) -> Option<(&Dot, &Rec)> {
+        let (d, r) = self.recs.range(..=x.clone()).next_back()?;
+        (d.src == x.src && x.ctr - d.ctr < r.span).then_some((d, r))
+    }
+
+    /// From element `x`, at most `max` elements: whether they are kept, how many share that,
+    /// and whether they are kept only as anchors (not shown).
+    fn stretch(&self, x: &Dot, max: u64) -> (bool, u64, bool) {
+        let Some((d, r)) = self.find(x) else {
+            // not in the state: not needed, up to the next record
+            let next = self.recs.range(x.clone()..).next().filter(|(d, _)| d.src == x.src).map_or(max, |(d, _)| d.ctr - x.ctr);
+            return (false, next.clamp(1, max), true);
+        };
+        let j = x.ctr - d.ctr;
+        let rest = (r.span - j).min(max);
+        if r.chain {
+            return if j < r.prefix { (true, (r.prefix - j).min(rest), !r.shown) } else { (false, rest, true) };
+        }
+        let keep = r.single.contains(&j);
+        let len = (j + 1..j + rest).take_while(|k| r.single.contains(k) == keep).count() as u64 + 1;
+        (keep, len, !r.shown)
+    }
+
+    /// Whether record `(d, span)` stays as it is: every element kept, and its content (`content`)
+    /// shown.
+    fn all_kept(&self, d: &Dot, span: u64, content: bool) -> bool {
+        let (keep, len, hidden) = self.stretch(d, span);
+        keep && len == span && !(content && hidden)
+    }
+}

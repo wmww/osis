@@ -859,6 +859,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     if rebuild {
         for (tid, ak) in &flipped {
             super::rebuild(tx, tid, ak)?;
+            crate::retention::recheck_at_most(tx, tid, ak)?;
         }
     }
     super::keys::rebuild_intro(tx, &intro_flips)?;

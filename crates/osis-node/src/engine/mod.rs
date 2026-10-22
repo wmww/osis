@@ -89,6 +89,15 @@ impl Owned {
             _ => false,
         }
     }
+    /// Whether a dot of `src` with a counter in `lo..hi` belongs to this delta.
+    pub fn owns_range(&self, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
+        match (self, src.kind()) {
+            (Owned::Node { node, lo: a, hi: b }, SourceKind::Node(t)) => t == node && lo < *b && *a < hi,
+            (Owned::Commit(c), SourceKind::Commit(x)) => c == x,
+            (Owned::Dots { src: s, ctrs }, _) => s == src && ctrs.get(ctrs.partition_point(|c| *c < lo)).is_some_and(|c| *c < hi),
+            _ => false,
+        }
+    }
 }
 
 /// Applies `$m` to every journaled index of a `Core`.
@@ -249,7 +258,8 @@ pub(crate) struct Core {
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
     /// only commits whose things' owner chains are known are kept.
     pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
-    /// `Engine::body_live` per body, cleared by every transaction that changes anything
+    /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
+    /// and wholly on rollback
     /// (`touch`, `rollback`).
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
     /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
@@ -288,10 +298,14 @@ impl Core {
         self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
     }
 
+    /// Forgets the cached liveness of the bodies of `(tid, ak)` (its state changed).
+    pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
+        self.live_bodies.retain(|(_, t, a), _| t != tid || a != ak);
+    }
+
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
-        self.live_bodies.clear();
         self.generation += 1;
         self.dirty = true;
     }
@@ -526,6 +540,7 @@ impl Tx<'_> {
     /// whole state.
     pub fn set_state(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, shred: Shred, clear_undo: bool) -> Result<()> {
         self.core.touch();
+        self.core.forget_live(tid, ak);
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
@@ -556,7 +571,7 @@ impl Tx<'_> {
     /// else is written whole (the pages not loaded joined in first). The caller has noted the
     /// state as written (`Core::written`).
     pub fn set_state_touched(&mut self, tid: &Tid, ak: &Ak, f: Option<Fragment>, touch: &pages::Touch, shred: Shred) -> Result<()> {
-        self.core.live_bodies.clear();
+        self.core.forget_live(tid, ak);
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
