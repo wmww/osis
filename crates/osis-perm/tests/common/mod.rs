@@ -260,7 +260,6 @@ impl World {
     }
 }
 
-/// The commit IDs of dropped writes.
 /// Sticky residue (notes/permissions.md, models/tla/membership M2): a drop whose cause was
 /// dropped too. Its writes stay dropped, so the answer depends on the order drops were found,
 /// and a roster snapshot can repair it.
@@ -269,21 +268,7 @@ pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
     tl.dropped().values().any(|p| dropped.contains(&p.commit))
 }
 
-/// Rejection residue (issues/epoch-start-rejection-residue.md): an epoch start rejected for a
-/// write that was dropped later stays rejected, so the epoch starts differ from those of the
-/// held set without the dropped writes; a roster snapshot of `above` (the thing or one above
-/// each differing start) can repair it.
-pub fn rejection_residue(w: &World, tl: &osis_perm::Timeline, above: &Tid) -> bool {
-    let d = dropped_commits(tl);
-    if d.is_empty() {
-        return false;
-    }
-    let fixed = osis_perm::Timeline::evaluate(&w.held_without(&d));
-    let (a, b) = (tl.epoch_starts(), fixed.epoch_starts());
-    let differ: BTreeSet<Tid> = a.keys().chain(b.keys()).filter(|t| a.get(t) != b.get(t)).copied().collect();
-    !differ.is_empty() && differ.iter().all(|t| t == above || tl.owners().chain(t).0.contains(above))
-}
-
+/// The commit IDs of dropped writes.
 pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {
     tl.dropped().keys().map(WriteId::commit).collect()
 }
@@ -427,3 +412,12 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
     SnapWorld { w, nodes, p, g, ids }
 }
 
+
+/// A random run's seed: `seed`, or `seed` xor `OSIS_PERM_SEED` (decimal) to sample other
+/// histories (`OSIS_PERM_SEED=1 cargo test --release -p osis-perm -- --ignored`).
+pub fn seeded(seed: u64) -> u64 {
+    match std::env::var("OSIS_PERM_SEED") {
+        Ok(v) => seed ^ v.parse::<u64>().unwrap_or_else(|_| panic!("OSIS_PERM_SEED={v:?} is not a decimal u64")),
+        Err(_) => seed,
+    }
+}
