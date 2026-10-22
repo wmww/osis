@@ -612,6 +612,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         for (_, id) in ids {
             let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
+            // every row is what its record reads now (rewritten with it: late parts, drops)
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
             validity::add_membership(tx, &h, &id, &parts)?;
         }
     } else {

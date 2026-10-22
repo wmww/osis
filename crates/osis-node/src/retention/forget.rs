@@ -108,7 +108,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
             chunks.extend(m.header.chunks.iter().map(|c| c.blob));
             out.commits.insert(id);
         } else if rest.parts.len() < blob.parts.len() {
-            tx.put_commit(&id, &rest, &m, Shred::Yes)?;
+            tx.put_commit(&id, &rest, &m, Shred::Yes, None)?;
         }
         for (ai, a) in m.header.aspects.iter().enumerate() {
             if ais.contains(&ai) {

@@ -50,4 +50,16 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
         net.advance(10_000);
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
+    // spec: none (local store index, notes/node.md Open): the grant reached Bob with a late
+    // `/members` part; his `node/edges` row was rewritten with the record, so a reopen from the
+    // index equals a rebuild from the commit records and keeps the edge
+    let e = net.engine(b);
+    let held = |d: String| d.lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n");
+    assert!(e.index_current().unwrap());
+    let (perm, index, rows) = (e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap());
+    e.reload_index().unwrap();
+    assert_eq!(e.role_on(&g), Some(Role::Read), "reopened");
+    assert_eq!((e.perm_digest(false), held(e.index_digest())), (perm.clone(), index.clone()), "reopened");
+    e.rebuild_index().unwrap();
+    assert_eq!((e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap()), (perm, index, rows), "rebuilt");
 }

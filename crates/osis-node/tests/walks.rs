@@ -75,8 +75,10 @@ fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
 /// Two nodes: peer 0 owns the docs and a team, makes peer 1 admin of some, both write edges,
 /// peer 0 demotes peer 1 now and then (dropping its unreceived writes) and snapshots rosters;
 /// commits travel late and out of order.
-fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, &mut Rng)) {
+/// Returns how many membership snapshots it made.
+fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, &mut Rng)) -> usize {
     let mut rng = Rng(seed | 1);
+    let mut snapshots = 0;
     let mut lp = LocalPeer::new(2, seed, T0).unwrap();
     for p in &mut lp.peers {
         p.engine.set_walk_cache_min(1 + rng.below(4) as usize);
@@ -97,6 +99,11 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
             }
             7 => {
                 let _ = lp.peers[0].engine.roster_snapshot(&doc, None);
+                // a membership snapshot (of the node's `/keys`) reaches perm's inputs too
+                let node = lp.peers[0].engine.tid();
+                if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_core::Ak::new("/keys").unwrap()) {
+                    snapshots += 1;
+                }
             }
             _ => {
                 let (a, b) = if rng.below(2) == 0 { (0, 1) } else { (1, 0) };
@@ -106,6 +113,7 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
         lp.peers[rng.below(2) as usize].clock.advance(1 + rng.below(3));
         each(&mut lp, step, &mut rng);
     }
+    snapshots
 }
 
 // spec/permissions.md §5.1 step 5, §6: reopening from the saved walks (exact, or older and
@@ -116,7 +124,7 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
 fn reopen_from_saved_walks_equals_from_scratch() {
     let mut restored = 0;
     for seed in 1..=4u64 {
-        history(seed * 7919, 120, |lp, step, rng| {
+        let _ = history(seed * 7919, 120, |lp, step, rng| {
             if rng.below(6) == 0 {
                 let i = rng.below(2) as usize;
                 restored += reopen_same(&mut lp.peers[i].engine, &format!("seed {seed} step {step} peer {i}"));
@@ -129,17 +137,19 @@ fn reopen_from_saved_walks_equals_from_scratch() {
 // spec/permissions.md §5.1 step 5, §6; spec: none (local store index, notes/node.md Open): an
 // open adapting perm's inputs from the index's per-commit rows gives what a rebuild from the
 // commit records gives (timelines, validity, the rows themselves) over random two-node histories
-// with late arrivals, demotions and roster snapshots
+// with late arrivals, demotions, roster snapshots and membership snapshots
 #[test]
 fn reopen_from_edge_rows_equals_rebuild() {
+    let mut snapshots = 0;
     for seed in 1..=4u64 {
-        history(seed * 104_729, 100, |lp, step, rng| {
+        snapshots += history(seed * 104_729, 100, |lp, step, rng| {
             if rng.below(8) == 0 {
                 let i = rng.below(2) as usize;
                 reopen_equals_rebuild(&mut lp.peers[i].engine, &format!("seed {seed} step {step} peer {i}"));
             }
         });
     }
+    assert!(snapshots > 0, "no membership snapshot");
 }
 
 // spec: none (local store index, notes/node.md Open): a truncated, garbled or missing

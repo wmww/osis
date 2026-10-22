@@ -288,7 +288,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
-        tx.put_commit(c, &rest, &m, Shred::Yes)?;
+        tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);

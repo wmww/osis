@@ -22,9 +22,11 @@ fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
 
 /// Notes a held compaction snapshot of `(tid, ak)` with its frontiers.
 pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::Ts, id: &CommitId, fr: osis_crdt::Frontiers) {
+    // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
     let v = core.snapshots.entry_or_default((*tid, ak.clone()));
     if !v.iter().any(|x| x.1 == *id) {
-        v.push((ts, *id, fr));
+        let at = v.partition_point(|x| (x.0, x.1) < (ts, *id));
+        v.insert(at, (ts, *id, fr));
     }
 }
 
@@ -239,7 +241,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             crate::retention::note_earlier_deaths(tx, &id, &a.tid, &a.ak, &f)?;
         }
     }
-    tx.put_commit(&id, blob, &meta, Shred::No)?;
+    tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     crate::retention::on_apply(tx, &id, &mut changed)?;
 
     for (tid, ak) in &changed {
@@ -345,12 +347,12 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             crate::retention::note_earlier_deaths(tx, id, &a.tid, &a.ak, &f)?;
         }
     }
-    tx.put_commit(id, merged, &meta, Shred::No)?;
-    if edges {
-        // the commit's edge writes again, from every held part
+    // the record's `node/edges` row, read once: it is also the commit's edge writes again
+    let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
+    tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
+    if edges && let Some(all) = &all {
         tx.core.held.remove(id);
-        let all = super::edge_parts(tx, id)?;
-        validity::add_membership(tx, &h, id, &all)?;
+        validity::add_membership(tx, &h, id, all)?;
         held_changed = true;
     }
     if held_changed {

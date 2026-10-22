@@ -693,14 +693,21 @@ impl Tx<'_> {
 
     /// Writes a commit record: what the engine indexes of it (`index::record_head`: received,
     /// origin, dropped parts, per part its validity and roles) and its blob.
-    pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred) -> Result<()> {
+    /// Writes a commit record, and for a membership commit its `node/edges` row (`edges`: what
+    /// the caller already read of `blob` with `edge_parts_of`, else decoded here).
+    pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         self.core.bodies.remove(id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         if meta.header.kind.is_membership() {
             // perm's reading of it, persisted beside the record (an open decodes no body)
-            let parts = crate::apply::edge_parts_of(self, id, &meta.header, blob.clone())?;
-            index::put_edges(self, id, &parts, shred)?;
+            match edges {
+                Some(p) => index::put_edges(self, id, p, shred)?,
+                None => {
+                    let p = crate::apply::edge_parts_of(self, id, &meta.header, blob.clone())?;
+                    index::put_edges(self, id, &p, shred)?;
+                }
+            }
         }
         Ok(())
     }
