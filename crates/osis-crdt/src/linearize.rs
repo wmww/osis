@@ -31,6 +31,10 @@ pub(crate) struct Placed<'a> {
     pub parent: Vec<Option<usize>>,
     /// Anchors of position writes that name no element (their writers wait for them, §6.1).
     pub waiting: HashSet<Dot>,
+    /// Whether each real node's chosen edge names HEAD.
+    pub head: Vec<bool>,
+    /// Nodes on a cycle some demotion broke (§6.2).
+    pub cyc: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -200,10 +204,11 @@ pub(crate) fn place_idx(elems: &Elems) -> Placed<'_> {
         }
         g.edge.push(edge);
     }
-    break_cycles(&mut g);
+    let cyc = break_cycles(&mut g);
     let (order, parent) = traverse(&g);
+    let head = g.edge.iter().take(real).map(|e| *e == Edge::Head).collect();
     drop(g);
-    Placed { nodes, order, parent, waiting }
+    Placed { nodes, order, parent, waiting, head, cyc }
 }
 
 /// Places the elements of a sequence (§6), by dot.
@@ -216,8 +221,8 @@ pub(crate) fn place(elems: &Elems, text: bool) -> crate::seq_lin::Placement {
 /// demotion is forced, so any walk may demote the cycle it finds. A node whose parent path ends at
 /// HEAD, END or a hidden anchor is on no cycle and only cycle members change edges, so that mark
 /// persists; within a round every node is walked once. Later rounds start from the victims, the
-/// only nodes whose new edge can close a cycle.
-fn break_cycles(g: &mut Graph) {
+/// only nodes whose new edge can close a cycle. Returns the members of every cycle broken.
+fn break_cycles(g: &mut Graph) -> Vec<usize> {
     let n = g.dots.len();
     let mut term = vec![false; n];
     let mut mark = vec![0usize; n];
@@ -225,6 +230,7 @@ fn break_cycles(g: &mut Graph) {
     let mut path: Vec<usize> = Vec::new();
     let mut starts: Vec<usize> = (0..n).collect();
     let mut round = 0usize;
+    let mut members = Vec::new();
     while !starts.is_empty() {
         round += 1;
         let mut victims = Vec::new();
@@ -243,6 +249,7 @@ fn break_cycles(g: &mut Graph) {
                         if let Some(v) = g.demote(&cyc) {
                             victims.push(v);
                         }
+                        members.extend(cyc);
                     }
                     break false;
                 }
@@ -268,6 +275,7 @@ fn break_cycles(g: &mut Graph) {
         }
         starts = victims;
     }
+    members
 }
 
 

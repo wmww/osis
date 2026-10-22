@@ -120,7 +120,7 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 /// root anchors at the last element of the previous root's moved subtree.
 fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
     let inr: HashSet<&Dot> = range.iter().collect();
-    let last_el: HashMap<&Dot, &Dot> = p.iter().map(|r| (&r.dot, &r.last)).collect();
+    let spans: HashMap<&Dot, u64> = p.iter().map(|r| (&r.dot, r.span)).collect();
     let loose: HashMap<&Dot, u64> = p.iter().filter(|r| r.span > 1 && !r.created).map(|r| (&r.dot, r.span)).collect();
     let parent: HashMap<&Dot, Option<&Dot>> = p.iter().map(|r| (&r.dot, r.parent.as_ref())).collect();
     let par = |d: &Dot| parent.get(d).copied().flatten();
@@ -157,7 +157,7 @@ fn move_writes(w: &mut Writer, p: &Placement, range: &[Dot], pred: Anchor, dest:
             out.insert(nth(r, i), position(w, a));
         }
         let l = last.get(r).copied().unwrap_or(r);
-        anchor = Anchor::Dot(last_el.get(l).copied().unwrap_or(l).clone());
+        anchor = Anchor::Dot(nth(l, spans.get(l).copied().unwrap_or(1).saturating_sub(1)));
     }
     out
 }

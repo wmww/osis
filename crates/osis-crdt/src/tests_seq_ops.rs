@@ -448,13 +448,14 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     a.state.join(older);
     let older_join = t.elapsed();
-    // a move: the next use places from scratch
+    // a move: the moved subtrees are re-placed
     let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
     let d = wired(&d, &src, range, 1006);
     let t = Instant::now();
     a.state.join(d);
-    let _ = a.state.read();
     let move_join = t.elapsed();
+    let _ = a.state.read();
+    let move_read = t.elapsed() - move_join;
     let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
@@ -464,7 +465,7 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move join and read {move_join:?}, encode {encode:?}, decode {decode:?}", p.iter().count());
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}", p.iter().count());
     let _ = v;
 }
 
@@ -837,6 +838,80 @@ fn cached_placement_follows_wire_deltas_spec_6() {
         assert_eq!(read_str(&a.state), read_str(&b.state));
     }
     assert!(kept + 2 >= joins, "kept {kept} of {joins}");
+}
+
+/// §6.2 (`seq_lin`): writers moving, typing and deleting concurrently (the same range moved by
+/// several, cycles included), joined from the wire by a replica that reads in between: the
+/// cached placement follows the moves that close no cycle and equals a whole pass after every
+/// join; all converge.
+#[test]
+fn cached_placement_follows_moves_spec_6_2() {
+    let (mut kept, mut moves) = (0, 0);
+    for seed in 0..12u64 {
+        let mut r = Rng(2 * seed + 1);
+        let mut base = Replica::new(1);
+        base.commit(1, &[op(Op::Set(s(&"abcdefghij".repeat(8))))], &text_view());
+        let mut ws: Vec<Replica> = (2..5).map(|n| Replica { state: base.state.clone(), src: node(n), lo: 1 }).collect();
+        let mut seen = vec![0usize; ws.len()];
+        let mut d = Replica { state: base.state.clone(), src: node(9), lo: 1 };
+        let mut log: Vec<(usize, Fragment)> = Vec::new();
+        for round in 0..30u64 {
+            // often the same visible range for every writer: concurrent moves of one element
+            let shared = r.chance(1, 2).then(|| (r.below(60), 1 + r.below(4)));
+            let mut fresh = Vec::new();
+            for (i, w) in ws.iter_mut().enumerate() {
+                let n = read_str(&w.state).chars().count();
+                let o = match r.below(8) {
+                    0 => Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] },
+                    1 if n > 4 => Op::Delete { at: r.below(n - 3), len: 1 + r.below(3) },
+                    _ => {
+                        let (at, len) = shared.unwrap_or((r.below(n.max(1)), 1 + r.below(4)));
+                        let at = at.min(n.saturating_sub(2));
+                        let len = len.min(n - at - 1).max(1);
+                        Op::Move { at, len, to: r.below(n - len + 1) }
+                    }
+                };
+                let mv = matches!(o, Op::Move { .. });
+                let t = round * 4 + i as u64 + 2;
+                if let Some((x, src, range)) = w.commit(t, &[op(o)], &text_view()) {
+                    fresh.push((mv, wired(&x, &src, range, t)));
+                }
+            }
+            for k in (1..fresh.len()).rev() {
+                fresh.swap(k, r.below(k + 1));
+            }
+            for (mv, x) in &fresh {
+                let _ = read_str(&d.state);
+                d.state.join(x.clone());
+                crate::testutil::check_lin(&d.state);
+                if *mv {
+                    moves += 1;
+                    if matches!(&d.state, Fragment::Seq(q) if q.lin_check() == Some(true)) {
+                        kept += 1;
+                    }
+                }
+            }
+            log.extend(fresh.into_iter().map(|(_, x)| (0, x)));
+            // each writer catches up on a random prefix of the log
+            for (w, at) in ws.iter_mut().zip(seen.iter_mut()) {
+                let upto = *at + r.below(log.len() - *at + 1);
+                for (_, x) in log.get(*at..upto).unwrap_or_default() {
+                    let _ = read_str(&w.state);
+                    w.state.join(x.clone());
+                    crate::testutil::check_lin(&w.state);
+                }
+                *at = upto;
+            }
+        }
+        for (w, at) in ws.iter_mut().zip(seen.iter()) {
+            for (_, x) in log.get(*at..).unwrap_or_default() {
+                w.state.join(x.clone());
+            }
+            assert_eq!(read_str(&w.state), read_str(&d.state), "seed {seed}");
+        }
+    }
+    eprintln!("moves followed: {kept} of {moves}");
+    assert!(kept * 4 >= moves * 3, "followed {kept} of {moves}");
 }
 
 /// §6.1 sibling order (`seq_lin`): a run anchored where a newer and an older run already hang

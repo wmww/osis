@@ -56,8 +56,8 @@ pub struct Seq {
     pub(crate) meta: Meta,
     elems: Elems,
     /// Placement cache (`seq_lin`) of a sequence of `LIN_MIN` records or more: built on first
-    /// use, kept up by joins that add elements or change flags and content, dropped by any
-    /// other change of `elems`. Not part of equality.
+    /// use, kept up by joins that add elements, move them or change flags and content, dropped
+    /// by any other change of `elems`. Not part of equality.
     lin: OnceLock<Arc<Lin>>,
 }
 
