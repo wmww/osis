@@ -461,22 +461,27 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
             Ok(Some(contribution(w, kind, a.clone())))
         }
         Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. } => {
-            let enc = match op {
-                Op::Edit { new, .. } => encoding_for(view, new),
-                _ => view.encoding().ok_or(Error::Mismatch("sequence op needs a list or text type"))?,
-            };
-            let text = match enc {
-                Encoding::Text => true,
-                Encoding::List => false,
-                _ => return Err(Error::Mismatch("sequence op needs a list or text")),
-            };
-            let slot = present_slot(cur, enc);
+            let text = seq_text(view, op)?;
+            let slot = present_slot(cur, if text { Encoding::Text } else { Encoding::List });
             let s = match slot.as_deref() {
-                Some(Fragment::Seq(s)) => Some(s),
+                Some(Fragment::Seq(s)) => Some(s as &dyn crate::seq::SeqRead),
                 _ => None,
             };
             Ok(seq::op(w, text, s, view, op)?.map(Fragment::Seq))
         }
+    }
+}
+
+/// Whether sequence op `op` under `view` is a text op (else a list op).
+pub(crate) fn seq_text<V: View>(view: &V, op: &Op) -> Result<bool, Error> {
+    let enc = match op {
+        Op::Edit { new, .. } => encoding_for(view, new),
+        _ => view.encoding().ok_or(Error::Mismatch("sequence op needs a list or text type"))?,
+    };
+    match enc {
+        Encoding::Text => Ok(true),
+        Encoding::List => Ok(false),
+        _ => Err(Error::Mismatch("sequence op needs a list or text")),
     }
 }
 

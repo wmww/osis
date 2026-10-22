@@ -61,6 +61,33 @@ pub(crate) fn elem<'a>(m: &'a Elems, d: &Dot) -> Option<Cow<'a, SeqElem>> {
     Some(if e.span == 1 { Cow::Borrowed(e) } else { Cow::Owned(piece(k, e, d.ctr - k.ctr, 1).1) })
 }
 
+/// Element records looked up by dot: a sequence's own, or a state's under a batch's
+/// (`seq::Layered`).
+pub(crate) trait Recs {
+    /// The record holding `d`.
+    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)>;
+    /// The records starting in `a..=b`, in dot order; `None` where they cannot be listed.
+    fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>>;
+    /// The record starting at `d`.
+    fn get(&self, d: &Dot) -> Option<&SeqElem> {
+        self.find(d).filter(|(k, _)| *k == d).map(|x| x.1)
+    }
+    /// Element `d` (a copy for one inside a range).
+    fn elem(&self, d: &Dot) -> Option<Cow<'_, SeqElem>> {
+        let (k, e) = self.find(d)?;
+        Some(if e.span == 1 { Cow::Borrowed(e) } else { Cow::Owned(piece(k, e, d.ctr - k.ctr, 1).1) })
+    }
+}
+
+impl Recs for Elems {
+    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
+        find(self, d)
+    }
+    fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
+        Some(self.range(a..=b).collect())
+    }
+}
+
 /// Splits the record holding `x` and a dot before it, so a record starts at `x`.
 fn split_plain(m: &mut Elems, x: &Dot) {
     let Some((k, e)) = m.range(..x).next_back() else { return };

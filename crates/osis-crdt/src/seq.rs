@@ -10,7 +10,7 @@
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::Lin;
-use crate::seq_span::{Elems, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
+use crate::seq_span::{Elems, Recs, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
 use std::collections::BTreeMap;
@@ -454,8 +454,129 @@ pub(crate) fn has_records(s: &Seq) -> bool {
 
 /// Visible elements in order: not deleted, with content that reads (§5.7 Read). Never inside a
 /// range record (ranges have no content).
-pub(crate) fn visible(s: &Seq) -> Vis {
-    Vis(s.lin())
+pub(crate) fn visible<S: SeqRead + ?Sized>(s: &S) -> Vis {
+    Vis(s.placed())
+}
+
+/// What sequence ops read: a `Seq`, or a state's under a batch's records (`Layered`).
+pub(crate) trait SeqRead {
+    fn text(&self) -> bool;
+    /// The placement (§6).
+    fn placed(&self) -> Arc<Lin>;
+    /// The record starting at `d` (a visible element's is its own).
+    fn rec(&self, d: &Dot) -> Option<&SeqElem>;
+}
+
+impl SeqRead for Seq {
+    fn text(&self) -> bool {
+        self.text
+    }
+    fn placed(&self) -> Arc<Lin> {
+        self.lin()
+    }
+    fn rec(&self, d: &Dot) -> Option<&SeqElem> {
+        self.elems.get(d)
+    }
+}
+
+/// A state's sequence with a batch's writes joined over it, without copying the state: what the
+/// batch's next op there resolves against (§4.5). `top` holds the joined record of every dot the
+/// batch wrote, each lined up with the state's record of that dot (same key and span) or new;
+/// `lin` is the state's placement followed through them.
+pub(crate) struct Layered<'s> {
+    base: &'s Seq,
+    top: Elems,
+    w: Option<Stamp>,
+    lin: Arc<Lin>,
+}
+
+/// The records of a `Layered`: the batch's over the state's.
+struct Union<'a> {
+    base: &'a Elems,
+    top: &'a Elems,
+}
+
+impl Recs for Union<'_> {
+    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
+        self.top.find(d).or_else(|| self.base.find(d))
+    }
+    fn starting(&self, _: &Dot, _: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
+        None
+    }
+}
+
+impl<'s> Layered<'s> {
+    /// `base` ⊔ `d` (a batch's writes, no reset); `None` where a record does not line up with
+    /// the state's or the placement cannot follow (the caller copies instead).
+    pub(crate) fn new(base: &'s Seq, d: Seq) -> Option<Layered<'s>> {
+        let mut l = Layered { base, top: Elems::new(), w: base.meta.w.clone(), lin: base.lin() };
+        l.join(d).then_some(l)
+    }
+
+    /// Joins `d` (more of the batch's writes); `false`: the layer is unusable, drop it.
+    pub(crate) fn join(&mut self, d: Seq) -> bool {
+        if d.text != self.base.text || d.meta.reset.is_some() {
+            return false;
+        }
+        self.w = max_opt(self.w.take(), d.meta.w);
+        let mut plans = Vec::with_capacity(d.elems.len());
+        let mut ch = Changes::new();
+        for (dot, de) in d.elems {
+            if dot.src.is_derived() {
+                return false;
+            }
+            match self.top.get(&dot) {
+                Some(r) if r.span != de.span => return false,
+                Some(_) => {}
+                None => match self.base.elems.find(&dot) {
+                    Some((k, r)) if *k == dot && r.span == de.span => {
+                        self.top.insert(dot.clone(), r.clone());
+                    }
+                    Some(_) => return false,
+                    None if de.span != 1 => return false,
+                    None => {}
+                },
+            }
+            if !self.lin.plan(&Union { base: &self.base.elems, top: &self.top }, &dot, &de, &mut plans) {
+                return false;
+            }
+            let mut t = Seq::new(self.base.text, Meta::default(), std::mem::take(&mut self.top));
+            join_one(&mut t, dot.clone(), de, None, &mut ch);
+            self.top = t.elems;
+            if !self.top.contains_key(&dot) {
+                return false;
+            }
+        }
+        Arc::make_mut(&mut self.lin).follow(&Union { base: &self.base.elems, top: &self.top }, self.base.text, plans)
+    }
+
+    /// Present (§4.3) as the joined state would be.
+    pub(crate) fn present(&self) -> bool {
+        self.w.is_some() || has_written(self.base) || has_written(&Seq::new(self.base.text, Meta::default(), self.top.clone()))
+    }
+
+    /// The joined state, copied (checks).
+    #[cfg(debug_assertions)]
+    pub(crate) fn to_seq(&self) -> Seq {
+        let mut elems = self.base.elems.clone();
+        elems.extend(self.top.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone() }, elems);
+        #[cfg(test)]
+        assert!(*self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");
+        s
+    }
+}
+
+impl SeqRead for Layered<'_> {
+    fn text(&self) -> bool {
+        self.base.text
+    }
+    fn placed(&self) -> Arc<Lin> {
+        self.lin.clone()
+    }
+    fn rec(&self, d: &Dot) -> Option<&SeqElem> {
+        self.top.get(d).or_else(|| self.base.elems.get(d))
+    }
 }
 
 /// The visible elements of a placement (`visible`).

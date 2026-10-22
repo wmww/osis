@@ -20,7 +20,7 @@
 
 use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, SeqContent, SeqElem, is_visible};
-use crate::seq_span::{Elems, elem, find, nth};
+use crate::seq_span::{Elems, Recs, nth};
 use crate::stamp::{Dot, Stamp};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -597,8 +597,8 @@ impl Lin {
     }
 
     /// The plans for joining record `(dot, de)` into `elems`, pushed to `out`; `false`: rebuild.
-    pub(crate) fn plan(&self, elems: &Elems, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
-        match find(elems, dot) {
+    pub(crate) fn plan(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
+        match elems.find(dot) {
             Some((k, r)) if k == dot && r.span < de.span => self.plan_cover(elems, dot, de, out),
             _ => match self.plan_one(elems, dot, de) {
                 Some(p) => {
@@ -612,13 +612,14 @@ impl Lin {
 
     /// A flag-only range record (a decoded delete) over several state records of one source that
     /// it covers exactly: a flag plan per record (`join_one` cuts it at their bounds).
-    fn plan_cover(&self, elems: &Elems, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
+    fn plan_cover(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
         if de.created.is_some() || !de.pos.is_empty() || !matches!(de.content, SeqContent::None) {
             return false;
         }
         let last = nth(dot, de.span - 1);
         let mut next = dot.ctr;
-        for (k, r) in elems.range(dot..=&last) {
+        let Some(rs) = elems.starting(dot, &last) else { return false };
+        for (k, r) in rs {
             if k.src != dot.src || k.ctr != next {
                 return false;
             }
@@ -629,8 +630,8 @@ impl Lin {
     }
 
     /// The plan for joining record `(dot, de)` into `elems`; `None`: rebuild.
-    fn plan_one(&self, elems: &Elems, dot: &Dot, de: &SeqElem) -> Option<Plan> {
-        match find(elems, dot) {
+    fn plan_one(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem) -> Option<Plan> {
+        match elems.find(dot) {
             None => {
                 if de.span != 1 || dot.src.is_derived() {
                     return None;
@@ -642,7 +643,7 @@ impl Lin {
                 let known = match &anchor {
                     Anchor::Head => true,
                     Anchor::Dot(x) if x.src.is_derived() => return None,
-                    Anchor::Dot(x) => match find(elems, x) {
+                    Anchor::Dot(x) => match elems.find(x) {
                         Some((_, r)) if r.span != 1 => return None,
                         r => r.is_some(),
                     },
@@ -665,7 +666,7 @@ impl Lin {
     /// Follows a joined delta by its records' plans, in dot order; `false`: rebuild. New
     /// elements are spliced in as runs where they place, moved elements' subtrees are cut out
     /// and put in where they now place, flag and content writes flip visibility.
-    pub(crate) fn follow(&mut self, elems: &Elems, text: bool, plans: Vec<(Dot, Plan)>) -> bool {
+    pub(crate) fn follow(&mut self, elems: &dyn Recs, text: bool, plans: Vec<(Dot, Plan)>) -> bool {
         // runs of new elements by the existing node (`None`: HEAD) they follow, with the first
         // element's edge stamp
         let mut runs: Vec<(Option<Dot>, Stamp, Vec<Dot>)> = Vec::new();
@@ -781,7 +782,7 @@ impl Lin {
     /// `Some(None)` if its chosen edge stays; `None`: rebuild. Rebuilds if a write gained or lost
     /// names an element inside a range record (the nodes split differently), an unknown or
     /// `Derived` element, or the element is on a broken cycle (§6.2: its demotion may change).
-    fn moved(&self, elems: &Elems, dot: &Dot, old: &[(Stamp, Anchor)], now: &[(Stamp, Anchor)]) -> Option<Option<(Stamp, Dot, Anchor)>> {
+    fn moved(&self, elems: &dyn Recs, dot: &Dot, old: &[(Stamp, Anchor)], now: &[(Stamp, Anchor)]) -> Option<Option<(Stamp, Dot, Anchor)>> {
         if dot.src.is_derived() || self.cyc.contains(dot) {
             return None;
         }
@@ -789,7 +790,7 @@ impl Lin {
         let lost = old.iter().filter(|p| !now.contains(p));
         for (_, a) in gained.chain(lost) {
             if let Anchor::Dot(x) = a
-                && (x.src.is_derived() || !find(elems, x).is_some_and(|(_, r)| r.span == 1))
+                && (x.src.is_derived() || !elems.find(x).is_some_and(|(_, r)| r.span == 1))
             {
                 return None;
             }
@@ -807,7 +808,7 @@ impl Lin {
 
     /// Moves the subtree of `dot` below `anchor` with edge stamp `stamp`; `false`: rebuild (the
     /// element or the anchor is not placed, or the anchor is in the subtree: a cycle).
-    fn place_moved(&mut self, elems: &Elems, dot: &Dot, stamp: Stamp, anchor: Anchor) -> bool {
+    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor) -> bool {
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(d) = self.p.block(b).get(o).map(|r| r.depth + self.p.shift_of(b)) else { return false };
         let i = self.p.base(b) + o;
@@ -835,7 +836,7 @@ impl Lin {
     /// and its children with greater edge stamps, with their subtrees (§6.1 sibling order), and
     /// at HEAD before the `END` nodes, as if the rows `skip` (the node's own subtree) were out;
     /// `None`: rebuild.
-    fn slot(&self, elems: &Elems, key: &Option<Dot>, stamp: &Stamp, skip: Range<usize>) -> Option<Slot> {
+    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, skip: Range<usize>) -> Option<Slot> {
         let (mut j, d, want) = match key {
             None => (0, -1, Anchor::Head),
             Some(x) => {
@@ -862,7 +863,7 @@ impl Lin {
 /// The edge stamp of node `row` towards `want`: its greatest position write naming it (a
 /// demoted edge is the `prev` one, §6.2; a node a delta moves away keeps its old write there as
 /// `prev` until it is re-placed, else this is `None` and the caller rebuilds).
-fn child_stamp(elems: &Elems, row: &Row, want: &Anchor) -> Option<Stamp> {
-    let e = elem(elems, &row.dot)?;
+fn child_stamp(elems: &dyn Recs, row: &Row, want: &Anchor) -> Option<Stamp> {
+    let e = elems.elem(&row.dot)?;
     e.pos.iter().find(|(_, a)| a == want).map(|(s, _)| s.clone())
 }

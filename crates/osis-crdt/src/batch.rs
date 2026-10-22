@@ -4,8 +4,8 @@
 
 use crate::error::Error;
 use crate::fragment::{Bag, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
-use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf};
-use crate::seq;
+use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf, seq_text};
+use crate::seq::{self, Layered, SeqRead};
 use crate::stamp::{CounterRange, Dot, Stamp, max_opt};
 use crate::view::View;
 use std::borrow::Cow;
@@ -32,7 +32,7 @@ pub struct Batch<'s> {
     w: Writer,
     acc: Option<Fragment>,
     /// The batch's view of the sequence position the last op met, if the batch had writes there.
-    seen: Option<Seen>,
+    seen: Option<Seen<'s>>,
 }
 
 /// State joined with the batch's writes at one sequence position, reached through fields and
@@ -40,18 +40,32 @@ pub struct Batch<'s> {
 /// under the batch's reset `e` from above: what `resolve` would copy there. Kept across ops at
 /// that position while joining each op's delta into it equals the net effect (§4.5), dropped by
 /// any other op.
-struct Seen {
+struct Seen<'s> {
     at: Vec<PathSeg>,
     index: bool,
-    frag: Fragment,
+    frag: Over<'s>,
+}
+
+/// A view of a sequence position: the state's sequence under the batch's records, or (where
+/// those do not line up, or a reset of the batch lies above) a copy of both joined.
+enum Over<'s> {
+    Layer(Layered<'s>),
+    Copy(Fragment),
 }
 
 /// Where `resolve` meets the probed sequence position (`rest` path segments left): it uses
 /// `over` instead of copying state and batch writes there, and hands back what it used in `out`.
-struct Probe {
+struct Probe<'s> {
     rest: usize,
-    over: Option<Fragment>,
-    out: Option<Fragment>,
+    over: Option<Over<'s>>,
+    out: Option<Over<'s>>,
+}
+
+/// What an op at a position resolves against: the fragment there (borrowed from the state where
+/// the batch has no writes) or a layered sequence.
+enum Cur<'a> {
+    Frag(Option<Cow<'a, Fragment>>),
+    Layer(Layered<'a>),
 }
 
 /// The sequence position `path` and `op` meet through fields and cases: prefix length and
@@ -127,7 +141,7 @@ impl<'s> Batch<'s> {
             follow = Some((at, index, frag, e, a_at.cloned(), d_at.cloned()));
         }
         let next = overlay(a, d, &self.w);
-        if let Some((at, index, mut frag, e, a_at, d_at)) = follow {
+        if let Some((at, index, frag, e, a_at, d_at)) = follow {
             let (n_at, ne) = at_point(Some(&next), &at, index, true);
             let mut ch = crate::changes::Changes::new();
             let mut j = a_at.unwrap_or_default();
@@ -137,15 +151,26 @@ impl<'s> Batch<'s> {
             }
             let mut n = n_at.cloned().unwrap_or_default();
             n.prune(e.as_ref(), &mut ch);
-            if ne == e && j == n {
-                if let Some(d_at) = d_at {
-                    frag.join_into(d_at, e.as_ref(), &mut ch);
+            let frag = match (frag, d_at) {
+                _ if ne != e || j != n => None,
+                (f, None) => Some(f),
+                (Over::Copy(mut f), Some(d_at)) => {
+                    f.join_into(d_at, e.as_ref(), &mut ch);
+                    Some(Over::Copy(f))
                 }
+                (Over::Layer(mut l), Some(Fragment::Seq(d_at))) if e.is_none() => l.join(d_at).then_some(Over::Layer(l)),
+                _ => None,
+            };
+            if let Some(frag) = frag {
                 #[cfg(debug_assertions)]
                 {
                     // what `resolve` would copy at this position for the next op
                     let (s_at, _) = at_point(Some(self.state), &at, index, false);
-                    debug_assert!(joined(s_at, n_at, e.as_ref()).unwrap_or_default() == frag, "batch view differs from state + net effect");
+                    let view = match &frag {
+                        Over::Copy(f) => Cow::Borrowed(f),
+                        Over::Layer(l) => Cow::Owned(Fragment::Seq(l.to_seq())),
+                    };
+                    debug_assert!(joined(s_at, n_at, e.as_ref()).unwrap_or_default() == *view, "batch view differs from state + net effect");
                 }
                 self.seen = Some(Seen { at, index, frag });
             }
@@ -196,31 +221,51 @@ fn current<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>)
     joined(s, a, e).map(Cow::Owned)
 }
 
-/// `current`, or the probe's kept view where the probe meets the path (`left` segments left).
-fn point<'a>(probe: &mut Option<&mut Probe>, left: usize, s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Option<Cow<'a, Fragment>> {
-    if let Some(p) = probe.as_deref_mut().filter(|p| p.rest == left)
-        && let Some(f) = p.over.take()
-    {
-        return Some(Cow::Owned(f));
+/// `current`, or where the probe meets the path (`left` segments left) its kept view, else the
+/// state's sequence layered under the batch's writes there.
+fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Fragment>, a: Option<&Fragment>, e: Option<&Stamp>) -> Cur<'a> {
+    if let Some(p) = probe.as_deref_mut().filter(|p| p.rest == left) {
+        match p.over.take() {
+            Some(Over::Copy(f)) => return Cur::Frag(Some(Cow::Owned(f))),
+            Some(Over::Layer(l)) => return Cur::Layer(l),
+            None => {}
+        }
+        if e.is_none()
+            && let (Some(Fragment::Seq(b)), Some(Fragment::Seq(x))) = (s, a)
+            && let Some(l) = Layered::new(b, x.clone())
+        {
+            return Cur::Layer(l);
+        }
     }
-    current(s, a, e)
+    Cur::Frag(current(s, a, e))
 }
 
-/// Hands a copy `point` made (or the kept view) back to the probe.
-fn keep(probe: &mut Option<&mut Probe>, left: usize, cur: Option<Cow<'_, Fragment>>) {
-    if let (Some(p), Some(Cow::Owned(f))) = (probe.as_deref_mut().filter(|p| p.rest == left), cur) {
-        p.out = Some(f);
+/// Hands a view `point` made (or the kept one) back to the probe.
+fn keep<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, cur: Cur<'a>) {
+    if let Some(p) = probe.as_deref_mut().filter(|p| p.rest == left) {
+        p.out = match cur {
+            Cur::Frag(Some(Cow::Owned(f))) => Some(Over::Copy(f)),
+            Cur::Layer(l) => Some(Over::Layer(l)),
+            Cur::Frag(_) => None,
+        };
     }
 }
 
 /// Resolves `op` at `path` below the position whose state is `s` and batch writes `a`; `e` is
 /// the batch's effective reset from above. Returns the root-relative delta.
 #[allow(clippy::too_many_arguments)]
-fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool, mut probe: Option<&mut Probe>) -> Result<Option<Fragment>, Error> {
+fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Fragment>, e: Option<Stamp>, path: &[PathSeg], op: &PathOp, view: &V, root: bool, mut probe: Option<&mut Probe<'s>>) -> Result<Option<Fragment>, Error> {
     let Some((seg, rest)) = path.split_first() else {
         // nothing of the batch at this position: resolve against the state itself, no clone
         let cur = point(&mut probe, 0, s, a, e.as_ref());
-        let r = leaf(w, cur.as_deref(), view, &op.op, root);
+        let r = match &cur {
+            Cur::Frag(c) => leaf(w, c.as_deref(), view, &op.op, root),
+            // a sequence op (the probe stops only there); what `leaf` does with the joined copy
+            Cur::Layer(l) => seq_text(view, &op.op).and_then(|text| {
+                let s = (l.text() == text && l.present()).then_some(l as &dyn SeqRead);
+                Ok(seq::op(w, text, s, view, &op.op)?.map(Fragment::Seq))
+            }),
+        };
         keep(&mut probe, 0, cur);
         return r;
     };
@@ -291,8 +336,14 @@ fn resolve<V: View>(w: &mut Writer, s: Option<&Fragment>, a: Option<&Fragment>, 
         PathSeg::Index(i) => {
             let eview = view.element().ok_or(Error::Mismatch("list without element type"))?;
             let cur = point(&mut probe, path.len(), s, a, e.as_ref());
-            let Some(Fragment::Seq(sq)) = cur.as_deref() else { return Err(Error::Mismatch("index out of range")) };
-            let (d, content) = seq::element_at(sq, *i).ok_or(Error::Mismatch("index out of range"))?;
+            let found = match &cur {
+                Cur::Frag(c) => match c.as_deref() {
+                    Some(Fragment::Seq(sq)) => seq::element_at(sq, *i),
+                    _ => return Err(Error::Mismatch("index out of range")),
+                },
+                Cur::Layer(l) => seq::element_at(l, *i),
+            };
+            let (d, content) = found.ok_or(Error::Mismatch("index out of range"))?;
             keep(&mut probe, path.len(), cur);
             let c = resolve(w, content.as_ref(), None, None, rest, op, &eview, false, None)?;
             c.map(|c| Fragment::Seq(seq::wrap_element(d, c)))

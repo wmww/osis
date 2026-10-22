@@ -5,7 +5,7 @@ use crate::batch::Batch;
 use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
 use crate::ops::{Op, PathOp, PathSeg, Writer};
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem, visible};
+use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, visible};
 use crate::stamp::Dot;
 use crate::view::View;
 use osis_core::Value;
@@ -182,17 +182,17 @@ fn items(v: &Value) -> Result<&[Value], Error> {
 }
 
 /// Visible text elements and their chars.
-fn text_view(s: &Seq) -> (Vec<Dot>, Vec<char>) {
+fn text_view(s: &dyn SeqRead) -> (Vec<Dot>, Vec<char>) {
     let vis = visible(s);
     vis.rows().map(|r| (r.dot.clone(), r.ch.unwrap_or_default())).unzip()
 }
 
 /// Visible list elements: dot, content and projected read (`None`: opaque, §9).
-fn list_view<V: View>(s: &Seq, ev: &V) -> Vec<(Dot, Option<Fragment>, Option<Value>)> {
+fn list_view<V: View>(s: &dyn SeqRead, ev: &V) -> Vec<(Dot, Option<Fragment>, Option<Value>)> {
     visible(s)
         .iter()
         .map(|d| {
-            let f = s.elems().get(d).and_then(|e| if let SeqContent::Frag(f) = &e.content { Some((**f).clone()) } else { None });
+            let f = s.rec(d).and_then(|e| if let SeqContent::Frag(f) = &e.content { Some((**f).clone()) } else { None });
             let p = f.as_ref().and_then(Fragment::read).and_then(|v| ev.project(&v).map(|c| c.into_owned()));
             (d.clone(), f, p)
         })
@@ -267,9 +267,9 @@ pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &
 /// matches only, so a base element changed or removed concurrently is never deleted and anchors
 /// nothing; a list element changed on both sides is edited in place when it is the one unmatched
 /// element of its gap on each side.
-pub(crate) fn edit<V: View>(w: &mut Writer, s: &Seq, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
-    let mut out = Seq::new(s.text, Meta::default(), BTreeMap::new());
-    if s.text {
+pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
+    let mut out = Seq::new(s.text(), Meta::default(), BTreeMap::new());
+    if s.text() {
         let (b, n) = (chars(base)?, chars(new)?);
         let (vis, cur) = text_view(s);
         let to_cur: HashMap<usize, usize> = lcs(&b, &cur, |x, y| x == y).into_iter().collect();

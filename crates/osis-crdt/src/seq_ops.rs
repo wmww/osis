@@ -6,7 +6,7 @@ use crate::error::Error;
 use crate::fragment::{Fragment, Meta};
 use crate::seq_lin::{Lin, Placement};
 use crate::ops::{Op, Writer};
-use crate::seq::{Anchor, Seq, SeqContent, SeqElem, Vis, is_visible, top2, visible};
+use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, top2, visible};
 use crate::seq_span::{elem, expand, nth};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
@@ -177,9 +177,9 @@ pub fn cut_dots(state: &Fragment, at: usize, len: usize) -> Result<Vec<Dot>, Err
 }
 
 /// Sequence op against present state `s` (§5.7 Ops); `None` if a no-op.
-pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V, op: &Op) -> Result<Option<Seq>, Error> {
+pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, view: &V, op: &Op) -> Result<Option<Seq>, Error> {
     let empty = delta(text);
-    let s = s.unwrap_or(&empty);
+    let s: &dyn SeqRead = s.unwrap_or(&empty);
     let mut out = delta(text);
     match op {
         Op::Insert { at, items } => {
@@ -222,7 +222,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             if !text {
                 return Err(Error::Mismatch("paste is a text op"));
             }
-            let held = |d: &Dot| s.elems().get(d).is_some_and(|e| matches!(e.content, SeqContent::Char(_)));
+            let held = |d: &Dot| s.rec(d).is_some_and(|e| matches!(e.content, SeqContent::Char(_)));
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
@@ -236,7 +236,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             let range = dots_of(p, *i0..*i1 + 1);
             // visible text inside the remembered range: the clipboard no longer matches
             let clip: HashSet<&Dot> = dots.iter().collect();
-            if range.iter().any(|d| !clip.contains(d) && s.elems().get(d).is_some_and(|e| is_visible(e, text))) {
+            if range.iter().any(|d| !clip.contains(d) && s.rec(d).is_some_and(|e| is_visible(e, text))) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
             let inr: HashSet<&Dot> = range.iter().collect();
@@ -246,7 +246,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
-                let c = s.elems().get(dot).map_or(SeqContent::None, |e| e.content.clone());
+                let c = s.rec(dot).map_or(SeqContent::None, |e| e.content.clone());
                 let el = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 el.deleted = Some((d.clone(), false));
                 el.content = c;
@@ -259,9 +259,9 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&Seq>, view: &V,
 }
 
 /// The visible element at index `i`: its dot and, for a list, its content fragment.
-pub(crate) fn element_at(s: &Seq, i: usize) -> Option<(Dot, Option<Fragment>)> {
+pub(crate) fn element_at(s: &dyn SeqRead, i: usize) -> Option<(Dot, Option<Fragment>)> {
     let d = visible(s).get(i)?.clone();
-    let content = match s.elems().get(&d).map(|e| &e.content) {
+    let content = match s.rec(&d).map(|e| &e.content) {
         Some(SeqContent::Frag(f)) => Some((**f).clone()),
         _ => None,
     };

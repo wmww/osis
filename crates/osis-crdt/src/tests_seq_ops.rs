@@ -177,6 +177,41 @@ proptest! {
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
     }
 
+    /// §4.5 (`Batch` layered view): a commit of several text ops on a state from a concurrent
+    /// history (sometimes bootstrapped from a snapshot, so with range records) reads like the
+    /// same ops on a plain string; the layered view of the state under the batch is checked
+    /// against state + net effect after every op (debug assertion in `Batch`).
+    #[test]
+    fn text_batch_over_history_spec_4_5(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let mut reps: Vec<Replica> = (1..=2).map(Replica::new).collect();
+        reps[0].commit(1, &[op(Op::Set(s("the quick brown fox")))], &text_view());
+        reps[1].state = reps[0].state.clone();
+        for k in 0..6u64 {
+            for i in 0..2 {
+                let n = read_str(&reps[i].state).chars().count();
+                let o = random_text_op(&mut r, n, &reps[i].state);
+                if !matches!(o, Op::Set(_)) && let Some((d, _, _)) = reps[i].commit(2 + 2 * k + i as u64, &[op(o)], &text_view()) {
+                    reps[1 - i].state.join(d);
+                }
+            }
+        }
+        let mut a = Replica { state: if r.chance(1, 2) { rebooted(&reps[0].state) } else { reps[0].state.clone() }, src: node(3), lo: 1 };
+        let base = a.state.clone();
+        let mut model: Vec<char> = read_str(&base).chars().collect();
+        let mut ops = Vec::new();
+        for _ in 0..8 {
+            let o = random_text_op(&mut r, model.len(), &base);
+            if matches!(o, Op::Paste { .. } | Op::Set(_)) {
+                continue;
+            }
+            apply_text(&mut model, &o, &base);
+            ops.push(op(o));
+        }
+        a.commit(40, &ops, &text_view());
+        prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
+    }
+
     /// §5.7, §6: replicas applying random text ops (paste included) and exchanging deltas in
     /// random order converge to equal states.
     #[test]
