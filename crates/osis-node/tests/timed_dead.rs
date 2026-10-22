@@ -36,3 +36,82 @@ fn replaced_register_needs_no_carrier_spec_sync_7() {
     net.servers[sv].hub.tick(now);
     assert_eq!(net.server_ids(sv, &l).len() + 1, before, "the replaced body went at its bound, nobody online");
 }
+
+/// Server entries of commit `c` under `l`, as node `n` knows them.
+fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osis_core::CommitId) -> Vec<osis_core::BlobId> {
+    let ids = net.server_ids(sv, l);
+    net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
+}
+
+// spec/commits.md §5 (keep at most: a body with a live write keeps `AT_MOST_GRACE`; no
+// carrier needed without one), spec/sync.md §5 (a timed delete cannot be withdrawn), §6
+// (must-hold): a body whose write died gets a timed delete; a validity flip (the replacing
+// writer revoked from before its write) revives the write; the server deletes the body at the
+// plain bound all the same, and a right holder online uploads it again at its next resync (a
+// fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; past the
+// extended bound the body goes behind a carrier snapshot.
+#[test]
+fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
+    use osis_core::Role;
+    use osis_node::flows::{Demotion, PreSync};
+    let gone = osis_core::Ak::new("/t/gone").unwrap();
+    for online in [true, false] {
+        let mut net = Net::new();
+        let sv = net.add_server();
+        let a = net.node(3, &[sv]);
+        let b = net.node(4, &[sv]);
+        let g = net.group(a, &[(b, Role::Write)], &[sv]);
+        let t = net.item(a, g, g, "x");
+        net.run();
+        let l = net.label(a);
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s("v1")).unwrap();
+        let c1 = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        net.advance(60_000);
+        let before = net.now();
+        net.advance(1_000);
+        net.run();
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s("v2")).unwrap();
+        net.engine(b).commit(m).unwrap();
+        net.run();
+        net.advance(1_000);
+        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v2")));
+        let first = at_server(&mut net, a, sv, &l, &c1);
+        assert_eq!(first.len(), 1, "v1's body is at the server, its delete timed");
+        // b revoked from before its write: v2 is void, v1 live again at a
+        let bt = net.tid(b);
+        net.set_online(b, false);
+        let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_core::WallMs(before)) };
+        let done = net.engine(a).demote(&g, &d).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        net.run();
+        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")), "v1 revived");
+        net.set_online(a, online);
+        // past the plain bound: the server carries out the timed delete
+        net.advance(3_600_000);
+        net.run();
+        let again = at_server(&mut net, a, sv, &l, &c1);
+        assert!(!again.contains(&first[0]), "the timed delete went at the plain bound");
+        if online {
+            // the next resync (`resync_ms`) finds the body missing there
+            let resync = net.sync(a).config().resync_ms;
+            net.advance(resync);
+            assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "uploaded again on the next resync");
+            continue;
+        }
+        assert!(again.is_empty(), "deleted while no right holder is online");
+        net.set_online(a, true);
+        net.run();
+        assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "uploaded again on the next sync");
+        // past the extended bound: dropped behind a carrier
+        net.advance(osis_core::format::AT_MOST_GRACE_MS);
+        net.advance(1_000);
+        assert!(at_server(&mut net, a, sv, &l, &c1).is_empty(), "gone at the extended bound");
+        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")), "v1 still read");
+        let snaps = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
+        assert!(snaps > 0, "a carrier snapshot holds v1");
+    }
+}
