@@ -10,7 +10,7 @@ osis (Open Structured Information System) is a decentralized database optimized 
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
-The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md (vectors FC-1..FC-3 frozen, the rest provisional).
+The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design is settled; byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `crates/`: osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), osis-cli (binary `osis`), osis-bench.

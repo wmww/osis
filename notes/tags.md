@@ -9,7 +9,7 @@
 - No user-visible "space". Moving a thing to another owner is a copy with a new tid, so users must never be expected to move things between containers; a share is per item, through one roster (below).
 - Chat is deferred (fiddly, important to get right); notes/chat.md stands as built.
 
-## Core revision 2 (spec/data-model.md §9, core.osis, vectors FC-7)
+## Core revision 2 (spec/data-model.md §9, core.osis)
 ```
 aspect /name: string;                 // what humans call the thing
 aspect /description: markdown;
