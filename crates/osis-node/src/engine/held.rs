@@ -37,6 +37,8 @@ pub(crate) struct Held {
     /// replaced or removed (`apply::waits`).
     generation: u64,
     edges: u64,
+    /// Things whose creation record `create` added since `take_records`.
+    records: Vec<Tid>,
 }
 
 fn named(c: &MembershipCommit) -> Vec<(Tid, Tid)> {
@@ -181,6 +183,7 @@ impl Held {
     /// Adds a creation record under its tid.
     pub fn create(&mut self, record: CreationRecord) {
         let t = record.tid();
+        self.records.push(t);
         let old = self.set_created(t, Some(record));
         self.log.push(Undo::Created(t, old));
     }
@@ -206,6 +209,11 @@ impl Held {
     pub fn remove(&mut self, id: &CommitId) {
         let (cs, ss) = self.take(id);
         self.log.push(Undo::Removed(cs, ss));
+    }
+
+    /// Things whose creation record was added since the last call.
+    pub fn take_records(&mut self) -> Vec<Tid> {
+        std::mem::take(&mut self.records)
     }
 
     /// Things whose held inputs changed since the last call.

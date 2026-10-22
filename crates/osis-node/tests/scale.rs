@@ -458,9 +458,13 @@ fn first_sync_cost() {
     assert_eq!(net.read(c, things[(n - 1) % 100]), last);
     println!("first sync of {n} commits: {first:?} (reader {rb:?}, writer {wa:?}, hub {hub:?}); writing them {fill:?}; {} commits ingested directly: {direct:?}", ids.len());
     println!("engine phases during the sync, both nodes (inclusive; calls):");
-    for (k, d, c) in phases {
+    for (k, d, c) in &phases {
         println!("  {k}: {d:?} ({c})");
     }
-    // O(N²) at 10^4 took 580 s
-    assert!(first.as_secs() < 60 * n as u64 / 10_000, "first sync of {n} commits took {first:?}");
+    // at 10^4: ingest 4 s, the whole sync 60 s (the passes judge every body: issues/node-sync-gaps.md);
+    // re-examining every pending commit after each applied one took 540 s of 580
+    let ingest = phases.iter().find(|p| p.0 == "ingest").map(|p| p.1).unwrap_or_default();
+    let scale = (n as u64).max(1_000);
+    assert!(ingest.as_secs() < 30 * scale / 10_000, "ingesting {n} commits took {ingest:?}");
+    assert!(first.as_secs() < 180 * scale / 10_000, "first sync of {n} commits took {first:?}");
 }

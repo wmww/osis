@@ -254,12 +254,12 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
     }
     let received = tx.now();
     let inline = blob.header.is_resolved();
-    tx.core.waits.remove(&id);
     let _s = crate::costs::span("examine");
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
             tx.core.touch();
             let was_pending = tx.core.pending.remove(&id).is_some();
+            tx.core.waits.unpended(&id);
             if was_pending {
                 tx.txn.remove_pending(&id, Shred::Yes)?;
             }
@@ -273,6 +273,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
             tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
             tx.core.pending.insert(id, r.clone());
+            tx.core.waits.pended(&id);
             keys::read_pending_boxes(tx, &blob, &id)?;
             let now = tx.now().0;
             waits::note(tx.core, id, &blob, inline, &r, now);
@@ -282,6 +283,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
             tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Parked, &blob.encode())?;
             tx.core.pending.insert(id, Reason::Parked);
+            tx.core.waits.pended(&id);
             Ok(Ingested::Parked(id))
         }
     }
@@ -300,7 +302,6 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 /// §4); dropped parts stay dropped. Late deltas that wait (their thing's `/created`, chain or
 /// pages) are kept pending under the commit's ID and joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
-    tx.core.waits.remove(id);
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
@@ -313,6 +314,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     }
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
+        tx.core.waits.unpended(id);
         if tx.core.pending.remove(id).is_some() {
             tx.core.touch();
             tx.txn.remove_pending(id, Shred::Yes)?;
@@ -324,6 +326,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     let _s = crate::costs::span("examine");
     match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
+            tx.core.waits.unpended(id);
             if tx.core.pending.remove(id).is_some() {
                 tx.core.touch();
                 tx.txn.remove_pending(id, Shred::Yes)?;
@@ -335,6 +338,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             tx.core.touch();
             tx.txn.put_pending(id, PendingKind::Pending, &blob.encode())?;
             tx.core.pending.insert(*id, r.clone());
+            tx.core.waits.pended(id);
             Ok(Ingested::Pending(*id, r))
         }
         Exam::Parked => Ok(Ingested::Parked(*id)),
@@ -407,6 +411,7 @@ impl Engine {
                     tx.core.touch();
                     tx.txn.put_pending(&id, PendingKind::Parked, bytes)?;
                     tx.core.pending.insert(id, Reason::Parked);
+                    tx.core.waits.pended(&id);
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
@@ -431,14 +436,16 @@ impl Engine {
         let _s = crate::costs::span("reexamine");
         loop {
             let now = self.core.now().0;
-            let (ids, unchanged): (Vec<CommitId>, Vec<CommitId>) = self.core.pending.keys().partition(|id| !waits::unchanged(&self.core, id, now));
+            let ids = {
+                let _s = crate::costs::span("reexamine: candidates");
+                waits::candidates(&mut self.core, now)
+            };
             #[cfg(debug_assertions)]
-            self.check_unchanged(&unchanged);
-            #[cfg(not(debug_assertions))]
-            let _ = unchanged;
+            self.check_unchanged(&ids);
             if ids.is_empty() {
                 return Ok(());
             }
+            let _s = crate::costs::span("reexamine: round");
             let progressed = self.run(|tx| {
                 // a delta wait (`Core::waits`) is judged where its turn comes, without reading
                 // it; the others are read and decoded first
@@ -450,6 +457,7 @@ impl Engine {
                     }
                     let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
                         tx.core.pending.remove(&id);
+                        tx.core.waits.unpended(&id);
                         continue;
                     };
                     match CommitBlob::decode(&bytes) {
@@ -471,9 +479,9 @@ impl Engine {
                         Turn::Read(b) => *b,
                         Turn::Waiting(_) if waits::still_waits(tx, &id)? => continue,
                         Turn::Waiting(_) => {
-                            tx.core.waits.remove(&id);
                             let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
                                 tx.core.pending.remove(&id);
+                                tx.core.waits.unpended(&id);
                                 continue;
                             };
                             match CommitBlob::decode(&bytes) {
@@ -489,6 +497,7 @@ impl Engine {
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
                             tx.core.pending.remove(&id);
+                            tx.core.waits.unpended(&id);
                             keys::forget_unchecked(tx, &id)?;
                             // secrets read from its boxes go unless something else reads them
                             crate::rotation::mark_lost_due(tx, things)?;
@@ -498,8 +507,6 @@ impl Engine {
                         Err(e) => return Err(e),
                     }
                 }
-                let pending = &tx.core.pending;
-                tx.core.waits.retain(|id| pending.contains_key(id));
                 Ok(progressed)
             })?;
             if !progressed {
@@ -508,15 +515,16 @@ impl Engine {
         }
     }
 
-    /// Checks that examining each of `ids` again (in a transaction rolled back) gives the
-    /// reason `Core::waits` kept it waiting for.
+    /// Checks that examining each pending commit but `candidates` again (in a transaction
+    /// rolled back) gives the reason `Core::waits` kept it waiting for.
     #[cfg(debug_assertions)]
-    fn check_unchanged(&mut self, ids: &[CommitId]) {
+    fn check_unchanged(&mut self, candidates: &[CommitId]) {
+        let ids: Vec<CommitId> = self.core.pending.keys().filter(|id| !candidates.contains(id)).copied().collect();
         if ids.is_empty() {
             return;
         }
         let r: Result<()> = self.run(|tx| {
-            for id in ids {
+            for id in &ids {
                 let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
                 let Ok(mut b) = CommitBlob::decode(&bytes) else { continue };
                 let want = tx.core.pending.get(id).cloned();
