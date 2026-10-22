@@ -205,20 +205,20 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("r")));
 }
 
-/// Secrets for hand-built commits with `nobody` retention: dedup only.
+/// Secrets for hand-built commits: dedup, and made-up delete keys (servers' business).
 struct Dedup(Vec<osis_core::CreationRecord>);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.0.iter().find(|r| r.tid() == *tid).map(|r| osis_crypto::dedup_secret(r.nonce()))
     }
-    fn admin(&self, _: &Tid) -> Option<Secret32> {
-        None
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn chain_write(&self) -> Option<Secret32> {
-        None
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
-    fn write(&self, _: &Tid) -> Option<Secret32> {
-        None
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 

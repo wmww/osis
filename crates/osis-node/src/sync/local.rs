@@ -248,7 +248,7 @@ impl SyncEngine {
                 }
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
-                self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone() } });
+                self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt } });
             }
             let parts = self.engine.header(c).map(|h| h.aspects.iter().enumerate().filter(|(i, _)| aspects.contains(i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect()).unwrap_or_default();
             self.place_linked(l, c, &parts)?;
@@ -277,7 +277,7 @@ impl SyncEngine {
             return Ok(());
         }
         for b in self.state.present_at(&server, &l) {
-            let Some(Kind::Commit { commit, parts }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
+            let Some(Kind::Commit { commit, parts, .. }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
             let Some(h) = self.engine.header(commit) else { return Ok(()) };
             if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
                 return Ok(());

@@ -62,8 +62,9 @@ pub enum Kind {
     /// Not opened: a chunk, tree node or page (filler wrap), a blob under an epoch not held, or
     /// a blob not fetched yet.
     Unknown,
-    /// A commit blob holding these parts.
-    Commit { commit: CommitId, parts: Vec<(usize, usize)> },
+    /// A commit blob holding these parts, with its prefix salt (a delete-key signature is made
+    /// for it, spec/crypto.md §7).
+    Commit { commit: CommitId, parts: Vec<(usize, usize)>, salt: [u8; 16] },
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
@@ -257,7 +258,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
     };
     match &e.kind {
         Kind::Unknown => w.u8(0),
-        Kind::Commit { commit, parts } => encode_parts(w.u8(1).raw(&commit.0), parts),
+        Kind::Commit { commit, parts, salt } => encode_parts(w.u8(1).raw(&commit.0).raw(salt), parts),
         Kind::Inbox(None) => w.u8(2),
         Kind::Inbox(Some(c)) => w.u8(5).raw(&c.0),
         Kind::Bad => w.u8(3),
@@ -277,7 +278,8 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
     let kind = match r.u8()? {
         1 => {
             let commit = CommitId(r.arr()?);
-            Kind::Commit { commit, parts: decode_parts(&mut r)? }
+            let salt = r.arr()?;
+            Kind::Commit { commit, parts: decode_parts(&mut r)?, salt }
         }
         2 => Kind::Inbox(None),
         5 => Kind::Inbox(Some(CommitId(r.arr()?))),

@@ -135,20 +135,20 @@ fn unmerge_restores_register_spec_crdt_4_6() {
     assert_eq!(lp.peers[2].engine.get(&d, &ak("/t/reg")).unwrap(), Some(s("alice")));
 }
 
-/// Secrets for hand-built commits with `nobody` retention: dedup only.
+/// Secrets for hand-built commits: dedup, and made-up delete keys (servers' business).
 struct Dedup(osis_core::CreationRecord);
 impl osis_commit::Secrets for Dedup {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
         Some(osis_crypto::dedup_secret(self.0.nonce()))
     }
-    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        None
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
-        None
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
-    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        None
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 
@@ -405,24 +405,24 @@ fn forge_snapshot_full(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_core::Ak,
     let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    cb.build(&lp.peers[by].engine.identity().keys().signing, &Tokens(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
-/// Secrets for hand-built commits with `writer` retention: dedup, and made-up write secrets
-/// (delete tokens are servers' business).
-struct Tokens(osis_core::CreationRecord);
-impl osis_commit::Secrets for Tokens {
+/// Secrets for hand-built commits with `writer` retention: dedup, and made-up delete keys
+/// (servers' business).
+struct Keys(osis_core::CreationRecord);
+impl osis_commit::Secrets for Keys {
     fn dedup(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
         Some(osis_crypto::dedup_secret(self.0.nonce()))
     }
-    fn admin(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        None
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
     }
-    fn chain_write(&self) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::Secret32::from_bytes([1; 32]))
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
     }
-    fn write(&self, _: &Tid) -> Option<osis_crypto::Secret32> {
-        Some(osis_crypto::Secret32::from_bytes([2; 32]))
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
     }
 }
 

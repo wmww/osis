@@ -1,6 +1,6 @@
 //! Labeling (spec/sync.md §1-§3, §6-§7): which blobs go under which label
 //! (closure, entitlement, projection by retention class), wraps, stamps and deposits, the keys a
-//! server's head calls for, delete tokens, certificate blobs, and the convergence rule.
+//! server's head calls for, delete keys, certificate blobs, and the convergence rule.
 //! Synchronous functions over the `Engine`; `sync` acts on them.
 
 mod actors;

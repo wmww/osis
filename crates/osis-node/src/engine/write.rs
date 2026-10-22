@@ -243,8 +243,8 @@ pub(crate) struct Resolved {
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_core::CommitId, Tid>)>,
-    /// Chunk blobs of large values the delta introduces (ID, prefix salt).
-    pub chunks: Vec<(osis_core::BlobId, [u8; 16])>,
+    /// Chunk blobs of large values the delta introduces.
+    pub chunks: Vec<osis_core::BlobId>,
     /// Written as one delta per root map entry or set element (a roster snapshot).
     pub split: bool,
 }
@@ -266,7 +266,9 @@ pub(crate) struct CommitPlan {
 
 /// Retention, expiry and blob framing of one aspect's delta in a commit (spec/commits.md §5,
 /// §6; spec/crypto.md §7).
-pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
+/// `published`: [`super::secrets::published_keys`] of the commit's things.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_core::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, r: Option<Retention>, e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     let retention = match plan.kind {
         Kind::ContentSnapshot | Kind::MembershipSnapshot => osis_commit::retention::snapshot_retention(ak.as_str(), defaults.as_ref()),
@@ -276,10 +278,10 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, tid: &Tid, ak: &Ak, sc
         Kind::Content => osis_commit::retention::write_expires(ak.as_str(), plan.ts, defaults.as_ref(), e)?,
         _ => None,
     };
-    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates };
-    let tokens = osis_commit::token_secrets(&secrets, tid, &retention, plan.kind)?;
+    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
+    let keys = osis_commit::delete_keys(&secrets, tid, &retention, plan.kind)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    let framing = Framing { dedup, expiry: expires.map(WallMs), tokens: tokens.iter().map(|t| (t.level, t.secret.clone())).collect() };
+    let framing = Framing { dedup, expiry: expires.map(WallMs), keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? };
     Ok((retention, expires, framing))
 }
 
@@ -308,9 +310,10 @@ fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<B
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
     let node = plan.signer;
+    let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let (retention, expires, framing) = framing_for(tx.core, &plan, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
+        let (retention, expires, framing) = framing_for(tx.core, &plan, &published, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
         if expires.is_some() && !plan.purge.is_empty() {
             return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
         }
@@ -344,8 +347,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             for b in &bytes {
                 linked.extend(super::large::delta_links(tx, &framing.dedup, b)?);
             }
-            let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|(id, _)| linked.contains(id));
-            for (id, _) in &drop {
+            let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|id| linked.contains(id));
+            for id in &drop {
                 tx.txn.delete_blob(id);
             }
             own = keep;
@@ -368,7 +371,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.origins = plan.origins;
     let built = {
         let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates };
+        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
@@ -445,6 +448,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
+    let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
         let created_here = plan.creates.iter().any(|r| r.tid() == tid);
         if !created_here && tx.core.created(&tid).is_none() {
@@ -454,7 +458,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
         let framing = match kind {
-            Kind::Content => Some(framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
+            Kind::Content => Some(framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
             _ => None,
         };
         // a paged state loads what the ops address (map keys, fields, set values: a large one
@@ -472,7 +476,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), framing, &m.fresh)?;
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
-            let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+            let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
         let lo = match m.form {

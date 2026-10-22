@@ -98,7 +98,7 @@ fn reader(core: &Core, tid: &Tid) -> Tid {
 /// The body holding aspect `ai` of a commit (spec/commits.md §5: one projection class, readable
 /// subset and retention class) and the aspects it holds. Its ID keys the death records.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
-    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.tokens.clone());
+    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
     let k = key(me);
     let members: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();

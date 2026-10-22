@@ -472,7 +472,7 @@ impl Osis {
 
     /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, joins its actor
     /// as this person (removing the link key in the same commit when the link is single use), then
-    /// waits until the target is here. Returns the target. Each wait fails `Network` after
+    /// waits until the target is here and writable (its delete keys known, spec/crypto.md §7). Returns the target. Each wait fails `Network` after
     /// `Config::wait_timeout`; a used single-use link is refused that way (its key is no member
     /// of K any more). The link key is forgotten on every outcome, a dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
@@ -498,7 +498,7 @@ impl Osis {
         // joined: the grant stands in a view with nothing on K pending
         self.wait_until(t, Box::new(move |s, _| {
             let e = s.engine_mut();
-            (e.knows(&target) && e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
+            (e.knows(&target) && e.roster(&k).contains_key(&me) && !pending_on(e, &k) && e.delete_keys_known(&target)).then_some(Ok(()))
         }))
         .await?;
         Ok(target)

@@ -14,7 +14,7 @@ fn card_entries(net: &mut Net, n: usize, sv: usize, l: &LabelId, author: Tid, ak
     let ids = net.server_ids(sv, l);
     let mut out = Vec::new();
     for (id, k) in net.sync(n).entries(l) {
-        let EntryKind::Commit { commit, parts } = k else { continue };
+        let EntryKind::Commit { commit, parts, .. } = k else { continue };
         let Some(h) = net.engine(n).header(&commit) else { continue };
         if ids.contains(&id) && parts.iter().any(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == author && a.ak.as_str() == ak)) {
             out.push((id, commit));

@@ -1027,7 +1027,7 @@ impl SyncEngine {
         for (l, id, n, how) in sent {
             let what = match self.state.entries.get(&(l, id)) {
                 Some(e) => match &e.kind {
-                    state::Kind::Commit { commit, parts } => {
+                    state::Kind::Commit { commit, parts, .. } => {
                         let h = self.engine.header(commit);
                         let aspects: Vec<String> = parts.iter().filter_map(|(ai, _)| h.as_ref().and_then(|h| h.aspects.get(*ai))).map(|a| format!("{}{}", t4(&a.tid), a.ak.as_str())).collect();
                         let kind = h.as_ref().map(|h| format!("{:?}", h.kind)).unwrap_or_default();

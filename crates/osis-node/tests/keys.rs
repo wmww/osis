@@ -97,6 +97,8 @@ fn history_chain_from_state_spec_crypto_4() {
     let a = new_thing(&mut lp, 0);
     let roles = BTreeSet::from([Role::Read]);
     let only0 = [rcpt(&lp, 0, Role::Admin)];
+    // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
+    rotation_commit_to(&mut lp, a, 9, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &only0);
     let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0);
     let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0);
     sync(&mut lp, 0, 1);

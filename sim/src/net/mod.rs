@@ -1316,7 +1316,7 @@ impl NetSim {
         let Some(s) = self.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { return };
         for (_, gl) in s.labels() {
             for (b, k) in s.entries(&gl.id) {
-                if let osis_node::sync::EntryKind::Commit { commit, parts } = k {
+                if let osis_node::sync::EntryKind::Commit { commit, parts, .. } = k {
                     self.known.insert((gl.id, b), (commit, parts));
                 }
             }

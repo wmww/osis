@@ -3,7 +3,7 @@
 //! head (the actor's membership commits the server lacks, then the step; the rest after it is
 //! registered), then uploads of must-hold bodies (membership first) or relays of stamped ones,
 //! this node's certificates and node card, heartbeats, and deletions of must-not-hold bodies
-//! (by delete key or token, carriers first), timed deletes for relative keep-at-most.
+//! (by the label delete key or a delete key, carriers first), timed deletes for relative keep-at-most.
 
 use super::state::{BlobRec, Entry, Kind, ServerKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
@@ -13,7 +13,6 @@ use crate::labeling::{Body, Facts, HeadKeys, Hold, Parts, Why, classify, delete_
 use osis_commit::Kind as CKind;
 use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
-use osis_crypto::Secret32;
 use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -279,7 +278,7 @@ impl SyncEngine {
             // (`hold`): it never goes before its chain (removals excepted, spec/sync.md §5)
             if !held.is_empty()
                 && !e.cert
-                && let Kind::Commit { commit, parts } = &e.kind
+                && let Kind::Commit { commit, parts, .. } = &e.kind
                 && self.own(commit)
                 && self.engine.header(commit).is_some_and(|h| h.frontier.is_none())
                 && self.engine.author_chain(commit, &parts.iter().copied().collect()).is_some_and(|ch| ch.keys().any(|x| held.contains(x)))
@@ -570,7 +569,7 @@ impl SyncEngine {
         let commits: Vec<(CommitId, BTreeSet<(usize, usize)>)> = ids
             .into_iter()
             .filter_map(|id| match self.state.entries.get(&(*l, id)).map(|e| &e.kind) {
-                Some(Kind::Commit { commit, parts }) => Some((*commit, parts.iter().copied().collect())),
+                Some(Kind::Commit { commit, parts, .. }) => Some((*commit, parts.iter().copied().collect())),
                 _ => None,
             })
             .collect();
@@ -910,9 +909,9 @@ impl SyncEngine {
             let Some(h) = self.engine.header(&c) else { continue };
             self.prefix_checked.insert(b);
             let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
-                (Ok(p), Ok((expiry, tokens))) => {
-                    let toks: Vec<(u8, [u8; 16])> = tokens.iter().map(|t| (t.level, t.hash)).collect();
-                    parts.is_empty() || p.agrees(expiry.map(WallMs), &toks)
+                (Ok(p), Ok((expiry, keys))) => {
+                    let keys: std::result::Result<Vec<_>, _> = keys.iter().map(|k| k.verifying_key().map(|v| (k.level, v))).collect();
+                    parts.is_empty() || keys.is_ok_and(|k| p.agrees(expiry.map(WallMs), &k))
                 }
                 _ => false,
             };
@@ -965,7 +964,7 @@ impl SyncEngine {
                 self.settle_at = Some(self.settle_at.map_or(due, |x| x.min(due)));
                 continue;
             }
-            let Kind::Commit { commit, parts } = &e.kind else { continue };
+            let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
             if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") {
                 continue;
@@ -1232,8 +1231,9 @@ impl SyncEngine {
                 (s.id, s.key)
             }
         };
+        let Some(salt) = self.engine.blob(&id)?.and_then(|x| osis_label::Prefix::parse(&x).ok()).map(|p| *p.salt()) else { return Ok(None) };
         let wrap = osis_crypto::wrap(&secret, &id, &key)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone() } });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt } });
         Ok(Some(id))
     }
 
@@ -1587,7 +1587,7 @@ impl SyncEngine {
     #[allow(clippy::too_many_arguments)]
     fn judge(&mut self, server: Option<&ServerKey>, l: &LabelId, g: &Tid, id: &BlobId, e: &Entry, desired: &Desired, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool, note: &mut Note) -> Result<Option<Judged>> {
         let now = self.now();
-        let Kind::Commit { commit, parts } = &e.kind else { return Ok(None) };
+        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok(None) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok(None) };
         let h = m.header.clone();
         // a blob expires whole with its class (spec/sync.md §3)
@@ -1864,7 +1864,7 @@ impl SyncEngine {
                 if super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
                     continue;
                 }
-                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
                     let raw = self.raw_now();
                     self.deleting.insert((conn, l, b), raw);
                     items.push(item);
@@ -1897,7 +1897,7 @@ impl SyncEngine {
                 }
             }
             for b in gone {
-                if let Some(item) = delete_item(keys, &l, b, None, &[]) {
+                if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
                     let raw = self.raw_now();
                     self.deleting.insert((conn, l, b), raw);
                     items.push(item);
@@ -2006,7 +2006,7 @@ impl SyncEngine {
     /// Chunk, tree-node and page blobs among `cands` whose creating deltas this node dropped
     /// (purge, expiry, keep at most, compaction), by the commit and chunk entry that list them,
     /// unless a commit whose creating deltas are not all dropped lists them too (chunk reuse,
-    /// spec/sync.md §1). A chunk's creating deltas are those whose token indices are its own
+    /// spec/sync.md §1). A chunk's creating deltas are those whose delete-key indices are its own
     /// (one class); with no such delta, every delta of the commit. Nor those a live tree links
     /// (spec/sync.md §7: reused chunks and the chunks of compacted values are not in the
     /// linking commit's list): those are returned apart, judged again while trees may link them.
@@ -2032,8 +2032,7 @@ impl SyncEngine {
                 let Some(m) = self.engine.core.commits.get(&id) else { continue };
                 let h = &m.header;
                 for ch in h.chunks.iter().filter(|ch| ch.blob == *b) {
-                    let idx: Vec<usize> = ch.tokens.iter().map(|(i, _)| *i).collect();
-                    let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.tokens == idx).map(|(ai, _)| ai).collect();
+                    let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
                     let mut parts = ais.iter().flat_map(|ai| (0..h.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(move |di| (*ai, di))).peekable();
                     let dropped = parts.peek().is_some() && parts.all(|p| m.dropped.contains(&p));
@@ -2071,12 +2070,12 @@ impl SyncEngine {
         Ok((out, waiting))
     }
 
-    /// A delete item for a dropped chunk: the delete key, else its chunk token (from the salt in
-    /// its prefix; a chunk never fetched is fetched first).
+    /// A delete item for a dropped chunk: the label delete key, else a delete key of its delta
+    /// (signed for the salt in its prefix; a chunk never fetched is fetched first).
     #[allow(clippy::too_many_arguments)]
     fn chunk_delete(&mut self, conn: ConnId, keys: &HeadKeys, l: &LabelId, id: &BlobId, c: &CommitId, ch: &osis_commit::ChunkEntry, out: &mut Vec<super::Action>) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
-            return Ok(delete_item(keys, l, *id, None, &[]));
+            return Ok(delete_item(keys, l, *id, None, None, &[]));
         }
         let Some(blob) = self.engine.blob(id)? else {
             if !self.fetching.contains_key(id) && !self.missing.contains(&(conn, *id)) {
@@ -2086,17 +2085,22 @@ impl SyncEngine {
             return Ok(None);
         };
         let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
-        let tokens = self.engine.chunk_tokens(c, ch, prefix.salt());
-        Ok(delete_item(keys, l, *id, None, &tokens))
+        let dks = self.engine.chunk_delete_secrets(c, ch);
+        Ok(delete_item(keys, l, *id, None, Some(prefix.salt()), &dks))
     }
 
-    /// A delete item for an entry: delete key, else a token this node can derive.
+    /// A delete item for an entry: the label delete key, else a delete key this node holds.
     fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry, at: Option<WallMs>) -> Result<Option<osis_label::DeleteItem>> {
-        let tokens: Vec<(u8, Secret32)> = match &e.kind {
-            Kind::Commit { commit, parts } => self.engine.tokens_of(commit, parts),
-            _ => Vec::new(),
-        };
-        Ok(delete_item(keys, l, *id, at, &tokens))
+        if keys.delete.is_some() {
+            return Ok(delete_item(keys, l, *id, at, None, &[]));
+        }
+        Ok(match &e.kind {
+            Kind::Commit { commit, parts, salt } => {
+                let dks = self.engine.delete_secrets_of(commit, parts);
+                delete_item(keys, l, *id, at, Some(salt), &dks)
+            }
+            _ => None,
+        })
     }
 }
 

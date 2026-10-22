@@ -127,7 +127,7 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A removed writer's bodies deleted by token (spec/sync.md §5 deletion by token; spec/commits.md
+/// A removed writer's bodies deleted by delete key (spec/sync.md §5 deletion by delete key; spec/commits.md
 /// §5): W writes a writer-purgeable aspect, the admin removes W, then a remaining writer (no
 /// delete key) purges W's body while the admin is away; it is gone from the server and from
 /// every honest node.
@@ -159,7 +159,7 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     if sim.engine(b)?.header(&cw).is_none() {
         return Err(sim.fail("B never received W's body"));
     }
-    // the admin is away: B purges W's body and deletes it by token
+    // the admin is away: B purges W's body and deletes it by delete key
     sim.node_down(a)?;
     purge(&mut sim, b, cw, t)?;
     sim.run(30)?;

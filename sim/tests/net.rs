@@ -32,7 +32,7 @@ fn three_persons_two_servers() {
     assert!(r.writes > 10 && r.held_checked > 0 && r.partitions > 0, "{r:?}");
 }
 
-// spec/sync.md §5 (deletion by token); spec/commits.md §5 (purge): a removed writer's body
+// spec/sync.md §5 (deletion by delete key); spec/commits.md §5 (purge): a removed writer's body
 // purged by a remaining writer without the delete key.
 #[test]
 #[ignore = "tier 2"]

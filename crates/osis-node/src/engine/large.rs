@@ -244,9 +244,9 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
 /// position holds now (spec/sync.md §1: a reused chunk keeps its blob unless the re-encryption
 /// rule says otherwise; one this node no longer holds is written afresh). Returns the blobs
-/// written (ID, prefix salt): the delta's chunk list; reused blobs are not in it. `fresh`: blobs
+/// written: the delta's chunk list; reused blobs are not in it. `fresh`: blobs
 /// never reused.
-pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<(BlobId, [u8; 16])>> {
+pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<BlobId>> {
     // what the ops address is loaded (`commit_in`)
     tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
@@ -278,8 +278,8 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
 /// A roster snapshot's `/tenures` value (spec/permissions.md §6, spec/data-model.md §6): a
 /// tenure's frontier above `CHUNK_THRESHOLD` becomes a link to a fresh chunk tree, so every
 /// blob it needs is in the commit's chunk list (receivers fetch frontiers by it before judging).
-/// Returns the blobs written (ID, prefix salt).
-pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Framing) -> Result<Vec<(BlobId, [u8; 16])>> {
+/// Returns the blobs written.
+pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Framing) -> Result<Vec<BlobId>> {
     let mut blobs = TxBlobs::new(&mut tx.txn);
     let rng = &mut *tx.rng;
     let frontier_field = Value::Int(4);

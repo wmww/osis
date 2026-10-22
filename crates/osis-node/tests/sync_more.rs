@@ -104,7 +104,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     let ids: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
     let mut held: std::collections::BTreeMap<osis_core::CommitId, Vec<(usize, usize)>> = Default::default();
     for (id, k) in net.sync(a).entries(&l) {
-        if let EntryKind::Commit { commit, parts } = k
+        if let EntryKind::Commit { commit, parts, .. } = k
             && ids.contains(&id)
         {
             let seen = held.entry(commit).or_default();
@@ -753,7 +753,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let l = net.label(a);
     // the body under the label carries t2's part too (same reader actor)
     let h = net.engine(a).header(&both).unwrap();
-    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
+    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
     assert!(t2_part, "the commit's body under the label touches t2");
     let under: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
     assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
@@ -958,7 +958,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
-    // an admin co-writer: it holds the admin token secret, so its framing keeps a's chunks
+    // an admin co-writer: it holds the admin secret, so its framing keeps a's chunks
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     let blob_ak = Ak::new(BLOB.ak()).unwrap();

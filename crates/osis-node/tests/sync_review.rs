@@ -64,7 +64,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
 
 // spec/commits.md §5 (purge drops every copy): after a purge applied, a reader holds neither
 // the purged body's key nor its ciphertext; a writer without the delete key deletes it at the
-// server by token.
+// server by delete key.
 #[test]
 fn purge_leaves_no_copy_spec_commits_5() {
     let mut net = Net::new();
@@ -81,7 +81,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     let l = net.label(a);
     let ids = blobs_of(&mut net, r, &l, &c);
     assert!(!ids.is_empty() && ids.iter().all(|id| net.sync(r).holds_blob(id)));
-    // the admin is away: the writer purges, and deletes by token
+    // the admin is away: the writer purges, and deletes by delete key
     net.set_online(a, false);
     let mut m = Mutation::new();
     m.purge(PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
@@ -92,7 +92,7 @@ fn purge_leaves_no_copy_spec_commits_5() {
     diags(&mut net, &[b, r]);
     for id in &ids {
         assert!(!net.sync(r).holds_blob(id), "the reader keeps no key or ciphertext");
-        assert!(!net.server_ids(sv, &l).contains(id), "deleted at the server by token");
+        assert!(!net.server_ids(sv, &l).contains(id), "deleted at the server by delete key");
     }
     let gone = Ak::new(GONE.ak()).unwrap();
     assert_eq!(net.engine(r).get(&t, &gone).unwrap(), None);
@@ -167,7 +167,7 @@ fn private_and_shared_split_spec_sync_3() {
     let l = net.label(a);
     let h = net.engine(a).header(&c).unwrap();
     for (_, k) in net.sync(a).entries(&l) {
-        if let EntryKind::Commit { commit, parts } = k
+        if let EntryKind::Commit { commit, parts, .. } = k
             && commit == c
         {
             assert!(parts.iter().all(|(ai, _)| h.aspects[*ai].tid == t), "only the shared deltas: {parts:?}");

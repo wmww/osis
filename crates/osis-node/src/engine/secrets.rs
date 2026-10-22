@@ -1,15 +1,16 @@
 //! Secrets the engine holds (spec/crypto.md §3–§4): the node's own role secrets, derived secrets
 //! of plain things, epochs of actors with secrets of their own opened from `/secrets` (the
-//! `SecretStore`, kept in the store per actor), dedup secrets from creation records, and the
-//! `Secrets` osis-commit asks for when building a commit.
+//! `SecretStore`, kept in the store per actor), dedup secrets from creation records, delete keys
+//! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;
 use crate::error::{Error, Result};
 use osis_core::{CreationRecord, Role, Tid, Value};
-use osis_crypto::{Epoch, Secret32, dedup_secret};
+use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Opener, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{Keys, Secrets};
+use osis_schema::core_types::{Keys, Secrets, SigningKey};
+use std::collections::BTreeMap;
 
 /// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
 const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
@@ -57,8 +58,73 @@ impl Core {
         None
     }
 
-    fn newest(&self, tid: &Tid, r: Role) -> Option<Secret32> {
-        self.epochs(tid)?.role(r).newest_held().map(|(_, s)| s.clone())
+    /// The delete base of `tid` for role `r` (spec/crypto.md §7): the nearest actor in its owner
+    /// chain, itself first, with secrets of its own of that role, or the key actor the chain
+    /// ends at.
+    pub(crate) fn delete_base(&self, tid: &Tid, r: Role) -> Option<DeleteBase> {
+        let mut cur = *tid;
+        for _ in 0..MAX_CHAIN {
+            if cur == self.id.tid() {
+                return Some(DeleteBase::KeyActor(self.id.keys().signing.verifying_key()));
+            }
+            if let Some(k) = self.key_actors.get(&cur) {
+                return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
+            }
+            match self.secrets.get(&cur) {
+                Some(e) if e.role(r).epochs().next().is_some() => return Some(DeleteBase::Actor(cur, Some(e.clone()))),
+                Some(_) => {}
+                None if self.own_keys.contains(&cur) => return Some(DeleteBase::Actor(cur, None)),
+                None => {}
+            }
+            match self.created(&cur)? {
+                CreationRecord::Thing { owner, .. } => cur = *owner,
+                CreationRecord::KeyActor { public_key, .. } => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+            }
+        }
+        None
+    }
+
+    /// The delete secrets this node may hold along the owner chain of `tid`, itself first: a
+    /// delete key a header lists for `tid` is one of them (a thing that got secrets of its own
+    /// keeps content of its derived era under its former base's keys).
+    pub(crate) fn delete_chain(&self, tid: &Tid) -> Vec<DeleteSource> {
+        let mut out = Vec::new();
+        let mut cur = *tid;
+        for _ in 0..MAX_CHAIN {
+            let seed = if cur == self.id.tid() { Some(self.id.seed().clone()) } else { self.key_actors.get(&cur).map(|k| k.seed().clone()) };
+            if let Some(seed) = seed {
+                out.push(DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""))));
+                break;
+            }
+            if let Some(e) = self.secrets.get(&cur) {
+                out.push(DeleteSource::Epochs(e.clone()));
+            }
+            match self.created(&cur) {
+                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// The delete secret of `level` matching a header's delete key `key` (spec/crypto.md §7),
+    /// tried over every held epoch along the chains: `thing` the chain of the delta's thing,
+    /// `author` that of the actor above its author node (empty for an import).
+    pub(crate) fn delete_secret(level: u8, key: &[u8; 32], thing: &[DeleteSource], author: &[DeleteSource]) -> Option<DeleteSecret> {
+        let chain = if level == osis_keys::delete::LEVEL_AUTHOR { author } else { thing };
+        for src in chain {
+            match src {
+                DeleteSource::KeyActor(d) if d.verifying_key().to_bytes() == *key => return Some(DeleteSecret::from_seed(d.seed().clone())),
+                DeleteSource::KeyActor(_) => {}
+                DeleteSource::Epochs(e) => {
+                    let found = osis_keys::delete_candidates(level, e, Some(e)).into_iter().map(|(_, s)| DeleteSecret::derive(s)).find(|d| d.verifying_key().to_bytes() == *key);
+                    if found.is_some() {
+                        return found;
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Opens what `/secrets` of `actor` holds for this node or for actors it holds secrets of
@@ -192,6 +258,21 @@ impl Core {
     }
 }
 
+/// The delete base of a thing (spec/crypto.md §7).
+pub(crate) enum DeleteBase {
+    /// An actor with secrets of its own, with its epochs when held.
+    Actor(Tid, Option<ActorEpochs>),
+    /// A key actor: its signing key is its delete key at every level.
+    KeyActor(VerifyingKey),
+}
+
+/// A held source of delete secrets along an owner chain.
+pub(crate) enum DeleteSource {
+    Epochs(ActorEpochs),
+    /// A key actor's signing key.
+    KeyActor(DeleteSecret),
+}
+
 /// What a commit build asks for (osis-commit `Secrets`).
 pub struct CommitSecrets<'c> {
     pub core: &'c Core,
@@ -199,42 +280,114 @@ pub struct CommitSecrets<'c> {
     pub actor: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c [CreationRecord],
+    /// Delete keys published in `/keys` of delete bases whose secret of that role is not held
+    /// ([`published_keys`]).
+    pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
+}
+
+/// The delete base of `tid` for role `r` ([`Core::delete_base`]); a thing `created` in this
+/// commit is plain, so it uses its owner's.
+fn base_of(core: &Core, created: &[CreationRecord], tid: &Tid, r: Role) -> Option<DeleteBase> {
+    let mut cur = *tid;
+    for _ in 0..=created.len() {
+        match created.iter().find(|r| r.tid() == cur) {
+            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+            Some(CreationRecord::KeyActor { public_key, .. }) => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+            None => return core.delete_base(&cur, r),
+        }
+    }
+    None
+}
+
+/// The admin and write delete keys published in `/keys` (spec/crypto.md §3, §7) of the delete
+/// bases of `tids` whose secret of that role this node does not hold: a writer that is no admin
+/// lists the admin one.
+pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &[CreationRecord], tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
+    let mut need = std::collections::BTreeSet::new();
+    for t in tids {
+        for r in [Role::Admin, Role::Write] {
+            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t, r)
+                && e.is_none_or(|e| e.role(r).newest_held().is_none())
+            {
+                need.insert((b, r));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (b, r) in need {
+        let Some(keys) = Core::keys_in(tx, &b)? else { continue };
+        let ks = if r == Role::Admin { keys.admin } else { keys.write };
+        if let Some(SigningKey::Ed25519(k)) = ks.map(|ks| ks.delete_key)
+            && let Ok(vk) = VerifyingKey::from_slice(&k)
+        {
+            out.insert((b, r), vk);
+        }
+    }
+    Ok(out)
+}
+
+impl crate::Engine {
+    /// Whether this node can list every delete key a write to `tid` calls for (spec/crypto.md
+    /// §7): its delete base is a key actor, or this node holds that base's admin secret or its
+    /// published `/keys`. A member that learned its secrets before syncing the base's `/keys`
+    /// cannot write yet.
+    pub fn delete_keys_known(&mut self, tid: &Tid) -> bool {
+        let t = *tid;
+        self.run(|tx| {
+            Ok(match tx.core.delete_base(&t, Role::Admin) {
+                None => false,
+                Some(DeleteBase::KeyActor(_)) => true,
+                Some(DeleteBase::Actor(_, Some(e))) if e.admin.newest_held().is_some() => true,
+                Some(DeleteBase::Actor(b, _)) => published_keys(tx, &[], [t])?.contains_key(&(b, Role::Admin)),
+            })
+        })
+        .unwrap_or(false)
+    }
 }
 
 impl osis_commit::Secrets for CommitSecrets<'_> {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
         self.core.dedup(tid).or_else(|| self.created.iter().find(|r| r.tid() == *tid).map(|r| dedup_secret(r.nonce())))
     }
-    fn admin(&self, tid: &Tid) -> Option<Secret32> {
-        self.core.newest(tid, Role::Admin).or_else(|| self.derived_new(tid, Role::Admin))
+    fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        self.key(tid, Role::Admin)
     }
-    fn chain_write(&self) -> Option<Secret32> {
-        self.core.newest(&self.actor, Role::Write)
+    fn chain_key(&self) -> Option<VerifyingKey> {
+        // the author's own actor: from a secret this node holds, never a published key (a node
+        // cannot sign as an actor it does not act for)
+        match self.core.delete_base(&self.actor, Role::Write)? {
+            DeleteBase::KeyActor(k) => self.chain_holder().then_some(k),
+            DeleteBase::Actor(_, e) => e?.write.newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key()),
+        }
     }
-    fn write(&self, tid: &Tid) -> Option<Secret32> {
-        self.core.newest(tid, Role::Write).or_else(|| self.derived_new(tid, Role::Write))
+    fn write_key(&self, tid: &Tid) -> Option<VerifyingKey> {
+        self.key(tid, Role::Write)
     }
 }
 
 impl CommitSecrets<'_> {
-    /// A thing created by this commit derives from its owner (through owners it creates too).
-    fn derived_new(&self, tid: &Tid, r: Role) -> Option<Secret32> {
-        let mut chain = vec![*tid];
-        let mut e = loop {
-            let cur = chain.last()?;
-            let Some(CreationRecord::Thing { owner, .. }) = self.created.iter().find(|x| x.tid() == *cur) else { return None };
-            if !self.created.iter().any(|x| x.tid() == *owner && matches!(x, CreationRecord::Thing { .. })) {
-                break self.core.epochs(owner)?;
+    /// Whether this node holds the key actor at the end of the commit actor's owner chain.
+    fn chain_holder(&self) -> bool {
+        let mut cur = self.actor;
+        for _ in 0..MAX_CHAIN {
+            if cur == self.core.id.tid() || self.core.key_actors.contains_key(&cur) {
+                return true;
             }
-            if chain.len() > self.created.len() {
-                return None;
+            match self.core.created(&cur) {
+                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+                _ => return false,
             }
-            chain.push(*owner);
-        };
-        for t in chain.iter().rev() {
-            e = ActorEpochs::derived(&e, t);
         }
-        e.role(r).newest_held().map(|(_, s)| s.clone())
+        false
+    }
+
+    /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
+    /// the newest held secret of the role, else the published one.
+    fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
+        match base_of(self.core, self.created, tid, r)? {
+            DeleteBase::KeyActor(k) => Some(k),
+            DeleteBase::Actor(b, e) => e.and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| self.published.get(&(b, r)).copied()),
+        }
     }
 }
 
