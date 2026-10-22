@@ -185,3 +185,36 @@ fn one_step_per_rotation_without_server_spec_sync_5() {
         assert_eq!(shape(&mut net, n), (2, 1), "node {n}: one new step, one tip");
     }
 }
+
+// spec/sync.md §3 (a certificate copy carries the blobs its parts link), §5 (member peer: what
+// a server's sync would delete leaves the served state): once the copy has gone (here expired),
+// the entries of the blobs it linked go too.
+#[test]
+fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
+    let (mut net, a, _, g, l) = setup();
+    // a thing outside the label's closure, written with an aspect list that goes by link
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_node::Mutation::new();
+    let u = e.new_thing(&mut m, me);
+    let at = WallMs(e.now().0 + 5_000);
+    for i in 0..800 {
+        let ak = Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap();
+        m.set(u, &ak, &s("v")).unwrap();
+        m.expires(u, &ak, at).unwrap();
+    }
+    let c = e.commit(m).unwrap().unwrap();
+    assert!(net.engine(a).header(&c).unwrap().links.aspects.is_some(), "the aspect list goes by link");
+    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.expires.is_some()).unwrap();
+    let acts = net.sync(a).place_certificate(&g, &c, &[ai].into()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let copies = |net: &mut Net| net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).count();
+    let linked: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|(id, _)| id).collect();
+    assert!(copies(&mut net) > 0 && !linked.is_empty(), "the copy is served with its linked aspect list");
+    net.advance(10_000);
+    net.advance(31_000);
+    assert_eq!(copies(&mut net), 0, "the expired copy went");
+    let ids = listed(&mut net, a, &l);
+    assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
+}

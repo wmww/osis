@@ -473,8 +473,8 @@ impl SyncEngine {
     /// only with a carrier, a covering snapshot asked for meanwhile, even when its bytes are
     /// gone), an expired one outright; any other entry whose bytes this node no longer holds
     /// serves nothing and goes, one past its prefix's expiry goes outright (a heartbeat's
-    /// chunk, an inbox blob); chunks of dropped deltas go. Removed entries are tombstoned
-    /// (`State::remove_entry`), expired ones not.
+    /// chunk, an inbox blob); chunks of dropped deltas go, and the blobs a gone certificate
+    /// copy linked. Removed entries are tombstoned (`State::remove_entry`), expired ones not.
     fn local_deletions(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, bodies: &[Body], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>, settled: bool) -> Result<()> {
         let ids: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).filter(|id| !self.state.present_anywhere(&l, id)).collect();
         let now = self.now();
@@ -527,7 +527,58 @@ impl SyncEngine {
             self.local_expiry.remove(&b);
             self.forget_chunk(&b)?;
         }
+        // the blobs certificate copies linked, as a pass at a server deletes them (the bytes
+        // stay: they are the engine's own)
+        let copied: Vec<CommitId> = self.state.certs.range((l, CommitId([0; 32]))..=(l, CommitId([0xff; 32]))).map(|(_, c)| *c).collect();
+        let mut gone = self.copy_links(&l, copied)?;
+        gone.retain(|b| !self.state.present_anywhere(&l, b));
+        if !gone.is_empty() {
+            let all: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).map(|((_, id), _)| *id).collect();
+            for b in self.linked_by(&l, all)? {
+                gone.remove(&b);
+            }
+        }
+        for b in gone {
+            self.state.remove_entry(l, b);
+            self.local_expiry.remove(&b);
+        }
         Ok(())
+    }
+
+    /// The entries under `l` that certificate copies of `copied` placed for the blobs they link
+    /// (`place_linked`), of the commits no entry under `l` holds any more (spec/sync.md §3).
+    fn copy_links(&mut self, l: &LabelId, copied: Vec<CommitId>) -> Result<BTreeSet<BlobId>> {
+        let mut out = BTreeSet::new();
+        for c in copied {
+            if self.state.entries_of(l, &c).next().is_some() {
+                continue;
+            }
+            let Some(h) = self.engine.header(&c) else { continue };
+            let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
+            for b in self.engine.linked_blobs(&c, &all)? {
+                if self.state.entries.get(&(*l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown) {
+                    out.insert(b);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The blobs the commit entries among `ids` under `l` link (roster snapshots sharing tree
+    /// pages with a gone copy).
+    fn linked_by(&mut self, l: &LabelId, ids: impl IntoIterator<Item = BlobId>) -> Result<BTreeSet<BlobId>> {
+        let commits: Vec<(CommitId, BTreeSet<(usize, usize)>)> = ids
+            .into_iter()
+            .filter_map(|id| match self.state.entries.get(&(*l, id)).map(|e| &e.kind) {
+                Some(Kind::Commit { commit, parts }) => Some((*commit, parts.iter().copied().collect())),
+                _ => None,
+            })
+            .collect();
+        let mut out = BTreeSet::new();
+        for (c, parts) in commits {
+            out.extend(self.engine.linked_blobs(&c, &parts)?);
+        }
+        Ok(out)
     }
 
     /// Drops the bytes of a blob whose entry under a label synced with nobody went: a commit
@@ -1831,35 +1882,18 @@ impl SyncEngine {
             };
             let copied: Vec<CommitId> = self.state.certs.range((l, CommitId([0; 32]))..=(l, CommitId([0xff; 32]))).map(|(_, c)| *c).filter(|c| every || scope.has(c)).collect();
             let mut gone = BTreeSet::new();
-            for c in copied {
-                if self.state.entries_of(&l, &c).next().is_some() {
-                    continue;
-                }
-                let Some(h) = self.engine.header(&c) else { continue };
-                let all: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
-                for b in self.engine.linked_blobs(&c, &all)? {
-                    let linked = self.state.entries.get(&(l, b)).is_some_and(|e| e.cert && e.kind == Kind::Unknown);
-                    if linked && self.state.is_present(&server, &l, &b) {
-                        left.blobs.insert(b);
-                        if !super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
-                            gone.insert(b);
-                        }
+            for b in self.copy_links(&l, copied)? {
+                if self.state.is_present(&server, &l, &b) {
+                    left.blobs.insert(b);
+                    if !super::in_flight(&self.deleting, &(conn, l, b), self.raw_now()) {
+                        gone.insert(b);
                     }
                 }
             }
             if !gone.is_empty() {
                 let present = self.state.present_at(&server, &l);
-                let others: Vec<(CommitId, BTreeSet<(usize, usize)>)> = present
-                    .iter()
-                    .filter_map(|id| match self.state.entries.get(&(l, *id)).map(|e| &e.kind) {
-                        Some(Kind::Commit { commit, parts }) => Some((*commit, parts.iter().copied().collect())),
-                        _ => None,
-                    })
-                    .collect();
-                for (c, parts) in others {
-                    for b in self.engine.linked_blobs(&c, &parts)? {
-                        gone.remove(&b);
-                    }
+                for b in self.linked_by(&l, present)? {
+                    gone.remove(&b);
                 }
             }
             for b in gone {
