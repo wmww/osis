@@ -65,6 +65,9 @@ impl SyncEngine {
         let feed = std::mem::take(&mut self.state.feed);
         let now = self.state.now;
         self.state = super::state::State::load(&mut self.engine)?;
+        // what the passes knew of entries is gone with them: everything is judged again
+        self.touched.full = true;
+        self.listers = None;
         self.state.feed = feed;
         self.state.now = now;
         let gone = |l: &LabelId| f.labels.contains(l);
@@ -250,7 +253,7 @@ impl SyncEngine {
                 if !inside || !self.engine.may_read(&x, &b.reader) {
                     continue;
                 }
-                if !self.held_at(&gl.id, c, Some(&b.parts), !local) && !self.parts_covered(&gl.id, c, &h, &b.parts)? {
+                if !self.held_at(&gl.id, c, Some(&b.parts), !local) && !self.parts_covered_at(&gl.id, c, &h, &b.parts)? {
                     return Ok(false);
                 }
             }
@@ -262,10 +265,9 @@ impl SyncEngine {
     /// (any part when `None`).
     fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[(usize, usize)]>, present: bool) -> bool {
         let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
-        for ((_, id), e) in self.state.entries.range((*l, osis_core::BlobId([0; 32]))..).take_while(|((x, _), _)| x == l) {
-            if let super::state::Kind::Commit { commit, parts: p } = &e.kind
-                && commit == c
-                && (!present || self.state.present_anywhere(l, id))
+        for (id, e) in self.state.entries_of(l, c) {
+            if let super::state::Kind::Commit { parts: p, .. } = &e.kind
+                && (!present || self.state.present_anywhere(l, &id))
             {
                 held.extend(p.iter().copied());
             }

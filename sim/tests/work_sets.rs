@@ -1,0 +1,35 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+//! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
+//! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
+//! give the same run: every message, the server logs (uploads and deletes in order, in the
+//! report's digest) and the final state. A trigger the work sets miss shows as a divergence.
+
+use osis_sim::net::with_full_passes;
+use osis_sim::replay;
+
+fn same(name: &str, seed: u64) {
+    let work = replay(name, seed).unwrap_or_else(|f| panic!("{f}"));
+    let full = with_full_passes(|| replay(name, seed)).unwrap_or_else(|f| panic!("full passes: {f}"));
+    assert_eq!(work, full, "{name} seed {seed}: work sets {work:?}, full passes {full:?}");
+}
+
+// spec/sync.md §6, §7: random writes on two replicating servers, snapshots, keep-at-most,
+// expiry, a purge and a demotion: work sets give the full passes' run.
+#[test]
+fn work_sets_seed_1() {
+    same("work_sets", 1);
+}
+
+// spec/sync.md §6, §7: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), seeds 0..20
+// (`OSIS_SIM_SEEDS`): work sets give the full passes' run.
+#[test]
+#[ignore = "tier 2"]
+fn work_sets_match_full_passes() {
+    let seeds: u64 = std::env::var("OSIS_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+    let only: Vec<String> = std::env::var("OSIS_SIM_ONLY").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
+    for (name, _) in osis_sim::SCENARIOS.iter().filter(|(n, _)| osis_sim::blocked(n).is_none() && (only.is_empty() || only.iter().any(|o| o == n))) {
+        for seed in 0..seeds {
+            same(name, seed);
+        }
+    }
+}

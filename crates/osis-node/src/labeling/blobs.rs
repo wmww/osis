@@ -60,6 +60,20 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
     Ok((pt, c))
 }
 
+/// A group as `Engine::commit_bodies_under` sees it.
+pub(crate) struct BodyCtx {
+    pub closure: std::collections::BTreeSet<Tid>,
+    pub actor: Tid,
+    pub published: std::collections::BTreeSet<Tid>,
+}
+
+impl BodyCtx {
+    /// Whether a commit with header `h` may have bodies under the group's labels.
+    pub(crate) fn touches(&self, h: &osis_commit::Header) -> bool {
+        h.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"))
+    }
+}
+
 /// The label keys this node holds for a server's head (spec/sync.md §2, §5).
 #[derive(Clone, Default)]
 pub struct HeadKeys {
@@ -137,40 +151,49 @@ impl Engine {
     /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
     /// change projects only the commits it changed.
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
-        let closure = self.closure(g);
-        let x = self.group_actor(g);
-        let published = self.published_under(g);
-        let ids: Vec<CommitId> = self
-            .core
-            .commits
-            .iter()
-            .filter(|(_, m)| m.header.aspects.iter().any(|a| closure.contains(&a.tid) || published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created")))
-            .map(|(id, _)| *id)
-            .collect();
+        let ctx = self.body_ctx(g);
+        let ids: Vec<CommitId> = self.core.commits.iter().filter(|(_, m)| ctx.touches(&m.header)).map(|(id, _)| *id).collect();
         let mut out = Vec::new();
         for id in ids {
-            let Some(h) = self.header(&id) else { continue };
-            let touches = h.aspects.iter().any(|a| closure.contains(&a.tid));
-            let bodies = match self.core.bodies.get(&id) {
-                Some(b) => b.clone(),
-                None => {
-                    let mut b = self.bodies(&id)?;
-                    for x in &mut b {
-                        x.plaintext = Vec::new();
-                    }
-                    // kept only while every reader actor is resolved (a missing owner record
-                    // arriving later moves it)
-                    if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
-                        self.core.bodies.insert(id, b.clone());
-                    }
-                    b
+            out.extend(self.commit_bodies_under(&ctx, &id)?);
+        }
+        Ok(out)
+    }
+
+    /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
+    /// label publishes.
+    pub(crate) fn body_ctx(&self, g: &Tid) -> BodyCtx {
+        BodyCtx { closure: self.closure(g), actor: self.group_actor(g), published: self.published_under(g) }
+    }
+
+    /// The bodies of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`).
+    pub(crate) fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
+        let id = *id;
+        let Some(h) = self.header(&id) else { return Ok(Vec::new()) };
+        if !ctx.touches(&h) {
+            return Ok(Vec::new());
+        }
+        let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));
+        let bodies = match self.core.bodies.get(&id) {
+            Some(b) => b.clone(),
+            None => {
+                let mut b = self.bodies(&id)?;
+                for x in &mut b {
+                    x.plaintext = Vec::new();
                 }
-            };
-            for b in bodies {
-                let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
-                if inside && self.core.may_read(&x, &b.reader) {
-                    out.push(b);
+                // kept only while every reader actor is resolved (a missing owner record
+                // arriving later moves it)
+                if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
+                    self.core.bodies.insert(id, b.clone());
                 }
+                b
+            }
+        };
+        let mut out = Vec::new();
+        for b in bodies {
+            let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
+            if inside && self.core.may_read(&ctx.actor, &b.reader) {
+                out.push(b);
             }
         }
         Ok(out)
