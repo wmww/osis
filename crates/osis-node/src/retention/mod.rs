@@ -25,6 +25,9 @@ use std::collections::BTreeSet;
 
 pub(crate) mod forget;
 
+/// A body a due timer drops with a live write: its commit and every aspect of it.
+pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
+
 const T_EXPIRY: u8 = 1;
 const T_AT_MOST: u8 = 2;
 
@@ -490,7 +493,7 @@ impl Engine {
     /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
     /// aspect of the body): a node that may write them snapshots them first (spec/commits.md
     /// §5).
-    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<(CommitId, Vec<(Tid, Ak)>)>> {
+    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
         let due = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
