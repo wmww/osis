@@ -107,6 +107,30 @@ fn bench_10k_edges() {
         let t9 = Instant::now();
         let _ = tl.certificates(&nodes[2], &doc, mid);
         let cert_mid = t9.elapsed();
+        // a restart: the walk saved (as a node's cache) and restored, exact and with the last
+        // 1% of the writes added since the save
+        let t10 = Instant::now();
+        let saved: std::collections::BTreeMap<Tid, Vec<u8>> = inc.to_save(b"rules", 1, true).put.into_iter().collect();
+        let save = t10.elapsed();
+        let bytes: usize = saved.values().map(|b| b.len()).sum();
+        let all: std::collections::BTreeSet<Tid> = osis_perm::HeldSet::things(&held3).into_iter().collect();
+        let t11 = Instant::now();
+        let mut back = Timelines::new();
+        back.update_touched_cached(&held3, &all, &mut |r| saved.get(r).cloned(), b"rules");
+        let restore = t11.elapsed();
+        assert_eq!(back.restored(), 1);
+        let mut w4 = w3.clone();
+        for i in 0..n / 100 {
+            w4.set(nodes[1 + i % 10], doc, nodes[200 + i % 2], edge(if i % 2 == 0 { Read } else { Write }), n as u64 + 10 + i as u64, &[]);
+        }
+        let held4 = w4.held();
+        let all4: std::collections::BTreeSet<Tid> = osis_perm::HeldSet::things(&held4).into_iter().collect();
+        let t12 = Instant::now();
+        let mut stale = Timelines::new();
+        stale.update_touched_cached(&held4, &all4, &mut |r| saved.get(r).cloned(), b"rules");
+        let restore_stale = t12.elapsed();
+        assert_eq!(stale.restored(), 1);
+        eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
             "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
             tl.passes(),

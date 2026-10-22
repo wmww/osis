@@ -69,6 +69,10 @@ impl Owners {
         }
         self.owner.insert(t, link);
     }
+    /// Every owner link, by thing.
+    pub fn links(&self) -> impl Iterator<Item = (&Tid, &Owner)> {
+        self.owner.iter()
+    }
     pub fn owner(&self, t: &Tid) -> Option<Owner> {
         self.owner.get(t).copied()
     }

@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// What the node holds that layer 1 needs. Applied, verified commits only (pending ones are not
-/// held, spec/commits.md §4); duplicates are harmless.
+/// held, spec/commits.md §4); duplicates are harmless. A record's frontiers are fixed by its
+/// commit ID (the node's are inline in the signed header or linked by content hash): a saved
+/// walk is matched to its input by everything else in full, frontiers by their sizes.
 pub trait HeldSet {
     /// Things with a held edge write, roster snapshot or `/created` record.
     fn things(&self) -> Vec<Tid>;

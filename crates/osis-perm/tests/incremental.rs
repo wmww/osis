@@ -9,7 +9,7 @@ use common::*;
 use membership_model::{edges, joint, snapshot, Rng};
 use osis_core::Tid;
 use osis_perm::{At, HeldSet, Timeline, Timelines, WriteId};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Option<String> {
     let full = Timeline::evaluate(held);
@@ -31,6 +31,9 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         }
         if part.epoch_start(&t) != full.epoch_start(&t) {
             return Some(format!("epoch start of {t:?}"));
+        }
+        if part.roster_state(&t) != full.roster_state(&t) {
+            return Some(format!("roster state (ledger) of {t:?}"));
         }
         // the edge history too: roles before every applied write
         for a in full.applied().values() {
@@ -249,4 +252,156 @@ fn leaves_and_appends_extend() {
 
 fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
     touched(a, b)
+}
+
+const SALT: &[u8] = b"rules";
+
+/// A node's walk cache: what `to_save` asked to keep, by root.
+type Disk = BTreeMap<Tid, Vec<u8>>;
+
+fn store(disk: &mut Disk, s: osis_perm::Saves) {
+    for r in s.delete {
+        disk.remove(&r);
+    }
+    disk.extend(s.put);
+}
+
+/// A restart: fresh timelines over `held`, components restored from `disk`.
+fn reopen(held: &osis_perm::MemoryHeldSet, disk: &Disk, salt: &[u8]) -> Timelines {
+    let mut inc = Timelines::new();
+    let all: BTreeSet<Tid> = held.things().into_iter().collect();
+    inc.update_touched_cached(held, &all, &mut |r| disk.get(r).cloned(), salt);
+    inc
+}
+
+/// Random arrivals with the walks saved now and then (stale in between) and restarts from
+/// them: equal to a from-scratch evaluation after every step; a walk saved over exactly the
+/// held inputs and restored saves byte-identical bytes again.
+fn run_restarts(samples: u64, seed: u64) {
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let mut restored = 0;
+    for s in 0..samples {
+        let mut w = World::new();
+        let mut nodes = Vec::new();
+        if rng.below(3) == 0 {
+            let sw = snap_world(&snapshot::random_hist(&mut rng));
+            w = sw.w;
+            nodes = sw.nodes;
+        } else {
+            for k in 0..1 + rng.below(2) {
+                let (wk, nk) = if rng.below(2) == 0 {
+                    let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), 10 + k as u8);
+                    (wk, nk)
+                } else {
+                    let (wk, nk, _) = edges_world(&edges::random_hist(&mut rng), 10 + k as u8);
+                    (wk, nk)
+                };
+                w.merge(wk);
+                nodes.extend(nk);
+            }
+        }
+        let order = if rng.below(2) == 0 {
+            rng.perm(w.commits.len())
+        } else {
+            let mut o: Vec<usize> = (0..w.commits.len()).collect();
+            o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
+            o
+        };
+        let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
+        let mut held_ids = BTreeSet::new();
+        let mut prev = w.held_without(&all);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        let mut disk = Disk::new();
+        let min = 1 + rng.below(4);
+        for (step, &i) in order.iter().enumerate() {
+            held_ids.insert(w.commits[i].id);
+            let held = w.held_without(&all.difference(&held_ids).copied().collect());
+            inc.update_touched(&held, &touched(&prev, &held));
+            prev = held.clone();
+            let saved_all = rng.below(4) == 0;
+            if saved_all || rng.below(3) == 0 {
+                let mut saves = inc.to_save(SALT, min, saved_all);
+                inc.saved(std::mem::take(&mut saves.done));
+                if saved_all {
+                    disk.clear();
+                }
+                store(&mut disk, saves);
+            }
+            if rng.below(3) == 0 {
+                inc = reopen(&held, &disk, SALT);
+                restored += inc.restored();
+                if let Some(d) = check(&held, &inc, &nodes) {
+                    panic!("seed {seed:#x} sample {s} step {step} after a restart: {d}");
+                }
+                if saved_all {
+                    // restored over exactly its inputs: the same bytes again
+                    let again: Disk = inc.to_save(SALT, min, true).put.into_iter().collect();
+                    assert_eq!(again, disk, "seed {seed:#x} sample {s} step {step}: restored walks save other bytes");
+                }
+            } else if let Some(d) = check(&held, &inc, &nodes) {
+                panic!("seed {seed:#x} sample {s} step {step}: {d}");
+            }
+        }
+    }
+    assert!(restored > 0, "no walk was restored");
+}
+
+// spec/permissions.md §5.1 step 5 (a pure function of the held set): a restart from saved walks
+// (notes/local-store.md, rebuildable caches) gives what a from-scratch evaluation gives.
+#[test]
+fn restart_from_saved_walks_equals_from_scratch() {
+    run_restarts(25, 0x5eed_0303);
+}
+
+#[test]
+#[ignore]
+fn restart_from_saved_walks_equals_from_scratch_large() {
+    run_restarts(2_000, 0x5eed_0304);
+}
+
+// spec/permissions.md §5.1 step 5: a saved walk that is damaged, truncated, saved under other
+// rules (salt) or over other inputs is never used; the component is evaluated from scratch.
+#[test]
+fn damaged_or_foreign_saved_walk_is_ignored() {
+    let mut rng = Rng(seeded(0x5eed_0305));
+    let mut tried = 0;
+    while tried < 20 {
+        let (w, nodes, _) = edges_world(&edges::random_hist(&mut rng), 10);
+        let held = w.held();
+        let mut inc = Timelines::new();
+        inc.update(&held);
+        let disk: Disk = inc.to_save(SALT, 1, true).put.into_iter().collect();
+        if disk.is_empty() {
+            continue;
+        }
+        tried += 1;
+        assert!(reopen(&held, &disk, SALT).restored() > 0);
+        let mut bad: Vec<(&str, Disk, &[u8])> = vec![("other rules", disk.clone(), b"other rules")];
+        let (root, bytes) = disk.iter().next().map(|(r, b)| (*r, b.clone())).unwrap();
+        let mut flipped = bytes.clone();
+        let at = rng.below(flipped.len());
+        flipped[at] ^= 1 << rng.below(8);
+        bad.push(("a flipped bit", BTreeMap::from([(root, flipped)]), SALT));
+        let cut = rng.below(bytes.len());
+        bad.push(("truncated", BTreeMap::from([(root, bytes[..cut].to_vec())]), SALT));
+        bad.push(("extended", BTreeMap::from([(root, [bytes.as_slice(), &[0]].concat())]), SALT));
+        // another history's walk under this root
+        let (w2, _, _) = edges_world(&edges::random_hist(&mut rng), 10);
+        let mut other = Timelines::new();
+        other.update(&w2.held());
+        if let Some((_, b)) = other.to_save(SALT, 1, true).put.into_iter().next() {
+            bad.push(("another history", BTreeMap::from([(root, b)]), SALT));
+        }
+        for (what, d, salt) in bad {
+            let inc = reopen(&held, &d, salt);
+            let n = if what == "other rules" { 0 } else { disk.len() - 1 };
+            assert!(inc.restored() <= n, "{what}: used");
+            assert_eq!(check(&held, &inc, &nodes), None, "{what}");
+            // the unusable walk is overwritten
+            let s = inc.to_save(salt, 1, false);
+            assert!(s.put.iter().any(|(r, _)| *r == root) || s.delete.contains(&root), "{what}: not replaced");
+        }
+    }
 }

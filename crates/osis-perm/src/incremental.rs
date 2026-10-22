@@ -66,9 +66,7 @@ impl HeldSet for Part<'_> {
     }
 }
 
-/// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
-/// held `/created` records (by tid; a record's tid fixes its content).
-type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
+use crate::cache::{self, Inputs};
 
 /// Which things' timelines an update changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -81,14 +79,46 @@ pub struct Changed {
     pub extended: BTreeSet<Tid>,
 }
 
+/// One component's timeline.
+struct Comp {
+    inputs: Inputs,
+    tl: Timeline,
+    /// How many commits and snapshots the walk saved under the component's root (its first
+    /// thing) covered, 0 if none was: what `to_save` measures growth against.
+    basis: usize,
+}
+
 /// Timelines per component, cached across held-set changes.
 #[derive(Default)]
 pub struct Timelines {
-    comps: BTreeMap<u64, (Inputs, Timeline)>,
+    comps: BTreeMap<u64, Comp>,
     next: u64,
     of: BTreeMap<Tid, u64>,
     /// Things whose component the last update evaluated or continued.
     changed: BTreeSet<Tid>,
+    /// Components evaluated or continued since `to_save` last looked.
+    unsaved: BTreeSet<u64>,
+    /// Roots whose saved walk no component uses any more.
+    retired: BTreeSet<Tid>,
+    /// Components the last update restored from a saved walk.
+    restored: usize,
+}
+
+/// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
+#[derive(Default)]
+pub struct Saves {
+    pub put: Vec<(Tid, Vec<u8>)>,
+    pub delete: Vec<Tid>,
+    /// For `Timelines::saved` once these are durable.
+    pub done: SaveDone,
+}
+
+/// What a durable `Saves` changes in `Timelines`.
+#[derive(Default, Debug)]
+pub struct SaveDone {
+    looked: Vec<u64>,
+    based: Vec<(u64, usize)>,
+    retired: Vec<Tid>,
 }
 
 /// The things `t`'s held inputs link it to (the unions of a partition).
@@ -125,7 +155,7 @@ impl Timelines {
         for t in region.clone() {
             region.extend(links(held, &t));
         }
-        let (evaluated, _) = self.update_region(held, region);
+        let (evaluated, _) = self.update_region(held, region, &mut |_| None, &[]);
         evaluated
     }
 
@@ -134,31 +164,42 @@ impl Timelines {
     /// components and every component newly linked to them, so the cost follows the affected
     /// components, not the held set. Equal to `update`. Returns what changed.
     pub fn update_touched(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Changed {
+        self.update_touched_cached(held, touched, &mut |_| None, &[])
+    }
+
+    /// `update_touched`, where a component with no timeline here first tries the walk
+    /// `saved(root)` returns (`to_save` wrote it under the component's first thing; `salt` as
+    /// given then): used when its tag shows it was walked over this component's inputs, or over
+    /// fewer commits of it (then continued by `Timeline::extend`, else evaluated). Equal to
+    /// `update_touched` whatever `saved` returns.
+    pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Changed {
         let mut region: BTreeSet<Tid> = BTreeSet::new();
         let mut queue: Vec<Tid> = touched.iter().copied().collect();
         while let Some(t) = queue.pop() {
             if !region.insert(t) {
                 continue;
             }
-            if let Some((inputs, _)) = self.of.get(&t).and_then(|c| self.comps.get(c)) {
-                queue.extend(inputs.0.iter().filter(|x| !region.contains(x)).copied());
+            if let Some(c) = self.of.get(&t).and_then(|c| self.comps.get(c)) {
+                queue.extend(c.inputs.0.iter().filter(|x| !region.contains(x)).copied());
             }
             queue.extend(links(held, &t).into_iter().filter(|x| !region.contains(x)));
         }
-        self.update_region(held, region).1
+        self.update_region(held, region, saved, salt).1
     }
 
     /// Re-partitions `region` (a union of whole components, old and new) and evaluates its
     /// components whose inputs changed: (how many, what changed).
-    fn update_region(&mut self, held: &dyn HeldSet, region: BTreeSet<Tid>) -> (usize, Changed) {
-        let mut cache: BTreeMap<Inputs, Timeline> = BTreeMap::new();
+    fn update_region(&mut self, held: &dyn HeldSet, region: BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> (usize, Changed) {
+        // old components by their inputs: (timeline, basis, not saved since it changed)
+        let mut cache: BTreeMap<Inputs, (Timeline, usize, bool)> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
         for c in old {
-            if let Some((inputs, tl)) = self.comps.remove(&c) {
-                for t in &inputs.0 {
+            if let Some(comp) = self.comps.remove(&c) {
+                for t in &comp.inputs.0 {
                     self.of.remove(t);
                 }
-                cache.insert(inputs, tl);
+                let dirty = self.unsaved.remove(&c);
+                cache.insert(comp.inputs, (comp.tl, comp.basis, dirty));
             }
         }
         let mut dsu = Dsu::default();
@@ -203,10 +244,11 @@ impl Timelines {
         let mut evaluated = 0;
         let mut changed = Changed::default();
         self.changed.clear();
-        for (_, inputs) in groups {
+        self.restored = 0;
+        for (root, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
-            let tl = match cache.remove(&inputs) {
-                Some(tl) => tl,
+            let (tl, basis, dirty) = match cache.remove(&inputs) {
+                Some(x) => x,
                 None => {
                     evaluated += 1;
                     // a component that only gained commits continues its walk when it can; one
@@ -222,20 +264,28 @@ impl Timelines {
                                     new.insert(*t);
                                 }
                             }
-                            (cache.remove(&k), new)
+                            // a walk saved under the old root stays a basis only under it
+                            let from = cache.remove(&k).map(|(tl, basis, _)| (tl, if k.0.first() == Some(&root) { basis } else { self.retire(&k, basis) }));
+                            (from, new)
                         }
                         None => (None, BTreeSet::new()),
                     };
-                    match from.and_then(|tl| tl.extend(&part)) {
-                        Some(tl) => {
+                    let extended = match from {
+                        Some((tl, basis)) => tl.extend(&part).map(|tl| (tl, basis)),
+                        None => None,
+                    };
+                    self.changed.extend(inputs.0.iter().copied());
+                    match extended {
+                        Some((tl, basis)) => {
                             changed.extended.extend(new);
-                            self.changed.extend(inputs.0.iter().copied());
-                            tl
+                            (tl, basis, true)
                         }
                         None => {
                             changed.evaluated.extend(inputs.0.iter().copied());
-                            self.changed.extend(inputs.0.iter().copied());
-                            Timeline::evaluate(&part)
+                            match self.restore(&inputs, &part, saved, salt) {
+                                Some((tl, basis)) => (tl, basis, true),
+                                None => (Timeline::evaluate(&part), 0, true),
+                            }
                         }
                     }
                 }
@@ -245,14 +295,138 @@ impl Timelines {
             for t in &inputs.0 {
                 self.of.insert(*t, i);
             }
-            self.comps.insert(i, (inputs, tl));
+            if dirty {
+                self.unsaved.insert(i);
+            }
+            self.comps.insert(i, Comp { inputs, tl, basis });
+        }
+        for (k, (_, basis, _)) in cache {
+            self.retire(&k, basis);
         }
         (evaluated, changed)
     }
 
+    /// Notes that the walk saved under `k`'s root (if `basis` says one was) is no longer used;
+    /// returns the basis a component under another root starts from (none).
+    fn retire(&mut self, k: &Inputs, basis: usize) -> usize {
+        if basis > 0
+            && let Some(r) = k.0.first()
+        {
+            self.retired.insert(*r);
+        }
+        0
+    }
+
+    /// The timeline of a component with no timeline here from a walk saved under one of its
+    /// things (its root first; a component's root changes when a thing with a smaller tid
+    /// joins it), continued as at run time: over the new leaves (things with only a
+    /// `/created` record), then over the commits added since; and how many commits and
+    /// snapshots the walk saved under its root covered (0 when saved under another thing).
+    fn restore(&mut self, inputs: &Inputs, part: &Part<'_>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Option<(Timeline, usize)> {
+        for (j, t) in inputs.0.iter().enumerate() {
+            let Some(bytes) = saved(t) else { continue };
+            let Some(s) = cache::parse(&bytes) else {
+                self.retired.insert(*t);
+                continue;
+            };
+            match Self::resume(&s, inputs, part, salt) {
+                Some(tl) => {
+                    self.restored += 1;
+                    if j > 0 {
+                        // overwritten under the root by the next `to_save`
+                        self.retired.insert(*t);
+                        return Some((tl, 0));
+                    }
+                    return Some((tl, s.inputs.1.len()));
+                }
+                // unusable: overwritten or deleted by the next `to_save`
+                None => {
+                    self.retired.insert(*t);
+                }
+            }
+        }
+        None
+    }
+
+    fn resume(s: &cache::Saved<'_>, inputs: &Inputs, part: &Part<'_>, salt: &[u8]) -> Option<Timeline> {
+        let k = &s.inputs;
+        // as `update_region` at run time: new things only by their `/created` (leaves), then
+        // commits added
+        let leaves = inputs.0.difference(&k.0).eq(inputs.2.difference(&k.2));
+        if !(k.0.is_subset(&inputs.0) && k.2.is_subset(&inputs.2) && k.1.is_subset(&inputs.1) && leaves) {
+            return None;
+        }
+        let mut tl = cache::restore(s, part, salt)?;
+        if k.0 != inputs.0 {
+            tl = tl.extend(&cache::Only { held: part, things: &inputs.0, created: &inputs.2, ids: &k.1 })?;
+        }
+        if k.1 != inputs.1 {
+            tl = tl.extend(part)?;
+        }
+        Some(tl)
+    }
+
+    /// The walks a node's cache should hold now: components walked anew or continued since the
+    /// last `saved` whose commits and snapshots number at least `min` and grew by at least a
+    /// quarter (and `min`) since their walk was last saved, encoded with `salt` (the rules);
+    /// and the roots whose saved walk no component uses. `all`: the cache is empty (every
+    /// component of at least `min` is saved). Saving amortizes to O(1) per added commit.
+    /// Changes nothing here: once the writes are durable, pass `Saves::done` to `saved`.
+    pub fn to_save(&self, salt: &[u8], min: usize, all: bool) -> Saves {
+        let ids: Vec<u64> = if all { self.comps.keys().copied().collect() } else { self.unsaved.iter().copied().collect() };
+        let mut out = Saves::default();
+        let mut kept: BTreeSet<Tid> = BTreeSet::new();
+        for i in &ids {
+            let Some(c) = self.comps.get(i) else { continue };
+            let Some(root) = c.inputs.0.first().copied() else { continue };
+            if Self::save_due(c, min, all)
+                && let Some(bytes) = cache::save(&c.inputs, &c.tl, salt)
+            {
+                kept.insert(root);
+                out.put.push((root, bytes));
+                out.done.based.push((*i, c.inputs.1.len()));
+            }
+        }
+        let used = |r: &Tid| self.of.get(r).and_then(|i| self.comps.get(i)).is_some_and(|c| c.basis > 0 && c.inputs.0.first() == Some(r));
+        out.delete = self.retired.iter().filter(|r| !kept.contains(*r) && !used(r)).copied().collect();
+        out.done.looked = ids;
+        out.done.retired = self.retired.iter().copied().collect();
+        out
+    }
+
+    /// What `to_save` returned is durable.
+    pub fn saved(&mut self, done: SaveDone) {
+        for i in &done.looked {
+            self.unsaved.remove(i);
+        }
+        for (i, n) in done.based {
+            if let Some(c) = self.comps.get_mut(&i) {
+                c.basis = n;
+            }
+        }
+        for r in &done.retired {
+            self.retired.remove(r);
+        }
+    }
+
+    fn save_due(c: &Comp, min: usize, all: bool) -> bool {
+        let (n, b) = (c.inputs.1.len(), if all { 0 } else { c.basis });
+        n >= min.max(1) && (n < b || n - b >= (b / 4).max(min))
+    }
+
+    /// Whether `to_save(_, min, false)` has something to write or delete.
+    pub fn due(&self, min: usize) -> bool {
+        !self.retired.is_empty() || self.unsaved.iter().filter_map(|i| self.comps.get(i)).any(|c| Self::save_due(c, min, false))
+    }
+
+    /// Components the last update restored from a saved walk.
+    pub fn restored(&self) -> usize {
+        self.restored
+    }
+
     /// The timeline of the component holding `thing` (and every node with a path to it).
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {
-        self.of.get(thing).and_then(|i| self.comps.get(i)).map(|(_, tl)| tl)
+        self.of.get(thing).and_then(|i| self.comps.get(i)).map(|c| &c.tl)
     }
 
     /// Things whose timeline the last `update` evaluated (or continued): every other thing's

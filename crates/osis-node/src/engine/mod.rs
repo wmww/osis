@@ -157,6 +157,11 @@ pub(crate) struct Core {
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub timelines: Timelines,
+    /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
+    /// tests lower it).
+    pub walk_cache_min: usize,
+    /// Saved walks the running transaction writes, for `Timelines::saved` once it is durable.
+    pub walks_done: Option<osis_perm::SaveDone>,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
     /// The paged maps' key index hash key, derived from the node's seed.
@@ -358,6 +363,8 @@ impl Core {
             pages: HashMap::new(),
             held: held::Held::default(),
             timelines: Timelines::new(),
+            walk_cache_min: index::WALK_CACHE_MIN,
+            walks_done: None,
             stale_things: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -878,11 +885,15 @@ impl Engine {
         };
         match r {
             Ok(v) => {
+                if let Some(d) = self.core.walks_done.take() {
+                    self.core.timelines.saved(d);
+                }
                 self.core.commit_journal();
                 self.core.events.flush();
                 Ok(v)
             }
             Err(e) => {
+                self.core.walks_done = None;
                 self.core.events.discard();
                 self.core.rollback();
                 self.core.stale_all = stale_all;
@@ -902,6 +913,7 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.walk_cache_min = self.core.walk_cache_min;
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;
@@ -931,6 +943,10 @@ impl Engine {
                 }
                 index::write_all(tx)
             })?;
+        } else if self.core.timelines.due(self.core.walk_cache_min) {
+            // walks evaluated or continued at open saved for the next (a cache: a failure
+            // leaves the open as it is)
+            let _ = self.run(|_| Ok(()));
         }
         Ok(())
     }
