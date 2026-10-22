@@ -186,15 +186,24 @@ pub(crate) fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role
 }
 
 /// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
-/// created by the commit take their owner's.
+/// created by the commit take their owner's, through owners the commit creates too.
 pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     let need = required_role(ak);
-    let role = match creates.iter().find(|r| r.tid() == *tid) {
-        Some(CreationRecord::KeyActor { .. }) => (*tid == node).then_some(Role::Admin),
-        Some(CreationRecord::Thing { owner, .. }) if *owner == node => Some(Role::Admin),
-        Some(CreationRecord::Thing { owner, .. }) => role_of(core, &node, owner, ts),
-        None => role_of(core, &node, tid, ts),
-    };
+    let mut cur = *tid;
+    let mut role = None;
+    // each step leaves a record behind, so the walk ends within `creates.len()` steps
+    for _ in 0..=creates.len() {
+        role = match creates.iter().find(|r| r.tid() == cur) {
+            Some(CreationRecord::KeyActor { .. }) => (cur == node).then_some(Role::Admin),
+            Some(CreationRecord::Thing { owner, .. }) if *owner == node => Some(Role::Admin),
+            Some(CreationRecord::Thing { owner, .. }) => {
+                cur = *owner;
+                continue;
+            }
+            None => role_of(core, &node, &cur, ts),
+        };
+        break;
+    }
     if role >= Some(need) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
 }
 

@@ -325,6 +325,41 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(b.send_signal(t, &ak("/t/sig"), &Value::Int(1), osis::Target::All), Err(Error::Permission { .. })));
 }
 
+// spec/permissions.md §1 (the owner chain confers write), §5; notes/api.md Writes: one batch
+// creates A, B owned by A and C owned by B; another node applying the commit holds all three.
+// A thing owned by one the writer may not write is still refused.
+#[test]
+fn tree_in_one_batch_spec_permissions_1() {
+    let a = db(1);
+    let b = db(2);
+    let mut w = a.write();
+    let x = w.create(a.me(), Place::Unsynced).unwrap();
+    let y = w.create(x, Place::Unsynced).unwrap();
+    let z = w.create(y, Place::Unsynced).unwrap();
+    for (i, t) in [x, y, z].into_iter().enumerate() {
+        w.at(t, ak("/t/x")).set(&Value::Int(i as i64)).unwrap();
+    }
+    w.commit().unwrap().unwrap();
+    deliver(&a, &b);
+    for (i, t) in [x, y, z].into_iter().enumerate() {
+        assert_eq!(b.owner_of(t), Some([a.me(), x, y][i]));
+        assert!(b.created(t).is_some());
+        assert_eq!(b.get(t, ak("/t/x")).unwrap(), Some(Value::Int(i as i64)));
+    }
+    let before = b.engine(|e| e.commit_ids().len());
+    let mut w = b.write();
+    let p = w.create(x, Place::Unsynced).unwrap();
+    w.create(p, Place::Unsynced).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })));
+    let mut w = b.write();
+    let p = w.create(b.me(), Place::Unsynced).unwrap();
+    let q = w.create(z, Place::Unsynced).unwrap();
+    w.create(p, Place::Unsynced).unwrap();
+    w.create(q, Place::Unsynced).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })));
+    assert_eq!(b.engine(|e| e.commit_ids().len()), before);
+}
+
 // notes/api.md Writes: membership-class and synthetic aspects are not written by ops.
 // spec/permissions.md §1
 // spec/permissions.md §1 (membership-class by admins): writer side

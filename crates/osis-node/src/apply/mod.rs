@@ -966,4 +966,73 @@ mod tests {
         assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
+
+    // spec/permissions.md §1 (a thing's owner chain confers authority), §5; spec/commits.md
+    // §1 (a commit's writes apply in order): a writer creates A under X, B under A and C under
+    // B in one commit; the commit is valid wherever applied. Owned by a thing the writer may
+    // not write, the same tree fails the local check.
+    #[test]
+    fn tree_created_in_one_commit_spec_perm_1() {
+        let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a0, a1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let reg = Ak::new("/x/a").unwrap();
+        let mut things = Vec::new();
+        for _ in 0..2 {
+            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, a0);
+            m.set(t, &reg, &Value::Int(0)).unwrap();
+            lp.peers[0].commit(m).unwrap();
+            things.push(t);
+        }
+        let (x, y) = (things[0], things[1]);
+        let mut m = Mutation::new();
+        let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        m.op(x, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        let p1 = &mut lp.peers[1];
+        let mut m = Mutation::new();
+        let a = p1.engine.new_thing(&mut m, x);
+        let b = p1.engine.new_thing(&mut m, a);
+        let c = p1.engine.new_thing(&mut m, b);
+        for (i, t) in [a, b, c].into_iter().enumerate() {
+            m.set(t, &reg, &Value::Int(i as i64 + 1)).unwrap();
+        }
+        let id = p1.commit(m).unwrap().unwrap();
+        let pk = p1.engine.package(&id).unwrap().unwrap();
+        assert_eq!(lp.deliver(0, &pk).unwrap(), Ingested::Applied(id));
+        let p0 = &mut lp.peers[0];
+        assert!(p0.engine.core.commits.get(&id).unwrap().valid.iter().all(|v| *v));
+        assert!(p0.engine.pending().is_empty());
+        for (i, t) in [a, b, c].into_iter().enumerate() {
+            assert!(p0.engine.creation(&t).is_some());
+            assert_eq!(p0.engine.get(&t, &reg).unwrap(), Some(Value::Int(i as i64 + 1)));
+        }
+        // the owner's tree: the last thing's delete tokens derive from its owner's secrets
+        // through the two created above it (spec/crypto.md §3, §7)
+        let mut m = Mutation::new();
+        let d = p0.engine.new_thing(&mut m, x);
+        let e = p0.engine.new_thing(&mut m, d);
+        let f = p0.engine.new_thing(&mut m, e);
+        m.set(f, &reg, &Value::Int(4)).unwrap();
+        m.retention(f, &reg, osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }).unwrap();
+        let id = p0.commit(m).unwrap().unwrap();
+        let h = p0.engine.header(&id).unwrap();
+        let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();
+        let levels: Vec<u8> = wf.tokens.iter().map(|i| h.tokens[*i].level).collect();
+        assert_eq!(levels, [1, 2, 3]);
+        // under Y (no role there) the tree is refused
+        let p1 = &mut lp.peers[1];
+        let mut m = Mutation::new();
+        let a = p1.engine.new_thing(&mut m, y);
+        p1.engine.new_thing(&mut m, a);
+        assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })));
+        let mut m = Mutation::new();
+        let a = p1.engine.new_thing(&mut m, x);
+        let b = p1.engine.new_thing(&mut m, y);
+        p1.engine.new_thing(&mut m, a);
+        p1.engine.new_thing(&mut m, b);
+        assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })));
+    }
 }

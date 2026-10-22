@@ -86,8 +86,8 @@ struct Shape {
 }
 
 /// One history of `shape`, the rest random. Peer 0 (A) owns G, gives peer 1 (B) write and
-/// peer 2 (C) admin; A creates two items under G in one commit, then an item under the first
-/// (a grandchild of G); B writes on G or on one of them, the demoter receiving each at once or not
+/// peer 2 (C) admin; A creates two items under G and maybe an item under the first (a grandchild
+/// of G) in one commit; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
 fn sample(seed: u64, shape: Shape) -> usize {
@@ -109,17 +109,14 @@ fn sample(seed: u64, shape: Shape) -> usize {
     let item2 = lp.peers[0].engine.new_thing(&mut m, g);
     m.set(item, &reg(), &Value::Str("v0".into())).unwrap();
     m.set(item2, &reg(), &Value::Str("w0".into())).unwrap();
-    lp.peers[0].commit(m).unwrap();
-    // a thing owned by one created in the same commit fails the writer-side check
     let sub = if shape.sub {
-        let mut m = Mutation::new();
         let sub = lp.peers[0].engine.new_thing(&mut m, item);
         m.set(sub, &reg(), &Value::Str("s0".into())).unwrap();
-        lp.peers[0].commit(m).unwrap();
         sub
     } else {
         item2
     };
+    lp.peers[0].commit(m).unwrap();
     lp.sync_all().unwrap();
     let by = shape.by;
     let mut marks = vec![lp.peers[by].clock.now_wall_ms()];
@@ -186,7 +183,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
 // owner; a commit naming a former leaf.
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
-    let cases = [(1, 0, 0, true, 0), (1, 1, 2, true, 0), (2, 1, 0, false, 0), (1, 0, 2, false, 3)];
+    let cases = [(2, 0, 0, true, 0), (2, 1, 2, true, 0), (2, 1, 0, false, 0), (1, 0, 2, false, 3)];
     for (i, (writes, at, by, sub, tail)) in cases.into_iter().enumerate() {
         assert_eq!(sample(0x0de5_0000 + i as u64, Shape { writes, at, by, sub, tail }), 24);
     }

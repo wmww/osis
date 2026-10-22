@@ -217,11 +217,23 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 }
 
 impl CommitSecrets<'_> {
-    /// A thing created by this commit derives from its owner.
+    /// A thing created by this commit derives from its owner (through owners it creates too).
     fn derived_new(&self, tid: &Tid, r: Role) -> Option<Secret32> {
-        let rec = self.created.iter().find(|x| x.tid() == *tid)?;
-        let CreationRecord::Thing { owner, .. } = rec else { return None };
-        let e = ActorEpochs::derived(&self.core.epochs(owner)?, tid);
+        let mut chain = vec![*tid];
+        let mut e = loop {
+            let cur = chain.last()?;
+            let Some(CreationRecord::Thing { owner, .. }) = self.created.iter().find(|x| x.tid() == *cur) else { return None };
+            if !self.created.iter().any(|x| x.tid() == *owner && matches!(x, CreationRecord::Thing { .. })) {
+                break self.core.epochs(owner)?;
+            }
+            if chain.len() > self.created.len() {
+                return None;
+            }
+            chain.push(*owner);
+        };
+        for t in chain.iter().rev() {
+            e = ActorEpochs::derived(&e, t);
+        }
         e.role(r).newest_held().map(|(_, s)| s.clone())
     }
 }
