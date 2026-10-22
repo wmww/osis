@@ -6,12 +6,15 @@
 //! point (edges alive then, any role, owner links); "every held demotion" is every held edge
 //! write between two things of the chain and every held roster snapshot of one, applied or
 //! not, at any time (a superset: a demotion that was itself dropped can still have dropped a
-//! write, drops being sticky).
+//! write, drops being sticky); each later one that may demote the node (a static check, applied
+//! or not) brings the node's chain for the same thing at its point, since whether its class fell
+//! depends on its other paths there.
 
 use crate::graph::{Edges, View};
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
-use crate::types::{Point, RosterSnapshot, WriteId};
+use crate::types::{Edge, Point, RosterSnapshot, WriteId};
+use crate::walk;
 use osis_core::{CommitId, Role, Tid};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,15 +33,23 @@ pub struct Certificates {
     pub keys: BTreeSet<Tid>,
 }
 
-/// `roles_from` per node at one point.
-type Reach = BTreeMap<Tid, BTreeMap<Tid, Role>>;
+/// A held value of an edge: its point, the value, the commit (none for a snapshot roster).
+type EdgeValue = (Point, Option<Edge>, Option<CommitId>);
 
-/// Held membership commits by the (member, target) of their edge writes and roster snapshots
+/// `roles_from` per node and `reach_backward` per thing at one point.
+type Reach = (BTreeMap<Tid, BTreeMap<Tid, Role>>, BTreeMap<Tid, BTreeSet<Tid>>);
+
+/// Held membership commits by the member and target of their edge writes and roster snapshots
 /// by thing, so a closure step costs what its chain touches, not the held history.
 #[derive(Default)]
 pub(crate) struct CertIndex {
-    by_edge: BTreeMap<(Tid, Tid), Vec<CommitId>>,
+    by_edge: BTreeMap<Tid, BTreeMap<Tid, Vec<CommitId>>>,
     by_thing: BTreeMap<Tid, Vec<CommitId>>,
+    /// Commits with a write that may demote (below an earlier value of its edge).
+    audits: BTreeSet<CommitId>,
+    /// Things with a held edge write or roster snapshot on them: the only key actors a path
+    /// can pass through.
+    entered: BTreeSet<Tid>,
 }
 
 impl Timeline {
@@ -47,11 +58,38 @@ impl Timeline {
             let mut x = CertIndex::default();
             for cm in self.commits.values() {
                 for o in &cm.ops {
-                    x.by_edge.entry((o.member, o.target)).or_default().push(cm.id);
+                    x.by_edge.entry(o.member).or_default().entry(o.target).or_default().push(cm.id);
+                    x.entered.insert(o.target);
+                }
+            }
+            // A static check, so a demotion dropped in a later round counts too: a write below
+            // the join of every earlier held value on its edge (snapshot rosters included).
+            let mut values: BTreeMap<(Tid, Tid), Vec<EdgeValue>> = BTreeMap::new();
+            for cm in self.commits.values() {
+                for o in &cm.ops {
+                    values.entry((o.member, o.target)).or_default().push((cm.point(), o.edge, Some(cm.id)));
+                }
+            }
+            for s in self.snaps.values() {
+                for (m, e) in &s.roster {
+                    values.entry((*m, s.thing)).or_default().push((s.point(), Some(*e), None));
+                }
+            }
+            for mut v in values.into_values() {
+                v.sort_by_key(|x| x.0);
+                let mut restored: Option<Edge> = None;
+                for (p, e, id) in v {
+                    if let Some(id) = id.filter(|_| walk::exceeds(restored, e, p.ts)) {
+                        x.audits.insert(id);
+                    }
+                    if let Some(e) = e.filter(|e| e.alive_at(Some(p.ts))) {
+                        restored = Some(walk::join(restored, e));
+                    }
                 }
             }
             for s in self.snaps.values() {
                 x.by_thing.entry(s.thing).or_default().push(s.id);
+                x.entered.insert(s.thing);
             }
             x
         })
@@ -61,9 +99,9 @@ impl Timeline {
     /// and a cache of `roles_from` at that point.
     fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, edges: &Edges, reach: &mut Reach) -> BTreeSet<Tid> {
         let view = View::new(&self.owners, edges, Some(at.ts));
-        let reach = reach.entry(*node).or_insert_with(|| view.roles_from(node));
-        let to = view.reach_backward(thing);
-        let mut c: BTreeSet<Tid> = reach.keys().filter(|t| to.contains(t)).copied().collect();
+        let from = reach.0.entry(*node).or_insert_with(|| view.roles_from(node));
+        let to = reach.1.entry(*thing).or_insert_with(|| view.reach_backward(thing));
+        let mut c: BTreeSet<Tid> = from.keys().filter(|t| to.contains(t)).copied().collect();
         c.insert(*node);
         c.insert(*thing);
         c
@@ -107,16 +145,29 @@ impl Timeline {
         let mut todo: BTreeSet<(Point, Tid, Tid)> = seeds.into_iter().map(|(n, t, p)| (p, n, t)).collect();
         let mut seen: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
         let mut at: Option<(Point, Cow<'_, Edges>, Reach)> = None;
-        while let Some((p, n, t)) = todo.pop_last() {
+        // n's chains at later demotions go in rounds, so each round visits a point once
+        let mut later: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
+        let mut on_chains: BTreeSet<Tid> = BTreeSet::new();
+        loop {
+            let Some((p, n, t)) = todo.pop_last() else {
+                if later.is_empty() {
+                    break;
+                }
+                todo.append(&mut later);
+                continue;
+            };
             if !seen.insert((p, n, t)) {
                 continue;
             }
             if at.as_ref().is_none_or(|a| a.0 != p) {
-                at = Some((p, self.edges_at(Some(p)), BTreeMap::new()));
+                at = Some((p, self.edges_at(Some(p)), Reach::default()));
             }
             let Some((_, edges, reach)) = at.as_mut() else { continue };
             let chain = self.chain_things(&n, &t, p, edges, reach);
             for c in &chain {
+                if !on_chains.insert(*c) {
+                    continue;
+                }
                 // /created of each thing on the chain and of its owners up to the key actor.
                 out.created.insert(*c);
                 let (up, top) = self.owners.chain(c);
@@ -126,9 +177,18 @@ impl Timeline {
                     out.keys.insert(*c);
                 }
             }
-            let pairs = chain.iter().flat_map(|m| chain.iter().map(move |t| (*m, *t)));
-            for id in pairs.filter_map(|e| index.by_edge.get(&e)).flatten() {
-                if let Some(cm) = self.commits.get(id).filter(|_| out.commits.insert(*id)) {
+            // A later write on the chain that lowered its edge may demote n: n's chain at its
+            // point goes along too, so the verifier sees whether n's class fell (another path
+            // may keep it). Earlier ones are covered from the states of n's earlier writes.
+            let on_chain = chain.iter().filter_map(|m| index.by_edge.get(m)).flatten().filter(|(t, _)| chain.contains(t));
+            for id in on_chain.flat_map(|(_, ids)| ids) {
+                let Some(cm) = self.commits.get(id) else { continue };
+                // n reaches a key actor other than itself only through an edge on it
+                let reaches = |m: &Tid| *m == n || !self.owners.is_key(m) || index.entered.contains(m);
+                if cm.point() > p && index.audits.contains(id) && cm.ops.iter().any(|o| reaches(&o.member)) {
+                    later.insert((cm.point(), n, t));
+                }
+                if out.commits.insert(*id) {
                     for o in &cm.ops {
                         todo.insert((cm.point(), cm.author, o.target));
                         todo.insert((cm.point(), cm.author, o.member));
@@ -140,6 +200,11 @@ impl Timeline {
                 let entry = out.snapshots.entry(s.id).or_default();
                 let fresh = entry.is_empty();
                 entry.extend(members);
+                // the snapshot, and each ledger entry with a frontier at its own key, may demote n
+                let ends = s.ledger.iter().filter(|e| e.frontier.is_some()).map(|e| e.until);
+                for q in ends.chain([s.point()]).filter(|q| *q > p) {
+                    later.insert((q, n, t));
+                }
                 if fresh {
                     todo.insert((s.point(), s.author, s.thing));
                 }

@@ -315,7 +315,7 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
 }
 
 /// Componentwise maximum of two edge values, alive: what a member held across them.
-fn join(a: Option<Edge>, b: Edge) -> Edge {
+pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
         None => Edge { until: None, since: None, ..b },
         Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, since: None },
@@ -324,7 +324,7 @@ fn join(a: Option<Edge>, b: Edge) -> Edge {
 
 /// Does restoring `r` give more than `new` at `ts` (role, invite or life)? If not, an explicit
 /// write of `new` demotes nobody.
-fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
+pub(crate) fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
     match (r, new) {
         (None, _) => false,
         (Some(_), None) => true,

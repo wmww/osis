@@ -300,11 +300,20 @@ fn snap_run(samples: u64, seed: u64) {
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
     for s in 0..samples {
-        // The snapshot model has no self-removal: leave out writes of an author's own edge.
+        // The snapshot model has no self-removal: leave out writes of an author's own edge, and
+        // give ledger entries ended by the member's own node another ending node (that end is a
+        // self-removal, spec/permissions.md §2, never an audited end, §6; read as one, its author
+        // keeps its standing, §5.1 step 4).
         let mut h = snapshot::random_hist(&mut rng);
         let keep: Vec<usize> = (0..h.writes.len()).filter(|&i| h.writes[i].snap.is_some() || h.writes[i].rec || h.writes[i].author != h.writes[i].target).collect();
         h.writes = keep.iter().map(|&i| h.writes[i].clone()).collect();
         h.recv = keep.iter().map(|&i| h.recv[i].clone()).collect();
+        let n = h.n();
+        for e in h.writes.iter_mut().flat_map(|w| w.ledger.iter_mut()) {
+            if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.member) {
+                u.1 = (e.member + 1) % n;
+            }
+        }
         let o = h.eval(true);
         let mut cases = vec![("full".to_string(), h.clone())];
         // Compaction at every applied snapshot, and projections.
