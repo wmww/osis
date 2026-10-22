@@ -269,11 +269,12 @@ impl DeleteItem {
         Ok(DeleteItem { blob, at, by: None, sig })
     }
 
-    /// Signed by the delete key of `level` under the blob's prefix `salt`, and by the label key
-    /// `key_for_level` names.
-    pub fn sign_by(key: &SigningSecret, dk: &DeleteSecret, level: Level, salt: &[u8; 16], label: &LabelId, blob: BlobId, at: Option<WallMs>) -> Result<DeleteItem, Error> {
+    /// Signed by the delete key of `level` under the blob's prefix `salt` and its header's blind
+    /// `hb`, and by the label key `key_for_level` names.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sign_by(key: &SigningSecret, dk: &DeleteSecret, level: Level, salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId, at: Option<WallMs>) -> Result<DeleteItem, Error> {
         let d = delete_digest(label, &blob, at, Some(level))?;
-        Ok(DeleteItem { blob, at, by: Some((level, dk.sign(salt, &d))), sig: key.sign(Domain::Delete, &d) })
+        Ok(DeleteItem { blob, at, by: Some((level, dk.sign(salt, hb, &d))), sig: key.sign(Domain::Delete, &d) })
     }
 
     /// Server check against its head and the entry's blob prefix (none: unknown framing, no
@@ -407,27 +408,29 @@ mod tests {
         let (sync, write) = (label_role_key(LabelRole::Sync, &g.read, 0), label_role_key(LabelRole::Write, &g.write, 0));
         let salt = [5u8; 16];
         let (d2, d3) = (DeleteSecret::derive(&Secret32::from_bytes([1; 32])), DeleteSecret::derive(&Secret32::from_bytes([2; 32])));
-        let prefix = Prefix::for_keys(salt, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
+        let hb = [7u8; 16];
+        let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
         DeleteItem::sign(&g.delete(0), &l, b, None).unwrap().verify(&s0, None).unwrap();
-        DeleteItem::sign_by(&sync, &d2, 2, &salt, &l, b, Some(WallMs(5))).unwrap().verify(&s0, Some(&prefix)).unwrap();
-        DeleteItem::sign_by(&write, &d3, 3, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).unwrap();
+        DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, Some(WallMs(5))).unwrap().verify(&s0, Some(&prefix)).unwrap();
+        DeleteItem::sign_by(&write, &d3, 3, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).unwrap();
         // level 3 needs the write key, level 2 the sync key
-        assert!(DeleteItem::sign_by(&sync, &d3, 3, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&write, &d2, 2, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&sync, &d3, 3, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&write, &d2, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
         // a key at another level, a forged key, another salt, no prefix
-        assert!(DeleteItem::sign_by(&sync, &d3, 2, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 1, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&sync, &d3, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&sync, &d2, 1, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
         let forged = DeleteSecret::derive(&Secret32::from_bytes([3; 32]));
-        assert!(DeleteItem::sign_by(&sync, &forged, 2, &salt, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 2, &[6; 16], &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 2, &salt, &l, b, None).unwrap().verify(&s0, None).is_err());
+        assert!(DeleteItem::sign_by(&sync, &forged, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&sync, &d2, 2, &[6; 16], &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(DeleteItem::sign_by(&sync, &d2, 2, &salt, &[9; 16], &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err(), "another header's blind");
+        assert!(DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, None).is_err());
         // the label-key signature binds the level: moved to level 3 it fails
-        let mut moved = DeleteItem::sign_by(&sync, &d2, 2, &salt, &l, b, None).unwrap();
+        let mut moved = DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, None).unwrap();
         moved.by = moved.by.map(|(_, s)| (3, s));
         assert!(moved.verify(&s0, Some(&prefix)).is_err());
         assert!(DeleteItem::sign(&sync, &l, b, None).unwrap().verify(&s0, None).is_err());
-        let item = DeleteItem::sign_by(&sync, &d2, 2, &salt, &l, b, Some(WallMs(5))).unwrap();
+        let item = DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, Some(WallMs(5))).unwrap();
         assert_eq!(DeleteItem::from_value(&item.to_value().unwrap()).unwrap(), item);
         let mut v = item.to_value().unwrap();
         if let Value::List(x) = &mut v {

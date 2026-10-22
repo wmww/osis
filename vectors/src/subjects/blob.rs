@@ -50,9 +50,10 @@ pub fn prefixes() -> VecFile {
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![c(2, 0x22)]).unwrap()));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
     let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
-    let p = Prefix::for_keys(salt, None, &keys).unwrap();
+    let hb = [0x26u8; 16];
+    let p = Prefix::for_keys(salt, &hb, None, &keys).unwrap();
     let pairs: Vec<String> = keys.iter().map(|(l, k)| format!("{l}:{}", hex(&k.to_bytes()))).collect();
-    cases.push(prefix_case("three commitments from delete keys", &p).with("keys", pairs.join(",")));
+    cases.push(prefix_case("three commitments from delete keys", &p).with("keys", pairs.join(",")).with("header-blind", hex(&hb)));
 
     let base = Prefix::new(salt, None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
     let mut b = base.clone();
@@ -103,14 +104,16 @@ pub fn blobs() -> VecFile {
     let salt = [0x27; 16];
     let secret = s32(0x26);
     let dk = DeleteSecret::derive(&secret).verifying_key();
-    let p = Prefix::for_keys(salt, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
+    let hb = [0x2c; 16];
+    let p = Prefix::for_keys(salt, &hb, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
     let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
         r.with("dedup", hex(dedup.expose()))
             .with("delete-secret", hex(secret.expose()))
             .with("delete-level", "1")
-            .with("delete-key", hex(&dk.to_bytes())),
+            .with("delete-key", hex(&dk.to_bytes()))
+            .with("header-blind", hex(&hb)),
     );
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();

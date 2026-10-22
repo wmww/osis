@@ -308,9 +308,9 @@ fn chunk_list() {
         assert_eq!(c.keys, h.aspects[0].keys);
         let keys: Vec<DeleteKey> = c.keys.iter().map(|i| h.keys[*i]).collect();
         assert_eq!(keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1, 2, 3]);
-        let prefix = Prefix::from_keys([1; 16], None, &keys).unwrap();
+        let prefix = Prefix::from_keys([1; 16], &h.blind, None, &keys).unwrap();
         for (x, k) in prefix.commitments.iter().zip(&keys) {
-            assert_eq!(x[1..], osis_crypto::blind(&k.verifying_key().unwrap(), &[1; 16]).to_bytes());
+            assert_eq!(x[1..], osis_crypto::blind(&k.verifying_key().unwrap(), &[1; 16], &h.blind).to_bytes());
         }
     }
 }

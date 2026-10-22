@@ -187,7 +187,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: home, servers: vec![net.address(sv)] }] };
+    let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: home, servers: vec![net.address(sv)], delete_keys: None }] };
     let now = osis_core::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);

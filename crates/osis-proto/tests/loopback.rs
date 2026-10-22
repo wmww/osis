@@ -265,6 +265,9 @@ fn sync(label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, gained: Vec
 }
 
 // spec/wire.md §11.1, spec/sync.md §6: Hellos at once, clock offset from three round trips, diagnostic above a few seconds
+/// A header blind (spec/crypto.md §7).
+const HB: [u8; 16] = [0x4b; 16];
+
 #[test]
 fn handshake_and_clock_offset() {
     let net = Net::new(1, 3_000);
@@ -577,14 +580,14 @@ fn deletes() {
     net.setup(&l);
     net.open(0, &l);
     let dk = |t: &Secret32| osis_crypto::DeleteSecret::derive(t);
-    let commit = |level: u8, t: &Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n)).unwrap();
+    let commit = |level: u8, t: &Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n), &HB).unwrap();
     let (t1, t3, t9) = (s32(1), s32(3), s32(9));
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
     let b_timed = blob(12);
     net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(b_timed.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(by.1), by.0, &salt(n), &l.id, osis_label::blob_id(b), None).unwrap();
+    let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(by.1), by.0, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.sync), item(&b3, 10, (3, &t9), &k.write), item(&b3, 10, (1, &t3), &k.sync), item(&b1, 11, (1, &t1), &k.sync)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.write)] });

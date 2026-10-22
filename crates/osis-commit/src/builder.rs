@@ -57,6 +57,9 @@ pub struct CommitBuilder {
     pub undoes: Option<CommitId>,
     /// The frontier value of an explicit demotion (spec/permissions.md §5).
     pub frontier: Option<Value>,
+    /// The header's blind (spec/crypto.md §7): given when chunks were framed under it, else
+    /// drawn at build.
+    pub blind: Option<[u8; 16]>,
     pub origins: Vec<Origin>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
@@ -79,13 +82,18 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
     /// and checks the result against every header rule and that each delta fits a blob.
     pub fn build(mut self, key: &SigningSecret, secrets: &dyn Secrets, sink: &mut dyn BlobSink, rng: &mut dyn CryptoRngCore) -> Result<Built, Error> {
         let kind = self.kind;
+        let blind = self.blind.unwrap_or_else(|| {
+            let mut b = [0u8; 16];
+            rng.fill_bytes(&mut b);
+            b
+        });
 
         // schema table
         let mut schemas: BTreeMap<SchemaId, u64> = BTreeMap::new();
@@ -162,6 +170,7 @@ impl CommitBuilder {
             chunks,
             purge,
             undoes: self.undoes,
+            blind,
             keys,
             frontier: self.frontier,
             origins,
@@ -184,7 +193,7 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut s = [0u8; 16];
                 rng.fill_bytes(&mut s);
-                Prefix::from_keys(s, list_expiry, &list_keys)
+                Prefix::from_keys(s, &blind, list_expiry, &list_keys)
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;

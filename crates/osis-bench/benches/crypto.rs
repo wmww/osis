@@ -30,10 +30,10 @@ fn main() {
     let d = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
     let vk = d.verifying_key();
     bench("crypto/delete_key_derive", None, || DeleteSecret::derive(&Secret32::from_bytes([4; 32])).verifying_key());
-    bench("crypto/delete_commitment", None, || commitment(1, &vk, &[6; 16]).unwrap());
-    let c = commitment(1, &vk, &[6; 16]).unwrap();
+    bench("crypto/delete_commitment", None, || commitment(1, &vk, &[6; 16], &[7; 16]).unwrap());
+    let c = commitment(1, &vk, &[6; 16], &[7; 16]).unwrap();
     let key: [u8; 32] = c[1..].try_into().unwrap();
-    bench("crypto/delete_sign_blinded", None, || d.sign(&[6; 16], &[9; 32]));
-    let dsig = d.sign(&[6; 16], &[9; 32]);
+    bench("crypto/delete_sign_blinded", None, || d.sign(&[6; 16], &[7; 16], &[9; 32]));
+    let dsig = d.sign(&[6; 16], &[7; 16], &[9; 32]);
     bench("crypto/delete_verify", None, || verify_delete(&key, &[9; 32], &dsig).unwrap());
 }

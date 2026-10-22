@@ -59,14 +59,16 @@ fn delete_levels_by_retention() {
 #[test]
 fn prefix_commitments() {
     let d = DeleteSecret::derive(&Secret32::from_bytes([1; 32]));
-    let p = Prefix::from_keys([9; 16], Some(5), &[DeleteKey::new(2, &d.verifying_key()), dkey(1, 2)]).unwrap();
+    let hb = [6u8; 16];
+    let p = Prefix::from_keys([9; 16], &hb, Some(5), &[DeleteKey::new(2, &d.verifying_key()), dkey(1, 2)]).unwrap();
     assert_eq!(p.commitments.len(), 2);
     assert_eq!((p.commitments[0][0], p.commitments[1][0]), (1, 2));
     let key: [u8; 32] = p.commitments[1][1..].try_into().unwrap();
-    osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &[4; 32])).unwrap();
-    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[3; 16], &[4; 32])).is_err());
+    osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &hb, &[4; 32])).unwrap();
+    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[3; 16], &hb, &[4; 32])).is_err());
+    assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&[9; 16], &[1; 16], &[4; 32])).is_err());
     // two keys at one level cannot share a blob
-    assert!(Prefix::from_keys([9; 16], None, &[dkey(2, 1), dkey(2, 2)]).is_err());
+    assert!(Prefix::from_keys([9; 16], &hb, None, &[dkey(2, 1), dkey(2, 2)]).is_err());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and author key.

@@ -250,13 +250,20 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     // what the ops address is loaded (`commit_in`)
     tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
+    // the blind of the header that introduced each held commit's chunks: a reused blob's
+    // commitments are checked under it (spec/sync.md §1), built once when a tree is reused
+    let core = &*tx.core;
+    let mut introduced: Option<std::collections::HashMap<BlobId, [u8; 16]>> = None;
+    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> {
+        introduced.get_or_insert_with(|| core.commits.values().flat_map(|m| m.header.chunks.iter().map(|c| (c.blob, m.header.blind))).collect()).get(b).copied()
+    };
     let mut blobs = TxBlobs::new(&mut tx.txn);
     let rng = &mut *tx.rng;
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
     let mut put = |v: &Value, base: Option<&Link>| -> Result<Value> {
         let reuse = match base {
             Some(b) => {
-                let mut r = Reuse::index(b, framing.clone(), &mut blobs, ChunkParams::FORMAT, max)?;
+                let mut r = Reuse::index(b, framing.clone(), &mut blobs, &mut blind_of, ChunkParams::FORMAT, max)?;
                 fresh.iter().for_each(|x| r.exclude(x));
                 Some(r)
             }

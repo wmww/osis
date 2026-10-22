@@ -32,6 +32,7 @@ impl Secrets for VSecrets {
 const AUTHOR: Tid = Tid::from_bytes([0x21; 15]);
 const ACTOR: Tid = Tid::from_bytes([0x22; 15]);
 const THING: Tid = Tid::from_bytes([0x23; 15]);
+const BLIND: [u8; 16] = [0x34; 16];
 
 fn ts(wall: u64) -> Ts {
     Ts::make(WallMs(wall), 0).unwrap()
@@ -45,7 +46,7 @@ fn delta(kind: Kind, at: Ts, src: Source, lo: u64, v: Value, nonce: u8) -> Vec<u
 
 fn built(b: CommitBuilder) -> CommitBlob {
     let key = SigningSecret::from_seed(&s32(0x35));
-    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[])).unwrap().commit;
+    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&BLIND])).unwrap().commit;
     let dedup = |_: &Tid| Some(s32(0x30));
     verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
     c
@@ -55,7 +56,8 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
     let mut r = case(name, spec)
         .with("signing-seed", hex(s32(0x35).expose()))
         .with("dedup", hex(s32(0x30).expose()))
-        .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())));
+        .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
+        .with("blind", hex(&BLIND));
     for p in &c.parts {
         r = r.with(&format!("delta-{}-{}", p.ai, p.di), hex(&p.delta));
     }

@@ -20,8 +20,10 @@ use std::collections::{BTreeSet, HashMap};
 pub struct Framing {
     pub dedup: Secret32,
     pub expiry: Option<WallMs>,
-    /// `(level, delete key)`, blinded by each blob's salt.
+    /// `(level, delete key)`, blinded by each blob's salt and `blind`.
     pub keys: Vec<(Level, VerifyingKey)>,
+    /// The blind of the commit's header (spec/crypto.md §7).
+    pub blind: [u8; 16],
 }
 
 /// Level of the author-chain delete key (spec/crypto.md §7); the others are the thing's.
@@ -30,16 +32,17 @@ const AUTHOR_CHAIN: Level = 2;
 impl Framing {
     /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
     /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
-    /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt.
-    /// Author-chain commitments need not match.
-    pub fn keeps(&self, prefix: &Prefix) -> bool {
+    /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt and
+    /// `blind`, the blind of the header that introduced it. Author-chain commitments need not
+    /// match.
+    pub fn keeps(&self, prefix: &Prefix, blind: &[u8; 16]) -> bool {
         let expiry_ok = match (prefix.expiry(), self.expiry) {
             (None, _) => true,
             (Some(_), None) => false,
             (Some(old), Some(new)) => old >= new,
         };
         let salt = prefix.salt();
-        let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != AUTHOR_CHAIN).map(|(l, k)| commitment(*l, k, salt)).collect();
+        let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != AUTHOR_CHAIN).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
         let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != AUTHOR_CHAIN).copied().collect();
         expiry_ok && mine.is_ok_and(|m| m == theirs)
     }
@@ -132,8 +135,9 @@ impl<'a> BlobWriter<'a> {
         if old.suite != SUITE_1 || crate::blob::blob_id(&blob) != old.blob {
             return Ok(None);
         }
+        let Some(blind) = self.reuse.and_then(|r| r.blinds.get(&old.blob)) else { return Ok(None) };
         Ok(match open(&blob, &Secret32::from_bytes(old.key)) {
-            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix) => Some(old),
+            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, blind) => Some(old),
             _ => None,
         })
     }
@@ -149,7 +153,7 @@ impl<'a> BlobWriter<'a> {
     /// Frames `plaintext` as a blob whose link carries `hash`.
     pub fn put_blob(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
         let salt = Prefix::random_salt(self.rng);
-        let prefix = Prefix::for_keys(salt, self.framing.expiry, &self.framing.keys)?;
+        let prefix = Prefix::for_keys(salt, &self.framing.blind, self.framing.expiry, &self.framing.keys)?;
         let (key, blob) = frame(&prefix, plaintext, self.rng)?;
         let id = crate::blob::blob_id(&blob);
         self.store.put(id, blob)?;
@@ -209,15 +213,19 @@ pub struct Reuse {
     framing: Framing,
     chunks: HashMap<[u8; 32], Link>,
     nodes: HashMap<[u8; 32], (Link, [u8; 32])>,
+    /// The blind of the header that introduced each indexed blob.
+    blinds: HashMap<BlobId, [u8; 16]>,
 }
 
 impl Reuse {
     /// Walks the tree under `root` through the held node blobs (each verified; a missing,
     /// corrupt or foreign node just indexes nothing below it), visiting at most
-    /// `max_len / CHUNK_MIN + 1` chunk links. Only `Storage` fails.
-    pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
-        let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new() };
-        let framing = &r.framing;
+    /// `max_len / CHUNK_MIN + 1` chunk links. `blind_of` gives the blind of the header that
+    /// introduced a blob (none: never kept). Only `Storage` fails.
+    pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, blind_of: &mut dyn FnMut(&BlobId) -> Option<[u8; 16]>, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
+        let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new(), blinds: HashMap::new() };
+        let framing = r.framing.clone();
+        let framing = &framing;
         let mut budget = (max_len / params.min.max(1)).saturating_add(1);
         let mut stack = vec![(*root, None)];
         let mut seen = std::collections::HashSet::new();
@@ -226,7 +234,7 @@ impl Reuse {
                 continue;
             }
             let Some((prefix, level, kids)) = Self::node(framing, fetch, &link, expect)? else { continue };
-            if framing.keeps(&prefix) {
+            if blind_of(&link.blob).is_some_and(|b| framing.keeps(&prefix, &b)) {
                 r.nodes.insert(link.hash, (link, kids_digest(&kids)));
             }
             for (l, _) in kids.into_iter().rev() {
@@ -238,6 +246,9 @@ impl Reuse {
                     return Ok(r);
                 }
                 budget -= 1;
+                if let Some(b) = blind_of(&l.blob) {
+                    r.blinds.insert(l.blob, b);
+                }
                 r.chunks.entry(l.hash).or_insert(l);
             }
         }
@@ -341,7 +352,7 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))] }
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], blind: [4; 16] }
     }
 
     fn dk(b: u8) -> osis_crypto::VerifyingKey {
@@ -364,7 +375,7 @@ mod tests {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
             assert_eq!(p.expiry(), Some(WallMs(99)));
             assert_eq!(p.commitments().len(), 2);
-            assert_eq!(p.key_at(3), Some(osis_crypto::blind(&f.keys[1].1, p.salt()).to_bytes()));
+            assert_eq!(p.key_at(3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind).to_bytes()));
         }
         let dedup = f.dedup.clone();
         let mut r = BlobReader::new(&dedup, &mut store);

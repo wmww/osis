@@ -47,9 +47,10 @@ pub struct Prefix {
 }
 
 impl Prefix {
-    /// Prefix of a blob serving deltas whose delete keys are `keys`, each blinded by `salt`.
-    pub fn from_keys(salt: [u8; 16], expiry: Option<u64>, keys: &[DeleteKey]) -> Result<Prefix, Error> {
-        let mut commitments = keys.iter().map(|k| Ok(commitment(k.level, &k.verifying_key()?, &salt)?)).collect::<Result<Vec<_>, Error>>()?;
+    /// Prefix of a blob serving deltas whose delete keys are `keys`, each blinded by `salt` and
+    /// the header's `blind`.
+    pub fn from_keys(salt: [u8; 16], blind: &[u8; 16], expiry: Option<u64>, keys: &[DeleteKey]) -> Result<Prefix, Error> {
+        let mut commitments = keys.iter().map(|k| Ok(commitment(k.level, &k.verifying_key()?, &salt, blind)?)).collect::<Result<Vec<_>, Error>>()?;
         commitments.sort_unstable();
         commitments.dedup();
         if commitments.windows(2).any(|w| matches!(w, [a, b] if a[0] == b[0])) {

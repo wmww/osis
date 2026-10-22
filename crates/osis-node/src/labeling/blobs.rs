@@ -21,6 +21,8 @@ pub struct Body {
     pub parts: Vec<(usize, usize)>,
     pub expires: Option<u64>,
     pub keys: Vec<DeleteKey>,
+    /// The header's blind (spec/crypto.md §7).
+    pub blind: [u8; 16],
     pub plaintext: Vec<u8>,
     pub membership: bool,
 }
@@ -36,7 +38,7 @@ pub struct Sealed {
 /// Frames a body as a fresh blob: random salt and key, prefix from its class (spec/sync.md §1).
 pub fn seal_body(b: &Body, rng: &mut dyn CryptoRngCore) -> Result<Sealed> {
     let salt = osis_label::Prefix::random_salt(rng);
-    let p = osis_commit::Prefix::from_keys(salt, b.expires, &b.keys)?;
+    let p = osis_commit::Prefix::from_keys(salt, &b.blind, b.expires, &b.keys)?;
     let prefix = osis_label::Prefix::new(p.salt, p.expiry.map(WallMs), p.commitments)?;
     let (key, blob) = osis_label::frame(&prefix, &b.plaintext, rng)?;
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt })
@@ -55,7 +57,7 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
     }
     let (expiry, keys) = osis_commit::prefix_inputs(&c.header, &parts)?;
     let keys = keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<Vec<_>, osis_commit::Error>>()?;
-    if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &keys) {
+    if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys) {
         return Err(Error::BadInput("blob prefix disagrees with its header"));
     }
     Ok((pt, c))
@@ -123,7 +125,7 @@ impl Engine {
             .into_iter()
             .filter_map(|p| {
                 let reader = p.readers?;
-                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, plaintext: p.plaintext, membership })
+                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, blind: blob.header.blind, plaintext: p.plaintext, membership })
             })
             .collect())
     }
@@ -373,20 +375,20 @@ impl Engine {
 }
 
 /// A delete item for an entry: by the label delete key when held, else by a level's delete key
-/// (`dks`, for the blob's prefix `salt`) and the label key its level needs (spec/sync.md §5),
-/// under established epochs only (spec/crypto.md §4).
-pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, salt: Option<&[u8; 16]>, dks: &[(u8, DeleteSecret)]) -> Option<osis_label::DeleteItem> {
+/// (`dks`, for the blob's prefix salt and its header's blind) and the label key its level needs
+/// (spec/sync.md §5), under established epochs only (spec/crypto.md §4).
+pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<WallMs>, blinding: Option<(&[u8; 16], &[u8; 16])>, dks: &[(u8, DeleteSecret)]) -> Option<osis_label::DeleteItem> {
     if let Some(d) = &keys.delete {
         return osis_label::DeleteItem::sign(d, label, blob, at).ok();
     }
-    let salt = salt?;
+    let (salt, hb) = blinding?;
     for (level, dk) in dks {
         let key = match osis_label::key_for_level(*level).ok()? {
             LabelRole::Write => keys.write.as_ref(),
             _ => keys.sync.as_ref().filter(|_| keys.sync_established),
         };
         if let Some(k) = key {
-            return osis_label::DeleteItem::sign_by(k, dk, *level, salt, label, blob, at).ok();
+            return osis_label::DeleteItem::sign_by(k, dk, *level, salt, hb, label, blob, at).ok();
         }
     }
     None

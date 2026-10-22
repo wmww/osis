@@ -398,7 +398,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
             let p = osis_label::Prefix::parse(&bytes).unwrap();
             assert_eq!(p.commitments().len(), level2, "level-2 commitments only");
             assert!(p.commitments().iter().all(|x| x[0] == 2));
-            items.push(osis_label::DeleteItem::sign_by(&sync, dk, level, p.salt(), &l, *b, None).unwrap());
+            items.push(osis_label::DeleteItem::sign_by(&sync, dk, level, p.salt(), &h.blind, &l, *b, None).unwrap());
         }
         let conn = net.conn_to(a, sv).expect("connected");
         net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
@@ -864,12 +864,13 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let head = net.server_path(sv, &l).last().unwrap().clone();
     let keys = net.engine(w).head_keys(&g, gl.index, &head).unwrap();
     let (sync, write) = (keys.sync.unwrap(), keys.write.unwrap());
+    let rhb = net.engine(c).header(&rot).unwrap().blind;
     let mut items = Vec::new();
     for b in &rblobs {
         let bytes = net.engine(c).blob(b).unwrap().unwrap();
         let p = osis_label::Prefix::parse(&bytes).unwrap();
-        items.push(osis_label::DeleteItem::sign_by(&write, &wk, 3, p.salt(), &l, *b, None).unwrap());
-        items.push(osis_label::DeleteItem::sign_by(&sync, &wk, 1, p.salt(), &l, *b, None).unwrap());
+        items.push(osis_label::DeleteItem::sign_by(&write, &wk, 3, p.salt(), &rhb, &l, *b, None).unwrap());
+        items.push(osis_label::DeleteItem::sign_by(&sync, &wk, 1, p.salt(), &rhb, &l, *b, None).unwrap());
     }
     let conn = net.conn_to(w, sv).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_010, label: l, items }) }]);
@@ -897,4 +898,50 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     net.run();
     let left: Vec<_> = blobs.iter().filter(|id| net.server_ids(sv, &l).contains(id)).collect();
     assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the server", left.len(), blobs.len());
+}
+
+// spec/sync.md §5, spec/crypto.md §7, spec/requirements.md (deletion needs current membership):
+// a removed writer still holds a valid delete key for its own blob (its author chain), but its
+// label sync key is stale once the admin re-registers: the server refuses the delete.
+#[test]
+fn removed_writer_stale_label_key_refused_spec_sync_5() {
+    use osis_node::sync::EntryKind;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let w = net.node(2, &[sv]);
+    let g = net.group(a, &[(w, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let cw = net.write(w, t, "by w");
+    net.feed(w, Event::Local);
+    net.run();
+    let l = net.label(a);
+    let blobs: Vec<_> = net.sync(w).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cw)).collect();
+    assert!(!blobs.is_empty());
+    // w's keys before its removal: its author-chain delete key and the head's sync key
+    let mut ds = net.engine(w).delete_secrets_of(&cw, &[(0, 0)]);
+    let (level, dk) = ds.iter().position(|x| x.0 == 2).map(|i| ds.remove(i)).expect("w holds its level-2 key");
+    let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let old_head = net.server_path(sv, &l).last().unwrap().clone();
+    let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
+    let hb = net.engine(w).header(&cw).unwrap().blind;
+    // the admin removes w with a rotation and steps the label
+    let (at, wt) = (net.tid(a), net.tid(w));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin)]);
+    remove_member(e, g, wt, &rs, 31);
+    net.feed(a, Event::Local);
+    net.run();
+    net.run();
+    assert_ne!(net.server_path(sv, &l).last().unwrap().id(), old_head.id(), "the label stepped");
+    let mut items = Vec::new();
+    for (b, k) in &blobs {
+        let EntryKind::Commit { salt, .. } = k else { unreachable!() };
+        items.push(osis_label::DeleteItem::sign_by(&sync, &dk, level, salt, &hb, &l, *b, None).unwrap());
+    }
+    let conn = net.conn_to(w, sv).expect("connected");
+    net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
+    net.settle(10_000);
+    assert!(blobs.iter().all(|(id, _)| net.server_ids(sv, &l).contains(id)), "a removed member's delete went through");
 }

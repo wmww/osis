@@ -13,6 +13,9 @@ use osis_server::Policy;
 use osis_store::Backend;
 
 // spec/sync.md §5, §6: register, open, upload inline with Sync, download by replay, cursor sync with gained and want
+/// A header blind (spec/crypto.md §7).
+const HB: [u8; 16] = [0x4b; 16];
+
 #[test]
 fn register_open_sync_download() {
     let mut w = World::new();
@@ -99,14 +102,14 @@ fn deletes_and_tombstones() {
     w.setup(a, &l);
     w.open(a, &l);
     let dk = |t: &osis_crypto::Secret32| osis_crypto::DeleteSecret::derive(t);
-    let commit = |level: u8, t: &osis_crypto::Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n)).unwrap();
+    let commit = |level: u8, t: &osis_crypto::Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n), &HB).unwrap();
     let (t1, t3) = (s32(1), s32(3));
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
     let plain = blob(12);
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(t), level, &salt(n), &l.id, osis_label::blob_id(b), None).unwrap();
+    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(t), level, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
     let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain), None).unwrap();
     let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);

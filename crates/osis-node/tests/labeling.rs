@@ -119,7 +119,7 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     let ds = net.engine(b).delete_secrets_of(&c, &body.parts);
     let d = [7u8; 32];
     let k3 = p.key_at(3).unwrap();
-    assert!(ds.iter().any(|(lvl, dk)| *lvl == 3 && osis_crypto::verify_delete(&k3, &d, &dk.sign(p.salt(), &d)).is_ok()), "a writer holds the level-3 key: {:?}", ds.iter().map(|x| x.0).collect::<Vec<_>>());
+    assert!(ds.iter().any(|(lvl, dk)| *lvl == 3 && osis_crypto::verify_delete(&k3, &d, &dk.sign(p.salt(), &body.blind, &d)).is_ok()), "a writer holds the level-3 key: {:?}", ds.iter().map(|x| x.0).collect::<Vec<_>>());
     net.pair(a, r);
     assert!(net.engine(r).delete_secrets_of(&c, &body.parts).is_empty());
 }

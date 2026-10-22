@@ -43,7 +43,7 @@ Blind-node policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget sp
 ## 4. Commits
 ```
 Header    := [version, author, actor, kind, ts, form, schemas, aspects, chunks, purge,
-              undoes, keys, frontier, origins]
+              undoes, blind, keys, frontier, origins]
 Aspect    := [tid, ak, lo, hi, Retention, expires, schema, keys, hashes]
 Retention := [by, at_least, at_most]
 Bound     := {? 0: abs, ? 1: rel}
@@ -64,9 +64,10 @@ Header fields by position:
 8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
 9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`.
 10. `undoes`: `Opt(commit_id)`.
-11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1); a key no aspect lists is bad input.
-12. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
-13. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
+11. `blind`: 16 random bytes (spec/crypto.md §7).
+12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
+13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a membership commit carrying an explicit demotion (spec/permissions.md §5).
+14. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
 
 Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most 1024 bytes); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3, 4; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `expires`: `Opt(T)`; `schema`: `Opt(index into schemas)`; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, 4, sorted and distinct for kinds 1 and 5.
 
@@ -89,7 +90,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 - The ciphertext runs from offset `26 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above); signal envelope: §9.
-- Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt: one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only (none for an import). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
+- Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it): one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only (none for an import). A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32)`: 49 bytes. A filler is 49 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a blob with no expiry and no commitments.
 
@@ -126,8 +127,8 @@ ClaimSet := [[claim+], {entry: box}]
 
 ## 9. Inbox blobs and signal envelopes
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then a sealed box (§7) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` and payload the padded (§5) canonical bytes of
-  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*]]*]]`:
-  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID and server addresses (`address` values, spec/data-model.md §9), sorted by tid.
+  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, [address*], Opt([admin_pk, write_pk])]*]]`:
+  the membership commit with the parts about the recipient (§4), then for each thing it names, its label ID and server addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
 - **Signal envelope** (spec/sync.md §9): a blob (§5) with no expiry and no commitments, wrapped under the label like any blob, at most 64 KiB. Plaintext: the padded canonical bytes of `[SignalBody, signature]` with
   `SignalBody := [node, actor, ts, tid, kind, target, schema, value]`: sender node tid, actor tid, `ts`, target thing tid, kind (text, as an AK), `Opt(target node tid)`, `Opt([schema_id, revision])`, the value. The `signature` value is the sender node's under `"osis v1 signal"`, digest BLAKE3(canonical `SignalBody`).
 - Publish authorization: `[key, sig]`, key 0 for the label's write key or 1 for its deposit key, `sig` raw Ed25519 under `"osis v1 signal publish"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`).

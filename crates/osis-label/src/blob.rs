@@ -35,13 +35,13 @@ impl Prefix {
     }
 
     /// Prefix of a blob serving deltas whose delete keys are `keys`: one commitment per
-    /// `(level, key)`, the key blinded by this prefix's salt (spec/crypto.md §7). A repeated pair
-    /// gives one commitment.
-    pub fn for_keys(salt: [u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
+    /// `(level, key)`, the key blinded by this prefix's salt and the header's blind `hb`
+    /// (spec/crypto.md §7). A repeated pair gives one commitment.
+    pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
         let mut ks = keys.to_vec();
         ks.sort_by_key(|(l, k)| (*l, k.to_bytes()));
         ks.dedup();
-        let cs = ks.iter().map(|(l, k)| commitment(*l, k, &salt)).collect::<Result<Vec<_>, _>>()?;
+        let cs = ks.iter().map(|(l, k)| commitment(*l, k, &salt, hb)).collect::<Result<Vec<_>, _>>()?;
         Prefix::new(salt, expiry, cs)
     }
 
@@ -131,9 +131,9 @@ impl Prefix {
 
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
     /// §4, spec/sync.md §1): the same expiry, and exactly the commitments of `keys` under this
-    /// salt. A mismatch makes the commit blob bad input.
-    pub fn agrees(&self, expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> bool {
-        Prefix::for_keys(self.salt, expiry, keys).is_ok_and(|p| p == *self)
+    /// salt and the header's blind `hb`. A mismatch makes the commit blob bad input.
+    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -> bool {
+        Prefix::for_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p == *self)
     }
 }
 
@@ -275,18 +275,21 @@ mod tests {
         let salt = [4u8; 16];
         let k = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key();
         let k3 = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key();
-        let p = Prefix::for_keys(salt, Some(WallMs(10)), &[(2, k)]).unwrap();
-        assert!(p.agrees(Some(WallMs(10)), &[(2, k)]));
-        assert!(!p.agrees(None, &[(2, k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[(3, k)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[(2, k3)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[]));
-        assert_eq!(p.key_at(2), Some(osis_crypto::blind(&k, &salt).to_bytes()));
+        let hb = [6u8; 16];
+        let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
+        assert!(p.agrees(Some(WallMs(10)), &hb, &[(2, k)]));
+        assert!(!p.agrees(None, &hb, &[(2, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(3, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(2, k3)]));
+        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[(2, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[]));
+        assert_eq!(p.key_at(2), Some(osis_crypto::blind(&k, &salt, &hb).to_bytes()));
         // Repeated pairs on either side give one commitment; two keys at one level are refused.
-        assert_eq!(Prefix::for_keys(salt, Some(WallMs(10)), &[(2, k), (2, k)]).unwrap(), p);
-        assert!(Prefix::for_keys(salt, None, &[(2, k), (2, k3)]).is_err());
-        // another salt, another blinded key
-        assert_ne!(Prefix::for_keys([5; 16], None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
+        assert_eq!(Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k), (2, k)]).unwrap(), p);
+        assert!(Prefix::for_keys(salt, &hb, None, &[(2, k), (2, k3)]).is_err());
+        // another salt or header blind, another blinded key
+        assert_ne!(Prefix::for_keys([5; 16], &hb, None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
+        assert_ne!(Prefix::for_keys(salt, &[8; 16], None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
     }
 
     // spec/crypto.md §5: a reader tries its read secrets newest first; a filler opens under none.

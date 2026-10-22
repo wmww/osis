@@ -911,7 +911,7 @@ impl SyncEngine {
             let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
                 (Ok(p), Ok((expiry, keys))) => {
                     let keys: std::result::Result<Vec<_>, _> = keys.iter().map(|k| k.verifying_key().map(|v| (k.level, v))).collect();
-                    parts.is_empty() || keys.is_ok_and(|k| p.agrees(expiry.map(WallMs), &k))
+                    parts.is_empty() || keys.is_ok_and(|k| p.agrees(expiry.map(WallMs), &h.blind, &k))
                 }
                 _ => false,
             };
@@ -2086,7 +2086,8 @@ impl SyncEngine {
         };
         let Ok(prefix) = osis_label::Prefix::parse(&blob) else { return Ok(None) };
         let dks = self.engine.chunk_delete_secrets(c, ch);
-        Ok(delete_item(keys, l, *id, None, Some(prefix.salt()), &dks))
+        let Some(hb) = self.engine.header(c).map(|h| h.blind) else { return Ok(None) };
+        Ok(delete_item(keys, l, *id, None, Some((prefix.salt(), &hb)), &dks))
     }
 
     /// A delete item for an entry: the label delete key, else a delete key this node holds.
@@ -2097,7 +2098,8 @@ impl SyncEngine {
         Ok(match &e.kind {
             Kind::Commit { commit, parts, salt } => {
                 let dks = self.engine.delete_secrets_of(commit, parts);
-                delete_item(keys, l, *id, at, Some(salt), &dks)
+                let hb = self.engine.header(commit).map(|h| h.blind);
+                delete_item(keys, l, *id, at, hb.as_ref().map(|hb| (salt, hb)), &dks)
             }
             _ => None,
         })

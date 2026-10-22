@@ -262,6 +262,16 @@ pub(crate) struct CommitPlan {
     pub origins: Vec<osis_commit::Origin>,
     /// The signing key actor: the node, or a key actor it holds.
     pub signer: Tid,
+    /// The header's blind: chunks and pages are framed under it before the header exists
+    /// (spec/crypto.md §7).
+    pub blind: [u8; 16],
+}
+
+/// A fresh header blind.
+pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
+    let mut b = [0u8; 16];
+    rng.fill_bytes(&mut b);
+    b
 }
 
 /// Retention, expiry and blob framing of one aspect's delta in a commit (spec/commits.md §5,
@@ -281,7 +291,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, &retention, plan.kind)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
-    let framing = Framing { dedup, expiry: expires.map(WallMs), keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? };
+    let framing = Framing { dedup, expiry: expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? };
     Ok((retention, expires, framing))
 }
 
@@ -368,6 +378,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.purge = plan.purge;
     b.undoes = plan.undoes;
     b.frontier = plan.frontier;
+    b.blind = Some(plan.blind);
     b.origins = plan.origins;
     let built = {
         let core: &Core = tx.core;
@@ -445,7 +456,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         m.form = Form::Commit;
     }
     let ts = tx.core.hlc.next();
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node };
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;

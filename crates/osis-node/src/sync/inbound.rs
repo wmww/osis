@@ -416,6 +416,7 @@ impl SyncEngine {
             for s in keys {
                 let kem = role_kem(&s);
                 if let Ok((_, payload)) = osis_label::open_inbox_blob(&bytes, &actor, &kem) {
+                    self.engine.note_delete_hints(&payload.things)?;
                     let pt = osis_core::encode(&payload.commit);
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {

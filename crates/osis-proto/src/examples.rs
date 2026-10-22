@@ -120,7 +120,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD], head: Some(f.child.clone()) }),
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, entries_left: 63, bytes_left: 2_064_384, head: None }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
+        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
         ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
         ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] }),
         (

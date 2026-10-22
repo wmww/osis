@@ -93,7 +93,8 @@ pub(crate) fn deliver_parts(tx: &mut Tx<'_>, member: Tid, c: CommitId, things: &
         if seen.insert(*t)
             && let Some((label, servers)) = label_for(tx, t)?
         {
-            ts.push(InboxThing { tid: *t, label, servers });
+            let delete_keys = crate::engine::secrets::own_delete_keys(tx, t)?;
+            ts.push(InboxThing { tid: *t, label, servers, delete_keys });
         }
     }
     ts.sort_by_key(|t| t.tid);
@@ -409,6 +410,7 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
+        self.note_delete_hints(&p.things)?;
         let bytes = osis_core::encode(&p.commit);
         let id = CommitBlob::decode(&bytes)?.id();
         self.ingest(&bytes, Vec::new())?;

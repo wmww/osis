@@ -106,6 +106,10 @@ impl Header {
         if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
             return Err(Error::Invalid("roster snapshot of several things"));
         }
+        // one author chain: at most one level-2 key (header-list blobs commit to it alone)
+        if self.keys.iter().filter(|k| k.level == 2).count() > 1 {
+            return Err(Error::Invalid("more than one level-2 delete key"));
+        }
         if used.iter().any(|u| !u) {
             return Err(Error::Malformed("delete key no aspect calls for"));
         }

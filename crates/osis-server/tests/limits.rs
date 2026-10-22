@@ -19,6 +19,9 @@ fn world() -> (World, usize) {
 
 // spec/sync.md §5 Open: an ex-member's superseded sync key gets the child step and nothing else
 // spec/sync.md §5 (stale sync key), §5 (download needs open)
+/// A header blind (spec/crypto.md §7).
+const HB: [u8; 16] = [0x4b; 16];
+
 #[test]
 fn stale_sync_key_gets_exactly_one_step() {
     let (mut w, c) = world();
@@ -73,17 +76,17 @@ fn delete_key_deletes_only_its_own_body() {
     let l = Label::new(3);
     w.setup(c, &l);
     let dk = osis_crypto::DeleteSecret::derive(&s32(1));
-    let commit = |level: u8, n: u64| osis_crypto::commitment(level, &dk.verifying_key(), &salt(n)).unwrap();
+    let commit = |level: u8, n: u64| osis_crypto::commitment(level, &dk.verifying_key(), &salt(n), &HB).unwrap();
     let mine = blob_with(10, 0, vec![commit(1, 10)]);
     let other = blob_with(11, 0, vec![commit(1, 99)]);
     let plain = blob(12);
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(mine.clone()), l.entry(other.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &dk, level, &salt(n), &l.id, osis_label::blob_id(b), None).unwrap();
+    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &dk, level, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
     // hostile deletes: a forged delete key; the right key under the write label key (level 1
     // needs the sync key); the right key at another level; another blob's salt
-    let forged = DeleteItem::sign_by(&k.sync, &osis_crypto::DeleteSecret::derive(&s32(2)), 1, &salt(10), &l.id, osis_label::blob_id(&mine), None).unwrap();
-    let wrong_label_key = DeleteItem::sign_by(&k.write, &dk, 1, &salt(10), &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let forged = DeleteItem::sign_by(&k.sync, &osis_crypto::DeleteSecret::derive(&s32(2)), 1, &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let wrong_label_key = DeleteItem::sign_by(&k.write, &dk, 1, &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
     let ev = w.run(c, Command::Delete { label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     // a delete for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)

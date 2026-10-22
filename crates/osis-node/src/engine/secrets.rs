@@ -58,10 +58,10 @@ impl Core {
         None
     }
 
-    /// The delete base of `tid` for role `r` (spec/crypto.md §7): the nearest actor in its owner
-    /// chain, itself first, with secrets of its own of that role, or the key actor the chain
-    /// ends at.
-    pub(crate) fn delete_base(&self, tid: &Tid, r: Role) -> Option<DeleteBase> {
+    /// The delete base of `tid` (spec/crypto.md §7): the nearest actor in its owner chain,
+    /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
+    /// key actor the chain ends at.
+    pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
             if cur == self.id.tid() {
@@ -70,11 +70,11 @@ impl Core {
             if let Some(k) = self.key_actors.get(&cur) {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
-            match self.secrets.get(&cur) {
-                Some(e) if e.role(r).epochs().next().is_some() => return Some(DeleteBase::Actor(cur, Some(e.clone()))),
-                Some(_) => {}
-                None if self.own_keys.contains(&cur) => return Some(DeleteBase::Actor(cur, None)),
-                None => {}
+            if let Some(e) = self.secrets.get(&cur) {
+                return Some(DeleteBase::Actor(cur, Some(e.clone())));
+            }
+            if self.own_keys.contains(&cur) {
+                return Some(DeleteBase::Actor(cur, None));
             }
             match self.created(&cur)? {
                 CreationRecord::Thing { owner, .. } => cur = *owner,
@@ -285,15 +285,15 @@ pub struct CommitSecrets<'c> {
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
 }
 
-/// The delete base of `tid` for role `r` ([`Core::delete_base`]); a thing `created` in this
-/// commit is plain, so it uses its owner's.
-fn base_of(core: &Core, created: &[CreationRecord], tid: &Tid, r: Role) -> Option<DeleteBase> {
+/// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
+/// so it uses its owner's.
+fn base_of(core: &Core, created: &[CreationRecord], tid: &Tid) -> Option<DeleteBase> {
     let mut cur = *tid;
     for _ in 0..=created.len() {
         match created.iter().find(|r| r.tid() == cur) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { public_key, .. }) => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
-            None => return core.delete_base(&cur, r),
+            None => return core.delete_base(&cur),
         }
     }
     None
@@ -306,7 +306,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &[Creation
     let mut need = std::collections::BTreeSet::new();
     for t in tids {
         for r in [Role::Admin, Role::Write] {
-            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t, r)
+            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t)
                 && e.is_none_or(|e| e.role(r).newest_held().is_none())
             {
                 need.insert((b, r));
@@ -315,33 +315,58 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &[Creation
     }
     let mut out = BTreeMap::new();
     for (b, r) in need {
-        let Some(keys) = Core::keys_in(tx, &b)? else { continue };
-        let ks = if r == Role::Admin { keys.admin } else { keys.write };
-        if let Some(SigningKey::Ed25519(k)) = ks.map(|ks| ks.delete_key)
-            && let Ok(vk) = VerifyingKey::from_slice(&k)
-        {
+        let keys = Core::keys_in(tx, &b)?;
+        let ks = keys.and_then(|k| if r == Role::Admin { k.admin } else { k.write });
+        let published = match ks.map(|ks| ks.delete_key) {
+            Some(SigningKey::Ed25519(k)) => VerifyingKey::from_slice(&k).ok(),
+            _ => None,
+        };
+        // else the keys an inbox payload named, until `/keys` arrives
+        let hinted = || match tx.core.delete_hints.get(&b) {
+            Some(Value::List(x)) => x.get(usize::from(r != Role::Admin)).and_then(|v| if let Value::Bytes(k) = v { VerifyingKey::from_slice(k).ok() } else { None }),
+            _ => None,
+        };
+        if let Some(vk) = published.or_else(hinted) {
             out.insert((b, r), vk);
         }
     }
     Ok(out)
 }
 
+/// The current admin and write delete keys of `t` when it is its own delete base (it has
+/// secrets of its own): from held secrets, else published or hinted; for an inbox payload.
+pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
+    let Some(DeleteBase::Actor(b, e)) = tx.core.delete_base(t) else { return Ok(None) };
+    if b != *t {
+        return Ok(None);
+    }
+    let published = published_keys(tx, &[], [*t])?;
+    let key = |r: Role| e.as_ref().and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| published.get(&(b, r)).copied());
+    Ok(key(Role::Admin).zip(key(Role::Write)))
+}
+
 impl crate::Engine {
-    /// Whether this node can list every delete key a write to `tid` calls for (spec/crypto.md
-    /// §7): its delete base is a key actor, or this node holds that base's admin secret or its
-    /// published `/keys`. A member that learned its secrets before syncing the base's `/keys`
-    /// cannot write yet.
-    pub fn delete_keys_known(&mut self, tid: &Tid) -> bool {
-        let t = *tid;
+    /// [`own_delete_keys`] of `t`.
+    pub(crate) fn own_delete_keys(&mut self, t: &Tid) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
+        let t = *t;
+        self.run(|tx| own_delete_keys(tx, &t))
+    }
+
+    /// Notes the delete keys an inbox payload names (spec/wire.md §9): listed for those things
+    /// until their `/keys` arrives. As trustworthy as the granter; a lie only spoils deletion.
+    pub(crate) fn note_delete_hints(&mut self, things: &[osis_label::InboxThing]) -> Result<()> {
+        let hints: Vec<(Tid, Value)> = things.iter().filter_map(|t| t.delete_keys.map(|(a, w)| (t.tid, Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])))).collect();
+        if hints.is_empty() {
+            return Ok(());
+        }
         self.run(|tx| {
-            Ok(match tx.core.delete_base(&t, Role::Admin) {
-                None => false,
-                Some(DeleteBase::KeyActor(_)) => true,
-                Some(DeleteBase::Actor(_, Some(e))) if e.admin.newest_held().is_some() => true,
-                Some(DeleteBase::Actor(b, _)) => published_keys(tx, &[], [t])?.contains_key(&(b, Role::Admin)),
-            })
+            for (t, v) in hints {
+                if tx.core.delete_hints.get(&t) != Some(&v) {
+                    tx.core.delete_hints.insert(t, v);
+                }
+            }
+            Ok(())
         })
-        .unwrap_or(false)
     }
 }
 
@@ -355,7 +380,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
     fn chain_key(&self) -> Option<VerifyingKey> {
         // the author's own actor: from a secret this node holds, never a published key (a node
         // cannot sign as an actor it does not act for)
-        match self.core.delete_base(&self.actor, Role::Write)? {
+        match self.core.delete_base(&self.actor)? {
             DeleteBase::KeyActor(k) => self.chain_holder().then_some(k),
             DeleteBase::Actor(_, e) => e?.write.newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key()),
         }
@@ -384,7 +409,7 @@ impl CommitSecrets<'_> {
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
     /// the newest held secret of the role, else the published one.
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        match base_of(self.core, self.created, tid, r)? {
+        match base_of(self.core, self.created, tid)? {
             DeleteBase::KeyActor(k) => Some(k),
             DeleteBase::Actor(b, e) => e.and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| self.published.get(&(b, r)).copied()),
         }

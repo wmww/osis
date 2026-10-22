@@ -207,6 +207,8 @@ pub struct Header {
     pub chunks: Vec<ChunkEntry>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
+    /// 16 random bytes blinding the commitments of every blob of the commit (spec/crypto.md §7).
+    pub blind: [u8; 16],
     pub keys: Vec<DeleteKey>,
     /// The frontier value (spec/data-model.md §9), typed by osis-perm.
     pub frontier: Option<Value>,
@@ -305,6 +307,7 @@ impl Header {
             self.position(ListField::Chunks),
             self.position(ListField::Purge),
             opt(self.undoes.map(|c| bytes(&c.0))),
+            bytes(&self.blind),
             self.position(ListField::Keys),
             self.position(ListField::Frontier),
             self.position(ListField::Origins),
@@ -465,7 +468,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, keys, frontier, origins] = items else {
+        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, blind, keys, frontier, origins] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let schemas = as_list(schemas)?;
@@ -495,6 +498,7 @@ impl Header {
             chunks: Vec::new(),
             purge: Vec::new(),
             undoes: as_opt(undoes)?.map(|c| as_bytes(c).map(CommitId)).transpose()?,
+            blind: as_bytes(blind)?,
             keys: Vec::new(),
             frontier: None,
             origins: Vec::new(),

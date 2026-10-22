@@ -11,7 +11,7 @@ Encoding: spec/wire.md §4. Fields:
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6), schema index or none, and the delta hashes of its deltas. A content commit has one delta per aspect; a membership commit may have several (§2), all sharing the aspect's range.
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
-- Delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
+- A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - The aspect, chunk, purge, delete-key and origin lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
 - Signature (spec/crypto.md §2).

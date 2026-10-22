@@ -137,3 +137,20 @@ fn expiry_range() {
     h.aspects[0].expires = Some(FOREVER + 1);
     assert!(h.validate().is_err());
 }
+
+// spec/wire.md §4: one author chain: a header listing two level-2 delete keys is bad input.
+#[test]
+fn one_level_2_key() {
+    let mut h = sample_header();
+    h.keys.push(crate::tests::dkey(2, 9));
+    h.keys.sort_by_key(|k| osis_core::encode(&crate::header::key_value(k)));
+    let i = h.keys.iter().position(|k| *k == crate::tests::dkey(1, 1)).unwrap();
+    let j = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 2)).unwrap();
+    let k = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 9)).unwrap();
+    h.aspects[0].keys = vec![i, j];
+    let mut a2 = h.aspects[0].clone();
+    a2.ak = Ak::new("/app/title2").unwrap();
+    a2.keys = vec![i, k];
+    h.aspects.push(a2);
+    assert!(h.validate().unwrap_err().to_string().contains("level-2"));
+}

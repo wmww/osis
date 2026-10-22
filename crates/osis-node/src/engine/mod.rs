@@ -118,6 +118,7 @@ macro_rules! journaled {
         c.valueless.$m();
         c.secrets.$m();
         c.own_keys.$m();
+        c.delete_hints.$m();
         c.was.$m();
         c.was_of.$m();
         c.moved.$m();
@@ -201,6 +202,9 @@ pub(crate) struct Core {
     pub secrets: JMap<Tid, ActorEpochs>,
     /// Things known to have secrets of their own (a `/keys` with keysets).
     pub own_keys: JSet<Tid>,
+    /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
+    /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9).
+    pub delete_hints: JMap<Tid, osis_core::Value>,
     /// `/was` index: t -> things whose `/was` reads t.
     pub was: JSetMap<Tid, Tid>,
     /// The `/was` each thing reads.
@@ -390,6 +394,7 @@ impl Core {
             valueless: JMap::default(),
             secrets: JMap::default(),
             own_keys: JSet::default(),
+            delete_hints: JMap::default(),
             was: JSetMap::default(),
             was_of: JMap::default(),
             moved: JMap::default(),

@@ -336,7 +336,8 @@ impl SyncEngine {
         for t in tids {
             for gl in self.engine.group_labels(&t)? {
                 if !gl.replaced {
-                    things.push(InboxThing { tid: t, label: gl.id, servers: gl.servers });
+                    let delete_keys = self.engine.own_delete_keys(&t)?;
+                    things.push(InboxThing { tid: t, label: gl.id, servers: gl.servers, delete_keys });
                     break;
                 }
             }
