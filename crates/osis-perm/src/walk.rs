@@ -176,19 +176,19 @@ pub(crate) struct Walked {
 /// Walk state beyond what queries read (see `Pass`), and the undo log that rolls it back.
 #[derive(Default)]
 pub(crate) struct Rest {
-    prior: BTreeMap<(Tid, Tid), Edge>,
-    dead: BTreeSet<(Tid, Tid)>,
-    prior_node: BTreeMap<(Tid, Tid), BTreeMap<Tid, Edge>>,
-    by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
-    setter: BTreeMap<(Tid, Tid), WriteId>,
-    candidates: BTreeMap<CommitId, Applied>,
-    log: Vec<Undo>,
+    pub prior: BTreeMap<(Tid, Tid), Edge>,
+    pub dead: BTreeSet<(Tid, Tid)>,
+    pub prior_node: BTreeMap<(Tid, Tid), BTreeMap<Tid, Edge>>,
+    pub by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
+    pub setter: BTreeMap<(Tid, Tid), WriteId>,
+    pub candidates: BTreeMap<CommitId, Applied>,
+    pub log: Vec<Undo>,
     /// Per walked item: the log and history lengths before it.
-    marks: Vec<(usize, usize)>,
+    pub marks: Vec<(usize, usize)>,
 }
 
 /// The inverse of one change to the walk state.
-enum Undo {
+pub(crate) enum Undo {
     Edge(Tid, Tid, Option<Edge>),
     Dead((Tid, Tid), bool),
     Setter((Tid, Tid), Option<WriteId>),

@@ -306,4 +306,23 @@ fn membership_change_and_open_cost() {
     e.rebuild_index().unwrap();
     println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
     assert_eq!(e.roster(&things[0]).len(), 1);
+    // 10^4 edge writes in the tree's one membership component: 20 members' roles toggled
+    let n: usize = std::env::var("OSIS_SCALE_EDGES").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let members: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
+    let t5 = Instant::now();
+    for i in 0..n {
+        let role = if (i / 20) % 2 == 0 { Role::Read } else { Role::Write };
+        let mut m = Mutation::new();
+        m.op(things[i % 100], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(members[i % 20]))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        e.commit(m).unwrap().unwrap();
+    }
+    println!("{n} edge writes: {:?}", t5.elapsed());
+    let roster = e.roster(&things[1]);
+    drop(e);
+    for k in 0..2 {
+        let t6 = Instant::now();
+        let e = reopen.open(&batches, &bytes);
+        println!("open {k} with {n} edge writes held: {:?} ({} membership components restored from their saved walks)", t6.elapsed(), e.walks_restored());
+        assert_eq!(e.roster(&things[1]), roster);
+    }
 }

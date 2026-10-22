@@ -46,9 +46,9 @@ pub struct Timeline {
     passes: usize,
     /// Inputs `extend` must find unchanged.
     nodes: BTreeSet<Tid>,
-    epoch_changed: bool,
+    pub(crate) epoch_changed: bool,
     /// The furthest point a walk under the final epoch starts other than the final one reached.
-    reach: Option<Point>,
+    pub(crate) reach: Option<Point>,
     /// The edge state before history change `i * CHECKPOINT`, for `edges_at`.
     checkpoints: Vec<Edges>,
     /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
@@ -92,7 +92,7 @@ impl Timeline {
         Timeline::from_outcome(input, out)
     }
 
-    fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
+    pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
         let checkpoints = checkpoints(&out.walked);
         Timeline {
             owners: input.owners,

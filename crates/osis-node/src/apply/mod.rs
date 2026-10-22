@@ -676,7 +676,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
         }
     }
-    tx.core.update_timelines();
+    if fast {
+        crate::engine::index::update_timelines_saved(tx)?;
+    } else {
+        tx.core.update_timelines();
+    }
     keys::load_unresolved(tx)?;
     crate::rotation::load_lost_due(tx)?;
     let mut pend = Vec::new();

@@ -43,11 +43,14 @@ pub struct Config {
     /// `/node` software revision.
     pub software: String,
     pub store: StoreConfig,
+    /// Membership components with fewer commits and snapshots are evaluated from scratch at
+    /// open rather than saved (`engine::index`, walk cache).
+    pub walk_cache_min: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default() }
+        Config { software: format!("osis-node {}", env!("CARGO_PKG_VERSION")), store: StoreConfig::default(), walk_cache_min: 64 }
     }
 }
 
@@ -157,6 +160,8 @@ pub(crate) struct Core {
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
     pub timelines: Timelines,
+    /// `Config::walk_cache_min`.
+    pub walk_cache_min: usize,
     /// The running transaction called `touch` (`rollback` drops the caches).
     pub dirty: bool,
     /// The paged maps' key index hash key, derived from the node's seed.
@@ -358,6 +363,7 @@ impl Core {
             pages: HashMap::new(),
             held: held::Held::default(),
             timelines: Timelines::new(),
+            walk_cache_min: Config::default().walk_cache_min,
             stale_things: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
@@ -751,6 +757,7 @@ impl Engine {
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        e.core.walk_cache_min = e.cfg.walk_cache_min;
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -774,6 +781,7 @@ impl Engine {
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), clock, cfg };
+        e.core.walk_cache_min = e.cfg.walk_cache_min;
         e.reload()?;
         e.reexamine()?;
         Ok(e)
@@ -902,6 +910,7 @@ impl Engine {
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.schemas = std::mem::take(&mut self.core.schemas);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.walk_cache_min = self.core.walk_cache_min;
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;
@@ -931,6 +940,10 @@ impl Engine {
                 }
                 index::write_all(tx)
             })?;
+        } else if self.core.timelines.due(self.core.walk_cache_min) {
+            // walks evaluated or continued at open saved for the next (a cache: a failure
+            // leaves the open as it is)
+            let _ = self.run(|_| Ok(()));
         }
         Ok(())
     }

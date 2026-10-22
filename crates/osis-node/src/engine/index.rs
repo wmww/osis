@@ -38,6 +38,9 @@ const OWN_KEYS: &[u8] = b"node/own keys";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 const CARRIED: &[u8] = b"node/carried";
 const AUTHORS: &[u8] = b"node/authors";
+/// Saved membership walks (osis-perm `Timelines::to_save`), by component root: a cache unit
+/// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
+const WALKS: &[u8] = b"node/walks";
 
 /// A record key or value of the persisted index.
 trait Rec: Sized {
@@ -391,6 +394,35 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, CARRIED, &c.carried, &k)?;
     let k = if all { c.authors.keys().cloned().collect() } else { c.authors.logged() };
     put_map(txn, AUTHORS, &c.authors, &k)?;
+    // after the indexes and in their transaction: a saved walk never runs ahead of the
+    // commits it covers
+    let min = tx.core.walk_cache_min;
+    let saves = tx.core.timelines.to_save(VERSION.as_bytes(), min, all);
+    if !saves.put.is_empty() || !saves.delete.is_empty() {
+        // shredded: a walk may name writes no longer held (rare, amortized: one root write)
+        let t = tx.txn.index(WALKS)?;
+        for r in saves.delete {
+            tx.txn.table_remove(t, r.as_bytes(), Shred::Yes)?;
+        }
+        for (r, bytes) in saves.put {
+            tx.txn.table_put(t, r.as_bytes(), bytes, Shred::Yes)?;
+        }
+    }
+    Ok(())
+}
+
+/// `Core::update_timelines` at open: components restored from their saved walks where those
+/// match (else evaluated); a unit that does not read is evaluated anew, never an error.
+pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
+    let touched = tx.core.held.take_touched();
+    let t = tx.txn.index(WALKS)?;
+    let txn = &mut tx.txn;
+    let core = &mut *tx.core;
+    let changed = core.timelines.update_touched_cached(&core.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
+    core.stale_things.extend(changed.evaluated);
+    let below = core.held.reach(&changed.extended);
+    core.stale_things.extend(below);
+    core.membership_changed();
     Ok(())
 }
 
@@ -620,6 +652,71 @@ impl super::Engine {
             } else {
                 tx.txn.put_local(VERSION_KEY, b"another build", Shred::No).map_err(Error::from)
             }
+        })
+    }
+
+    /// The membership timelines' verdicts per thing (rosters, ledgers, epoch starts, applied and
+    /// dropped edge writes): of the components as held (`false`) or of one from-scratch
+    /// evaluation of the held set (tests: restored walks equal a from-scratch evaluation).
+    #[doc(hidden)]
+    pub fn perm_digest(&self, from_scratch: bool) -> String {
+        use std::fmt::Write;
+        let held = &self.core.held;
+        let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
+        let get = |t: &Tid| full.as_ref().or_else(|| self.core.timelines.get(t));
+        let mut out = String::new();
+        let mut applied = BTreeMap::new();
+        let mut dropped = BTreeMap::new();
+        for t in osis_perm::HeldSet::things(held) {
+            let Some(tl) = get(&t) else {
+                let _ = writeln!(out, "{t:?} no timeline");
+                continue;
+            };
+            let _ = writeln!(out, "{t:?} {:?} {:?} {:?}", tl.roster(&t, osis_perm::At::END), tl.roster_state(&t), tl.epoch_start(&t));
+            applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
+            dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
+        }
+        let _ = writeln!(out, "applied {applied:?}\ndropped {dropped:?}");
+        out
+    }
+
+    /// Sets `Config::walk_cache_min` for this session (tests).
+    #[doc(hidden)]
+    pub fn set_walk_cache_min(&mut self, n: usize) {
+        self.core.walk_cache_min = n;
+    }
+
+    /// Membership components the last open restored from their saved walks (tests).
+    #[doc(hidden)]
+    pub fn walks_restored(&self) -> usize {
+        self.core.timelines.restored()
+    }
+
+    /// Damages every saved walk (tests): 0 truncates, 1 flips a bit, 2 saves it again under
+    /// other rules.
+    #[doc(hidden)]
+    pub fn damage_walks(&mut self, how: u8) -> Result<usize> {
+        self.run(|tx| {
+            let t = tx.txn.index(WALKS)?;
+            let rows = tx.txn.table_range(t, &[], None, 1 << 20)?;
+            let other = tx.core.timelines.to_save(b"another build", 1, true);
+            for (k, mut v) in rows.iter().cloned() {
+                match how {
+                    0 => v.truncate(v.len() / 2),
+                    1 => {
+                        let i = v.len() / 2;
+                        if let Some(b) = v.get_mut(i) {
+                            *b ^= 4;
+                        }
+                    }
+                    _ => match other.put.iter().find(|(r, _)| r.as_bytes()[..] == k[..]) {
+                        Some((_, b)) => v = b.clone(),
+                        None => continue,
+                    },
+                }
+                tx.txn.table_put(t, &k, v, Shred::Yes)?;
+            }
+            Ok(rows.len())
         })
     }
 
