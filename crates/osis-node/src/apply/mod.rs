@@ -214,7 +214,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // (tests let a local writer break these rules, to test receivers)
     if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
         validity::check_roster_parts(&h, &out)?;
-        if !validity::linked_frontiers(tx, &h, &out)?.waiting.is_empty() {
+        if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out))?.waiting.is_empty() {
             return Ok(Exam::Pending(Reason::WaitBlobs));
         }
     }
@@ -541,8 +541,8 @@ impl Engine {
 
 /// Rebuilds the engine's indexes from the store (open, and after forgetting): from the persisted
 /// index when this build wrote it (`engine::index`: commit metas with their validity, the
-/// indexes derived from membership bodies; only `/members` and `/tenures` parts are decoded,
-/// for perm), else from every commit record, re-judging every delta. Returns whether it rebuilt
+/// indexes derived from membership bodies, perm's reading of each membership commit; no part is
+/// decoded), else from every commit record, re-judging every delta. Returns whether it rebuilt
 /// (the persisted index is then to be written).
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
 pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_core::Ak) -> Result<()> {
@@ -604,13 +604,14 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
         crate::engine::index::load(tx)?;
-        // perm's inputs: the edge writes of the membership commits, oldest first
-        let mut ids: Vec<(osis_core::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| matches!(m.header.kind, Kind::Membership | Kind::RosterSnapshot)).map(|(id, m)| (m.header.ts, *id)).collect();
+        // perm's inputs: the edge writes of the membership commits, oldest first, from what the
+        // index keeps of their bodies
+        let mut edges = crate::engine::index::load_edges(tx)?;
+        let mut ids: Vec<(osis_core::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, m)| (m.header.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
             let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
-            let edges = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures"));
-            let parts = held_parts_at(tx, &id, &edges)?;
+            let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
             validity::add_membership(tx, &h, &id, &parts)?;
         }
     } else {
@@ -672,7 +673,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                         }
                     }
                 }
-                validity::add_membership(tx, &b.header, &id, &parts)?;
+                validity::add_membership(tx, &b.header, &id, &validity::EdgeParts::of(&b.header, &parts))?;
             }
         }
     }
@@ -774,6 +775,24 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
         out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(Exam::Ready(out))
+}
+
+/// What perm's adaptation reads of a held membership commit: its held `/members` and `/tenures`
+/// parts.
+pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
+    let Some(h) = tx.core.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
+    let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
+    edge_parts_of(tx, id, &h, blob)
+}
+
+/// `edge_parts` of a commit record's blob (`h`: its resolved header).
+pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob: CommitBlob) -> Result<validity::EdgeParts> {
+    blob.header = h.clone();
+    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+    match examine_stored(tx, &mut blob, id)? {
+        Exam::Ready(v) => Ok(validity::EdgeParts::of(h, &v)),
+        _ => Ok(validity::EdgeParts::default()),
+    }
 }
 
 /// Decoded parts of a held commit on aspect `ai`.

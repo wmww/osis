@@ -104,7 +104,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
         let Some(blob) = tx.get_commit(&id)? else { continue };
         let rest = osis_commit::rewrite(&blob, |ai, _| ais.contains(&ai));
         if rest.parts.is_empty() {
-            tx.txn.remove_local(&records::commit_key(&id), Shred::Yes)?;
+            tx.remove_commit(&id)?;
             chunks.extend(m.header.chunks.iter().map(|c| c.blob));
             out.commits.insert(id);
         } else if rest.parts.len() < blob.parts.len() {

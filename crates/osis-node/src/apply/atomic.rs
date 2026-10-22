@@ -161,7 +161,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     validity::note_authors(tx.core, &id, &h, &parts)?;
     if h.kind.is_membership() {
         validity::note_required(tx.core, &h, &id, &parts);
-        validity::add_membership(tx, &h, &id, &parts)?;
+        validity::add_membership(tx, &h, &id, &validity::EdgeParts::of(&h, &parts))?;
         held_changed = true;
     }
     if held_changed {
@@ -349,12 +349,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if edges {
         // the commit's edge writes again, from every held part
         tx.core.held.remove(id);
-        let mut all = Vec::new();
-        for (ai, a) in h.aspects.iter().enumerate() {
-            if matches!(a.ak.as_str(), "/members" | "/tenures") {
-                all.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
-            }
-        }
+        let all = super::edge_parts(tx, id)?;
         validity::add_membership(tx, &h, id, &all)?;
         held_changed = true;
     }

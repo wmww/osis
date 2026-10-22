@@ -1,9 +1,11 @@
 //! The persisted index (notes/local-store.md: a rebuildable index unit): what `apply::load`
 //! would otherwise re-derive at every open by decoding every commit and re-judging every delta.
 //! Each applied commit's meta (header and dropped parts in its record's head; per part its
-//! validity, rotation role and overreach in a small table) and the indexes derived from
-//! membership bodies (box keys, epoch introductions, own keys, snapshots, carried writes) are
-//! written in the transaction that changes them, from the journal of the in-memory indexes.
+//! validity, rotation role and overreach in a small table), the indexes derived from
+//! membership bodies (box keys, epoch introductions, own keys, snapshots, carried writes) and
+//! perm's reading of each membership commit's held parts (`EDGES`, written with the commit
+//! record) are written in the transaction that changes them, from the journal of the in-memory
+//! indexes.
 //! Tagged with a hash of the sources its judgments follow from (`build.rs`): a build with other
 //! rules, a store without the tag, one whose commit records changed outside the indexes
 //! (`invalidate`), or one that fails to decode rebuilds it from the commit records once (a full
@@ -38,6 +40,10 @@ const OWN_KEYS: &[u8] = b"node/own keys";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 const CARRIED: &[u8] = b"node/carried";
 const AUTHORS: &[u8] = b"node/authors";
+/// Per membership commit, what perm's adaptation reads of its held `/members` and `/tenures`
+/// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
+/// adapts these rows instead of decoding the bodies.
+const EDGES: &[u8] = b"node/edges";
 /// Saved membership walks (osis-perm `Timelines::to_save`), by component root: a cache unit
 /// tagged with these rules and its exact inputs; one that does not match is evaluated anew.
 const WALKS: &[u8] = b"node/walks";
@@ -244,6 +250,74 @@ impl<A: Rec, B: Rec, C: Rec, D: Rec> Rec for (A, B, C, D) {
     }
 }
 
+impl Rec for crate::apply::validity::EdgeParts {
+    fn to(&self) -> Value {
+        use crate::apply::validity::EdgePart;
+        let opt = |x: &Option<Value>| Value::List(x.iter().cloned().collect());
+        Value::List(
+            self.0
+                .iter()
+                .map(|(ai, p)| match p {
+                    EdgePart::Members(es) => Value::List(vec![
+                        uint(*ai as u64),
+                        Value::Int(0),
+                        Value::List(
+                            es.iter()
+                                .map(|(d, k, v)| {
+                                    let v = match v {
+                                        None => Value::Int(0),
+                                        Some(v) => opt(v),
+                                    };
+                                    Value::List(vec![records::dot_value(d), opt(k), v])
+                                })
+                                .collect(),
+                        ),
+                    ]),
+                    EdgePart::Tenures(ts) => Value::List(vec![uint(*ai as u64), Value::Int(1), Value::List(ts.clone())]),
+                })
+                .collect(),
+        )
+    }
+    fn from(v: &Value) -> Option<Self> {
+        use crate::apply::validity::EdgePart;
+        let opt = |x: &Value| -> Option<Option<Value>> {
+            match x {
+                Value::List(l) if l.len() <= 1 => Some(l.first().cloned()),
+                _ => None,
+            }
+        };
+        let Value::List(x) = v else { return None };
+        let mut out = Vec::with_capacity(x.len());
+        for p in x {
+            let Value::List(p) = p else { return None };
+            let [ai, kind, Value::List(items)] = p.as_slice() else { return None };
+            let ai = <usize as Rec>::from(ai)?;
+            out.push((
+                ai,
+                match kind {
+                    Value::Int(0) => EdgePart::Members(
+                        items
+                            .iter()
+                            .map(|e| {
+                                let Value::List(e) = e else { return None };
+                                let [d, k, v] = e.as_slice() else { return None };
+                                let v = match v {
+                                    Value::Int(0) => None,
+                                    v => Some(opt(v)?),
+                                };
+                                Some((records::dot_of(d).ok()?, opt(k)?, v))
+                            })
+                            .collect::<Option<Vec<_>>>()?,
+                    ),
+                    Value::Int(1) => EdgePart::Tenures(items.clone()),
+                    _ => return None,
+                },
+            ));
+        }
+        Some(crate::apply::validity::EdgeParts(out))
+    }
+}
+
 fn enc<T: Rec>(x: &T) -> Vec<u8> {
     osis_core::encode(&x.to())
 }
@@ -299,6 +373,52 @@ fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<
         }
     }
     Ok(())
+}
+
+/// Writes a membership commit's `EDGES` row (with its record).
+pub(crate) fn put_edges(tx: &mut Tx<'_>, id: &CommitId, parts: &crate::apply::validity::EdgeParts, shred: Shred) -> Result<()> {
+    let t = tx.txn.index(EDGES)?;
+    tx.txn.table_put(t, &id.0, enc(parts), shred)?;
+    Ok(())
+}
+
+/// Removes a commit's `EDGES` row, shredded (with its record).
+pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let t = tx.txn.index(EDGES)?;
+    tx.txn.table_remove(t, &id.0, Shred::Yes)?;
+    Ok(())
+}
+
+/// Every membership commit's `EDGES` row, from its record (after a rebuild).
+fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
+    let ids: Vec<CommitId> = tx.core.commits.iter().filter(|(_, m)| m.header.kind.is_membership()).map(|(id, _)| *id).collect();
+    for id in ids {
+        let parts = crate::apply::edge_parts(tx, &id)?;
+        put_edges(tx, &id, &parts, Shred::No)?;
+    }
+    Ok(())
+}
+
+/// The `EDGES` rows of the held membership commits; an error when one is missing or does not
+/// decode (the open then rebuilds).
+pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
+    let t = tx.txn.index(EDGES)?;
+    let lim = |n: usize| osis_core::Limits { max_depth: 2 * osis_core::format::MAX_OBJECT_DEPTH, max_bytes: n };
+    let mut out = BTreeMap::new();
+    let mut from = Vec::new();
+    loop {
+        let got = tx.txn.table_range(t, &from, None, 256)?;
+        let n = got.len();
+        for (k, v) in got {
+            from = [k.as_slice(), &[0]].concat();
+            let id = CommitId(k.as_slice().try_into().map_err(|_| Error::Corrupt("edges row key"))?);
+            let v = osis_core::decode(&v, &lim(v.len())).map_err(|_| Error::Corrupt("edges row"))?;
+            out.insert(id, Rec::from(&v).ok_or(Error::Corrupt("edges row"))?);
+        }
+        if n < 256 {
+            return Ok(out);
+        }
+    }
 }
 
 /// What of a commit its record holds ahead of its blob (version 1): received, origin, dropped
@@ -440,6 +560,7 @@ pub(crate) fn persist(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     // what an older index held goes shredded (forgotten things' entries among it)
     tx.txn.drop_indexes()?;
+    write_edges_all(tx)?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;
     Ok(())
@@ -510,8 +631,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         let (head, blob) = parse_head(&v)?;
         // the blob is `[header, signature, parts]`: its first item
         let lim = osis_core::Limits { max_depth: osis_core::format::MAX_OBJECT_DEPTH, max_bytes: blob.len() };
-        let (_, hb) = osis_core::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
-        let h = osis_commit::Header::decode(hb).map_err(|_| Error::Corrupt("commit record header"))?;
+        let (hv, hb) = osis_core::decode_prefix(blob.get(1..).unwrap_or_default(), &lim).map_err(|_| Error::Corrupt("commit record header"))?;
+        // bytes hashing to the ID are its canonical header: decoded once, never re-encoded
+        if osis_core::hash::hash(hb) != id.0 {
+            return Err(Error::Corrupt("commit record"));
+        }
+        let h = osis_commit::Header::from_value(&hv).map_err(|_| Error::Corrupt("commit record header"))?;
         metas.push((id, head, h));
         Ok(())
     })?;
@@ -548,9 +673,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             && let Some(dedup) = tx.core.dedup(&h.actor)
         {
             h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup, osis_commit::MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
-        }
-        if h.id() != id {
-            return Err(Error::Corrupt("commit record"));
         }
         let h = Arc::new(h);
         crate::apply::index_commit(tx.core, &id, &h);
@@ -721,6 +843,33 @@ impl super::Engine {
                 tx.txn.table_put(t, &k, v, Shred::Yes)?;
             }
             Ok(rows.len())
+        })
+    }
+
+    /// Damages the membership commits' `EDGES` rows (tests): 0 truncates one, 1 garbles one,
+    /// 2 removes one. Returns how many rows there were.
+    #[doc(hidden)]
+    pub fn damage_edges(&mut self, how: u8) -> Result<usize> {
+        self.run(|tx| {
+            let t = tx.txn.index(EDGES)?;
+            let rows = tx.txn.table_range(t, &[], None, 1 << 20)?;
+            if let Some((k, v)) = rows.iter().max_by_key(|(_, v)| v.len()) {
+                match how {
+                    0 => tx.txn.table_put(t, k, v.get(..v.len() / 2).unwrap_or_default().to_vec(), Shred::No).map(|_| ())?,
+                    1 => tx.txn.table_put(t, k, vec![0xff; v.len()], Shred::No).map(|_| ())?,
+                    _ => tx.txn.table_remove(t, k, Shred::No).map(|_| ())?,
+                }
+            }
+            Ok(rows.len())
+        })
+    }
+
+    /// The `EDGES` rows as stored (tests: what a rebuild writes equals what the writes kept).
+    #[doc(hidden)]
+    pub fn edges_rows(&mut self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.run(|tx| {
+            let t = tx.txn.index(EDGES)?;
+            Ok(tx.txn.table_range(t, &[], None, 1 << 20)?)
         })
     }
 

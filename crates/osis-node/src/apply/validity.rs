@@ -62,15 +62,64 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
     m.entries().map(|(d, _, k, f)| (d.clone(), k.cloned(), f.cloned())).collect()
 }
 
+/// A `/members` entry as perm's adaptation reads it: dot, key, and its fragment's value (`None`:
+/// no fragment, an entry reset; `Some(None)`: a fragment reading nothing).
+pub(crate) type Entry = (Dot, Option<Value>, Option<Option<Value>>);
+
+/// One held `/members` or `/tenures` part of a membership commit as perm's adaptation reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum EdgePart {
+    Members(Vec<Entry>),
+    /// The tenure set's elements.
+    Tenures(Vec<Value>),
+}
+
+/// What perm's adaptation reads of a membership commit's held parts, by aspect index: a function
+/// of the commit record, persisted per commit in the index (`engine::index`, `EDGES`) so an open
+/// decodes no membership body.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub(crate) struct EdgeParts(pub Vec<(usize, EdgePart)>);
+
+impl EdgeParts {
+    pub(crate) fn of(h: &Header, parts: &[(usize, usize, Decoded)]) -> EdgeParts {
+        let mut out = Vec::new();
+        for (ai, _, d) in parts {
+            let f = fragment(d);
+            match h.aspects.get(*ai).map(|a| a.ak.as_str()) {
+                Some("/members") => out.push((*ai, EdgePart::Members(entries(f).into_iter().map(|(d, k, x)| (d, k, x.map(|x| x.read()))).collect()))),
+                Some("/tenures") => out.push((*ai, EdgePart::Tenures(match f.read() {
+                    Some(Value::Set(s)) => s.into_iter().collect(),
+                    _ => Vec::new(),
+                }))),
+                _ => {}
+            }
+        }
+        EdgeParts(out)
+    }
+
+    fn members(&self) -> impl Iterator<Item = (usize, &[Entry])> {
+        self.0.iter().filter_map(|(ai, p)| match p {
+            EdgePart::Members(e) => Some((*ai, e.as_slice())),
+            EdgePart::Tenures(_) => None,
+        })
+    }
+
+    fn tenures(&self) -> impl Iterator<Item = (usize, Vec<ct::Tenure>)> + '_ {
+        self.0.iter().filter_map(|(ai, p)| match p {
+            EdgePart::Tenures(t) => Some((*ai, tenures_of(t))),
+            EdgePart::Members(_) => None,
+        })
+    }
+}
+
 /// Records every keyed `/members` entry of these deltas: (target, entry dot) -> (member, value).
-fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
+fn note_keys(core: &mut Core, target: &Tid, es: &[Entry]) -> bool {
     let mut new = false;
-    for (d, k, frag) in entries(f) {
-        if let (Some(Value::Tid(m)), Some(frag)) = (k, frag)
+    for (d, k, v) in es {
+        if let (Some(Value::Tid(m)), Some(v)) = (k, v)
             && core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none())
         {
-            let v = frag.read();
-            core.member_keys.upsert((*target, d), || (m, None), |slot| slot.1 = v);
+            core.member_keys.upsert((*target, d.clone()), || (*m, None), |slot| slot.1 = v.clone());
             new = true;
         }
     }
@@ -81,23 +130,23 @@ fn note_keys(core: &mut Core, target: &Tid, f: &Fragment) -> bool {
 /// with a fragment sets the edge it reads; an entry reset of a known key removes it; nested
 /// writes into a known entry change it (overlaid on the entry's creation). `None` while a
 /// removed key is unknown here.
-fn edge_ops(core: &Core, target: &Tid, f: &Fragment, dots: Dots) -> Option<Vec<EdgeOp>> {
+fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots) -> Option<Vec<EdgeOp>> {
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
     let mut set: BTreeSet<Tid> = BTreeSet::new();
-    for (d, k, frag) in entries(f) {
-        match (k, frag) {
-            (Some(Value::Tid(m)), Some(frag)) => {
-                if let Some(e) = frag.read().as_ref().and_then(edge_of) {
-                    per.insert(m, Some(e));
-                    set.insert(m);
+    for (d, k, v) in es {
+        match (k, v) {
+            (Some(Value::Tid(m)), Some(v)) => {
+                if let Some(e) = v.as_ref().and_then(edge_of) {
+                    per.insert(*m, Some(e));
+                    set.insert(*m);
                 }
             }
-            (_, frag) => {
-                let (m, base) = core.member_keys.get(&(*target, d))?.clone();
+            (_, v) => {
+                let (m, base) = core.member_keys.get(&(*target, d.clone()))?.clone();
                 if set.contains(&m) {
                     continue;
                 }
-                let edge = match frag.and_then(|x| x.read()) {
+                let edge = match v.clone().flatten() {
                     // nested field writes: overlay on the entry's created value
                     Some(Value::Map(changes)) => match base {
                         Some(Value::Map(mut b)) => {
@@ -135,7 +184,11 @@ pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {
 /// it reads as its link); malformed ones are skipped.
 fn tenures(f: &Fragment) -> Vec<ct::Tenure> {
     let Some(Value::Set(s)) = f.read() else { return Vec::new() };
-    s.into_iter().filter_map(|t| osis_schema::AspectKey::decode(&ct::TENURES, &Value::Set([t].into())).ok()).flat_map(|x| x.0).collect()
+    tenures_of(&s.into_iter().collect::<Vec<_>>())
+}
+
+fn tenures_of(s: &[Value]) -> Vec<ct::Tenure> {
+    s.iter().filter_map(|t| osis_schema::AspectKey::decode(&ct::TENURES, &Value::Set([t.clone()].into())).ok()).flat_map(|x| x.0).collect()
 }
 
 /// A roster snapshot's parts on one thing: roster, ledger, `/members` dots.
@@ -162,16 +215,6 @@ pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) 
     Ok(())
 }
 
-/// Links of the frontiers a `/tenures` delta's tenures carry by link.
-fn tenure_links(f: &Fragment) -> Vec<osis_core::Link> {
-    tenures(f)
-        .into_iter()
-        .filter_map(|t| match t.frontier {
-            Some(osis_schema::Chunked::Link(l)) => Some(l),
-            _ => None,
-        })
-        .collect()
-}
 
 /// Local records of linked frontiers read once (`n/` + link content hash -> the frontier's
 /// canonical bytes), so judging never depends on the tree blobs staying held.
@@ -245,20 +288,20 @@ fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_core::Link, listed: &
 
 /// Resolves the linked frontiers of a roster snapshot's `/tenures` parts (spec/permissions.md
 /// §6): each distinct link (by content hash) read once, within `MAX_LINKED_FRONTIERS`.
-pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<Linked> {
+pub(crate) fn linked_frontiers(tx: &mut Tx<'_>, h: &Header, parts: &EdgeParts) -> Result<Linked> {
     linked_frontiers_capped(tx, h, parts, osis_core::format::MAX_LINKED_FRONTIERS)
 }
 
-pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], cap: usize) -> Result<Linked> {
+pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeParts, cap: usize) -> Result<Linked> {
     let mut out = Linked::default();
     if h.kind != Kind::RosterSnapshot {
         return Ok(out);
     }
     let mut links: BTreeMap<[u8; 32], (Tid, osis_core::Link)> = BTreeMap::new();
-    for (ai, _, d) in parts {
-        let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() == "/tenures" {
-            for l in tenure_links(fragment(d)) {
+    for (ai, ts) in parts.tenures() {
+        let Some(a) = h.aspects.get(ai) else { continue };
+        for t in ts {
+            if let Some(osis_schema::Chunked::Link(l)) = t.frontier {
                 links.entry(l.hash).or_insert((a.tid, l));
             }
         }
@@ -293,7 +336,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &[(usi
 /// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
 /// `roster_snapshot` refuses it (`Core::frontier_unknown`).
-pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &EdgeParts) -> Result<()> {
     tx.core.stale_commits.insert(*id);
     let linked = match linked_frontiers(tx, h, parts) {
         Ok(l) => l,
@@ -309,23 +352,18 @@ pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: 
     Ok(())
 }
 
-fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], linked: &Linked) {
-    for (ai, _, d) in parts {
-        if let Some(a) = h.aspects.get(*ai)
-            && a.ak.as_str() == "/members"
-        {
-            note_keys(core, &a.tid, fragment(d));
+fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
+    for (ai, es) in parts.members() {
+        if let Some(a) = h.aspects.get(ai) {
+            note_keys(core, &a.tid, es);
         }
     }
     match h.kind {
         Kind::Membership => {
             let mut ops = Vec::new();
-            for (ai, _, d) in parts {
-                let Some(a) = h.aspects.get(*ai) else { continue };
-                if a.ak.as_str() != "/members" {
-                    continue;
-                }
-                match edge_ops(core, &a.tid, fragment(d), dots_of(h, *ai)) {
+            for (ai, es) in parts.members() {
+                let Some(a) = h.aspects.get(ai) else { continue };
+                match edge_ops(core, &a.tid, es, dots_of(h, ai)) {
                     Some(v) => ops.extend(v),
                     None => {
                         core.unresolved.insert(*id);
@@ -340,20 +378,20 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize
         }
         Kind::RosterSnapshot => {
             let mut by_thing: BTreeMap<Tid, RosterParts> = BTreeMap::new();
-            for (ai, _, d) in parts {
+            for (ai, p) in &parts.0 {
                 let Some(a) = h.aspects.get(*ai) else { continue };
                 let e = by_thing.entry(a.tid).or_insert_with(|| (BTreeMap::new(), Vec::new(), Dots::Commit));
-                match a.ak.as_str() {
-                    "/members" => {
+                match p {
+                    EdgePart::Members(es) => {
                         e.2 = dots_of(h, *ai);
-                        for (_, k, frag) in entries(fragment(d)) {
-                            if let (Some(Value::Tid(m)), Some(edge)) = (k, frag.and_then(|f| f.read()).as_ref().and_then(edge_of)) {
-                                e.0.insert(m, edge);
+                        for (_, k, v) in es {
+                            if let (Some(Value::Tid(m)), Some(edge)) = (k, v.as_ref().and_then(|v| v.as_ref()).and_then(edge_of)) {
+                                e.0.insert(*m, edge);
                             }
                         }
                     }
-                    "/tenures" => {
-                        for t in tenures(fragment(d)) {
+                    EdgePart::Tenures(ts) => {
+                        for t in tenures_of(ts) {
                             let frontier = match t.frontier {
                                 Some(osis_schema::Chunked::Inline(f)) => Some(Arc::new(frontier_of(f))),
                                 Some(osis_schema::Chunked::Link(l)) => linked.frontiers.get(&l.hash).cloned(),
@@ -362,7 +400,6 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize
                             e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(point_of), until: point_of(t.until), frontier });
                         }
                     }
-                    _ => {}
                 }
             }
             for (thing, (roster, ledger, dots)) in by_thing {
@@ -522,16 +559,9 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     let ids: Vec<CommitId> = tx.core.unresolved.iter().copied().collect();
     let mut any = false;
     for id in ids {
-        let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
-        let mut parts = Vec::new();
-        for (ai, a) in m.header.aspects.iter().enumerate() {
-            if a.ak.as_str() == "/members" {
-                for d in super::held_parts(tx, &id, ai)? {
-                    parts.push((ai, 0, d));
-                }
-            }
-        }
-        add_membership(tx, &m.header, &id, &parts)?;
+        let Some(h) = tx.core.commits.get(&id).map(|m| m.header.clone()) else { continue };
+        let parts = super::edge_parts(tx, &id)?;
+        add_membership(tx, &h, &id, &parts)?;
         any |= !tx.core.unresolved.contains(&id);
     }
     Ok(any)

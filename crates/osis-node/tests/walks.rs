@@ -3,7 +3,8 @@
 //! an open resumes each component's walk from the store and gives what a from-scratch
 //! evaluation gives (spec/permissions.md §5.1 step 5: validity is a function of the held set);
 //! a damaged, truncated or foreign walk is evaluated anew, never an error; a crash at any write
-//! leaves no walk ahead of its commits.
+//! leaves no walk ahead of its commits. Likewise the index's rows of what perm reads of each
+//! membership commit (`node/edges`): an open from them equals a rebuild from the commit records.
 
 mod common;
 use common::*;
@@ -55,6 +56,20 @@ fn reopen_same(e: &mut Engine, at: &str) -> usize {
     // held commits are listed in arrival order, which an open does not keep
     assert_eq!(validity(&e.index_digest()), validity(&index), "{at}: index");
     e.walks_restored()
+}
+
+/// Reopens from the persisted index (perm's inputs from the `node/edges` rows), then rebuilds
+/// from the commit records: the same timelines, validity and rows.
+fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
+    assert!(e.index_current().unwrap(), "{at}: index not current");
+    let rows = e.edges_rows().unwrap();
+    e.reload_index().unwrap();
+    let (perm, index) = (e.perm_digest(false), validity(&e.index_digest()));
+    assert_eq!(perm, e.perm_digest(true), "{at}: reopened against from scratch");
+    e.rebuild_index().unwrap();
+    assert_eq!(e.perm_digest(false), perm, "{at}: rebuilt");
+    assert_eq!(validity(&e.index_digest()), index, "{at}: rebuilt index");
+    assert_eq!(e.edges_rows().unwrap(), rows, "{at}: rebuilt rows");
 }
 
 /// Two nodes: peer 0 owns the docs and a team, makes peer 1 admin of some, both write edges,
@@ -111,6 +126,56 @@ fn reopen_from_saved_walks_equals_from_scratch() {
     assert!(restored > 0, "no walk was restored");
 }
 
+// spec/permissions.md §5.1 step 5, §6; spec: none (local store index, notes/node.md Open): an
+// open adapting perm's inputs from the index's per-commit rows gives what a rebuild from the
+// commit records gives (timelines, validity, the rows themselves) over random two-node histories
+// with late arrivals, demotions and roster snapshots
+#[test]
+fn reopen_from_edge_rows_equals_rebuild() {
+    for seed in 1..=4u64 {
+        history(seed * 104_729, 100, |lp, step, rng| {
+            if rng.below(8) == 0 {
+                let i = rng.below(2) as usize;
+                reopen_equals_rebuild(&mut lp.peers[i].engine, &format!("seed {seed} step {step} peer {i}"));
+            }
+        });
+    }
+}
+
+// spec: none (local store index, notes/node.md Open): a truncated, garbled or missing
+// `node/edges` row, or an index tagged with other rules, makes the open rebuild from the commit
+// records: the same timelines and validity, and the rows written again as they were
+#[test]
+fn damaged_edge_rows_are_rebuilt() {
+    let mut lp = LocalPeer::new(2, 0xed6e, T0).unwrap();
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let me = e.tid();
+    let t = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    for i in 0..20u8 {
+        try_edge(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
+        if i == 9 {
+            e.roster_snapshot(&t, None).unwrap();
+        }
+    }
+    let (perm, index) = (e.perm_digest(false), validity(&e.index_digest()));
+    let rows = e.edges_rows().unwrap();
+    assert!(rows.len() > 20);
+    for how in 0..4u8 {
+        if how < 3 {
+            assert_eq!(e.damage_edges(how).unwrap(), rows.len());
+        } else {
+            e.damage_index(false).unwrap();
+        }
+        e.reload_index().unwrap();
+        assert_eq!(e.perm_digest(false), perm, "damage {how}");
+        assert_eq!(validity(&e.index_digest()), index, "damage {how}: index");
+        assert_eq!(e.edges_rows().unwrap(), rows, "damage {how}: rows");
+        assert!(e.index_current().unwrap());
+    }
+}
+
 // spec: none (local store cache, notes/local-store.md): a saved walk truncated, with a flipped
 // bit, or saved under other rules is not used: the open evaluates anew (the same timelines) and
 // saves it again, so the next open restores it
@@ -158,8 +223,9 @@ impl Dev {
 }
 
 // spec/commits.md §4 (all or none); spec: none (local store cache, notes/local-store.md): a crash
-// at any durable write of edge writes that save their component's walk, then open: the open
-// resumes a saved walk, and its timelines equal a from-scratch evaluation of what landed
+// at any durable write of edge writes (and a roster snapshot) that save their component's walk,
+// then open: the open resumes a saved walk, its timelines equal a from-scratch evaluation of what
+// landed, and the index's `node/edges` rows equal a rebuild's
 #[test]
 fn crash_at_every_write_keeps_saved_walks_exact() {
     let mut crashed_any = false;
@@ -178,14 +244,19 @@ fn crash_at_every_write_keeps_saved_walks_exact() {
         for i in 0..6u8 {
             dev.clock.advance(1);
             try_edge(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Write));
+            if i == 2 {
+                let _ = e.roster_snapshot(&t, None);
+            }
         }
         let crashed = dev.faults.crashed();
         drop(e);
         dev.faults.revive();
-        let e = dev.open().unwrap();
+        let mut e = dev.open().unwrap();
         assert_eq!(e.perm_digest(false), e.perm_digest(true), "crash at write {n}");
         // the first grants saved the walk before the faults: every open resumes it
         assert!(e.walks_restored() > 0, "crash at write {n}: the saved walk was not used");
+        // the `node/edges` rows the open read are those of what landed
+        reopen_equals_rebuild(&mut e, &format!("crash at write {n}"));
         if !crashed {
             break;
         }

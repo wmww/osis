@@ -182,7 +182,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
         lp.peers[0].engine.core.frontiers.clear();
         lp.peers[0].engine.run(|tx| {
             let h = (*tx.core.commits.get(&c).unwrap().header).clone();
-            let parts = super::held_parts_at(tx, &c, &|_| true)?;
+            let parts = super::edge_parts(tx, &c)?;
             super::validity::linked_frontiers_capped(tx, &h, &parts, cap).map(|l| l.frontiers.len())
         })
     };

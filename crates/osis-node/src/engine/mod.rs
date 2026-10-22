@@ -697,7 +697,19 @@ impl Tx<'_> {
         self.core.bodies.remove(id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
+        if meta.header.kind.is_membership() {
+            // perm's reading of it, persisted beside the record (an open decodes no body)
+            let parts = crate::apply::edge_parts_of(self, id, &meta.header, blob.clone())?;
+            index::put_edges(self, id, &parts, shred)?;
+        }
         Ok(())
+    }
+
+    /// Removes a commit record (shredded) with what the index keeps beside it.
+    pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
+        self.core.bodies.remove(id);
+        self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
+        index::remove_edges(self, id)
     }
 
     pub fn get_commit(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
