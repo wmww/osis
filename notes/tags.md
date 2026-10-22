@@ -50,6 +50,6 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 
 ## Open
 - Confirm the shapes above, then: spec/data-model.md §9 and core.osis revision 2, `osis::core` constants, examples/notes-app and folder moved onto `/name` and tags. No "share tag" API helper (owner: avoid convenience functions that only save calling existing ones; `place` plus `grant` is the operation).
-- Admin-only aspects on shared actors (tag settings today, chat moderation later): issues/admin-only-aspects.md (owner-call).
+- Admin-only aspects on shared actors: a chat moderation question, not a tag one (writers may rename a shared tag, owner); issues/admin-only-aspects.md, decided with the chat redesign.
 - Whether `/icon.image` should be a tid or an inline small blob.
 - Chat redesign (notes/chat.md) after tags land.
