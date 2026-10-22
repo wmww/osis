@@ -20,9 +20,9 @@
 //! Whole-pass fallbacks (the cache is dropped):
 //! - a record that is neither new nor over held elements: a reset, a record partly new, a new
 //!   `Derived` record (it splits records of its base source), a new record of more than one
-//!   element or not a plain creation, a new element anchored at an absent `Derived` dot (a
-//!   virtual anchor on `END`), position writes on a range record (`plan`, `plan_one`,
-//!   `plan_pieces`);
+//!   element or not a plain creation (one anchored at itself included), a new element anchored
+//!   at an absent `Derived` dot (a virtual anchor on `END`), position writes on a range record
+//!   (`plan`, `plan_one`, `plan_pieces`);
 //! - a new element some write was waiting for, one anchored at a new element other than the end
 //!   of a run (`follow`);
 //! - more new runs, moves and row cuts in one delta than max(√n, 64), or their placements
@@ -457,13 +457,15 @@ impl Placement {
         }
     }
 
-    /// Adds `dd` to the depths of the rows `x`, by block shift where a block lies inside.
-    fn reshift(&mut self, x: Range<usize>, dd: i64) {
+    /// Adds `dd` to the depths of the rows `x`, by block shift where a block lies inside; the
+    /// blocks and rows looked at.
+    fn reshift(&mut self, x: Range<usize>, dd: i64) -> usize {
         if dd == 0 {
-            return;
+            return 0;
         }
-        let mut at = 0;
+        let (mut at, mut work) = (0, 0);
         for k in 0..self.order.len() {
+            work += 1;
             let Some(b) = self.order.get(k).copied() else { break };
             let n = self.block(b).len();
             let (lo, hi) = (x.start.max(at), x.end.min(at + n));
@@ -478,12 +480,14 @@ impl Placement {
                     r.depth += dd;
                 }
                 blk.recount();
+                work += n;
             }
             at += n;
             if at >= x.end {
                 break;
             }
         }
+        work
     }
 
     /// Takes the rows `x` out (depths unshifted); the dot map keeps naming their old blocks
@@ -835,7 +839,8 @@ impl Lin {
                     return None;
                 }
                 let (stamp, anchor) = de.created.clone()?;
-                if stamp.dot != *dot || de.pos.len() != 1 || de.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) {
+                // anchored at itself: a cycle of one (§6.2), which the whole pass demotes
+                if stamp.dot != *dot || de.pos.len() != 1 || de.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) || anchor == Anchor::Dot(dot.clone()) {
                     return None;
                 }
                 let (known, cut) = match &anchor {
@@ -954,7 +959,7 @@ impl Lin {
         let each = self.p.order.len() + self.p.cap;
         for x in cuts {
             *work += each;
-            if !self.cut_row(&x, work) {
+            if !self.cut_row(&x, work) || *work > self.p.len.max(1024) {
                 return false;
             }
         }
@@ -1071,7 +1076,7 @@ impl Lin {
         let dd = i64::from(row.created);
         if row.created {
             let e = self.p.past(self.p.norm(self.p.cursor(i)), d, work).at;
-            self.p.reshift(i + 1..e, 1);
+            *work += self.p.reshift(i + 1..e, 1);
         }
         let second = Row { dot: x.clone(), span: row.span - off, created: row.created, parent: row.created.then(|| nth(&row.dot, off - 1)), head: false, shown: false, ch: None, depth: d + dd };
         self.p.insert(b, o + 1, vec![second], Some(&mut self.at));

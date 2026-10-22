@@ -1042,3 +1042,20 @@ proptest! {
     }
 }
 
+// spec/crdt.md §6.2: a received insert anchored at its own dot is a cycle of one, demoted to END
+// and shown there; the cached placement used to hide it (fuzz: seq_follow).
+#[test]
+fn self_anchored_insert_placed_spec_6_2() {
+    use crate::fuzzing::{seq_follow_cx, seq_follow_state};
+    let hex = "002700845001010101010101010101010101010101808084098080818601028201818200026261628080";
+    let data: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+    let mut st = seq_follow_state();
+    let [src, l0, l1, bytes @ ..] = &data[..] else { panic!() };
+    assert_eq!(usize::from(u16::from_le_bytes([*l0, *l1])), bytes.len());
+    let d = decode_delta(bytes, &seq_follow_cx(*src, 0), &mut Interner::new(), None).unwrap();
+    let _ = st.read();
+    st.join(d.fragment);
+    crate::testutil::check_lin(&st);
+    assert!(matches!(st.read(), Some(Value::Str(x)) if x.ends_with("ab")));
+}
+

@@ -9,6 +9,8 @@ mod changes;
 mod codec;
 mod error;
 mod fragment;
+#[doc(hidden)]
+pub mod fuzzing;
 mod lifecycle;
 mod linearize;
 mod ops;

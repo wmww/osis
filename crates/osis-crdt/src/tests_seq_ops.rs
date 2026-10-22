@@ -695,8 +695,6 @@ fn placement_dot_map_shared_by_copies_spec_6() {
         Fragment::Seq(x) => x.lin(),
         _ => panic!(),
     };
-    // a lookup builds the map before the copy
-    let _ = lin(&a.state).index(&crate::seq::visible(match &a.state { Fragment::Seq(x) => x, _ => panic!() }).get(0).unwrap().clone());
     let mut b2 = Replica { state: a.state.clone(), src: node(2), lo: 1 };
     for k in 0..20u64 {
         b2.commit(200 + k, &[op(Op::Insert { at: r.below(10_000), items: vec![s("x")] })], &text_view());
@@ -1188,6 +1186,51 @@ fn hostile_moves_join_bounded_spec_6() {
     }
 }
 
+/// §6 (`seq_lin`): a delta of flag writes each splitting one long deleted chain (a range record
+/// at the root) with a deep subtree below it: each cut shifts the subtree's depths; the work
+/// stays within the budget plus one cut, or the count cap rebuilds before any work.
+#[test]
+fn hostile_cuts_join_bounded_spec_6() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::stamp::{Dot, Stamp};
+    let (a, b, c) = (node(1), node(2), node(3));
+    let chain = 2000u64;
+    let mut elems = std::collections::BTreeMap::new();
+    let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
+    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)], deleted: del, span: chain });
+    // a typed chain of 2000 chars below the range's last element: depth 2000
+    let mut prev = Anchor::Dot(Dot::new(a.clone(), chain));
+    for k in 1..=2000u64 {
+        let st = Stamp::new(ts(3 << 16), c.clone(), k);
+        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev)], deleted: None, span: 1 });
+        prev = Anchor::Dot(st.dot);
+    }
+    let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));
+    let Fragment::Seq(q) = &base else { panic!() };
+    let (len, blocks, cap) = q.lin().shape();
+    let count = len.isqrt().max(64);
+    for writes in [count / 2 - 1, count] {
+        let mut st = base.clone();
+        let _ = read_str(&st);
+        // newer delete flags on single elements spread over the chain: two cuts each
+        let w = Stamp::new(ts(4 << 16), node(4), 1);
+        let step = chain / (writes as u64 + 1);
+        let d = (1..=writes as u64).map(|j| (Dot::new(a.clone(), 1 + j * step), SeqElem { deleted: Some((w.clone(), true)), ..SeqElem::bare() })).collect();
+        let _ = crate::seq_lin::probe();
+        st.join(Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), d)));
+        let Fragment::Seq(q) = &st else { panic!() };
+        let _ = q.lin();
+        let (work, passes) = crate::seq_lin::probe();
+        assert_eq!(2 * writes > count, work == 0, "{writes} writes: the count cap ({count}) rebuilds before any work");
+        // budget, then one cut: its charge, the subtree walk and the reshift (each every block
+        // and two partial blocks of at most 2 * cap rows)
+        let bound = len.max(1024) + 3 * (blocks + 4 * cap);
+        assert!(work <= bound, "{writes} writes: {work} units, bound {bound}");
+        assert!(passes <= 1, "{writes} writes: {passes} whole passes");
+        crate::testutil::check_lin(&st);
+    }
+}
+
 /// §6 (`seq_lin`), tier 2 timing: on a 10^5-char text a delta of 1000 moves to HEAD below 250
 /// newer HEAD siblings joins and places in about a whole pass's time (under three passes).
 #[test]
@@ -1284,5 +1327,3 @@ fn batch_keeps_sequence_view_spec_4_5() {
     assert!(!bt.keeps_view(), "dropped by an op elsewhere");
     assert_eq!(bt.view().read(), Some(Value::Map([(Value::Int(1), s(">hello, rld")), (Value::Int(2), Value::Int(7))].into_iter().collect())));
 }
-
-

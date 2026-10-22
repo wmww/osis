@@ -70,6 +70,7 @@ pub fn seeds() -> Vec<(&'static str, Vec<Vec<u8>>)> {
         ("chunker", vec![vec![0], vec![1; 300], chunk]),
         ("commit_header", [field_bytes("commit", "header"), field_bytes("commit", "blob")].concat()),
         ("delta", delta_seeds()),
+        ("seq_follow", seq_follow_seeds()),
         ("box", [field_bytes("box", "sealed"), field_bytes("box", "wrap"), field_bytes("box", "box"), field_bytes("box", "padded"), field_bytes("box", "sealed-value")].concat()),
     ]
 }
@@ -105,6 +106,47 @@ fn delta_seeds() -> Vec<Vec<u8>> {
         if let Ok(b) = encode_snapshot(&snap, &cx, None) {
             out.push([vec![1], b].concat());
         }
+    }
+    out
+}
+
+/// `seq_follow`: frames of text ops on the target's fixed text (inserts at the ends and inside,
+/// deletes across deleted stretches, moves), each against the state after the frames before.
+fn seq_follow_seeds() -> Vec<Vec<u8>> {
+    use osis_core::Value;
+    use osis_crdt::fuzzing::{TextView, seq_follow_cx, seq_follow_state};
+    use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
+    let s = |x: &str| vec![Value::Str(x.into())];
+    let base = seq_follow_state();
+    let n = match base.read() {
+        Some(Value::Str(t)) => t.chars().count(),
+        _ => 0,
+    };
+    let sets = [
+        vec![Op::Insert { at: 0, items: s("ab") }, Op::Insert { at: n / 2, items: s("cd") }, Op::Insert { at: n, items: s("ef") }],
+        vec![Op::Delete { at: 5, len: 20 }, Op::Insert { at: 6, items: s("x") }],
+        vec![Op::Move { at: 10, len: 15, to: 100 }, Op::Delete { at: 90, len: 30 }],
+        vec![Op::Delete { at: 40, len: 50 }, Op::Move { at: 0, len: 5, to: 30 }, Op::Insert { at: 35, items: s("yz") }],
+    ];
+    let mut out = Vec::new();
+    for set in sets {
+        let mut st = base.clone();
+        let mut input = Vec::new();
+        for (i, op) in set.into_iter().enumerate() {
+            let cx = seq_follow_cx(i as u8, i as u64);
+            let mut b = Batch::new(&st, Writer::new(cx.ts, cx.own.clone(), cx.range.lo));
+            if b.apply(&PathOp { path: vec![], op }, &TextView).is_err() {
+                continue;
+            }
+            let Some((d, _)) = b.finish() else { continue };
+            let Ok(bytes) = encode_delta(&Delta { nonce: [1; 16], fragment: d.clone() }, &cx, None) else { continue };
+            let Ok(len) = u16::try_from(bytes.len()) else { continue };
+            input.extend([i as u8]);
+            input.extend(len.to_le_bytes());
+            input.extend(bytes);
+            st.join(d);
+        }
+        out.push(input);
     }
     out
 }
