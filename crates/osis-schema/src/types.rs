@@ -59,7 +59,7 @@ pub struct Case {
 }
 
 /// Standard named types (spec/data-model.md §3) with their parameter count.
-pub const STANDARD: &[(&str, usize)] = &[("option", 1), ("markdown", 0), ("timestamp", 0), ("duration", 0)];
+pub const STANDARD: &[(&str, usize)] = &[("option", 1), ("markdown", 0), ("timestamp", 0), ("duration", 0), ("date", 0), ("localtime", 0)];
 
 /// Names a schema type may not take: builtins and standard named types.
 pub fn is_reserved_name(n: &str) -> bool {

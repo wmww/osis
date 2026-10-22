@@ -31,6 +31,8 @@ impl osis_schema::Codec for Priority {
 }
 /// Case IDs of `Priority`.
 pub mod priority {
+    #[allow(unused_imports)]
+    use super::*;
     pub const LOW: osis_schema::CaseId = osis_schema::CaseId(0);
     pub const MEDIUM: osis_schema::CaseId = osis_schema::CaseId(1);
     pub const HIGH: osis_schema::CaseId = osis_schema::CaseId(2);
@@ -78,6 +80,8 @@ impl osis_schema::Codec for Status {
 }
 /// Case IDs of `Status`.
 pub mod status {
+    #[allow(unused_imports)]
+    use super::*;
     pub const TODO: osis_schema::CaseId = osis_schema::CaseId(0);
     pub const DOING: osis_schema::CaseId = osis_schema::CaseId(1);
     pub const DONE: osis_schema::CaseId = osis_schema::CaseId(2);
@@ -107,6 +111,8 @@ osis_schema::codec_struct! {
 }
 /// Field IDs of `Tagged`.
 pub mod tagged {
+    #[allow(unused_imports)]
+    use super::*;
     pub const LABEL: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const VALUE: osis_schema::FieldId = osis_schema::FieldId(1);
 }
@@ -126,6 +132,8 @@ osis_schema::codec_struct! {
 }
 /// Field IDs of `Task`.
 pub mod task {
+    #[allow(unused_imports)]
+    use super::*;
     pub const TITLE: osis_schema::FieldId = osis_schema::FieldId(1);
     pub const DONE: osis_schema::FieldId = osis_schema::FieldId(2);
     pub const TAGS: osis_schema::FieldId = osis_schema::FieldId(3);
@@ -157,6 +165,8 @@ osis_schema::codec_struct! {
 }
 /// Field IDs of `Typing`.
 pub mod typing {
+    #[allow(unused_imports)]
+    use super::*;
     pub const WHO: osis_schema::FieldId = osis_schema::FieldId(0);
     pub const AT: osis_schema::FieldId = osis_schema::FieldId(1);
 }

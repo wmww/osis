@@ -2,7 +2,7 @@
 > Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-core and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
-Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membership`, `vectors`, `sim`, `examples/*`; `fuzz/` is excluded (cargo-fuzz); `models/tla` holds TLA+ specs, no crate. Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
+Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membership`, `vectors`, `sim`; `fuzz/` is excluded (cargo-fuzz); `models/tla` holds TLA+ specs, no crate. Internal crates are `[workspace.dependencies]`; members write `osis-core.workspace = true`. A new crate needs a line here.
 
 | layer | crate | plan(s) | contents |
 |---|---|---|---|
@@ -24,7 +24,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membersh
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |
 | 9 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 9 | `osis-sim` (`sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
-| 9 | `notes-app`, `chat`, `tags` (`examples/*`) | (notes/apps.md) | example apps: scenario libraries plus a tiny binary each, default members so they keep compiling; depend on osis (osis-schema to build, osis-sim to test) |
+| 9 | `osis-std` | (notes/std.md) | first-party schemas (contact, event) as typed keys, and the scenario tests of the standard data (notes, tags, contact, event); depends on osis (osis-schema to build, osis-sim to test) |
 | - | `crdt-model` (`models/crdt`) | | reference model of spec/crdt.md (notes/crdt.md) |
 | - | `membership-model` (`models/membership`) | | model of the membership rules (notes/permissions.md) |
 
@@ -61,7 +61,7 @@ Compile and test time are the bottleneck of agent-driven work.
 - **Test tiers** (notes/testing.md): (1) fast: unit and small property tests, `PROPTEST_CASES=32` by default via `.cargo/config.toml` (an explicit env value wins), a crate's fast tier under ~10 s; (2) slow: large property runs, differential runs at size, size budgets: `#[ignore]`, run with `--ignored` (or gated on `OSIS_SLOW=1`); (3) by hand, periodically: fuzz, simulator seed sweeps, big model instances. Tier 1 never sleeps or touches the network; disk only through a temp directory in osis-store's own backend tests (everything else uses `MemoryBackend` and `InProcess`).
 - **Targeted runs**: in crate X run `cargo test -p X` while iterating, `cargo test -p X -p <direct dependents>` before committing; `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings` at integration.
 - `cargo nextest` when installed; plain `cargo test` must work. Nothing may require nextest, deny or fuzz.
-- Integration crates (sim, examples, cli) sit at the top so no library build pulls them.
+- Integration crates (sim, osis-std, cli) sit at the top so no library build pulls them.
 
 ## 5. Dependency allowlist
 One line per external crate; adding a dependency means adding its line. No serde, no CBOR crates, no parser generators, no proc-macro crates in core-layer crates.

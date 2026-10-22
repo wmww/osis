@@ -14,7 +14,7 @@ The MVP is built: every subsystem of the spec is implemented and tested (final r
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `crates/`: osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), osis-cli (binary `osis`), osis-bench.
-- `examples/` notes-app, chat, tags (notes/apps.md); `sim/` the deterministic simulator (notes/testing.md); `vectors/` conformance vectors; `fuzz/` cargo-fuzz targets; `models/` crdt and membership reference models, TLA+ `sync` and `rotation`; `tools/` policy.py, spec_map.py, fixpoint.
+- `crates/osis-std` the first-party schemas and scenario tests (notes/std.md); `sim/` the deterministic simulator (notes/testing.md); `vectors/` conformance vectors; `fuzz/` cargo-fuzz targets; `models/` crdt and membership reference models, TLA+ `sync` and `rotation`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
@@ -25,7 +25,7 @@ What runs where (details and latest numbers: notes/testing.md):
 How to run:
 - CLI: `cargo run -p osis-cli -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
 - Server: `cargo run -p osis-server --features bin -- --help` (or `osis serve`); prints `quic://host:port#key`.
-- Examples: `cargo run -p notes-app` (or chat, tags); `cargo test -p chat`.
+- Standard data scenarios: `cargo test -p osis-std`.
 - Sim: `cargo run --release -p osis-sim --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `models/tla/run.sh small` (Java); `cargo test -p crdt-model`, `-p membership-model`.
 
@@ -45,12 +45,12 @@ Known open (issues/): owner tradeoffs stated in user terms (token-admin-secret, 
 - notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: signals vs expiry vs the all-nodes predicate, heartbeats and the stranded flag.
-- notes/chat.md: the chat pattern derived from the current design, with costs (to be redesigned after tags, notes/tags.md).
-- notes/tags.md: the standard core aspects (`/name`, `/description`, `/icon`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
+- notes/chat.md: the chat pattern derived from the current design, with costs (thrown out; kept for its measured costs until the redesign, notes/std.md).
+- notes/tags.md: the standard core aspects (`/name`, `/body`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: transports (iroh, direct servers), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-node module layout, engine surface, store records, node-core readings.
 - notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).
-- notes/apps.md: the example apps, their end-to-end tests and findings.
+- notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
 - notes/testing.md: tiers, vectors, fuzzing, simulator, budgets, policy checks; notes/testing-map.md: the generated spec-to-test map.
 - notes/explainer.md: the docs site.

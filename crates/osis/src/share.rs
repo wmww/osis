@@ -680,6 +680,22 @@ impl Osis {
         Ok(card)
     }
 
+    /// This person's profile thing (notes/std.md): the target of its contact card, made on first
+    /// use. The person writes its profile aspects on it (`/name`, `/contact/*`); everyone holding
+    /// the card reads them.
+    pub fn profile(&self) -> Result<Tid> {
+        let card = self.contact_card()?;
+        let link = osis_label::ShareLink::from_text(&card.0).map_err(bad("contact card"))?;
+        Ok(link.target)
+    }
+
+    /// The profile thing of a person whose card this database imported, if any.
+    pub fn profile_of(&self, person: Tid) -> Result<Option<Tid>> {
+        let Some(b) = self.engine(|e| e.app_record(&format!("{PROFILE_OF}{person}")))? else { return Ok(None) };
+        let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
+        t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
+    }
+
     /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
     /// written) until the person's `/keys` is here. Returns the person, usable in `grant`. Fails
     /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
@@ -709,11 +725,12 @@ impl Osis {
         drop(key);
         r?;
         let who = *crate::watch::lock(&found);
-        if let Some(p) = who {
+        if let Some(who) = who {
             self.locked(|l| {
-                let acts = l.sync.set_contact(p, true);
+                let acts = l.sync.set_contact(who, true);
                 self.inner.net.apply(acts);
             });
+            self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
         }
         who.ok_or(Error::Invalid("contact card: no person".into()))
     }
@@ -1000,6 +1017,8 @@ fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::A
 }
 
 const CONTACT: &str = "contact";
+/// App record prefix: `profile/<person tid>` -> profile tid text, written by `import_contact`.
+const PROFILE_OF: &str = "profile/";
 
 fn links_value(links: &BTreeMap<Tid, MadeLink>) -> Value {
     Value::List(links.iter().map(|(k, m)| Value::List(vec![Value::Tid(*k), Value::Tid(m.l), Value::Tid(m.target), Value::Bool(m.single_use), Value::Bool(m.finalized), Value::Bool(m.direct), Value::Bool(m.ended)])).collect())

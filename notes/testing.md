@@ -26,10 +26,9 @@ Tier-1 test time per crate (sum of the binaries' run times, `cargo test -p <crat
 |---|---|---|---|---|---|
 | osis-node | 19.1 | crdt-model | 3.9 | osis-store | 1.3 |
 | osis | 14.4 | osis-cli | 3.4 | osis-vectors | 1.0 |
-| osis-sim | 6.2 | folder | 2.8 | osis-label | 0.6 |
-| chat | 5.2 | osis-crdt | 2.3 | osis-server | 0.5 |
-| notes-app | 4.8 | osis-proto | 1.7 | others | ≤ 0.4 each |
-| | | osis-perm | 1.6 | | |
+| osis-sim | 6.2 | osis-std | 10 | osis-label | 0.6 |
+| osis-crdt | 2.3 | osis-proto | 1.7 | osis-server | 0.5 |
+| osis-perm | 1.6 | | | others | ≤ 0.4 each |
 
 About 70 s of test time in all (`cargo test --workspace` warm: about 75 s of tests after the build). Hardening (4-core box shared with two other agents, `CARGO_INCREMENTAL=0`): clean `cargo build --workspace --release` with default features 13.7 min; `cargo test --workspace` build 2.7 min (dependencies already compiled by a clippy run), tests 124 s wall (139 binaries, 901 tests, 122 s summed), all passing. osis-node and osis are over the 10 s line by many small binaries (no single test over about 6 s); osis-sim and the example apps keep their quickest cases in tier 1 and move the rest to `#[ignore = "tier 2"]`. Tier 2 (`cargo test --release --workspace -- --ignored --skip sweep`, wave 5 integration pass: about 50 min on a loaded 4-core machine, nearly all of it the release build; about 270 s of tests, the longest osis-bench budgets 90 s, osis-store `tests/paged.rs` 47 s, osis-perm bench 33 s): everything passes except chat `costs_join_message_removal` (issues/chat-costs.md: join 63 KB, removal 85 KB plus 68 KB from the others) (osis-store `pager::tests::shape_reduced_arity` failed then too: a test off-by-one, fixed). Simulator sweeps (release): latest `sim-sweep --seeds 200` (41 scenarios, 14 jobs, 398 s on 16 cores, after the partial-certificate fix merged with the chat-cost fix: promotion completes the author's chain, orphan copies go): every scenario green. link_race 41, 107, 120, 144, 197, 50 and 46 (a first try that deleted deposits) are ignored tests in sim/tests/library.rs.
 

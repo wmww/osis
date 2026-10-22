@@ -95,7 +95,7 @@ impl SignalKey for Ak {
 /// Typed keys of the core aspects (spec/data-model.md §9). Membership-class aspects are read
 /// here and written only through the sharing calls.
 pub mod core {
-    pub use osis_schema::core_types::{ASPECTS, CREATED, DESCRIPTION, GROUP, GROUPS, Group, KEYS, LABEL, MEMBERS, MOVED, NAME, NODE, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag, WAS};
+    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, MEMBERS, MOVED, NAME, NODE, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag, WAS};
 
     /// Field ids of `/group` (spec/data-model.md §8), for path ops on it.
     pub mod group {

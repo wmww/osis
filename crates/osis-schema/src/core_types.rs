@@ -245,5 +245,5 @@ pub const SEEN: Aspect<Seen> = Aspect::new("/seen", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("/group", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("/groups", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("/name", &CORE);
-pub const DESCRIPTION: Aspect<String> = Aspect::new("/description", &CORE);
+pub const BODY: Aspect<String> = Aspect::new("/body", &CORE);
 pub const TAG: Aspect<Tag> = Aspect::new("/tag", &CORE);

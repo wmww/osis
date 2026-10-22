@@ -26,7 +26,7 @@ fn core_schema_parses_spec_data_model_9() {
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "/tid", "/aspects", "/created", "/members", "/keys", "/secrets", "/tenures", "/label", "/moved", "/was", "/node",
-        "/reach", "/seen", "/group", "/groups", "/name", "/description", "/tag",
+        "/reach", "/seen", "/group", "/groups", "/name", "/body", "/tag",
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
@@ -76,6 +76,8 @@ fn encoding_per_type_spec_crdt_3_1() {
         ("float", Some(Encoding::Register)),
         ("tid", Some(Encoding::Register)),
         ("timestamp", Some(Encoding::Register)),
+        ("date", Some(Encoding::Register)),
+        ("localtime", Some(Encoding::Register)),
         ("text", Some(Encoding::Text)),
         ("markdown", Some(Encoding::Text)),
         ("counter<int>", Some(Encoding::Counter)),

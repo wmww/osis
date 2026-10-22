@@ -436,6 +436,16 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let c = db.contact_card()?;
             ctx.emit(&[c.to_string()], J::obj([("card", J::str(c.to_string()))]))
         }
+        Cmd::Card(CardCmd::Profile { person }) => {
+            let p = match person {
+                Some(a) => db.profile_of(ctx.tid(&a)?)?,
+                None => Some(db.profile()?),
+            };
+            match p {
+                Some(p) => ctx.emit(&[p.to_uri()], J::obj([("profile", J::tid(p))])),
+                None => Err(exit(3, "no profile known for that person")),
+            }
+        }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
             let a = wait(ctx, db.import_contact(&c))?;
