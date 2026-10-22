@@ -1,9 +1,10 @@
 //! osis-crypto benches: sealed box seal/open and KEM keygen (spec/crypto.md §1, §3), blob
-//! encryption (spec/crypto.md §5), Ed25519 sign/verify (spec/crypto.md §2).
+//! encryption (spec/crypto.md §5), Ed25519 sign/verify (spec/crypto.md §2), delete keys: blinded
+//! commitment, blinded sign and verify (spec/crypto.md §7).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_bench::bench;
-use osis_crypto::{Domain, KemSecret, Secret32, SeededRng, SigningSecret, decrypt_blob, encrypt_blob, open_sealed, seal};
+use osis_crypto::{DeleteSecret, Domain, KemSecret, Secret32, SeededRng, SigningSecret, commitment, decrypt_blob, encrypt_blob, open_sealed, seal, verify_delete};
 
 fn main() {
     let mut rng = SeededRng::from_u64(1);
@@ -25,4 +26,14 @@ fn main() {
     let sig = sk.sign(Domain::Commit, &[9; 32]);
     bench("crypto/ed25519_sign", None, || sk.sign(Domain::Commit, &[9; 32]));
     bench("crypto/ed25519_verify", None, || pk.verify(Domain::Commit, &[9; 32], &sig).unwrap());
+
+    let d = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
+    let vk = d.verifying_key();
+    bench("crypto/delete_key_derive", None, || DeleteSecret::derive(&Secret32::from_bytes([4; 32])).verifying_key());
+    bench("crypto/delete_commitment", None, || commitment(1, &vk, &[6; 16]).unwrap());
+    let c = commitment(1, &vk, &[6; 16]).unwrap();
+    let key: [u8; 32] = c[1..].try_into().unwrap();
+    bench("crypto/delete_sign_blinded", None, || d.sign(&[6; 16], &[9; 32]));
+    let dsig = d.sign(&[6; 16], &[9; 32]);
+    bench("crypto/delete_verify", None, || verify_delete(&key, &[9; 32], &dsig).unwrap());
 }

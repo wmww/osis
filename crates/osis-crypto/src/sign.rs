@@ -85,7 +85,7 @@ impl fmt::Debug for SigningSecret {
 /// Ed25519 public key, canonically encoded and not of small order. The agility enum
 /// `signing_key` case 1 (spec/wire.md §3).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct VerifyingKey(ed25519_dalek::VerifyingKey);
+pub struct VerifyingKey(pub(crate) ed25519_dalek::VerifyingKey);
 
 impl VerifyingKey {
     /// Rejects non-canonical encodings and small-order points (spec/crypto.md §1).
