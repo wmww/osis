@@ -1,12 +1,11 @@
 //! The membership timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
-use crate::graph::{Class, Edges, Owners, Standing, View};
+use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{Edge, MembershipCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_core::{CommitId, Role, Tid, Ts};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -49,8 +48,9 @@ pub struct Timeline {
     pub(crate) epoch_changed: bool,
     /// The furthest point a walk under the final epoch starts other than the final one reached.
     pub(crate) reach: Option<Point>,
-    /// The edge state before history change `i * CHECKPOINT`, for `edges_at`.
-    checkpoints: Vec<Edges>,
+    /// The edge state before history change `i * CHECKPOINT`, for `edges_at` (shared with
+    /// the timeline `extend` made this from).
+    checkpoints: Vec<Arc<Edges>>,
     /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
     /// component) is.
     pub(crate) memo: Memo,
@@ -72,16 +72,47 @@ pub(crate) struct Memo {
     pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
 }
 
-fn checkpoints(w: &walk::Walked) -> Vec<Edges> {
-    let mut out = Vec::with_capacity(w.history.len() / CHECKPOINT + 1);
-    let mut e = w.initial.clone();
-    for (i, c) in w.history.iter().enumerate() {
-        if i % CHECKPOINT == 0 {
-            out.push(e.clone());
+/// The kept edge states of `w`'s history, going on from those in `out` (still valid for it).
+fn checkpoints(w: &walk::Walked, mut out: Vec<Arc<Edges>>) -> Vec<Arc<Edges>> {
+    out.truncate(w.history.len().div_ceil(CHECKPOINT));
+    let start = out.len().saturating_sub(1) * CHECKPOINT;
+    let mut e = out.last().map_or_else(|| w.initial.clone(), |c| (**c).clone());
+    for (i, c) in w.history.iter().enumerate().skip(start) {
+        if i % CHECKPOINT == 0 && i / CHECKPOINT == out.len() {
+            out.push(Arc::new(e.clone()));
         }
         e.set(c.member, c.target, c.edge);
     }
     out
+}
+
+/// What a timeline hands the one `extend` makes from it: what stays true over the history
+/// both share (the same initial state and changes up to the first that differs).
+pub(crate) struct Kept {
+    history: Vec<(Point, Tid, Tid, Option<Edge>)>,
+    checkpoints: Vec<Arc<Edges>>,
+    first_held: FirstHeld,
+}
+
+impl Kept {
+    fn of(tl: &mut Timeline) -> Kept {
+        let history = tl.walked.history.iter().map(|c| (c.point, c.member, c.target, c.edge)).collect();
+        let first_held = std::mem::take(&mut *tl.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
+        Kept { history, checkpoints: std::mem::take(&mut tl.checkpoints), first_held }
+    }
+
+    /// The kept states and `first_held` answers still valid for `w`.
+    fn carry(self, w: &walk::Walked) -> (Vec<Arc<Edges>>, FirstHeld) {
+        let same = self.checkpoints.first().is_some_and(|e| **e == w.initial);
+        let n = if same { self.history.iter().zip(&w.history).take_while(|(a, c)| **a == (c.point, c.member, c.target, c.edge)).count() } else { 0 };
+        let mut cps = self.checkpoints;
+        cps.truncate(if same { n / CHECKPOINT + 1 } else { 0 });
+        // an answer found at a change before the first that differs stands
+        let bound = self.history.get(n).map(|h| h.0);
+        let mut fh = self.first_held;
+        fh.retain(|_, v| same && v.is_some_and(|p| p.is_none_or(|p| bound.is_none_or(|b| p < b))));
+        (checkpoints(w, cps), fh)
+    }
 }
 
 impl Timeline {
@@ -93,7 +124,14 @@ impl Timeline {
     }
 
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
-        let checkpoints = checkpoints(&out.walked);
+        Timeline::from_kept(input, out, None)
+    }
+
+    fn from_kept(input: Input, out: walk::Outcome, kept: Option<Kept>) -> Timeline {
+        let (checkpoints, first_held) = match kept {
+            Some(k) => k.carry(&out.walked),
+            None => (checkpoints(&out.walked, Vec::new()), FirstHeld::new()),
+        };
         Timeline {
             owners: input.owners,
             commits: input.commits,
@@ -106,7 +144,7 @@ impl Timeline {
             epoch_changed: out.epoch_changed,
             reach: out.reach,
             checkpoints,
-            memo: Memo::default(),
+            memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
         }
     }
 
@@ -117,7 +155,7 @@ impl Timeline {
     /// new commit and goes on from there instead of starting over (equal to `evaluate`).
     /// `None` when that does not hold (another walk reached that point, a new thing an earlier
     /// write names, or the inputs differ otherwise): evaluate.
-    pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
+    pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
         // a new author or member could have changed how earlier writes were walked
         if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes {
@@ -128,11 +166,12 @@ impl Timeline {
         }
         let leaves = self.leaves(&input)?;
         let added = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
+        let kept = Kept::of(&mut self);
         let Timeline { mut walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
         walked.alias_leaves(&leaves, &input.nodes)?;
         let Some(from) = added else {
             let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach };
-            return Some(Timeline::from_outcome(input, out));
+            return Some(Timeline::from_kept(input, out, Some(kept)));
         };
         // after epoch changes, going on from the old starts finds the same ones only when they
         // have a unique fixed point (walk::drive)
@@ -140,7 +179,7 @@ impl Timeline {
             return None;
         }
         let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from });
-        Some(Timeline::from_outcome(input, out))
+        Some(Timeline::from_kept(input, out, Some(kept)))
     }
 
     /// The things `input` adds by their `/created`, with their owners: leaves the walk never
@@ -204,16 +243,27 @@ impl Timeline {
     }
 
     /// The edge state just before `point` (`None`: the current state).
-    pub fn edges_at(&self, point: Option<Point>) -> Cow<'_, Edges> {
-        let Some(p) = point else { return Cow::Borrowed(&self.walked.edges) };
-        // from the newest kept state before `p`: O(edges + CHECKPOINT), not O(history)
-        let n = self.walked.history.partition_point(|c| c.point < p);
+    pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
+        let Some(p) = point else { return EdgesAt::new(&self.walked.edges) };
+        let mut e = EdgesAt::new(&self.walked.initial);
+        self.advance(&mut e, 0, self.walked.history.partition_point(|c| c.point < p));
+        e
+    }
+
+    /// Brings `e`, the state after the first `pos` history changes, to after the first `n`
+    /// (`n >= pos`): from the newest kept state when that is past `pos`, the changes since as
+    /// an overlay. O(CHECKPOINT), no copy.
+    pub(crate) fn advance<'a>(&'a self, e: &mut EdgesAt<'a>, mut pos: usize, n: usize) {
         let k = (n / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
-        let mut e = self.checkpoints.get(k).cloned().unwrap_or_else(|| self.walked.initial.clone());
-        for c in self.walked.history.iter().take(n).skip(k * CHECKPOINT) {
+        if k * CHECKPOINT > pos
+            && let Some(base) = self.checkpoints.get(k)
+        {
+            *e = EdgesAt::new(base);
+            pos = k * CHECKPOINT;
+        }
+        for c in self.walked.history.iter().take(n).skip(pos) {
             e.set(c.member, c.target, c.edge);
         }
-        Cow::Owned(e)
     }
 
     /// The roster of `thing` (§5.1): its edges alive at `at`.
@@ -225,7 +275,7 @@ impl Timeline {
     /// Standing (class and effective role) of `node` on `thing`.
     pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
         let edges = self.edges_at(at.point);
-        let view = View::new(&self.owners, &edges, at.ts);
+        let view = View::at(&self.owners, &edges, at.ts);
         let best = view.roles_from(node);
         view.standing(node, &best, thing)
     }
@@ -254,7 +304,7 @@ impl Timeline {
     /// Effective invite (§2).
     pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         let edges = self.edges_at(at.point);
-        let view = View::new(&self.owners, &edges, at.ts);
+        let view = View::at(&self.owners, &edges, at.ts);
         let best = view.roles_from(node);
         view.invite(&best, thing)
     }
@@ -262,6 +312,6 @@ impl Timeline {
     /// Effective roles of `node` on every thing it reaches.
     pub fn roles_of(&self, node: &Tid, at: At) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
-        View::new(&self.owners, &edges, at.ts).roles_from(node)
+        View::at(&self.owners, &edges, at.ts).roles_from(node)
     }
 }

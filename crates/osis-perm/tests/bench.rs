@@ -98,6 +98,25 @@ fn bench_10k_edges() {
             let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
         }
         let rejudge = t7.elapsed();
+        // members' deltas: one by each member granted write or more, just after the grant
+        let fresh = Timeline::evaluate(&held);
+        let mut by_members = Vec::new();
+        for id in fresh.applied().keys() {
+            let osis_perm::WriteId::Op(c, k) = id else { continue };
+            let cm = fresh.membership_commit(c).unwrap();
+            let o = &cm.ops[*k as usize];
+            if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
+                let p = cm.point();
+                by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_core::CommitId([0x11; 32]) }, o.target));
+            }
+        }
+        by_members.truncate(1000);
+        let t7b = Instant::now();
+        let mut valid_members = 0;
+        for (p, t) in &by_members {
+            valid_members += usize::from(fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
+        }
+        let rejudge_members = t7b.elapsed();
         // what a demotion's frontier lists (§5.1): an admin's chain certificates on a doc, at
         // the end and at the middle
         let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
@@ -148,10 +167,11 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
+            by_members.len(),
             certs.commits.len(),
             certs.snapshots.len()
         );

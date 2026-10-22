@@ -226,3 +226,45 @@ fn until_gap_write_finalized_by_frontier() {
         assert_eq!(valid(&Timeline::evaluate(&w.held()), p, t, Write), seen);
     }
 }
+
+/// Re-grant's first tenure (`first_held`, a replay of the node's roles over the history) is
+/// what a search at every change finds: random owner trees, actors as members, edges with
+/// `until` and invites, most writes by the target's key actor. Debug builds compare the two at
+/// every call.
+#[cfg(debug_assertions)]
+#[test]
+fn regrant_replay_equals_search() {
+    use osis_core::Role::Read;
+    let mut rng = membership_model::Rng(0x5eed_0501);
+    for _ in 0..3000 {
+        let mut w = World::new();
+        let n = w.nodes(3);
+        let mut ents = n.clone();
+        let mut top: std::collections::BTreeMap<Tid, Tid> = n.iter().map(|x| (*x, *x)).collect();
+        for _ in 0..4 {
+            let o = ents[rng.below(ents.len())];
+            let t = w.thing(o);
+            top.insert(t, top[&o]);
+            ents.push(t);
+        }
+        for k in 0..rng.below(40) as u64 {
+            let (target, member) = (ents[3 + rng.below(4)], ents[rng.below(ents.len())]);
+            let author = if rng.below(4) == 0 { n[rng.below(3)] } else { top[&target] };
+            let role = [Read, Write, Admin][rng.below(3)];
+            let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
+            let until = (rng.below(3) == 0).then(|| osis_core::WallMs(k + rng.below(10) as u64));
+            let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None });
+            if member != target {
+                w.set(author, target, member, e, 1 + k, &[]);
+            }
+        }
+        let tl = Timeline::evaluate(&w.held());
+        for x in &n {
+            for t in &ents[3..] {
+                for r in [Read, Write, Admin] {
+                    let _ = valid(&tl, Point { ts: ts(0), node: *x, commit: cid(1) }, *t, r);
+                }
+            }
+        }
+    }
+}

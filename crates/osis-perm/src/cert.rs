@@ -10,13 +10,12 @@
 //! or not) brings the node's chain for the same thing at its point, since whether its class fell
 //! depends on its other paths there.
 
-use crate::graph::{Edges, View};
+use crate::graph::{EdgesAt, View};
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
 use crate::types::{Edge, Point, RosterSnapshot, WriteId};
 use crate::walk;
 use osis_core::{CommitId, Role, Tid};
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -97,8 +96,8 @@ impl Timeline {
 
     /// Things on any path from `node` to `thing` just before `at`, given the edge state there
     /// and a cache of `roles_from` at that point.
-    fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, edges: &Edges, reach: &mut Reach) -> BTreeSet<Tid> {
-        let view = View::new(&self.owners, edges, Some(at.ts));
+    fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, edges: &EdgesAt<'_>, reach: &mut Reach) -> BTreeSet<Tid> {
+        let view = View::at(&self.owners, edges, Some(at.ts));
         let from = reach.0.entry(*node).or_insert_with(|| view.roles_from(node));
         let to = reach.1.entry(*thing).or_insert_with(|| view.reach_backward(thing));
         let mut c: BTreeSet<Tid> = from.keys().filter(|t| to.contains(t)).copied().collect();
@@ -144,7 +143,7 @@ impl Timeline {
         // can queue a later point, so a point's state may be built again when the walk returns
         let mut todo: BTreeSet<(Point, Tid, Tid)> = seeds.into_iter().map(|(n, t, p)| (p, n, t)).collect();
         let mut seen: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
-        let mut at: Option<(Point, Cow<'_, Edges>, Reach)> = None;
+        let mut at: Option<(Point, EdgesAt<'_>, Reach)> = None;
         // n's chains at later demotions go in rounds, so each round visits a point once
         let mut later: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
         let mut on_chains: BTreeSet<Tid> = BTreeSet::new();

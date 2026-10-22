@@ -41,6 +41,13 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                 if part.role(n, &t, At::before(a.point)) != full.role(n, &t, At::before(a.point)) {
                     return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
                 }
+                // layer 2 there (re-grant's first tenure is carried over `extend`)
+                let p = osis_perm::Point { node: *n, commit: osis_core::CommitId([0xee; 32]), ..a.point };
+                for r in [osis_core::Role::Read, osis_core::Role::Write, osis_core::Role::Admin] {
+                    if part.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) != full.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) {
+                        return Some(format!("validity of {n:?}'s {r:?} delta on {t:?} at {p:?}"));
+                    }
+                }
             }
         }
         if seen.insert(part as *const Timeline) {
@@ -281,6 +288,43 @@ fn leaves_and_appends_extend() {
     let c = inc.update_touched(&held, &touched_of(&prev, &held));
     assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
     assert!(check(&held, &inc, &n).is_none());
+}
+
+/// §5.1, §5.2: a write arriving late in the middle of a history longer than the timeline's kept
+/// edge states rolls the walk back there (`extend`); the states and the re-grant answers
+/// (first tenures) kept from before it, and those rebuilt after, equal an evaluation from
+/// scratch. Member 1, admin at the end, has its first admin tenure moved earlier by the late
+/// write.
+#[test]
+fn late_write_mid_history_keeps_states_exact() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(6);
+    let k = n[0];
+    let g = w.thing(k);
+    for i in 0..600u64 {
+        let (m, e) = match i {
+            550 | 599 => (n[1], edge(Admin)),
+            _ => (n[1 + (i % 5) as usize], edge(if (i / 5) % 2 == 0 { Read } else { Write })),
+        };
+        w.set(k, g, m, e, 2 * i + 2, &[]);
+    }
+    let late = w.set(k, g, n[1], edge(Admin), 601, &[]);
+    let held = w.held_without(&BTreeSet::from([late]));
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let tl = inc.get(&g).unwrap();
+    for x in &n {
+        for a in tl.applied().values() {
+            for r in [Read, Write, Admin] {
+                let _ = tl.delta_valid(osis_perm::Point { node: *x, ..a.point }, &g, "/x", osis_perm::Dots::Commit, r);
+            }
+        }
+    }
+    let all = w.held();
+    let c = inc.update_touched(&all, &touched_of(&held, &all));
+    assert!(c.evaluated.is_empty(), "{c:?}");
+    assert!(check(&all, &inc, &n).is_none(), "{:?}", check(&all, &inc, &n));
 }
 
 fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {

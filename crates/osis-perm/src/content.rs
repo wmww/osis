@@ -2,9 +2,10 @@
 //! membership-class writes judged like content, and the node-form overlap rule
 //! (spec/commits.md §4).
 
+use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
-use crate::types::{Dots, Point};
-use osis_core::{CommitId, Role, Tid};
+use crate::types::{Dots, Edge, Point};
+use osis_core::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Validity of one delta.
@@ -68,28 +69,74 @@ impl Timeline {
             return v;
         }
         let v = self.first_held_uncached(x, thing, required);
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(v, self.first_held_replayed(x, thing, required));
         if let Ok(mut m) = self.memo.first_held.lock() {
             m.insert(key, v);
         }
         v
     }
 
+    /// Replays `x`'s roles over the history: a change of an edge out of something `x` does not
+    /// reach changes none of them; a wider edge raises them in place; only an edge that may
+    /// have carried a role narrowing, or one expiring, searches again. Between two searches
+    /// roles only fall (edges expire), so the first change after which they hold is found.
     fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
-        let mut edges = self.walked.initial.clone();
-        let holds = |edges: &crate::graph::Edges, ts: Option<osis_core::Ts>| {
-            let view = crate::graph::View::new(&self.owners, edges, ts);
-            view.roles_from(x).get(thing).copied() >= Some(required)
-        };
-        if holds(&edges, Some(osis_core::Ts::default())) {
+        let holds = |best: &BTreeMap<Tid, Role>| best.get(thing).copied() >= Some(required);
+        let mut edges = EdgesAt::new(&self.walked.initial);
+        let (mut best, mut expires) = View::at(&self.owners, &edges, Some(Ts::default())).roles_expiring(x);
+        if holds(&best) {
             return Some(None);
         }
-        for c in &self.walked.history {
+        let mut pos = 0;
+        for (i, c) in self.walked.history.iter().enumerate() {
+            // `best` is exact while nothing expired, else at least the roles
+            let Some(&level) = best.get(&c.member) else { continue };
+            let ts = c.point.ts;
+            self.advance(&mut edges, pos, i);
+            let old = edges.get(&c.member, &c.target).copied();
             edges.set(c.member, c.target, c.edge);
-            if holds(&edges, Some(c.point.ts)) {
+            pos = i + 1;
+            let view = View::at(&self.owners, &edges, Some(ts));
+            let gives = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts))).map(|e| level.min(e.role));
+            let (was, now, cur) = (gives(old), gives(c.edge), best.get(&c.target).copied());
+            if expires.is_some_and(|u| ts.wall_ms() >= u) || (was.is_some() && was >= cur && now < was) {
+                (best, expires) = view.roles_expiring(x);
+            } else if now > cur {
+                let (raised, until) = view.roles_raised_expiring(&best, &[c.member]);
+                best.extend(raised);
+                expires = earliest(expires, until);
+            }
+            expires = earliest(expires, c.edge.and_then(|e| e.until));
+            if holds(&best) {
                 return Some(Some(c.point));
             }
         }
         None
+    }
+
+    /// `first_held_uncached` by a search at every change (debug check).
+    #[cfg(debug_assertions)]
+    fn first_held_replayed(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
+        let mut edges = self.walked.initial.clone();
+        let holds = |edges: &crate::graph::Edges, ts: Ts| View::new(&self.owners, edges, Some(ts)).roles_from(x).get(thing).copied() >= Some(required);
+        if holds(&edges, Ts::default()) {
+            return Some(None);
+        }
+        for c in &self.walked.history {
+            edges.set(c.member, c.target, c.edge);
+            if holds(&edges, c.point.ts) {
+                return Some(Some(c.point));
+            }
+        }
+        None
+    }
+}
+
+fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }
 

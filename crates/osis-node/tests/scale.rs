@@ -333,11 +333,15 @@ fn membership_change_and_open_cost() {
     e.commit(m).unwrap().unwrap();
     println!("a new thing with 10^4 commits held: {:?}", t4.elapsed());
     let other = Tid::from_bytes([7; 15]);
+    osis_node::costs::take();
     let t1 = Instant::now();
     let mut m = Mutation::new();
     m.op(things[0], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None }.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap();
     println!("one grant with 10^4 commits held: {:?}", t1.elapsed());
+    for (k, d, c) in osis_node::costs::take() {
+        println!("  {k}: {d:?} ({c})");
+    }
     drop(e);
     let t2 = Instant::now();
     let mut e = reopen.open(&batches, &bytes);
@@ -349,6 +353,7 @@ fn membership_change_and_open_cost() {
     // 10^4 edge writes in the tree's one membership component: 20 members' roles toggled
     let n: usize = std::env::var("OSIS_SCALE_EDGES").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
     let members: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
+    osis_node::costs::take();
     let t5 = Instant::now();
     for i in 0..n {
         let role = if (i / 20) % 2 == 0 { Role::Read } else { Role::Write };
@@ -357,6 +362,9 @@ fn membership_change_and_open_cost() {
         e.commit(m).unwrap().unwrap();
     }
     println!("{n} edge writes: {:?}", t5.elapsed());
+    for (k, d, c) in osis_node::costs::take() {
+        println!("  {k}: {d:?} ({c})");
+    }
     let roster = e.roster(&things[1]);
     drop(e);
     for k in 0..2 {

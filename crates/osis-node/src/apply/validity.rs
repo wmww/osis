@@ -916,7 +916,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid
         return false;
     }
     let edges = tl.edges_at(None);
-    let view = osis_perm::graph::View::new(tl.owners(), &edges, Some(ts)).patched(*member, *target, None);
+    let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(ts)).patched(*member, *target, None);
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
