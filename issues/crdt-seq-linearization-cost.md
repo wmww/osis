@@ -10,4 +10,3 @@ Remains:
 - `Batch` still copies the position's state where its records do not line up with the state's (the same range splits) or a reset of the batch lies above the position.
 - List `read` looks up each visible element's record (text reads chars from the cache).
 - A writer-side batch of thousands of moves on one text takes seconds (4000 moves: 4-8 s): each op clones the batch's net effect so far, and `Layered::present` clones the layer's records per op.
-- The placement cache's dot map folds its added entries into its base past √n; when the base is shared (a copied state, a batch's layered view) that fold copies all n entries.

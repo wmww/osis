@@ -502,6 +502,20 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     a.state.join(older);
     let older_join = t.elapsed();
+    // joins into copies of a state (as a node keeping the state before a commit): each copy's
+    // placement shares the original's until it changes it
+    let mut copies = Vec::new();
+    for k in 0..200u64 {
+        let (d, src, range) = b.commit(2000 + k, &[op(Op::Insert { at: r.below(90_000), items: vec![s("c")] })], &text_view()).unwrap();
+        let d = wired(&d, &src, range, 2000 + k);
+        let mut c = a.state.clone();
+        let t = Instant::now();
+        c.join(d.clone());
+        copies.push(t.elapsed());
+        a.state.join(d);
+    }
+    let copy_mean = copies.iter().sum::<std::time::Duration>() / 200;
+    let copy_max = copies.iter().max().copied().unwrap_or_default();
     // a move: the moved subtrees are re-placed
     let t = Instant::now();
     let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
@@ -534,7 +548,7 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}; 1000 moves to HEAD with {}", p.iter().count(), hostile.join(", with "));
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; 1000 moves to HEAD with {}", p.iter().count(), hostile.join(", with "));
     let _ = v;
 }
 
@@ -567,6 +581,32 @@ fn cached_placement_follows_typing_spec_6() {
         assert!(cached(&b));
     }
     assert_eq!(read_str(&a.state), read_str(&b.state));
+}
+
+// spec/crdt.md §6: the cached placement's dot map is shared between copies of a state; a join
+// into one copy clones only the chunks it writes (notes/crdt.md, placement cache).
+#[test]
+fn placement_dot_map_shared_by_copies_spec_6() {
+    let mut r = Rng(3);
+    let mut a = Replica::new(1);
+    let run = "abcdefghij".repeat(10);
+    for k in 0..100u64 {
+        let n = read_str(&a.state).chars().count();
+        a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&run)] })], &text_view());
+    }
+    let lin = |f: &Fragment| match f {
+        Fragment::Seq(x) => x.lin(),
+        _ => panic!(),
+    };
+    // a lookup builds the map before the copy
+    let _ = lin(&a.state).index(&crate::seq::visible(match &a.state { Fragment::Seq(x) => x, _ => panic!() }).get(0).unwrap().clone());
+    let mut b2 = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    for k in 0..20u64 {
+        b2.commit(200 + k, &[op(Op::Insert { at: r.below(10_000), items: vec![s("x")] })], &text_view());
+    }
+    let (unshared, all) = lin(&b2.state).map_unshared(&lin(&a.state));
+    eprintln!("{unshared} of {all}");
+    assert!(all >= 50 && unshared <= 25, "{unshared} of {all} chunks copied");
 }
 
 /// §6.1 sibling order (`seq_lin`): two writers typing at one place concurrently (each insert

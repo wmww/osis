@@ -606,27 +606,64 @@ struct Cursor {
     at: usize,
 }
 
-/// Dot to block, cheap to copy: a shared base plus the entries set since, folded in once they
-/// pass √n (at least 64), so a copy clones few.
+/// Row (first dot) to block, in dot order, so the row holding a dot is the one starting at or
+/// before it. Sorted chunks of about √n entries (at least 64), each shared until a copy changes
+/// it: a copy clones only the chunks it writes.
 #[derive(Clone, Debug, Default)]
 struct DotMap {
-    base: Arc<HashMap<Dot, usize>>,
-    new: HashMap<Dot, usize>,
+    chunks: Vec<Arc<Vec<(Dot, usize)>>>,
+    len: usize,
 }
 
 impl DotMap {
+    fn new(mut v: Vec<(Dot, usize)>) -> DotMap {
+        // rows are mostly in dot order by runs: a stable sort is near linear
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        let len = v.len();
+        let chunks = v.chunks(DotMap::size(len)).map(|c| Arc::new(c.to_vec())).collect();
+        DotMap { chunks, len }
+    }
+    fn size(len: usize) -> usize {
+        len.isqrt().max(64)
+    }
+    /// The chunk holding `d` or where it would go.
+    fn chunk(&self, d: &Dot) -> usize {
+        self.chunks.partition_point(|c| c.first().is_some_and(|x| x.0 <= *d)).saturating_sub(1)
+    }
+    /// The entry at or before `d`.
+    fn at_or_before(&self, d: &Dot) -> Option<(&Dot, usize)> {
+        let c = self.chunks.get(self.chunk(d))?;
+        let i = c.partition_point(|x| x.0 <= *d).checked_sub(1)?;
+        c.get(i).map(|x| (&x.0, x.1))
+    }
     fn get(&self, d: &Dot) -> Option<usize> {
-        self.new.get(d).or_else(|| self.base.get(d)).copied()
+        self.at_or_before(d).filter(|x| x.0 == d).map(|x| x.1)
     }
     fn set(&mut self, d: Dot, b: usize) {
-        self.new.insert(d, b);
-        if self.new.len() > self.base.len().isqrt().max(64) {
-            Arc::make_mut(&mut self.base).extend(self.new.drain());
+        if self.chunks.is_empty() {
+            self.chunks.push(Arc::default());
+        }
+        let k = self.chunk(&d);
+        let Some(c) = self.chunks.get_mut(k).map(Arc::make_mut) else { return };
+        match c.binary_search_by(|x| x.0.cmp(&d)) {
+            Ok(i) => {
+                if let Some(x) = c.get_mut(i) {
+                    x.1 = b;
+                }
+            }
+            Err(i) => {
+                c.insert(i, (d, b));
+                self.len += 1;
+                if c.len() > 2 * DotMap::size(self.len) {
+                    let tail = c.split_off(c.len() / 2);
+                    self.chunks.insert(k + 1, Arc::new(tail));
+                }
+            }
         }
     }
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.base.len() + self.new.keys().filter(|k| !self.base.contains_key(*k)).count()
+        self.len
     }
 }
 
@@ -677,15 +714,7 @@ impl Lin {
     }
 
     fn map(&self) -> &DotMap {
-        self.at.get_or_init(|| {
-            let mut m = HashMap::with_capacity(self.p.len);
-            for b in &self.p.order {
-                for r in self.p.block(*b) {
-                    m.insert(r.dot.clone(), *b);
-                }
-            }
-            DotMap { base: Arc::new(m), new: HashMap::new() }
-        })
+        self.at.get_or_init(|| DotMap::new(self.p.order.iter().flat_map(|b| self.p.block(*b).iter().map(|r| (r.dot.clone(), *b))).collect()))
     }
 
     /// Block and offset of the node starting at `d`.
@@ -702,6 +731,13 @@ impl Lin {
         let map = self.at.get().is_none_or(|m| m.len() == p.len && p.order.iter().all(|b| p.block(*b).iter().all(|r| m.get(&r.dot) == Some(*b))));
         let arena = p.order.len() + p.free.len() == p.blocks.len() && p.blocks.len() == p.shift.len();
         counts && map && arena && p.len == p.iter().count() && p.shown == p.vis().count()
+    }
+
+    /// Chunks of the dot map not shared with `o`'s, and all chunks (tests).
+    #[cfg(test)]
+    pub(crate) fn map_unshared(&self, o: &Lin) -> (usize, usize) {
+        let (a, b) = (self.map(), o.map());
+        (a.chunks.iter().filter(|c| !b.chunks.iter().any(|x| Arc::ptr_eq(c, x))).count(), a.chunks.len())
     }
 
     /// Position of the node starting at `d`.
