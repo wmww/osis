@@ -235,7 +235,7 @@ fn more_accepted() -> Vec<Record> {
     let mut back = CommitBlob::decode(&c.encode()).unwrap();
     back.header.resolve(&mut sink, &s32(0x30), MAX_LIST_BYTES).unwrap();
     assert_eq!(back, c);
-    let mut r = case("linked aspect list", "spec/wire.md §4, §6")
+    let mut r = case("linked aspect list", "spec/wire.md §4, §5, §6")
         .with("signing-seed", hex(s32(0x35).expose()))
         .with("dedup", hex(s32(0x30).expose()))
         .with("token-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
@@ -243,7 +243,9 @@ fn more_accepted() -> Vec<Record> {
         .with("aspect-list-blake3", hex(&osis_core::hash::hash(&osis_core::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
     for (i, id) in bl.list_blobs.iter().enumerate() {
         let (p, plain) = &sink.blobs[id];
-        r = r.with(&format!("list-blob-{i}"), format!("{} {} {}", hex(&id.0), hex(&p.salt), hex(plain)));
+        // level-2 commitments only (spec/wire.md §5)
+        assert!(p.commitments.len() == 1 && p.commitments.iter().all(|x| x[0] == 2));
+        r = r.with(&format!("list-blob-{i}"), format!("{} {} {} {}", hex(&id.0), hex(&p.salt), hex(&p.commitments.concat()), hex(plain)));
     }
     out.push(r.with("header", hex(&c.header.encode())).with("commit-id", hex(&c.id().0)).with("signature", hex(&c.signature.0)).with("blob", hex(&c.encode())));
     out

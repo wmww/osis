@@ -6,7 +6,7 @@ use crate::project::check_fits;
 use crate::tokens::{Prefix, Secrets, TokenSecret, token_secrets};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
-use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB, MAX_COMMITMENTS};
+use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB};
 use osis_core::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
 use osis_schema::Retention;
@@ -183,18 +183,10 @@ impl CommitBuilder {
 
         // lists above the threshold go by link
         let mut list_blobs = Vec::new();
+        // header-list chunks and tree nodes: the commit's level-2 tokens only (spec/wire.md §5)
         let list_secrets: Vec<TokenSecret> = {
             let mut seen = std::collections::BTreeSet::new();
-            let mut all: Vec<TokenSecret> = Vec::new();
-            for s in aspect_tokens.iter().flatten() {
-                if seen.insert(s.hash(&salt)) {
-                    all.push(s.clone());
-                }
-            }
-            if all.len() > MAX_COMMITMENTS {
-                all.retain(|s| s.level == 2);
-            }
-            all
+            aspect_tokens.iter().flatten().filter(|s| s.level == 2 && seen.insert(s.hash(&salt))).cloned().collect()
         };
         for f in ListField::ALL {
             let Some(v) = header.list_value(f) else { continue };

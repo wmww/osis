@@ -47,7 +47,7 @@
 
 ## 7. Delete tokens
 - **Token secrets** of a delta, by its retention (spec/commits.md §5), each at a **level**: `admin` and above, the admin secret of its thing (level 1); `author` and above, also the write secret of the actor directly above the author node in its chain (level 2; omitted for an imported delta, whose importer cannot derive it: its origin author purges at honest nodes by request and admins delete at blind nodes, spec/permissions.md §7); `writer`, also the write secret of its thing (level 3); `nobody`, none. A commit's token secrets are the union over its deltas; a blob carries the commitments of the deltas it holds (spec/sync.md §1, §3).
-- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the delta that created the chunk or page; for a chunk of a header list, one per token secret of the commit up to the cap of spec/wire.md §5. Tokens are 32 bytes.
+- Commit blob token: `kdf("delete token", secret, header salt)`, one per token secret. Chunk token: `kdf("delete token", secret, chunk prefix salt)`, one per token secret of the delta that created the chunk or page; for a chunk or tree node of a header list, one per level-2 token secret of the commit (spec/wire.md §5). Tokens are 32 bytes.
 - **Token hash** = first 16 bytes of BLAKE3(token); the header lists them with their levels.
 - **Commitment** in a blob prefix = level byte || first 16 bytes of BLAKE3(token hash || prefix salt). A server verifies a presented token by hashing twice and requires the signature its level calls for (spec/sync.md §5).
 - A token holder tries its epochs of the secret.

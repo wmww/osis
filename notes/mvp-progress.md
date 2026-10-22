@@ -38,7 +38,7 @@ Each is a requirement of spec/requirements.md not fully met, with the issue (or 
 - **Determinism** (Decentralization: "never of arrival order"): an invite grant's `/secrets` resets of entries the node has not seen pass, so validity depends on arrival order: issues/invite-grant-secrets.md.
 - **Chat costs** (Cost goal): measured (`costs_join_message_removal`, tier 2, passes) join 41 KB, message 2.5 KB, removal 26 KB at 4 members (37 KB at 8) with others sending only heartbeats; the waste after flows round 2 was certificate re-copies (fixed: certificates per label). Left: the wire-format knobs (header once per commit, one KEM key per keyset, one sealed box per member) in issues/chat-costs.md.
 - **LAN** (Offline and network: "works over LAN"): built. The driver's LAN loop (feature `lan`) announces a fresh key per network with a sealed signature under the dialable key (spec/sync.md §10, datagram provisional); one driver (`Multi`) carries servers and peers; tier-2 tests over iroh on localhost and through a self-hosted relay. IPv4 and IPv6, network changes from iroh's netwatch; a LAN route replaces a relay connection; `/reach` rotation; first contact by a direct link.
-- **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/header-list-commitments.md (header-list chunk commitments capped at 16, arbitrary cutoff), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
+- **Accepted for post-MVP** (owner): issues/token-admin-secret.md (a non-admin writer omits the level-1 token, so admin-level deletion by token does not reach its deltas), issues/reseal-triggers.md (a member whose deposits are refused can wait for a manual re-share; within Out of scope "re-sealing is triggered, never guaranteed").
 - **Accepted re-seal residue** (residue 2): TLA+ `rotation/MC_drop_refresh` fails `CurrentOpens` as expected (a refused stranded heartbeat); same item as reseal-triggers. Also accepted: re-seal after `/secrets` compaction (notes/sync.md, Limits).
 - **Not checked**: "Runs in browsers" (no wasm build; the lower crates are sans-I/O and take rng and clock as parameters); "pushed, not polled" holds for connected nodes, push wake-ups for sleeping devices are a proposal (notes/networking.md).
 - **API conveniences not built** (no wire impact): queries and backlinks, `undelete` and text cut/paste, `sync_policy`, bearer `open_link`, streaming writes, `pending_uploads`: issues/api-deferred.md.
@@ -58,7 +58,8 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 
 ## Owner decisions applied
 - Until a stable release, spec edits need no owner sign-off; only changes to or conflicts with spec/requirements.md go to the owner (CLAUDE.md).
-- issues/token-admin-secret.md option 1 and issues/header-list-commitments.md (a) for the MVP; better designs post-MVP.
+- issues/token-admin-secret.md option 1 for the MVP; better designs post-MVP.
+- Header-list chunks carry level-2 commitments only, no cutoff (notes/crypto.md).
 - reseal-triggers: accepted as a limit (notes/sync.md), within "triggered, never guaranteed".
 - LAN: the datagram format in spec/sync.md §10 stays provisional; the key is bound by a sealed signature under the dialable key (notes/networking.md).
 - deny.toml licence exceptions for the iroh feature approved; permissive licences and compile-time-only advisories need no sign-off.
@@ -68,7 +69,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Push wake-ups for sleeping devices (notes/networking.md proposal).
 - BLE transport.
 - Browser build: wasm target for the sans-I/O crates, a browser store backend and transport.
-- Post-MVP designs: token-admin-secret, header-list-commitments (reseal-triggers: accepted as a limit, notes/sync.md).
+- Post-MVP designs: token-admin-secret (reseal-triggers: accepted as a limit, notes/sync.md).
 - Chat cost wire-format knobs: declined by the owner (notes/chat.md Costs).
 - Large-value seeking and residues (issues/large-value-seek.md, large-value-residues.md).
 - Sequence paging remainder (issues/node-sequences-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).

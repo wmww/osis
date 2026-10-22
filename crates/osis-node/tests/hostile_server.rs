@@ -359,6 +359,64 @@ fn writer_purge_deletes_chunks_by_token_spec_crypto_7() {
     assert!(left.is_empty(), "{} of {} chunks of the purged value stay at the server", left.len(), chunks.len());
 }
 
+// spec/wire.md §5, spec/crypto.md §7, spec/sync.md §5: the chunks and tree nodes of a linked
+// header list carry exactly the commit's level-2 (author-chain) commitments; a server deletes
+// them by the author-chain token, and refuses the thing-admin token of the same commit.
+#[test]
+fn header_list_chunks_level_2_only_spec_wire_5() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let g = net.group(a, &[], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let mut m = osis_node::Mutation::new();
+    for i in 0..800 {
+        m.set(t, &Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+    }
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let h = net.engine(a).header(&c).unwrap();
+    assert!(h.links.aspects.is_some(), "the aspect list goes by link");
+    let level2 = h.tokens.iter().filter(|x| x.level == 2).count();
+    assert_eq!(level2, 1);
+    assert!(h.tokens.iter().any(|x| x.level == 1), "the commit has a thing-admin token");
+    let lists: Vec<osis_core::BlobId> = net.engine(a).package(&c).unwrap().unwrap().blobs.iter().map(|(id, _)| *id).collect();
+    assert!(lists.len() > 1, "chunks and a tree node");
+    assert!(lists.iter().all(|id| net.server_ids(sv, &l).contains(id)), "header-list blobs uploaded");
+    let thing = net.engine(a).epochs(&t).unwrap();
+    let author = net.engine(a).epochs(&h.actor).unwrap();
+    // the commit's own token secrets per level, found by the header's token hashes
+    let secret = |level: u8| {
+        osis_keys::token_candidates(level, &thing, Some(&author))
+            .into_iter()
+            .map(|(_, s)| s.clone())
+            .find(|s| h.tokens.iter().any(|x| x.level == level && x.hash == osis_crypto::token_hash(osis_crypto::delete_token(s, &h.salt).expose())))
+            .unwrap()
+    };
+    let (admin, chain) = (secret(1), secret(2));
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let head = net.server_path(sv, &l).last().unwrap().clone();
+    let sync = net.engine(a).head_keys(&g, gl.index, &head).unwrap().sync.unwrap();
+    let by = |secret: &Secret32, id: u32, net: &mut Net| {
+        let mut items = Vec::new();
+        for b in &lists {
+            let bytes = net.engine(a).blob(b).unwrap().unwrap();
+            let p = osis_label::Prefix::parse(&bytes).unwrap();
+            assert_eq!(p.commitments().len(), level2, "level-2 commitments only");
+            assert!(p.commitments().iter().all(|x| x[0] == 2));
+            let tok = osis_crypto::delete_token(secret, p.salt());
+            items.push(osis_label::DeleteItem::sign(&sync, &l, *b, None, Some(&tok)).unwrap());
+        }
+        let conn = net.conn_to(a, sv).expect("connected");
+        net.actions(a, vec![Action::Send { conn, bytes: frame(Message::Delete { id, label: l, items }) }]);
+        net.settle(10_000);
+        lists.iter().filter(|id| net.server_ids(sv, &l).contains(id)).count()
+    };
+    assert_eq!(by(&admin, 900_001, &mut net), lists.len(), "the thing-admin token deletes nothing");
+    assert_eq!(by(&chain, 900_002, &mut net), 0, "the author-chain token deletes every header-list blob");
+}
+
 // spec/commits.md §4 (a commit blob whose prefix disagrees with its header is bad input), for a
 // commit whose header lists go by link (spec/commits.md §1): checked once the lists are
 // resolved; the forged blob counts as no body, so a writer places its own.

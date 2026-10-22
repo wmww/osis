@@ -42,7 +42,7 @@ The requirements behind this file: spec/requirements.md, Untrusted (blind) nodes
 ## Wire choices (spec/wire.md)
 - The blob prefix is a fixed byte layout so a blind node parses it without a CBOR decoder; the AEAD binds it as AD so a reader cannot re-prefix a ciphertext (new expiry or commitments) under a fresh blob ID.
 - Padmé length recovery: a `0x80` marker then zeros inside the ciphertext (ISO 7816-4 style). One byte, no length field, and canonical because the padded length must equal `padme(len + 1)`.
-- Header lists, the token list, purge and origins go by link above `CHUNK_THRESHOLD` rather than being capped, since a commit has no size limit; only header-list chunk commitments needed a cap (issues/header-list-commitments.md).
+- Header lists, the token list, purge and origins go by link above `CHUNK_THRESHOLD` rather than being capped, since a commit has no size limit; header-list chunks carry the level-2 commitments only (notes/crypto.md).
 - Range reconciliation: Negentropy-style additive fingerprints (sum of IDs mod 2^256 plus count, hashed) so a sorted ID index answers any range incrementally; 16-way splits, lists at 32 IDs, about log16(n/32) round trips. Rejected: hash of the concatenation (not incremental); Negentropy's full encoding (bound compression and timestamps, more rules for little gain).
 - Protocol: request/reply by id over length-prefixed frames; both Hellos go out at once, so negotiation costs no round trip; per-entry status so a batch partly succeeds; a Status naming a stale key carries the head, so an uploader that never opened learns it.
 - Opens bind the opened side's Hello challenge and static key (no replay elsewhere); stamps, deposits and deletes do not, so stamped entries and timed deletes stay relayable.

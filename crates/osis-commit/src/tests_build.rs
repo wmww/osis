@@ -92,7 +92,7 @@ fn list_overflow_links() {
     assert!(!built.list_blobs.is_empty());
     assert_eq!(built.list_blobs.len(), sink.blobs.len());
     assert!(h.encode().len() < CHUNK_THRESHOLD);
-    // over 16 tokens: header-list blobs carry the level-2 commitment only
+    // header-list blobs carry the level-2 commitment only (spec/wire.md §5)
     for (p, _) in sink.blobs.values() {
         assert_eq!(p.commitments.len(), 1);
         assert_eq!(p.commitments[0][0], 2);
