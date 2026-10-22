@@ -18,9 +18,10 @@
 //! inside one, cuts the row where a whole pass cuts the node (`cut_row`).
 //!
 //! Whole-pass fallbacks (the cache is dropped):
-//! - a record that is neither new nor over held elements: a reset, a record partly new, a
-//!   `Derived` dot, a new record of more than one element or not a plain creation, a new element
-//!   anchored at a `Derived` dot, position writes on a range record (`plan`, `plan_one`,
+//! - a record that is neither new nor over held elements: a reset, a record partly new, a new
+//!   `Derived` record (it splits records of its base source), a new record of more than one
+//!   element or not a plain creation, a new element anchored at an absent `Derived` dot (a
+//!   virtual anchor on `END`), position writes on a range record (`plan`, `plan_one`,
 //!   `plan_pieces`);
 //! - a new element some write was waiting for, one anchored at a new element other than the end
 //!   of a run (`follow`);
@@ -28,9 +29,9 @@
 //!   costing more than about a whole pass (max(n, 1024) rows and blocks looked at; `follow`,
 //!   `slot`);
 //! - a move of an element on a cycle a demotion broke (`Lin::cyc`; otherwise the old demotions
-//!   stay forced, §6.2), a `Derived` element, one gaining or losing a write that names an
-//!   unknown or `Derived` element, or losing one that names an element inside a range record
-//!   (its node may join the next again) (`moved`); a row cut on such a cycle (`cut_row`);
+//!   stay forced, §6.2), one gaining or losing a write that names an unknown element (an absent
+//!   `Derived` one included), or losing one that names an element inside a range record (its
+//!   node may join the next again) (`moved`); a row cut on such a cycle (`cut_row`);
 //! - a move of an element or to an anchor that is not placed, or one closing a cycle (the anchor
 //!   inside the subtree, checked per step) (`place_moved`);
 //! - 256 or more newer siblings at the anchor (`slot`), or a sibling there whose old write fell
@@ -796,9 +797,6 @@ impl Lin {
     /// splits the state's records at its bounds (`Plan::Cut`) and joins it piece by piece into
     /// each; a plan per piece. `false` where part of it is new.
     fn plan_pieces(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
-        if dot.src.is_derived() {
-            return false;
-        }
         let last = nth(dot, de.span - 1);
         let Some(rs) = elems.starting(dot, &last) else { return false };
         let mut pieces = Vec::new();
@@ -846,12 +844,13 @@ impl Lin {
                 }
                 let known = match &anchor {
                     Anchor::Head => true,
-                    Anchor::Dot(x) if x.src.is_derived() => return None,
                     Anchor::Dot(x) => match elems.find(x) {
                         Some((k, r)) => {
                             *cut = inside(k, r, x);
                             true
                         }
+                        // a virtual anchor on `END` (§6.1): it would split nodes of its source
+                        None if x.src.is_derived() => return None,
                         None => false,
                     },
                 };
@@ -1018,18 +1017,18 @@ impl Lin {
     /// The edge change of single element `dot` whose position writes went from `old` to `now`:
     /// `Some(None)` if its chosen edge stays; `None`: rebuild. A write gained naming an element
     /// inside a range record cuts a row after it (`cuts`); rebuilds if a write gained or lost
-    /// names an unknown or `Derived` element, a write lost names an element inside a range
-    /// record (its node may join the next again), or the element is on a broken cycle (§6.2:
-    /// its demotion may change).
+    /// names an unknown element (an absent `Derived` one: a virtual anchor), a write lost names
+    /// an element inside a range record (its node may join the next again), or the element is
+    /// on a broken cycle (§6.2: its demotion may change).
     fn moved(&self, elems: &dyn Recs, dot: &Dot, old: &[(Stamp, Anchor)], now: &[(Stamp, Anchor)], cuts: &mut Vec<Dot>) -> Option<Option<(Stamp, Dot, Anchor)>> {
-        if dot.src.is_derived() || self.cyc.contains(dot) {
+        if self.cyc.contains(dot) {
             return None;
         }
         let gained = now.iter().filter(|p| !old.contains(p)).map(|p| (true, p));
         let lost = old.iter().filter(|p| !now.contains(p)).map(|p| (false, p));
         for (gain, (_, a)) in gained.chain(lost) {
             let Anchor::Dot(x) = a else { continue };
-            let (k, r) = elems.find(x).filter(|_| !x.src.is_derived())?;
+            let (k, r) = elems.find(x)?;
             match inside(k, r, x) {
                 Some(c) if gain => cuts.push(c),
                 Some(_) => return None,
