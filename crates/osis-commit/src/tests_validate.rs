@@ -192,30 +192,33 @@ fn retention_rules() {
     assert_eq!(keep_at_most(&r, None), Some(400));
     assert_eq!(keep_at_most(&r, Some(20)), Some(30));
     let h = sample_header();
-    assert_eq!(body_keep(&h, &r, Some(20), Some(80)), Keep { at_least: 30, at_most: Some(30) });
+    assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 30, at_most: Some(30) });
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/app/title").unwrap() });
     let floor = h.ts.wall_ms().0 + MEMBERSHIP_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
-    assert_eq!(body_keep(&p, &r, Some(20), Some(80)), Keep { at_least: floor, at_most: Some(floor) });
+    assert_eq!(body_keep(&p, &r, Some(20), Some(80), false), Keep { at_least: floor, at_most: Some(floor) });
 }
 
-// spec/commits.md §5 (keep at most): under at most D after replaced, an ordinary body's bound is
-// its first death plus D; a compaction-snapshot body's is that plus `SNAPSHOT_GRACE`.
+// spec/commits.md §5 (keep at most): under at most D after replaced, a body's bound is its
+// first death plus D, plus `AT_MOST_GRACE` while it has a live write, whatever its kind.
 #[test]
-fn snapshot_grace_spec_commits_5() {
+fn at_most_grace_spec_commits_5() {
     use crate::retention::body_keep;
+    use osis_core::format::AT_MOST_GRACE_MS as G;
     let r = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
     let h = sample_header();
-    assert_eq!(body_keep(&h, &r, Some(20), Some(80)).at_most, Some(20));
     let mut s = h.clone();
     s.kind = Kind::ContentSnapshot;
-    assert_eq!(body_keep(&s, &r, Some(20), Some(80)).at_most, Some(20 + osis_core::format::SNAPSHOT_GRACE_MS));
-    assert_eq!(body_keep(&s, &r, None, None).at_most, None);
-    let d = Retention { at_most: Bound { abs: None, rel: Some(5) }, ..r };
-    assert_eq!(body_keep(&h, &d, Some(20), Some(80)).at_most, Some(25));
-    assert_eq!(body_keep(&s, &d, Some(20), Some(80)).at_most, Some(25 + osis_core::format::SNAPSHOT_GRACE_MS));
-    // an absolute bound is not extended
-    let t = Retention { at_most: Bound { abs: Some(30), rel: None }, ..r };
-    assert_eq!(body_keep(&s, &t, Some(20), Some(80)).at_most, Some(30));
+    for x in [&h, &s] {
+        assert_eq!(body_keep(x, &r, Some(20), Some(80), false).at_most, Some(20));
+        assert_eq!(body_keep(x, &r, Some(20), Some(80), true).at_most, Some(20 + G));
+        assert_eq!(body_keep(x, &r, None, None, true).at_most, None);
+        let d = Retention { at_most: Bound { abs: None, rel: Some(5) }, ..r };
+        assert_eq!(body_keep(x, &d, Some(20), Some(80), false).at_most, Some(25));
+        assert_eq!(body_keep(x, &d, Some(20), Some(80), true).at_most, Some(25 + G));
+        // an absolute bound is not extended
+        let t = Retention { at_most: Bound { abs: Some(30), rel: None }, ..r };
+        assert_eq!(body_keep(x, &t, Some(20), Some(80), true).at_most, Some(30));
+    }
 }

@@ -60,9 +60,9 @@ pub const MAX_DRIFT_MS: u64 = HOUR_MS;
 /// Membership deltas are kept at least this long after replaced (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
 pub const MEMBERSHIP_KEEP_MS: u64 = 90 * DAY_MS;
-/// A compaction-snapshot body under keep at most 0 after replaced is kept this long after its
-/// first death, or to the next compaction (spec/wire.md §2, spec/commits.md §5). fixed.
-pub const SNAPSHOT_GRACE_MS: u64 = HOUR_MS;
+/// Added to the relative keep-at-most bound of a body with a live write (spec/wire.md §2,
+/// spec/commits.md §5). fixed.
+pub const AT_MOST_GRACE_MS: u64 = HOUR_MS;
 /// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
 /// Heartbeat bounds (spec/wire.md §2, spec/permissions.md §4). fixed.

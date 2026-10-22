@@ -127,7 +127,9 @@ fn purge_drops_snapshots_spec_commits_5() {
 }
 
 // spec/commits.md §5: a body is one projection class: its deltas share deaths and are dropped
-// together; keep at most 0 drops at apply even when the killing `ts` is ahead of the clock.
+// together; while one of them has a live write the class is kept (`AT_MOST_GRACE`); keep at
+// most 0 drops at apply the kill that leaves it none, even when the killing `ts` is ahead of
+// the clock.
 #[test]
 fn body_is_a_class_spec_commits_5() {
     let mut lp = net(2, 75);
@@ -137,14 +139,18 @@ fn body_is_a_class_spec_commits_5() {
     m.set(t, &GONE2, &s("a2")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     sync(&mut lp, 0, 1);
-    // node 0's clock is ahead; its kill of /t/gone reaches node 1
+    // node 0's clock is ahead; its kills reach node 1
     lp.peers[0].clock.advance(600_000);
     set(&mut lp, 0, t, &GONE, "b");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
+    assert!(e.holds_body(&c, &t, &ak("/t/gone")) && e.holds_body(&c, &t, &ak("/t/gone2")), "/t/gone2 is still live");
+    set(&mut lp, 0, t, &GONE2, "b2");
+    sync(&mut lp, 0, 1);
+    let e = &mut lp.peers[1].engine;
     assert!(!e.holds_body(&c, &t, &ak("/t/gone")));
     assert!(!e.holds_body(&c, &t, &ak("/t/gone2")));
-    assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("a2")));
+    assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();

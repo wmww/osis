@@ -112,9 +112,10 @@ fn expired_body_leaves_local_label_spec_sync_5() {
 }
 
 // spec/sync.md §7 (a right holder that must delete a body with live writes and finds no carrier
-// writes a covering snapshot first), spec/commits.md §5 (relative keep-at-most): a map body
-// partly replaced, its other key still live, leaves the label served with no server only with
-// a snapshot carrying that key under it.
+// writes a covering snapshot first), spec/commits.md §5 (relative keep-at-most, plus
+// `AT_MOST_GRACE` while the body has a live write): a map body partly replaced, its other key
+// still live, is kept and served past first death plus D with no snapshot, then leaves the
+// label served with no server only with a snapshot carrying that key under it.
 #[test]
 fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -130,19 +131,26 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     net.engine(a).commit(m).unwrap();
     net.run();
     let kmap = Ak::new(KMAP.ak()).unwrap();
+    let snap = |net: &mut Net| {
+        net.sync(a).entries(&l).into_iter().any(|(_, x)| match x {
+            EntryKind::Commit { commit, .. } => net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.tid == t && x.ak == kmap)),
+            _ => false,
+        })
+    };
+    let c1_held = |net: &mut Net| net.sync(a).entries(&l).iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
+    // past first death plus 1 h, before the grace bound
+    for _ in 0..4 {
+        net.advance(1_000_000);
+    }
+    assert!(net.engine(a).holds_body(&c1, &t, &kmap) && c1_held(&mut net), "kept and served before the grace bound");
+    assert!(!snap(&mut net), "no carrier before the bound");
     for _ in 0..4 {
         net.advance(1_000_000);
     }
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
     assert_eq!(v, osis_core::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
-    let entries = net.sync(a).entries(&l);
-    let c1_held = entries.iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
-    let snap = entries.iter().any(|(_, x)| match x {
-        EntryKind::Commit { commit, .. } => net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|x| x.tid == t && x.ak == kmap)),
-        _ => false,
-    });
-    assert!(c1_held || snap, "k2 is carried under the label: by its body or a snapshot");
-    assert!(!net.engine(a).holds_body(&c1, &t, &kmap) || c1_held, "a body the node still holds is still served");
+    assert!(!net.engine(a).holds_body(&c1, &t, &kmap), "dropped at the grace bound");
+    assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }
 
 // spec/sync.md §5 (re-registration issues a child of the head; a recorded path is registered
