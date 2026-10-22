@@ -18,21 +18,20 @@ impl Secrets for VSecrets {
     fn dedup(&self, _: &Tid) -> Option<Secret32> {
         Some(s32(0x30))
     }
-    fn admin(&self, _: &Tid) -> Option<Secret32> {
-        Some(s32(0x31))
+    fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&s32(0x31)).verifying_key())
     }
-    fn chain_write(&self) -> Option<Secret32> {
-        Some(s32(0x32))
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&s32(0x32)).verifying_key())
     }
-    fn write(&self, _: &Tid) -> Option<Secret32> {
-        Some(s32(0x33))
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&s32(0x33)).verifying_key())
     }
 }
 
 const AUTHOR: Tid = Tid::from_bytes([0x21; 15]);
 const ACTOR: Tid = Tid::from_bytes([0x22; 15]);
 const THING: Tid = Tid::from_bytes([0x23; 15]);
-const SALT: [u8; 16] = [0x34; 16];
 
 fn ts(wall: u64) -> Ts {
     Ts::make(WallMs(wall), 0).unwrap()
@@ -46,7 +45,7 @@ fn delta(kind: Kind, at: Ts, src: Source, lo: u64, v: Value, nonce: u8) -> Vec<u
 
 fn built(b: CommitBuilder) -> CommitBlob {
     let key = SigningSecret::from_seed(&s32(0x35));
-    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&SALT])).unwrap().commit;
+    let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[])).unwrap().commit;
     let dedup = |_: &Tid| Some(s32(0x30));
     verify_blob(&c, &key.verifying_key(), &dedup, None).unwrap();
     c
@@ -56,8 +55,7 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
     let mut r = case(name, spec)
         .with("signing-seed", hex(s32(0x35).expose()))
         .with("dedup", hex(s32(0x30).expose()))
-        .with("token-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
-        .with("salt", hex(&SALT));
+        .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())));
     for p in &c.parts {
         r = r.with(&format!("delta-{}-{}", p.ai, p.di), hex(&p.delta));
     }
@@ -152,8 +150,8 @@ pub fn headers() -> VecFile {
     x.aspects[0].lo = 0;
     cases.push(reject("empty counter range on a content commit", "spec/wire.md §4", &x, "counter-range"));
     let mut x = h.clone();
-    x.tokens.reverse();
-    cases.push(reject("tokens out of order", "spec/wire.md §4", &x, "order"));
+    x.keys.reverse();
+    cases.push(reject("delete keys out of order", "spec/wire.md §4", &x, "order"));
     cases.extend(more_accepted());
     cases.extend(more_rejected(&c.header));
     VecFile { header: generated_header("commit", SPEC), cases }
@@ -192,11 +190,11 @@ fn more_accepted() -> Vec<Record> {
     a.schema = Some((osis_core::SchemaId([0x27; 16]), 2));
     a.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
-    a.chunks = vec![(BlobId([0x28; 32]), [0x29; 16]), (BlobId([0x2a; 32]), [0x2b; 16])];
+    a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
-    out.push(record("commit form, schema index, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c).with("chunk-salts", format!("{}:{} {}:{}", hex(&[0x28; 32]), hex(&[0x29; 16]), hex(&[0x2a; 32]), hex(&[0x2b; 16]))));
+    out.push(record("commit form, schema index, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
     // purge request, /created kept forever
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
@@ -238,7 +236,7 @@ fn more_accepted() -> Vec<Record> {
     let mut r = case("linked aspect list", "spec/wire.md §4, §5, §6")
         .with("signing-seed", hex(s32(0x35).expose()))
         .with("dedup", hex(s32(0x30).expose()))
-        .with("token-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
+        .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
         .with("randomness", hex(&rec.1))
         .with("aspect-list-blake3", hex(&osis_core::hash::hash(&osis_core::encode(&c.header.list_value(ListField::Aspects).unwrap()))));
     for (i, id) in bl.list_blobs.iter().enumerate() {
@@ -280,28 +278,38 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.schemas = vec![(SchemaId([9; 16]), 1), (SchemaId([1; 16]), 1)];
     out.push(reject("schemas out of order", "spec/wire.md §4", &x, "order"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), tokens: vec![(1, [0; 16]), (0, [0; 16])] });
-    out.push(reject("chunk tokens out of order", "spec/wire.md §4", &x, "chunk-tokens"));
+    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), keys: vec![1, 0] });
+    out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
-    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), tokens: vec![(9, [0; 16])] });
-    out.push(reject("chunk token index out of range", "spec/wire.md §4", &x, "chunk-tokens"));
+    x.chunks.push(ChunkEntry { blob: osis_core::BlobId([1; 32]), keys: vec![9] });
+    out.push(reject("chunk delete key index out of range", "spec/wire.md §4", &x, "chunk-keys"));
     let mut x = content.clone();
     x.aspects[0].ak = Ak::new("/created").unwrap();
     out.push(reject("/created with other than its fixed retention", "spec/commits.md §5", &x, "fixed-retention"));
     let mut x = content.clone();
     x.aspects[0].ak = Ak::new("/created").unwrap();
     x.aspects[0].retention = retention::CREATED_RETENTION;
-    x.aspects[0].tokens.clear();
-    x.tokens.clear();
+    x.aspects[0].keys.clear();
+    x.keys.clear();
     x.validate().unwrap();
     x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("/created with expires", "spec/commits.md §5, §6", &x, "fixed-expires"));
     let mut x = content.clone();
-    x.tokens.push(Token { level: 3, hash: [0xff; 16] });
-    out.push(reject("token no aspect lists", "spec/wire.md §4", &x, "unused-token"));
+    x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
+    out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
     let mut x = content.clone();
-    x.tokens.remove(1);
-    x.aspects[0].tokens = vec![0];
-    out.push(reject("author retention without its level-2 token", "spec/crypto.md §7", &x, "token-levels"));
+    x.keys.remove(1);
+    x.aspects[0].keys = vec![0];
+    out.push(reject("author retention without its level-2 key", "spec/crypto.md §7", &x, "delete-levels"));
+    let mut x = content.clone();
+    x.keys.remove(0);
+    x.aspects[0].keys = vec![0];
+    out.push(reject("author retention without its level-1 key", "spec/crypto.md §7", &x, "delete-levels"));
+    // a delete key that is no valid Ed25519 point
+    let mut x = content.clone();
+    x.keys[0].key = [0; 32];
+    let bytes = x.encode();
+    assert!(Header::decode(&bytes).is_err());
+    out.push(case("delete key not a valid point", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "delete-key"));
     out
 }
