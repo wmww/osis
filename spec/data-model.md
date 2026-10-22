@@ -80,7 +80,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `/groups` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
-The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, schema ID 16 zero bytes, revision 2, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
 
 | AK | type | notes |
 |---|---|---|
@@ -99,6 +99,9 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/seen` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
+| `/name` | string | what humans call the thing |
+| `/description` | markdown | |
+| `/tag` | struct { color: option<string> } | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
 **Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
 
@@ -143,9 +146,12 @@ aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: 
 aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
 aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect /groups: set<tid> [synthetic, guaranteed];
+aspect /name: string;
+aspect /description: markdown;
+aspect /tag: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen` and `/group`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/description` and `/tag`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

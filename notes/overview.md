@@ -14,7 +14,7 @@ The MVP is built: every subsystem of the spec is implemented and tested (final r
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `crates/`: osis-core (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, iroh, LAN), -server (blind node), -node (engine, sync engine, membership flows), `osis` (the app API), osis-cli (binary `osis`), osis-bench.
-- `examples/` notes-app, chat, folder (notes/apps.md); `sim/` the deterministic simulator (notes/testing.md); `vectors/` conformance vectors; `fuzz/` cargo-fuzz targets; `models/` crdt and membership reference models, TLA+ `sync` and `rotation`; `tools/` policy.py, spec_map.py, fixpoint.
+- `examples/` notes-app, chat, tags (notes/apps.md); `sim/` the deterministic simulator (notes/testing.md); `vectors/` conformance vectors; `fuzz/` cargo-fuzz targets; `models/` crdt and membership reference models, TLA+ `sync` and `rotation`; `tools/` policy.py, spec_map.py, fixpoint.
 
 What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
@@ -25,7 +25,7 @@ What runs where (details and latest numbers: notes/testing.md):
 How to run:
 - CLI: `cargo run -p osis-cli -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
 - Server: `cargo run -p osis-server --features bin -- --help` (or `osis serve`); prints `quic://host:port#key`.
-- Examples: `cargo run -p notes-app` (or chat, folder); `cargo test -p chat`.
+- Examples: `cargo run -p notes-app` (or chat, tags); `cargo test -p chat`.
 - Sim: `cargo run --release -p osis-sim --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `models/tla/run.sh small` (Java); `cargo test -p crdt-model`, `-p membership-model`.
 

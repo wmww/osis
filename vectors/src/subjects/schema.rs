@@ -70,6 +70,8 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("reach", "/reach", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
         ("seen", "/seen", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
         ("group", "/group", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
+        ("name", "/name", NAME.encode(&"Trip".to_string())),
+        ("tag", "/tag", TAG.encode(&Tag { color: Some("#ff8800".into()) })),
     ]
 }
 
