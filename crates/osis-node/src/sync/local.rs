@@ -126,15 +126,16 @@ impl SyncEngine {
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
     /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
     /// right holder as it holds the snapshot); `s` carries them. A body is judged against `s`
-    /// again until its verdict is settled (dropped or established uncovered: `covered_judged`),
-    /// so what a node drops follows what it holds, not when the snapshot or the body arrived.
+    /// again until it is dropped or settled kept (established uncovered, or the lower of two
+    /// covered-equal snapshots: `covered_judged`), so what a node drops follows what it holds,
+    /// not when the snapshot or the body arrived.
     pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
         let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
         let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
         for c in held {
-            if c == s || self.covered_judged.contains(&(s, c)) || !self.engine.holds_body(&c, t, ak) {
+            if c == s || self.covered_judged.contains(&(s, c, *t, ak.clone())) || !self.engine.holds_body(&c, t, ak) {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
@@ -152,16 +153,16 @@ impl SyncEngine {
                 // not established yet: judged again
                 None => continue,
                 Some(false) => {
-                    self.covered_judged.insert((s, c));
+                    self.covered_judged.insert((s, c, *t, ak.clone()));
                     continue;
                 }
                 Some(true) => {}
             }
-            self.covered_judged.insert((s, c));
             // covered-equal snapshots: only the higher commit ID goes (spec/sync.md §7), as in
             // the must-hold judgment, or this node drops the one a co-writer keeps uploading
             let snapshot = matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot);
             if snapshot && c < s && self.engine.covered(&c, &s, t, ak)? == Some(true) {
+                self.covered_judged.insert((s, c, *t, ak.clone()));
                 continue;
             }
             self.engine.drop_body(&c, t, ak)?;

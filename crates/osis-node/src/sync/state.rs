@@ -315,13 +315,14 @@ impl State {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
-                // a queued deposit that does not decode (an older format) is not sent: never a
-                // failed load
-                b"o" => {
-                    if let Ok((k, o)) = decode_out(rest, &v) {
+                // a queued deposit that does not decode (an older format) is not sent and goes:
+                // never a failed load
+                b"o" => match decode_out(rest, &v) {
+                    Ok((k, o)) => {
                         s.outbox.insert(k, o);
                     }
-                }
+                    Err(_) => s.del([b"y/".as_slice(), &k].concat()),
+                },
                 b"q" => {
                     let l = LabelId(r.arr()?);
                     if v.is_empty() {
@@ -877,8 +878,11 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let s = State::load(e).unwrap();
+        let mut s = State::load(e).unwrap();
         assert!(s.outbox.is_empty());
+        s.flush(e).unwrap();
+        let left = e.run(|tx| Ok(tx.txn.scan_local(OUTBOX, &[], 8)?)).unwrap();
+        assert!(left.is_empty(), "the undecodable record is deleted");
     }
 
     // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox

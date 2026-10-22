@@ -410,6 +410,8 @@ impl SyncEngine {
     /// by aspect.
     fn drop_label_covered(&mut self, l: &LabelId) -> Result<BTreeMap<(Tid, Ak), Vec<CommitId>>> {
         let snaps = self.snapshots_at(l);
+        let judged = std::mem::take(&mut self.covered_judged);
+        self.covered_judged = judged.into_iter().filter(|(s, c, t, a)| self.engine.holds_body(s, t, a) && self.engine.holds_body(c, t, a)).collect();
         for ((t, a), ss) in &snaps {
             for s in ss {
                 if self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {

@@ -72,6 +72,8 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
         net.node(20 + i, &[sv]);
     }
     let (g, l, c, done) = invite(&mut net, sv);
+    // the grantee stays offline: its inbox copy is no other route to the label
+    net.set_online(2, false);
     net.set_online(1, false);
     net.sync(1).carry_out(done).unwrap();
     // node 1 loses the group before it is back online
@@ -84,8 +86,11 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.pair(0, 1);
     net.sync(1).drop_lost().unwrap();
     assert!(net.sync(1).labels().iter().all(|(_, x)| x.id != l), "node 1 forgot the label");
+    let before = log(&net, sv, &l);
+    assert_eq!(copies(&mut net, 0, &l, &c), 0, "not under the label yet");
     net.set_online(1, true);
     net.run();
     net.advance(61_000);
+    assert!(log(&net, sv, &l).0 > before.0, "node 1 deposited after forgetting the label");
     assert_eq!(copies(&mut net, 0, &l, &c), 1, "the deposit reached the label");
 }
