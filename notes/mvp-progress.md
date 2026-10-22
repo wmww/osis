@@ -59,7 +59,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 ## Owner decisions applied
 - Until a stable release, spec edits need no owner sign-off; only changes to or conflicts with spec/requirements.md go to the owner (CLAUDE.md).
 - issues/token-admin-secret.md option 1 and issues/header-list-commitments.md (a) for the MVP; better designs post-MVP.
-- issues/reseal-triggers.md (a), within "triggered, never guaranteed".
+- reseal-triggers: accepted as a limit (notes/sync.md), within "triggered, never guaranteed".
 - LAN: the datagram format in spec/sync.md §10 stays provisional; the key is bound by a sealed signature under the dialable key (notes/networking.md).
 - deny.toml licence exceptions for the iroh feature approved; permissive licences and compile-time-only advisories need no sign-off.
 
@@ -68,7 +68,7 @@ Rationale lives in the notes named; TLC finding IDs (S*, R*) are in models/tla/*
 - Push wake-ups for sleeping devices (notes/networking.md proposal).
 - BLE transport.
 - Browser build: wasm target for the sans-I/O crates, a browser store backend and transport.
-- Post-MVP designs: token-admin-secret, header-list-commitments, reseal-triggers.
+- Post-MVP designs: token-admin-secret, header-list-commitments (reseal-triggers: accepted as a limit, notes/sync.md).
 - Chat cost wire-format knobs: declined by the owner (notes/chat.md Costs).
 - Large-value seeking and residues (issues/large-value-seek.md, large-value-residues.md).
 - Sequence paging remainder (issues/node-sequences-not-paged.md) and the perm walk cost and owner-chain cap (issues/perm-eval-cost.md).
