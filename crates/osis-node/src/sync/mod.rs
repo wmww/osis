@@ -331,9 +331,9 @@ pub struct SyncEngine {
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// Labels synced, with the actor their keys derive from and their servers.
     pub(crate) label_actors: BTreeMap<LabelId, (Tid, Vec<ServerKey>)>,
-    /// (snapshot, body) pairs whose compaction verdict is settled: the body dropped or
-    /// established uncovered (spec/sync.md §7).
-    pub(crate) covered_judged: BTreeSet<(osis_core::CommitId, osis_core::CommitId)>,
+    /// (snapshot, body, aspect) judgments settled with the body kept (spec/sync.md §7); a pair
+    /// goes once either body is dropped.
+    pub(crate) covered_judged: BTreeSet<(osis_core::CommitId, osis_core::CommitId, Tid, osis_core::Ak)>,
     /// Peer sessions this node serves (member peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
