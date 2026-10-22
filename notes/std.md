@@ -23,7 +23,7 @@ Four kinds, three types:
 - A **profile** is the same aspects on the person's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the person; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(person)` gives the profile a card import brought.
 - A contact of mine that is an osis user carries `/contact/profile`; my aspects override the profile's values field by field (tests/contact.rs `view`). A contact without it is just my data.
 - Entries are keyed maps (`emails`, `phones`, `urls` by value; `addresses`, `dates` by label), not lists: concurrent additions merge and one entry's label is editable alone. `labeled { label, pref }` marks the preferred one of a kind.
-- Left out of vCard on purpose: gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
+- Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 
 ## Event (schemas/event.osis)
 - `/event/start`: `at(wall)` or `day(date)`; absent means not scheduled yet. `/event/end`: `at(wall)` with its own zone (a flight lands in another zone), `day(date)` inclusive (iCalendar's exclusive date end is the commonest import bug; the import converts), or `after(duration)` from the start, so moving a start moves the end. Absent: a moment, or one day. An end whose kind does not match the start, or precedes it, is an app-level validation error (start and end are separate aspects and merge independently).
@@ -41,5 +41,5 @@ Four kinds, three types:
 ## Open
 - Recurrence expansion and zone resolution as a shared library (an app concern today; worth one implementation).
 - Import and export for vCard and iCalendar, with where UIDs are kept.
-- Files (a blob with a mime type) for attachments; the contact photo is inline meanwhile.
+- Files (a blob with a mime type) for attachments and contact photos (no photo aspect now, owner).
 - Chat (notes/chat.md).
