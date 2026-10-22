@@ -344,6 +344,7 @@ fn move_many_bare_anchors_spec_perm_7() {
 
 /// Text `t` on peer 0: "headtail", then `n` characters typed between, then deleted (two
 /// commits: a delete is at most `MAX_DELTA_BARE` elements), all but the last `kept` of them;
+/// then "SECRETmid" typed after "head" and "SECRET" deleted (shown "mid" anchors at it);
 /// compacted (the snapshot carries the deleted elements content-less, its bodies dropped) when
 /// `compact`.
 fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_core::Tid, n: usize, kept: usize, compact: bool) {
@@ -359,6 +360,11 @@ fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_core::Tid, n:
         m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 4, len } }).unwrap();
         ids.push(lp.peers[0].commit(m).unwrap().unwrap());
     }
+    for op in [Op::Insert { at: 4, items: vec![s("SECRETmid")] }, Op::Delete { at: 4, len: 6 }] {
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: Vec::new(), op }).unwrap();
+        ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+    }
     if compact {
         let k = ak("/t/text");
         let e = &mut lp.peers[0].engine;
@@ -370,10 +376,10 @@ fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_core::Tid, n:
 }
 
 // spec/permissions.md §7 (an import carries only the sequence elements the importer's state
-// shows and those they anchor at), spec/crdt.md §3.3 rule 7 (`MAX_DELTA_BARE`): a text with
-// 300k characters deleted moves, from its commits or compacted: the copy reads like the
-// original, the imports are small (the deleted characters stay behind), and a receiver accepts
-// them.
+// shows and those they anchor at, the latter without content), spec/crdt.md §3.3 rule 7
+// (`MAX_DELTA_BARE`): a text with 300k characters deleted and a word erased inside shown text
+// moves, from its commits or compacted: the copy reads like the original, the imports are
+// small and hold no erased text, and a receiver accepts them.
 #[test]
 #[ignore = "tier 2"]
 fn move_deleted_text_small_import_spec_perm_7() {
@@ -385,17 +391,20 @@ fn move_deleted_text_small_import_spec_perm_7() {
         deleted_text(&mut lp, t, 300_000, 0, compact);
         let k = ak("/t/text");
         let e = &mut lp.peers[0].engine;
-        assert_eq!(e.get(&t, &k).unwrap(), Some(s("headtail")));
+        assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidtail")));
         let (copy, imports) = e.move_thing(&t, a).unwrap();
-        assert_eq!(e.get(&copy, &k).unwrap(), Some(s("headtail")), "compact {compact}: the copy is complete");
+        assert_eq!(e.get(&copy, &k).unwrap(), Some(s("headmidtail")), "compact {compact}: the copy is complete");
         let mut size = 0;
         for i in &imports {
             let pk = e.package(i).unwrap().unwrap();
             size += pk.bytes.len() + pk.blobs.iter().map(|(_, b)| b.len()).sum::<usize>();
+            for b in std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)) {
+                assert!(!b.windows(6).any(|w| w == b"SECRET"), "compact {compact}: erased text in an import");
+            }
         }
         assert!(size < 16 * 1024, "compact {compact}: imports of {size} bytes");
         sync(&mut lp, 0, 1);
-        assert_eq!(lp.peers[1].engine.get(&copy, &k).unwrap(), Some(s("headtail")), "compact {compact}: receivers accept the import");
+        assert_eq!(lp.peers[1].engine.get(&copy, &k).unwrap(), Some(s("headmidtail")), "compact {compact}: receivers accept the import");
     }
 }
 
@@ -411,7 +420,7 @@ fn move_over_max_delta_bare_fails_spec_perm_7() {
     deleted_text(&mut lp, t, 400_000, 1, true);
     let k = ak("/t/text");
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&t, &k).unwrap(), Some(s("headxtail")));
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidxtail")));
     let before = e.commit_ids().len();
     let err = e.move_thing(&t, a).unwrap_err();
     assert!(err.to_string().contains("MAX_DELTA_BARE"), "{err}");

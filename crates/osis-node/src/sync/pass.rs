@@ -512,10 +512,14 @@ impl SyncEngine {
     fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(Entry, u64)>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
-        if a.retention.at_most.rel.is_none() || self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
+        if a.retention.at_most.rel.is_none() {
             return Ok(None);
         }
+        // deaths and bound first: liveness costs a look through the state (cached per aspect)
         let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { return Ok(None) };
+        if self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
+            return Ok(None);
+        }
         Ok(self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))
     }
 
@@ -1737,7 +1741,7 @@ impl SyncEngine {
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a
     /// covering snapshot first when it may write the aspect (spec/sync.md §7).
-    fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
+    pub(super) fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
         if aspects.iter().all(|(t, a)| self.carrier_of(body, t, a).is_some()) {
             return Ok(());
         }

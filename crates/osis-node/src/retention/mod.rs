@@ -226,6 +226,22 @@ pub(crate) fn note_earlier_deaths(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: 
     Ok(())
 }
 
+/// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
+/// again: its state changed other than by a join (a validity flip), so a body may have gained
+/// or lost its live writes (spec/commits.md §5).
+pub(crate) fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    for c in held {
+        let Some(m) = tx.core.commits.get(&c) else { continue };
+        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        if m.dropped.contains(&(ai, 0)) || m.header.aspects.get(ai).is_none_or(|a| a.retention.at_most.rel.is_none()) {
+            continue;
+        }
+        check_at_most(tx, &c, ai)?;
+    }
+    Ok(())
+}
+
 fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
@@ -273,6 +289,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
+    tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
@@ -457,7 +474,8 @@ impl Engine {
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
                     T_EXPIRY => expire(tx, &c, ai, &mut changed)?,
-                    _ => drop_part(tx, &c, ai)?,
+                    // judged again: liveness may have changed since the timer was set
+                    _ => check_at_most(tx, &c, ai)?,
                 }
             }
             if !changed.is_empty() {
@@ -467,6 +485,30 @@ impl Engine {
         })?;
         self.reexamine()?;
         Ok(n)
+    }
+
+    /// The bodies the due keep-at-most timers will drop with a live write, as (commit, thing,
+    /// aspect): a node that may write the aspect snapshots them first (spec/commits.md §5).
+    pub(crate) fn due_live_drops(&mut self) -> Result<Vec<(CommitId, Tid, Ak)>> {
+        let due = self.run(|tx| {
+            let now = tx.now().0;
+            let mut due = Vec::new();
+            tx.scan(records::TIMER, |k, v| {
+                let (t, c, ai) = records::parse_timer(k)?;
+                if t <= now && v.first() == Some(&T_AT_MOST) {
+                    due.push((c, ai));
+                }
+                Ok(())
+            })?;
+            Ok(due.into_iter().filter_map(|(c, ai)| tx.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).map(|a| (c, a.tid, a.ak.clone()))).collect::<Vec<_>>())
+        })?;
+        let mut out = Vec::new();
+        for (c, t, a) in due {
+            if self.holds_body(&c, &t, &a) && self.body_keep(&c, &t, &a)?.at_most.is_some_and(|b| b <= self.now().0) && self.body_live(&c, &t, &a)? {
+                out.push((c, t, a));
+            }
+        }
+        Ok(out)
     }
 
     /// When the next expiry or keep-at-most timer is due (corrected wall ms).
@@ -520,7 +562,7 @@ impl Engine {
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
     /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
-    /// until the next change (`Core::live_bodies`).
+    /// until its aspect's state changes (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         let key = (*c, *tid, ak.clone());
         if let Some(v) = self.core.live_bodies.get(&key) {
@@ -528,9 +570,11 @@ impl Engine {
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
         let live = self.run(|tx| match aspect_index(tx, &c, &tid, &ak) {
-            Some(ai) => live(tx, &c, ai),
-            None => Ok(true),
+            Some(ai) => live(tx, &c, ai).map(Some),
+            None => Ok(None),
         })?;
+        // an unknown commit counts live, uncached (its apply may change nothing here)
+        let Some(live) = live else { return Ok(true) };
         self.core.live_bodies.insert(key, live);
         Ok(live)
     }
@@ -690,7 +734,7 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
             tx.ensure_touch(&a.tid, &a.ak, t)?;
         }
         let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-        if st.writes().iter().any(|(d, _)| o.owns(d)) {
+        if st.holds_owned(&|src, lo, hi| o.owns_range(src, lo, hi)) {
             return Ok(true);
         }
     }

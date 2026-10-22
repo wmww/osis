@@ -347,3 +347,47 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     assert!(!text.contains(marker));
     assert!(!ec.holds_body(&old, &t, &ak));
 }
+
+// spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose
+// text was all erased keeps to the next compaction or its first death plus `AT_MOST_GRACE`;
+// the erased data may persist that long), spec/crdt.md §4.8: under keep at most 0, a word
+// typed then wholly deleted is kept before the bound with no snapshot, gone here and at the
+// server after it, and a reader joining then cannot read it.
+#[test]
+fn text_fully_erased_kept_to_grace_bound_spec_commits_5() {
+    use osis_crdt::{Op, PathOp};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let c = net.node(3, &[sv]);
+    net.blocked.insert((c, sv));
+    let g = net.group(a, &[(c, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(GONETEXT.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![s("SECRET")] } }).unwrap();
+    let typed = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_server = blobs(&mut net, a, &l, &typed);
+    let mut m = Mutation::new();
+    m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 6 } }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(a).get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
+    assert!(net.engine(a).body_live(&typed, &t, &ak).unwrap(), "a deleted char's creation is a live write");
+    net.advance(30 * 60_000);
+    assert!(net.engine(a).holds_body(&typed, &t, &ak), "held before the bound");
+    assert!(at_server.iter().all(|b| net.server_ids(sv, &l).contains(b)), "and at the server");
+    assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no snapshot before the bound");
+    net.advance(31 * 60_000);
+    net.run();
+    assert!(!net.engine(a).holds_body(&typed, &t, &ak), "dropped at the bound");
+    let ids = net.server_ids(sv, &l);
+    assert!(at_server.iter().all(|b| !ids.contains(b)), "deleted at the server");
+    net.blocked.clear();
+    net.advance(10_000);
+    let ec = net.engine(c);
+    assert_eq!(ec.get(&t, &ak).unwrap().unwrap_or(s("")), s(""));
+    assert!(!ec.holds_body(&typed, &t, &ak));
+}

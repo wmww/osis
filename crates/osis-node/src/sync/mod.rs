@@ -541,6 +541,10 @@ impl SyncEngine {
             Event::Tick => {
                 // keep-at-most drops change no read, so no engine event says so: forget the
                 // dropped bodies' blobs and let every label judge again (spec/commits.md §5)
+                // the carrier of a live write goes before its body (spec/commits.md §5)
+                for (c, t, a) in self.engine.due_live_drops()? {
+                    self.snapshot_first(&[(t, a)], &c)?;
+                }
                 if self.engine.tick_drops()? > 0 {
                     self.mark_dirty();
                     self.forget_dropped()?;

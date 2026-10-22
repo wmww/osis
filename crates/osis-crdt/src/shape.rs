@@ -51,7 +51,7 @@ impl Fragment {
                 if shown {
                     work.extend(anchors.iter().cloned());
                 }
-                recs.insert(d.clone(), Rec { span: e.span, chain: e.created.is_some(), anchors, prefix: if shown { e.span } else { 0 }, single: BTreeSet::new() });
+                recs.insert(d.clone(), Rec { span: e.span, shown, chain: e.created.is_some(), anchors, prefix: if shown { e.span } else { 0 }, single: BTreeSet::new() });
             }
         });
         let mut out = Shown { recs };
@@ -74,11 +74,12 @@ impl Fragment {
         out
     }
 
-    /// Drops the sequence elements `shown` (of the importer's state) does not need: an import
-    /// carries no element nothing it shows depends on (spec/permissions.md §7).
+    /// Drops the sequence elements `shown` (of the importer's state) does not need, and the
+    /// content of those it keeps only as anchors (not shown there): an import carries no
+    /// element nothing it shows depends on, and no erased content (spec/permissions.md §7).
     pub fn keep_shown(&mut self, shown: &Shown) {
         self.walk_seqs_mut(&mut |s| {
-            if s.elems().iter().all(|(d, e)| shown.all_kept(d, e.span)) {
+            if s.elems().iter().all(|(d, e)| shown.all_kept(d, e.span, !matches!(e.content, SeqContent::None))) {
                 return;
             }
             let old = std::mem::take(s.elems_mut());
@@ -86,9 +87,12 @@ impl Fragment {
             for (d, e) in old {
                 let mut off = 0;
                 while off < e.span {
-                    let (keep, len) = shown.stretch(&crate::seq_span::nth(&d, off), e.span - off);
+                    let (keep, len, hidden) = shown.stretch(&crate::seq_span::nth(&d, off), e.span - off);
                     if keep {
-                        let (x, y) = crate::seq_span::piece(&d, &e, off, len);
+                        let (x, mut y) = crate::seq_span::piece(&d, &e, off, len);
+                        if hidden {
+                            y.content = SeqContent::None;
+                        }
                         out.insert(x, y);
                     }
                     off += len;
@@ -141,6 +145,8 @@ impl Fragment {
 /// A state record for `Fragment::shown`.
 struct Rec {
     span: u64,
+    /// The state shows it (one element).
+    shown: bool,
     /// A creation chain: element `j > 0` anchors at element `j - 1`.
     chain: bool,
     /// The first element's anchors.
@@ -167,25 +173,28 @@ impl Shown {
         (d.src == x.src && x.ctr - d.ctr < r.span).then_some((d, r))
     }
 
-    /// From element `x`, at most `max` elements: whether they are kept, and how many share that.
-    fn stretch(&self, x: &Dot, max: u64) -> (bool, u64) {
+    /// From element `x`, at most `max` elements: whether they are kept, how many share that,
+    /// and whether they are kept only as anchors (not shown).
+    fn stretch(&self, x: &Dot, max: u64) -> (bool, u64, bool) {
         let Some((d, r)) = self.find(x) else {
             // not in the state: not needed, up to the next record
             let next = self.recs.range(x.clone()..).next().filter(|(d, _)| d.src == x.src).map_or(max, |(d, _)| d.ctr - x.ctr);
-            return (false, next.clamp(1, max));
+            return (false, next.clamp(1, max), true);
         };
         let j = x.ctr - d.ctr;
         let rest = (r.span - j).min(max);
         if r.chain {
-            return if j < r.prefix { (true, (r.prefix - j).min(rest)) } else { (false, rest) };
+            return if j < r.prefix { (true, (r.prefix - j).min(rest), !r.shown) } else { (false, rest, true) };
         }
         let keep = r.single.contains(&j);
         let len = (j + 1..j + rest).take_while(|k| r.single.contains(k) == keep).count() as u64 + 1;
-        (keep, len)
+        (keep, len, !r.shown)
     }
 
-    /// Whether every element of record `(d, span)` is kept.
-    fn all_kept(&self, d: &Dot, span: u64) -> bool {
-        self.stretch(d, span) == (true, span)
+    /// Whether record `(d, span)` stays as it is: every element kept, and its content (`content`)
+    /// shown.
+    fn all_kept(&self, d: &Dot, span: u64, content: bool) -> bool {
+        let (keep, len, hidden) = self.stretch(d, span);
+        keep && len == span && !(content && hidden)
     }
 }
