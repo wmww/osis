@@ -74,20 +74,21 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
 /// backdated; 1 between them; the last: after them), the demoter (0: A, the owner; 2: C, an
-/// admin of G), whether a grandchild of G is created, and what follows the
+/// admin of G), the grandchild of G (0: none; 1: created in a later commit, so it can arrive
+/// late under a late parent; 2: in its parent's commit), and what follows the
 /// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
 /// item: a commit naming a former leaf).
 struct Shape {
     writes: usize,
     at: usize,
     by: usize,
-    sub: bool,
+    sub: usize,
     tail: usize,
 }
 
 /// One history of `shape`, the rest random. Peer 0 (A) owns G, gives peer 1 (B) write and
-/// peer 2 (C) admin; A creates two items under G and maybe an item under the first (a grandchild
-/// of G) in one commit; B writes on G or on one of them, the demoter receiving each at once or not
+/// peer 2 (C) admin; A creates two items under G in one commit, and maybe an item under the first
+/// (a grandchild of G) in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
 /// Returns how many orders ran.
 fn sample(seed: u64, shape: Shape) -> usize {
@@ -109,7 +110,10 @@ fn sample(seed: u64, shape: Shape) -> usize {
     let item2 = lp.peers[0].engine.new_thing(&mut m, g);
     m.set(item, &reg(), &Value::Str("v0".into())).unwrap();
     m.set(item2, &reg(), &Value::Str("w0".into())).unwrap();
-    let sub = if shape.sub {
+    if shape.sub == 1 {
+        lp.peers[0].commit(std::mem::take(&mut m)).unwrap();
+    }
+    let sub = if shape.sub > 0 {
         let sub = lp.peers[0].engine.new_thing(&mut m, item);
         m.set(sub, &reg(), &Value::Str("s0".into())).unwrap();
         sub
@@ -178,12 +182,12 @@ fn sample(seed: u64, shape: Shape) -> usize {
 
 // spec/permissions.md §5 (validity is a deterministic function of the held set), §5.2 (a write
 // a demotion's frontier misses is invalid whatever order it arrives in), spec/crdt.md §4.6:
-// frontiers before (backdated), inside and after the writer's writes; children and a
-// grandchild of the demoted actor created in one commit; a demotion by an admin other than the
+// frontiers before (backdated), inside and after the writer's writes; children of the demoted
+// actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
 // owner; a commit naming a former leaf.
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
-    let cases = [(2, 0, 0, true, 0), (2, 1, 2, true, 0), (2, 1, 0, false, 0), (1, 0, 2, false, 3)];
+    let cases = [(1, 0, 0, 1, 0), (1, 1, 2, 1, 0), (2, 1, 2, 2, 0), (2, 1, 0, 0, 0), (1, 0, 2, 0, 3)];
     for (i, (writes, at, by, sub, tail)) in cases.into_iter().enumerate() {
         assert_eq!(sample(0x0de5_0000 + i as u64, Shape { writes, at, by, sub, tail }), 24);
     }
@@ -196,7 +200,7 @@ fn validity_alike_in_every_arrival_order_random_spec_permissions_5_2() {
     let mut rng = Rng(0x0de5_1111);
     for seed in 0..40 {
         let writes = 1 + rng.below(2);
-        let shape = Shape { writes, at: rng.below(writes + 1), by: [0, 2][rng.below(2)], sub: rng.below(2) == 0, tail: rng.below(4) };
+        let shape = Shape { writes, at: rng.below(writes + 1), by: [0, 2][rng.below(2)], sub: rng.below(3), tail: rng.below(4) };
         sample(0x0de5_1000 + seed, shape);
     }
 }

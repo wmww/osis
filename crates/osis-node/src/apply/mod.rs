@@ -967,10 +967,10 @@ mod tests {
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
 
-    // spec/permissions.md §1 (a thing's owner chain confers authority), §5; spec/commits.md
-    // §1 (a commit's writes apply in order): a writer creates A under X, B under A and C under
-    // B in one commit; the commit is valid wherever applied. Owned by a thing the writer may
-    // not write, the same tree fails the local check.
+    // spec/permissions.md §1 (an owner holds admin on what it owns; owner chains within
+    // MAX_OWNER_DEPTH), §5: a writer creates A under X, B under A and C under B in one commit;
+    // the commit is valid wherever applied. Owned by a thing the writer may not write, the same
+    // tree fails the local check, as does a chain of new things past MAX_OWNER_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
         let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
@@ -1022,6 +1022,18 @@ mod tests {
         let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();
         let levels: Vec<u8> = wf.tokens.iter().map(|i| h.tokens[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
+        // a writer of X gets no admin on what it creates below X: no edges there
+        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, since: None };
+        for depth in [1, 3] {
+            let p1 = &mut lp.peers[1];
+            let mut m = Mutation::new();
+            let mut cur = x;
+            for _ in 0..depth {
+                cur = p1.engine.new_thing(&mut m, cur);
+            }
+            m.op(cur, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(adm.to_value()) }).unwrap();
+            assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
+        }
         // under Y (no role there) the tree is refused
         let p1 = &mut lp.peers[1];
         let mut m = Mutation::new();
@@ -1034,5 +1046,22 @@ mod tests {
         p1.engine.new_thing(&mut m, a);
         p1.engine.new_thing(&mut m, b);
         assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })));
+        // a chain of new things: at the cap it commits, one deeper is refused before signing
+        for (extra, ok) in [(0, true), (1, false)] {
+            let p0 = &mut lp.peers[0];
+            let before = p0.engine.commit_ids().len();
+            let mut m = Mutation::new();
+            let mut cur = a0;
+            for _ in 0..osis_core::format::MAX_OWNER_DEPTH + extra {
+                cur = p0.engine.new_thing(&mut m, cur);
+            }
+            m.set(cur, &reg, &Value::Int(7)).unwrap();
+            let r = p0.commit(m);
+            assert_eq!(r.is_ok(), ok, "{r:?}");
+            if !ok {
+                assert!(matches!(r, Err(crate::Error::Permission { tid }) if tid == cur));
+                assert_eq!(p0.engine.commit_ids().len(), before);
+            }
+        }
     }
 }

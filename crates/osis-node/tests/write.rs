@@ -423,3 +423,59 @@ fn edit_of_gone_item_lists_nothing_spec_commits_1() {
     let large = matches!(&got, Some(Value::List(l)) if l.iter().any(|v| matches!(v, Value::Str(s) if s.len() > 1000)));
     assert!(large || listed == 0, "{listed} blobs listed for a value the list does not hold: {got:?}");
 }
+
+fn op_at(p: &mut Peer, t: osis_core::Tid, a: &Ak, path: Vec<PathSeg>, op: Op) -> bool {
+    let mut m = Mutation::new();
+    m.op(t, a, PathOp { path, op }).unwrap();
+    p.commit(m).unwrap().is_some()
+}
+
+// spec/crdt.md §5.5 (add of a live value writes nothing; remove resets its elements), §5.6
+// (remove and put by key), spec/data-model.md §6 (a set element or map key above
+// CHUNK_THRESHOLD is held as a link, equal by content hash): by value over 128 KiB, in small
+// and paged states, in the session that wrote it and in new ones.
+#[test]
+fn large_values_by_value_spec_crdt_5_5() {
+    let large = |c: &str| Value::Str(c.repeat(osis_core::format::CHUNK_THRESHOLD + 10));
+    let links = |v: &Value| match v {
+        Value::Set(s) => s.iter().filter(|x| matches!(x, Value::Link(_))).count(),
+        Value::Map(m) => m.keys().filter(|x| matches!(x, Value::Link(_))).count(),
+        _ => panic!("{v:?}"),
+    };
+    for (seed, n) in [(40u64, 10i64), (41, 2000)] {
+        let mut p = peer(seed);
+        let me = p.engine.tid();
+        let a = ak("/app/set");
+        let mut m = Mutation::new();
+        let t = p.engine.new_thing(&mut m, me);
+        let mut v: std::collections::BTreeSet<Value> = (0..n).map(|i| Value::Str(format!("e{i}"))).collect();
+        v.insert(large("L"));
+        m.set(t, &a, &Value::Set(v)).unwrap();
+        p.commit(m).unwrap().unwrap();
+        assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, same session");
+        p.restart(seed).unwrap();
+        assert!(!op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: present, new session");
+        p.restart(seed).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
+        assert!(op_at(&mut p, t, &a, vec![], Op::Add(large("L"))), "n {n}: added again");
+        p.restart(seed).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("L"))), "n {n}: removed again");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0);
+        // a map with a large key
+        let a = ak("/app/map");
+        let mut m = Mutation::new();
+        let mut kv: BTreeMap<Value, Value> = (0..n).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        kv.insert(large("K"), Value::Int(-1));
+        m.set(t, &a, &Value::Map(kv)).unwrap();
+        p.commit(m).unwrap().unwrap();
+        p.restart(seed).unwrap();
+        assert!(op_at(&mut p, t, &a, vec![PathSeg::Key(large("K"))], Op::Set(Value::Int(5))), "n {n}: put");
+        p.restart(seed).unwrap();
+        assert_eq!(p.engine.get_at(&t, &a, &[PathSeg::Key(large("K"))]).unwrap(), Some(Value::Int(5)), "n {n}");
+        let got = p.engine.get(&t, &a).unwrap().unwrap();
+        assert_eq!((links(&got), matches!(&got, Value::Map(m) if m.len() == n as usize + 1)), (1, true), "n {n}: one entry");
+        assert!(op_at(&mut p, t, &a, vec![], Op::Remove(large("K"))), "n {n}: key removed");
+        assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
+    }
+}

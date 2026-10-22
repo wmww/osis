@@ -204,7 +204,21 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord]
         };
         break;
     }
-    if role >= Some(need) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
+    if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, creates, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
+}
+
+/// Whether `tid`'s owner chain, through the commit's own creation records, reaches a key actor
+/// within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write deeper is invalid).
+fn within_depth(core: &Core, creates: &[CreationRecord], tid: &Tid) -> bool {
+    let mut cur = *tid;
+    for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+        match creates.iter().find(|r| r.tid() == cur).or_else(|| core.created(&cur)) {
+            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+            Some(CreationRecord::KeyActor { .. }) => return true,
+            None => return false,
+        }
+    }
+    false
 }
 
 fn run_ops<V: View>(state: &Fragment, w: Writer, ops: &[PathOp], view: &V) -> Result<Option<(Fragment, CounterRange)>> {
@@ -439,16 +453,24 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if !m.unchecked {
             check_authority(tx.core, node, &plan.creates, &tid, ak.as_str(), ts)?;
         }
-        // a paged state loads what the ops address (map keys, fields), else whole
-        match crate::engine::pages::op_paths(&am.ops) {
+        let framing = match kind {
+            Kind::Content => Some(framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
+            _ => None,
+        };
+        // a paged state loads what the ops address (map keys, fields, set values: a large one
+        // by its link, as the state holds it), else whole
+        let paths = match &framing {
+            Some(f) => crate::engine::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
+            None => crate::engine::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
+        };
+        match paths {
             Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
             None => tx.load(&tid, &ak)?,
         }
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
-        if kind == Kind::Content {
-            let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), &framing, &m.fresh)?;
+        if let Some(framing) = &framing {
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), framing, &m.fresh)?;
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
             let (_, _, framing) = framing_for(tx.core, &plan, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;

@@ -116,6 +116,16 @@ impl Engine {
         if self.core.created(tid).is_none() {
             return Ok(None);
         }
+        // a large map key is held as its link (spec/data-model.md §6)
+        let mut path = path.to_vec();
+        if let Some(dedup) = self.core.dedup(tid) {
+            for s in &mut path {
+                if let osis_crdt::PathSeg::Key(k) = s {
+                    *k = super::large::lookup_form(k, &dedup)?;
+                }
+            }
+        }
+        let path = &path[..];
         // a paged state loads only the pages on the path
         let v = self.run(|tx| {
             tx.ensure_paths(tid, ak, &[path.to_vec()])?;

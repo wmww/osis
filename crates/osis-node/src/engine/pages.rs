@@ -801,23 +801,30 @@ pub fn skeleton_unit(f: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
 /// write there reads only what it addresses; an add or remove by value addresses its value as
 /// a key step); `None` when one needs the whole position (a write of a whole collection, a
 /// sequence op).
-pub fn op_paths(ops: &[osis_crdt::PathOp]) -> Option<Vec<Vec<PathSeg>>> {
+/// `key`: the form a key or value is looked up by (a large one: its link).
+pub fn op_paths(ops: &[osis_crdt::PathOp], key: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<Option<Vec<Vec<PathSeg>>>> {
     use osis_crdt::Op;
     let mut out = Vec::new();
     for o in ops {
-        if o.path.iter().any(|s| matches!(s, PathSeg::Index(_))) {
-            return None;
+        let mut path = o.path.clone();
+        match &o.op {
+            Op::Add(k) | Op::Remove(k) => path.push(PathSeg::Key(k.clone())),
+            Op::Set(_) | Op::Replace(_) | Op::Put(_) if matches!(o.path.last(), Some(PathSeg::Key(_) | PathSeg::Field(_))) => {}
+            _ => return Ok(None),
         }
-        match (&o.op, o.path.last()) {
-            // by value the crdt matches elements and keys as the writer's type projects them;
-            // only a value without struct (map) parts projects from itself alone
-            (Op::Add(k) | Op::Remove(k), _) if has_map(k) => return None,
-            (Op::Add(k) | Op::Remove(k), _) => out.push([o.path.clone(), vec![PathSeg::Key(k.clone())]].concat()),
-            (Op::Set(_) | Op::Replace(_) | Op::Put(_), Some(PathSeg::Key(_) | PathSeg::Field(_))) => out.push(o.path.clone()),
-            _ => return None,
+        for s in &mut path {
+            match s {
+                PathSeg::Index(_) => return Ok(None),
+                // the crdt matches keys and elements as the writer's type projects them; only
+                // a value without struct (map) parts projects from itself alone
+                PathSeg::Key(k) if has_map(k) => return Ok(None),
+                PathSeg::Key(k) => *k = key(k)?,
+                _ => {}
+            }
         }
+        out.push(path);
     }
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Whether `v` holds a map (a struct or map value) anywhere.
@@ -899,7 +906,7 @@ mod tests {
         // a value's page alone, then the op over it writes what it writes over the whole set
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         let op = PathOp { path: Vec::new(), op: Op::Remove(Value::Int(5)) };
-        for p in op_paths(std::slice::from_ref(&op)).unwrap() {
+        for p in op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap().unwrap() {
             assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap());
         }
         assert!(!idx.whole());
@@ -923,9 +930,101 @@ mod tests {
         assert_eq!(key_row(&set, &Value::List(vec![link(1)]), None), key_row(&set, &Value::List(vec![link(2)]), None));
         // a value with struct parts is matched as projected: not by the index
         let st = Value::Map(BTreeMap::from([(Value::Int(0), Value::Int(1))]));
-        assert_eq!(op_paths(&[PathOp { path: Vec::new(), op: Op::Add(Value::List(vec![st])) }]), None);
+        assert_eq!(op_paths(&[PathOp { path: Vec::new(), op: Op::Add(Value::List(vec![st.clone()])) }], &mut |v| Ok(v.clone())).unwrap(), None);
+        assert_eq!(op_paths(&[PathOp { path: vec![PathSeg::Key(st.clone()), PathSeg::Key(Value::Int(1))], op: Op::Set(Value::Int(2)) }], &mut |v| Ok(v.clone())).unwrap(), None);
+        assert_eq!(op_paths(&[PathOp { path: vec![PathSeg::Key(st)], op: Op::Put(Value::Int(2)) }], &mut |v| Ok(v.clone())).unwrap(), None);
     }
 
+    // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links equal by
+    // content hash): ops by value over the pages a paged set's index finds write what they write
+    // over the whole state, for floats, links (alone and nested), enums, empty values, with a
+    // concurrent writer's elements joined in.
+    #[test]
+    fn set_index_differential_spec_crdt_5_5() {
+        use osis_core::Float;
+        let mut rng = osis_crypto::SeededRng::from_u64(177);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([3; 15]), osis_core::Ak::new("/app/s").unwrap());
+        let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
+        let link = |h: u8, b: u8| Value::Link(osis_core::Link { hash: [h; 32], blob: osis_core::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let pool = |i: u64| -> Value {
+            match i % 14 {
+                0 => Value::Float(Float::new(0.0)),
+                1 => Value::Float(Float::new(-0.0)),
+                2 => Value::Float(Float::new(f64::NAN)),
+                3 => Value::Int(0),
+                4 => Value::Bool(true),
+                5 => Value::Bool(false),
+                6 => link(1, (i % 3) as u8),
+                7 => Value::Bytes(vec![1; 32]),
+                8 => Value::List(vec![link(2, (i % 5) as u8), Value::Int(1)]),
+                9 => Value::Enum(3, Some(Box::new(link(1, (i % 4) as u8)))),
+                10 => Value::Enum(3, None),
+                11 => Value::Set([link(4, (i % 2) as u8), Value::Int(9)].into_iter().collect()),
+                12 => Value::Str(String::new()),
+                _ => Value::Int(i as i64 % 50),
+            }
+        };
+        let base = Value::Set((0..3000).map(|i| Value::Str(format!("padding-padding-{i:05}"))).chain((0..200).map(pool)).collect());
+        let mut ts = 1u64 << 16;
+        let mut w = Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), 1);
+        let mut st = create(&mut w, &AnyView, &base).unwrap();
+        let mut ctrs = [w.range().hi, 1];
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (mut unit, i0) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        assert!(i0.is_some());
+        let mut orng = osis_crypto::SeededRng::from_u64(179);
+        let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n;
+        let mut old = st.clone();
+        let (mut mism, mut writes) = (0, 0);
+        for step in 0..120 {
+            ts += 1 << 16;
+            let v = pool(r(1000));
+            let op = PathOp { path: vec![], op: if r(2) == 0 { Op::Add(v) } else { Op::Remove(v) } };
+            let wi = r(2) as usize;
+            // writer 1 writes against an old snapshot (concurrent), writer 0 against the paged state
+            if wi == 1 {
+                let mut b = Batch::new(&old, Writer::new(Ts::from_u64(ts).unwrap(), nodes[1].clone(), ctrs[1]));
+                if b.apply(&op, &AnyView).is_err() { continue; }
+                let Some((delta, range)) = b.finish() else { continue };
+                ctrs[1] = range.hi;
+                let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+                let touch = touch_of(&delta, Some(&idx));
+                match &touch { Some(t) => { ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap(); } None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() }
+                st.join(delta.clone()); f.join(delta);
+                match touch.as_ref().and_then(|t| write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap()) {
+                    Some(Some(u)) => unit = u,
+                    Some(None) => {}
+                    None => { load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(); unit = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap().0; }
+                }
+                if r(4) == 0 { old = st.clone(); }
+                continue;
+            }
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            match op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap() {
+                Some(paths) => for p in &paths { ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap(); },
+                None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
+            }
+            let mut b = Batch::new(&f, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            let mut full = Batch::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            let (ok, ok_full) = (b.apply(&op, &AnyView).is_ok(), full.apply(&op, &AnyView).is_ok());
+            assert_eq!(ok, ok_full);
+            if !ok { continue; }
+            let (got, want) = (b.finish(), full.finish());
+            if got.as_ref().map(|x| &x.0) != want.as_ref().map(|x| &x.0) {
+                mism += 1;
+                println!("mismatch at step {step}: {op:?}");
+            }
+            let Some((delta, range)) = want else { continue };
+            writes += 1;
+            ctrs[0] = range.hi;
+            load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+            st.join(delta.clone()); f.join(delta);
+            unit = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap().0;
+        }
+        assert!(writes > 20, "{writes} writes");
+        assert_eq!(mism, 0);
+    }
     // spec: none (local store layout); notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
     // of the root collection by page ID) is read whole and laid out anew.
     #[test]
@@ -958,7 +1057,20 @@ mod tests {
         assert_eq!(old4[1], TAG as u8);
         old4[1] = 4;
         assert!(open(&old4, &SALT).is_err());
-        assert_eq!(legacy(&mut txn, &tid, &ak, &old4).unwrap(), Some(st));
+        // its index rows (an earlier hashing) go; the new layout indexes anew
+        let kt = txn.table(&tid, &ak, KEY_TABLE).unwrap().unwrap();
+        txn.table_put(kt, &[0, 0, 0, 0, 1, 2, 3], Vec::new(), Shred::No).unwrap();
+        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 10_000).unwrap().len());
+        assert_eq!(rows(&mut txn), 6001);
+        let whole4 = legacy(&mut txn, &tid, &ak, &old4).unwrap().unwrap();
+        assert_eq!(whole4, st);
+        let (unit5, _) = write_full(&mut txn, &tid, &ak, Some(&whole4), true, &SALT).unwrap();
+        assert_eq!(rows(&mut txn), 6000);
+        let (mut f, mut idx) = open(&unit5, &SALT).unwrap();
+        let k = PathSeg::Key(Value::Int(4321));
+        assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&k)).unwrap());
+        assert!(!idx.whole());
+        assert_eq!(f.at(&[k]).and_then(|x| x.read()), Some(Value::Int(4321)));
     }
 
     // spec: none (local store paging, for the Scale requirements: a change costs O(change) at any
@@ -1014,7 +1126,7 @@ mod tests {
             };
             // a fresh session: the skeleton, then the pages the op addresses
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            match op_paths(std::slice::from_ref(&op)) {
+            match op_paths(std::slice::from_ref(&op), &mut |v| Ok(v.clone())).unwrap() {
                 Some(paths) => {
                     for p in &paths {
                         assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, p).unwrap());

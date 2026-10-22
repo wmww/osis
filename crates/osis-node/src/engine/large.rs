@@ -151,10 +151,42 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
         None => (core, Type::Any),
     };
     let PathOp { path, op } = op;
+    // large map keys on the path: the link the state holds for the key, else a new tree
+    for i in 0..path.len() {
+        let (before, rest) = path.split_at_mut(i);
+        let Some(PathSeg::Key(k)) = rest.first_mut() else { continue };
+        if !atomic_large(k) {
+            continue;
+        }
+        let Value::Link(h) = hash(k)? else { continue };
+        let key_of = |f: &Fragment| match f {
+            Fragment::Map(m) => m.live(&Value::Link(h)).first().and_then(|(d, _)| f.entry_key(d)).cloned(),
+            _ => None,
+        };
+        // (`at` copies the position: the root is read in place)
+        let held = match before {
+            [] => state.and_then(key_of),
+            _ => state.and_then(|f| f.at(before)).as_ref().and_then(key_of),
+        };
+        *k = match held {
+            Some(x) => x,
+            None => put(k, None)?,
+        };
+    }
     let ty = if path.is_empty() { root } else { type_at(s, &root, &schema_path(path)).map(|x| x.0).unwrap_or(Type::Any) };
     let text = matches!(s.expand(&ty).as_deref(), Ok(Type::Text));
     match op {
         Op::Set(v) | Op::Replace(v) | Op::Put(v) => chunk_value(v, s, &ty, state.map(|f| (&path[..], f)), put),
+        // a set element or map key is chunked whole (spec/data-model.md §6); removal matches
+        // the held link by content hash
+        Op::Add(v) if atomic_large(v) => {
+            *v = put(v, None)?;
+            Ok(())
+        }
+        Op::Remove(v) if atomic_large(v) => {
+            *v = hash(v)?;
+            Ok(())
+        }
         Op::Add(v) => chunk_value(v, s, &ty, None, put),
         // a list's (a text's edit holds strings)
         Op::Edit { base, new } if !text && matches!(new, Value::List(_)) => {
@@ -192,6 +224,21 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
         }
         _ => Ok(()),
     }
+}
+
+/// Whether `v`, held atomically (a set element, a map key), is held as a link
+/// (spec/data-model.md §6: above `CHUNK_THRESHOLD`).
+fn atomic_large(v: &Value) -> bool {
+    !matches!(v, Value::Link(_)) && osis_core::encode(v).len() > osis_core::format::CHUNK_THRESHOLD
+}
+
+/// What an index lookup finds an atomic value by: a large one by its link (content hash only,
+/// no blob written), as the state holds it.
+pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
+    if !atomic_large(v) {
+        return Ok(v.clone());
+    }
+    Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?)
 }
 
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
