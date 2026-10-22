@@ -9,6 +9,8 @@ pub(crate) mod receipt;
 pub(crate) mod validity;
 #[cfg(test)]
 mod tests_linked;
+#[cfg(test)]
+mod tests_order;
 
 pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, invalid_of, rebuild};
 

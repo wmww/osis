@@ -56,6 +56,29 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
     None
 }
 
+/// 1-3 leaves (things only their `/created` names) under random held things, leaves included,
+/// each with the step from which it is held (0: from the start).
+fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
+    let mut out = Vec::new();
+    for _ in 0..1 + rng.below(3) {
+        let owners: Vec<Tid> = w.created.keys().copied().collect();
+        let t = w.thing(owners[rng.below(owners.len())]);
+        out.push((t, rng.below(steps + 1)));
+    }
+    out
+}
+
+/// The held set without `skip` and without the leaves not held by `step`.
+fn held_at(w: &World, skip: &BTreeSet<osis_core::CommitId>, leaves: &[(Tid, usize)], step: usize) -> osis_perm::MemoryHeldSet {
+    let mut h = w.held_without(skip);
+    for (t, at) in leaves {
+        if *at > step {
+            h.created.remove(t);
+        }
+    }
+    h
+}
+
 /// Things whose held inputs differ between two held sets (what a node tracks as it adds).
 fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
     let mut all: BTreeSet<Tid> = a.things().into_iter().collect();
@@ -103,27 +126,37 @@ fn run(samples: u64, seed: u64) {
             o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
             o
         };
+        let leaves = add_leaves(&mut w, &mut rng, order.len());
         let mut held_ids = BTreeSet::new();
         let mut inc = Timelines::new();
         let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
         // half the samples re-partition only around what changed
         let around = rng.below(2) == 0;
-        let mut prev = w.held_without(&all);
+        let mut prev = held_at(&w, &all, &leaves, 0);
         if around {
             inc.update(&prev);
         }
+        // each step: the leaves arriving then (alone), then the commit
         for (step, &i) in order.iter().enumerate() {
-            held_ids.insert(w.commits[i].id);
-            let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
-            let held = w.held_without(&skip);
-            if around {
-                inc.update_touched(&held, &touched(&prev, &held));
-            } else {
-                inc.update(&held);
-            }
-            prev = held.clone();
-            if let Some(d) = check(&held, &inc, &nodes) {
-                panic!("seed {seed:#x} sample {s} step {step}: {d}");
+            for leaves_only in [true, false] {
+                if leaves_only {
+                    if !leaves.iter().any(|l| l.1 == step + 1) {
+                        continue;
+                    }
+                } else {
+                    held_ids.insert(w.commits[i].id);
+                }
+                let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
+                let held = held_at(&w, &skip, &leaves, step + 1);
+                if around {
+                    inc.update_touched(&held, &touched(&prev, &held));
+                } else {
+                    inc.update(&held);
+                }
+                prev = held.clone();
+                if let Some(d) = check(&held, &inc, &nodes) {
+                    panic!("seed {seed:#x} sample {s} step {step} (leaves only: {leaves_only}): {d}");
+                }
             }
         }
         // Nothing changed: nothing is evaluated again.
@@ -308,16 +341,17 @@ fn run_restarts(samples: u64, seed: u64) {
             o.sort_by_key(|&i| (w.commits[i].t, w.commits[i].author, w.commits[i].id));
             o
         };
+        let leaves = add_leaves(&mut w, &mut rng, order.len());
         let all: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
         let mut held_ids = BTreeSet::new();
-        let mut prev = w.held_without(&all);
+        let mut prev = held_at(&w, &all, &leaves, 0);
         let mut inc = Timelines::new();
         inc.update(&prev);
         let mut disk = Disk::new();
         let min = 1 + rng.below(4);
         for (step, &i) in order.iter().enumerate() {
             held_ids.insert(w.commits[i].id);
-            let held = w.held_without(&all.difference(&held_ids).copied().collect());
+            let held = held_at(&w, &all.difference(&held_ids).copied().collect(), &leaves, step + 1);
             inc.update_touched(&held, &touched(&prev, &held));
             prev = held.clone();
             let saved_all = rng.below(4) == 0;

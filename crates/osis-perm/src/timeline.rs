@@ -114,8 +114,9 @@ impl Timeline {
     /// snapshots plus more membership commits: the final walk is rolled back to the earliest
     /// new commit and goes on from there instead of starting over (equal to `evaluate`).
     /// `None` when that does not hold (another walk reached that point, or the inputs differ
-    /// otherwise): evaluate. With no new commit the inputs may add only leaves (`/created` of
-    /// things nothing held names, `Timelines`): the walk is kept as it is.
+    /// otherwise): evaluate. The inputs may add leaves instead (`/created` of things nothing
+    /// held names, `Timelines`): the walk goes on from the first demotion above one
+    /// (`leaf_from`), else is kept as it is.
     pub fn extend(self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
         // a new author or member could have changed how earlier writes were walked
@@ -125,7 +126,13 @@ impl Timeline {
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
             return None;
         }
-        let Some(from) = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min() else {
+        let added = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
+        // `Timelines` adds commits or leaves, never both
+        let from = match added {
+            Some(p) => Some(p),
+            None => self.leaf_from(&input)?,
+        };
+        let Some(from) = from else {
             let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
             let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach };
             return Some(Timeline::from_outcome(input, out));
@@ -139,6 +146,28 @@ impl Timeline {
         let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from });
         Some(Timeline::from_outcome(input, out))
     }
+    /// For `extend` over new leaves (things `input` adds by their `/created` alone): the
+    /// earliest demotion the walk recorded on the nearest thing it knew above one (`Some(None)`:
+    /// none). The walk records demotions (§5.2 input) only on the things it reached, so one
+    /// on a leaf's owner arriving before the leaf left the leaf without it (a revoked writer's
+    /// write on it judged by arrival order). A leaf has no edges, so every node's role on it
+    /// is its role on its owner at every point: the walk before that demotion is unchanged and
+    /// goes on from there. `None`: no known thing above a leaf (evaluate).
+    fn leaf_from(&self, input: &Input) -> Option<Option<Point>> {
+        let new = |t: &Tid| self.owners.owner(t).is_none() && input.owners.owner(t).is_some();
+        let mut from: Option<Point> = None;
+        for (t, _) in input.owners.links().filter(|(t, _)| new(t)) {
+            let (up, _) = input.owners.chain(t);
+            let a = up.into_iter().find(|a| !new(a))?;
+            for x in &input.nodes {
+                for d in self.demotions(x, &a) {
+                    from = Some(from.map_or(d.point, |f| f.min(d.point)));
+                }
+            }
+        }
+        Some(from)
+    }
+
     /// Walks the last evaluation or `extend` made (1 when nothing was dropped and no epoch
     /// start applied).
     pub fn passes(&self) -> usize {
