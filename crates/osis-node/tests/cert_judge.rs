@@ -302,3 +302,31 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     assert!(card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "the node whose chain is held lost its /reach");
     assert!(!card_entries(&mut net, a, sv, &l, r2t, "/reach").is_empty(), "the node whose chain is not held keeps its card");
 }
+
+// spec/permissions.md §2 (edges, `until`): a member re-granted after its edge passed its
+// `until` reads again; the expired edge's fields do not outlive the re-grant (the grant
+// removes the old entry first). Then its card goes back under the label.
+#[test]
+fn regrant_after_until_reads_again_spec_permissions_2() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let r = net.node(2, &[sv]);
+    let until = osis_core::WallMs(net.now() + 3_600_000);
+    let (g, p, l) = person_reader(&mut net, a, r, sv, Some(until));
+    let rt = net.tid(r);
+    net.clock.advance(3_600_000);
+    settle(&mut net);
+    assert!(!net.engine(a).may_read(&p, &g), "the edge passed its until");
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &p, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    assert!(net.engine(a).may_read(&p, &g), "the re-grant restores read access in the admin's view");
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    settle(&mut net);
+    assert!(net.engine(r).may_read(&p, &g), "and at the member's device");
+    assert!(!card_entries(&mut net, a, sv, &l, rt, "/reach").is_empty(), "its card is under the label again");
+}

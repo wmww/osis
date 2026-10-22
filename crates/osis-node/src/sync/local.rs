@@ -119,7 +119,9 @@ impl SyncEngine {
     /// the snapshot is there.
     pub fn compact(&mut self, t: &Tid, ak: &Ak) -> Result<Vec<Action>> {
         let Some(s) = self.engine.snapshot(t, ak)? else { return Ok(Vec::new()) };
-        self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?;
+        let dropped: BTreeSet<CommitId> = self.drop_covered(t, ak, &s, None, &mut super::work::Left::default())?.into_iter().collect();
+        // a dropped body's key and ciphertext go with it (spec/commits.md §5)
+        self.forget_dropped(Some(&dropped))?;
         Ok(self.handle(super::Event::Local))
     }
 

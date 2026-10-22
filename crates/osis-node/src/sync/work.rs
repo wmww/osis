@@ -220,15 +220,7 @@ impl SyncEngine {
         let closure = self.engine.closure(g);
         let full = w.full || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
         if full {
-            w.commits.clear();
-            w.blobs.clear();
-            w.aspects.clear();
-            w.things.clear();
-            w.waits.clear();
-            w.links.clear();
-            w.due.clear();
-            self.rebuild(g, l, w);
-            w.until = self.roster_horizon(&closure, g);
+            self.go_full(g, l, w, &closure);
         } else {
             w.things.extend(closure.symmetric_difference(&w.closure).copied());
             // a snapshot changes coverage of its aspects; a node's newer card write makes its
@@ -268,7 +260,7 @@ impl SyncEngine {
     /// The next time the clock alone changes a roster that entitlement and departures under a
     /// label of `g` read (`rotation::direct_departures` has the same horizon per actor): the
     /// components of its actor and of its closure's reader actors.
-    pub(super) fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
+    fn roster_horizon(&self, closure: &BTreeSet<Tid>, g: &Tid) -> Option<u64> {
         let now = self.now();
         let core = &self.engine.core;
         let mut seen: Vec<*const osis_perm::Timeline> = Vec::new();
@@ -300,6 +292,20 @@ impl SyncEngine {
             }
         }
         out
+    }
+
+    /// Readies `w` for a pass judging everything: what it named and waited on goes, the
+    /// aggregates and the roster horizon are taken anew.
+    pub(super) fn go_full(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
+        w.commits.clear();
+        w.blobs.clear();
+        w.aspects.clear();
+        w.things.clear();
+        w.waits.clear();
+        w.links.clear();
+        w.due.clear();
+        self.rebuild(g, l, w);
+        w.until = self.roster_horizon(closure, g);
     }
 
     /// Every commit with a delta on thing `t`.

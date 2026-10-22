@@ -20,12 +20,12 @@ fn work_sets_seed_1() {
     same("work_sets", 1);
 }
 
-// spec/sync.md §6, §7: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), seeds 0..8
+// spec/sync.md §6, §7: every scenario (`OSIS_SIM_ONLY=a,b` narrows them), seeds 0..20
 // (`OSIS_SIM_SEEDS`): work sets give the full passes' run.
 #[test]
 #[ignore = "tier 2"]
 fn work_sets_match_full_passes() {
-    let seeds: u64 = std::env::var("OSIS_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let seeds: u64 = std::env::var("OSIS_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
     let only: Vec<String> = std::env::var("OSIS_SIM_ONLY").map(|s| s.split(',').map(String::from).collect()).unwrap_or_default();
     for (name, _) in osis_sim::SCENARIOS.iter().filter(|(n, _)| osis_sim::blocked(n).is_none() && (only.is_empty() || only.iter().any(|o| o == n))) {
         for seed in 0..seeds {

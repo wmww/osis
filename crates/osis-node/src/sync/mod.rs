@@ -558,6 +558,9 @@ impl SyncEngine {
         if let Err(e) = self.step(ev, &mut out) {
             self.diag(format!("sync: {e}"));
         }
+        // to the open labels' work sets now: with none (offline, LAN or local labels only) the
+        // changes go (a label opened later judges everything)
+        self.spread_touches();
         self.update_pass_peers();
         if let Err(e) = self.state.flush(&mut self.engine) {
             self.diag(format!("sync state: {e}"));
@@ -592,8 +595,8 @@ impl SyncEngine {
                 for (c, aspects) in self.engine.due_live_drops()? {
                     self.snapshot_first(&aspects, &c)?;
                 }
-                let due = self.due_timers()?;
-                if self.engine.tick_drops()? > 0 {
+                let due = self.engine.tick_drops()?;
+                if !due.is_empty() {
                     self.touched.commits.extend(due.iter().copied());
                     self.mark_dirty();
                     self.forget_dropped(Some(&due))?;
@@ -743,6 +746,12 @@ impl SyncEngine {
                     }
                     self.touched.aspects.extend(aspects);
                 }
+                // late parts: other labels holding the commit judge its bodies again
+                crate::Event::Joined { id } => {
+                    changed = true;
+                    dropped.insert(id);
+                    self.touched.commits.insert(id);
+                }
                 crate::Event::Roster { .. } => {
                     changed = true;
                     self.served_cache = None;
@@ -758,23 +767,6 @@ impl SyncEngine {
             self.forget_dropped(if all { None } else { Some(&dropped) })?;
         }
         Ok(())
-    }
-
-    /// The commits of the expiry and keep-at-most timers due now (`Engine::tick_drops` drops
-    /// their bodies without an event).
-    fn due_timers(&mut self) -> Result<BTreeSet<osis_core::CommitId>> {
-        self.engine.run(|tx| {
-            let now = tx.now().0;
-            let mut due = BTreeSet::new();
-            tx.scan(crate::engine::records::TIMER, |k, _| {
-                let (t, c, _) = crate::engine::records::parse_timer(k)?;
-                if t <= now {
-                    due.insert(c);
-                }
-                Ok(())
-            })?;
-            Ok(due)
-        })
     }
 
     /// Hands the changes noted since the last pass to every label's work set: the engine's
@@ -1331,6 +1323,38 @@ impl SyncEngine {
 
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
+    /// A digest of this node's sync state (simulator determinism checks): entries with their
+    /// wraps, stamps and kinds, presence, deposits, tombstones, timed deletes, certificates,
+    /// carriers, blob records, and which of the blobs they name the store holds.
+    pub fn state_digest(&mut self) -> [u8; 32] {
+        let s = &self.state;
+        let mut h = osis_core::hash::Hasher::new();
+        for ((l, b), e) in &s.entries {
+            h.update(format!("e{l:?}{b:?}{:?}{:?}{}{:?}", e.wrap, e.stamp.map(|x| x.0), e.cert, e.kind).as_bytes());
+        }
+        let sets = [("p", &s.present), ("d", &s.deposited), ("g", &s.gone), ("t", &s.timed)];
+        for (k, set) in sets {
+            for x in set {
+                h.update(format!("{k}{x:?}").as_bytes());
+            }
+        }
+        for x in &s.certs {
+            h.update(format!("k{x:?}").as_bytes());
+        }
+        for x in &s.carriers {
+            h.update(format!("s{x:?}").as_bytes());
+        }
+        for (id, r) in &s.blobs {
+            h.update(format!("b{id:?}{:?}{:?}{}", r.commit, r.parts, r.cert).as_bytes());
+        }
+        let ids: BTreeSet<osis_core::BlobId> = s.entries.keys().map(|(_, b)| *b).chain(s.blobs.keys().copied()).collect();
+        for b in ids {
+            let held = self.engine.has_blob(&b);
+            h.update(format!("h{b:?}{held}").as_bytes());
+        }
+        h.finalize()
+    }
+
     /// What passes did so far (scale checks).
     pub fn pass_stats(&self) -> PassStats {
         self.stats

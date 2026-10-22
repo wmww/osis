@@ -1416,6 +1416,8 @@ impl NetSim {
                 h.update(&c.0);
                 commits.insert(c);
             }
+            // what the node keeps locally: entries, presence, blob records, held bytes
+            h.update(&s.state_digest());
             let r = crate::check::reads(s.engine_mut()).map_err(|x| x.to_string());
             let r = r.map_err(|x| self.fail(format!("read: {x}")))?;
             h.update(format!("{r:?}").as_bytes());

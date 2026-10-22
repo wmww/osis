@@ -188,8 +188,9 @@ impl SyncEngine {
         if w.inputs.as_ref() != Some(&inputs) && !full {
             full = true;
             scope = Scope::All;
+            let closure = w.closure.clone();
+            self.go_full(&g, &l, w, &closure);
             self.check_linked_prefixes(l, &scope)?;
-            w.until = self.roster_horizon(&w.closure, &g);
         }
         w.inputs = Some(inputs);
         if let Scope::Some { commits, .. } = &mut scope {

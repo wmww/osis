@@ -459,8 +459,9 @@ impl Engine {
         self.tick_drops().map(|_| ())
     }
 
-    /// `tick`, returning how many timers fired (node-sync forgets the dropped bodies' blobs).
-    pub(crate) fn tick_drops(&mut self) -> Result<usize> {
+    /// `tick`, returning the commits whose timers fired (node-sync forgets the dropped bodies'
+    /// blobs and judges them again).
+    pub(crate) fn tick_drops(&mut self) -> Result<BTreeSet<CommitId>> {
         let n = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
@@ -472,7 +473,7 @@ impl Engine {
                 Ok(())
             })?;
             let mut changed = BTreeSet::new();
-            let n = due.len();
+            let n: BTreeSet<CommitId> = due.iter().map(|x| x.1).collect();
             for (k, c, ai, kind) in due {
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
