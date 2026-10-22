@@ -198,6 +198,8 @@ impl SyncEngine {
                 uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp });
             } else if let Some(d) = &keys.deposit
                 && self.mine(&e)
+                // a queued deposit goes from the outbox
+                && !self.state.outbox.contains_key(&(server, o.id))
             {
                 let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
                 deposits.push((blob, e.wrap, sig));
@@ -408,18 +410,13 @@ impl SyncEngine {
     /// by aspect.
     fn drop_label_covered(&mut self, l: &LabelId) -> Result<BTreeMap<(Tid, Ak), Vec<CommitId>>> {
         let snaps = self.snapshots_at(l);
-        let mut done = Vec::new();
         for ((t, a), ss) in &snaps {
             for s in ss {
-                if self.snapshots_seen.contains(s) || !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
-                    continue;
-                }
-                if !self.drop_covered(t, a, s)? {
-                    done.push(*s);
+                if self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
+                    self.drop_covered(t, a, s)?;
                 }
             }
         }
-        self.snapshots_seen.extend(done);
         self.forget_dropped()?;
         Ok(snaps)
     }

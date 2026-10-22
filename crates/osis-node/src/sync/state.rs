@@ -315,16 +315,12 @@ impl State {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
+                // a queued deposit that does not decode (an older format) is not sent: never a
+                // failed load
                 b"o" => {
-                    let k = (r.arr()?, BlobId(r.arr()?));
-                    let mut x = Rd::new(&v);
-                    let label = LabelId(x.arr()?);
-                    let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
-                    let server = Address { url, key: x.arr()? };
-                    let wrap = x.arr()?;
-                    let sig = Signature(x.arr()?);
-                    let blob = x.bytes()?.to_vec();
-                    s.outbox.insert(k, OutRec { label, server, blob, wrap, sig });
+                    if let Ok((k, o)) = decode_out(rest, &v) {
+                        s.outbox.insert(k, o);
+                    }
                 }
                 b"q" => {
                     let l = LabelId(r.arr()?);
@@ -818,6 +814,22 @@ fn encode_sent(x: &SentInbox) -> Vec<u8> {
     w.take()
 }
 
+fn decode_out(k: &[u8], v: &[u8]) -> Result<((ServerKey, BlobId), OutRec)> {
+    let mut r = Rd::new(k);
+    let key = (r.arr()?, BlobId(r.arr()?));
+    let mut x = Rd::new(v);
+    let label = LabelId(x.arr()?);
+    let url = String::from_utf8(x.bytes()?.to_vec()).map_err(|_| Error::Corrupt("outbox"))?;
+    let server = Address { url, key: x.arr()? };
+    let wrap = x.arr()?;
+    let sig = Signature(x.arr()?);
+    let blob = x.bytes()?.to_vec();
+    if !x.is_empty() {
+        return Err(Error::Corrupt("outbox"));
+    }
+    Ok((key, OutRec { label, server, blob, wrap, sig }))
+}
+
 fn decode_sent(v: &[u8]) -> Result<SentInbox> {
     let mut r = Rd::new(v);
     let member = r.tid()?;
@@ -851,6 +863,22 @@ mod tests {
         .unwrap();
         let s = State::load(e).unwrap();
         assert!(s.sent_inbox.is_empty());
+    }
+
+    // spec/sync.md §5: a queued deposit record that does not decode (an older format) is
+    // skipped, never a failed load of the sync state.
+    #[test]
+    fn corrupt_outbox_record_skipped_spec_sync_5() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 962, osis_core::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let k = key(OUTBOX, &[&[7u8; 32], &[8u8; 32]]);
+        e.run(|tx| {
+            tx.txn.put_local(&k, b"short", Shred::No)?;
+            Ok(())
+        })
+        .unwrap();
+        let s = State::load(e).unwrap();
+        assert!(s.outbox.is_empty());
     }
 
     // spec/sync.md §5: a followed label keeps the key actor it follows for when an inbox

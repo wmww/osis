@@ -141,7 +141,7 @@ impl SyncEngine {
                 }
                 Delivery::Deposit { commit, under } => {
                     for g in self.groups_holding(&under) {
-                        self.deposit_commit(&g, &commit)?;
+                        self.place_all(&g, &commit)?;
                     }
                 }
             }
@@ -163,37 +163,11 @@ impl SyncEngine {
         self.place_certificate_in(g, c, &ais)
     }
 
-    /// Deposits a non-writer's membership write `c` under the labels of `g` (spec/sync.md §5):
-    /// its projections and the blobs they link, sealed, wrapped and signed now and queued like
-    /// inbox blobs, so they reach the label even when this node loses `g` before its server
-    /// answers (other nodes may hold parts of `c` from certificate copies or inbox blobs and
-    /// wait for the rest from the label). Not under an epoch that does not cover a known
-    /// departure: the label's writers carry it there.
-    fn deposit_commit(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+    /// Places every aspect of `c` as a certificate copy under the labels of `g`.
+    fn place_all(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let all: BTreeSet<usize> = (0..h.aspects.len()).collect();
-        let parts: BTreeSet<(usize, usize)> = h.aspects.iter().enumerate().flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect();
-        if self.uncovered_now(g)?.contains(&osis_core::Role::Read) {
-            self.diag(format!("deposit of {c:?}: an uncovered epoch"));
-            return Ok(());
-        }
-        let Some(seed) = self.engine.deposit_seed(g)? else { return Ok(()) };
-        for l in self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced) {
-            let d = osis_crypto::deposit_key(&seed, &l.id);
-            for b in self.engine.partial_bodies(c, &all)? {
-                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
-                let s = crate::labeling::seal_body(&b, &mut *self.rng)?;
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
-                self.queue_deposit(l.id, &l.servers, &d, s.blob, wrap);
-            }
-            for id in self.engine.linked_blobs(c, &parts)? {
-                if let Some(blob) = self.engine.blob(&id)? {
-                    let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-                    self.queue_deposit(l.id, &l.servers, &d, blob, wrap);
-                }
-            }
-        }
-        Ok(())
+        self.place_certificate_in(g, c, &all)
     }
 
     /// Groups with a label whose closure holds `t` (the thing itself when labeled).

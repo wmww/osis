@@ -125,18 +125,16 @@ impl SyncEngine {
 
     /// Drops the bodies of `(t, ak)` that snapshot `s` covers, that this node may purge and
     /// whose keep-at-least bound has passed (spec/sync.md §7: the compactor, and every other
-    /// right holder as it sees the snapshot); `s` carries them. Returns whether a body may still
-    /// go later (its keep-at-least bound ahead, or not established covered or uncovered yet):
-    /// the snapshot is judged again, so what a node drops depends on what it holds, not on when
-    /// it first saw the snapshot.
-    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<bool> {
+    /// right holder as it holds the snapshot); `s` carries them. A body is judged against `s`
+    /// again until its verdict is settled (dropped or established uncovered: `covered_judged`),
+    /// so what a node drops follows what it holds, not when the snapshot or the body arrived.
+    pub(crate) fn drop_covered(&mut self, t: &Tid, ak: &Ak, s: &CommitId) -> Result<()> {
         let s = *s;
         let me = self.engine.tid();
         let now = self.engine.now();
-        let mut later = false;
         let held: Vec<CommitId> = self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default();
         for c in held {
-            if c == s || !self.engine.holds_body(&c, t, ak) {
+            if c == s || self.covered_judged.contains(&(s, c)) || !self.engine.holds_body(&c, t, ak) {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
@@ -147,17 +145,19 @@ impl SyncEngine {
                 Some(tl) => tl.may_purge(&me, t, by, &h.actor, At::now(ts)),
                 None => by != PurgeBy::Nobody && self.engine.role_on(t) >= Some(Role::Admin),
             };
-            if !may {
+            if !may || self.engine.body_keep(&c, t, ak)?.at_least > now.0 {
                 continue;
             }
-            let covered = self.engine.covered(&s, &c, t, ak)?;
-            if covered.is_none() || covered == Some(true) && self.engine.body_keep(&c, t, ak)?.at_least > now.0 {
-                later = true;
-                continue;
+            match self.engine.covered(&s, &c, t, ak)? {
+                // not established yet: judged again
+                None => continue,
+                Some(false) => {
+                    self.covered_judged.insert((s, c));
+                    continue;
+                }
+                Some(true) => {}
             }
-            if covered != Some(true) {
-                continue;
-            }
+            self.covered_judged.insert((s, c));
             // covered-equal snapshots: only the higher commit ID goes (spec/sync.md §7), as in
             // the must-hold judgment, or this node drops the one a co-writer keeps uploading
             let snapshot = matches!(h.kind, osis_commit::Kind::ContentSnapshot | osis_commit::Kind::MembershipSnapshot);
@@ -167,7 +167,7 @@ impl SyncEngine {
             self.engine.drop_body(&c, t, ak)?;
             self.state.set_carrier(c, s);
         }
-        Ok(later)
+        Ok(())
     }
 
     /// Places commit `c`'s deltas on `aspects` as a certificate copy under every label of `g`
@@ -178,8 +178,12 @@ impl SyncEngine {
         Ok(self.handle(super::Event::Local))
     }
 
+    /// `place_certificate`. A copy of this node's own write under a label it does not write
+    /// (its invite grant, self-removal, chain) is also queued as a deposit (`queue_deposit`),
+    /// so it reaches the label even when this node loses the label before a server answers:
+    /// other nodes may hold parts of the commit from elsewhere and wait for the rest.
     pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<()> {
-        let labels: Vec<LabelId> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| l.id).collect();
+        let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| (l.id, l.servers)).collect();
         if labels.is_empty() {
             return Ok(());
         }
@@ -190,22 +194,36 @@ impl SyncEngine {
             self.deferred.push((*g, *c, aspects.clone()));
             return Ok(());
         }
-        for l in labels {
+        let own = self.engine.core.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
+        let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
+        for (l, servers) in labels {
             if self.state.certs.contains(&(l, *c)) {
                 continue;
             }
+            let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             for b in self.engine.partial_bodies(c, aspects)? {
                 // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
                 // members take it as the body's entry
                 let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
                 let s = seal_body(&b, &mut *self.rng)?;
+                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+                if let Some(d) = &deposit {
+                    self.queue_deposit(l, &servers, d, s.blob.clone(), wrap);
+                }
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
                 self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone() } });
             }
             let parts = self.engine.header(c).map(|h| h.aspects.iter().enumerate().filter(|(i, _)| aspects.contains(i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect()).unwrap_or_default();
             self.place_linked(l, c, &parts)?;
+            if let Some(d) = &deposit {
+                for id in self.engine.linked_blobs(c, &parts)? {
+                    let wrap = self.state.entries.get(&(l, id)).map(|e| e.wrap);
+                    if let (Some(wrap), Some(blob)) = (wrap, self.engine.blob(&id)?) {
+                        self.queue_deposit(l, &servers, d, blob, wrap);
+                    }
+                }
+            }
             self.state.add_cert(l, *c);
         }
         Ok(())
@@ -349,18 +367,18 @@ impl SyncEngine {
         };
         let d = osis_crypto::deposit_key(&osis_crypto::Secret32::from_bytes(seed), &label);
         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
+        // an inbox this node serves to nobody else's server: deposited here
+        if servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == label) {
+            self.local_inbox.push((label, blob.clone(), wrap));
+        }
         self.queue_deposit(label, servers, &d, blob, wrap);
         Ok(())
     }
 
     /// Queues a deposit under `label`, signed now: kept durably until each of its servers answers
-    /// (a crash, a cut or forgetting the label does not recall it), and logged here when this
-    /// node serves the label to nobody else's server.
+    /// (a crash, a cut or forgetting the label does not recall it).
     pub(crate) fn queue_deposit(&mut self, label: LabelId, servers: &[Address], deposit: &osis_crypto::SigningSecret, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN]) {
         let sig = osis_label::sign_deposit(deposit, &label, &osis_label::blob_id(&blob), &wrap);
-        if servers.iter().all(super::peers::is_peer) && self.labels().iter().any(|(_, x)| x.id == label) {
-            self.local_inbox.push((label, blob.clone(), wrap));
-        }
         for server in servers {
             let o = Outgoing { label, server: server.clone(), blob: blob.clone(), wrap, sig, after: 0, tries: 0 };
             self.state.add_out(super::state::OutRec { label, server: o.server.clone(), blob: o.blob.clone(), wrap, sig });
