@@ -3,9 +3,10 @@
 //! consecutive root elements in the aspect's table, the rest as a skeleton in the unit. The
 //! store's B+tree is the index: a page's row key is its collection's set ID and the
 //! order-preserving bytes of its first dot, so the page holding a dot is the last row at or below
-//! it (`table_rank`, `table_nth`), and a map key's entries are found through a key index (set ID,
-//! keyed hash of the key under a node-local secret, dot). In memory a state is loaded lazily: the skeleton first, then the pages a read,
-//! write or join needs (`ensure_*`), or all of them (`load_all`) where the whole state is needed.
+//! it (`table_rank`, `table_nth`), and a map key's entries and a set value's elements are found
+//! through an index (set ID, keyed hash of the key or value under a node-local secret, dot). In
+//! memory a state is loaded lazily: the skeleton first, then the pages a read, write or join
+//! needs (`ensure_*`), or all of them (`load_all`) where the whole state is needed.
 
 use super::state::{decode, encode};
 use crate::error::{Error, Result};
@@ -21,8 +22,10 @@ const PAGE_BYTES: usize = 8 * 1024;
 const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
 const STATE_TABLE: u8 = 0;
-/// The aspect table holding the key index of its paged maps.
+/// The aspect table holding the index of its paged maps (by key) and sets (by value).
 const KEY_TABLE: u8 = 1;
+/// The unit state tag of this layout (`legacy` reads the earlier ones).
+const TAG: i64 = 5;
 
 /// A path with the keys of its entry steps (to rebuild an entry's key from a page alone).
 type KeyedPath = Vec<(Step, Option<Value>, Option<osis_crdt::Stamp>)>;
@@ -34,7 +37,7 @@ type Range = (Option<Dot>, Option<Dot>);
 #[derive(Clone, Debug)]
 struct PageSet {
     id: u32,
-    /// The key index's hash key (`Core::key_salt`).
+    /// The index's hash key (`Core::key_salt`).
     salt: [u8; 32],
     path: KeyedPath,
     enc: Encoding,
@@ -185,11 +188,12 @@ fn steps(p: &KeyedPath) -> Vec<Step> {
     p.iter().map(|(s, _, _)| s.clone()).collect()
 }
 
-/// Unit state of a paged state: `[4, skeleton, [[set ID, path, encoding]*]]` (`3`: an earlier
-/// build's, its key index hashed unkeyed). Unpaged states start `[bytes, ...]`.
+/// Unit state of a paged state: `[5, skeleton, [[set ID, path, encoding]*]]` (earlier builds':
+/// `3`, the key index hashed unkeyed; `4`, no set values indexed, link keys hashed whole).
+/// Unpaged states start `[bytes, ...]`.
 fn unit_state(skeleton: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     let sets = idx.sets.values().map(|s| Value::List(vec![uint(u64::from(s.id)), path_value(&s.path), uint(u64::from(s.enc.id()))])).collect();
-    Ok(osis_core::encode(&Value::List(vec![Value::Int(4), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
+    Ok(osis_core::encode(&Value::List(vec![Value::Int(TAG), Value::Bytes(encode(skeleton)?), Value::List(sets)])))
 }
 
 /// A page row: `[first dot or [], next page's first dot or [], page]`.
@@ -205,10 +209,40 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
     Ok(((opt_dot_of(lo)?, opt_dot_of(hi)?), decode(p)?))
 }
 
-/// A key index row of a paged map: set ID, the key's hash, the entry's dot.
+/// What an index row finds a key or value by: equal values (links by content hash alone,
+/// spec/data-model.md §6) give equal results.
+fn ident(v: &Value) -> Value {
+    match v {
+        Value::Link(l) => Value::Bytes(l.hash.to_vec()),
+        Value::List(x) => Value::List(x.iter().map(ident).collect()),
+        Value::Set(x) => Value::Set(x.iter().map(ident).collect()),
+        Value::Map(x) => Value::Map(x.iter().map(|(k, v)| (ident(k), ident(v))).collect()),
+        Value::Enum(c, p) => Value::Enum(*c, p.as_deref().map(|p| Box::new(ident(p)))),
+        v => v.clone(),
+    }
+}
+
+/// What the index of a paged collection finds element `d` by: a map entry's key, the value of
+/// a set element (and of any `Derived` element sorting right after it: a superset). Empty for
+/// a keyless or value-less element and other encodings.
+fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
+    match enc {
+        Encoding::Map => c.entry_key(d).cloned().into_iter().collect(),
+        Encoding::Set => {
+            let next = d.ctr.checked_add(1).map(|ctr| Dot { src: d.src.clone(), ctr });
+            match c.elem_range(Some(d), next.as_ref(), false).and_then(|x| x.read()) {
+                Some(Value::Set(vs)) => vs.into_iter().collect(),
+                _ => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// An index row of a paged map or set: set ID, the hash of the key or value, the element's dot.
 fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
     let mut out = set.id.to_be_bytes().to_vec();
-    out.extend_from_slice(&osis_core::hash::keyed_hash(&set.salt, &osis_core::encode(k)));
+    out.extend_from_slice(&osis_core::hash::keyed_hash(&set.salt, &osis_core::encode(&ident(k))));
     if let Some(d) = d {
         out.extend_from_slice(&osis_core::encode(&dot_value(d)));
     }
@@ -219,7 +253,7 @@ fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
 
 /// Opens a paged state: its skeleton and index, no page loaded yet.
 pub fn open(unit_state: &[u8], salt: &[u8; 32]) -> Result<(Fragment, PageIndex)> {
-    open_tagged(unit_state, salt, 4)
+    open_tagged(unit_state, salt, TAG)
 }
 
 fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment, PageIndex)> {
@@ -246,11 +280,11 @@ fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment
 }
 
 /// A paged state in an earlier build's layout (`[1]`: a root collection; `[2, skeleton]`: a
-/// struct with paged fields; pages in the state table, each a fragment; `[3, ...]`: this layout
-/// with an unkeyed key index), joined whole; `None` for any other unit state.
+/// struct with paged fields; pages in the state table, each a fragment; `[3, ...]` and
+/// `[4, ...]`: this layout with an earlier index), joined whole; `None` for any other unit state.
 pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) -> Result<Option<Fragment>> {
     // the tag is the array's first byte item
-    if !matches!(unit_state.get(1), Some(1..=3)) {
+    if !matches!(unit_state.get(1), Some(1..=4)) {
         return Ok(None);
     }
     let lim = osis_core::Limits { max_depth: 4, max_bytes: unit_state.len() };
@@ -258,8 +292,9 @@ pub fn legacy(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, unit_state: &[u8]) 
     let mut f = match items.as_slice() {
         [Value::Int(1)] => Fragment::default(),
         [Value::Int(2), Value::Bytes(s)] => decode(s)?,
-        [Value::Int(3), ..] => {
-            let (mut f, mut idx) = open_tagged(unit_state, &[0; 32], 3)?;
+        [Value::Int(t @ (3 | 4)), ..] => {
+            // loading reads pages only, never the index
+            let (mut f, mut idx) = open_tagged(unit_state, &[0; 32], *t)?;
             load_all(txn, tid, ak, &mut idx, &mut f)?;
             return Ok(Some(f));
         }
@@ -289,6 +324,8 @@ fn join_row(f: &mut Fragment, set: &mut PageSet, key: Vec<u8>, row: &[u8]) -> Re
     if set.loaded.contains_key(&key) {
         return Ok(());
     }
+    // counted: scale tests read the number of pages loaded
+    let _s = crate::costs::span("state page load");
     let (range, p) = parse_page_row(row)?;
     if set.row_key(range.0.as_ref()) != key {
         return Err(Error::Corrupt("state page key"));
@@ -392,20 +429,21 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Pag
     Ok(true)
 }
 
-/// Removes the key index rows of the map entries `bodies` hold that the state no longer holds
-/// under that key (shredded: a dropped body leaves no local entry derived from it,
-/// spec/commits.md §5). The pages holding the bodies' dots are loaded.
+/// Removes the index rows of the map entries and set elements `bodies` hold that the state no
+/// longer holds under that key or value (shredded: a dropped body leaves no local entry derived
+/// from it, spec/commits.md §5). The pages holding the bodies' dots are loaded.
 pub fn unindex(txn: &mut Transaction<'_>, idx: &PageIndex, tid: &Tid, ak: &Ak, f: &Fragment, bodies: &[Fragment]) -> Result<()> {
     let Some(kt) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(()) };
-    for (p, set) in idx.sets.iter().filter(|(_, s)| s.enc == Encoding::Map) {
+    for (p, set) in idx.sets.iter().filter(|(_, s)| matches!(s.enc, Encoding::Map | Encoding::Set)) {
         let c = f.at_steps(p);
         for b in bodies {
-            let Some(Fragment::Map(m)) = b.at_steps(p) else { continue };
-            for (d, _, k, _) in m.entries() {
-                if let Some(k) = k
-                    && c.and_then(|c| c.entry_key(d)) != Some(k)
-                {
-                    txn.table_remove(kt, &key_row(set, k, Some(d)), Shred::Yes)?;
+            let Some(bc) = b.at_steps(p).filter(|x| x.encoding() == set.enc) else { continue };
+            for d in bc.elem_dots(None, None) {
+                let now = c.map(|c| indexed(c, set.enc, &d)).unwrap_or_default();
+                for k in indexed(bc, set.enc, &d) {
+                    if !now.contains(&k) {
+                        txn.table_remove(kt, &key_row(set, &k, Some(&d)), Shred::Yes)?;
+                    }
                 }
             }
         }
@@ -413,7 +451,8 @@ pub fn unindex(txn: &mut Transaction<'_>, idx: &PageIndex, tid: &Tid, ak: &Ak, f
     Ok(())
 }
 
-/// The dots of key `k`'s entries in the paged map `set` (a superset: the index is never pruned).
+/// The dots of key `k`'s entries in the paged map `set`, or of value `k`'s elements in the paged
+/// set `set` (a superset: the index is never pruned).
 fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Value) -> Result<Vec<Dot>> {
     let Some(t) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(Vec::new()) };
     let start = key_row(set, k, None);
@@ -455,7 +494,8 @@ pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Page
                 // away) even when the key has none: a write then finds the collection
                 ensure_first(txn, t, set, f)?;
                 match seg {
-                    PathSeg::Key(k) if set.enc == Encoding::Map => {
+                    // a key of a map; a value of a set (`op_paths` of an op by value)
+                    PathSeg::Key(k) if matches!(set.enc, Encoding::Map | Encoding::Set) => {
                         let ds = key_dots(txn, tid, ak, set, k)?;
                         for d in &ds {
                             ensure_dot(txn, t, set, f, d)?;
@@ -543,16 +583,16 @@ fn keyed(f: &Fragment, p: &[Step]) -> KeyedPath {
     out
 }
 
-/// Adds the keys of the entries at `dots` of the map `c` to its key index.
-/// Adds the key index rows of the map entries `dots` (`fresh`: the table is new, no row exists).
+/// Adds the index rows of the map entries or set elements `dots` of `c` (`fresh`: the table is
+/// new, no row exists).
 fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment, dots: &mut dyn Iterator<Item = &Dot>, fresh: bool) -> Result<()> {
-    if set.enc != Encoding::Map {
+    if !matches!(set.enc, Encoding::Map | Encoding::Set) {
         return Ok(());
     }
     for d in dots {
-        if let Some(k) = c.entry_key(d) {
+        for k in indexed(c, set.enc, d) {
             // rows are never removed (a superset), so most are there already: a read, not a write
-            let row = key_row(set, k, Some(d));
+            let row = key_row(set, &k, Some(d));
             if fresh || txn.table_get(kt, &row)?.is_none() {
                 txn.table_put(kt, &row, Vec::new(), Shred::No)?;
             }
@@ -720,17 +760,18 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
 
 /// Holds value-less, in the paged state `f`, the writes `pred` names, which lie in the pages
 /// `touches` say (those of the deltas owning them, loaded by `ensure_touch`): strips them in
-/// memory, rewrites those pages shredded and drops the key index rows of map entries left
-/// without their key (an index entry derived from a dropped write, spec/commits.md §5).
+/// memory, rewrites those pages shredded and drops the index rows of map entries left without
+/// their key and set elements without their value (an index entry derived from a dropped write,
+/// spec/commits.md §5).
 /// `Ok(false)`: it does not fit the pages (strip and write whole).
 pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<bool> {
     let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
     for t in touches {
         for (p, dots) in &t.elems {
-            if idx.sets.get(p).is_some_and(|s| s.enc == Encoding::Map)
+            if let Some(set) = idx.sets.get(p)
                 && let Some(c) = f.at_steps(p)
             {
-                before.extend(dots.iter().filter_map(|d| Some((p.clone(), d.clone(), c.entry_key(d)?.clone()))));
+                before.extend(dots.iter().flat_map(|d| indexed(c, set.enc, d).into_iter().map(|k| (p.clone(), d.clone(), k))));
             }
         }
     }
@@ -743,7 +784,7 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     if let Some(kt) = txn.table(tid, ak, KEY_TABLE)? {
         for (p, d, k) in before {
             let (Some(set), Some(c)) = (idx.sets.get(&p), f.at_steps(&p)) else { continue };
-            if c.entry_key(&d) != Some(&k) {
+            if !indexed(c, set.enc, &d).contains(&k) {
                 txn.table_remove(kt, &key_row(set, &k, Some(&d)), Shred::Yes)?;
             }
         }
@@ -756,9 +797,10 @@ pub fn skeleton_unit(f: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
     unit_state(&f.reduced(&idx.paths), idx)
 }
 
-/// The paths of the ops of a mutation if each addresses map keys or fields only (a write there
-/// reads only what it addresses); `None` when one needs the whole position (a write of a whole
-/// collection, a sequence op, a set element by value).
+/// The paths of the ops of a mutation if each addresses map keys, fields or set values only (a
+/// write there reads only what it addresses; an add or remove by value addresses its value as
+/// a key step); `None` when one needs the whole position (a write of a whole collection, a
+/// sequence op).
 pub fn op_paths(ops: &[osis_crdt::PathOp]) -> Option<Vec<Vec<PathSeg>>> {
     use osis_crdt::Op;
     let mut out = Vec::new();
@@ -767,12 +809,26 @@ pub fn op_paths(ops: &[osis_crdt::PathOp]) -> Option<Vec<Vec<PathSeg>>> {
             return None;
         }
         match (&o.op, o.path.last()) {
-            (Op::Remove(k), _) => out.push([o.path.clone(), vec![PathSeg::Key(k.clone())]].concat()),
+            // by value the crdt matches elements and keys as the writer's type projects them;
+            // only a value without struct (map) parts projects from itself alone
+            (Op::Add(k) | Op::Remove(k), _) if has_map(k) => return None,
+            (Op::Add(k) | Op::Remove(k), _) => out.push([o.path.clone(), vec![PathSeg::Key(k.clone())]].concat()),
             (Op::Set(_) | Op::Replace(_) | Op::Put(_), Some(PathSeg::Key(_) | PathSeg::Field(_))) => out.push(o.path.clone()),
             _ => return None,
         }
     }
     Some(out)
+}
+
+/// Whether `v` holds a map (a struct or map value) anywhere.
+fn has_map(v: &Value) -> bool {
+    match v {
+        Value::Map(_) => true,
+        Value::List(x) => x.iter().any(has_map),
+        Value::Set(x) => x.iter().any(has_map),
+        Value::Enum(_, Some(p)) => has_map(p),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -823,6 +879,53 @@ mod tests {
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
     }
 
+    // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links compare by
+    // content hash), spec/commits.md §5 (a dropped body leaves no index entry derived from it):
+    // a paged set's value index finds a value's elements, a link by its hash alone; the rows of
+    // a removed value go with the bodies holding it.
+    #[test]
+    fn set_value_index_spec_crdt_5_5() {
+        let mut rng = osis_crypto::SeededRng::from_u64(81);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([6; 15]), osis_core::Ak::new("/app/set").unwrap());
+        let node = Source::node(Tid::from_bytes([1; 15]));
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
+        let body = create(&mut w, &AnyView, &Value::Set((0..6000).map(Value::Int).collect())).unwrap();
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&body), false, &SALT).unwrap();
+        assert!(idx.is_some());
+        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 10_000).unwrap().len());
+        assert_eq!(rows(&mut txn), 6000);
+        // a value's page alone, then the op over it writes what it writes over the whole set
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        let op = PathOp { path: Vec::new(), op: Op::Remove(Value::Int(5)) };
+        for p in op_paths(std::slice::from_ref(&op)).unwrap() {
+            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &p).unwrap());
+        }
+        assert!(!idx.whole());
+        let mut b = Batch::new(&f, Writer::new(Ts::from_u64(2 << 16).unwrap(), node.clone(), w.range().hi));
+        b.apply(&op, &AnyView).unwrap();
+        let (d, _) = b.finish().unwrap();
+        let mut full = Batch::new(&body, Writer::new(Ts::from_u64(2 << 16).unwrap(), node, w.range().hi));
+        full.apply(&op, &AnyView).unwrap();
+        assert_eq!(full.finish().unwrap().0, d);
+        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        f.join(d);
+        let set = idx.sets.values().next().unwrap().clone();
+        unindex(&mut txn, &idx, &tid, &ak, &f, std::slice::from_ref(&body)).unwrap();
+        assert_eq!(rows(&mut txn), 5999);
+        assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
+        assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
+        // links: by content hash, whatever blob holds the value
+        let link = |b: u8| Value::Link(osis_core::Link { hash: [7; 32], blob: osis_core::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        assert_eq!(link(1), link(2));
+        assert_eq!(key_row(&set, &link(1), None), key_row(&set, &link(2), None));
+        assert_eq!(key_row(&set, &Value::List(vec![link(1)]), None), key_row(&set, &Value::List(vec![link(2)]), None));
+        // a value with struct parts is matched as projected: not by the index
+        let st = Value::Map(BTreeMap::from([(Value::Int(0), Value::Int(1))]));
+        assert_eq!(op_paths(&[PathOp { path: Vec::new(), op: Op::Add(Value::List(vec![st])) }]), None);
+    }
+
     // spec: none (local store layout); notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages
     // of the root collection by page ID) is read whole and laid out anew.
     #[test]
@@ -850,6 +953,12 @@ mod tests {
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         assert_eq!(f, st);
+        // the layout before set values were indexed (`[4, ...]`) is read whole too
+        let mut old4 = unit.clone();
+        assert_eq!(old4[1], TAG as u8);
+        old4[1] = 4;
+        assert!(open(&old4, &SALT).is_err());
+        assert_eq!(legacy(&mut txn, &tid, &ak, &old4).unwrap(), Some(st));
     }
 
     // spec: none (local store paging, for the Scale requirements: a change costs O(change) at any
@@ -897,7 +1006,8 @@ mod tests {
             let op = match r(6) {
                 0 => PathOp { path: vec![key("big"), PathSeg::Key(Value::Int(r(3000) as i64))], op: Op::Set(Value::Int(-(step as i64))) },
                 1 => PathOp { path: vec![key("big")], op: Op::Remove(Value::Int(r(2500) as i64)) },
-                2 => PathOp { path: vec![key("tags")], op: Op::Add(Value::Str(format!("n{step}"))) },
+                2 if r(2) == 0 => PathOp { path: vec![key("tags")], op: Op::Add(Value::Str(format!("n{step}"))) },
+                2 => PathOp { path: vec![key("tags")], op: Op::Remove(Value::Str(format!("s{}", r(2000)))) },
                 3 => PathOp { path: vec![key("small"), PathSeg::Key(Value::Int(r(10) as i64))], op: Op::Set(Value::Int(7)) },
                 4 => PathOp { path: vec![PathSeg::Key(Value::Str(format!("k{}", r(5))))], op: Op::Set(ints(3, 2)) },
                 _ => PathOp { path: vec![key("x")], op: Op::Set(Value::Int(step as i64)) },

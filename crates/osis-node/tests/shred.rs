@@ -184,6 +184,48 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
 }
 
+// spec/commits.md §6, spec/crdt.md §4.7, §5.5: an expiring element of a paged set goes
+// value-less in its page and leaves its value index; no copy of its value survives; adding the
+// value again and removing another by value work over the pages
+#[test]
+fn expired_element_paged_set_unrecoverable_spec_commits_6() {
+    let mut lp = net2(77);
+    let t = new_thing(&mut lp, 0);
+    let a = ak("/t/bigset");
+    let mut m = Mutation::new();
+    m.set(t, &a, &Value::Set((0..66).map(|i| s(&format!("e{i:03}{}", "f".repeat(1100)))).collect())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let marker = big("PAGED-SET-EXPIRY-MARK-5b1e");
+    let add = |lp: &mut LocalPeer, v: &str, exp: Option<u64>| {
+        let mut m = Mutation::new();
+        m.op(t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Add(s(v)) }).unwrap();
+        if let Some(e) = exp {
+            m.expires(t, &a, osis_core::WallMs(e)).unwrap();
+        }
+        lp.peers[0].commit(m).unwrap()
+    };
+    lp.advance(5);
+    let exp = lp.peers[0].engine.now().0 + 60_000;
+    add(&mut lp, &marker, Some(exp)).unwrap();
+    filler(&mut lp, 0, 6);
+    assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
+    lp.advance(60_001);
+    lp.peers[0].engine.tick().unwrap();
+    assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
+    let read = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &a).unwrap() {
+        Some(Value::Set(v)) => v,
+        x => panic!("{x:?}"),
+    };
+    assert_eq!(read(&mut lp).len(), 66);
+    assert!(add(&mut lp, &marker, None).is_some(), "the value is gone, so it is added again");
+    let gone = format!("e007{}", "f".repeat(1100));
+    let mut m = Mutation::new();
+    m.op(t, &a, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&gone)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let v = read(&mut lp);
+    assert!(v.len() == 66 && v.contains(&s(&marker)) && !v.contains(&s(&gone)));
+}
+
 // spec/commits.md §5: shredding a version covers every chunk only it reached (chunk keys live in
 // links inside the dropped body); a purged large value's chunks stay unopenable from what the
 // device still yields, though their ciphertext may linger in freed storage

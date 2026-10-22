@@ -226,6 +226,46 @@ fn deep_map_edit_cost() {
     }
 }
 
+// spec/crdt.md §5.5 (set ops resolved by value), §8; spec/requirements.md, Scale (a change
+// costs O(change)): adding and removing elements by value in a 10^5-element set, each op in a
+// new session: the pages loaded (`state page load` spans) and the time.
+#[test]
+#[ignore = "tier 2"]
+fn big_set_by_value_cost() {
+    let n = 100_000usize;
+    let a = ak("/app/set");
+    let s = |x: String| Value::Str(x);
+    let (mut e, batches, bytes, reopen) = engine_reopenable(8);
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &a, &Value::Set((0..n).map(|i| s(format!("e{i}"))).collect())).unwrap();
+    e.commit(m).unwrap().unwrap();
+    drop(e);
+    let ops = [
+        ("add new", Op::Add(s("x".into())), true),
+        ("add present", Op::Add(s(format!("e{}", n / 2))), false),
+        ("remove", Op::Remove(s(format!("e{}", n / 3))), true),
+        ("remove absent", Op::Remove(s("y".into())), false),
+    ];
+    for (name, op, writes) in ops {
+        let mut e = reopen.open(&batches, &bytes);
+        osis_node::costs::take();
+        let t0 = Instant::now();
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![], op }).unwrap();
+        assert_eq!(e.commit(m).unwrap().is_some(), writes, "{name}");
+        let dt = t0.elapsed();
+        let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+        println!("set {n} elements, new session: {name} by value {dt:?}, {loads} pages loaded");
+        assert!(loads <= 4, "{name}: {loads} pages loaded");
+    }
+    let mut e = reopen.open(&batches, &bytes);
+    let Some(Value::Set(v)) = e.get(&t, &a).unwrap() else { panic!() };
+    assert_eq!(v.len(), n);
+    assert!(v.contains(&s("x".into())) && !v.contains(&s(format!("e{}", n / 3))));
+}
+
 // spec/requirements.md, Scale (O(change)); spec/commits.md §7 (undo): one insert into a
 // 10^5-char text keeps an undo buffer of what undoing it reads, not the text; the first access
 // to the text in a new session; the undo commit.
