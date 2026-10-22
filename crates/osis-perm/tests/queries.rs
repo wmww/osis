@@ -39,6 +39,30 @@ fn certificates_carry_demotions() {
     assert!(verify(&set2, &z, &g, before, Write));
 }
 
+/// §4: a demotion goes along with its demoted author's chain at its point. X writes on G by
+/// its admin edge; a later grant makes X an admin of G's owner P; removing X's G edge after
+/// that is no fall, so X's write unseen by the remover stands from certificates too.
+#[test]
+fn certificates_carry_chain_at_demotion_spec_permissions_4() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (x, a, k) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(k, g, x, edge(Admin), 0, &all);
+    w.set(k, p, a, edge(Admin), 0, &all);
+    w.set(x, g, n[3], edge(Write), 2, &[]);
+    w.set(a, p, x, edge(Admin), 2, &[(x, 2), (k, 2)]);
+    w.set(k, g, x, None, 6, &[]);
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let id = WriteId::Op(w.commits[2].id, 0);
+    assert!(tl.is_applied(&id) && tl.dropped().is_empty());
+    let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
+    assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id));
+}
+
 /// §4 projection: for every write of random joint and edges histories, its author's
 /// certificates plus the write give the write the timeline's outcome (applied, dropped) and
 /// the author its standing at the write.
