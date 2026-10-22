@@ -696,13 +696,14 @@ impl Eq for Lin {}
 
 /// How the cache follows one record of a delta, decided against the state before it joins.
 pub(crate) enum Plan {
-    /// A new element created at `anchor`; whether the anchor's element is held.
-    New { stamp: Stamp, anchor: Anchor, known: bool },
+    /// A new element created at `anchor`; whether the anchor's element is held, and the element
+    /// after it when both are inside a range record (a row starts there once it is anchored at).
+    New { stamp: Stamp, anchor: Anchor, known: bool, cut: Option<Dot> },
     /// Flag, content or (a single element's) position writes to the record of this span,
     /// whose creation stays as it was; `pos` are its position writes before.
     Held { span: u64, pos: Vec<(Stamp, Anchor)>, created: bool },
-    /// A row starts at this element: a record split there, or the element before it is now
-    /// anchored at (a whole pass cuts a node after each such element).
+    /// A row starts at this element: a record split there (whether or not the record changed
+    /// anything).
     Cut,
 }
 
@@ -779,17 +780,13 @@ impl Lin {
     pub(crate) fn plan(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
         match elems.find(dot) {
             Some((k, r)) if k != dot || r.span != de.span => self.plan_pieces(elems, dot, de, out),
-            _ => {
-                let mut cut = None;
-                match self.plan_one(elems, dot, de, &mut cut) {
-                    Some(p) => {
-                        out.extend(cut.map(|x| (x, Plan::Cut)));
-                        out.push((dot.clone(), p));
-                        true
-                    }
-                    None => false,
+            _ => match self.plan_one(elems, dot, de) {
+                Some(p) => {
+                    out.push((dot.clone(), p));
+                    true
                 }
-            }
+                None => false,
+            },
         }
     }
 
@@ -814,7 +811,7 @@ impl Lin {
             if pd.ctr != next {
                 return false;
             }
-            next = pd.ctr + pe.span;
+            next = pd.ctr.saturating_add(pe.span);
             let (_, dp) = piece(dot, de, pd.ctr - dot.ctr, pe.span);
             if dp.created.as_ref().is_some_and(|c| pe.created.as_ref() != Some(c)) || pe.span != 1 && !dp.pos.iter().all(|p| pe.pos.iter().any(|q| q.0 == p.0)) {
                 return false;
@@ -826,13 +823,12 @@ impl Lin {
         if elems.find(&end).is_some_and(|(k, _)| *k != end) {
             out.push((end, Plan::Cut));
         }
-        next == last.ctr + 1
+        next == last.ctr.saturating_add(1)
     }
 
     /// The plan for joining record `(dot, de)` into `elems` (new, or lining up with the state's
-    /// record there); `None`: rebuild. `cut`: a row to start after the anchor, an element inside
-    /// a range record that nothing anchored at before.
-    fn plan_one(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, cut: &mut Option<Dot>) -> Option<Plan> {
+    /// record there); `None`: rebuild.
+    fn plan_one(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem) -> Option<Plan> {
         match elems.find(dot) {
             None => {
                 if de.span != 1 || dot.src.is_derived() {
@@ -842,19 +838,16 @@ impl Lin {
                 if stamp.dot != *dot || de.pos.len() != 1 || de.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) {
                     return None;
                 }
-                let known = match &anchor {
-                    Anchor::Head => true,
+                let (known, cut) = match &anchor {
+                    Anchor::Head => (true, None),
                     Anchor::Dot(x) => match elems.find(x) {
-                        Some((k, r)) => {
-                            *cut = inside(k, r, x);
-                            true
-                        }
+                        Some((k, r)) => (true, inside(k, r, x)),
                         // a virtual anchor on `END` (§6.1): it would split nodes of its source
                         None if x.src.is_derived() => return None,
-                        None => false,
+                        None => (false, None),
                     },
                 };
-                Some(Plan::New { stamp, anchor, known })
+                Some(Plan::New { stamp, anchor, known, cut })
             }
             Some((k, r)) => {
                 if k != dot || r.span != de.span || de.created.as_ref().is_some_and(|c| r.created.as_ref() != Some(c)) {
@@ -900,7 +893,7 @@ impl Lin {
             let Some(r) = elems.get(&dot) else { return false };
             match plan {
                 Plan::Cut => {}
-                Plan::New { stamp, anchor, known } => {
+                Plan::New { stamp, anchor, known, cut } => {
                     // a write waiting for this dot now gets placed: rebuild
                     if r.span != 1 || r.created.as_ref() != Some(&(stamp.clone(), anchor.clone())) || r.pos.len() != 1 || r.pos.first().is_none_or(|(s, a)| *s != stamp || *a != anchor) || self.waiting.contains(&dot) {
                         return false;
@@ -915,6 +908,7 @@ impl Lin {
                         new.insert(dot, None);
                         continue;
                     }
+                    cuts.extend(cut);
                     let run = match key.as_ref().and_then(|x| new.get(x)) {
                         // below a hidden new element
                         Some(None) => None,
