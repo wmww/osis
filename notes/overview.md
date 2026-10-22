@@ -45,7 +45,8 @@ Known open (issues/): owner tradeoffs stated in user terms (token-admin-secret, 
 - notes/sync.md: sync and blind-node reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: signals vs expiry vs the all-nodes predicate, heartbeats and the stranded flag.
-- notes/chat.md: the chat pattern derived from the current design, with costs.
+- notes/chat.md: the chat pattern derived from the current design, with costs (to be redesigned after tags, notes/tags.md).
+- notes/tags.md: the standard core aspects (`/name`, `/description`, `/icon`, `/tag`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: transports (iroh, direct servers), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-node module layout, engine surface, store records, node-core readings.
