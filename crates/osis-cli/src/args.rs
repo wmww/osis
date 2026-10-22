@@ -464,6 +464,8 @@ pub enum LinkCmd {
 pub enum CardCmd {
     Show,
     Import { card: String },
+    /// This person's profile thing, or the profile a card import brought for PERSON
+    Profile { person: Option<String> },
 }
 
 #[derive(Subcommand, Debug)]

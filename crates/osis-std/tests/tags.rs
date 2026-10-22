@@ -1,22 +1,80 @@
-//! Tags end to end (notes/tags.md), tier 1 (the slower cases tier 2): databases and a blind
-//! server in process (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
+//! Tags (notes/tags.md): sharing a tag per item through one roster, sub-tags, only what you may
+//! share, tag-owned things, ownership transfer. Tier 1 (the slower cases tier 2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis::{EdgeOpts, Error, Lower, Osis, Role, Tid};
+mod common;
+use common::*;
+use osis::core::{BODY, GROUP, NAME, TAG, Tag};
+use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Place, Result, Role, Tid};
 use osis_sim::world::World;
-use tags::*;
 
-fn person(w: &mut World, seed: u64, sv: usize) -> Osis {
-    let db = w.person(seed, &[sv]).unwrap().0;
-    w.run();
-    db
+/// A sub-tag of `parent` owned by `owner`, with an edge for the parent (unless the parent owns it)
+/// so the parent's members reach what it holds.
+fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
+    let t = db.write_with(|w| {
+        let t = w.create(owner, Place::In(parent))?;
+        w.make_group(t)?;
+        w.at(t, TAG).set(&Tag::default())?;
+        w.at(t, NAME).set(&name.to_string())?;
+        w.add_subgroup(parent, t)?;
+        Ok(t)
+    })?;
+    if owner != parent {
+        db.grant(t, parent, role, EdgeOpts::default())?;
+    }
+    Ok(t)
 }
 
-/// `db` imports `other`'s contact card; returns `other`'s person actor.
-fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
-    let card = other.contact_card().unwrap();
-    w.run();
-    w.until(db.import_contact(&card), 1000, 10).expect("card imported").unwrap()
+/// A card: a thing with a body, owned by `owner`, placed nowhere yet.
+fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
+    db.write_with(|w| {
+        let c = w.create(owner, Place::Unsynced)?;
+        w.at(c, BODY).set(&text.to_string())?;
+        Ok(c)
+    })
+}
+
+/// Adds a thing the person owns to a tag: a placement plus an edge for the tag's actor, so the
+/// tag's members reach it (capped by their role on the tag) and it syncs under the tag's label
+/// (spec/sync.md §3, entitlement). Placing alone shares nothing.
+fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
+    db.write_with(|w| w.place(thing, tag))?;
+    db.grant(thing, tag, role, EdgeOpts::default())
+}
+
+fn place(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
+    db.write_with(|w| w.place(thing, tag))
+}
+
+/// Removes a thing from a tag and ends the tag's edge on it (the thing's secrets rotate).
+async fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
+    db.write_with(|w| w.unplace(thing, tag))?;
+    db.demote(thing, tag, Lower::Remove, Demotion::default()).await
+}
+
+fn edit(db: &Osis, card: Tid, shown: &str, new: &str) -> Result<()> {
+    db.write_with(|w| w.at(card, BODY).edit(&shown.to_string(), &new.to_string()))
+}
+
+fn text(db: &Osis, card: Tid) -> Result<Option<String>> {
+    db.get(card, BODY)
+}
+
+/// The things in a tag and its sub-tags (subgroups carrying `/tag`).
+fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
+    let g = db.get(tag, GROUP)?.unwrap_or_default();
+    let things = g.items.iter().filter(|t| !g.subgroups.contains(t)).copied().collect();
+    let mut subs = Vec::new();
+    for s in g.subgroups {
+        if db.get(s, TAG)?.is_some() {
+            subs.push(s);
+        }
+    }
+    Ok((things, subs))
+}
+
+fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> Result<()> {
+    db.grant(tag, person, role, EdgeOpts { until: None, invite })
 }
 
 // notes/tags.md (sharing a tag per item through one roster), spec/sync.md §3 (entitlement),
@@ -48,13 +106,13 @@ fn shared_tag_per_item() {
     add(&alice, trip, packing, Role::Write).unwrap();
     w.run();
     assert_eq!(text(&bob, packing).unwrap().as_deref(), Some("socks"));
-    assert_eq!(tags_of(&bob, packing).unwrap(), vec![trip]);
+    assert_eq!(tag_names(&bob, packing).unwrap(), ["Trip"]);
 
     w.until(remove(&alice, trip, packing), 1000, 20).expect("pre-sync").unwrap();
     edit(&alice, packing, "socks", "socks, hat").unwrap();
     w.run();
     assert_eq!(text(&bob, packing).unwrap().as_deref(), Some("socks"), "removed from the tag: nothing new");
-    assert!(tags_of(&bob, packing).unwrap().is_empty());
+    assert!(tag_names(&bob, packing).unwrap().is_empty());
 }
 
 // notes/tags.md (rosters nest; only what you may share), spec/permissions.md §1 (effective role
@@ -75,7 +133,6 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
     let pitch = new_card(&alice, alice.me(), "pitch").unwrap();
     add(&alice, ideas, pitch, Role::Write).unwrap();
     share(&alice, work, b, Role::Write, None).unwrap();
-    // Carol shares a card with Alice read-only; Alice tags it but cannot share it on.
     let memo = new_card(&carol, carol.me(), "carol's memo").unwrap();
     carol.sync(memo, &[]).unwrap();
     carol.grant(memo, a, Role::Read, EdgeOpts::default()).unwrap();
@@ -124,7 +181,7 @@ fn tag_owned_cards_reader_writer_demotion() {
     assert_eq!(text(&alice, notes).unwrap().as_deref(), Some("from the writer"));
     assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v2"));
 
-    w.until(demote(&alice, team, wr, Lower::To(Role::Read)), 1000, 20).expect("pre-sync").unwrap();
+    w.until(alice.demote(team, wr, Lower::To(Role::Read), Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
     w.run();
     assert_eq!(writer.role_on(team), Some(Role::Read));
     assert!(matches!(edit(&writer, spec, "v2", "v3"), Err(Error::Permission { .. })));
@@ -170,7 +227,7 @@ fn ownership_transfer_is_a_copy() {
     share(&alice, team, b, Role::Read, None).unwrap();
     w.run();
     assert_eq!(text(&bob, f).unwrap().as_deref(), Some("private now"));
-    let mine = transfer(&alice, f, alice.me(), alice.home()).unwrap();
+    let mine = alice.move_thing(f, alice.me(), Place::In(alice.home())).unwrap();
     assert_ne!(mine, f);
     assert!(alice.same_thing(mine, f));
     w.run();

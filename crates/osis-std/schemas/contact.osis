@@ -1,0 +1,31 @@
+//! Contacts (notes/std.md). A contact is a thing with any of these aspects, owned by whoever keeps it;
+//! a profile is the same aspects on a person's profile thing, written by that person. Display name: `/name`;
+//! notes: `/body`; groups: tags.
+schema 0x5b1d4c0e9a7f4e2bb3c6d8a1f0e2c4b6;
+revision 1;
+
+/// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.
+type labeled = struct { 0 label: string = "", 1 pref: bool = false };
+type address = struct { 0 street: string = "", 1 city: string = "", 2 region: string = "", 3 postal: string = "", 4 country: string = "" };
+/// A recurring date; without a year, the year is unknown.
+type annual = struct { 0 month: int, 1 day: int, 2 year: option<int> };
+
+/// The profile thing of the osis user this contact is; the contact's own aspects override the profile's values.
+aspect /contact/profile: tid;
+aspect /contact/names: struct { 0 given: option<string>, 1 family: option<string>, 2 middle: option<string>, 3 prefix: option<string>, 4 suffix: option<string> };
+aspect /contact/nickname: string;
+aspect /contact/photo: struct { 0 mime: string, 1 data: blob };
+/// Keyed by the address.
+aspect /contact/emails: map<string, labeled>;
+/// Keyed by the number as entered.
+aspect /contact/phones: map<string, labeled>;
+aspect /contact/urls: map<string, labeled>;
+/// Keyed by label: home, work, ...
+aspect /contact/addresses: map<string, address>;
+/// Keyed by label: birthday, anniversary, ...
+aspect /contact/dates: map<string, annual>;
+aspect /contact/org: struct { 0 name: string = "", 1 department: string = "", 2 title: string = "" };
+/// Messaging and social accounts.
+aspect /contact/accounts: set<struct { 0 service: string, 1 handle: string }>;
+/// Another contact -> the relation (spouse, child, ...).
+aspect /contact/relations: map<tid, string>;

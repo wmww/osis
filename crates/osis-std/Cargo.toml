@@ -1,6 +1,6 @@
 [package]
-name = "chat"
-description = "Example: group chat over the osis API (notes/chat.md: personas, links, removal, disappearing messages, typing)"
+name = "osis-std"
+description = "First-party schemas over the core: contacts and events (notes and tags need only core aspects); the scenario tests of the standard data"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

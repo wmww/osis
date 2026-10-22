@@ -57,7 +57,7 @@ Every public `Osis` method appears here (checked by tests/cli.rs). Now = works; 
 | `now` | `now` | now |
 | `grant` / `edge` / `demote` / `leave` | `grant` / `change_edge` / `demote` / `leave` | now |
 | `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
-| `card show/import` | `contact_card` / `import_contact` | now |
+| `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
 | `status [--watch]` / `sync` / `wait` | `status`, `watch_status` / `sync_now`, `wait_synced` | now |
 | `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |

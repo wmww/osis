@@ -26,6 +26,8 @@
   - `option<T>` = `enum { 0 none, 1 some(T) }`, default `none`.
   - `markdown` = `text`, content not guaranteed valid.
   - `timestamp` = `int`, milliseconds since the Unix epoch, UTC. `duration` = `int`, milliseconds.
+  - `date` = `int`, days since 1970-01-01 in the proleptic Gregorian calendar: a civil day, no zone.
+  - `localtime` = `int`, milliseconds since 1970-01-01T00:00 of an unnamed zone, no leap seconds: a wall-clock time. With an IANA zone name it resolves to an instant at read time under the reader's zone rules; a wall time inside a gap (clocks moved forward) resolves forward by the gap, one inside an overlap (clocks moved back) to the earlier instant.
   - `any`: the raw canonical value, self-describing by its CBOR encoding (§5); a map with int keys reads as `map<int, any>`, so a struct held in an `any` position reads back as a map.
 - Field and case IDs are never reused (spec/versioning.md).
 - Encoding wrappers are not allowed as set elements or map keys (those are atomic).
@@ -100,7 +102,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 2, evol
 | `/group` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `/groups` | set<tid> | synthetic, guaranteed, local |
 | `/name` | string | what humans call the thing |
-| `/description` | markdown | |
+| `/body` | markdown | freeform content: a note's text, notes on anything |
 | `/tag` | struct { color: option<string> } | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
 **Membership-class aspects**: `/members`, `/secrets`, `/keys`, `/label`, `/tenures`, `/moved`, `/was`. Their rules: spec/commits.md §2, spec/permissions.md.
@@ -147,11 +149,11 @@ aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of
 aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect /groups: set<tid> [synthetic, guaranteed];
 aspect /name: string;
-aspect /description: markdown;
+aspect /body: markdown;
 aspect /tag: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive (spec/wire.md §3): `/created` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/description` and `/tag`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `/node`, `/reach`, `/seen`, `/group`, `/name`, `/body` and `/tag`: `author`, no keep bounds; membership-class aspects and `/created` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

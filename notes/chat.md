@@ -1,5 +1,5 @@
 # Chat
-> Summary: The group-chat pattern (entitlement, per-thing roles, writer stamps, inbox blobs) as built in examples/chat: chat actor, personas, join by link, removal through the link actor with rotation, disappearing messages with expiring placements, hide set, reactions, read marker, typing signals; what each step costs (measured) and the limits the owner should know. Not reviewed by the owner.
+> Summary: **Thrown out (owner): no chat schema until a good one is designed, post-prototype (notes/std.md); kept for the pattern and its measured costs.** The group-chat pattern (entitlement, per-thing roles, writer stamps, inbox blobs) as built in examples/chat: chat actor, personas, join by link, removal through the link actor with rotation, disappearing messages with expiring placements, hide set, reactions, read marker, typing signals; what each step costs (measured) and the limits the owner should know. Not reviewed by the owner.
 
 ## Structure (built: examples/chat, tests in examples/chat/tests/e2e.rs)
 - **Chat actor C**: a group owned by the creator's person (better: a root actor, notes/permissions.md Patterns), created `Unsynced` and synced on the creator's servers under its own label (not placed in the home group); C's label is the chat's label. Moderators are C's admins. C holds the title and the hidden-message set.

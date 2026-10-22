@@ -1,0 +1,32 @@
+//! Calendar events (notes/std.md). Name: `/name`; notes: `/body`; a calendar is a tag of events.
+//! Times are wall-clock times with a zone (spec/data-model.md §3, `localtime`), days are civil dates.
+schema 0x8e2f6a1c4d0b4f7a9c3e5b7d1a2f4c6e;
+revision 1;
+
+/// A wall-clock time in an IANA zone (or a fixed `+HH:MM` offset); no zone: floating, the viewer's zone.
+type wall = struct { 0 time: localtime, 1 zone: option<string> };
+type weekday = enum { 0 mon, 1 tue, 2 wed, 3 thu, 4 fri, 5 sat, 6 sun };
+/// An occurrence of a repeating event, by its nominal start.
+type occurrence = enum { 0 at(localtime), 1 day(date) };
+
+/// When the event starts; absent: not scheduled yet.
+aspect /event/start: enum { 0 at(wall), 1 day(date) };
+/// When it ends: a wall time (its own zone), the last day (inclusive), or a duration after the start.
+/// Absent: a moment, or one day. Must match the start's kind.
+aspect /event/end: enum { 0 at(wall), 1 day(date), 2 after(duration) };
+aspect /event/location: string;
+aspect /event/repeat: struct {
+    0 freq: enum { 0 daily, 1 weekly, 2 monthly, 3 yearly },
+    1 interval: int = 1,
+    /// Weekly: on these days. Monthly and yearly: the nth such day of the month or year, -1 the last.
+    2 weekdays: set<struct { 0 day: weekday, 1 nth: option<int> }>,
+    3 monthdays: set<int>,
+    4 until: option<date>,
+    5 count: option<int>,
+    /// Occurrences removed from the series.
+    6 skip: set<occurrence>,
+};
+/// This event replaces that occurrence of a repeating event.
+aspect /event/overrides: struct { 0 series: tid, 1 at: occurrence };
+/// Reminders, before the start.
+aspect /event/alerts: set<duration>;

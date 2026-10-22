@@ -56,6 +56,7 @@ aspect /groups: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.
 aspect /name: string;
-aspect /description: markdown;
+/// Freeform markdown: a note's content, notes on an event or a contact.
+aspect /body: markdown;
 /// Marks a group as a user-facing tag (notes/tags.md): its items are the tag's contents, its subgroups its sub-tags.
 aspect /tag: struct { 0 color: option<string> };

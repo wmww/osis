@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "models/crdt", "models/membership", "vectors", "sim", "examples/*"]
+members = ["crates/*", "models/crdt", "models/membership", "vectors", "sim"]
 exclude = ["fuzz"]
 
 [workspace.package]

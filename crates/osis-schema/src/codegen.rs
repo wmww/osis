@@ -123,7 +123,7 @@ impl Gen {
             Type::Named(n, args) => match (n.as_str(), args.as_slice()) {
                 ("option", [t]) => format!("Option<{}>", self.rust_type(t, hint, in_collection)?),
                 ("markdown", []) => "String".into(),
-                ("timestamp" | "duration", []) => "i64".into(),
+                ("timestamp" | "duration" | "date" | "localtime", []) => "i64".into(),
                 _ => {
                     let mut s = camel(n);
                     if !args.is_empty() {
@@ -176,7 +176,7 @@ impl Gen {
                     let _ = writeln!(consts, "    pub const {}: {P}::FieldId = {P}::FieldId({id});", f.name.to_uppercase());
                 }
                 let _ = writeln!(self.out, "    }}\n}}");
-                let _ = writeln!(self.out, "/// Field IDs of `{}`.\npub mod {} {{\n{consts}}}", it.rust, snake(&it.rust));
+                let _ = writeln!(self.out, "/// Field IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
             }
             Type::Enum(en) => {
                 self.out.push_str(&s.replace("    ///", "///"));
@@ -208,7 +208,7 @@ impl Gen {
                     "impl{bounds} {P}::Codec for {}{generics} {{\n    fn to_value(&self) -> {P}::codec::rt::Value {{\n        match self {{\n{to}        }}\n    }}\n    fn from_value(v: &{P}::codec::rt::Value) -> Result<Self, {P}::PathError> {{\n        match v {{\n{from}            _ => Err({P}::codec::rt::unknown_case(v)),\n        }}\n    }}\n}}",
                     it.rust
                 );
-                let _ = writeln!(self.out, "/// Case IDs of `{}`.\npub mod {} {{\n{consts}}}", it.rust, snake(&it.rust));
+                let _ = writeln!(self.out, "/// Case IDs of `{}`.\npub mod {} {{\n    #[allow(unused_imports)]\n    use super::*;\n{consts}}}", it.rust, snake(&it.rust));
             }
             _ => {
                 let t = self.rust_type(&body, &it.rust, false)?;

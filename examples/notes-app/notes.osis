@@ -1,8 +1,0 @@
-//! Notes app (examples/notes-app): notebooks are tags that own their notes; names are the core `/name`.
-schema 0xf27e9991e5ed93dd6d0dfe427b584bde;
-revision 2;
-
-/// A note's body, edited in text sessions.
-aspect /notes/body: text;
-/// A large markdown document attached to a note, written and read as a stream.
-aspect /notes/attachment: markdown;

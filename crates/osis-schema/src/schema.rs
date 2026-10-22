@@ -155,7 +155,7 @@ impl Schema {
                 Ok(Type::option_body(args.first().cloned().unwrap_or(Type::Any)))
             }
             "markdown" => arity(0).map(|_| Type::Text),
-            "timestamp" | "duration" => arity(0).map(|_| Type::Int),
+            "timestamp" | "duration" | "date" | "localtime" => arity(0).map(|_| Type::Int),
             _ => {
                 let def = self.types.get(n).ok_or_else(|| format!("unknown type {n}"))?;
                 arity(def.params.len())?;

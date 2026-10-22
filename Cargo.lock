@@ -441,15 +441,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chat"
-version = "0.1.0"
-dependencies = [
- "osis",
- "osis-schema",
- "osis-sim",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2428,15 +2419,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "notes-app"
-version = "0.1.0"
-dependencies = [
- "osis",
- "osis-schema",
- "osis-sim",
-]
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2806,6 +2788,15 @@ dependencies = [
  "osis-schema",
  "osis-server",
  "osis-store",
+]
+
+[[package]]
+name = "osis-std"
+version = "0.1.0"
+dependencies = [
+ "osis",
+ "osis-schema",
+ "osis-sim",
 ]
 
 [[package]]
@@ -4003,15 +3994,6 @@ checksum = "8e1d1b10ced5ca923a1fcb8d03e96b8d3268065d724548c0211415ff6ac6bac4"
 dependencies = [
  "core-foundation-sys",
  "libc",
-]
-
-[[package]]
-name = "tags"
-version = "0.1.0"
-dependencies = [
- "osis",
- "osis-schema",
- "osis-sim",
 ]
 
 [[package]]
