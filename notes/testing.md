@@ -35,6 +35,8 @@ About 70 s of test time in all (`cargo test --workspace` warm: about 75 s of tes
 
 **Sign-off run** (idle 4-core box, `CARGO_INCREMENTAL=0`, clean target dir): `cargo test --workspace --no-run` 3.1 min; `cargo test --workspace` 152 s wall, 143 binaries, 944 passed, 0 failed, 88 ignored, 98 s summed test time; clippy (all targets, all features, `-D warnings`), `cargo deny check`, `tools/policy.py`, `tools/spec_map.py --gaps` and `--uncited` clean; `gen-vectors` leaves `vectors/` unchanged. Tier 2, the sim sweep and `models/tla/run.sh small` were not run: the session was stopped for low memory during the release build. Their latest results are the ones above (tier 2: two known failures; sweeps: seeds 0..15 of every scenario green) and in Models below (TLA+: every instance passes but the expected `MC_drop_refresh`).
 
+osis-perm's random runs (`roster`, `differential`, `queries`, `incremental`) sample other histories with `OSIS_PERM_SEED=<n>` (xor'ed into each run's seed).
+
 How to replay a failing sim seed: `sim-sweep` prints `osis_sim::replay("<scenario>", <seed>)`; call it from a test (`cargo test --release -p osis-sim`) or add it as an ignored `<scenario>_seed_<n>` test naming its issue (Phase C, Blocked). `OSIS_SIM_TRACE=1` prints every trace line.
 
 What nothing covers: the scale checks' "Not covered" list below, the TLA+ "Not covered" list, the items of issues/tests-unbuilt.md, QUIC and iroh tests outside tier 2 with `--features`, browsers, real networks beyond localhost.

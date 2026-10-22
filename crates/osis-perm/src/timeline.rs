@@ -47,10 +47,8 @@ pub struct Timeline {
     converged: bool,
     /// Inputs `extend` must find unchanged.
     nodes: BTreeSet<Tid>,
-    ever_members: BTreeMap<Tid, BTreeSet<Tid>>,
     epoch_changed: bool,
-    rejected: BTreeSet<CommitId>,
-    /// The furthest point a walk other than the final one reached.
+    /// The furthest point a walk under the final epoch starts other than the final one reached.
     reach: Option<Point>,
     /// The edge state before history change `i * CHECKPOINT`, for `edges_at`.
     checkpoints: Vec<Edges>,
@@ -107,9 +105,7 @@ impl Timeline {
             passes: out.passes,
             converged: out.converged,
             nodes: input.nodes,
-            ever_members: input.ever_members,
             epoch_changed: out.epoch_changed,
-            rejected: out.rejected,
             reach: out.reach,
             checkpoints,
             memo: Memo::default(),
@@ -127,24 +123,25 @@ impl Timeline {
             return None;
         }
         let input = Input::gather(held);
-        // a new author or member, or (after epoch changes) a new membership path, could have
-        // changed how earlier writes were walked
-        if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes || (self.epoch_changed && input.ever_members != self.ever_members) {
+        // a new author or member could have changed how earlier writes were walked; after epoch
+        // changes, going on from the old starts finds the same ones only when they have a
+        // unique fixed point (walk::drive)
+        if !input.snaps.keys().eq(self.snaps.keys()) || input.nodes != self.nodes || (self.epoch_changed && input.cyclic()) {
             return None;
         }
         if !self.commits.keys().all(|k| input.commits.contains_key(k)) {
             return None;
         }
         let Some(from) = input.commits.iter().filter(|(k, _)| !self.commits.contains_key(*k)).map(|(_, c)| c.point()).min() else {
-            let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, rejected, reach, .. } = self;
-            let out = walk::Outcome { walked, dropped, epoch_starts, passes, converged: true, epoch_changed, rejected, reach };
+            let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
+            let out = walk::Outcome { walked, dropped, epoch_starts, passes, converged: true, epoch_changed, reach };
             return Some(Timeline::from_outcome(input, out));
         };
         if self.reach.is_some_and(|r| r >= from) {
             return None;
         }
-        let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, rejected, reach, .. } = self;
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, rejected, passes, epoch_changed, reach, from });
+        let Timeline { walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
+        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, passes, epoch_changed, reach, from });
         Some(Timeline::from_outcome(input, out))
     }
     /// Walks evaluated (1 when nothing was dropped and no epoch start applied).

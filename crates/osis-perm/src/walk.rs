@@ -11,11 +11,11 @@
 //! - Only R's frontier and R itself cover X's writes (§5.1): writes on A's own chain too (the
 //!   writer lists its chain certificates by commit ID), so a removed admin's backdated write on
 //!   its remover's edge drops.
-//! - Epoch starts: the newest snapshot found applicable at its position in a walk becomes N's
-//!   epoch start and the walk restarts; one found inapplicable or dropped while chosen is
-//!   rejected until an epoch start changes on a thing authority on N may come through
-//!   (owners, members of what is above, at any time). D is rebuilt whenever
-//!   the epoch starts change, so writes a start ignores leave no drops.
+//! - Epoch starts (§6), by iteration: under the current starts the walk runs until D settles
+//!   (from scratch), judging every snapshot at its position like an owner-chain edge write
+//!   (`candidates`: a later demotion's audit may drop it); then each thing's start becomes its
+//!   newest snapshot that applied, and so on until the starts settle (`drive` argues
+//!   termination). Only settled walks choose, so the starts are a function of the held set.
 //! - Before its epoch start S, N's edges follow S's roster and ledger as virtual writes placed
 //!   at their keys (just after the commit at that point); an entry with a frontier is the
 //!   explicit demotion it records, by its key's node (exempt as the author), audit-only
@@ -70,20 +70,27 @@ pub(crate) struct Input {
 }
 
 impl Input {
-    /// Things authority on `t` may come through, at any time: its owners and the members of
-    /// anything on the way, transitively (`t` excluded).
-    pub fn above(&self, t: &Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![*t];
-        while let Some(e) = stack.pop() {
-            let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_members.get(&e).into_iter().flatten().copied());
-            for y in up {
-                if y != *t && seen.insert(y) {
-                    stack.push(y);
+    /// Whether authority on some thing with a roster snapshot may come through that thing
+    /// itself (mutual membership): through its owners and the members of anything on the way,
+    /// transitively, at any time. Otherwise the epoch starts have a unique fixed point (`drive`).
+    pub fn cyclic(&self) -> bool {
+        let things: BTreeSet<Tid> = self.snaps.values().map(|s| s.thing).collect();
+        things.iter().any(|t| {
+            let mut seen = BTreeSet::new();
+            let mut stack = vec![*t];
+            while let Some(e) = stack.pop() {
+                let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_members.get(&e).into_iter().flatten().copied());
+                for y in up {
+                    if y == *t {
+                        return true;
+                    }
+                    if seen.insert(y) {
+                        stack.push(y);
+                    }
                 }
             }
-        }
-        seen
+            false
+        })
     }
 
     pub fn gather(held: &dyn HeldSet) -> Input {
@@ -169,6 +176,7 @@ pub(crate) struct Rest {
     prior_node: BTreeMap<(Tid, Tid), BTreeMap<Tid, Edge>>,
     by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
     setter: BTreeMap<(Tid, Tid), WriteId>,
+    candidates: BTreeMap<CommitId, Applied>,
     log: Vec<Undo>,
     /// Per walked item: the log and history lengths before it.
     marks: Vec<(usize, usize)>,
@@ -182,6 +190,7 @@ enum Undo {
     Prior((Tid, Tid), Option<Edge>),
     PriorNode((Tid, Tid), Option<BTreeMap<Tid, Edge>>),
     Applied(WriteId, Option<Applied>),
+    Candidate(CommitId, Option<Applied>),
     ByAuthorTarget((Tid, Tid)),
     Demotion((Tid, Tid)),
 }
@@ -192,12 +201,10 @@ pub(crate) struct Outcome {
     pub epoch_starts: BTreeMap<Tid, CommitId>,
     pub passes: usize,
     pub converged: bool,
-    /// Whether the epoch starts ever changed (the rejection rule then read `Input::above`).
+    /// Whether the epoch starts ever changed.
     pub epoch_changed: bool,
-    /// Rejected epoch starts, as the final walk began.
-    pub rejected: BTreeSet<CommitId>,
-    /// The furthest point a walk other than the final one reached (where it restarted, or its
-    /// last item): a walk is the final one's prefix up to here only.
+    /// The furthest point a walk under the final starts other than the final walk reached
+    /// (where it restarted): a walk is the final one's prefix up to here only.
     pub reach: Option<Point>,
 }
 
@@ -207,7 +214,6 @@ pub(crate) struct Resume {
     pub walked: Walked,
     pub dropped: BTreeMap<WriteId, Point>,
     pub epoch_starts: BTreeMap<Tid, CommitId>,
-    pub rejected: BTreeSet<CommitId>,
     pub passes: usize,
     pub epoch_changed: bool,
     pub reach: Option<Point>,
@@ -366,6 +372,9 @@ struct Pass<'a> {
     applied: BTreeMap<WriteId, Applied>,
     by_author_target: BTreeMap<(Tid, Tid), Vec<WriteId>>,
     setter: BTreeMap<(Tid, Tid), WriteId>,
+    /// Snapshots that applied at their position (owner-chain authority, not dropped), the
+    /// epoch starts among them: each thing's newest is its next start (`choose`).
+    candidates: BTreeMap<CommitId, Applied>,
     history: Vec<Change>,
     demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
     /// `roles_from` per node over the current edges: the answer, the ts it was computed at
@@ -398,12 +407,12 @@ impl<'a> Pass<'a> {
 
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
         let Walked { initial, history, edges, applied, demotions, rest } = w;
-        let Rest { prior, dead, prior_node, by_author_target, setter, log, marks } = rest;
-        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, history, demotions, roles: BTreeMap::new(), log, marks }
+        let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks } = rest;
+        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, roles: BTreeMap::new(), log, marks }
     }
 
     fn finish(self) -> (Walked, BTreeMap<WriteId, Point>) {
-        let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter, log: self.log, marks: self.marks };
+        let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter, candidates: self.candidates, log: self.log, marks: self.marks };
         (Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, rest }, self.dropped)
     }
 
@@ -443,6 +452,12 @@ impl<'a> Pass<'a> {
                     match a {
                         Some(a) => self.applied.insert(id, a),
                         None => self.applied.remove(&id),
+                    };
+                }
+                Undo::Candidate(c, a) => {
+                    match a {
+                        Some(a) => self.candidates.insert(c, a),
+                        None => self.candidates.remove(&c),
                     };
                 }
                 Undo::ByAuthorTarget(k) => {
@@ -670,7 +685,11 @@ impl<'a> Pass<'a> {
     fn audit(&mut self, x: &Tid, n: &Tid, now: Class, held: Class, aud: &Auditor) -> bool {
         let mut grew = false;
         for id in self.by_author_target.get(&(*x, *n)).cloned().unwrap_or_default() {
-            let Some(a) = self.applied.get(&id) else { continue };
+            let a = match id {
+                WriteId::Snapshot(s) => self.candidates.get(&s),
+                WriteId::Op(..) => self.applied.get(&id),
+            };
+            let Some(a) = a else { continue };
             let Attr::By(c) = a.attr else { continue };
             if !(now < c && c <= held) {
                 continue;
@@ -754,29 +773,28 @@ impl<'a> Pass<'a> {
         grew
     }
 
-    /// A roster snapshot at its position: `Err(())` asks for a restart (the chosen epoch start
-    /// is inapplicable). A newer applicable one becomes a candidate (`choose`).
-    fn snapshot(&mut self, s: &RosterSnapshot, rejected: &mut BTreeSet<CommitId>, choose: &mut BTreeMap<Tid, CommitId>) -> Result<(), ()> {
+    /// A roster snapshot at its position (§6): applies like an owner-chain edge write
+    /// (`candidates`, audited like one); the epoch start's roster becomes N's edges whether it
+    /// applies or not (the next round of `drive` then chooses again).
+    fn snapshot(&mut self, s: &RosterSnapshot) {
         let id = WriteId::Snapshot(s.id);
-        if self.dropped.contains_key(&id) || rejected.contains(&s.id) {
-            return Ok(());
+        let start = self.epoch.get(&s.thing) == Some(&s.id);
+        if !self.dropped.contains_key(&id) {
+            let best = self.roles(s.author, s.ts);
+            if self.view(s.ts).standing(&s.author, &best, &s.thing).class == Class::Chain {
+                let a = Applied { author: s.author, target: s.thing, point: s.point(), attr: Attr::By(Class::Chain), dots: s.dots };
+                if start {
+                    self.record(id, a);
+                } else {
+                    self.by_author_target.entry((a.author, a.target)).or_default().push(id);
+                    self.log.push(Undo::ByAuthorTarget((a.author, a.target)));
+                }
+                let was = self.candidates.insert(s.id, a);
+                self.log.push(Undo::Candidate(s.id, was));
+            }
         }
-        let best = self.roles(s.author, s.ts);
-        let chain = self.view(s.ts).standing(&s.author, &best, &s.thing).class == Class::Chain;
-        match self.start_of(&s.thing).map(|e| (e.id, e.point())) {
-            Some((e, _)) if e == s.id => {
-                if !chain {
-                    rejected.insert(s.id);
-                    return Err(());
-                }
-            }
-            Some((_, p)) if s.point() < p => return Ok(()),
-            _ => {
-                if chain {
-                    choose.insert(s.thing, s.id);
-                }
-                return Ok(());
-            }
+        if !start {
+            return;
         }
         // The epoch start itself: N's edges become its roster.
         let point = s.point();
@@ -797,8 +815,18 @@ impl<'a> Pass<'a> {
                 self.set_setter((*m, s.thing), Some(id));
             }
         }
-        self.record(id, Applied { author: s.author, target: s.thing, point, attr: Attr::By(Class::Chain), dots: s.dots });
-        Ok(())
+    }
+
+    /// Each thing's newest snapshot that applied in this walk, `banned` ones aside.
+    fn choose(&self, banned: &BTreeSet<CommitId>) -> BTreeMap<Tid, CommitId> {
+        let mut out: BTreeMap<Tid, (Point, CommitId)> = BTreeMap::new();
+        for (c, a) in self.candidates.iter().filter(|(c, _)| !banned.contains(c)) {
+            let e = out.entry(a.target).or_insert((a.point, *c));
+            if a.point > e.0 {
+                *e = (a.point, *c);
+            }
+        }
+        out.into_iter().map(|(t, (_, c))| (t, c)).collect()
     }
 
     fn virtual_write(&mut self, v: &Virtual) -> bool {
@@ -868,14 +896,12 @@ enum Step {
     Done,
     /// D grew: walk again from this item (the first one D now skips more of).
     Restart(usize),
-    /// The chosen epoch start is inapplicable.
-    Reject,
 }
 
 impl Pass<'_> {
     /// Walks `items` from item `from` (rolled back to the state before it). A walk with a
     /// larger D is this one up to the first write D now skips, so a restart resumes there.
-    fn walk(&mut self, items: &Items, from: usize, rejected: &mut BTreeSet<CommitId>, choose: &mut BTreeMap<Tid, CommitId>) -> Step {
+    fn walk(&mut self, items: &Items, from: usize) -> Step {
         self.rollback(from);
         self.fresh.clear();
         for (_, _, _, _, item) in items.list.iter().skip(from) {
@@ -883,9 +909,7 @@ impl Pass<'_> {
             let restart = match item {
                 Item::Commit(c) => self.commit(c),
                 Item::Snap(s) => {
-                    if self.snapshot(s, rejected, choose).is_err() {
-                        return Step::Reject;
-                    }
+                    self.snapshot(s);
                     false
                 }
                 Item::Virtual(v) => self.virtual_write(v),
@@ -911,97 +935,76 @@ pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
     drive(input, Some(r))
 }
 
+/// Termination. A walk under fixed starts restarts only when D grew, and D only grows, so it
+/// settles within one walk per write. A round maps starts E to F(E), each thing's newest
+/// snapshot that applied in the settled walk under E. A snapshot of N applies by authority
+/// through what is above N (owners, members of anything on the way, at any time), and E acts
+/// on the walk only through each start's thing. So unless authority on N may come through N
+/// itself (`Input::cyclic`), F(E) on N depends only on E above N: the rounds settle from the
+/// top down, from any E, in at most one round per thing with snapshots plus one, at the
+/// unique fixed point (so `Timeline::extend` may go on from the old starts). Through mutual
+/// membership a start can withdraw its own author's authority (a fixed point need not
+/// exist): the starts then return to an assignment seen before without settling, and every
+/// snapshot that is a start in some but not all of the assignments since is never a start
+/// again. Each return bans at least one snapshot (the assignments differ, and all are free of
+/// bans), bans are never lifted, and between returns the finitely many assignments must
+/// repeat; so a start is not accepted and rejected forever. `cap` is a safety net.
 fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
     let ns = input.snaps.len();
     let writes = input.commits.values().map(|c| c.ops.len()).sum::<usize>() + ns;
-    // Safety net: D grows between epoch changes; epoch changes stop except where authority
-    // paths cycle through mutual membership, where this bound ends the evaluation.
     let cap = (writes + 2).saturating_mul(ns.saturating_mul(ns + 2) + 1).saturating_mul(4);
-    let (mut epoch, mut rejected, mut passes, mut epoch_changed, mut reach, mut it, mut p, mut from);
+    let (mut epoch, mut passes, mut epoch_changed, mut reach, mut it, mut p, mut from);
     match resume {
         None => {
             epoch = BTreeMap::new();
-            rejected = BTreeSet::new();
             (passes, epoch_changed, reach) = (0, false, None);
             it = items(input, &epoch);
             p = Pass::new(input, epoch.clone(), BTreeMap::new(), it.initial.clone());
             from = 0;
         }
         Some(r) => {
-            (epoch, rejected, passes, epoch_changed, reach) = (r.epoch_starts, r.rejected, r.passes, r.epoch_changed, r.reach);
+            (epoch, passes, epoch_changed, reach) = (r.epoch_starts, r.passes, r.epoch_changed, r.reach);
             it = items(input, &epoch);
             from = it.list.partition_point(|x| x.0 < r.from);
             p = Pass::resume(input, epoch.clone(), r.dropped, r.walked);
         }
     }
-    let mut fresh = false;
+    // assignments since the last ban, and the bans
+    let mut seen: Vec<BTreeMap<Tid, CommitId>> = Vec::new();
+    let mut banned: BTreeSet<CommitId> = BTreeSet::new();
     loop {
-        passes += 1;
-        let mut changed: Vec<Tid> = Vec::new();
-        // A dropped epoch start is rejected.
-        for (thing, s) in &epoch {
-            if p.dropped.contains_key(&WriteId::Snapshot(*s)) {
-                rejected.insert(*s);
-                changed.push(*thing);
+        // §5.1 step 5 under `epoch`
+        loop {
+            passes += 1;
+            match p.walk(&it, from) {
+                Step::Done => break,
+                Step::Restart(i) => {
+                    reach = reach.max(p.marks.len().checked_sub(1).and_then(|k| it.list.get(k)).map(|x| x.0));
+                    from = i;
+                }
             }
         }
-        epoch.retain(|_, s| !rejected.contains(s));
-        if fresh || !changed.is_empty() {
-            it = items(input, &epoch);
-            p = Pass::new(input, epoch.clone(), std::mem::take(&mut p.dropped), it.initial.clone());
-            from = 0;
+        let mut next = p.choose(&banned);
+        if next != epoch
+            && let Some(cycle) = seen.iter().position(|e| *e == next).and_then(|i| seen.get(i..))
+        {
+            let cycle: Vec<&BTreeMap<Tid, CommitId>> = cycle.iter().chain([&epoch]).collect();
+            let some: BTreeSet<CommitId> = cycle.iter().flat_map(|e| e.values().copied()).collect();
+            banned.extend(some.into_iter().filter(|c| !cycle.iter().all(|e| e.values().any(|v| v == c))));
+            seen.clear();
+            next = p.choose(&banned);
         }
-        let mut choose = BTreeMap::new();
-        let before: BTreeSet<CommitId> = rejected.clone();
-        let step = p.walk(&it, from, &mut rejected, &mut choose);
-        // where this walk stopped, should it not be the final one
-        let stop = match step {
-            Step::Done => it.list.last().map(|x| x.0),
-            Step::Restart(_) | Step::Reject => p.marks.len().checked_sub(1).and_then(|i| it.list.get(i)).map(|x| x.0),
-        };
-        for s in rejected.difference(&before) {
-            if let Some(sn) = input.snaps.get(s) {
-                changed.push(sn.thing);
-            }
+        let converged = next == epoch;
+        if converged || passes >= cap {
+            let (walked, dropped) = p.finish();
+            return Outcome { walked, dropped, epoch_starts: epoch, passes, converged, epoch_changed, reach };
         }
-        epoch.retain(|_, s| !rejected.contains(s));
-        for (thing, s) in &choose {
-            epoch.insert(*thing, *s);
-            changed.push(*thing);
-        }
-        if !changed.is_empty() {
-            epoch_changed = true;
-            // A rejected start gets another chance when a start changes anywhere authority on
-            // its thing may come from (owners, members of what is above, at any time); D is
-            // rebuilt, so writes a new start ignores leave no drops behind.
-            rejected.retain(|s| {
-                input.snaps.get(s).is_none_or(|sn| {
-                    let above = input.above(&sn.thing);
-                    !changed.iter().any(|c| above.contains(c))
-                })
-            });
-            p.dropped.clear();
-        }
-        match step {
-            Step::Done if changed.is_empty() => {
-                let (walked, dropped) = p.finish();
-                return Outcome { walked, dropped, epoch_starts: epoch, passes, converged: true, epoch_changed, rejected, reach };
-            }
-            _ if passes >= cap => {
-                let it = items(input, &epoch);
-                let mut q = Pass::new(input, epoch.clone(), p.dropped.clone(), it.initial.clone());
-                let walked = match q.walk(&it, 0, &mut rejected.clone(), &mut BTreeMap::new()) {
-                    Step::Done => q.finish().0,
-                    _ => Pass::new(input, BTreeMap::new(), BTreeMap::new(), Edges::default()).finish().0,
-                };
-                return Outcome { walked, dropped: p.dropped, epoch_starts: epoch, passes, converged: false, epoch_changed, rejected, reach: None };
-            }
-            _ => {}
-        }
-        reach = reach.max(stop);
-        fresh = !changed.is_empty();
-        if let Step::Restart(i) = step {
-            from = i;
-        }
+        seen.push(std::mem::replace(&mut epoch, next));
+        epoch_changed = true;
+        it = items(input, &epoch);
+        // D is rebuilt, so writes a new start ignores leave no drops behind
+        p = Pass::new(input, epoch.clone(), BTreeMap::new(), it.initial.clone());
+        from = 0;
+        reach = None;
     }
 }

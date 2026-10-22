@@ -108,7 +108,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
 }
 
 fn joint_run(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     let mut fails = Vec::new();
     let mut with_drops = 0u64;
     for s in 0..samples {
@@ -222,7 +222,7 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
 }
 
 fn edges_run(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     let mut fails = Vec::new();
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
@@ -294,7 +294,7 @@ fn residue(tl: &Timeline) -> bool {
 }
 
 fn snap_run(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     let mut fails = Vec::new();
     for s in 0..samples {
         // The snapshot model has no self-removal: leave out writes of an author's own edge.

@@ -66,7 +66,7 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
 }
 
 fn run(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     for s in 0..samples {
         // Two or three independent histories in one held set: several components; or one
         // snapshot-model history (its roster snapshots held from the start, epoch starts).

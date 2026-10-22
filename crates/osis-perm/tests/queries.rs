@@ -43,7 +43,7 @@ fn certificates_carry_demotions() {
 /// certificates plus the write give the write the timeline's outcome (applied, dropped) and
 /// the author its standing at the write.
 fn cert_run_joint(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     for s in 0..samples {
         let h = joint::random_hist(&mut rng);
         let mut w = World::new();
@@ -119,7 +119,7 @@ fn certificates_project_joint_large() {
 }
 
 fn cert_run_edges(samples: u64, seed: u64) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng(seeded(seed));
     for s in 0..samples {
         let h = edges::random_hist(&mut rng);
         let mut w = World::new();
