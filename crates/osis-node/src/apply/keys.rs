@@ -418,19 +418,15 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
-    // a commit whose `/members` part grants this node or an actor it holds outranks one that
-    // only boxes it: its author gets a budget of its own even when its chain is unknown here
-    let me = tx.core.id.tid();
-    let grants = pending_grantees(blob, id, None).iter().any(|m| *m == me || tx.core.secrets.contains_key(m) || tx.core.key_actors.contains_key(m));
     for (a, w) in pending_secrets_writes(tx.core, blob, id) {
         if w.boxes.is_empty() && w.history.is_empty() {
             continue;
         }
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
-        // an author whose chain is not known here shares one budget with every such author,
-        // unless its commit grants this node (bogus commits that only box it fill no grant's)
-        let author = if grants || tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        // an author whose chain is not known here shares one budget with every such author (a
+        // claimed grant earns nothing: its `/members` part is as unverified as the boxes)
+        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
         let from = osis_keys::Unchecked { author, commit: *id };
         let published = Core::keys_in(tx, &a)?;
         if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new(), published.as_ref()) {
@@ -461,9 +457,9 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     crate::rotation::mark_lost_due(tx, lost)
 }
 
-/// The members a held, not applied membership commit's `/members` parts (those on `on` only,
-/// when given) put an edge for, decoded unverified.
-pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: Option<&Tid>) -> Vec<Tid> {
+/// The members a held, not applied membership commit's `/members` parts on `on` put an edge
+/// for, decoded unverified.
+pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: &Tid) -> Vec<Tid> {
     let h = &blob.header;
     let mut out = Vec::new();
     if !h.kind.is_membership() || !h.is_resolved() {
@@ -471,7 +467,7 @@ pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on
     }
     let mut interner = osis_crdt::Interner::new();
     for p in &blob.parts {
-        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "/members" || on.is_some_and(|t| a.tid != *t)) {
+        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "/members" || a.tid != *on) {
             continue;
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
@@ -629,6 +625,7 @@ mod tests {
     use osis_core::{CommitId, Role, Tid, Value, WallMs};
     use osis_crypto::{Epoch, Secret32};
     use osis_keys::{ActorEpochs, Unchecked};
+    use osis_schema::Codec;
     use osis_schema::core_types as ct;
 
     fn reading_only(n: u8, commit: CommitId) -> ActorEpochs {
@@ -666,66 +663,117 @@ mod tests {
         assert!(!held(&lp, 1), "at the cap: not read");
     }
 
-    // spec/crypto.md §4: a grantee holding neither the target's `/keys` nor the granter's chain
-    // reads the target from its pending grant even after 64 bogus pending commits from unknown
-    // authors filled their shared budget: a commit granting the node outranks ones that only
-    // box it.
-    #[test]
-    fn grant_outranks_unknown_authors_spec_crypto_4() {
-        let mut lp = LocalPeer::new(2, 909, WallMs(1_700_000_000_000)).unwrap();
+    /// Peer 0 owns thing `t` (`/x/a` = 1); peer 1 is the grantee, holding nothing of peer 0;
+    /// peers 2.. are throwaway authors unknown to the grantee.
+    fn grantee_world(seed: u64, n: usize) -> (LocalPeer, Tid) {
+        let mut lp = LocalPeer::new(n, seed, WallMs(1_700_000_000_000)).unwrap();
         let me = lp.peers[0].engine.tid();
-        let b = lp.peers[1].engine.tid();
-        // the granter holds the grantee's keys; the grantee holds nothing of the granter
+        // the granter holds the grantee's keys
         lp.sync(1, 0).unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
-        let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
-        let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
-        // 64 bogus candidates of unknown authors for the target, as pending commits leave them
-        let mut bogus = ActorEpochs::default();
-        for n in 0..osis_keys::MAX_READING_PER_AUTHOR {
-            let n = u8::try_from(n).unwrap();
-            bogus.read.set_reading_secret(Epoch::new(1, [n; 16]).unwrap(), Secret32::from_bytes([n; 32]), Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: CommitId([n; 32]) });
-        }
-        lp.peers[1].engine.core.secrets.insert(t, bogus);
-        lp.deliver(1, &p).unwrap();
-        assert!(!lp.peers[1].engine.pending().is_empty(), "the grant waits for the granter's chain");
-        let read = lp.peers[1].engine.core.secrets.get(&t).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
-        assert!(read > osis_keys::MAX_READING_PER_AUTHOR, "the grant's candidate is read: {read}");
+        (lp, t)
     }
 
-    // spec/crypto.md §4 (residue, issues/reading-candidates-unknown-authors.md): a bogus
-    // pending commit can claim a grant as easily as a genuine one (its `/members` part is
-    // unverified until its chain arrives), so such claims under throwaway authors each get a
-    // budget of their own; only the role's total (`MAX_READING`) bounds them, and once they
-    // fill it a genuine grant's candidate is refused until its grant applies.
-    #[test]
-    fn bogus_grant_claims_bounded_by_role_total_spec_crypto_4() {
-        let mut lp = LocalPeer::new(2, 910, WallMs(1_700_000_000_000)).unwrap();
-        let me = lp.peers[0].engine.tid();
+    /// Floods the grantee (peer 1) with `per` bogus pending commits from each throwaway author
+    /// (peers 2..): each boxes it a fresh read secret of `t` at a fresh epoch, built past the
+    /// writer rules. Returns how many it delivered.
+    fn flood(lp: &mut LocalPeer, t: Tid, per: usize) -> usize {
         let b = lp.peers[1].engine.tid();
-        lp.sync(1, 0).unwrap();
-        let mut m = Mutation::new();
-        let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_core::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
-        lp.peers[0].commit(m).unwrap();
+        let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
+        let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+        let mut sent = 0;
+        for x in 2..lp.peers.len() {
+            for i in 0..per {
+                let mut held = ActorEpochs::default();
+                held.read.observe(Epoch::new(1, [0; 16]).unwrap());
+                let rcpt = osis_keys::Recipient { member: b, role: Role::Read, keys: osis_keys::MemberKeys::KeyActor { kem: kem.clone(), seed: None } };
+                let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
+                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut rng).unwrap();
+                let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
+                let bytes = forge_membership(lp, x, t, &rec, &v);
+                assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
+                sent += 1;
+            }
+        }
+        sent
+    }
+
+    /// A membership commit by peer `by` setting `t`'s `/secrets` to `v`, signed past every
+    /// writer rule (its author holds no chain to `t`).
+    fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_core::CreationRecord, v: &Value) -> Vec<u8> {
+        use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+        use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+        struct Dedup(osis_core::CreationRecord);
+        impl osis_commit::Secrets for Dedup {
+            fn dedup(&self, _: &Tid) -> Option<Secret32> {
+                Some(osis_crypto::dedup_secret(self.0.nonce()))
+            }
+            fn admin(&self, _: &Tid) -> Option<Secret32> {
+                None
+            }
+            fn chain_write(&self) -> Option<Secret32> {
+                None
+            }
+            fn write(&self, _: &Tid) -> Option<Secret32> {
+                None
+            }
+        }
+        let ak = osis_core::Ak::new("/secrets").unwrap();
+        let author = lp.peers[by].engine.tid();
+        lp.peers[by].clock.advance(1);
+        let ts = osis_core::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+        let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
+        let own = Source::commit(CommitId([0; 32]));
+        let mut w = Writer::new(ts, own.clone(), 1);
+        let f = create(&mut w, &view, v).unwrap();
+        let r = w.range();
+        let mut cx = writer_ctx(Kind::Membership, ts, author, r.lo, r.hi);
+        cx.own = own;
+        let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+        let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
+        aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+        let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Commit);
+        cb.aspects.push(aw);
+        cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    }
+
+    fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
+        lp.peers[1].engine.core.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
+    }
+
+    // spec/crypto.md §4 (secrets from pending commits kept as reading candidates): a flood of
+    // bogus pending commits from throwaway authors leaves at most the shared unknown-author
+    // pool (`MAX_READING_PER_AUTHOR`), within the role's `MAX_READING`.
+    #[test]
+    fn bogus_flood_bounded_by_caps_spec_crypto_4() {
+        let (mut lp, t) = grantee_world(909, 5);
+        let sent = flood(&mut lp, t, 30);
+        assert!(sent > osis_keys::MAX_READING_PER_AUTHOR);
+        let n = candidates(&lp, &t);
+        assert_eq!(n, osis_keys::MAX_READING_PER_AUTHOR, "throwaway authors share one budget");
+        assert!(n <= osis_keys::MAX_READING);
+    }
+
+    // spec/crypto.md §4, spec/permissions.md §2: with the unknown-author pool full, a genuine
+    // pending grant adds no candidate (it claims a grant as cheaply as a bogus commit could); the
+    // member reads once the granter's chain arrives and the grant applies.
+    #[test]
+    fn genuine_grant_applies_after_flood_spec_crypto_4() {
+        let (mut lp, t) = grantee_world(910, 4);
+        let b = lp.peers[1].engine.tid();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
         let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
+        flood(&mut lp, t, 40);
+        let before = candidates(&lp, &t);
         let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
-        // what MAX_READING bogus grant claims under throwaway authors leave
-        let mut bogus = ActorEpochs::default();
-        for n in 0..osis_keys::MAX_READING {
-            let x = u8::try_from(n % 256).unwrap();
-            let y = u8::try_from(n / 256).unwrap();
-            bogus.read.set_reading_secret(Epoch::new(1, [x; 16]).unwrap(), Secret32::from_bytes([x; 32]), Unchecked { author: Tid::from_bytes([x ^ 0x55, y, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]), commit: CommitId([x; 32]) });
-        }
-        lp.peers[1].engine.core.secrets.insert(t, bogus);
-        lp.deliver(1, &p).unwrap();
-        let read = lp.peers[1].engine.core.secrets.get(&t).map(|e| e.read.held_newest_first().len()).unwrap_or(0);
-        assert_eq!(read, osis_keys::MAX_READING, "bounded; the genuine grant's candidate waits for its grant to apply");
+        assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Pending(..)), "the grant waits for the granter's chain");
+        assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
+        lp.sync(0, 1).unwrap();
+        assert!(!lp.peers[1].engine.core.pending.contains_key(&g), "the grant applied");
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_core::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
     }
 
     // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped

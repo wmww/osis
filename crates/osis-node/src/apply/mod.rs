@@ -577,7 +577,7 @@ impl Engine {
                 continue;
             }
             if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
-                out.extend(keys::pending_grantees(&b, c, Some(thing)));
+                out.extend(keys::pending_grantees(&b, c, thing));
                 for (a, w) in keys::pending_secrets_writes(&self.core, &b, c) {
                     if a == *thing {
                         out.extend(w.boxes.into_keys().map(|k| k.member));
