@@ -49,7 +49,8 @@ fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osi
 // writer revoked from before its write) revives the write; the server deletes the body at the
 // plain bound all the same, and a right holder online uploads it again at its next resync (a
 // fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; past the
-// extended bound the body goes behind a carrier snapshot.
+// extended bound the body goes behind a carrier snapshot. (A member offline throughout:
+// `late_member_judges_backdated_revoke_alike_*`.)
 #[test]
 fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
     use osis_core::Role;
@@ -114,4 +115,44 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         let snaps = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
         assert!(snaps > 0, "a carrier snapshot holds v1");
     }
+}
+
+// spec/permissions.md §5.2 (a write after a revoke's frontier is invalid, whatever the order
+// it arrives in), spec/crdt.md §4.6: a member that was offline while a writer's later write
+// and a backdated revoke of that writer arrived must read what an online member reads.
+// Fails on main: the late member reads v2 (issues/late-member-backdated-revoke.md).
+#[test]
+#[ignore = "issues/late-member-backdated-revoke.md"]
+fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
+    use osis_core::Role;
+    use osis_node::flows::{Demotion, PreSync};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(13, &[sv]);
+    let b = net.node(14, &[sv]);
+    let late = net.node(15, &[sv]);
+    let on = net.node(16, &[sv]);
+    let g = net.group(a, &[(b, Role::Write), (late, Role::Read), (on, Role::Read)], &[sv]);
+    net.set_online(late, false);
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    net.advance(60_000);
+    let before = net.now();
+    net.advance(1_000);
+    net.write(b, t, "v2");
+    net.run();
+    net.advance(1_000);
+    let bt = net.tid(b);
+    net.set_online(b, false);
+    let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_core::WallMs(before)) };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert_eq!(net.read(a, t), Some(s("v1")));
+    assert_eq!(net.read(on, t), Some(s("v1")), "an online member");
+    net.set_online(late, true);
+    net.run();
+    net.advance(61_000);
+    assert_eq!(net.read(late, t), Some(s("v1")), "a member offline throughout");
 }
