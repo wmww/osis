@@ -15,7 +15,7 @@
 use crate::{Address, PublicKey};
 #[cfg(feature = "lan")]
 use crate::Error;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 #[cfg(feature = "lan")]
 use std::net::Ipv4Addr;
 #[cfg(feature = "lan")]
@@ -35,10 +35,52 @@ pub fn broadcast(port: u16) -> SocketAddr {
 /// The IPv6 link-local all-nodes group.
 pub const ALL_NODES: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
-/// Where IPv6 announcements are sent: the all-nodes group at `port` (on the default multicast
-/// interface).
+/// Where IPv6 announcements are sent: the all-nodes group at `port`, no interface named
+/// (`Lan::announce` sends it on every interface, `targets`).
 pub fn multicast(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V6(ALL_NODES), port)
+}
+
+/// The all-nodes group at `port` on the interface with index `scope`.
+pub fn multicast_on(port: u16, scope: u32) -> SocketAddr {
+    SocketAddr::V6(SocketAddrV6::new(ALL_NODES, port, 0, scope))
+}
+
+/// Where an announcement to `to` goes: the all-nodes group with no interface named goes to it
+/// on each interface of `scopes` (spec/sync.md §10: every link the host is on), or out the
+/// default multicast interface when there is none; any other address as it is.
+pub fn targets(to: SocketAddr, scopes: &[u32]) -> Vec<SocketAddr> {
+    match to {
+        SocketAddr::V6(v) if *v.ip() == ALL_NODES && v.scope_id() == 0 && !scopes.is_empty() => scopes.iter().map(|s| multicast_on(v.port(), *s)).collect(),
+        _ => vec![to],
+    }
+}
+
+/// The interfaces IPv6 announcements go out on, from (up, IPv6 addresses with their scope IDs)
+/// per interface: the scope (interface index) of each up interface's link-local addresses,
+/// sorted, once each. Loopback has none.
+pub fn link_scopes(ifaces: impl IntoIterator<Item = (bool, Vec<(Ipv6Addr, u32)>)>) -> Vec<u32> {
+    let mut out: Vec<u32> = ifaces
+        .into_iter()
+        .filter(|(up, _)| *up)
+        .flat_map(|(_, addrs)| addrs.into_iter().filter(|(ip, scope)| *scope != 0 && ip.segments().first().is_some_and(|f| f & 0xffc0 == 0xfe80)).map(|(_, scope)| scope))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The host's interfaces for IPv6 announcements now (`link_scopes` over netwatch's list).
+#[cfg(feature = "lan")]
+pub async fn v6_scopes() -> Vec<u32> {
+    let st = netwatch::interfaces::State::new().await;
+    link_scopes(st.interfaces.values().map(|i| {
+        let v6 = i.addrs().filter_map(|a| match a {
+            netwatch::interfaces::IpNet::V6 { net, scope_id, .. } => Some((net.addr(), scope_id)),
+            netwatch::interfaces::IpNet::V4(_) => None,
+        });
+        (i.is_up(), v6.collect())
+    }))
 }
 
 /// One announcement.
@@ -149,14 +191,37 @@ impl Lan {
     }
 
     /// Sends an announcement to `to` (the broadcast address or the all-nodes group at the
-    /// announcement port, or one host) on the socket of its family.
+    /// announcement port, or one host) on the socket of its family. The all-nodes group with no
+    /// interface named goes out every up interface with IPv6, each with its scope (`targets`,
+    /// `v6_scopes`, looked up at each call: interfaces come and go); if every one of those
+    /// sends fails, it goes out the default multicast interface. The socket joins the group on
+    /// each of those interfaces at each call ("already joined" ignored): Linux delivers to it
+    /// anyway (`IPV6_MULTICAST_ALL`), BSD stacks only on interfaces it joined, and interfaces
+    /// come and go under one socket.
     pub async fn announce(&self, a: &Announce, to: SocketAddr) -> Result<(), Error> {
         let s = match (to, &self.v6) {
             (SocketAddr::V4(_), _) => &self.v4,
             (SocketAddr::V6(_), Some(s)) => s,
             (SocketAddr::V6(_), None) => return Err(Error::Unreachable("no IPv6 socket".into())),
         };
-        s.send_to(&a.encode(), to).await.map(|_| ()).map_err(io)
+        let scopes = if to == multicast(to.port()) { v6_scopes().await } else { Vec::new() };
+        for sc in &scopes {
+            let _ = s.join_multicast_v6(&ALL_NODES, *sc);
+        }
+        let bytes = a.encode();
+        let mut res = Ok(());
+        let mut sent = false;
+        for t in targets(to, &scopes) {
+            match s.send_to(&bytes, t).await {
+                Ok(_) => sent = true,
+                Err(e) => res = Err(io(e)),
+            }
+        }
+        if !sent && !scopes.is_empty() {
+            res = s.send_to(&bytes, to).await.map(|_| ()).map_err(io);
+            sent = res.is_ok();
+        }
+        if sent { Ok(()) } else { res }
     }
 
     /// The next announcement heard on either socket and its sender's address. Other datagrams,
@@ -369,6 +434,31 @@ mod tests {
         assert_eq!(&a.signed()[48..], &4433u16.to_be_bytes());
     }
 
+    // spec/sync.md §10: IPv6 announcements go to the all-nodes group on every link the host is
+    // on, each send naming its interface; with no interface known, out the default one.
+    #[test]
+    fn v6_targets_per_interface_spec_sync_10() {
+        let ll = |s: &str| s.parse::<Ipv6Addr>().unwrap();
+        let ifaces = vec![
+            (true, vec![(ll("::1"), 0)]),
+            (true, vec![(ll("2001:db8::5"), 0), (ll("fe80::1"), 2)]),
+            (true, vec![(ll("fe80::2"), 3), (ll("fe80::3"), 3)]),
+            (false, vec![(ll("fe80::4"), 4)]),
+            (true, vec![(ll("fd00::1"), 0)]),
+        ];
+        let scopes = link_scopes(ifaces);
+        assert_eq!(scopes, vec![2, 3]);
+        let t = targets(multicast(PORT), &scopes);
+        assert_eq!(t, vec![multicast_on(PORT, 2), multicast_on(PORT, 3)]);
+        assert!(t.iter().all(|a| matches!(a, SocketAddr::V6(v) if *v.ip() == ALL_NODES && v.port() == PORT)));
+        assert_eq!(t[1].to_string(), "[ff02::1%3]:47380");
+        assert_eq!(targets(multicast(PORT), &[]), vec![multicast(PORT)]);
+        // a scoped group, the IPv4 broadcast and one host go as they are
+        for to in [multicast_on(PORT, 7), broadcast(PORT), "[fe80::9%2]:5".parse().unwrap()] {
+            assert_eq!(targets(to, &scopes), vec![to]);
+        }
+    }
+
     // spec/sync.md §10: only addresses that can be on the LAN are heard.
     #[test]
     fn local_sources_spec_sync_10() {
@@ -399,6 +489,37 @@ mod tests {
             assert_eq!(got, a);
             assert!(from.is_ipv6() && from.ip().is_loopback());
         }
+    }
+
+    // spec/sync.md §10: an announcement to the all-nodes group goes out every IPv6 link, each
+    // send naming its interface (a scope no interface has fails); copies looped back are heard
+    // from that link's address (tier 2: real sockets and interfaces; a host whose firewall drops
+    // multicast, as the dev VM's, hears none, so hearing is checked only when something comes).
+    #[cfg(feature = "lan")]
+    #[tokio::test]
+    #[ignore]
+    async fn announce_v6_every_interface_spec_sync_10() {
+        let rx = Lan::bind(0).await.unwrap();
+        let tx = Lan::bind(0).await.unwrap();
+        let scopes = v6_scopes().await;
+        if !rx.has_v6() || scopes.is_empty() {
+            return;
+        }
+        let a = Announce { tag: [6; 16], key: [7; 32], port: 9, sig: [8; 64] };
+        for sc in &scopes {
+            tx.announce(&a, multicast_on(rx.port(), *sc)).await.unwrap();
+        }
+        assert!(tx.announce(&a, multicast_on(rx.port(), 999_999)).await.is_err());
+        tx.announce(&a, multicast(rx.port())).await.unwrap();
+        let mut heard = std::collections::BTreeSet::new();
+        while let Ok(r) = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv()).await {
+            let (got, from) = r.unwrap();
+            assert_eq!(got, a);
+            let SocketAddr::V6(v) = from else { panic!("{from}") };
+            assert!(is_local(from.ip()));
+            heard.insert(v.scope_id());
+        }
+        assert!(heard.iter().all(|s| scopes.contains(s)), "{heard:?} {scopes:?}");
     }
 
     // spec/sync.md §10: a network watch starts and polls without OS events where it has none

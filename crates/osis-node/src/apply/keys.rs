@@ -421,7 +421,7 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
     // a commit whose `/members` part grants this node or an actor it holds outranks one that
     // only boxes it: its author gets a budget of its own even when its chain is unknown here
     let me = tx.core.id.tid();
-    let grants = pending_grantees(blob, id).iter().any(|m| *m == me || tx.core.secrets.contains_key(m) || tx.core.key_actors.contains_key(m));
+    let grants = pending_grantees(blob, id, None).iter().any(|m| *m == me || tx.core.secrets.contains_key(m) || tx.core.key_actors.contains_key(m));
     for (a, w) in pending_secrets_writes(tx.core, blob, id) {
         if w.boxes.is_empty() && w.history.is_empty() {
             continue;
@@ -461,9 +461,9 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     crate::rotation::mark_lost_due(tx, lost)
 }
 
-/// The members a held, not applied membership commit's `/members` parts put an edge for,
-/// decoded unverified.
-fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<Tid> {
+/// The members a held, not applied membership commit's `/members` parts (those on `on` only,
+/// when given) put an edge for, decoded unverified.
+pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: Option<&Tid>) -> Vec<Tid> {
     let h = &blob.header;
     let mut out = Vec::new();
     if !h.kind.is_membership() || !h.is_resolved() {
@@ -471,7 +471,7 @@ fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<Tid> {
     }
     let mut interner = osis_crdt::Interner::new();
     for p in &blob.parts {
-        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "/members") {
+        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "/members" || on.is_some_and(|t| a.tid != *t)) {
             continue;
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };

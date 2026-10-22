@@ -267,6 +267,9 @@ pub struct SyncEngine {
     diagnostics: Vec<String>,
     /// Inbox blobs waiting for a connection to their server.
     pub(crate) outbox: Vec<local::Outgoing>,
+    /// Inbox blobs for a label this node syncs with nobody: deposited here, as a peer's deposit
+    /// would be (`send_outbox`).
+    pub(crate) local_inbox: Vec<(LabelId, Vec<u8>)>,
     /// Inbox blobs deposited and not answered yet (a label not registered yet, or a rate
     /// limit, sends them again after `retry_ms`).
     pub(crate) inbox_sent: BTreeMap<(ServerKey, osis_core::BlobId), (ConnId, local::Outgoing)>,
@@ -304,6 +307,13 @@ pub struct SyncEngine {
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: Option<u64>,
+    /// Labels synced with nobody want a local pass (`local_passes`); when the last ran (raw
+    /// ms), and whether there were any (the periodic pass's wake).
+    pub(crate) local_dirty: bool,
+    pub(crate) local_last: u64,
+    pub(crate) local_any: bool,
+    /// Prefix expiries of entries under labels synced with nobody (raw unix ms; read once).
+    pub(crate) local_expiry: BTreeMap<osis_core::BlobId, Option<u64>>,
     /// When this node first saw each entry deposited at a server (raw ms; the promotion wait).
     pub(crate) deposit_seen: BTreeMap<(ServerKey, LabelId, osis_core::BlobId), u64>,
     /// Stranded heartbeats already answered by a re-seal.
@@ -396,6 +406,7 @@ impl SyncEngine {
             signals: Vec::new(),
             diagnostics: Vec::new(),
             outbox,
+            local_inbox: Vec::new(),
             inbox_sent: BTreeMap::new(),
             leaving: BTreeSet::new(),
             fetching: BTreeMap::new(),
@@ -413,6 +424,10 @@ impl SyncEngine {
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
             settle_at: None,
+            local_dirty: true,
+            local_last: 0,
+            local_any: false,
+            local_expiry: BTreeMap::new(),
             deposit_seen: BTreeMap::new(),
             resealed: BTreeSet::new(),
             label_actors: BTreeMap::new(),
@@ -661,6 +676,7 @@ impl SyncEngine {
 
     /// Every label on every connection wants a pass.
     fn mark_dirty(&mut self) {
+        self.local_dirty = true;
         for c in self.conns.values_mut() {
             for l in c.labels.values_mut() {
                 l.dirty = true;
@@ -1039,6 +1055,9 @@ impl SyncEngine {
             }
             self.pass(conn, label, out)?;
         }
+        if self.local_dirty {
+            self.local_passes()?;
+        }
         Ok(())
     }
 
@@ -1074,6 +1093,9 @@ impl SyncEngine {
         for (conn, label, g) in failed {
             self.reopens.remove(&(conn, label));
             self.start_label(conn, g, label, out)?;
+        }
+        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now {
+            self.local_dirty = true;
         }
         for (conn, label) in resync {
             if !self.cfg.subscribe || self.conns.get(&conn).and_then(|c| c.labels.get(&label)).is_some_and(|l| !l.synced) {
@@ -1114,6 +1136,9 @@ impl SyncEngine {
         }
         if let Some(x) = self.settle_at {
             at(x);
+        }
+        if self.local_any {
+            at(self.local_last.saturating_add(self.cfg.resync_ms));
         }
         let skew = self.now() as i64 - now as i64;
         if let Some(x) = self.state.sent_inbox.values().map(|s| s.at.saturating_add(osis_core::format::INBOX_LIFETIME_MS)).min() {

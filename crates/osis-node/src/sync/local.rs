@@ -336,8 +336,14 @@ impl SyncEngine {
         self.outbox.push(o);
     }
 
-    /// Deposits waiting inbox blobs on connections to their servers (no open needed).
+    /// Deposits waiting inbox blobs on connections to their servers (no open needed), and those
+    /// for labels synced with nobody here.
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
+        for (l, blob) in std::mem::take(&mut self.local_inbox) {
+            let wrap = osis_crypto::filler_wrap(&mut *self.rng);
+            let blob_id = osis_label::blob_id(&blob);
+            self.log_events(None, l, vec![osis_proto::Event::Added { blob_id, blob: Some(blob), wrap, stamp: None }], None, out)?;
+        }
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
         let now = self.raw_now();
         let mut keep = Vec::new();

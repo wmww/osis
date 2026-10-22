@@ -133,6 +133,11 @@ pub struct ServedLabel {
 }
 
 impl ServedLabel {
+    /// The served head.
+    pub(crate) fn head(&self) -> Option<&Step> {
+        self.path.last()
+    }
+
     /// The path to the deepest step of `steps` (the lowest ID among equals).
     pub(crate) fn new(group: osis_core::Tid, steps: &BTreeMap<StepId, (Step, Option<ClaimSet>)>) -> Option<ServedLabel> {
         let depth = |id: &StepId| {
@@ -452,7 +457,7 @@ impl SyncEngine {
     /// The labels this node serves: those it syncs, at the deepest recorded step (and the steps
     /// peers registered here since start). Cached until `/label`, membership or the peer steps
     /// change.
-    fn served_labels(&mut self) -> Arc<BTreeMap<LabelId, ServedLabel>> {
+    pub(crate) fn served_labels(&mut self) -> Arc<BTreeMap<LabelId, ServedLabel>> {
         if let Some(c) = &self.served_cache {
             return c.clone();
         }
