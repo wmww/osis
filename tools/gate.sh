@@ -16,7 +16,7 @@ step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
-  step cargo run --release --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900 --jobs 8
+  step cargo run --release --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
 fi
 step tools/sweep.sh
 echo "== gate passed"
