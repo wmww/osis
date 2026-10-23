@@ -322,6 +322,65 @@ fn text_undo_and_first_access_cost() {
     println!("text {n} chars: undo commit {:?}", t4.elapsed());
 }
 
+// spec/crdt.md §5.7 (ops resolve by index against the placement), §6, §8; spec/requirements.md,
+// Scale (a change costs O(change)): a 10^5-char text, each step in a new session: a read of 100
+// chars at a random index, one local insert, one received insert; pages loaded (`state page
+// load` spans) and time.
+#[test]
+#[ignore = "tier 2"]
+fn text_range_and_edit_cost() {
+    let n = 100_000usize;
+    let mut lp = osis_node::local_peer::LocalPeer::new(2, 31, WallMs(1_700_000_000_000)).unwrap();
+    let a = ak("/s/text");
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    let b = lp.peers[1].engine.tid();
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let text: String = (0..n).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &Value::Str(text.clone())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    let mut rng = SeededRng::from_u64(5);
+    let at = (osis_crypto::RngCore::next_u64(&mut rng) % (n as u64 - 100)) as usize;
+    let measure = |name: &str, t0: Instant| {
+        let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+        println!("text {n} chars, new session: {name} {:?}, {loads} pages loaded", t0.elapsed());
+    };
+    lp.peers[1].restart(41).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    let got = lp.peers[1].engine.get_range(&t, &a, &[], at..at + 100).unwrap();
+    measure("read of 100 chars at a random index", t0);
+    assert_eq!(got, Some(Value::Str(text[at..at + 100].into())));
+    lp.peers[1].restart(42).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at, items: vec![Value::Str("XYZ".into())] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    measure("one insert", t0);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at: n / 3, items: vec![Value::Str("UVW".into())] } }).unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    lp.peers[1].restart(43).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    lp.deliver(1, &pk).unwrap();
+    measure("one received insert", t0);
+    // ASCII: byte indexes are char indexes; the later position first
+    let mut want = text.clone();
+    let mut ins = [(at, "XYZ"), (n / 3, "UVW")];
+    ins.sort();
+    for (i, x) in ins.iter().rev() {
+        want.insert_str(*i, x);
+    }
+    assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Str(want)));
+}
+
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node
 // holds 10^4 content commits on other things of its own tree, and opening that store.
 // spec: none (spec/requirements.md has no numbered sections)

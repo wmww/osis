@@ -538,6 +538,35 @@ impl Tx<'_> {
         Ok(())
     }
 
+    /// The visible elements `r` (by index, clamped) of the sequence at `path` (op path segments):
+    /// a paged one through its placement (`pages::seq_range`), loading only the pages holding
+    /// them; else, or where the placement is missing or damaged (then rebuilt), from the whole
+    /// sequence. `None` if absent or not a sequence.
+    pub fn read_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<osis_core::Value>> {
+        self.load_lazy(tid, ak)?;
+        let k = (*tid, ak.clone());
+        let mut damaged = None;
+        if self.core.pages.get(&k).is_some_and(|i| !i.whole()) {
+            match self.with_pages(tid, ak, |txn, idx, f| pages::seq_range(txn, tid, ak, idx, f, path, r.clone()))? {
+                // an empty sequence reads whole (its presence)
+                Some(pages::Ranged::Read(p, dots, total)) if total > 0 => {
+                    match self.cached(tid, ak).and_then(|f| f.at_steps(&p)).and_then(|s| s.read_elems(&dots)) {
+                        Some(v) => return Ok(Some(v)),
+                        None => damaged = Some(p),
+                    }
+                }
+                Some(pages::Ranged::Damaged(p)) => damaged = Some(p),
+                _ => {}
+            }
+        }
+        self.ensure_paths(tid, ak, &[path.to_vec()])?;
+        if let Some(p) = damaged {
+            self.core.written.push(k);
+            self.with_pages(tid, ak, |txn, idx, f| pages::rebuild_placement(txn, tid, ak, idx, f, &p))?;
+        }
+        Ok(self.cached(tid, ak).and_then(|f| f.at(path)).filter(Fragment::present).and_then(|s| s.read_elems(&s.visible_range(r)?)))
+    }
+
     /// Loads what joining a delta with this touch reads and rewrites (`pages::ensure_touch`;
     /// `None`: everything).
     pub fn ensure_touch(&mut self, tid: &Tid, ak: &Ak, touch: &pages::Touch) -> Result<()> {

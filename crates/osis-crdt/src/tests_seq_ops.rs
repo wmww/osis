@@ -1334,3 +1334,27 @@ fn batch_keeps_sequence_view_spec_4_5() {
     assert_eq!(bt.view().read(), Some(Value::Map([(Value::Int(1), s(">hello, rld")), (Value::Int(2), Value::Int(7))].into_iter().collect())));
 }
 
+
+// spec/crdt.md §6 (placement), §5.7 (Read): the placement's blocks read by index as the whole
+// read does, and a join that inserts or deletes keeps every block it did not touch the same
+// block (what a node rewrites of its stored placement), while the blocks read like a whole pass.
+#[test]
+fn placement_blocks_follow_joins_spec_6() {
+    let mut a = Replica::new(1);
+    let text: String = (0..3000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    a.commit(1, &[op(Op::Set(s(&text)))], &text_view());
+    let vis = |f: &Fragment| f.placement().unwrap().iter().flat_map(|b| b.visible().cloned().collect::<Vec<_>>()).collect::<Vec<_>>();
+    for (k, o) in [Op::Insert { at: 1500, items: vec![s("XYZ")] }, Op::Delete { at: 10, len: 3 }, Op::Move { at: 2000, len: 4, to: 7 }].into_iter().enumerate() {
+        let before = a.state.placement().unwrap();
+        a.commit(k as u64 + 2, &[op(o)], &text_view());
+        let after = a.state.placement().unwrap();
+        let kept = after.iter().filter(|b| before.iter().any(|o| o.same(b))).count();
+        assert!(kept + 4 >= after.len(), "step {k}: {kept} of {} blocks kept", after.len());
+        // the blocks are a whole pass's
+        assert_eq!(vis(&a.state), vis(&rebooted(&a.state)), "step {k}");
+        let all = read_str(&a.state);
+        let dots = a.state.visible_range(1490..1520).unwrap();
+        assert_eq!(a.state.read_elems(&dots), Some(s(&all.chars().skip(1490).take(30).collect::<String>())), "step {k}");
+        assert_eq!(a.state.read_elems(&a.state.visible_range(0..usize::MAX).unwrap()), Some(s(&all)));
+    }
+}

@@ -137,6 +137,28 @@ impl Engine {
         })
     }
 
+    /// The visible elements `r` (by index, clamped to the length) of the text or list at `path`
+    /// inside `(tid, ak)`: a string or a list; `None` if absent or not a sequence. A large
+    /// sequence loads only the pages holding them (spec/crdt.md §6 placement kept per page set).
+    pub fn get_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<Value>> {
+        if self.core.created(tid).is_none() || matches!(ak.as_str(), "/tid" | "/aspects" | "/groups" | "/members") {
+            return Ok(None);
+        }
+        let mut path = path.to_vec();
+        if let Some(dedup) = self.core.dedup(tid) {
+            for s in &mut path {
+                if let osis_crdt::PathSeg::Key(k) = s {
+                    *k = super::large::lookup_form(k, &dedup)?;
+                }
+            }
+        }
+        let v = self.run(|tx| tx.read_range(tid, ak, &path, r))?;
+        Ok(match v {
+            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
+            v => v,
+        })
+    }
+
     /// A typed read (reader defaults, spec/versioning.md §5).
     pub fn get_typed<K: AspectKey>(&mut self, tid: &Tid, key: &K) -> Result<Option<K::T>> {
         let ak = Ak::new(key.ak()).map_err(|_| Error::Misuse("invalid AK"))?;

@@ -5,6 +5,7 @@
 
 use crate::fragment::{Bag, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
+use crate::state::MemberRef;
 use crate::stamp::{Dot, Stamp};
 use osis_core::Value;
 use std::collections::BTreeMap;
@@ -53,6 +54,45 @@ impl Fragment {
             Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), lo, hi))),
             _ => return None,
         })
+    }
+
+    /// A sequence's placement (§6) as blocks of its visible elements in order (built on first
+    /// use, then cached); `None` for other encodings.
+    pub fn placement(&self) -> Option<Vec<crate::seq_lin::PlacedBlock>> {
+        match self.chosen_member() {
+            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.blocks()),
+            _ => None,
+        }
+    }
+
+    /// The dots of a sequence's visible elements `r` (by index, clamped to its length), in
+    /// order; `None` for other encodings.
+    pub fn visible_range(&self, r: std::ops::Range<usize>) -> Option<Vec<Dot>> {
+        match self.chosen_member() {
+            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.vis_range(r).into_iter().map(|x| x.dot.clone()).collect()),
+            _ => None,
+        }
+    }
+
+    /// What a sequence's elements `dots` read, in that order (§5.7 Read): a text's chars as one
+    /// string, a list's element values. `None` if one is not a visible element here.
+    pub fn read_elems(&self, dots: &[Dot]) -> Option<Value> {
+        let MemberRef::Frag(Fragment::Seq(s)) = self.chosen_member() else { return None };
+        let text = s.encoding() == crate::fragment::Encoding::Text;
+        let mut chars = String::new();
+        let mut vals = Vec::new();
+        for d in dots {
+            let e = s.elems().get(d)?;
+            if !crate::seq::is_visible(e, text) {
+                return None;
+            }
+            match &e.content {
+                crate::seq::SeqContent::Char(c) => chars.push(*c),
+                crate::seq::SeqContent::Frag(f) => vals.push(f.read()?),
+                crate::seq::SeqContent::None => return None,
+            }
+        }
+        Some(if text { Value::Str(chars) } else { Value::List(vals) })
     }
 
     /// What joining this delta can change in a pageable state of the same encoding: whether the
