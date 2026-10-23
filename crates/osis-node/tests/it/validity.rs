@@ -867,3 +867,40 @@ fn chain_found_past_owned_flood_spec_perm_4() {
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")));
 }
+
+/// The index digest without the held set's arrival order (`held` lines).
+fn index_of(e: &osis_node::Engine) -> String {
+    e.index_digest().lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n")
+}
+
+// spec/permissions.md §5 (validity is a function of the commits held), §5.1 (edge writes): a
+// change of an edge written by structural diff is a nested write into the grant's entry (the
+// role field alone); it overlays the edge the grant created, whatever order the two arrive in.
+// (Was: the first held record of the entry became its base, so the change arriving first left
+// the grant's value unknown for good; and the change read alone lost the grant's `until`.)
+#[test]
+fn edge_change_before_its_grant_judged_alike_spec_perm_5_1() {
+    let mut lp = net(2, 67);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let c = lp.peers[1].engine.tid();
+    let until = Some(WallMs(T0.0 + 30 * DAY));
+    let grant = set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Admin) }), None);
+    lp.advance(1_000);
+    let change = set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Write) }), None);
+    let pks = packages(&mut lp, 0);
+    let mut seen = Vec::new();
+    for change_first in [false, true] {
+        let mut p = osis_node::local_peer::Peer::new(6700, lp.peers[0].engine.now()).unwrap();
+        let mut order: Vec<_> = pks.iter().filter(|p| p.id != change).collect();
+        let at = order.iter().position(|p| p.id == grant).unwrap();
+        order.insert(if change_first { at } else { at + 1 }, pks.iter().find(|p| p.id == change).unwrap());
+        for pk in order {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        let e = p.engine.roster(&d).get(&c).cloned().unwrap();
+        assert_eq!((e.role, e.until), (Role::Write, until), "change first: {change_first}");
+        seen.push((index_of(&p.engine), p.engine.perm_digest(false)));
+    }
+    assert_eq!(seen[0], seen[1]);
+}

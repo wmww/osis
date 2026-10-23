@@ -6,7 +6,7 @@
 //! osis-commit cannot see (spec/commits.md §2).
 
 use crate::engine::write::required_role;
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, Owned, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
@@ -112,30 +112,38 @@ impl EdgeParts {
     }
 }
 
-/// Records every keyed `/members` entry of these deltas: (target, entry dot) -> (member, value).
-fn note_keys(core: &mut Core, target: &Tid, es: &[Entry]) -> bool {
+/// Records every keyed `/members` entry of these deltas: (target, entry dot) -> (member, the
+/// value the entry was created with). Only the delta owning the entry's dot (`own`) gives the
+/// value; a nested write into another's entry gives the key alone, so the base edge nested
+/// writes overlay is the same whatever order the commits arrive in.
+fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> bool {
     let mut new = false;
     for (d, k, v) in es {
-        if let (Some(Value::Tid(m)), Some(v)) = (k, v)
-            && core.member_keys.get(&(*target, d.clone())).is_none_or(|s| s.1.is_none())
-        {
-            core.member_keys.upsert((*target, d.clone()), || (*m, None), |slot| slot.1 = v.clone());
-            new = true;
+        let Some(Value::Tid(m)) = k else { continue };
+        let created = own.is_some_and(|o| o.owns(d.owner()));
+        let v = if created { v.clone().flatten() } else { None };
+        match core.member_keys.get(&(*target, d.clone())) {
+            Some((_, Some(_))) => {}
+            Some((_, None)) if v.is_none() => {}
+            _ => {
+                core.member_keys.insert((*target, d.clone()), (*m, v));
+                new = true;
+            }
         }
     }
     new
 }
 
-/// The edge writes of one `/members` delta of a membership commit, per member: a keyed entry
-/// with a fragment sets the edge it reads; an entry reset of a known key removes it; nested
-/// writes into a known entry change it (overlaid on the entry's creation). `None` while a
-/// removed key is unknown here.
-fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots) -> Option<Vec<EdgeOp>> {
+/// The edge writes of one `/members` delta of a membership commit, per member: an entry the
+/// delta creates sets the edge it reads; an entry reset of a known key removes it; nested
+/// writes into another's entry change it (overlaid on the entry's creation). `None` while a
+/// removed key, or the creation a nested write overlays, is unknown here.
+fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Owned>) -> Option<Vec<EdgeOp>> {
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
     let mut set: BTreeSet<Tid> = BTreeSet::new();
     for (d, k, v) in es {
         match (k, v) {
-            (Some(Value::Tid(m)), Some(v)) => {
+            (Some(Value::Tid(m)), Some(v)) if own.is_some_and(|o| o.owns(d.owner())) => {
                 if let Some(e) = v.as_ref().and_then(edge_of) {
                     per.insert(*m, Some(e));
                     set.insert(*m);
@@ -153,7 +161,8 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots) -> Option<Vec<E
                             b.extend(changes);
                             edge_of(&Value::Map(b))
                         }
-                        _ => None,
+                        // the creation is not held: wait for it
+                        _ => return None,
                     },
                     _ => None,
                 };
@@ -355,7 +364,7 @@ pub(crate) fn add_membership(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: 
 fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
     for (ai, es) in parts.members() {
         if let Some(a) = h.aspects.get(ai) {
-            note_keys(core, &a.tid, es);
+            note_keys(core, &a.tid, es, Owned::of(h, id, ai).as_ref());
         }
     }
     match h.kind {
@@ -363,7 +372,7 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
             let mut ops = Vec::new();
             for (ai, es) in parts.members() {
                 let Some(a) = h.aspects.get(ai) else { continue };
-                match edge_ops(core, &a.tid, es, dots_of(h, ai)) {
+                match edge_ops(core, &a.tid, es, dots_of(h, ai), Owned::of(h, id, ai).as_ref()) {
                     Some(v) => ops.extend(v),
                     None => {
                         core.unresolved.insert(*id);
