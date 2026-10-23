@@ -328,8 +328,19 @@ fn play(seed: u64, steps: &[Step]) -> Played {
 /// What a node holding `packs` judged and reads, as text, by part.
 fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     let e = &mut p.engine;
-    // held commits are listed in arrival order, which nothing else may show
-    let index: String = e.index_digest().lines().filter(|l| !l.starts_with("held ")).map(|l| format!("{l}\n")).collect();
+    let mut index = e.index_digest();
+    // first and last deaths and liveness of the held bodies (spec/crdt.md §4.8): under keep at
+    // most (`retention::note_earlier_deaths`); of every body with `OSIS_ORDER_DEATHS` (not yet a
+    // function of the held set: issues/deaths-arrival-order.md)
+    let every = std::env::var("OSIS_ORDER_DEATHS").is_ok();
+    let mut ids = e.commit_ids();
+    ids.sort();
+    for id in ids {
+        let Some(h) = e.header(&id) else { continue };
+        for a in h.aspects.iter().filter(|a| every || a.retention.at_most.rel.is_some()) {
+            let _ = writeln!(index, "death {id:?} {:?} {} {:?} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok(), e.body_live(&id, &a.tid, &a.ak).ok());
+        }
+    }
     let mut reads = String::new();
     let mut states = String::new();
     // every aspect held (fresh nodes share a seed, so their own things agree too)
@@ -356,6 +367,8 @@ const FRESH: u64 = 0x5eed_f00d;
 /// A fresh node given `packs` in `order`.
 fn deliver(played: &Played, order: &[usize]) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
+    // every component's walk saved, so reopens restore them
+    p.engine.set_walk_cache_min(1);
     for &i in order {
         let pk = &played.packs[i];
         let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
@@ -433,13 +446,32 @@ fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: us
     let played = play(seed, steps);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut tried = 0;
+    let mut full: Option<Vec<(&'static str, String)>> = None;
     for held in held_sets(&played, subsets, &mut rng) {
+        // a partial set, then the rest (both ways), ends where the whole set does
+        if let Some(f) = &full {
+            let rest: Vec<usize> = (0..played.packs.len()).filter(|i| !held.contains(i)).collect();
+            for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
+                let mut p = deliver(&played, &order);
+                if let Some(d) = first_diff(f, &judged(&mut p, &played.things)) {
+                    return Err(format!("held {held:?}, then the rest: {d}"));
+                }
+            }
+        }
         let orders = orders(&played, &held, all_up_to, random, &mut rng);
         tried += orders.len();
         let mut want: Option<Vec<(&'static str, String)>> = None;
         for (k, order) in orders.iter().enumerate() {
             let mut p = deliver(&played, order);
             let got = judged(&mut p, &played.things);
+            if want.is_some() {
+                // every order reopens alike too
+                p.engine.reload_index().unwrap();
+                p.engine.reexamine().unwrap();
+                if let Some(d) = first_diff(&got, &judged(&mut p, &played.things)) {
+                    return Err(format!("held {held:?}, order #{k} {order:?}: reopen differs: {d}"));
+                }
+            }
             let Some(w) = &want else {
                 // the reference: a reopen from the persisted index and a rebuild judge alike
                 // (an open re-examines what pends)
@@ -458,6 +490,9 @@ fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: us
                     let invalid = idx.lines().filter(|l| l.starts_with("commit ") && l.contains("false")).count();
                     let carried = idx.lines().find(|l| l.starts_with("carried ")).map_or(0, |l| l.matches("invalid: [").count() - l.matches("invalid: []").count());
                     eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups with invalid writes, {} pending, {} things", held.len(), played.packs.len(), played.base, invalid, carried, got[4].1.lines().count(), played.things.len());
+                }
+                if full.is_none() {
+                    full = Some(got.clone());
                 }
                 want = Some(got);
                 continue;
@@ -527,6 +562,39 @@ fn arrival_order_alike_small_spec_permissions_5_2() {
 #[ignore = "tier 2"]
 fn arrival_order_alike_large_spec_permissions_5_2() {
     run(1000..1060, 60, 0, 8, 4);
+}
+
+// spec/crdt.md §4.8 (a write dies at the earliest `ts` among the applied commits superseding
+// it, whatever the order): A's and B's writes both supersede G's first value; whichever
+// arrives first sets its death, the other then meets the winner, not G's value.
+#[test]
+#[ignore = "issues/deaths-arrival-order.md"]
+fn deaths_alike_in_any_order_spec_crdt_4_8() {
+    use Step::*;
+    let h = vec![Demote { by: 0, t: 1, member: 2, at: 2, to_read: false }, Write { by: 0, t: 3, op: 0, k: 2, v: 4 }, Write { by: 1, t: 7, op: 0, k: 1, v: 6 }];
+    check_deaths(16, &h);
+}
+
+/// `check` comparing every body's deaths.
+fn check_deaths(seed: u64, steps: &[Step]) {
+    let played = play(seed, steps);
+    let n = played.packs.len();
+    let mut seen = Vec::new();
+    for order in [(0..n).collect::<Vec<_>>(), (0..played.base).chain((played.base..n).rev()).collect()] {
+        let mut p = deliver(&played, &order);
+        let e = &mut p.engine;
+        let mut out = String::new();
+        let mut ids = e.commit_ids();
+        ids.sort();
+        for id in ids {
+            let Some(h) = e.header(&id) else { continue };
+            for a in &h.aspects {
+                let _ = writeln!(out, "{id:?} {:?} {} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok());
+            }
+        }
+        seen.push(out);
+    }
+    assert_eq!(seen[0], seen[1]);
 }
 
 // spec/crdt.md §4.6, spec/permissions.md §5.2: histories the harness found, shrunk (each
