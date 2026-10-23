@@ -21,6 +21,7 @@ mod lazy_tree;
 mod local_serve;
 mod metadata;
 mod negative;
+mod order;
 mod peers;
 mod peers_review;
 mod receive;
