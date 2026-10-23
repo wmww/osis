@@ -904,3 +904,32 @@ fn edge_change_before_its_grant_judged_alike_spec_perm_5_1() {
     }
     assert_eq!(seen[0], seen[1]);
 }
+
+// spec/permissions.md §5 (a function of the commits held), §5.2: two snapshots carrying Bob's
+// writes without his commit, held in either order, are recorded alike (was: the carried groups
+// were listed in arrival order, so the persisted index differed).
+#[test]
+fn carried_writes_recorded_alike_in_any_order_spec_perm_5_2() {
+    let (mut lp, d, b, _) = setup(69);
+    add_tag(&mut lp, 1, d, "bob");
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let tags = ak("/t/tags");
+    let x = lp.peers[0].engine.snapshot(&d, &tags).unwrap().unwrap();
+    let y = lp.peers[2].engine.snapshot(&d, &tags).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+    let mut seen = Vec::new();
+    for flip in [false, true] {
+        let mut p = osis_node::local_peer::Peer::new(6900, lp.peers[0].engine.now()).unwrap();
+        let mut order: Vec<_> = pks.iter().filter(|p| p.id != x && p.id != y).collect();
+        let (s1, s2) = if flip { (y, x) } else { (x, y) };
+        order.extend(pks.iter().filter(|p| p.id == s1).chain(pks.iter().filter(|p| p.id == s2)));
+        for pk in order {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        assert!(p.engine.index_digest().contains("carried {("), "the writes are carried");
+        seen.push(index_of(&p.engine));
+    }
+    assert_eq!(seen[0], seen[1]);
+}

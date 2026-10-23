@@ -798,6 +798,8 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
         c.invalid = carried_invalid(core, tid, ak, &c);
         cur.push(c);
     }
+    // in one order whatever order the snapshots arrived in
+    cur.sort_by(|x, y| (x.snap, &x.src, x.node, x.ts).cmp(&(y.snap, &y.src, y.node, y.ts)));
     if cur == before {
         return false;
     }
