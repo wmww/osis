@@ -177,10 +177,11 @@ proptest! {
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
     }
 
-    /// §4.5 (`Batch` layered view): a commit of several text ops on a state from a concurrent
-    /// history (sometimes bootstrapped from a snapshot, so with range records) reads like the
-    /// same ops on a plain string; the layered view of the state under the batch is checked
-    /// against state + net effect after every op (debug assertion in `Batch`).
+    /// §4.5, §7 (`Batch` layered view): a commit of several text ops on a state from a
+    /// concurrent history (sometimes upgraded from a string, a `Slots` position, and sometimes
+    /// bootstrapped from a snapshot, so with range records) reads like the same ops on a plain
+    /// string; the layered view of the state under the batch is checked against state + net
+    /// effect after every op (debug assertion in `Batch`).
     #[test]
     fn text_batch_over_history_spec_4_5(seed in any::<u64>()) {
         let mut r = Rng(seed | 1);
@@ -195,6 +196,11 @@ proptest! {
                     reps[1 - i].state.join(d);
                 }
             }
+        }
+        if r.chance(1, 3) {
+            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 30 << 16, 1);
+            let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
+            reps[0].state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
         }
         let mut a = Replica { state: if r.chance(1, 2) { rebooted(&reps[0].state) } else { reps[0].state.clone() }, src: node(3), lo: 1 };
         let base = a.state.clone();
@@ -1327,3 +1333,4 @@ fn batch_keeps_sequence_view_spec_4_5() {
     assert!(!bt.keeps_view(), "dropped by an op elsewhere");
     assert_eq!(bt.view().read(), Some(Value::Map([(Value::Int(1), s(">hello, rld")), (Value::Int(2), Value::Int(7))].into_iter().collect())));
 }
+

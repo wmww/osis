@@ -166,11 +166,18 @@ impl<'s> Batch<'s> {
                 {
                     // what `resolve` would copy at this position for the next op
                     let (s_at, _) = at_point(Some(self.state), &at, index, false);
+                    let mut whole = joined(s_at, n_at, e.as_ref()).unwrap_or_default();
                     let view = match &frag {
                         Over::Copy(f) => Cow::Borrowed(f),
-                        Over::Layer(l) => Cow::Owned(Fragment::Seq(l.to_seq())),
+                        Over::Layer(l) => {
+                            // a layer over a `Slots` member: that member of the joined position
+                            if let Fragment::Slots(x) = &mut whole {
+                                whole = x.members.remove(&l.to_seq().encoding()).unwrap_or_default();
+                            }
+                            Cow::Owned(Fragment::Seq(l.to_seq()))
+                        }
                     };
-                    debug_assert!(joined(s_at, n_at, e.as_ref()).unwrap_or_default() == *view, "batch view differs from state + net effect");
+                    debug_assert!(whole == *view, "batch view differs from state + net effect");
                 }
                 self.seen = Some(Seen { at, index, frag });
             }
@@ -231,13 +238,23 @@ fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Frag
             None => {}
         }
         if e.is_none()
-            && let (Some(Fragment::Seq(b)), Some(Fragment::Seq(x))) = (s, a)
+            && let (Some(Fragment::Seq(b)), Some(Fragment::Seq(x))) = (seq_member(s, a), a)
             && let Some(l) = Layered::new(b, x.clone())
         {
             return Cur::Layer(l);
         }
     }
     Cur::Frag(current(s, a, e))
+}
+
+/// The state's sequence a batch's sequence writes `a` join as they would at the position `s`: at a
+/// `Slots` position (§7) its member of `a`'s encoding when that carries the position's reset
+/// (the join then leaves the other members as they are), else `s`.
+fn seq_member<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>) -> Option<&'a Fragment> {
+    match (s, a) {
+        (Some(f @ Fragment::Slots(x)), Some(Fragment::Seq(d))) => x.members.get(&d.encoding()).filter(|m| m.reset() == f.reset()),
+        _ => s,
+    }
 }
 
 /// Hands a view `point` made (or the kept one) back to the probe.

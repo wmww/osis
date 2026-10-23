@@ -823,6 +823,26 @@ pub fn num_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+/// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+pub fn drop_deleted_chars(f: &mut Frag) {
+    match f {
+        Frag::Seq { elems, .. } => {
+            for e in elems.values_mut() {
+                match &mut e.content {
+                    Content::Char(_) if e.deleted.as_ref().map_or(false, |d| d.1) => e.content = Content::None,
+                    Content::Frag(x) => drop_deleted_chars(x),
+                    _ => {}
+                }
+            }
+        }
+        Frag::Struct { fields: m, .. } | Frag::Enum { payloads: m, .. } => m.values_mut().for_each(drop_deleted_chars),
+        Frag::Map { entries, .. } => entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(drop_deleted_chars),
+        Frag::Set { elems, .. } | Frag::Bag { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(drop_deleted_chars),
+        Frag::Slots { slots, .. } => slots.values_mut().for_each(drop_deleted_chars),
+        Frag::Register { .. } => {}
+    }
+}
+
 /// Split a fragment into its register slot and non-register slots.
 fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
     match f {

@@ -254,3 +254,10 @@ proptest! {
         }
     }
 }
+
+/// §3.3 rule 7, §7: a mutated snapshot whose `Commits` give a register write a `Derived` stamp
+/// (which no embedding could carry) is rejected by both decoders (pinned tier-2 seed).
+#[test]
+fn derived_register_write_rejected_spec_3_3() {
+    differential(4077260943037867378, &[kitchen_sink(), Ty::Register, Ty::Text], 40).unwrap();
+}

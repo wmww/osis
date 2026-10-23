@@ -882,21 +882,51 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         }
         _ => return Err(Error::Bad("encoding or arity")),
     };
+    if !derived_ok(&f) {
+        return Err(Error::Bad("write with a Derived stamp"));
+    }
     if let Frag::Register { reset: Some(_), .. } = &f {
         if !top {
             return Err(Error::Bad("nested register reset"));
         }
     }
     if let Frag::Slots { .. } = &f {
-        // §7 canonical form (§3.3 rule 7): pruning changes nothing (every member holds the register's embedding,
-        // none is empty or adds nothing to it, nothing lies below the position's one reset)
-        let mut c = f.clone();
-        c.prune(None);
+        // §7 canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every member holds the
+        // register's embedding, none is empty or adds nothing to it, nothing lies below the position's one reset);
+        // the chars of deleted embedded elements are restored by the embedding but never carried (rule 5)
+        // the pruned form is the result, so those chars are held again (a content-less undelete reads them)
+        let mut pruned = f.clone();
+        pruned.prune(None);
+        let mut c = pruned.clone();
+        crate::state::drop_deleted_chars(&mut c);
         if c != f {
             return Err(Error::Bad("non-canonical slots"));
         }
+        return Ok(pruned);
     }
     Ok(f)
+}
+
+/// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries a `Derived` stamp.
+/// Checks `f`'s own level; nested fragments were checked when decoded.
+fn derived_ok(f: &Frag) -> bool {
+    let ok = |s: Option<&Stamp>| !s.map_or(false, |s| matches!(s.dot.source, Source::Derived(_)));
+    let comp = |c: &Composite| ok(c.reset.as_ref()) && ok(c.w.as_ref());
+    match f {
+        Frag::Register { reset, write } => ok(reset.as_ref()) && ok(write.as_ref().map(|w| &w.0)),
+        Frag::Bag { c, elems, .. } | Frag::Set { c, elems } => comp(c) && elems.values().all(|e| ok(e.reset.as_ref())),
+        Frag::Struct { c, .. } => comp(c),
+        Frag::Enum { c, case, .. } => comp(c) && ok(case.as_ref().map(|x| &x.0)),
+        Frag::Map { c, entries } => comp(c) && entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),
+        Frag::Seq { text, c, elems } => {
+            comp(c)
+                && elems.values().all(|e| {
+                    let created = e.created.as_ref().map(|x| &x.0);
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && (*text || ok(created)) && e.pos.iter().all(|(p, _)| ok(Some(p)) || Some(p) == created)
+                })
+        }
+        Frag::Slots { .. } => true,
+    }
 }
 
 fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, Error> {

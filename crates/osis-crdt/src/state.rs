@@ -6,7 +6,7 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
-use crate::seq::{self, Seq};
+use crate::seq::{self, Seq, SeqContent};
 use crate::stamp::{Dot, Stamp, max_opt};
 use osis_core::{Float, Value};
 use std::cmp::Ordering;
@@ -440,6 +440,45 @@ impl Fragment {
         }
     }
 
+    /// Calls `f` on every sequence at any depth, outermost first; `f` gets the records (the
+    /// cached placement is dropped).
+    fn seqs_mut(&mut self, f: &mut dyn FnMut(&mut Seq)) {
+        match self {
+            Fragment::Seq(s) => {
+                f(s);
+                for e in s.elems_mut().values_mut() {
+                    if let SeqContent::Frag(x) = &mut e.content {
+                        x.seqs_mut(f);
+                    }
+                }
+            }
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(|x| x.seqs_mut(f)),
+            Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
+            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
+            Fragment::Slots(s) => s.members.values_mut().for_each(|x| x.seqs_mut(f)),
+            Fragment::Register(_) => {}
+        }
+    }
+
+    /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+    pub(crate) fn drop_deleted_chars(&mut self) {
+        self.seqs_mut(&mut |s| {
+            for e in s.elems_mut().values_mut() {
+                if matches!(e.content, SeqContent::Char(_)) && e.deleted.as_ref().is_some_and(|d| d.1) {
+                    e.content = SeqContent::None;
+                }
+            }
+        });
+    }
+
+    /// Drops every cached placement (checks that must not build or follow one).
+    #[cfg(debug_assertions)]
+    pub(crate) fn drop_caches(&mut self) {
+        self.seqs_mut(&mut |s| {
+            s.elems_mut();
+        });
+    }
+
     /// Own reset; for `Slots` the greatest member reset (§7).
     pub(crate) fn reset(&self) -> Option<Stamp> {
         match self {
@@ -588,6 +627,9 @@ impl Fragment {
     /// `chosen` without cloning the member.
     pub(crate) fn chosen_member(&self) -> MemberRef<'_> {
         match self {
+            // a lone non-register member holds the register's embedding, so its greatest
+            // stamp is at least the register's and it is chosen without a scan
+            Fragment::Slots(s) if s.members.len() == 1 => s.members.values().next().map_or(MemberRef::Frag(self), MemberRef::Frag),
             Fragment::Slots(_) => {
                 let key = |m: &MemberRef| (m.with(Fragment::all_max), m.with(Fragment::encoding));
                 let mut best: Option<(MemberRef, _)> = None;
@@ -708,8 +750,86 @@ fn prune_case(c: &mut Option<CaseWrite>, e: Option<&Stamp>, ch: &mut Changes) {
 }
 
 /// Join across encodings (§7): pointwise per encoding, the register slot embedded into every
-/// other slot, then one effective reset for the position.
+/// other slot, then one effective reset for the position. Into a `Slots` state whose register
+/// and effective reset the join leaves as they are (the common join: sequence writes), only the
+/// members `b` carries are joined, under that reset; else the whole position is re-embedded and
+/// pruned.
 fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+    #[cfg(debug_assertions)]
+    let whole = matches!(a, Fragment::Slots(_)).then(|| join_slots_whole(uncached(&a), b.clone(), e_parent, &mut Changes::new()));
+    let Fragment::Slots(sa) = a else { return join_slots_whole(a, b, e_parent, ch) };
+    let Some(e) = kept_reset(&sa, &b, e_parent) else { return join_slots_whole(Fragment::Slots(sa), b, e_parent, ch) };
+    let f = join_slots_kept(sa, b, e.as_ref(), ch);
+    #[cfg(debug_assertions)]
+    if let Some(whole) = whole {
+        debug_assert!(f == whole, "incremental slots join differs from a whole pass");
+    }
+    f
+}
+
+/// A copy of `f` without cached placements at any depth (a check that must never build one).
+#[cfg(debug_assertions)]
+fn uncached(f: &Fragment) -> Fragment {
+    let mut f = f.clone();
+    f.drop_caches();
+    f
+}
+
+/// The effective reset `E` of `Slots` state `sa` when joining `b` leaves its register and `E` as
+/// they are; `None` when the position must be re-embedded and pruned whole.
+fn kept_reset(sa: &Slots, b: &Fragment, e_parent: Option<&Stamp>) -> Option<Option<Stamp>> {
+    let e = sa.reg.iter().map(|r| r.reset.clone()).chain(sa.members.values().map(Fragment::reset)).fold(e_parent.cloned(), max_opt);
+    let raises = |x: Option<Stamp>| x.is_some_and(|x| e.as_ref().is_none_or(|e| x > *e));
+    let keeps = match b {
+        Fragment::Register(rb) => sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb)),
+        Fragment::Slots(sb) => sb.reg.as_ref().is_none_or(|rb| sa.reg.as_ref().is_some_and(|ra| reg_absorbs(ra, rb))) && !sb.members.values().any(|f| raises(f.reset())),
+        f => !raises(f.reset()),
+    };
+    keeps.then_some(e)
+}
+
+/// The incremental join of `join_slots` under `kept_reset`'s `e`. A `Slots` state's members
+/// already hold its register's embedding and are pruned under `e`; with the register and `e`
+/// staying, joining `b`'s members under `e` (a new one with the embedding) keeps that, and a
+/// joined member still adds something to the embedding.
+fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Changes) -> Fragment {
+    let (rb, mb) = parts(b);
+    if let (Some(ra), Some(rb)) = (sa.reg.as_mut(), rb) {
+        // the state's write wins or ties: only the loser's death and nothing else
+        let mut f = Fragment::Register(std::mem::take(ra));
+        f.join_into(Fragment::Register(rb), None, ch);
+        if let Fragment::Register(r) = f {
+            *ra = r;
+        }
+    }
+    for (k, fb) in mb {
+        match sa.members.get_mut(&k) {
+            Some(fa) => fa.join_into(fb, e, ch),
+            None => {
+                let mut f = fb;
+                f.prune(e, ch);
+                if let Some(x) = sa.reg.as_ref().and_then(|r| embed(r, k)) {
+                    f.join_into(x, e, ch);
+                }
+                if !f.is_empty() && !sa.reg.as_ref().is_some_and(|r| below_embedding(&f, r)) {
+                    ch.touch();
+                    sa.members.insert(k, f);
+                }
+            }
+        }
+    }
+    Fragment::Slots(sa)
+}
+
+/// Whether joining register `b` into `a` leaves `a` as it is: no greater reset, no greater write
+/// and no value `a`'s copy of the same write lacks (§4.7).
+fn reg_absorbs(a: &Register, b: &Register) -> bool {
+    b.reset.as_ref().is_none_or(|x| a.reset.as_ref().is_some_and(|y| x <= y) || a.write.as_ref().is_some_and(|w| *x < w.stamp))
+        && b.write.as_ref().is_none_or(|bw| a.write.as_ref().is_some_and(|aw| bw.stamp < aw.stamp || (bw.stamp == aw.stamp && (aw.value.is_some() || bw.value.is_none()))))
+}
+
+/// `join_slots` over the whole position.
+fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     let (ra, mut ma) = parts(a);
     let (rb, mb) = parts(b);
     let reg = match (ra, rb) {

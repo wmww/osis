@@ -56,6 +56,8 @@ pub fn kitchen_sink() -> Ty {
 pub fn random_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
     let small = |r: &mut Rng| Value::Int(r.below(4) as i64);
     match ty {
+        // a root register now and then holds a string, which a text at the same position embeds as chars (§7)
+        Ty::Register if depth == 0 && r.chance(1, 3) => Value::Str(random_text(r, 4)),
         Ty::Register | Ty::Counter | Ty::Max | Ty::Min => small(r),
         Ty::Text => Value::Str(random_text(r, if depth > 2 { 2 } else { 5 })),
         Ty::Struct(fts) => Value::fields(fts.iter().map(|(id, t)| (*id, random_value(r, t, depth + 1))).collect()),
@@ -103,6 +105,12 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                     }
                     let from = r.below(dead.len());
                     let to = (from + 1 + r.below(3)).min(dead.len());
+                    // now and then without content where the register's embedding restores it (embedded
+                    // chars, §7), as a writer bootstrapped from a snapshot may send
+                    let derived = dead[from..to].iter().all(|d| matches!(d.source, crate::stamp::Source::Derived(_)));
+                    if derived && r.chance(1, 2) {
+                        return Some(ops::seq_undelete(w, &Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() }, &dead[from..to]));
+                    }
                     Some(ops::seq_undelete(w, st, &dead[from..to]))
                 }
                 0 | 1 => {
