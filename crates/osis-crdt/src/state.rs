@@ -6,7 +6,7 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
-use crate::seq::{self, Seq};
+use crate::seq::{self, Seq, SeqContent};
 use crate::stamp::{Dot, Stamp, max_opt};
 use osis_core::{Float, Value};
 use std::cmp::Ordering;
@@ -437,6 +437,26 @@ impl Fragment {
                 let (reg, members) = parts(std::mem::take(self));
                 *self = prune_slots(reg, members, e_parent, ch);
             }
+        }
+    }
+
+    /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+    pub(crate) fn drop_deleted_chars(&mut self) {
+        match self {
+            Fragment::Seq(s) => {
+                for e in s.elems_mut().values_mut() {
+                    match &mut e.content {
+                        SeqContent::Char(_) if e.deleted.as_ref().is_some_and(|d| d.1) => e.content = SeqContent::None,
+                        SeqContent::Frag(x) => x.drop_deleted_chars(),
+                        _ => {}
+                    }
+                }
+            }
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(Fragment::drop_deleted_chars),
+            Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(Fragment::drop_deleted_chars),
+            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(Fragment::drop_deleted_chars),
+            Fragment::Slots(s) => s.members.values_mut().for_each(Fragment::drop_deleted_chars),
+            Fragment::Register(_) => {}
         }
     }
 

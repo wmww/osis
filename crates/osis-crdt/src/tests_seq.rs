@@ -201,11 +201,10 @@ pub(crate) struct Follows {
     pub missed_derived: usize,
 }
 
-/// Text built by a random history and bootstrapped from a snapshot (deleted stretches arrive as
-/// range records), or (`upgraded`) then a string register write over it, embedded as characters
-/// with `Derived` dots (§7), and text edits of those, the position's text member taken alone;
-/// then edited by a new writer
-/// through the wire: an insert anchored at a random placed element (hidden ones inside range
+/// Text built by a random history (`upgraded`: then a string register write over it, embedded as
+/// characters with `Derived` dots, §7, and text edits of those, the position's text member taken
+/// alone) and bootstrapped from a snapshot (deleted stretches arrive as range records, deleted
+/// chars without content); then edited by a new writer through the wire: an insert anchored at a random placed element (hidden ones inside range
 /// records and embedded ones included), then a random text op (undelete of part of a deleted
 /// run, delete, move, insert, now and then a replace), `n` times. After every join the read
 /// equals the model's text slot and the cached placement a whole pass (`check_lin`).
@@ -237,15 +236,9 @@ pub(crate) fn snapshot_then_edit(seed: u64, upgraded: bool, n: usize) -> Follows
     for d in &deltas {
         full.join(frag(d));
     }
-    // (an upgraded text's snapshot with a deleted embedded char is rejected by both decoders:
-    // issues/crdt-slots-snapshot-deleted-embedded.md; the joined state holds range records too)
-    let mut ours = if upgraded {
-        full
-    } else {
-        let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
-        let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
-        decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment
-    };
+    let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
+    let mut ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let mut f = Follows::default();
     // the text member alone (the writer's deltas are newer than the register's write, so the
     // member joins them as the position does)
@@ -377,30 +370,8 @@ fn seq_differential_large_spec_5_7() {
 /// A text state with the chars of deleted elements dropped: what a snapshot carries (§3.3 rule 5).
 fn as_carried(f: &Fragment) -> Fragment {
     let mut f = f.clone();
-    drop_deleted_chars(&mut f);
+    f.drop_deleted_chars();
     f
-}
-
-fn drop_deleted_chars(f: &mut Fragment) {
-    match f {
-        Fragment::Seq(s) => {
-            for e in s.elems_mut().values_mut() {
-                match &mut e.content {
-                    SeqContent::Char(_) if e.deleted.as_ref().is_some_and(|d| d.1) => e.content = SeqContent::None,
-                    SeqContent::Frag(x) => drop_deleted_chars(x),
-                    _ => {}
-                }
-            }
-        }
-        Fragment::Struct(s) => s.fields.values_mut().for_each(drop_deleted_chars),
-        Fragment::Enum(s) => s.payloads.values_mut().for_each(drop_deleted_chars),
-        Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(drop_deleted_chars),
-        Fragment::Set(crate::fragment::Set { elems, .. }) | Fragment::Bag(crate::fragment::Bag { elems, .. }) => {
-            elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(drop_deleted_chars)
-        }
-        Fragment::Slots(s) => s.members.values_mut().for_each(drop_deleted_chars),
-        Fragment::Register(_) => {}
-    }
 }
 
 /// Every delta of a random history encodes like the model's and decodes back to itself; snapshots
@@ -427,7 +398,39 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
         assert_eq!(back.fragment, as_carried(&s.fragment), "snapshot round trip");
         assert_eq!(back.fragment.read(), s.fragment.read());
+        let (mback, _) = crdt_model::wire::decode_snapshot(&sbytes, &mut Ctx::new(1 << 40, MSource::node(250), 1)).unwrap();
+        assert_eq!(frag(&mback), back.fragment, "model snapshot round trip");
     }
+}
+
+/// §3.3 rules 5 and 7, §7: a snapshot of a text upgraded from a string whose deleted embedded
+/// char is not carried round-trips through both decoders and reads alike (reviewer's probe).
+#[test]
+fn snapshot_deleted_embedded_char_spec_3_3() {
+    use crdt_model::value::Value as MValue;
+    let mut m = None;
+    let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+    mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
+    let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+    mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
+    let mut w = MWriter::new(MSource::node(3), 102 << 16, 1);
+    let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
+    mapply(&mut m, d);
+    let st = m.as_ref().unwrap();
+    assert!(matches!(st, MFrag::Slots { .. }));
+    let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+    let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+    assert_eq!(bytes, msnap);
+    let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
+    let (mback, _) = crdt_model::wire::decode_snapshot(&bytes, &mut Ctx::new(1 << 40, MSource::node(250), 1)).unwrap();
+    assert_eq!(back.read(), Some(Value::Str("b".into())));
+    assert_eq!(back.read(), s.fragment.read());
+    assert_eq!(frag(&mback).read(), back.read());
+    // joined into an empty state, the embedding restores the char locally
+    let mut j = Fragment::default();
+    j.join(back);
+    assert_eq!(j, s.fragment);
 }
 
 // ---- §3.3 rule 7 for runs (writer of node 1, range [3, 6), ts 5·2^16)

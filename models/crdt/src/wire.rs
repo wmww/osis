@@ -888,10 +888,12 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
         }
     }
     if let Frag::Slots { .. } = &f {
-        // §7 canonical form (§3.3 rule 7): pruning changes nothing (every member holds the register's embedding,
-        // none is empty or adds nothing to it, nothing lies below the position's one reset)
+        // §7 canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every member holds the
+        // register's embedding, none is empty or adds nothing to it, nothing lies below the position's one reset);
+        // the chars of deleted embedded elements are restored by the embedding but never carried (rule 5)
         let mut c = f.clone();
         c.prune(None);
+        crate::state::drop_deleted_chars(&mut c);
         if c != f {
             return Err(Error::Bad("non-canonical slots"));
         }

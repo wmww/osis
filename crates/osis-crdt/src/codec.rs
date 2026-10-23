@@ -614,10 +614,13 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             if usize::from(reg.is_some()) + members.len() < 2 {
                 return Err(Error::Malformed("slots with fewer than two members"));
             }
-            // §7 Canonical form (§3.3 rule 7): pruning changes nothing (every member holds the
-            // register's embedding, none is empty or adds nothing to it, nothing lies below the
-            // position's one reset), so readers of an unjoined fragment see what a join would
-            let pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
+            // §7 Canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every
+            // member holds the register's embedding, none is empty or adds nothing to it, nothing
+            // lies below the position's one reset; the chars of deleted embedded elements the
+            // embedding restores are never carried, rule 5), so readers of an unjoined fragment
+            // see what a join would
+            let mut pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
+            pruned.drop_deleted_chars();
             let f = Fragment::Slots(Slots { reg, members });
             if pruned != f {
                 return Err(Error::Malformed("slots not canonical: pruning changes it"));

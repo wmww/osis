@@ -56,6 +56,8 @@ pub fn kitchen_sink() -> Ty {
 pub fn random_value(r: &mut Rng, ty: &Ty, depth: u32) -> Value {
     let small = |r: &mut Rng| Value::Int(r.below(4) as i64);
     match ty {
+        // a root register now and then holds a string, which a text at the same position embeds as chars (§7)
+        Ty::Register if depth == 0 && r.chance(1, 3) => Value::Str(random_text(r, 4)),
         Ty::Register | Ty::Counter | Ty::Max | Ty::Min => small(r),
         Ty::Text => Value::Str(random_text(r, if depth > 2 { 2 } else { 5 })),
         Ty::Struct(fts) => Value::fields(fts.iter().map(|(id, t)| (*id, random_value(r, t, depth + 1))).collect()),
