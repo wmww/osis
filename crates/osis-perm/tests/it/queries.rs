@@ -155,7 +155,7 @@ fn cert_run_joint(samples: u64, seed: u64) {
             w.commit_id(cid(jw.id), nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), e)], &recv);
         }
         if let Some(d) = cert_check(&w) {
-            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
     }
 }
@@ -233,7 +233,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
             w.commit_id(cid(ew.id), nodes[ew.author], ew.t as u64, &ops, &recv);
         }
         if let Some(d) = cert_check(&w) {
-            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
     }
 }

@@ -5,6 +5,7 @@
 use crate::common;
 
 use common::*;
+use membership_model::shrink::{shrink, Shrink};
 use membership_model::{edges, joint, snapshot, Rng};
 use osis_core::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
@@ -107,23 +108,32 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
     None
 }
 
-fn joint_run(samples: u64, seed: u64) {
+/// Runs `samples` histories from `history` through `diff`, calling `each` on every one. A
+/// mismatching history is shrunk while it still mismatches and reported as a trace; the run
+/// fails after three.
+fn model_run<H: Shrink + Clone + std::fmt::Display>(samples: u64, seed: u64, history: impl Fn(&mut Rng) -> H, diff: impl Fn(&H) -> Option<String>, mut each: impl FnMut(&H)) {
     let seed = seeded(seed);
     let mut rng = Rng(seed);
     let mut fails = Vec::new();
-    let mut with_drops = 0u64;
     for s in 0..samples {
-        let h = joint::random_hist(&mut rng);
-        // histories where an audit dropped something (late forgeries, unseen writes)
-        with_drops += u64::from(joint::walk(&h).dropped != 0);
-        if let Some(d) = joint_diff(&h) {
-            fails.push(format!("seed {seed:#x} sample {s}: {d}\n{h:?}"));
+        let h = history(&mut rng);
+        each(&h);
+        if diff(&h).is_some() {
+            let m = shrink(h.clone(), |c| diff(c).is_some());
+            let d = diff(&m).unwrap_or_default();
+            fails.push(format!("seed {seed:#x} sample {s} (shrunk): {d}\n{m}"));
             if fails.len() >= 3 {
                 break;
             }
         }
     }
     assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+}
+
+fn joint_run(samples: u64, seed: u64) {
+    let mut with_drops = 0u64;
+    // histories where an audit dropped something (late forgeries, unseen writes)
+    model_run(samples, seed, joint::random_hist, joint_diff, |h| with_drops += u64::from(joint::walk(h).dropped != 0));
     eprintln!("joint model: {samples} histories, {with_drops} with drops");
 }
 
@@ -223,19 +233,7 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
 }
 
 fn edges_run(samples: u64, seed: u64) {
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let mut fails = Vec::new();
-    for s in 0..samples {
-        let h = edges::random_hist(&mut rng);
-        if let Some(d) = edges_diff(&h) {
-            fails.push(format!("seed {seed:#x} sample {s}: {d}\n{h:?}"));
-            if fails.len() >= 3 {
-                break;
-            }
-        }
-    }
-    assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    model_run(samples, seed, edges::random_hist, edges_diff, |_| {});
 }
 
 /// spec/permissions.md §2, §5.1, §9: `until`, invite power, self-removal and links agree with
@@ -254,7 +252,7 @@ fn edges_model_agrees_large() {
 
 fn snap_diff(h: &snapshot::SHist) -> Option<String> {
     let sw = snap_world(h);
-    let o = h.eval(true);
+    let o = snapshot::walk(h);
     let tl = Timeline::evaluate(&sw.w.held());
     if residue(&tl) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -295,47 +293,41 @@ fn residue(tl: &Timeline) -> bool {
     sticky_residue(tl)
 }
 
-fn snap_run(samples: u64, seed: u64) {
-    let seed = seeded(seed);
-    let mut rng = Rng(seed);
-    let mut fails = Vec::new();
-    for s in 0..samples {
-        // The snapshot model has no self-removal: leave out writes of an author's own edge, and
-        // give ledger entries ended by the member's own node another ending node (that end is a
-        // self-removal, spec/permissions.md §2, never an audited end, §6; read as one, its author
-        // keeps its standing, §5.1 step 4).
-        let mut h = snapshot::random_hist(&mut rng);
-        let keep: Vec<usize> = (0..h.writes.len()).filter(|&i| h.writes[i].snap.is_some() || h.writes[i].rec || h.writes[i].author != h.writes[i].target).collect();
-        h.writes = keep.iter().map(|&i| h.writes[i].clone()).collect();
-        h.recv = keep.iter().map(|&i| h.recv[i].clone()).collect();
-        let n = h.n();
-        for e in h.writes.iter_mut().flat_map(|w| w.ledger.iter_mut()) {
-            if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.member) {
-                u.1 = (e.member + 1) % n;
-            }
-        }
-        let o = h.eval(true);
-        let mut cases = vec![("full".to_string(), h.clone())];
-        // Compaction at every applied snapshot, and projections.
-        for thing in [snapshot::Thing::P, snapshot::Thing::G] {
-            for sn in h.snapshots(thing, &o, true) {
-                cases.push((format!("compacted {thing:?} at {sn}"), h.compacted(thing, sn).0));
-            }
-        }
-        for z in 1..h.n() {
-            cases.push((format!("projected {z}"), h.projected(z).0));
-        }
-        for (name, c) in cases {
-            if let Some(d) = snap_diff(&c) {
-                fails.push(format!("seed {seed:#x} sample {s} ({name}): {d}\n{c:?}"));
-                break;
-            }
-        }
-        if fails.len() >= 3 {
-            break;
+/// A snapshot-model history without self-removal: no writes of an author's own edge, and
+/// ledger entries ended by the member's own node given another ending node (that end is a
+/// self-removal, spec/permissions.md §2, never an audited end, §6; read as one, its author
+/// keeps its standing, §5.1 step 4). The snapshot model has no self-removal.
+fn snap_hist(rng: &mut Rng) -> snapshot::SHist {
+    let mut h = snapshot::random_hist(rng);
+    let keep: Vec<usize> = (0..h.writes.len()).filter(|&i| h.writes[i].snap.is_some() || h.writes[i].rec || h.writes[i].author != h.writes[i].target).collect();
+    h.writes = keep.iter().map(|&i| h.writes[i].clone()).collect();
+    h.recv = keep.iter().map(|&i| h.recv[i].clone()).collect();
+    let n = h.n();
+    for e in h.writes.iter_mut().flat_map(|w| w.ledger.iter_mut()) {
+        if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.member) {
+            u.1 = (e.member + 1) % n;
         }
     }
-    assert!(fails.is_empty(), "{} mismatches:\n{}", fails.len(), fails.join("\n"));
+    h
+}
+
+/// The full history, compacted at every applied snapshot, and projected for every actor.
+fn snap_cases(h: &snapshot::SHist) -> Option<String> {
+    let o = snapshot::walk(h);
+    let mut cases = vec![("full".to_string(), h.clone())];
+    for thing in [snapshot::Thing::P, snapshot::Thing::G] {
+        for sn in h.snapshots(thing, &o, true) {
+            cases.push((format!("compacted {thing:?} at {sn}"), h.compacted(thing, sn).0));
+        }
+    }
+    for z in 1..h.n() {
+        cases.push((format!("projected {z}"), h.projected(z).0));
+    }
+    cases.into_iter().find_map(|(name, c)| snap_diff(&c).map(|d| format!("({name}) {d}")))
+}
+
+fn snap_run(samples: u64, seed: u64) {
+    model_run(samples, seed, snap_hist, snap_cases, |_| {});
     eprintln!("snapshot model: {samples} histories, {} cases skipped as sticky residue", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
 }
 
