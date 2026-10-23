@@ -413,21 +413,25 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
     }
 }
 
-/// Do held edge writes lead from `author` (as member, through member actors) to a thing on
-/// `chain`? (The author's chain certificates, spec/permissions.md §4.)
+/// Does a path of held edge writes and owner links lead from `author` to a thing on `chain`?
+/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs membership
+/// edges and owner links, as perm's effective role does, so an owner reaches what its owned
+/// actors' edges name.) Only owned things that lead further (named as a member, owning
+/// something) or are on `chain` are expanded.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
+    let held = &core.held;
     let mut frontier = vec![*author];
-    let mut seen: BTreeSet<Tid> = BTreeSet::new();
+    let mut seen: BTreeSet<Tid> = BTreeSet::from([*author]);
     while let Some(x) = frontier.pop() {
-        if !seen.insert(x) || seen.len() > 4096 {
-            continue;
-        }
-        // the things `x` is named on as a member (edge writes, rosters, ledgers)
-        for t in core.held.named_on(&x) {
+        // the things `x` is named on as a member (edge writes, rosters, ledgers), then the
+        // things it owns
+        for t in held.named_on(&x).chain(held.owned(&x).filter(|t| held.named_on(t).next().is_some() || held.owned(t).next().is_some() || chain.contains(t))) {
             if chain.contains(t) {
                 return true;
             }
-            frontier.push(*t);
+            if seen.len() < 4096 && seen.insert(*t) {
+                frontier.push(*t);
+            }
         }
     }
     false
