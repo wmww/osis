@@ -109,6 +109,22 @@ fn shows(e: &SeqElem, text: bool) -> (bool, Option<char>) {
     (shown, ch)
 }
 
+/// One block of a sequence's placement, for a node keeping its visible elements by index
+/// (notes/node.md, Paged state).
+#[derive(Clone, Debug)]
+pub struct PlacedBlock(Arc<Block>);
+
+impl PlacedBlock {
+    /// Visible elements in the block.
+    pub fn shown(&self) -> usize {
+        self.0.shown
+    }
+    /// The visible elements in order.
+    pub fn visible(&self) -> impl Iterator<Item = &Dot> + '_ {
+        self.0.rows.iter().filter(|r| r.shown).map(|r| &r.dot)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct Block {
     rows: Vec<Row>,
@@ -267,6 +283,28 @@ impl Placement {
             k -= x.shown;
         }
         None
+    }
+
+    /// Visible nodes `r` (by visible index) in order: whole blocks before them skipped by count.
+    pub(crate) fn vis_range(&self, r: Range<usize>) -> Vec<&Row> {
+        let (mut skip, mut out) = (r.start, Vec::with_capacity(r.len().min(self.shown)));
+        for x in self.order.iter().filter_map(|b| self.blocks.get(*b)) {
+            if out.len() >= r.len() {
+                break;
+            }
+            if skip >= x.shown {
+                skip -= x.shown;
+                continue;
+            }
+            out.extend(x.rows.iter().filter(|r| r.shown).skip(skip).take(r.len() - out.len()));
+            skip = 0;
+        }
+        out
+    }
+
+    /// The blocks in order.
+    pub(crate) fn blocks(&self) -> Vec<PlacedBlock> {
+        self.order.iter().filter_map(|b| self.blocks.get(*b)).map(|x| PlacedBlock(x.clone())).collect()
     }
 
     /// Visible nodes in order.

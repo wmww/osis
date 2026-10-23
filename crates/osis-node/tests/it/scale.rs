@@ -307,7 +307,15 @@ fn text_undo_and_first_access_cost() {
     let id = e.commit(m).unwrap().unwrap();
     let insert = t1.elapsed();
     let w1 = bytes.load(Ordering::Relaxed);
-    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included)", w1 - w0);
+    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included; the session's first: invalidates the stored placement)", w1 - w0);
+    // later edits in the session: the placement is invalidated already
+    let k = 10;
+    for i in 0..k {
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at: (i * 7919) % n, items: vec![Value::Str("Q".into())] } }).unwrap();
+        e.commit(m).unwrap().unwrap();
+    }
+    println!("text {n} chars: later inserts in the session, store writes {} B each", (bytes.load(Ordering::Relaxed) - w1) / k as u64);
     drop(e);
     let t2 = Instant::now();
     let mut e = reopen.open(&batches, &bytes);
@@ -315,11 +323,80 @@ fn text_undo_and_first_access_cost() {
     let t3 = Instant::now();
     let v = e.get(&t, &ak("/s/text")).unwrap();
     let first = t3.elapsed();
-    assert!(matches!(&v, Some(Value::Str(x)) if x.len() == n + 3));
+    assert!(matches!(&v, Some(Value::Str(x)) if x.len() == n + 3 + k));
     println!("text {n} chars: open {opened:?}, first read {first:?}");
     let t4 = Instant::now();
     e.undo(&id).unwrap().unwrap();
     println!("text {n} chars: undo commit {:?}", t4.elapsed());
+}
+
+// spec/crdt.md §5.7 (ops resolve by index against the placement), §6, §8; spec/requirements.md,
+// Scale (a change costs O(change)): a 10^5-char text, each step in a new session: a read of 100
+// chars at a random index, one local insert, one received insert, then two reads (the first lays
+// the invalidated placement out anew); pages loaded (`state page load` spans) and time.
+#[test]
+#[ignore = "tier 2"]
+fn text_range_and_edit_cost() {
+    let n = 100_000usize;
+    let mut lp = osis_node::local_peer::LocalPeer::new(2, 31, WallMs(1_700_000_000_000)).unwrap();
+    let a = ak("/s/text");
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    let b = lp.peers[1].engine.tid();
+    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let text: String = (0..n).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &Value::Str(text.clone())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    let mut rng = SeededRng::from_u64(5);
+    let at = (osis_crypto::RngCore::next_u64(&mut rng) % (n as u64 - 100)) as usize;
+    let measure = |name: &str, t0: Instant| {
+        let c = osis_node::costs::take();
+        let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+        println!("text {n} chars, new session: {name} {:?}, {} pages loaded, {} placement blocks written", t0.elapsed(), count("state page load"), count("placement block write"));
+    };
+    lp.peers[1].restart(41).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    let got = lp.peers[1].engine.get_range(&t, &a, &[], at..at + 100).unwrap();
+    measure("read of 100 chars at a random index", t0);
+    assert_eq!(got, Some(Value::Str(text[at..at + 100].into())));
+    lp.peers[1].restart(42).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at, items: vec![Value::Str("XYZ".into())] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    measure("one insert", t0);
+    let mut m = Mutation::new();
+    m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at: n / 3, items: vec![Value::Str("UVW".into())] } }).unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    lp.peers[1].restart(43).unwrap();
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    lp.deliver(1, &pk).unwrap();
+    measure("one received insert", t0);
+    // the edits invalidated the stored placement: the first read by index lays it out anew, the
+    // next reads only its pages
+    for name in ["read of 100 chars after edits (lays out the placement)", "next read of 100 chars"] {
+        lp.peers[1].restart(44).unwrap();
+        osis_node::costs::take();
+        let t0 = Instant::now();
+        assert!(lp.peers[1].engine.get_range(&t, &a, &[], at..at + 100).unwrap().is_some());
+        measure(name, t0);
+    }
+    // ASCII: byte indexes are char indexes; the later position first
+    let mut want = text.clone();
+    let mut ins = [(at, "XYZ"), (n / 3, "UVW")];
+    ins.sort();
+    for (i, x) in ins.iter().rev() {
+        want.insert_str(*i, x);
+    }
+    assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Str(want)));
 }
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node

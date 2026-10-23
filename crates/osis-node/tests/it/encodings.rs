@@ -238,3 +238,102 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
     assert!(carried(lp.peers[0].engine.state(&t, &ak("/t/text")).unwrap()) == before, "state after restart");
     assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/text")).unwrap(), Some(s(&want)));
 }
+
+// spec/crdt.md §5.7 (Read: the visible elements in placement order), §6, §8: a read by index
+// range of a paged list (its placement kept with its pages; invalidated by the edits, laid out
+// anew by the first read) and of a small text, in new sessions, after a concurrent writer's
+// insert and a move: what the whole read holds there, clamped to the length; absent or not a
+// sequence reads `None`.
+#[test]
+fn range_reads_by_index_spec_crdt_5_7() {
+    let mut lp = net(2, 23);
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let items: Vec<Value> = (0..2500).map(|i| s(&format!("item-{i:06}-padding-padding"))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &LIST, &Value::List(items)).unwrap();
+    m.set(t, &TEXT, &s("hello world")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: vec![], op: Op::Insert { at: 1200, items: vec![s("from b")] } }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: vec![], op: Op::Move { at: 10, len: 5, to: 1500 } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 0, 1);
+    for p in 0..2 {
+        let Some(Value::List(all)) = lp.peers[p].engine.get(&t, &ak("/t/list")).unwrap() else { panic!() };
+        assert_eq!(all.len(), 2501);
+        assert!(all.contains(&s("from b")));
+        // the edits invalidated the stored placement: the first read by index lays it out anew
+        lp.peers[p].restart(59).unwrap();
+        osis_node::costs::take();
+        assert_eq!(lp.peers[p].engine.get_range(&t, &ak("/t/list"), &[], 0..2).unwrap(), Some(Value::List(all[0..2].to_vec())));
+        let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+        assert!(loads >= 6, "the rebuild loads the whole list: {loads} pages");
+        for r in [1195..1210, 1490..1510, 0..3, 2495..2600] {
+            // a new session: nothing loaded
+            lp.peers[p].restart(60 + r.start as u64).unwrap();
+            let want = all.get(r.start.min(all.len())..r.end.min(all.len())).unwrap().to_vec();
+            osis_node::costs::take();
+            assert_eq!(lp.peers[p].engine.get_range(&t, &ak("/t/list"), &[], r.clone()).unwrap(), Some(Value::List(want)), "peer {p} {r:?}");
+            let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+            assert!((1..=3).contains(&loads), "peer {p} {r:?}: {loads} pages loaded");
+        }
+        lp.peers[p].restart(70).unwrap();
+        osis_node::costs::take();
+        lp.peers[p].engine.get(&t, &ak("/t/list")).unwrap();
+        let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
+        assert!(loads >= 6, "the whole list: {loads} pages");
+        let e = &mut lp.peers[p].engine;
+        assert_eq!(e.get_range(&t, &ak("/t/text"), &[], 6..20).unwrap(), Some(s("world")));
+        assert_eq!(e.get_range(&t, &ak("/t/reg"), &[], 0..2).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("/t/short"), &[], 0..2).unwrap(), None);
+    }
+}
+
+// spec/crdt.md §5.7 (Read by index): a reversed range reads empty, from the whole sequence and
+// through a paged one's stored placement in a new session.
+#[test]
+fn reversed_range_reads_empty_spec_crdt_5_7() {
+    let mut lp = net(1, 31);
+    let t = new_thing(&mut lp, 0);
+    let items: Vec<Value> = (0..2500).map(|i| s(&format!("item-{i:06}-padding-padding"))).collect();
+    let mut m = Mutation::new();
+    m.set(t, &LIST, &Value::List(items)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let reversed = std::ops::Range { start: 10, end: 5 };
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/list"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
+    lp.peers[0].restart(7).unwrap();
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/list"), &[], reversed.clone()).unwrap(), Some(Value::List(Vec::new())));
+}
+
+// spec/crdt.md §5.6 (a removed key reads absent), §5.7: a range read under a removed map key
+// holding a paged text reads absent, as a read at that key does, in the session and a new one.
+#[test]
+fn range_under_removed_key_absent_spec_crdt_5_6() {
+    let mut lp = net(1, 29);
+    let t = new_thing(&mut lp, 0);
+    let big = |c: char| s(&std::iter::repeat_n(c, 30_000).collect::<String>());
+    let mut m = Mutation::new();
+    m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(big('a')) }).unwrap();
+    m.op(t, &DOCS, PathOp { path: vec![PathSeg::Key(s("b"))], op: Op::Set(big('b')) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].restart(5).unwrap();
+    assert_eq!(lp.peers[0].engine.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), Some(s("aaaaa")));
+    let mut m = Mutation::new();
+    m.op(t, &DOCS, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for session in 0..2 {
+        if session == 1 {
+            lp.peers[0].restart(6).unwrap();
+        }
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get_at(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))]).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("a"))], 0..5).unwrap(), None, "session {session}");
+        assert_eq!(e.get_range(&t, &ak("/t/docs"), &[PathSeg::Key(s("b"))], 0..5).unwrap(), Some(s("bbbbb")), "session {session}");
+    }
+}

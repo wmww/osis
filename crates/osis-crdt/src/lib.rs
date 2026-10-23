@@ -64,6 +64,7 @@ pub use paging::{PagedTouch, Paths, Step};
 pub use state::MemberRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_ops::cut_dots;
+pub use seq_lin::PlacedBlock;
 pub use stamp::{CounterRange, Dot, Interner, Source, SourceKind, Stamp};
 pub use view::{AnyView, View};
 pub use lifecycle::{unmerge, unmerge_in_place};
