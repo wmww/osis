@@ -5,6 +5,10 @@ edition = "2021"
 publish = false
 description = "Reference model for spec/crdt.md: slow, small, obviously correct. Not the implementation."
 
+[lib]
+test = false
+doctest = false
+
 [dependencies]
 
 [dev-dependencies]
@@ -12,6 +16,7 @@ proptest = "1"
 
 [[bin]]
 name = "text-bench"
+test = false
 path = "src/bin/text_bench.rs"
 
 # Reference model: style lints off; correctness is checked by its tests.

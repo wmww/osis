@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 
@@ -16,3 +19,7 @@ osis-crdt.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+
+[[bin]]
+name = "osis-schema-gen"
+test = false

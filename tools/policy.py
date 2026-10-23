@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Policy checks (notes/testing.md, Policy checks): unsafe forbidden everywhere in the workspace,
-workspace lints on, and every external dependency has its line in notes/architecture.md §5.
+workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
+target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run.
 Usage: python3 tools/policy.py   (from the repo root; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
 
@@ -28,6 +29,25 @@ def dep_tables(manifest):
 
 external = {n: "workspace" for n, d in ws["workspace"]["dependencies"].items() if n not in internal}
 UNSAFE = re.compile(r"\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)")
+DOCTEST = re.compile(r"^\s*//[/!]\s*```(?!text)")  # an opening fence rustdoc compiles
+
+def test_off_violations(m, rel, man):
+    """Targets with tests turned off must have none (notes/testing.md, Build hygiene)."""
+    lib = man.get("lib", {})
+    srcs = glob.glob(os.path.join(m, "src/**/*.rs"), recursive=True)
+    lib_srcs = [s for s in srcs if "/src/bin/" not in s and not s.endswith("/src/main.rs")]
+    if lib.get("test") is False and any("#[cfg(test)]" in open(s).read() for s in lib_srcs):
+        yield f"{rel}: [lib] test = false but src/ has #[cfg(test)]"
+    if lib.get("doctest") is False:
+        for s in lib_srcs:
+            fences = [l for l in open(s) if re.match(r"^\s*//[/!]\s*```", l)]
+            if any(DOCTEST.match(l) for l in fences[::2]):
+                yield f"{os.path.relpath(s, ROOT)}: doctest = false but it has a doctest"
+    for b in man.get("bin", []):
+        paths = [b["path"]] if "path" in b else [f"src/bin/{b['name']}.rs", "src/main.rs"]
+        path = next((os.path.join(m, p) for p in paths if os.path.exists(os.path.join(m, p))), None)
+        if b.get("test") is False and path and "#[cfg(test)]" in open(path).read():
+            yield f"{rel}: bin {b['name']} has test = false but #[cfg(test)]"
 
 for m in members:
     rel = os.path.relpath(m, ROOT)
@@ -39,6 +59,7 @@ for m in members:
             errs.append(f"{rel}: model needs [lints.rust] unsafe_code = \"forbid\"")
     elif lints.get("workspace") is not True:
         errs.append(f"{rel}: needs [lints] workspace = true")
+    errs.extend(test_off_violations(m, rel, man))
     for table in dep_tables(man):
         for name, spec in table.items():
             if name in internal or (isinstance(spec, dict) and "path" in spec):
