@@ -233,6 +233,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // (tests let a local writer break these rules, to test receivers)
     if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
         validity::check_roster_parts(&h, &out)?;
+        validity::check_members_parts(&h, id, &out)?;
         if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out))?.waiting.is_empty() {
             return Ok(Exam::Pending(Reason::WaitBlobs));
         }

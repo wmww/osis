@@ -31,12 +31,12 @@ impl Rng {
 
 /// `member`'s edge on `thing` by the engine (`None` removes it); refusals are fine.
 fn try_edge(e: &mut Engine, thing: Tid, member: Tid, role: Option<Role>) {
+    // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    let op = match role {
-        Some(r) => PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge(r).to_value()) },
-        None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) },
-    };
-    m.op(thing, &ct::MEMBERS, op).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    if let Some(r) = role {
+        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge(r).to_value()) }).unwrap();
+    }
     let _ = e.commit(m);
 }
 

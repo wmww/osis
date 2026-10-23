@@ -216,7 +216,7 @@ pub(crate) struct Core {
     /// `/group` definitions and `/groups` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
     /// Keyed `/members` entries seen: (target, entry dot) -> (member, created value).
-    pub member_keys: JMap<(Tid, Dot), (Tid, Option<osis_core::Value>)>,
+    pub member_keys: JMap<(Tid, Dot), Tid>,
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.

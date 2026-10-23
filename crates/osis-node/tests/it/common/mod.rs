@@ -96,18 +96,15 @@ pub fn edge(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, since: None }
 }
 
-/// Peer `i` writes `member`'s edge on `thing` (`None` removes it), with an optional frontier.
+/// Peer `i` writes `member`'s edge on `thing` as remove + put (`None` removes it), with an
+/// optional frontier.
 pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+    // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    let op = match edge {
-        Some(x) => Op::Set(x.to_value()),
-        None => Op::Remove(Value::Tid(member)),
-    };
-    let path = match op {
-        Op::Set(_) => vec![PathSeg::Key(Value::Tid(member))],
-        _ => Vec::new(),
-    };
-    m.op(thing, &ct::MEMBERS, PathOp { path, op }).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    if let Some(x) = edge {
+        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(x.to_value()) }).unwrap();
+    }
     if let Some(f) = frontier {
         m.frontier(f);
     }

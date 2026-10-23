@@ -149,7 +149,10 @@ pub(crate) fn put_keysets(m: &mut Mutation, actor: Tid, w: &KeysWrite) -> Result
 }
 
 /// An edge put (a change is remove + put, notes/node.md).
+/// Writes `member`'s edge on `target` as remove + put (spec/permissions.md §2): whatever entry
+/// the state holds for it, valid or one the timeline dropped, is reset, never written into.
 pub(crate) fn put_edge(m: &mut Mutation, target: Tid, member: Tid, e: &ct::Edge) -> Result<()> {
+    remove_edge(m, target, member)?;
     m.op(target, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(e.to_value()) })?;
     Ok(())
 }

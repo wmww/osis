@@ -184,7 +184,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
 
 /// The dots of `member`'s `/members` entries on `target` this node has seen, live or dead.
 fn entry_dots(tx: &Tx<'_>, target: &Tid, member: &Tid) -> Vec<osis_crdt::Dot> {
-    tx.core.member_keys.iter().filter(|((t, _), (m, _))| t == target && m == member).map(|((_, d), _)| d.clone()).collect()
+    tx.core.member_keys.iter().filter(|((t, _), m)| t == target && *m == member).map(|((_, d), _)| d.clone()).collect()
 }
 
 /// A removal or demotion (or a self-removal) of `d.member` on `target` by `who`: an explicit

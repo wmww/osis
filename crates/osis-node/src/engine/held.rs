@@ -222,6 +222,11 @@ impl Held {
         self.log.push(Undo::AddedSnapshot(s));
     }
 
+    /// The edge commit held under this ID.
+    pub fn edge_commit(&self, id: &CommitId) -> Option<&MembershipCommit> {
+        self.ids.get(id).and_then(|r| r.0.as_deref())
+    }
+
     /// Drops every commit and snapshot with this ID.
     pub fn remove(&mut self, id: &CommitId) {
         let (cs, ss) = self.take(id);

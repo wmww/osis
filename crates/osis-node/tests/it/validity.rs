@@ -874,36 +874,86 @@ fn index_of(e: &osis_node::Engine) -> String {
     e.index_digest().lines().filter(|l| !l.starts_with("held ")).collect::<Vec<_>>().join("\n")
 }
 
-// spec/permissions.md §5 (validity is a function of the commits held), §5.1 (edge writes): a
-// change of an edge written by structural diff is a nested write into the grant's entry (the
-// role field alone); it overlays the edge the grant created, whatever order the two arrive in.
-// (Was: the first held record of the entry became its base, so the change arriving first left
-// the grant's value unknown for good; and the change read alone lost the grant's `until`.)
+// spec/permissions.md §2 (an edge change is remove + put): a write inside a member's entry
+// is refused, so field changes cannot compose (was: a change adding `until`, then one raising
+// the role, left an admin edge with no `until`); written as remove + put, each change is the
+// whole edge.
 #[test]
-fn edge_change_before_its_grant_judged_alike_spec_perm_5_1() {
+fn edge_change_is_remove_and_put_spec_perm_2() {
     let mut lp = net(2, 67);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
     let c = lp.peers[1].engine.tid();
     let until = Some(WallMs(T0.0 + 30 * DAY));
-    let grant = set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Admin) }), None);
+    set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Write)), None);
     lp.advance(1_000);
-    let change = set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Write) }), None);
-    let pks = packages(&mut lp, 0);
-    let mut seen = Vec::new();
-    for change_first in [false, true] {
-        let mut p = osis_node::local_peer::Peer::new(6700, lp.peers[0].engine.now()).unwrap();
-        let mut order: Vec<_> = pks.iter().filter(|p| p.id != change).collect();
-        let at = order.iter().position(|p| p.id == grant).unwrap();
-        order.insert(if change_first { at } else { at + 1 }, pks.iter().find(|p| p.id == change).unwrap());
-        for pk in order {
-            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Write) }), None);
+    lp.advance(1_000);
+    // the role field alone, into the entry the last change created
+    let mut m = Mutation::new();
+    let path = vec![osis_crdt::PathSeg::Key(Value::Tid(c))];
+    m.op(d, &osis_schema::core_types::MEMBERS, osis_crdt::PathOp { path, op: osis_crdt::Op::Set(edge(Role::Admin).to_value()) }).unwrap();
+    assert_eq!(lp.peers[0].engine.commit(m).unwrap_err().class(), osis_core::ErrorClass::BadInput);
+    set_edge(&mut lp.peers[0].engine, d, c, Some(osis_schema::core_types::Edge { until, ..edge(Role::Admin) }), None);
+    let e = lp.peers[0].engine.roster(&d).get(&c).cloned().unwrap();
+    assert_eq!((e.role, e.until), (Role::Admin, until));
+}
+
+/// Person actors for `lp`'s peers, known to all.
+fn persons(lp: &mut LocalPeer) -> Vec<Tid> {
+    let servers = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+    let ps = (0..lp.peers.len()).map(|i| lp.peers[i].engine.create_person(&servers).unwrap().0.person).collect();
+    lp.sync_all().unwrap();
+    ps
+}
+
+/// Hands `done`'s inbox blobs to every other peer.
+fn carry(lp: &mut LocalPeer, from: usize, done: &osis_node::flows::Done) {
+    for d in &done.deliveries {
+        if let osis_node::flows::Delivery::Inbox { blob, .. } = d {
+            for i in (0..lp.peers.len()).filter(|i| *i != from) {
+                let _ = lp.peers[i].engine.accept_inbox(blob);
+            }
         }
-        let e = p.engine.roster(&d).get(&c).cloned().unwrap();
-        assert_eq!((e.role, e.until), (Role::Write, until), "change first: {change_first}");
-        seen.push((index_of(&p.engine), p.engine.perm_digest(false)));
     }
-    assert_eq!(seen[0], seen[1]);
+}
+
+// spec/permissions.md §2, §5.1: C grants B write; A removes C with a frontier that misses the
+// grant, so the walk drops it, but its entry stays live in the `/members` state. A grants B
+// again (same role or another): the grant resets that entry and puts a new one, and B reads its
+// edge (was: the grant flow diffed into the dropped entry: nothing, or a field write B never
+// resolved).
+#[test]
+fn regrant_over_dropped_entry_spec_perm_2() {
+    for again in [Role::Write, Role::Admin] {
+        use osis_node::flows::{Demotion, PreSync};
+        let mut lp = net(3, 71);
+        let ps = persons(&mut lp);
+        let (pb, pc) = (ps[1], ps[2]);
+        let mut m = Mutation::new();
+        let d = lp.peers[0].engine.new_thing(&mut m, ps[0]);
+        m.set(d, &REG, &s("x")).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let done = lp.peers[0].engine.grant(&d, &pc, &edge(Role::Admin)).unwrap();
+        carry(&mut lp, 0, &done);
+        lp.sync_all().unwrap();
+        lp.advance(10);
+        let g = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
+        lp.advance(10);
+        let done = lp.peers[0].engine.demote(&d, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+        carry(&mut lp, 0, &done);
+        lp.advance(10);
+        // A holds the dropped grant; B never does
+        send(&mut lp, 2, 0, &g);
+        assert_eq!(lp.peers[0].engine.roster(&d).get(&pb), None, "the grant is dropped");
+        lp.advance(10);
+        let done = lp.peers[0].engine.grant(&d, &pb, &edge(again)).unwrap();
+        carry(&mut lp, 0, &done);
+        let ids: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !g.contains(c)).collect();
+        send(&mut lp, 0, 1, &ids);
+        assert_eq!(lp.peers[0].engine.roster(&d).get(&pb).map(|e| e.role), Some(again), "at A");
+        assert_eq!(lp.peers[1].engine.roster(&d).get(&pb).map(|e| e.role), Some(again), "at B");
+    }
 }
 
 // spec/permissions.md §5 (a function of the commits held), §5.2: two snapshots carrying Bob's

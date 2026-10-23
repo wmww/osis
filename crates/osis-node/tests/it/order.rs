@@ -143,6 +143,16 @@ fn random_step(rng: &mut Rng) -> Step {
     }
 }
 
+/// `member`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
+fn edge_write(t: Tid, member: Tid, role: Option<Role>) -> Mutation {
+    let mut m = Mutation::new();
+    m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![], op: Op::Remove(Value::Tid(member)) }).unwrap();
+    if let Some(role) = role {
+        m.op(t, &osis_schema::core_types::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge(role).to_value()) }).unwrap();
+    }
+    m
+}
+
 /// A history as played: every commit made, in the order made, and the things.
 struct Played {
     packs: Vec<Package>,
@@ -203,13 +213,7 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Edge { by, t, member, role } => {
-                let mut m = Mutation::new();
-                let po = match role {
-                    Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(ids[member]))], op: Op::Set(edge(role).to_value()) },
-                    None => PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[member])) },
-                };
-                m.op(th(t), &osis_schema::core_types::MEMBERS, po).unwrap();
-                let _ = lp.peers[by].commit(m);
+                let _ = lp.peers[by].commit(edge_write(th(t), ids[member], role));
                 Some(by)
             }
             Step::Demote { by, t, member, at, to_read } => {
@@ -229,13 +233,7 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 };
                 let scope = DemotionScope { membership: BTreeMap::from([(ids[member], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[member], below)]) };
                 if let Ok(f) = lp.peers[by].engine.frontier(&scope, as_of) {
-                    let mut m = Mutation::new();
-                    let po = if to_read {
-                        PathOp { path: vec![PathSeg::Key(Value::Tid(ids[member]))], op: Op::Set(edge(Role::Read).to_value()) }
-                    } else {
-                        PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[member])) }
-                    };
-                    m.op(t, &osis_schema::core_types::MEMBERS, po).unwrap();
+                    let mut m = edge_write(t, ids[member], to_read.then_some(Role::Read));
                     m.frontier(f.to_value());
                     let _ = lp.peers[by].commit(m);
                 }
