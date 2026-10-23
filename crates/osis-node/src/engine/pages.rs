@@ -1454,7 +1454,7 @@ mod tests {
         seq_placement_run(true, 6_000);
     }
 
-    // As `seq_placement_differential_text_spec_crdt_6`, for a list.
+    // spec/crdt.md §5.7, §6, §8: as `seq_placement_differential_text_spec_crdt_6`, for a list.
     #[test]
     fn seq_placement_differential_list_spec_crdt_6() {
         seq_placement_run(false, 1_000);
