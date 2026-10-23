@@ -177,8 +177,13 @@ impl SyncEngine {
             actor: self.engine.group_actor(&g),
             published: self.engine.body_ctx(&g).published,
             may_rotate: self.may_rotate_read(&g),
-            unsettled: (unsettled.is_empty(), unsettled.contains(&None), snapping.contains(&None)),
+            held: self.engine.epochs(&g),
         };
+        // what was judged while unsettled is judged again once settled; becoming unsettled
+        // only withholds actions, and what is outside the set has none outstanding
+        let flags = (unsettled.is_empty(), !snapping.contains(&None));
+        let release = w.settled.is_some_and(|(s, n)| !s && flags.0 || !n && flags.1);
+        w.settled = Some(flags);
         // aspects that became or stopped being unsettled: their commits
         let mut moved: BTreeSet<(Tid, Ak)> = unsettled.iter().chain(snapping.iter()).flatten().cloned().collect();
         let was: BTreeSet<(Tid, Ak)> = w.unsettled.iter().flatten().cloned().collect();
@@ -192,6 +197,11 @@ impl SyncEngine {
             self.check_linked_prefixes(l, &scope)?;
         }
         w.inputs = Some(inputs);
+        if let Scope::Some { commits, .. } = &mut scope
+            && release
+        {
+            commits.extend(std::mem::take(&mut w.held_back));
+        }
         if let Scope::Some { commits, .. } = &mut scope {
             for (t, a) in &moved {
                 commits.extend(self.engine.core.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
@@ -354,6 +364,8 @@ impl SyncEngine {
         for (b, cs) in left.links {
             w.links.entry(b).or_default().extend(cs);
         }
+        w.keyless.extend(left.keyless);
+        w.held_back.extend(left.held_back);
         Ok(())
     }
 
@@ -640,6 +652,9 @@ impl SyncEngine {
         for b in bodies {
             let needed = self.must_hold(b, snaps, snapping, &mut note)?;
             note.leave(b.commit, left);
+            if snapping.contains(&None) {
+                left.held_back.insert(b.commit);
+            }
             let Some(needed) = needed else { continue };
             // another projection of the commit (a right holder dropped covered deltas) holds it
             if needed != b.parts && self.carried_by(server, &l, &b.commit, &needed) {
@@ -722,7 +737,10 @@ impl SyncEngine {
         }
         Ok(match self.delete_for(keys, l, id, e, None)? {
             Some(item) => Fate::Delete(why, item),
-            None => Fate::Wait,
+            None => {
+                note.keyless = true;
+                Fate::Wait
+            }
         })
     }
 
@@ -1802,6 +1820,9 @@ impl SyncEngine {
             let Kind::Commit { commit, .. } = e.kind else { continue };
             let fate = self.deletable(Some(&server), &l, g, &id, &e, keys, &desired, snaps, settled, true, &mut note)?;
             note.leave(commit, left);
+            if !settled {
+                left.held_back.insert(commit);
+            }
             match fate {
                 Fate::Keep | Fate::Wait => {}
                 Fate::Expired => {
@@ -1919,10 +1940,15 @@ impl SyncEngine {
                 left.wait(a.0, a.1, b.commit);
             }
             let Some((e, t)) = self.keep_at_most_due(&l, b, &id)? else { continue };
-            if let Some(item) = self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
-                left.commits.insert(b.commit);
-                self.timed_sent.insert((conn, l, id));
-                items.push(item);
+            match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
+                Some(item) => {
+                    left.commits.insert(b.commit);
+                    self.timed_sent.insert((conn, l, id));
+                    items.push(item);
+                }
+                None => {
+                    left.keyless.insert(b.commit);
+                }
             }
         }
         if !items.is_empty() {

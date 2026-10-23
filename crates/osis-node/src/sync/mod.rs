@@ -382,6 +382,8 @@ pub struct SyncEngine {
     /// When charges were last pruned (raw ms), and whether a budget was reached since.
     pub(crate) charges_pruned: u64,
     pub(crate) charges_full: bool,
+    /// The engine's actors with secrets of their own when its events were last taken.
+    pub(crate) own_keys: BTreeSet<Tid>,
     /// Sizes of blobs served to peers (memory only; pruned at ticks).
     pub(crate) blob_sizes: BTreeMap<osis_core::BlobId, u64>,
     /// LAN tags of the co-readers for the cached window and its neighbours, to dialable keys.
@@ -477,6 +479,7 @@ impl SyncEngine {
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
             touched: work::Touched::default(),
+            own_keys: BTreeSet::new(),
             listers: None,
             peer_steps: BTreeMap::new(),
             lan: BTreeMap::new(),
@@ -688,6 +691,8 @@ impl SyncEngine {
     pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
         let mut dropped: BTreeSet<osis_core::CommitId> = BTreeSet::new();
+        // things whose roster or creation record changed
+        let mut roots: BTreeSet<Tid> = BTreeSet::new();
         while let Ok(e) = self.events.try_recv() {
             match e {
                 crate::Event::Applied { id, origin, changed: aspects, .. } => {
@@ -699,6 +704,7 @@ impl SyncEngine {
                     if let Some(h) = self.engine.header(&id) {
                         // a creation record moves the reader actors of the thing's bodies
                         self.touched.things.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                        roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
                         // its chunks may have come with it
                         self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
                         if let Some(ls) = self.listers.as_mut() {
@@ -707,10 +713,12 @@ impl SyncEngine {
                             }
                         }
                     }
-                    if self.engine.header(&id).is_some_and(|h| h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label")) {
+                    if let Some(h) = self.engine.header(&id)
+                        && (h.kind.is_membership() || h.aspects.iter().any(|a| a.ak.as_str() == "/label"))
+                    {
                         self.served_cache = None;
                         self.members_moved = true;
-                        self.touched.full = true;
+                        self.touched.keys = true;
                     }
                     if origin == Origin::Remote
                         && let Some(h) = self.engine.header(&id)
@@ -741,6 +749,9 @@ impl SyncEngine {
                     if cause == crate::events::Cause::LostAccess {
                         self.touched.full = true;
                     }
+                    if aspects.iter().any(|(_, a)| osis_schema::core_types::is_membership_class(a.as_str())) {
+                        self.touched.keys = true;
+                    }
                     for (t, a) in &aspects {
                         dropped.extend(self.engine.core.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
                     }
@@ -751,15 +762,32 @@ impl SyncEngine {
                     changed = true;
                     dropped.insert(id);
                     self.touched.commits.insert(id);
+                    if let Some(h) = self.engine.header(&id)
+                        && h.kind.is_membership()
+                    {
+                        self.touched.keys = true;
+                    }
                 }
-                crate::Event::Roster { .. } => {
+                crate::Event::Roster { thing } => {
                     changed = true;
+                    roots.insert(thing);
                     self.served_cache = None;
                     self.members_moved = true;
-                    self.touched.full = true;
                 }
                 _ => {}
             }
+        }
+        // roles change only where authority flows from a changed roster or owner link
+        // (`Held::reach`: owned things, things named on as a member, transitively)
+        if !roots.is_empty() {
+            self.touched.moved.extend(self.engine.core.held.reach(&roots));
+        }
+        // actors that got or lost secrets of their own: the reader actors under them moved
+        if *self.engine.core.own_keys != self.own_keys {
+            let now: BTreeSet<Tid> = (*self.engine.core.own_keys).clone();
+            self.touched.actors.extend(now.symmetric_difference(&self.own_keys).copied());
+            self.own_keys = now;
+            changed = true;
         }
         if changed {
             self.mark_dirty();
@@ -784,6 +812,9 @@ impl SyncEngine {
                 w.states.extend(t.states.iter().cloned());
                 w.things.extend(t.things.iter().copied());
                 w.blobs.extend(t.blobs.iter().copied());
+                w.moved.extend(t.moved.iter().copied());
+                w.actors.extend(t.actors.iter().copied());
+                w.keys |= t.keys;
                 for (_, x) in st.range((*l, state::Touch::Commit(osis_core::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
                     match x {
                         state::Touch::Commit(c) => w.commits.insert(*c),

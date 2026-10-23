@@ -4,10 +4,11 @@
 //! the engine applied it or changed one of its aspects (validity, expiry, purge, a late delta),
 //! a snapshot or a newer card write of its aspects changed under the label, its thing got its
 //! creation record or entered or left the closure, a drop (compaction, keep at most), a time
-//! bound passed (keep at least, expiry), or the state of an aspect its verdict waits on changed
-//! (liveness, a keep-at-most bound). Anything else (open, a membership or `/label` change, lost
-//! access, a forget, other inputs of the pass: keys, unsettled aspects, the home label's
-//! published things) judges everything. A commit or blob leaves the set only once its pass did
+//! bound passed (keep at least, expiry), the state of an aspect its verdict waits on changed
+//! (liveness, a keep-at-most bound), a role it reads changed (`membership_moved`), or it was
+//! judged while unsettled and that ended. Anything else (open, a change of the label actor's
+//! roster or own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
+//! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
 //! nothing for it and found nothing waiting (no send, delete or relay wait outstanding); so a
 //! pass over the set acts as a full pass would.
 
@@ -28,6 +29,12 @@ pub(crate) struct Touched {
     pub things: BTreeSet<Tid>,
     /// Blobs that arrived (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
+    /// Things whose roles changed (`Core::roles_moved`).
+    pub moved: BTreeSet<Tid>,
+    /// Actors that got or lost secrets of their own (the reader actors under them).
+    pub actors: BTreeSet<Tid>,
+    /// Held epochs may have changed (delete keys a waiting delete lacked).
+    pub keys: bool,
 }
 
 /// What the pass's verdicts depend on beyond single commits: a change judges everything.
@@ -40,8 +47,8 @@ pub(crate) struct Inputs {
     pub actor: Tid,
     pub published: BTreeSet<Tid>,
     pub may_rotate: bool,
-    /// Whether anything is unsettled, every aspect (`None`) is, every aspect is for holding.
-    pub unsettled: (bool, bool, bool),
+    /// The group's held epochs (wraps, unopened entries, rotation exceptions).
+    pub held: Option<osis_keys::ActorEpochs>,
 }
 
 impl Inputs {
@@ -59,6 +66,17 @@ pub(crate) struct Work {
     pub aspects: BTreeSet<(Tid, Ak)>,
     pub states: BTreeSet<(Tid, Ak)>,
     pub things: BTreeSet<Tid>,
+    pub moved: BTreeSet<Tid>,
+    pub actors: BTreeSet<Tid>,
+    pub keys: bool,
+    /// Commits whose delete waits for a delete key this node lacks: judged again when held
+    /// epochs may have changed.
+    pub keyless: BTreeSet<CommitId>,
+    /// Commits judged while nothing could be deleted (something unsettled) or nothing
+    /// established uncovered (an entry being fetched): judged again once that ends.
+    pub held_back: BTreeSet<CommitId>,
+    /// At the last pass: whether nothing was unsettled, and no entry was being fetched.
+    pub settled: Option<(bool, bool)>,
     /// Commits whose verdict changes at a time (raw-free corrected wall ms).
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
     /// Commits whose verdict waits on an aspect's state (liveness, a keep-at-most bound).
@@ -80,6 +98,8 @@ pub(crate) struct Work {
     pub unjudged: BTreeMap<CommitId, Tid>,
     /// Other nodes' heartbeats under the label.
     pub beats: BTreeMap<Tid, BTreeSet<(osis_core::Ts, CommitId)>>,
+    /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
+    pub cards: BTreeSet<CommitId>,
 }
 
 impl Default for Work {
@@ -97,6 +117,12 @@ impl Work {
             aspects: BTreeSet::new(),
             states: BTreeSet::new(),
             things: BTreeSet::new(),
+            moved: BTreeSet::new(),
+            actors: BTreeSet::new(),
+            keys: false,
+            keyless: BTreeSet::new(),
+            held_back: BTreeSet::new(),
+            settled: None,
             due: BTreeMap::new(),
             waits: BTreeMap::new(),
             links: BTreeMap::new(),
@@ -108,6 +134,7 @@ impl Work {
             unopened: BTreeSet::new(),
             unjudged: BTreeMap::new(),
             beats: BTreeMap::new(),
+            cards: BTreeSet::new(),
         }
     }
 
@@ -119,6 +146,9 @@ impl Work {
         self.aspects.extend(o.aspects);
         self.states.extend(o.states);
         self.things.extend(o.things);
+        self.moved.extend(o.moved);
+        self.actors.extend(o.actors);
+        self.keys |= o.keys;
     }
 }
 
@@ -150,6 +180,8 @@ pub(crate) struct Left {
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
     pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
+    pub keyless: BTreeSet<CommitId>,
+    pub held_back: BTreeSet<CommitId>,
 }
 
 impl Left {
@@ -169,6 +201,8 @@ pub(crate) struct Note {
     pub unsure: bool,
     pub at: Option<u64>,
     pub waits: Vec<(Tid, Ak)>,
+    /// A delete waits for a key this node may get with new epochs.
+    pub keyless: bool,
 }
 
 impl Note {
@@ -186,6 +220,9 @@ impl Note {
         }
         for (t, a) in std::mem::take(&mut self.waits) {
             left.wait(t, a, c);
+        }
+        if std::mem::take(&mut self.keyless) {
+            left.keyless.insert(c);
         }
     }
 }
@@ -218,10 +255,15 @@ impl SyncEngine {
         }
         w.commits.extend(self.commits_of(l, &w.blobs));
         let closure = self.engine.closure(g);
-        let full = w.full || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
+        // a change of the label's own actor's roster (every entry's author may stand anew on
+        // it) or of whether it has secrets of its own
+        let x = self.engine.group_actor(g);
+        let own = w.moved.contains(&x) || w.actors.contains(&x);
+        let full = w.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
         if full {
             self.go_full(g, l, w, &closure);
         } else {
+            self.membership_moved(g, l, w, &closure);
             w.things.extend(closure.symmetric_difference(&w.closure).copied());
             // a snapshot changes coverage of its aspects; a node's newer card write makes its
             // older card stale (spec/permissions.md §4)
@@ -247,6 +289,61 @@ impl SyncEngine {
         }
         w.closure = closure;
         full
+    }
+
+    /// What membership changes that leave the actor of `g` alone move under its label `l`
+    /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
+    /// and of the `/label`s its home label publishes, whose roles changed (perm's components:
+    /// the target's reach, or a component evaluated anew) or whose owner chain holds a thing
+    /// whose secrets or keys a write changed (reader actors, delete keys); the label's commits
+    /// on other things whose roles changed (a superset's foreign deltas); other nodes' cards
+    /// (their author's departure); deletes waiting for a key. A label they reach takes its
+    /// roster horizon again.
+    fn membership_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
+        if std::mem::take(&mut w.keys) {
+            w.commits.extend(std::mem::take(&mut w.keyless));
+        }
+        let moved = std::mem::take(&mut w.moved);
+        let actors = std::mem::take(&mut w.actors);
+        if moved.is_empty() && actors.is_empty() {
+            return;
+        }
+        let published = self.engine.published_under(g);
+        let core = &self.engine.core;
+        let under = |t: &Tid| {
+            let mut cur = *t;
+            for _ in 0..=osis_core::format::MAX_OWNER_DEPTH {
+                if actors.contains(&cur) {
+                    return true;
+                }
+                match core.created(&cur) {
+                    Some(osis_core::CreationRecord::Thing { owner, .. }) => cur = *owner,
+                    _ => break,
+                }
+            }
+            false
+        };
+        let mut hit = false;
+        for t in closure.iter().chain(&published) {
+            if moved.contains(t) || !actors.is_empty() && under(t) {
+                w.things.insert(*t);
+                hit = true;
+            }
+        }
+        for t in moved.iter().filter(|t| !closure.contains(t) && !published.contains(t)) {
+            for c in self.commits_on_thing(t) {
+                if self.state.entries_of(l, &c).next().is_some() {
+                    w.commits.insert(c);
+                    hit = true;
+                }
+            }
+        }
+        if !moved.is_empty() {
+            w.commits.extend(w.cards.iter().copied());
+        }
+        if hit {
+            w.until = self.roster_horizon(closure, g);
+        }
     }
 
     /// The commits of the entries among `bs` under `l` (a blob touched before it opened).
@@ -304,6 +401,11 @@ impl SyncEngine {
         w.waits.clear();
         w.links.clear();
         w.due.clear();
+        w.moved.clear();
+        w.actors.clear();
+        w.keys = false;
+        w.keyless.clear();
+        w.held_back.clear();
         self.rebuild(g, l, w);
         w.until = self.roster_horizon(closure, g);
     }
@@ -320,6 +422,7 @@ impl SyncEngine {
         w.unopened.clear();
         w.unjudged.clear();
         w.beats.clear();
+        w.cards.clear();
         let cs: BTreeSet<CommitId> = self.state.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect();
         let bs: BTreeSet<BlobId> = self.state.of_kind(l, 0).into_iter().collect();
         self.aggregate(g, l, w, &cs, &bs);
@@ -349,6 +452,11 @@ impl SyncEngine {
                 w.unjudged.insert(*c, h.author);
             } else {
                 w.unjudged.remove(c);
+            }
+            if h.author != me && !blobs.is_empty() && h.aspects.iter().any(|x| x.tid == h.author && matches!(x.ak.as_str(), "/node" | "/reach" | "/keys")) {
+                w.cards.insert(*c);
+            } else {
+                w.cards.remove(c);
             }
             if h.author != me && h.aspects.iter().any(|x| x.ak.as_str() == "/seen" && x.tid == h.author) {
                 let set = w.beats.entry(h.author).or_default();

@@ -1243,3 +1243,45 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "the admin's hint is used");
     assert!(h.keys.iter().all(|k| k.key != ck.to_bytes()), "no forged hint is used");
 }
+
+// spec/sync.md §3, §6; spec/permissions.md §4: a membership change re-judges only the labels
+// whose verdicts can read it: an edge on an actor no closure reaches judges no body and no
+// pass judges everything; one on a label's group judges that label in full, not the other.
+#[test]
+fn membership_change_judges_only_its_labels_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let addr = net.address(sv);
+    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
+    let g1 = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
+    for g in [g0, g1] {
+        for i in 0..3 {
+            let t = net.item(a, g, g, &format!("t{i}"));
+            net.write(a, t, "v");
+        }
+    }
+    net.run();
+    net.pair(c, a);
+    let (me, other) = (net.tid(a), net.tid(c));
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let u = e.new_thing(&mut m, me);
+    m.set(u, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    net.advance(61_000);
+    let s0 = net.sync(a).pass_stats();
+    set_edge(net.engine(a), u, other, Role::Read);
+    net.run();
+    let s1 = net.sync(a).pass_stats();
+    assert!(s1.passes > s0.passes, "the change was looked at");
+    assert_eq!((s1.full - s0.full, s1.bodies - s0.bodies), (0, 0), "an unrelated edge judges nothing in full");
+    net.advance(61_000);
+    let s2 = net.sync(a).pass_stats();
+    set_edge(net.engine(a), g0, other, Role::Read);
+    net.run();
+    let s3 = net.sync(a).pass_stats();
+    assert_eq!(s3.full - s2.full, 1, "only g0's label judges everything");
+}

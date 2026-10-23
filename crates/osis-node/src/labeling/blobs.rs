@@ -204,7 +204,7 @@ impl Engine {
 
     /// Labeled groups whose nearest labeled owner-chain actor is `g` (its home label publishes
     /// their `/label`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
-    fn published_under(&self, g: &Tid) -> std::collections::BTreeSet<Tid> {
+    pub(crate) fn published_under(&self, g: &Tid) -> std::collections::BTreeSet<Tid> {
         let mut out = std::collections::BTreeSet::new();
         if !self.core.own_keys.contains(g) {
             return out;
