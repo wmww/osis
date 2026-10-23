@@ -217,6 +217,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let pend = super::keys::before_join(tx, &h, &parts, &valid)?;
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut touched = Touched::default();
+    let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -225,6 +226,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         if let Some(fr) = fr {
             note_snapshot(tx.core, &a.tid, &a.ak, h.ts, &id, fr);
             validity::note_carried(tx.core, &a.tid, &a.ak, &id, &f);
+            if validity::carries_invalid(tx.core, &a.tid, &a.ak, &id) {
+                unmerge.insert((a.tid, a.ak.clone()));
+            }
         }
         if !valid.get(ai).copied().unwrap_or(false) {
             // others' writes already joined may sit under its creations
@@ -250,6 +254,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         let _s = crate::costs::span("apply: put_commit");
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
+    unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
     {
         let _s = crate::costs::span("apply: retention");
         crate::retention::on_apply(tx, &id, &mut changed)?;
@@ -281,6 +286,18 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     for thing in rosters {
         tx.core.events.queue(Event::Roster { thing });
+    }
+    Ok(())
+}
+
+/// Rebuilds the aspects a snapshot just held carries invalid writes on (`carries_invalid`),
+/// once the commit is stored so its own body joins too.
+fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+    for (tid, ak) in unmerge {
+        rebuild(tx, tid, ak)?;
+        crate::retention::recheck_at_most(tx, tid, ak)?;
+        changed.insert((*tid, ak.clone()));
+        touched.whole(tid, ak);
     }
     Ok(())
 }
@@ -340,12 +357,16 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let mut changed = BTreeSet::new();
     let mut touched = Touched::default();
+    let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);
         if let Some(fr) = fr {
             note_snapshot(tx.core, &a.tid, &a.ak, h.ts, id, fr);
             validity::note_carried(tx.core, &a.tid, &a.ak, id, &f);
+            if validity::carries_invalid(tx.core, &a.tid, &a.ak, id) {
+                unmerge.insert((a.tid, a.ak.clone()));
+            }
         }
         if !meta.valid.get(ai).copied().unwrap_or(false) {
             continue;
@@ -364,6 +385,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
+    unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
     if edges && let Some(all) = &all {
         tx.core.held.remove(id);
         validity::add_membership(tx, &h, id, all)?;

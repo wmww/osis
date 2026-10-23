@@ -811,6 +811,14 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
     true
 }
 
+/// Whether snapshot `snap` carries writes on `(tid, ak)` that are invalid here: they may
+/// already sit in the state, joined from other bodies (another's write nested under an entry
+/// creation repeats its key), so the aspect is rebuilt (un-merge is a function of the held set,
+/// spec/crdt.md §4.6).
+pub(crate) fn carries_invalid(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> bool {
+    core.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
+}
+
 /// Drops the carried writes a commit now held owns (judged with it): its counters (node form),
 /// its whole source (commit form).
 pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
