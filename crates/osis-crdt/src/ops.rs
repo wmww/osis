@@ -561,12 +561,9 @@ pub(crate) fn joined(a: Option<&Fragment>, b: Option<&Fragment>, e: Option<&Stam
     let mut out = a.cloned();
     #[cfg(debug_assertions)]
     if let (Some(x), None) = (&out, e) {
-        // (a decoded snapshot lacks deleted embedded chars the prune restores, §3.3 rule 5)
-        let (mut p, mut q) = (x.clone(), x.clone());
+        let mut p = x.clone();
         p.prune(None, &mut Changes::new());
-        p.drop_deleted_chars();
-        q.drop_deleted_chars();
-        debug_assert!(p == q, "joined: state not pruned");
+        debug_assert!(p == *x, "joined: state not pruned");
     }
     if let (Some(x), Some(_)) = (&mut out, e) {
         x.prune(e, &mut ch);

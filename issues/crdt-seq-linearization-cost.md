@@ -13,4 +13,4 @@ Remains:
 - `Batch` still copies the position's state where its records do not line up with the state's (a write splitting a range record) or a reset of the batch lies above the position.
 - A writer-side batch of thousands of moves on one text takes seconds (4000 moves: 4-8 s): each op clones the batch's net effect so far, and `Layered::present` clones the layer's records per op.
 - The dot map is built eagerly with every rebuild (O(n) Dot clones, ~1.5 ms at 10^5, outside the work budget, like the pass itself), and its chunks split but never merge (at most n/64 chunks).
-- Texts at a `Slots` position: a join that changes the register or raises the position's reset (an old app's save, a replace) re-embeds and prunes every member (O(n), drops the cache); so does a member arriving whole.
+- Texts at a `Slots` position: a join that changes the register or raises the position's reset (an old app's save, a replace) re-embeds and prunes every member (O(n), drops the cache).

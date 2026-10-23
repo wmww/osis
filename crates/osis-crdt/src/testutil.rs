@@ -151,7 +151,9 @@ pub fn check_lin(f: &Fragment) {
         Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => all(&mut elems.values().filter_map(|e| e.frag.as_deref())),
         Fragment::Slots(x) => {
             // a lone member is chosen without a scan (§7 Read): it beats the register
-            if let (Some(r), [m]) = (&x.reg, x.members.values().collect::<Vec<_>>().as_slice()) {
+            if let (Some(r), [m]) = (&x.reg, x.members.values().collect::<Vec<_>>().as_slice())
+                && !big(m)
+            {
                 assert!(Fragment::Register(r.clone()).all_max() <= m.all_max(), "lone member chosen");
             }
             all(&mut x.members.values())

@@ -105,6 +105,12 @@ pub fn random_op(r: &mut Rng, w: &mut Writer, ty: &Ty, state: Option<&Frag>) -> 
                     }
                     let from = r.below(dead.len());
                     let to = (from + 1 + r.below(3)).min(dead.len());
+                    // now and then without content where the register's embedding restores it (embedded
+                    // chars, §7), as a writer bootstrapped from a snapshot may send
+                    let derived = dead[from..to].iter().all(|d| matches!(d.source, crate::stamp::Source::Derived(_)));
+                    if derived && r.chance(1, 2) {
+                        return Some(ops::seq_undelete(w, &Frag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() }, &dead[from..to]));
+                    }
                     Some(ops::seq_undelete(w, st, &dead[from..to]))
                 }
                 0 | 1 => {

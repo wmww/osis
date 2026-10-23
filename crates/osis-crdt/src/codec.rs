@@ -506,7 +506,33 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Resul
     cx.depth += 1;
     let r = decode_fragment_at(cx, v, may_reset);
     cx.depth -= 1;
-    r
+    let f = r?;
+    if !derived_ok(&f) {
+        return Err(Error::Malformed("write with a Derived stamp"));
+    }
+    Ok(f)
+}
+
+/// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries
+/// a `Derived` stamp; checks the writes of `f`'s own level (nested fragments check their own).
+fn derived_ok(f: &Fragment) -> bool {
+    let ok = |s: Option<&Stamp>| !s.is_some_and(|s| s.dot.src.is_derived());
+    let meta = |m: &Meta| ok(m.reset.as_ref()) && ok(m.w.as_ref());
+    match f {
+        Fragment::Register(r) => ok(r.reset.as_ref()) && ok(r.write.as_ref().map(|w| &w.stamp)),
+        Fragment::Bag(Bag { meta: m, elems, .. }) | Fragment::Set(Set { meta: m, elems }) => meta(m) && elems.values().all(|e| ok(e.reset.as_ref())),
+        Fragment::Struct(x) => meta(&x.meta),
+        Fragment::Enum(x) => meta(&x.meta) && ok(x.case.as_ref().map(|c| &c.stamp)),
+        Fragment::Map(x) => meta(&x.meta) && x.entries.values().all(|e| ok(e.reset.as_ref()) && ok(e.created.as_ref())),
+        Fragment::Seq(x) => {
+            meta(&x.meta)
+                && x.elems().values().all(|e| {
+                    let created = e.created.as_ref().map(|c| &c.0);
+                    ok(e.deleted.as_ref().map(|d| &d.0)) && (x.text || ok(created)) && e.pos.iter().all(|(p, _)| ok(Some(p)) || Some(p) == created)
+                })
+        }
+        Fragment::Slots(_) => true,
+    }
 }
 
 fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
@@ -618,14 +644,15 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             // member holds the register's embedding, none is empty or adds nothing to it, nothing
             // lies below the position's one reset; the chars of deleted embedded elements the
             // embedding restores are never carried, rule 5), so readers of an unjoined fragment
-            // see what a join would
-            let mut pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
-            pruned.drop_deleted_chars();
-            let f = Fragment::Slots(Slots { reg, members });
-            if pruned != f {
+            // see what a join would; the pruned form is returned, so those chars are held again
+            // (a later content-less undelete of one reads it, §4.6)
+            let pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
+            let mut carried = pruned.clone();
+            carried.drop_deleted_chars();
+            if carried != Fragment::Slots(Slots { reg, members }) {
                 return Err(Error::Malformed("slots not canonical: pruning changes it"));
             }
-            f
+            pruned
         }
         _ => return Err(Error::Malformed("fragment arity")),
     })

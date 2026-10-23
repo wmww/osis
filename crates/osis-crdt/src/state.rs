@@ -440,24 +440,43 @@ impl Fragment {
         }
     }
 
-    /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
-    pub(crate) fn drop_deleted_chars(&mut self) {
+    /// Calls `f` on every sequence at any depth, outermost first; `f` gets the records (the
+    /// cached placement is dropped).
+    fn seqs_mut(&mut self, f: &mut dyn FnMut(&mut Seq)) {
         match self {
             Fragment::Seq(s) => {
+                f(s);
                 for e in s.elems_mut().values_mut() {
-                    match &mut e.content {
-                        SeqContent::Char(_) if e.deleted.as_ref().is_some_and(|d| d.1) => e.content = SeqContent::None,
-                        SeqContent::Frag(x) => x.drop_deleted_chars(),
-                        _ => {}
+                    if let SeqContent::Frag(x) = &mut e.content {
+                        x.seqs_mut(f);
                     }
                 }
             }
-            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(Fragment::drop_deleted_chars),
-            Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(Fragment::drop_deleted_chars),
-            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(Fragment::drop_deleted_chars),
-            Fragment::Slots(s) => s.members.values_mut().for_each(Fragment::drop_deleted_chars),
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.values_mut().for_each(|x| x.seqs_mut(f)),
+            Fragment::Map(m) => m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
+            Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => elems.values_mut().filter_map(|e| e.frag.as_deref_mut()).for_each(|x| x.seqs_mut(f)),
+            Fragment::Slots(s) => s.members.values_mut().for_each(|x| x.seqs_mut(f)),
             Fragment::Register(_) => {}
         }
+    }
+
+    /// Drops the chars of deleted text elements at any depth: what the wire carries (§3.3 rule 5).
+    pub(crate) fn drop_deleted_chars(&mut self) {
+        self.seqs_mut(&mut |s| {
+            for e in s.elems_mut().values_mut() {
+                if matches!(e.content, SeqContent::Char(_)) && e.deleted.as_ref().is_some_and(|d| d.1) {
+                    e.content = SeqContent::None;
+                }
+            }
+        });
+    }
+
+    /// Drops every cached placement (checks that must not build or follow one).
+    #[cfg(debug_assertions)]
+    pub(crate) fn drop_caches(&mut self) {
+        self.seqs_mut(&mut |s| {
+            s.elems_mut();
+        });
     }
 
     /// Own reset; for `Slots` the greatest member reset (§7).
@@ -737,23 +756,22 @@ fn prune_case(c: &mut Option<CaseWrite>, e: Option<&Stamp>, ch: &mut Changes) {
 /// pruned.
 fn join_slots(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut Changes) -> Fragment {
     #[cfg(debug_assertions)]
-    let whole = matches!(a, Fragment::Slots(_)).then(|| {
-        // (without the cached placements, so the check never builds one)
-        let mut a = a.clone();
-        a.drop_deleted_chars();
-        let mut f = join_slots_whole(a, b.clone(), e_parent, &mut Changes::new());
-        f.drop_deleted_chars();
-        f
-    });
+    let whole = matches!(a, Fragment::Slots(_)).then(|| join_slots_whole(uncached(&a), b.clone(), e_parent, &mut Changes::new()));
     let Fragment::Slots(sa) = a else { return join_slots_whole(a, b, e_parent, ch) };
     let Some(e) = kept_reset(&sa, &b, e_parent) else { return join_slots_whole(Fragment::Slots(sa), b, e_parent, ch) };
     let f = join_slots_kept(sa, b, e.as_ref(), ch);
     #[cfg(debug_assertions)]
     if let Some(whole) = whole {
-        let mut g = f.clone();
-        g.drop_deleted_chars();
-        debug_assert!(g == whole, "incremental slots join differs from a whole pass");
+        debug_assert!(f == whole, "incremental slots join differs from a whole pass");
     }
+    f
+}
+
+/// A copy of `f` without cached placements at any depth (a check that must never build one).
+#[cfg(debug_assertions)]
+fn uncached(f: &Fragment) -> Fragment {
+    let mut f = f.clone();
+    f.drop_caches();
     f
 }
 

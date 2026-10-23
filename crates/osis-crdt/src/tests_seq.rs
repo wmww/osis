@@ -367,10 +367,12 @@ fn seq_differential_large_spec_5_7() {
     }
 }
 
-/// A text state with the chars of deleted elements dropped: what a snapshot carries (§3.3 rule 5).
+/// What decoding a snapshot of `f` gives: the chars of deleted elements dropped (§3.3 rule 5),
+/// those of embedded ones put back by the decoder's prune of a `Slots` (§7).
 fn as_carried(f: &Fragment) -> Fragment {
     let mut f = f.clone();
     f.drop_deleted_chars();
+    f.prune(None, &mut crate::Changes::new());
     f
 }
 
@@ -431,6 +433,47 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
     let mut j = Fragment::default();
     j.join(back);
     assert_eq!(j, s.fragment);
+}
+
+/// §3.3 rules 5 and 7, §4.6, §7: a node bootstrapped from a snapshot of an upgraded text holds a
+/// deleted embedded char again (the decoder returns the re-embedded position), so a content-less
+/// undelete of it (as a writer bootstrapped without the char sends) reads like on a node with the
+/// full history, and the state re-encodes and decodes (reviewer's probe).
+#[test]
+fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
+    use crdt_model::value::Value as MValue;
+    let mut m = None;
+    let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+    mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
+    let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+    mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
+    let mut w = MWriter::new(MSource::node(3), 102 << 16, 1);
+    let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
+    mapply(&mut m, d);
+    let full = frag(m.as_ref().unwrap());
+    let snap = |f: &Fragment| {
+        let s = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+        let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+        decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment
+    };
+    let mut boot = snap(&full);
+    assert_eq!(boot, full, "the embedded char is held again");
+    // the deleted embedded char, undeleted without content
+    let Some(MFrag::Seq { elems, .. }) = m.as_ref().and_then(|x| x.slot(9)) else { panic!() };
+    let dead: Vec<_> = elems.iter().filter(|(_, e)| e.is_deleted(true)).map(|(d, _)| d.clone()).collect();
+    assert_eq!(dead.len(), 1);
+    let mut w = MWriter::new(MSource::node(4), 103 << 16, 1);
+    let empty = MFrag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() };
+    let u = mops::seq_undelete(&mut w, &empty, &dead);
+    let cx = writer_cx(&w);
+    let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&u) }, &cx, None).unwrap();
+    let u = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+    let mut whole = full.clone();
+    whole.join(u.clone());
+    boot.join(u);
+    assert_eq!(whole.read(), Some(Value::Str("ab".into())));
+    assert_eq!(boot.read(), whole.read());
+    assert_eq!(snap(&boot).read(), whole.read());
 }
 
 /// §7 (`seq_lin`): joins at a `Slots` position that leave its register and effective reset as
