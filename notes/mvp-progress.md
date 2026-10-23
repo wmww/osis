@@ -2,7 +2,7 @@
 > Summary: Final state of the plans/mvp_meta.md run: what works to spec (with the tests that prove it), deviations and what justifies each, open issues by tag, spec edits made during the run (by file), owner decisions applied, suggested next plans, and how to resume.
 
 ## Environment
-- 4 cores, 30 GB RAM, about 35 GB of free disk: a workspace target dir is about 17 GB; run at most ~3 compiling agents at once, each with its own `CARGO_TARGET_DIR=$HOME/osis-targets/<worktree>` and `CARGO_INCREMENTAL=0` (a shared target dir is unsafe: worktrees reuse each other's path-crate artifacts), cleaned before returning.
+- 4 cores, 30 GB RAM, about 35 GB of free disk: a workspace target dir is about 17 GB; run at most ~3 compiling agents at once, each worktree with its own in-tree `target/`, seeded at `git worktree add` (notes/testing.md, Build hygiene).
 - Tooling: Rust stable 1.98, nightly (cargo-fuzz), cargo-deny 0.20, cargo-fuzz 0.13, cargo-nextest 0.9, Java 21 (TLC).
 - All waves (0–6) merged on `main`. Sign-off verification (notes/testing.md, Sign-off run): tier 1 green (944 passed, 152 s), clippy, deny, policy, spec map and vectors clean. Tier 2, the 500-seed sim sweep and TLC `small` were **not run**: the session was stopped for low memory during the release build. Run them next: `cargo test --release --workspace -- --ignored --skip sweep`, `cargo run --release -p osis-sim --bin sim-sweep -- --seeds 500 --budget-secs 3600`, `models/tla/run.sh small`. Expected from the last runs: tier 2 fails only chat `costs_join_message_removal` and osis-store `shape_reduced_arity` (their issues); sweeps green; TLC fails only `MC_drop_refresh` (expected).
 
