@@ -1,7 +1,7 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-server
 //! `Hub`s over in-memory queues under one `ManualClock`. No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The example apps
-//! (examples/*) and their end-to-end tests drive it; crates/osis/tests/common/world.rs is the
+//! (examples/*) and their end-to-end tests drive it; crates/osis/tests/it/common/world.rs is the
 //! osis crate's own copy (it cannot depend on this crate).
 
 use osis::node::sync::{Action, ConnId, Event};

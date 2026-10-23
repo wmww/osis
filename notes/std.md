@@ -15,13 +15,13 @@ Four kinds, three types:
 - **Civil days**, `date`: a birthday, a holiday, an all-day event. Days since 1970-01-01, proleptic Gregorian. Never a timestamp: "March 3" starts at a different instant in every zone, and storing midnight UTC shifts all-day events when the viewer travels.
 - **Wall-clock times**, `localtime` with an IANA zone name (or a fixed `+HH:MM` offset for imports): how people mean calendar events. Resolved to an instant at read time under the reader's current zone rules, so a rule change after the write moves the instant and keeps the wall time, and a weekly 9:00 stays 9:00 across daylight-saving changes. Gap: resolve forward by the gap. Overlap: the earlier instant. UTC is zone `UTC`; a missing zone is a floating time (7:00 wherever I am), allowed explicitly.
 - **Durations**, `duration`: exact milliseconds. Calendar intervals ("every month") are recurrence, not durations.
-- Dates and local times are **scalars**, not structs: a struct of year, month, day, hour merges field by field, so two people moving one meeting concurrently could get a day from one and an hour from the other. A scalar is a register and merges whole. Conversion to civil fields is a dozen lines (tests/event.rs `date`).
+- Dates and local times are **scalars**, not structs: a struct of year, month, day, hour merges field by field, so two people moving one meeting concurrently could get a day from one and an hour from the other. A scalar is a register and merges whole. Conversion to civil fields is a dozen lines (tests/it/event.rs `date`).
 - Partial dates (a birthday without a year) are a contact detail (`annual`), not a core type.
 
 ## Contact (schemas/contact.osis)
 - Many aspects, so a thing with only emails is a contact; display name `/name`, notes `/body`, groups are tags.
 - A **profile** is the same aspects on the person's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the person; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(person)` gives the profile a card import brought.
-- A contact of mine that is an osis user carries `/contact/profile`; my aspects override the profile's values field by field (tests/contact.rs `view`). A contact without it is just my data.
+- A contact of mine that is an osis user carries `/contact/profile`; my aspects override the profile's values field by field (tests/it/contact.rs `view`). A contact without it is just my data.
 - Entries are keyed maps (`emails`, `phones`, `urls` by value; `addresses`, `dates` by label), not lists: concurrent additions merge and one entry's label is editable alone. `labeled { label, pref }` marks the preferred one of a kind.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
 
@@ -32,10 +32,10 @@ Four kinds, three types:
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
 ## Tests (`cargo test -p osis-std`; tier 2 `--ignored`)
-- tests/notes.rs: two devices, offline edits merging, undo across devices; a notebook (a tag owning its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
-- tests/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, tag-owned cards with demotion and invites, ownership transfer as a copy).
-- tests/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
-- tests/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.
+- tests/it/notes.rs: two devices, offline edits merging, undo across devices; a notebook (a tag owning its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
+- tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, tag-owned cards with demotion and invites, ownership transfer as a copy).
+- tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
+- tests/it/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.
 - Tier-1 time (idle 4 cores, debug): about 10 s; persons and introductions cost about 1 s each, so the tags cases over 10 s are `#[ignore = "tier 2"]`.
 
 ## Open

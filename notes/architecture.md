@@ -106,7 +106,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - `hash`: `hash`, `keyed_hash`, `derive_key`, incremental `Hasher` (keyed, XOF). `kdf` and every purpose string live in osis-crypto.
 - `hex`: `encode` (lower case), `decode` (whitespace ignored, `None` on bad input): schema locks, vectors, test constants. `base64url`: unpadded `encode`, strict `decode` (`None` on padding, other characters or nonzero trailing bits): the Tid text form and osis-label's address, link and card text forms.
 - Errors: `ErrorClass::{BadInput, Parked, Local}`, trait `Classified { fn class(&self) -> ErrorClass }`, `impl_error!(Enum { Variant => ("fmt", args), .. })` or `impl_error!(Struct, "msg")`.
-- Integration test files start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`: clippy.toml's test exemptions cover only `#[test]` functions and `#[cfg(test)]` modules.
+- Integration tests: one binary per crate, `tests/it/main.rs` declaring a module per area (`tests/it/<area>.rs`; helpers `tests/it/common/`), never a new top-level `tests/*.rs` (each is its own ~60 MB executable linking every dependency). main.rs and each module start with `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]`: clippy.toml's test exemptions cover only `#[test]` functions and `#[cfg(test)]` modules. A module needing a feature gets `#[cfg(feature = "...")]` on its `mod` line.
 
 ## 8. osis-schema public surface
 - Types (spec/data-model.md §3): `Type` (mirrors §10 `type_expr`: scalars, `Text`, `List`/`Set`/`Map`, `Struct(StructType)`, `Enum(EnumType)`, `Counter`/`Max`/`Min`, `Named(name, args)` incl. `option`/`markdown`/`timestamp`/`duration`, `Param`), `Field`, `Case`.
