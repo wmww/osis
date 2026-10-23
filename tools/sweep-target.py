@@ -13,7 +13,7 @@ other canonical invocation shapes with --also, e.g.
 incremental/ can't be liveness-matched: keeps the newest 2 dirs per crate if
 touched in the last 7 days (--drop-incremental drops it all).
 
-Usage: sweep-target.py [--dry-run] [--drop-incremental] [--also "ARGS"]...
+Usage: sweep-target.py [--dry-run] [--drop-incremental] [--no-defaults] [--also "ARGS"]...
 """
 import argparse, fcntl, json, re, shlex, shutil, subprocess, sys, time
 from pathlib import Path
@@ -46,16 +46,19 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--drop-incremental", action="store_true")
     ap.add_argument("--also", action="append", default=[], metavar="ARGS")
+    ap.add_argument("--no-defaults", action="store_true", help="only the --also shapes")
     a = ap.parse_args()
     m = json.loads(subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"],
                                   capture_output=True, text=True, check=True).stdout)
     root = Path(m.get("build_directory") or m["target_directory"])
-    shapes = ["build --workspace --all-targets"]
-    if (root / "release").is_dir():
-        shapes.append("build --workspace --release")
+    shapes = [] if a.no_defaults else ["build --workspace --all-targets"]
+    if not a.no_defaults and (root / "release").is_dir():
+        shapes.append("build --workspace --all-targets --release")  # covers `cargo test --release` binaries
     live, profiles, inodes, names = set(), set(), set(), set()
     for shape in shapes + a.also:
-        p = subprocess.run(["cargo", *shlex.split(shape), "--message-format=json"],
+        words = shlex.split(shape)
+        cut = words.index("--") if "--" in words else len(words)  # keep `-- args` last
+        p = subprocess.run(["cargo", *words[:cut], "--message-format=json", *words[cut:]],
                            capture_output=True, text=True)
         if p.returncode:
             sys.exit(f"sweep-target: `cargo {shape}` failed, not sweeping:\n{p.stderr[-2000:]}")

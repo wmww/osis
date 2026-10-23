@@ -3,9 +3,10 @@
 [build]
 incremental = false
 
-# Tier-2 networking tests (QUIC, iroh, LAN, relay): the one feature set they are run with.
+# Networking code (QUIC, iroh, LAN, relay): the one feature set its tier-2 tests and lints use.
 [alias]
 test-net = "test --release --workspace --features osis/lan,osis-node/quic,osis-node/relay"
+clippy-net = "clippy --release --workspace --all-targets --features osis/lan,osis-node/quic,osis-node/relay"
 
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]
