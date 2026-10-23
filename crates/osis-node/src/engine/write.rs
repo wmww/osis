@@ -410,7 +410,17 @@ impl Engine {
     }
 }
 
-pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
+    let mut placed = Vec::new();
+    let r = commit_placed(tx, m, &mut placed);
+    for (tid, ak) in placed {
+        tx.end_edits(&tid, &ak);
+    }
+    r
+}
+
+/// `commit_in`, noting in `placed` the aspects whose op `Tx::place_op` resolved.
+fn commit_placed(tx: &mut Tx<'_>, mut m: Mutation, placed: &mut Vec<(Tid, Ak)>) -> Result<Option<CommitId>> {
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
@@ -478,7 +488,16 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Some(f) => crate::engine::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
             None => crate::engine::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
+        // a local insert or delete by index into a paged sequence: through its stored placement
+        let place = match (&paths, am.ops.as_slice()) {
+            (None, [op]) => tx.place_op(&tid, &ak, op)?,
+            _ => None,
+        };
+        if place.is_some() {
+            placed.push((tid, ak.clone()));
+        }
         match paths {
+            _ if place.is_some() => {}
             Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
             None => tx.load(&tid, &ak)?,
         }
@@ -489,6 +508,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
+        }
+        if let (Some(p), Some(op)) = (place, am.ops.first_mut()) {
+            crate::engine::pages::resolve_op(op, p);
         }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,

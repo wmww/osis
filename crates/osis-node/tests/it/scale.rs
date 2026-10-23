@@ -332,8 +332,10 @@ fn text_undo_and_first_access_cost() {
 
 // spec/crdt.md §5.7 (ops resolve by index against the placement), §6, §8; spec/requirements.md,
 // Scale (a change costs O(change)): a 10^5-char text, each step in a new session: a read of 100
-// chars at a random index, one local insert, one received insert, then two reads (the first lays
-// the invalidated placement out anew); pages loaded (`state page load` spans) and time.
+// chars at a random index, one local insert (through the stored placement, §6.1), one received
+// insert, then two reads (the first lays the placement the join invalidated out anew); then local
+// inserts and deletes by index at random places; pages loaded and written (`state page load`,
+// `state page write` spans), placement rows written, store bytes and time.
 #[test]
 #[ignore = "tier 2"]
 fn text_range_and_edit_cost() {
@@ -397,6 +399,41 @@ fn text_range_and_edit_cost() {
         want.insert_str(*i, x);
     }
     assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Str(want)));
+    // local inserts and deletes by index at random places, each in a new session (the typing hot
+    // path): pages loaded, placement rows written, store bytes written
+    let (mut e, _, bytes, reopen) = engine_reopenable(8);
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &TEXT, &Value::Str(text.clone())).unwrap();
+    e.commit(m).unwrap().unwrap();
+    let mut want: Vec<char> = text.chars().collect();
+    for step in 0..8 {
+        drop(e);
+        e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
+        osis_node::costs::take();
+        let w0 = bytes.load(Ordering::Relaxed);
+        let t0 = Instant::now();
+        let r = osis_crypto::RngCore::next_u64(&mut rng) as usize;
+        let (name, op) = if step % 2 == 0 {
+            let at = r % want.len();
+            want.splice(at..at, "XYZ".chars());
+            ("insert of 3 chars", Op::Insert { at, items: vec![Value::Str("XYZ".into())] })
+        } else {
+            let at = r % (want.len() - 5);
+            want.drain(at..at + 5);
+            ("delete of 5 chars", Op::Delete { at, len: 5 })
+        };
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: vec![], op }).unwrap();
+        e.commit(m).unwrap().unwrap();
+        let c = osis_node::costs::take();
+        let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+        println!("text {n} chars, new session: local {name} {:?}, {} pages loaded, {} pages and {} placement rows written, store writes {} B", t0.elapsed(), count("state page load"), count("state page write"), count("placement block write") + count("placement row write"), bytes.load(Ordering::Relaxed) - w0);
+    }
+    drop(e);
+    let mut e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
+    assert_eq!(e.get(&t, &a).unwrap(), Some(Value::Str(want.into_iter().collect())));
 }
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node

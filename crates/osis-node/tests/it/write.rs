@@ -479,3 +479,83 @@ fn large_values_by_value_spec_crdt_5_5() {
         assert_eq!(links(&p.engine.get(&t, &a).unwrap().unwrap()), 0, "n {n}");
     }
 }
+
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "schema 0x7e577e577e577e577e577e577e577e50; revision 1; aspect /w/text: text;\n");
+const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/text", &TEXTS);
+
+// spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6
+// (undo), §8: local inserts and deletes by index into a paged text, each in a new session, load a
+// few pages (resolved through the stored placement); undos of them, also in new sessions,
+// restore the text; reads by index and whole reads agree with a plain-string model throughout,
+// and edits by index go on after the undos.
+#[test]
+fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
+    let mut p = peer(9);
+    let me = p.engine.tid();
+    let a = ak("/w/text");
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    // 4-byte chars: the state is above PAGE_TARGET, so the text is paged
+    let mut model: Vec<char> = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let mut done = Vec::new();
+    let mut session = 100;
+    let mut restart = |p: &mut Peer| {
+        session += 1;
+        p.restart(session).unwrap();
+        osis_node::costs::take();
+    };
+    for step in 0..12 {
+        restart(&mut p);
+        let before = model.clone();
+        let op = if step % 3 == 2 {
+            let at = r(model.len() - 10);
+            let len = 1 + r(8);
+            model.drain(at..at + len);
+            Op::Delete { at, len }
+        } else {
+            let at = r(model.len() + 1);
+            model.splice(at..at, "ab".chars());
+            Op::Insert { at, items: vec![Value::Str("ab".into())] }
+        };
+        let mut m = Mutation::new();
+        m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
+        done.push((p.engine.commit(m).unwrap().unwrap(), before));
+        let pages = osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        assert!(pages <= 4, "step {step}: {pages} pages loaded");
+        restart(&mut p);
+        let lo = r(model.len() - 50);
+        assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "step {step}");
+    }
+    // undo the last edits (a delete, two inserts), newest first, each in a new session
+    for (id, before) in done.into_iter().rev().take(3) {
+        restart(&mut p);
+        p.engine.undo(&id).unwrap().unwrap();
+        model = before;
+    }
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
+    // edits by index go on: a read by index lays the placement out again, then through it
+    for step in 0..3 {
+        restart(&mut p);
+        assert_eq!(p.engine.get_range(&t, &a, &[], 0..10).unwrap(), Some(Value::Str(model[..10].iter().collect())));
+        restart(&mut p);
+        let at = r(model.len());
+        model.splice(at..at, "c".chars());
+        let mut m = Mutation::new();
+        m.op(t, &TEXT_AK, PathOp { path: vec![], op: Op::Insert { at, items: vec![Value::Str("c".into())] } }).unwrap();
+        p.engine.commit(m).unwrap().unwrap();
+        let pages = osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        assert!(pages <= 4, "after undo, step {step}: {pages} pages loaded");
+    }
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
+}
