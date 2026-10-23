@@ -65,7 +65,10 @@ impl Timeline {
     /// from the change at `p`, `None` never.
     fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let key = (*x, *thing, required);
+        // debug builds compare every answer, memoized ones (some carried over `extend`) too
         if let Some(v) = self.memo.first_held.lock().ok().and_then(|m| m.get(&key).copied()) {
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(v, self.first_held_replayed(x, thing, required));
             return v;
         }
         let v = self.first_held_uncached(x, thing, required);

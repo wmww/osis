@@ -1,5 +1,6 @@
 //! Cost of a 10^4-edge-write history (issues/perm-eval-cost.md): from scratch and incremental. Tier 2:
-//! `cargo test -p osis-perm --release --test bench -- --ignored --nocapture`.
+//! `cargo test -p osis-perm --release --test bench -- --ignored --nocapture`. Run it alone:
+//! `bench_10k_edges` peaks at about 16 GB (each held set of the org at 10^4 is about 3 GB).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 mod common;
@@ -68,8 +69,9 @@ fn bench_10k_edges() {
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
+        drop(held2);
         // a write arriving late, ordered in the middle of the history
-        let mut w3 = w2.clone();
+        let mut w3 = w2;
         w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
         let held3 = w3.held();
         let tl3 = Instant::now();
@@ -98,6 +100,7 @@ fn bench_10k_edges() {
             let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
         }
         let rejudge = t7.elapsed();
+        drop(fresh);
         // members' deltas: one by each member granted write or more, just after the grant
         let fresh = Timeline::evaluate(&held);
         let mut by_members = Vec::new();
@@ -117,6 +120,7 @@ fn bench_10k_edges() {
             valid_members += usize::from(fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
         }
         let rejudge_members = t7b.elapsed();
+        drop(fresh);
         // what a demotion's frontier lists (§5.1): an admin's chain certificates on a doc, at
         // the end and at the middle
         let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
@@ -138,7 +142,8 @@ fn bench_10k_edges() {
         back.update_touched_cached(&held3, &all, &mut |r| saved.get(r).cloned(), b"rules");
         let restore = t11.elapsed();
         assert_eq!(back.restored(), 1);
-        let mut w4 = w3.clone();
+        drop((back, held3));
+        let mut w4 = w3;
         for i in 0..n / 100 {
             w4.set(nodes[1 + i % 10], doc, nodes[200 + i % 2], edge(if i % 2 == 0 { Read } else { Write }), n as u64 + 10 + i as u64, &[]);
         }
@@ -149,6 +154,7 @@ fn bench_10k_edges() {
         stale.update_touched_cached(&held4, &all4, &mut |r| saved.get(r).cloned(), b"rules");
         let restore_stale = t12.elapsed();
         assert_eq!(stale.restored(), 1);
+        drop(stale);
         // a new thing (a leaf: only its `/created`) under the team and under the doc with the
         // most demotions recorded
         inc.update(&held4);
