@@ -19,10 +19,10 @@ fn diags(net: &mut Net, nodes: &[usize]) {
     }
 }
 
-// spec/sync.md §3 (retag), §5 (deletion by token), §6: a thing leaving the folder takes its own
-// bodies out of the folder's label; a writer without the delete key deletes them by token.
+// spec/sync.md §3 (retag), §5 (deletion by delete key), §6: a thing leaving the folder takes its own
+// bodies out of the folder's label; a writer without the label delete key deletes them by delete key.
 #[test]
-fn thing_leaving_deleted_by_token_spec_sync_5() {
+fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
@@ -35,7 +35,7 @@ fn thing_leaving_deleted_by_token_spec_sync_5() {
     let l = net.label(a);
     let blobs: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
     assert!(!blobs.is_empty() && blobs.iter().all(|id| net.server_ids(sv, &l).contains(id)));
-    // the admin is away: only the writer can act, by token
+    // the admin is away: only the writer can act, by delete key
     net.set_online(a, false);
     let e = net.engine(b);
     let mut grp = e.get_typed(&g, &ct::GROUP).unwrap().unwrap();

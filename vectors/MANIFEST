@@ -10,7 +10,7 @@ kdf/purposes.vec provisional
 keys/seed.vec provisional
 box/boxes.vec provisional
 wrap/wrap.vec provisional
-token/tokens.vec provisional
+delete/keys.vec provisional
 sign/signatures.vec provisional
 blob/prefix.vec provisional
 blob/blobs.vec provisional

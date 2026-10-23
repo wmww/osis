@@ -502,6 +502,20 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     a.state.join(older);
     let older_join = t.elapsed();
+    // joins into copies of a state (as a node keeping the state before a commit): each copy's
+    // placement shares the original's until it changes it
+    let mut copies = Vec::new();
+    for k in 0..200u64 {
+        let (d, src, range) = b.commit(2000 + k, &[op(Op::Insert { at: r.below(90_000), items: vec![s("c")] })], &text_view()).unwrap();
+        let d = wired(&d, &src, range, 2000 + k);
+        let mut c = a.state.clone();
+        let t = Instant::now();
+        c.join(d.clone());
+        copies.push(t.elapsed());
+        a.state.join(d);
+    }
+    let copy_mean = copies.iter().sum::<std::time::Duration>() / 200;
+    let copy_max = copies.iter().max().copied().unwrap_or_default();
     // a move: the moved subtrees are re-placed
     let t = Instant::now();
     let (d, src, range) = b.commit(1006, &[op(Op::Move { at: 100, len: 10, to: 60_000 })], &text_view()).unwrap();
@@ -525,6 +539,44 @@ fn budget_big_text_spec_6() {
         let _ = crate::linearize::place(q.elems(), q.text);
         hostile.push(format!("{sibs} siblings: join and placement {join:?}, whole pass {:?}", t.elapsed()));
     }
+    // a text upgraded from a 10^5-char string (embedded characters, `Derived` dots): a received
+    // insert anchored at an embedded char, and a two-op batch there
+    let upgraded = {
+        let mut u = Replica::new(4);
+        u.commit(1, &[op(Op::Set(s("xy")))], &text_view());
+        let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 2 << 16, 1);
+        u.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &crdt_model::ops::Ty::Register, &crdt_model::value::Value::Str(run.repeat(1000)))));
+        let mut v = Replica { state: u.state.clone(), src: node(6), lo: 1 };
+        let (d, src, range) = v.commit(3, &[op(Op::Insert { at: 50_000, items: vec![s("e")] })], &text_view()).unwrap();
+        let d = wired(&d, &src, range, 3);
+        let _ = read_str(&u.state);
+        let _ = crate::seq_lin::probe();
+        let t = Instant::now();
+        u.state.join(d);
+        let join = t.elapsed();
+        let passes = crate::seq_lin::probe().1;
+        let t = Instant::now();
+        let _ = read_str(&u.state);
+        let read = t.elapsed();
+        let t = Instant::now();
+        u.commit(4, &[op(Op::Insert { at: 10, items: vec![s("y")] }), op(Op::Delete { at: 60_000, len: 3 })], &text_view()).unwrap();
+        format!("received insert join {join:?} ({passes} passes), then read {read:?}, two-op batch {:?}", t.elapsed())
+    };
+    // a 10^5-element list built from 100 insert runs at random places: its read
+    let list_read = {
+        let view = TyView(Ty::List(Box::new(Ty::Register)));
+        let mut l = Replica::new(4);
+        let mut len = 0usize;
+        for k in 0..100u64 {
+            let at = r.below(len + 1);
+            len += 1000;
+            l.commit(k + 1, &[op(Op::Insert { at, items: (0..1000).map(Value::Int).collect() })], &view);
+        }
+        let _ = l.state.read();
+        let t = Instant::now();
+        assert!(matches!(l.state.read(), Some(Value::List(x)) if x.len() == 100_000));
+        t.elapsed()
+    };
     let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
     let cx = DeltaCtx { ts: ts(1 << 40), own: node(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = crate::MemoryPages::new();
@@ -534,7 +586,66 @@ fn budget_big_text_spec_6() {
     let t = Instant::now();
     crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
-    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), encode {encode:?}, decode {decode:?}; 1000 moves to HEAD with {}", p.iter().count(), hostile.join(", with "));
+    // a text bootstrapped from a snapshot: a deleted stretch arrives as one range record; an
+    // undelete of part of it and an insert anchored inside it split the record
+    let gone = crate::cut_dots(&a.state, 30_000, 100).unwrap();
+    a.commit(3000, &[op(Op::Delete { at: 30_000, len: 100 })], &text_view());
+    let snap = crate::wire::Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: a.state.clone(), frontiers: Default::default() };
+    let bytes = crate::encode_snapshot(&snap, &cx, Some(&mut pages)).unwrap();
+    let mut boot = crate::decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap().fragment;
+    let Fragment::Seq(full) = &a.state else { panic!() };
+    let undel = {
+        let src = node(5);
+        let st = crate::stamp::Stamp::new(ts(3001 << 16), src.clone(), 1);
+        let mut d = crate::seq::Seq::empty(true);
+        for x in &gone[45..55] {
+            let mut e = crate::seq::SeqElem::bare();
+            e.deleted = Some((st.clone(), false));
+            e.content = full.elems()[x].content.clone();
+            d.elems_mut().insert(x.clone(), e);
+        }
+        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3001)
+    };
+    let inside = {
+        let src = node(6);
+        let st = crate::stamp::Stamp::new(ts(3002 << 16), src.clone(), 1);
+        let a = crate::seq::Anchor::Dot(gone[70].clone());
+        let mut d = crate::seq::Seq::empty(true);
+        d.elems_mut().insert(st.dot.clone(), crate::seq::SeqElem { created: Some((st.clone(), a.clone())), content: crate::seq::SeqContent::Char('q'), pos: vec![(st, a)], deleted: None, span: 1 });
+        wired(&Fragment::Seq(d), &src, CounterRange { lo: 1, hi: 2 }, 3002)
+    };
+    let mut splits = Vec::new();
+    for d in [undel, inside] {
+        let _ = read_str(&boot);
+        let _ = crate::seq_lin::probe();
+        let t = Instant::now();
+        boot.join(d);
+        let join = t.elapsed();
+        let passes = crate::seq_lin::probe().1;
+        let t = Instant::now();
+        let _ = read_str(&boot);
+        splits.push(format!("join {join:?} ({passes} passes), then read {:?}", t.elapsed()));
+    }
+    assert!(read_str(&boot).contains('q'));
+    // a received set to a new value (a diff: one delete of everything) and a replace (a reset:
+    // every older element becomes a bare anchor on END)
+    let mut whole = Vec::new();
+    for o in [Op::Set(s("fresh")), Op::Replace(s("fresh"))] {
+        let mut c = Replica { state: a.state.clone(), src: node(8), lo: 1 };
+        let (d, src, range) = c.commit(4000, &[op(o)], &text_view()).unwrap();
+        let d = wired(&d, &src, range, 4000);
+        let mut st = a.state.clone();
+        let _ = read_str(&st);
+        let _ = crate::seq_lin::probe();
+        let t = Instant::now();
+        st.join(d);
+        let join = t.elapsed();
+        let p0 = crate::seq_lin::probe().1;
+        let t = Instant::now();
+        assert_eq!(read_str(&st), "fresh");
+        whole.push(format!("join {join:?} ({p0} passes), then read {:?} ({} passes)", t.elapsed(), crate::seq_lin::probe().1));
+    }
+    eprintln!("10^5 text ({} elems): build {build:?}, read {read:?}, place {place:?}, one op {one_op:?}, two-op batch {two_ops:?}, small join {small_join:?}, join without a read {unread_join:?}, delete join {delete_join:?}, older concurrent insert join {older_join:?}, move op {move_op:?}, move join {move_join:?} (then read {move_read:?}), join into a copy {copy_mean:?} (max {copy_max:?}), encode {encode:?}, decode {decode:?}; bootstrapped from a snapshot, undelete splitting a range record: {}, insert anchored inside it: {}; received set to a new value: {}, received replace: {}; upgraded text: {upgraded}; 10^5-element list read {list_read:?}; 1000 moves to HEAD with {}", p.iter().count(), splits[0], splits[1], whole[0], whole[1], hostile.join(", with "));
     let _ = v;
 }
 
@@ -567,6 +678,30 @@ fn cached_placement_follows_typing_spec_6() {
         assert!(cached(&b));
     }
     assert_eq!(read_str(&a.state), read_str(&b.state));
+}
+
+// spec/crdt.md §6: the cached placement's dot map is shared between copies of a state; a join
+// into one copy clones only the chunks it writes (notes/crdt.md, placement cache).
+#[test]
+fn placement_dot_map_shared_by_copies_spec_6() {
+    let mut r = Rng(3);
+    let mut a = Replica::new(1);
+    let run = "abcdefghij".repeat(10);
+    for k in 0..100u64 {
+        let n = read_str(&a.state).chars().count();
+        a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&run)] })], &text_view());
+    }
+    let lin = |f: &Fragment| match f {
+        Fragment::Seq(x) => x.lin(),
+        _ => panic!(),
+    };
+    let mut b2 = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    for k in 0..20u64 {
+        b2.commit(200 + k, &[op(Op::Insert { at: r.below(10_000), items: vec![s("x")] })], &text_view());
+    }
+    let (unshared, all) = lin(&b2.state).map_unshared(&lin(&a.state));
+    eprintln!("{unshared} of {all}");
+    assert!(all >= 50 && unshared <= 25, "{unshared} of {all} chunks copied");
 }
 
 /// §6.1 sibling order (`seq_lin`): two writers typing at one place concurrently (each insert
@@ -1047,6 +1182,51 @@ fn hostile_moves_join_bounded_spec_6() {
         let bound = len.max(1024) + count.min(moves) * (blocks + cap) + 8 + blocks + 4 * cap;
         assert!(work <= bound, "{moves} moves: {work} units, bound {bound}");
         assert!(passes <= 1, "{moves} moves: {passes} whole passes");
+        crate::testutil::check_lin(&st);
+    }
+}
+
+/// §6 (`seq_lin`): a delta of flag writes each splitting one long deleted chain (a range record
+/// at the root) with a deep subtree below it: each cut shifts the subtree's depths; the work
+/// stays within the budget plus one cut, or the count cap rebuilds before any work.
+#[test]
+fn hostile_cuts_join_bounded_spec_6() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    use crate::stamp::{Dot, Stamp};
+    let (a, b, c) = (node(1), node(2), node(3));
+    let chain = 2000u64;
+    let mut elems = std::collections::BTreeMap::new();
+    let del = Some((Stamp::new(ts(2 << 16), b.clone(), 1), true));
+    elems.insert(Dot::new(a.clone(), 1), SeqElem { created: Some((Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)), content: SeqContent::None, pos: vec![(Stamp::new(ts(1 << 16), a.clone(), 1), Anchor::Head)], deleted: del, span: chain });
+    // a typed chain of 2000 chars below the range's last element: depth 2000
+    let mut prev = Anchor::Dot(Dot::new(a.clone(), chain));
+    for k in 1..=2000u64 {
+        let st = Stamp::new(ts(3 << 16), c.clone(), k);
+        elems.insert(st.dot.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(st.clone(), prev)], deleted: None, span: 1 });
+        prev = Anchor::Dot(st.dot);
+    }
+    let base = Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), elems));
+    let Fragment::Seq(q) = &base else { panic!() };
+    let (len, blocks, cap) = q.lin().shape();
+    let count = len.isqrt().max(64);
+    for writes in [count / 2 - 1, count] {
+        let mut st = base.clone();
+        let _ = read_str(&st);
+        // newer delete flags on single elements spread over the chain: two cuts each
+        let w = Stamp::new(ts(4 << 16), node(4), 1);
+        let step = chain / (writes as u64 + 1);
+        let d = (1..=writes as u64).map(|j| (Dot::new(a.clone(), 1 + j * step), SeqElem { deleted: Some((w.clone(), true)), ..SeqElem::bare() })).collect();
+        let _ = crate::seq_lin::probe();
+        st.join(Fragment::Seq(Seq::new(true, crate::fragment::Meta::default(), d)));
+        let Fragment::Seq(q) = &st else { panic!() };
+        let _ = q.lin();
+        let (work, passes) = crate::seq_lin::probe();
+        assert_eq!(2 * writes > count, work == 0, "{writes} writes: the count cap ({count}) rebuilds before any work");
+        // budget, then one cut: its charge, the subtree walk and the reshift (each every block
+        // and two partial blocks of at most 2 * cap rows)
+        let bound = len.max(1024) + 3 * (blocks + 4 * cap);
+        assert!(work <= bound, "{writes} writes: {work} units, bound {bound}");
+        assert!(passes <= 1, "{writes} writes: {passes} whole passes");
         crate::testutil::check_lin(&st);
     }
 }

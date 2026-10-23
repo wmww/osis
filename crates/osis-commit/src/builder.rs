@@ -1,9 +1,9 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part};
-use crate::header::{AspectEntry, ChunkEntry, Form, Header, Kind, Links, ListField, Origin, PurgeItem, Token, aspect_key, purge_value, token_value};
+use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, Origin, PurgeItem, aspect_key, key_value, purge_value};
 use crate::project::check_fits;
-use crate::tokens::{Prefix, Secrets, TokenSecret, token_secrets};
+use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
 use osis_core::format::{CHUNK_THRESHOLD, FORMAT_VERSION, MAX_BLOB};
@@ -30,9 +30,9 @@ pub struct AspectWrite {
     pub expires: Option<u64>,
     /// The AK's schema and revision; `None` for an untyped write.
     pub schema: Option<(SchemaId, u64)>,
-    /// Chunk, tree-node and page blobs the deltas introduce, with the prefix salt each was
-    /// framed with (its chunk tokens derive from it).
-    pub chunks: Vec<(BlobId, [u8; 16])>,
+    /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
+    /// keys, [`delete_keys`]).
+    pub chunks: Vec<BlobId>,
 }
 
 impl AspectWrite {
@@ -57,17 +57,18 @@ pub struct CommitBuilder {
     pub undoes: Option<CommitId>,
     /// The frontier value of an explicit demotion (spec/permissions.md §5).
     pub frontier: Option<Value>,
+    /// The header's blind (spec/crypto.md §7): given when chunks were framed under it, else
+    /// drawn at build.
+    pub blind: Option<[u8; 16]>,
     pub origins: Vec<Origin>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
     pub(crate) max_blob: usize,
 }
 
-/// A built commit: the blob holding every delta, and the token secrets of each aspect (for
-/// framing its chunks and pages, [`Prefix::for_chunk`]).
+/// A built commit: the blob holding every delta.
 #[derive(Debug)]
 pub struct Built {
     pub commit: CommitBlob,
-    pub aspect_tokens: Vec<Vec<TokenSecret>>,
     /// Blobs written for linked header lists; they belong to every projection.
     pub list_blobs: Vec<BlobId>,
 }
@@ -81,15 +82,18 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
     /// and checks the result against every header rule and that each delta fits a blob.
     pub fn build(mut self, key: &SigningSecret, secrets: &dyn Secrets, sink: &mut dyn BlobSink, rng: &mut dyn CryptoRngCore) -> Result<Built, Error> {
         let kind = self.kind;
-        let mut salt = [0u8; 16];
-        rng.fill_bytes(&mut salt);
+        let blind = self.blind.unwrap_or_else(|| {
+            let mut b = [0u8; 16];
+            rng.fill_bytes(&mut b);
+            b
+        });
 
         // schema table
         let mut schemas: BTreeMap<SchemaId, u64> = BTreeMap::new();
@@ -102,9 +106,9 @@ impl CommitBuilder {
         }
         let schema_idx: BTreeMap<SchemaId, usize> = schemas.keys().enumerate().map(|(i, id)| (*id, i)).collect();
 
-        // aspects in canonical order, with their token secrets and delta hashes
+        // aspects in canonical order, with their delete keys and delta hashes
         self.aspects.sort_by_cached_key(|a| aspect_key(&a.tid, &a.ak));
-        let mut aspect_tokens = Vec::with_capacity(self.aspects.len());
+        let mut aspect_keys = Vec::with_capacity(self.aspects.len());
         let mut entries = Vec::with_capacity(self.aspects.len());
         let mut deltas = Vec::with_capacity(self.aspects.len());
         for a in std::mem::take(&mut self.aspects) {
@@ -112,7 +116,7 @@ impl CommitBuilder {
             let mut hd: Vec<([u8; 32], Vec<u8>)> = a.deltas.into_iter().map(|d| (delta_hash(&dedup, &d), d)).collect();
             hd.sort_by_key(|x| x.0);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
-            aspect_tokens.push(token_secrets(secrets, &a.tid, &a.retention, kind)?);
+            aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention, kind)?);
             entries.push((
                 AspectEntry {
                     tid: a.tid,
@@ -122,7 +126,7 @@ impl CommitBuilder {
                     retention: a.retention,
                     expires: a.expires,
                     schema: a.schema.and_then(|(id, _)| schema_idx.get(&id).copied()),
-                    tokens: Vec::new(),
+                    keys: Vec::new(),
                     hashes: hd.iter().map(|x| x.0).collect(),
                 },
                 a.chunks,
@@ -130,28 +134,21 @@ impl CommitBuilder {
             deltas.push(hd.into_iter().map(|x| x.1).collect::<Vec<_>>());
         }
 
-        // tokens: one per distinct token secret, sorted by canonical bytes
-        let mut table: BTreeMap<Vec<u8>, Token> = BTreeMap::new();
-        for ts in aspect_tokens.iter().flatten() {
-            let t = ts.hash(&salt);
-            table.insert(osis_core::encode(&token_value(&t)), t);
+        // delete keys: one per distinct (level, key), sorted by canonical bytes
+        let mut table: BTreeMap<Vec<u8>, DeleteKey> = BTreeMap::new();
+        for k in aspect_keys.iter().flatten() {
+            table.insert(osis_core::encode(&key_value(k)), *k);
         }
-        let tokens: Vec<Token> = table.into_values().collect();
-        let positions: BTreeMap<Token, usize> = tokens.iter().enumerate().map(|(i, t)| (*t, i)).collect();
-        let index_of = |t: &Token| positions.get(t).copied().ok_or(Error::Build("token table"));
+        let keys: Vec<DeleteKey> = table.into_values().collect();
+        let positions: BTreeMap<DeleteKey, usize> = keys.iter().enumerate().map(|(i, t)| (*t, i)).collect();
         let mut chunks = Vec::new();
-        for ((entry, cs), secs) in entries.iter_mut().zip(&aspect_tokens) {
-            let mut idx = secs.iter().map(|s| index_of(&s.hash(&salt))).collect::<Result<Vec<_>, _>>()?;
-            for (blob, csalt) in cs.iter() {
-                let mut ct = Vec::with_capacity(secs.len());
-                for (i, s) in idx.iter().zip(secs) {
-                    ct.push((*i, s.hash(csalt).hash));
-                }
-                ct.sort_by_key(|x| x.0);
-                chunks.push(ChunkEntry { blob: *blob, tokens: ct });
-            }
+        for ((entry, cs), ks) in entries.iter_mut().zip(&aspect_keys) {
+            let mut idx = ks.iter().map(|k| positions.get(k).copied().ok_or(Error::Build("delete key table"))).collect::<Result<Vec<_>, _>>()?;
             idx.sort_unstable();
-            entry.tokens = idx;
+            for blob in cs.iter() {
+                chunks.push(ChunkEntry { blob: *blob, keys: idx.clone() });
+            }
+            entry.keys = idx;
         }
         chunks.sort_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
@@ -173,8 +170,8 @@ impl CommitBuilder {
             chunks,
             purge,
             undoes: self.undoes,
-            salt,
-            tokens,
+            blind,
+            keys,
             frontier: self.frontier,
             origins,
             links: Links::default(),
@@ -183,11 +180,8 @@ impl CommitBuilder {
 
         // lists above the threshold go by link
         let mut list_blobs = Vec::new();
-        // header-list chunks and tree nodes: the commit's level-2 tokens only (spec/wire.md §5)
-        let list_secrets: Vec<TokenSecret> = {
-            let mut seen = std::collections::BTreeSet::new();
-            aspect_tokens.iter().flatten().filter(|s| s.level == 2 && seen.insert(s.hash(&salt))).cloned().collect()
-        };
+        // header-list chunks and tree nodes: the commit's level-2 key only (spec/wire.md §5)
+        let list_keys: Vec<DeleteKey> = header.keys.iter().filter(|k| k.level == 2).copied().collect();
         for f in ListField::ALL {
             let Some(v) = header.list_value(f) else { continue };
             let bytes = osis_core::encode(&v);
@@ -199,7 +193,7 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut s = [0u8; 16];
                 rng.fill_bytes(&mut s);
-                Prefix::for_chunk(s, list_expiry, &list_secrets)
+                Prefix::from_keys(s, &blind, list_expiry, &list_keys)
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;
@@ -216,7 +210,7 @@ impl CommitBuilder {
         }
         let commit = CommitBlob { header, signature, parts };
         check_fits(&commit, self.max_blob)?;
-        Ok(Built { commit, aspect_tokens, list_blobs })
+        Ok(Built { commit, list_blobs })
     }
 }
 

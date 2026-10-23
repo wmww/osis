@@ -335,7 +335,7 @@ impl Engine {
             _ => std::sync::Arc::new(cut.header.clone()),
         };
         let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;
-        Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, tokens: p.tokens, plaintext: p.plaintext, membership }).collect())
+        Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, keys: p.keys, blind: cut.header.blind, plaintext: p.plaintext, membership }).collect())
     }
 
     /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md

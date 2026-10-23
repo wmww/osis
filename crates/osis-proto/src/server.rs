@@ -10,7 +10,7 @@ use crate::rbsr;
 use crate::store::{EntryMeta, LabelStore, LogRecord, Put, StoreError};
 use osis_core::format::MAX_MESSAGE;
 use osis_core::{BlobId, LabelId, WallMs};
-use osis_crypto::{Domain, LabelRole, VerifyingKey};
+use osis_crypto::{Domain, LabelRole, VerifyingKey, verify_delete};
 use osis_label::auth::delete_digest;
 use osis_label::{OpenOutcome, entry_digest, evaluate_open, key_for_level, server_prefix};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -700,25 +700,26 @@ impl ServerConnection {
         store.put(label, Put { blob_id, blob, wrap, stamp, expiry })
     }
 
-    /// One Delete item (spec/sync.md §5): by the head's delete key, or by token with the key its
-    /// commitment level needs.
+    /// One Delete item (spec/sync.md §5): by the head's delete key, or by a level's delete key
+    /// (checked against the blob prefix's commitment at that level) with the label key the level
+    /// needs.
     fn delete(&mut self, store: &mut dyn LabelStore, now: u64, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
         let entry = store.entry(label, &item.blob)?;
-        // A token is checked against the blob's prefix: without the blob it cannot be (nor a
-        // tombstone revealed).
-        let prefix = match (&item.token, &entry) {
+        // A delete-key signature is checked against the blob's prefix: without the blob it cannot
+        // be (nor a tombstone revealed).
+        let prefix = match (&item.by, &entry) {
             (Some(_), Some(_)) => store.blob(&item.blob)?.and_then(|b| server_prefix(&b).ok().flatten()),
             _ => None,
         };
         let Some(c) = self.cached(store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        let key = match &item.token {
+        let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
+        let key = match &item.by {
             None => Key::Delete,
-            Some(t) => match prefix.as_ref().and_then(|p| p.match_token(t)).map(key_for_level) {
-                Some(Ok(role)) => Key::from_role(role),
+            Some((level, dsig)) => match (prefix.as_ref().and_then(|p| p.key_at(*level)), key_for_level(*level)) {
+                (Some(k), Ok(role)) if verify_delete(&k, &digest, dsig).is_ok() => Key::from_role(role),
                 _ => return Ok(Code::REFUSED),
             },
         };
-        let Ok(digest) = delete_digest(label, &item.blob, item.at, item.token.as_ref()) else { return Ok(Code::MALFORMED) };
         let code = c.check(key, Domain::Delete, &digest, &item.sig);
         if code != Code::OK {
             return Ok(code);

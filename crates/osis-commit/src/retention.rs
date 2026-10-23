@@ -135,9 +135,9 @@ pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death
     }
 }
 
-/// Token levels a delta of retention `r` calls for (spec/crypto.md §7); level 2 is omitted for
+/// Delete levels a delta of retention `r` calls for (spec/crypto.md §7); level 2 is omitted for
 /// an import.
-pub fn token_levels(r: &Retention, kind: Kind) -> &'static [u8] {
+pub fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
     let import = kind == Kind::Import;
     match r.by {
         PurgeBy::Nobody => &[],

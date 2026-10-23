@@ -2,19 +2,21 @@
 //! the prefix-versus-header agreement check (spec/commits.md §4) and label wraps (spec/crypto.md §5).
 
 use crate::Error;
-use osis_core::format::{BLOB_FRAMING_VERSION, MAX_BLOB, MAX_COMMITMENTS};
+use osis_core::format::{BLOB_FRAMING_VERSION, MAX_BLOB};
 use osis_core::{BlobId, WallMs};
-use osis_crypto::{CryptoRngCore, Secret32, commitment, decrypt_blob, delete_token, encrypt_blob, token_hash, verify_presented_token};
+use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob, encrypt_blob};
 
 /// Bytes of a prefix before its commitments.
 pub const PREFIX_FIXED_LEN: usize = 26;
-/// Bytes of one commitment: level, then 16 bytes.
-pub const COMMITMENT_LEN: usize = 17;
+/// Bytes of one commitment: level, then the 32-byte blinded delete key.
+pub const COMMITMENT_LEN: usize = 33;
+/// At most one commitment per level.
+const MAX_LEVELS: usize = 3;
 
-/// A token level (spec/wire.md §1): 1 admin secret, 2 author chain, 3 thing write secret.
+/// A delete level (spec/wire.md §1): 1 thing admin, 2 author chain, 3 thing write.
 pub type Level = u8;
 
-/// The clear prefix of a blob: salt, optional expiry, commitments strictly ascending.
+/// The clear prefix of a blob: salt, optional expiry, commitments with strictly ascending levels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Prefix {
     salt: [u8; 16],
@@ -23,8 +25,8 @@ pub struct Prefix {
 }
 
 impl Prefix {
-    /// Sorts the commitments; `Malformed` for a duplicate, a level outside 1..=3, more than
-    /// `MAX_COMMITMENTS`, or an expiry of 0 (which means none on the wire).
+    /// Sorts the commitments; `Malformed` for two at one level, a level outside 1..=3, or an
+    /// expiry of 0 (which means none on the wire).
     pub fn new(salt: [u8; 16], expiry: Option<WallMs>, mut commitments: Vec<[u8; COMMITMENT_LEN]>) -> Result<Prefix, Error> {
         commitments.sort();
         let p = Prefix { salt, expiry, commitments };
@@ -32,23 +34,15 @@ impl Prefix {
         Ok(p)
     }
 
-    /// Prefix of an encryption of a commit: commitments of the header's `(level, token hash)`
-    /// pairs its deltas call for, under this prefix's salt (spec/crypto.md §7). Repeated pairs
-    /// (two deltas of one thing and retention share a token) give one commitment.
-    pub fn for_tokens(salt: [u8; 16], expiry: Option<WallMs>, tokens: &[(Level, [u8; 16])]) -> Result<Prefix, Error> {
-        let mut cs = tokens.iter().map(|(l, h)| commitment(*l, h, &salt)).collect::<Result<Vec<_>, _>>()?;
-        cs.sort();
-        cs.dedup();
+    /// Prefix of a blob serving deltas whose delete keys are `keys`: one commitment per
+    /// `(level, key)`, the key blinded by this prefix's salt and the header's blind `hb`
+    /// (spec/crypto.md §7). A repeated pair gives one commitment.
+    pub fn for_keys(salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[(Level, VerifyingKey)]) -> Result<Prefix, Error> {
+        let mut ks = keys.to_vec();
+        ks.sort_by_key(|(l, k)| (*l, k.to_bytes()));
+        ks.dedup();
+        let cs = ks.iter().map(|(l, k)| commitment(*l, k, &salt, hb)).collect::<Result<Vec<_>, _>>()?;
         Prefix::new(salt, expiry, cs)
-    }
-
-    /// Prefix of a chunk, tree node or page: chunk tokens `kdf("delete token", secret, salt)`
-    /// per `(level, secret)`. Returns the prefix and the token hashes in input order (the header's
-    /// chunk list carries them).
-    pub fn for_chunk(salt: [u8; 16], expiry: Option<WallMs>, secrets: &[(Level, &Secret32)]) -> Result<(Prefix, Vec<[u8; 16]>), Error> {
-        let hashes: Vec<[u8; 16]> = secrets.iter().map(|(_, s)| token_hash(delete_token(s, &salt).expose())).collect();
-        let pairs: Vec<(Level, [u8; 16])> = secrets.iter().map(|(l, _)| *l).zip(hashes.iter().copied()).collect();
-        Ok((Prefix::for_tokens(salt, expiry, &pairs)?, hashes))
     }
 
     /// A random salt.
@@ -59,14 +53,11 @@ impl Prefix {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        if self.commitments.len() > MAX_COMMITMENTS {
-            return Err(Error::Malformed("more than MAX_COMMITMENTS"));
-        }
         if self.commitments.iter().any(|c| !(1..=3).contains(&c[0])) {
             return Err(Error::Malformed("commitment level"));
         }
-        if self.commitments.windows(2).any(|w| w.first() >= w.get(1)) {
-            return Err(Error::Malformed("commitments not strictly ascending"));
+        if self.commitments.windows(2).any(|w| matches!(w, [a, b] if a[0] >= b[0])) {
+            return Err(Error::Malformed("commitment levels not strictly ascending"));
         }
         if self.expiry == Some(WallMs(0)) {
             return Err(Error::Malformed("expiry 0"));
@@ -84,6 +75,11 @@ impl Prefix {
         &self.commitments
     }
 
+    /// The blinded key committed at `level`, if any.
+    pub fn key_at(&self, level: Level) -> Option<[u8; 32]> {
+        self.commitments.iter().find(|c| c[0] == level).and_then(|c| c.get(1..)).and_then(|k| k.try_into().ok())
+    }
+
     /// Encoded length.
     pub fn len(&self) -> usize {
         PREFIX_FIXED_LEN + COMMITMENT_LEN * self.commitments.len()
@@ -99,7 +95,7 @@ impl Prefix {
         out.push(BLOB_FRAMING_VERSION);
         out.extend_from_slice(&self.salt);
         out.extend_from_slice(&self.expiry.map_or(0, |t| t.0).to_le_bytes());
-        // At most MAX_COMMITMENTS (16) by construction.
+        // At most 3 by construction.
         out.push(u8::try_from(self.commitments.len()).unwrap_or(u8::MAX));
         for c in &self.commitments {
             out.extend_from_slice(c);
@@ -118,8 +114,8 @@ impl Prefix {
         let (salt, rest) = fixed.split_at(16);
         let (expiry, n) = rest.split_at(8);
         let n = usize::from(*n.first().ok_or(Error::Malformed("short prefix"))?);
-        if n > MAX_COMMITMENTS {
-            return Err(Error::Malformed("more than MAX_COMMITMENTS"));
+        if n > MAX_LEVELS {
+            return Err(Error::Malformed("more than 3 commitments"));
         }
         let body = blob.get(PREFIX_FIXED_LEN..PREFIX_FIXED_LEN + COMMITMENT_LEN * n).ok_or(Error::Malformed("short prefix"))?;
         let commitments: Vec<[u8; COMMITMENT_LEN]> = body.as_chunks::<COMMITMENT_LEN>().0.to_vec();
@@ -134,16 +130,10 @@ impl Prefix {
     }
 
     /// Whether this prefix is what an encryption of a commit's deltas computes (spec/commits.md
-    /// §4, spec/sync.md §1): the same expiry, and exactly the commitments of `tokens` under this
-    /// salt. A mismatch makes the commit blob bad input.
-    pub fn agrees(&self, expiry: Option<WallMs>, tokens: &[(Level, [u8; 16])]) -> bool {
-        Prefix::for_tokens(self.salt, expiry, tokens).is_ok_and(|p| p == *self)
-    }
-
-    /// The level of the commitment a presented token matches, hashing twice with the salt
-    /// (spec/crypto.md §7). The server then requires the signature that level calls for.
-    pub fn match_token(&self, token: &[u8; 32]) -> Option<Level> {
-        self.commitments.iter().find(|c| verify_presented_token(token, c, &self.salt)).map(|c| c[0])
+    /// §4, spec/sync.md §1): the same expiry, and exactly the commitments of `keys` under this
+    /// salt and the header's blind `hb`. A mismatch makes the commit blob bad input.
+    pub fn agrees(&self, expiry: Option<WallMs>, hb: &[u8; 16], keys: &[(Level, VerifyingKey)]) -> bool {
+        Prefix::for_keys(self.salt, hb, expiry, keys).is_ok_and(|p| p == *self)
     }
 }
 
@@ -205,8 +195,8 @@ mod tests {
     use osis_crypto::SeededRng;
     use proptest::prelude::*;
 
-    fn c(level: u8, b: u8) -> [u8; 17] {
-        let mut x = [b; 17];
+    fn c(level: u8, b: u8) -> [u8; 33] {
+        let mut x = [b; 33];
         x[0] = level;
         x
     }
@@ -216,39 +206,40 @@ mod tests {
     fn layout() {
         let p = Prefix::new([7; 16], Some(WallMs(0x0102)), vec![c(2, 9), c(1, 5)]).unwrap();
         let b = p.to_bytes();
-        assert_eq!(b.len(), 26 + 34);
+        assert_eq!(b.len(), 26 + 66);
         assert_eq!(b[0], 1);
         assert_eq!(b[1..17], [7; 16]);
         assert_eq!(b[17..25], [2, 1, 0, 0, 0, 0, 0, 0]);
         assert_eq!(b[25], 2);
-        assert_eq!(b[26..43], c(1, 5));
+        assert_eq!(b[26..59], c(1, 5));
         assert_eq!(Prefix::parse(&b).unwrap(), p);
+        assert_eq!(p.key_at(2), Some([9; 32]));
+        assert_eq!(p.key_at(3), None);
         let none = Prefix::new([0; 16], None, vec![]).unwrap();
         assert_eq!(none.to_bytes()[17..26], [0; 9]);
         assert_eq!(Prefix::parse(&none.to_bytes()).unwrap().expiry(), None);
     }
 
-    // spec/wire.md §5: rejections: unsorted or duplicate, level 0 or 4, more than 16, short,
-    // unknown framing version.
+    // spec/wire.md §5: rejections: two at one level, unsorted, level 0 or 4, more than 3,
+    // short, unknown framing version.
     #[test]
     fn rejections() {
-        let mut b = Prefix::new([0; 16], None, vec![c(1, 1), c(1, 2)]).unwrap().to_bytes();
-        b.swap(26, 26 + 17);
-        b.swap(27, 27 + 17);
-        b[26..43].copy_from_slice(&c(1, 2));
-        b[43..60].copy_from_slice(&c(1, 1));
+        assert!(Prefix::new([0; 16], None, vec![c(1, 1), c(1, 2)]).is_err());
+        let mut b = Prefix::new([0; 16], None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
+        b[26..59].copy_from_slice(&c(2, 2));
+        b[59..92].copy_from_slice(&c(1, 1));
         assert!(Prefix::parse(&b).is_err());
-        b[43..60].copy_from_slice(&c(1, 2));
-        assert!(Prefix::parse(&b).is_err());
+        b[26..59].copy_from_slice(&c(1, 2));
+        assert!(Prefix::parse(&b).is_err(), "two at level 1");
+        b[59..92].copy_from_slice(&c(3, 1));
+        assert!(Prefix::parse(&b).is_ok());
         for level in [0, 4] {
             assert!(Prefix::new([0; 16], None, vec![c(level, 1)]).is_err());
         }
-        let many: Vec<_> = (0..17).map(|i| c(1, i)).collect();
-        assert!(Prefix::new([0; 16], None, many).is_err());
         let mut b = Prefix::new([0; 16], None, vec![]).unwrap().to_bytes();
-        b[25] = 17;
-        b.extend(std::iter::repeat_n(1, 17 * 17));
-        assert_eq!(Prefix::parse(&b), Err(Error::Malformed("more than MAX_COMMITMENTS")));
+        b[25] = 4;
+        b.extend(std::iter::repeat_n(1, 33 * 4));
+        assert_eq!(Prefix::parse(&b), Err(Error::Malformed("more than 3 commitments")));
         assert!(Prefix::parse(&b[..25]).is_err());
         let mut b = Prefix::new([0; 16], None, vec![c(1, 1)]).unwrap().to_bytes();
         b.pop();
@@ -277,27 +268,28 @@ mod tests {
         assert!(server_prefix(&p.to_bytes()).is_err());
     }
 
-    // spec/commits.md §4, spec/crypto.md §7: the prefix agrees with the header's tokens and
-    // expiry only; a presented token matches its commitment and level.
+    // spec/commits.md §4, spec/crypto.md §7: the prefix agrees with the header's delete keys and
+    // expiry only; it commits to each key blinded by its salt.
     #[test]
-    fn agreement_and_tokens() {
+    fn agreement() {
         let salt = [4u8; 16];
-        let secret = Secret32::from_bytes([1; 32]);
-        let tok = delete_token(&secret, &[9; 16]);
-        let th = token_hash(tok.expose());
-        let p = Prefix::for_tokens(salt, Some(WallMs(10)), &[(2, th)]).unwrap();
-        assert!(p.agrees(Some(WallMs(10)), &[(2, th)]));
-        assert!(!p.agrees(None, &[(2, th)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[(3, th)]));
-        assert!(!p.agrees(Some(WallMs(10)), &[]));
-        assert_eq!(p.match_token(tok.expose()), Some(2));
-        assert_eq!(p.match_token(&[0; 32]), None);
-        // Repeated token pairs on either side give one commitment.
-        assert_eq!(Prefix::for_tokens(salt, Some(WallMs(10)), &[(2, th), (2, th)]).unwrap(), p);
-        assert!(p.agrees(Some(WallMs(10)), &[(2, th), (2, th)]));
-        let (cp, hashes) = Prefix::for_chunk(salt, None, &[(1, &secret)]).unwrap();
-        assert_eq!(hashes, vec![token_hash(delete_token(&secret, &salt).expose())]);
-        assert_eq!(cp.match_token(delete_token(&secret, &salt).expose()), Some(1));
+        let k = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key();
+        let k3 = osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key();
+        let hb = [6u8; 16];
+        let p = Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k)]).unwrap();
+        assert!(p.agrees(Some(WallMs(10)), &hb, &[(2, k)]));
+        assert!(!p.agrees(None, &hb, &[(2, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(3, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[(2, k3)]));
+        assert!(!p.agrees(Some(WallMs(10)), &[7; 16], &[(2, k)]));
+        assert!(!p.agrees(Some(WallMs(10)), &hb, &[]));
+        assert_eq!(p.key_at(2), Some(osis_crypto::blind(&k, &salt, &hb).to_bytes()));
+        // Repeated pairs on either side give one commitment; two keys at one level are refused.
+        assert_eq!(Prefix::for_keys(salt, &hb, Some(WallMs(10)), &[(2, k), (2, k)]).unwrap(), p);
+        assert!(Prefix::for_keys(salt, &hb, None, &[(2, k), (2, k3)]).is_err());
+        // another salt or header blind, another blinded key
+        assert_ne!(Prefix::for_keys([5; 16], &hb, None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
+        assert_ne!(Prefix::for_keys(salt, &[8; 16], None, &[(2, k)]).unwrap().key_at(2), p.key_at(2));
     }
 
     // spec/crypto.md §5: a reader tries its read secrets newest first; a filler opens under none.

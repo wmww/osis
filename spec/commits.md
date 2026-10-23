@@ -9,11 +9,11 @@ Encoding: spec/wire.md §4. Fields:
 - `ts` (spec/crdt.md §2.2) and the dot form, node or commit (§3).
 - Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6), schema index or none, and the delta hashes of its deltas. A content commit has one delta per aspect; a membership commit may have several (§2), all sharing the aspect's range.
-- Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with its token hashes, one per token secret, in the order of the commit's token hashes (spec/crypto.md §7).
+- Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
-- Delete token salt (16 random bytes) and token hashes with their levels (spec/crypto.md §7); per aspect, the indices of the token hashes its deltas call for.
+- A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
-- The aspect, chunk, purge, token and origin lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's token commitments (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
+- The aspect, chunk, purge, delete-key and origin lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
@@ -42,11 +42,11 @@ Encoding: spec/wire.md §4. Fields:
 - Two commits by one node whose node-form counter ranges on one aspect overlap are both invalid.
 - A membership or roster-snapshot commit in node form is bad input (§3).
 - A delta whose bytes do not match the header's delta hash is bad input.
-- A commit blob whose clear prefix disagrees with its header (expiry, the token commitments its deltas call for; spec/sync.md §1) is bad input.
+- A commit blob whose clear prefix disagrees with its header (expiry, the commitments to the delete keys its deltas list; spec/sync.md §1) is bad input.
 
 ## 5. Retention and purge
 Every delta carries **retention** on the wire: who may purge it, how long its body is kept, and its expiry (§6). The writer fills it from the schema's defaults per AK (spec/data-model.md §2); a commit may set it per aspect; an untyped write (no schema for the AK) defaults to `author` with no keep bounds and no expiry. Retention is immutable: to change it, purge and write again.
-- **Purgeable by**: `nobody` < `admin` < `author` < `writer`. The named role may drop the delta's body: by purge request (spec/permissions.md §8), by compaction, and by deleting its blobs at blind nodes (spec/sync.md §5). Delete tokens follow it (spec/crypto.md §7). A **right holder** is a node that holds the right now.
+- **Purgeable by**: `nobody` < `admin` < `author` < `writer`. The named role may drop the delta's body: by purge request (spec/permissions.md §8), by compaction, and by deleting its blobs at blind nodes (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7). A **right holder** is a node that holds the right now.
 - **Keep at least** and **keep at most**: each optional; each an absolute time, a duration after the body is replaced, or both (the later bound counts for at least, the earlier for at most). A relative keep at most exists only under `writer`: whoever replaces a body must be able to delete it. Where the two bounds disagree, keep at most wins.
 - A **body** is one blob of a commit (a projection, spec/sync.md §3, holds the deltas of one retention class). A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8), at the superseding commit's `ts` or at T. A body is **replaced** as its writes die; per body a node tracks the first and last death so far.
 - A body is **covered** by a snapshot the node holds when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A node-form body is covered only if the snapshot's frontier for its author also reaches the body's counters, a body judged by commit ID (commit form, import) only if the snapshot's `Absorbed` lists its commit, and a snapshot body only if the covering snapshot's frontiers reach its frontiers (spec/crdt.md §8), so every holder of the covering snapshot counts what the dropped body gave as received. A body the node cannot join, or a snapshot whose pages the node has not fetched, establishes nothing: the body is neither covered nor uncovered for it (spec/sync.md §6). A body holding no delta is covered. A snapshot written from a node's whole state of an aspect covers every body of it the node had applied, except those spec/crdt.md §8 never covers.

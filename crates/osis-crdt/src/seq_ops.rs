@@ -122,14 +122,16 @@ fn position(w: &mut Writer, a: Anchor) -> SeqElem {
 /// order. The next root anchors at the last element of the previous root's moved subtree.
 fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor, dest: Anchor) -> BTreeMap<Dot, SeqElem> {
     let rows: Vec<&Row> = p.iter_from(range.start).take(range.len()).collect();
-    let inr: HashSet<&Dot> = rows.iter().map(|r| &r.dot).collect();
+    // a row's children name its last element
+    let ends: Vec<Dot> = rows.iter().map(|r| nth(&r.dot, r.span - 1)).collect();
+    let inr: HashSet<&Dot> = ends.iter().collect();
     let outside = p.hanging(range, &inr);
     // the roots in order, and the last node of each root's moved subtree (preorder: parents
     // come first)
     let mut roots: Vec<&Row> = Vec::new();
     let mut root_of: HashMap<&Dot, &Dot> = HashMap::new();
     let mut last: HashMap<&Dot, &Row> = HashMap::new();
-    for r in &rows {
+    for (r, end) in rows.iter().zip(&ends) {
         let root = match r.parent.as_ref().filter(|x| inr.contains(x)) {
             Some(x) => root_of.get(x).copied().unwrap_or(&r.dot),
             None => {
@@ -137,7 +139,7 @@ fn move_writes(w: &mut Writer, p: &Placement, range: Range<usize>, pred: Anchor,
                 &r.dot
             }
         };
-        root_of.insert(&r.dot, root);
+        root_of.insert(end, root);
         last.insert(root, r);
     }
     let mut out = BTreeMap::new();

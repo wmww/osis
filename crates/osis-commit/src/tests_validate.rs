@@ -1,6 +1,6 @@
 //! Header validation and retention (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
-use crate::tests::{sample_header, t, ts};
+use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
 use osis_core::{Ak, CommitId, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
@@ -15,14 +15,14 @@ fn validate_layout() {
     let h = sample_header();
     h.validate().unwrap();
     let mut x = h.clone();
-    x.tokens.swap(0, 1);
+    x.keys.swap(0, 1);
     assert!(matches!(invalid(&x), Error::Malformed(_)));
     let mut x = h.clone();
     x.aspects[0].schema = Some(1);
     assert!(matches!(invalid(&x), Error::Malformed(_)));
     let mut x = h.clone();
-    x.tokens.push(Token { level: 3, hash: [3; 16] });
-    assert!(matches!(invalid(&x), Error::Malformed(_)), "unused token");
+    x.keys.push(dkey(3, 3));
+    assert!(matches!(invalid(&x), Error::Malformed(_)), "unused delete key");
     let mut x = h.clone();
     let mut a2 = x.aspects[0].clone();
     a2.tid = t(0);
@@ -53,16 +53,16 @@ fn validate_kinds() {
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("writer"));
     x.aspects[0].retention.by = PurgeBy::Writer;
-    x.tokens.push(Token { level: 3, hash: [3; 16] });
-    x.aspects[0].tokens = vec![0, 1, 2];
+    x.keys.push(dkey(3, 3));
+    x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
     let mut x = h.clone();
     x.kind = Kind::Import;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
-    assert!(invalid(&x).to_string().contains("token levels"), "imports carry no level-2 token");
-    x.tokens.remove(1);
-    x.aspects[0].tokens = vec![0];
+    assert!(invalid(&x).to_string().contains("delete levels"), "imports carry no level-2 key");
+    x.keys.remove(1);
+    x.aspects[0].keys = vec![0];
     assert!(invalid(&x).to_string().contains("origins"));
     x.origins.push(Origin { commit: CommitId([1; 32]), author: t(1), actor: t(2), ts: ts(5) });
     x.validate().unwrap();
@@ -78,9 +78,9 @@ pub(crate) fn membership_header(ak: &str) -> Header {
     a.retention = retention::MEMBERSHIP_RETENTION;
     a.expires = None;
     a.schema = None;
-    a.tokens = vec![0];
+    a.keys = vec![0];
     a.hashes = vec![[1; 32], [2; 32]];
-    h.tokens.truncate(1);
+    h.keys.truncate(1);
     h
 }
 

@@ -10,7 +10,7 @@ use crate::seq_span::{expand, nth};
 use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
-use crate::testutil::{frag, history_with, mapply, source, ts};
+use crate::testutil::{frag, history, history_with, mapply, source, ts};
 use crate::tests_join::lockstep;
 use crate::tests_wire::{delta, i, l, rejects, snap_cx, wcx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
@@ -31,6 +31,13 @@ proptest! {
     #[test]
     fn text_join_matches_model_spec_5_7(seed in any::<u64>()) {
         lockstep(seed, &[Ty::Text], 3, 5);
+    }
+
+    /// §5.7 Read, §6: a list's read (elements in placement order, which moves and inserts at
+    /// random places take far from dot order) equals the model's after every join.
+    #[test]
+    fn list_read_order_matches_model_spec_5_7(seed in any::<u64>()) {
+        lockstep(seed, &[Ty::List(Box::new(Ty::Register))], 4, 10);
     }
 
     /// §5.7: list join (element resets, nested fragments) equals the model's.
@@ -179,6 +186,180 @@ fn cycle_breaking_is_linear_spec_6_2() {
     assert_eq!(p.order.len(), (len + 2 * k) as usize);
     // linear: well under a second in release; a generous bound for a loaded debug build
     assert!(took.as_secs() < 10, "cycle breaking took {took:?}");
+}
+
+/// Joins of `snapshot_then_edit`: all, followed by the cached placement (no whole pass), and
+/// of those that split a range record or anchor inside one (`split`, and `missed`: not
+/// followed) or touch or anchor at a `Derived` dot (`derived`, `missed_derived`).
+#[derive(Debug, Default)]
+pub(crate) struct Follows {
+    pub joins: usize,
+    pub kept: usize,
+    pub split: usize,
+    pub missed: usize,
+    pub derived: usize,
+    pub missed_derived: usize,
+}
+
+/// Text built by a random history and bootstrapped from a snapshot (deleted stretches arrive as
+/// range records), or (`upgraded`) then a string register write over it, embedded as characters
+/// with `Derived` dots (§7), and text edits of those, the position's text member taken alone;
+/// then edited by a new writer
+/// through the wire: an insert anchored at a random placed element (hidden ones inside range
+/// records and embedded ones included), then a random text op (undelete of part of a deleted
+/// run, delete, move, insert, now and then a replace), `n` times. After every join the read
+/// equals the model's text slot and the cached placement a whole pass (`check_lin`).
+pub(crate) fn snapshot_then_edit(seed: u64, upgraded: bool, n: usize) -> Follows {
+    use crdt_model::stamp::Dot as MDot;
+    use crdt_model::state::{Anchor as MAnchor, Composite};
+    let mut r = Rng(seed | 1);
+    let mut deltas: Vec<MFrag> = history(&mut r, &[Ty::Text], 3, 8).into_iter().map(|c| c.delta).collect();
+    let mut m = None;
+    for d in &deltas {
+        mapply(&mut m, d.clone());
+    }
+    if upgraded {
+        let mut w = MWriter::new(MSource::node(8), 100 << 16, 1);
+        let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 12));
+        let d = crdt_model::ops::create(&mut w, &Ty::Register, &v);
+        mapply(&mut m, d.clone());
+        deltas.push(d);
+        let mut w = MWriter::new(MSource::node(7), 101 << 16, 1);
+        for k in 0..8 {
+            w.next_commit((102 + k) << 16);
+            if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) {
+                mapply(&mut m, d.clone());
+                deltas.push(d);
+            }
+        }
+    }
+    let mut full = Fragment::default();
+    for d in &deltas {
+        full.join(frag(d));
+    }
+    // (an upgraded text's snapshot with a deleted embedded char is rejected by both decoders:
+    // issues/crdt-slots-snapshot-deleted-embedded.md; the joined state holds range records too)
+    let mut ours = if upgraded {
+        full
+    } else {
+        let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: full, frontiers: Frontiers::default() };
+        let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
+        decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment
+    };
+    let mut f = Follows::default();
+    // the text member alone (the writer's deltas are newer than the register's write, so the
+    // member joins them as the position does)
+    if let Fragment::Slots(x) = &ours {
+        match x.members.get(&crate::fragment::Encoding::Text) {
+            Some(t) => ours = t.clone(),
+            None => return f,
+        }
+    }
+    let mread = |m: &Option<MFrag>| m.as_ref().and_then(|x| x.slot(9)).and_then(|x| x.read()).map(|v| crate::testutil::value(&v));
+    let mut w = MWriter::new(MSource::node(9), 1 << 30, 1);
+    let mut deliver = |d: MFrag, w: &MWriter, m: &mut Option<MFrag>, ours: &mut Fragment| {
+        mapply(m, d.clone());
+        let cx = writer_cx(w);
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: frag(&d) }, &cx, None).unwrap();
+        let d = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+        let before = match &*ours {
+            Fragment::Seq(x) => Some(x.clone()),
+            _ => None,
+        };
+        let (mut splits, mut derived) = (false, false);
+        if let (Some(st), Fragment::Seq(ds)) = (&before, &d) {
+            let inside = |x: &Dot| crate::seq_span::find(st.elems(), x).is_some_and(|(k, _)| k != x);
+            for (dot, de) in ds.elems() {
+                let anchors = || de.pos.iter().filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x) } else { None });
+                splits |= inside(dot) || inside(&nth(dot, de.span)) || anchors().any(|x| crate::seq_span::find(st.elems(), x).is_some_and(|(k, e)| x.ctr - k.ctr + 1 < e.span));
+                derived |= dot.src.is_derived() || anchors().any(|x| x.src.is_derived());
+            }
+        }
+        let cached = before.as_ref().is_some_and(|x| x.lin_check().is_some());
+        let _ = crate::seq_lin::probe();
+        ours.join(d);
+        // followed: no whole pass in the join, and still cached
+        let after = crate::seq_lin::probe().1 == 0 && matches!(&*ours, Fragment::Seq(x) if x.lin_check().is_some());
+        crate::testutil::check_lin(ours);
+        assert_eq!(ours.read(), mread(m));
+        f.joins += 1;
+        f.kept += usize::from(cached && after);
+        f.split += usize::from(cached && after && splits);
+        f.missed += usize::from(cached && !after && splits);
+        f.derived += usize::from(cached && after && derived);
+        f.missed_derived += usize::from(cached && !after && derived);
+    };
+    let text = Ty::Text;
+    for k in 0..n as u64 {
+        // the placement read before each join, so the join has a cache to follow
+        let _ = ours.read();
+        let order = match m.as_ref().and_then(|x| x.slot(9)) {
+            Some(MFrag::Seq { elems, .. }) => crdt_model::seq::linearize_full(elems).0,
+            _ => Vec::new(),
+        };
+        w.next_commit((1 << 30) + 2 * k + 1);
+        let anchor: Option<&MDot> = order.get(r.below(order.len() + 1));
+        let mut d = MFrag::Seq { text: true, c: Composite { reset: None, w: None }, elems: Default::default() };
+        let cs = crdt_model::r#gen::random_text(&mut r, 3);
+        if !cs.is_empty() {
+            crdt_model::ops::insert_run(&mut w, &mut d, anchor.map_or(MAnchor::Head, |x| MAnchor::Dot(x.clone())), cs.chars().map(Content::Char).collect());
+            deliver(d, &w, &mut m, &mut ours);
+        }
+        let _ = ours.read();
+        w.next_commit((1 << 30) + 2 * k + 2);
+        if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &text, m.as_ref()) {
+            deliver(d, &w, &mut m, &mut ours);
+        }
+    }
+    f
+}
+
+proptest! {
+    /// §5.7, §6 (`seq_lin`): a text bootstrapped from a snapshot takes inserts anchored at every
+    /// kind of element, undeletes of parts of deleted runs, deletes and moves like the model, and
+    /// the cached placement follows writes that split a range record.
+    #[test]
+    fn snapshot_text_edits_match_model_spec_6(seed in any::<u64>()) {
+        snapshot_then_edit(seed, false, 30);
+    }
+
+    /// §6.1, §7 (`seq_lin`): the same over a text upgraded from a string (embedded characters,
+    /// `Derived` dots and anchors at them, held or virtual).
+    #[test]
+    fn snapshot_slots_edits_match_model_spec_7(seed in any::<u64>()) {
+        snapshot_then_edit(seed, true, 30);
+    }
+}
+
+/// §6 (`seq_lin`): writes splitting a range record of a snapshot-bootstrapped text, or anchoring
+/// inside one, are followed by the cached placement, not rebuilt (fixed seeds).
+#[test]
+fn range_splits_follow_cache_spec_6() {
+    let mut t = Follows::default();
+    for seed in 0..24 {
+        let x = snapshot_then_edit(seed, false, 30);
+        t.joins += x.joins;
+        t.kept += x.kept;
+        t.split += x.split;
+        t.missed += x.missed;
+    }
+    assert!(t.split >= 50 && t.missed * 50 <= t.split, "{t:?}");
+    assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
+}
+
+/// §6.1, §7 (`seq_lin`): writes on embedded characters (`Derived` dots) of an upgraded text, and
+/// inserts anchored at them, are followed by the cached placement (fixed seeds).
+#[test]
+fn derived_dots_follow_cache_spec_7() {
+    let mut t = Follows::default();
+    for seed in 0..24 {
+        let x = snapshot_then_edit(seed, true, 30);
+        t.joins += x.joins;
+        t.kept += x.kept;
+        t.derived += x.derived;
+        t.missed_derived += x.missed_derived;
+    }
+    assert!(t.derived >= 50 && t.missed_derived * 20 <= t.derived, "{t:?}");
 }
 
 /// Tier 2: the differential suite at size (more writers, rounds and seeds).
@@ -860,3 +1041,21 @@ proptest! {
         }
     }
 }
+
+// spec/crdt.md §6.2: a received insert anchored at its own dot is a cycle of one, demoted to END
+// and shown there; the cached placement used to hide it (fuzz: seq_follow).
+#[test]
+fn self_anchored_insert_placed_spec_6_2() {
+    use crate::fuzzing::{seq_follow_cx, seq_follow_state};
+    let hex = "002700845001010101010101010101010101010101808084098080818601028201818200026261628080";
+    let data: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect();
+    let mut st = seq_follow_state();
+    let [src, l0, l1, bytes @ ..] = &data[..] else { panic!() };
+    assert_eq!(usize::from(u16::from_le_bytes([*l0, *l1])), bytes.len());
+    let d = decode_delta(bytes, &seq_follow_cx(*src, 0), &mut Interner::new(), None).unwrap();
+    let _ = st.read();
+    st.join(d.fragment);
+    crate::testutil::check_lin(&st);
+    assert!(matches!(st.read(), Some(Value::Str(x)) if x.ends_with("ab")));
+}
+

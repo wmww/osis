@@ -152,6 +152,26 @@ fn roster_removal_cost() {
             let keysets = [Role::Read, Role::Write].into_iter().map(|r| (r, (ep, kem.clone()))).collect();
             members.push(Recipient { member: Tid::from_bytes(b), role: Role::Write, keys: MemberKeys::Actor { keysets, own: BTreeMap::new() } });
         }
+        // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
+        let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
+        let view = e.epochs(&a).unwrap();
+        let r0 = rotate(&a, &all, &view, &Default::default(), &members[..1], &|_, _| true, &mut SeededRng::from_u64(2)).unwrap();
+        let mut m = Mutation::new();
+        for (k, b) in &r0.secrets.boxes {
+            m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
+        }
+        for (k, h) in &r0.secrets.history {
+            m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
+        }
+        for (role, ks) in &r0.keys.keysets {
+            let f = match role {
+                Role::Read => 0,
+                Role::Write => 1,
+                Role::Admin => 2,
+            };
+            m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
+        }
+        e.commit(m).unwrap().unwrap();
         let roles = BTreeSet::from([Role::Read, Role::Write]);
         let t0 = Instant::now();
         let view = e.epochs(&a).unwrap();

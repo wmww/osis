@@ -8,6 +8,7 @@ pub mod bundle;
 pub mod cbor;
 pub mod chunker;
 pub mod commit;
+pub mod delete;
 pub mod inbox;
 pub mod kdf;
 pub mod lan;
@@ -20,7 +21,6 @@ pub mod signal;
 pub mod step;
 pub mod schema;
 pub mod tid;
-pub mod token;
 pub mod wrap;
 
 use crate::file::VecFile;
@@ -46,7 +46,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "keys/seed.vec" => Subject { generate: Some(keys::seed), check: None },
         "box/boxes.vec" => Subject { generate: Some(boxes::boxes), check: None },
         "wrap/wrap.vec" => Subject { generate: Some(wrap::wrap), check: None },
-        "token/tokens.vec" => Subject { generate: Some(token::tokens), check: None },
+        "delete/keys.vec" => Subject { generate: Some(delete::keys), check: None },
         "sign/signatures.vec" => Subject { generate: Some(sign::signatures), check: None },
         "schema/core.vec" => Subject { generate: Some(schema::core), check: None },
         "proto/messages.vec" => Subject { generate: Some(proto::messages), check: None },

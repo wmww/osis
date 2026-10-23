@@ -136,7 +136,7 @@ RULES = [
     ("spec/sync.md", "5", "claim set hash", "it MUST hash to the step's"),
     ("spec/sync.md", "5", "upload refusals", "Refused: a bad stamp"),
     ("spec/sync.md", "5", "deposit refusals", "Refused like an upload, or when the label's deposit budget is full"),
-    ("spec/sync.md", "5", "delete keys", "a token whose commitment is in the blob's prefix"),
+    ("spec/sync.md", "5", "delete keys", "a delete signature that verifies under the blob prefix's commitment"),
     ("spec/sync.md", "5", "download needs open", "only for labels opened on the connection"),
     ("spec/sync.md", "5", "member peer", "A member peer serving a label applies the same rule"),
     ("spec/sync.md", "10", "server key check", "a client MUST check the server's key"),

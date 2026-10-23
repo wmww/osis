@@ -390,7 +390,8 @@ impl SyncEngine {
                     if !self.state.blobs.contains_key(&b) {
                         self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), key, cert: e.cert });
                     }
-                    e.kind = Kind::Commit { commit, parts };
+                    let salt = osis_label::Prefix::parse(&bytes).map(|p| *p.salt()).unwrap_or_default();
+                    e.kind = Kind::Commit { commit, parts, salt };
                     self.state.set_entry(l, b, e);
                     commits.push((pt, c));
                 }
@@ -416,6 +417,9 @@ impl SyncEngine {
                 let kem = role_kem(&s);
                 if let Ok((_, payload)) = osis_label::open_inbox_blob(&bytes, &actor, &kem) {
                     let pt = osis_core::encode(&payload.commit);
+                    if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
+                        self.engine.note_delete_hints(c.id(), &payload.things)?;
+                    }
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
                             // a sender's word: servers only, never a node to dial (`peer://`)
@@ -574,7 +578,7 @@ impl SyncEngine {
     }
 
     /// Drops the bytes of a chunk of dropped deltas once no label entry names it (spec/commits.md
-    /// §5); while one does, its prefix salt makes its chunk token.
+    /// §5); while one does, its delete-key signature needs its prefix salt.
     pub(crate) fn forget_chunk(&mut self, b: &BlobId) -> Result<()> {
         // cheapest first: commit blobs have their own record, most deleted bytes are gone already
         if self.state.blobs.contains_key(b) || !self.engine.has_blob(b) || self.state.named(b) || !self.dropped_chunks(&BTreeSet::from([*b]))?.0.contains_key(b) {

@@ -124,6 +124,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "seq_follow"
+path = "fuzz_targets/seq_follow.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "box"
 path = "fuzz_targets/box.rs"
 test = false

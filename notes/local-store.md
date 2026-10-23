@@ -11,7 +11,7 @@ No storage engine erases reliably (SSD wear levelling, copy-on-write filesystems
 - Commit blobs and chunks are encrypted under random keys (spec/crypto.md §5); chunk keys travel in links (spec/data-model.md §6). A content-derived chunk key would make every retained chunk ID a fingerprint and leave nothing to shred (spec/requirements.md, Data model).
 - Shredding a version: drop the wraps of its commit blob. Its deltas, hence its root links, hence every tree node and chunk only this version reached, become unreadable. Surviving chunks stay reachable through the live tree. Purge cost is independent of value size.
 - Dedup of large values is by reuse: an editor holds the current tree, recomputes content-defined boundaries over the new content, matches chunks by keyed content hash against the tree's links and reuses their (ID, key), unless the chunk must be re-encrypted (spec/sync.md §1); only new chunks become new blobs. This covers dedup across edits, devices and editors; two parties independently creating equal content for one thing get two blobs, and there is no cross-thing dedup.
-- The dedup secret keys content hashes only, never encryption, so it may stay permanent. Chunk IDs are hashes of ciphertext under random keys, so deletion lists, cursor logs and IDs-gained lists are not fingerprints. Delete tokens derive from salts, never from content.
+- The dedup secret keys content hashes only, never encryption, so it may stay permanent. Chunk IDs are hashes of ciphertext under random keys, so deletion lists, cursor logs and IDs-gained lists are not fingerprints. Delete-key commitments derive from salts and public keys, never from content.
 
 ## Units
 What a node holds and the unit each lives in:
@@ -34,7 +34,7 @@ What a node holds and the unit each lives in:
 ## What "dropped" means for a blob under several labels
 - Also held under another label the node is a member of: keep the blob and that label's wrap, drop only the purged label's wrap. The content is legitimately still readable there.
 - Under a label the node is blind for: keep; the wrap is unopenable here.
-- A blind node or relay never has plaintext; it honours tokens, timed deletes, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a token holder deletes it (spec/requirements.md, Deletion).
+- A blind node or relay never has plaintext; it honours delete-key signatures, timed deletes, its label delete key and expiry, nothing else. Its copy stays openable by anyone holding the label read secret until a delete-key holder deletes it (spec/requirements.md, Deletion).
 
 ## Cost
 - Reads: one unit decrypt per aspect load, cached. Writes: re-encrypt the unit; the tree is untouched unless a key rotates.

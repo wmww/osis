@@ -1,4 +1,4 @@
-//! osis-crypto: suite 1 primitives and every derivation, box, wrap and token of spec/crypto.md
+//! osis-crypto: suite 1 primitives and every derivation, box, wrap and delete key of spec/crypto.md
 //! (layouts: spec/wire.md §3, §5, §7, §8). Pure functions; randomness is injected
 //! (`&mut dyn CryptoRngCore`), secrets are zeroized on drop and never printed.
 //! Layer 1 (notes/architecture.md). Notes: notes/crypto.md.
@@ -7,6 +7,7 @@
 pub mod aead;
 mod blob;
 mod boxes;
+mod delete;
 mod error;
 pub mod kdf;
 mod kem;
@@ -15,10 +16,10 @@ mod label;
 mod rng;
 mod secret;
 mod sign;
-mod token;
 
 pub use aead::WRAP_LEN;
 pub use blob::{blob_id, decrypt_blob, encrypt_blob, filler_wrap, open_inbox, pad, padme, seal_inbox, unpad, unwrap, wrap};
+pub use delete::{DeleteSecret, blind, commitment, verify_delete};
 pub use boxes::{BoxForm, BoxItem, BoxSlot, Epoch, open_box, open_history, open_symmetric_box, seal_box, seal_history, wrap_symmetric_box};
 pub use error::Error;
 pub use kem::{KEM_PUBLIC_LEN, KemPublicKey, KemSecret, MLKEM_CT_LEN, SEALED_OVERHEAD, X25519Secret, open_sealed, seal, seal_with, sealed_from_value, sealed_to_value};
@@ -27,7 +28,6 @@ pub use label::{LabelRole, claim_key, deposit_key, label_id, label_role_key, ope
 pub use rng::SeededRng;
 pub use secret::Secret32;
 pub use sign::{Domain, Signature, SigningSecret, VerifyingKey};
-pub use token::{commitment, delete_token, token_hash, verify_presented_token};
 
 #[cfg(feature = "os-rng")]
 pub use rand_core::OsRng;

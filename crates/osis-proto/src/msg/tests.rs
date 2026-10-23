@@ -133,7 +133,7 @@ fn heads() {
     assert!(Message::decode(&enc(Value::List(push))).is_err());
 }
 
-// spec/wire.md §11.2: wrap 49 bytes, sig 64, label 16, token 32; blob at most MAX_BLOB, signal 64 KiB
+// spec/wire.md §11.2: wrap 49 bytes, sig 64, label 16; blob at most MAX_BLOB, signal 64 KiB
 // spec/sync.md §5 (upload refusals): an oversized blob does not decode
 #[test]
 fn field_sizes() {

@@ -104,7 +104,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     let ids: BTreeSet<osis_core::BlobId> = net.server_ids(sv, &l).into_iter().collect();
     let mut held: std::collections::BTreeMap<osis_core::CommitId, Vec<(usize, usize)>> = Default::default();
     for (id, k) in net.sync(a).entries(&l) {
-        if let EntryKind::Commit { commit, parts } = k
+        if let EntryKind::Commit { commit, parts, .. } = k
             && ids.contains(&id)
         {
             let seen = held.entry(commit).or_default();
@@ -753,7 +753,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let l = net.label(a);
     // the body under the label carries t2's part too (same reader actor)
     let h = net.engine(a).header(&both).unwrap();
-    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
+    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
     assert!(t2_part, "the commit's body under the label touches t2");
     let under: BTreeSet<_> = net.server_ids(sv, &l).into_iter().collect();
     assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
@@ -958,7 +958,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
     let a = net.node(1, &[sv]);
     let b = net.node(2, &[sv]);
     let c = net.node(3, &[sv]);
-    // an admin co-writer: it holds the admin token secret, so its framing keeps a's chunks
+    // an admin co-writer: it holds the admin secret, so its framing keeps a's chunks
     let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[sv]);
     let t = net.item(a, g, g, "x");
     let blob_ak = Ak::new(BLOB.ak()).unwrap();
@@ -1121,4 +1121,125 @@ fn reencrypt_loop_bounded_spec_sync_1() {
     net.advance(45 * 60_000);
     net.run();
     assert_eq!(repairs(&mut net), first + 2);
+}
+
+// spec/crypto.md §7, spec/wire.md §9: an inbox grant names the target's current admin and write
+// delete keys, so a grantee that holds the grant but not yet the target's `/keys` writes at once,
+// and a self-removal by it succeeds too; the keys it lists are the target's.
+#[test]
+fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
+    use osis_node::flows::{Delivery, Demotion, PreSync};
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let addr = net.address(sv);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.pair(b, a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice.person);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
+    // everything but the commits writing g's `/keys` reaches b directly; the grant by inbox
+    let keys_ak = Ak::new("/keys").unwrap();
+    for id in net.engine(a).commit_ids() {
+        let h = net.engine(a).header(&id).unwrap();
+        if h.aspects.iter().any(|x| x.tid == g && x.ak == keys_ak) {
+            continue;
+        }
+        let pk = net.engine(a).package(&id).unwrap().unwrap();
+        let _ = net.engine(b).ingest(&pk.bytes, pk.blobs);
+    }
+    net.engine(b).accept_inbox(&blob).unwrap();
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no /keys of g");
+    let mut m = Mutation::new();
+    m.set(g, &REG, &s("by bob")).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    let h = net.engine(b).header(&c).unwrap();
+    let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
+    assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "b lists g's admin delete key");
+    let done = net.engine(b).demote(&g, &Demotion { member: bob.person, new: None, presync: PreSync::Synced }).unwrap();
+    let _ = done;
+}
+
+// spec/crypto.md §7, spec/wire.md §9: an inbox hint counts only from a commit that applied valid,
+// touches the thing and is by an admin of it, and the first kept stays: a writer's commit naming
+// its own key as the thing's admin key, and an unrelated commit doing the same, are ignored even
+// when they arrive first; the admin's grant hint is used.
+#[test]
+fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
+    use osis_node::flows::Delivery;
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let (a, b, c) = (net.node(1, &[sv]), net.node(2, &[sv]), net.node(3, &[sv]));
+    let addr = net.address(sv);
+    let mut persons = Vec::new();
+    for n in [a, b, c] {
+        let (p, done) = net.engine(n).create_person(std::slice::from_ref(&addr)).unwrap();
+        let acts = net.sync(n).carry_out(done).unwrap();
+        net.actions(n, acts);
+        persons.push(p);
+    }
+    let (alice, bob, carl) = (&persons[0], &persons[1], &persons[2]);
+    net.run();
+    net.pair(b, a);
+    net.pair(c, a);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice.person);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+    net.engine(a).grant(&g, &carl.person, &edge).unwrap();
+    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
+    net.pair(a, c);
+    // carl, a writer of g, writes on g; carl's own person commit touches no g
+    let mut m = Mutation::new();
+    m.set(g, &REG, &s("by carl")).unwrap();
+    let cc = net.engine(c).commit(m).unwrap().unwrap();
+    let unrelated = net.engine(c).commit_ids().into_iter().find(|id| net.engine(c).header(id).unwrap().aspects.iter().all(|x| x.tid != g)).unwrap();
+    // b gets everything but g's `/keys` commits
+    let keys_ak = Ak::new("/keys").unwrap();
+    for n in [a, c] {
+        for id in net.engine(n).commit_ids() {
+            let h = net.engine(n).header(&id).unwrap();
+            if h.aspects.iter().any(|x| x.tid == g && x.ak == keys_ak) {
+                continue;
+            }
+            let pk = net.engine(n).package(&id).unwrap().unwrap();
+            let _ = net.engine(b).ingest(&pk.bytes, pk.blobs);
+        }
+    }
+    // forged inbox blobs to bob: carl's keys as g's admin and write keys
+    let ck = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0xcc; 32])).verifying_key();
+    let ks = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap();
+    let ct::KemKey::X25519MlKem768(kb) = ks.read.unwrap().kem_key;
+    let kem = osis_crypto::KemPublicKey::from_slice(&kb).unwrap();
+    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    for id in [cc, unrelated] {
+        let commit = osis_core::decode(&net.engine(c).package(&id).unwrap().unwrap().bytes, &osis_core::Limits { max_depth: 512, max_bytes: 1 << 24 }).unwrap();
+        let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: g, label: osis_core::LabelId([0; 16]), servers: vec![], delete_keys: Some((ck, ck)) }] };
+        let blob = osis_label::seal_inbox_blob(&bob.person, &kem, &payload, osis_core::WallMs(net.now()), &mut rng).unwrap();
+        let _ = net.engine(b).accept_inbox(&blob);
+    }
+    net.engine(b).accept_inbox(&genuine).unwrap();
+    assert!(net.engine(b).get_typed(&g, &ct::KEYS).unwrap().is_none(), "b holds no /keys of g");
+    let mut m = Mutation::new();
+    m.set(g, &REG, &s("by bob")).unwrap();
+    let id = net.engine(b).commit(m).unwrap().unwrap();
+    let h = net.engine(b).header(&id).unwrap();
+    let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
+    assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "the admin's hint is used");
+    assert!(h.keys.iter().all(|k| k.key != ck.to_bytes()), "no forged hint is used");
 }

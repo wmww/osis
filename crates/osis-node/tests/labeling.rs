@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Labeling on hand-built groups (spec/sync.md §1-§3, §5; spec/crypto.md §5, §7): entitlement,
-//! projection by retention class, wraps, head keys, delete tokens.
+//! projection by retention class, wraps, head keys, delete keys.
 
 mod net;
 use net::*;
@@ -39,7 +39,7 @@ fn shared_folder_entitlement_spec_sync_3() {
 }
 
 // spec/sync.md §1, §3: one blob per (reader actor, retention class); each blob's prefix carries
-// the expiry and the token commitments of its class, and opens against its header.
+// the expiry and the delete-key commitments of its class, and opens against its header.
 #[test]
 fn projection_by_retention_class_spec_sync_3() {
     let mut net = Net::new();
@@ -61,7 +61,7 @@ fn projection_by_retention_class_spec_sync_3() {
         let sealed = seal_body(body, &mut rng).unwrap();
         let p = Prefix::parse(&sealed.blob).unwrap();
         assert_eq!(p.expiry(), body.expires.map(WallMs));
-        assert_eq!(p.commitments().len(), body.tokens.len());
+        assert_eq!(p.commitments().len(), body.keys.len());
         let (_, cb) = open_commit(&sealed.blob, &sealed.key).unwrap();
         assert_eq!(cb.parts.iter().map(|x| (x.ai, x.di)).collect::<Vec<_>>(), body.parts);
         // two encryptions of one body are unlinkable blobs
@@ -91,10 +91,10 @@ fn rotation_wrap_exception_spec_crypto_5() {
 }
 
 // spec/sync.md §5, spec/crypto.md §4: a writer stamps with the head's write key, a reader only
-// opens (sync key) and deposits, an admin also holds the delete key; tokens of a `writer` body
-// match its blob's commitments for a holder of the thing's write secret.
+// opens (sync key) and deposits, an admin also holds the delete key; a holder of the thing's
+// write secret signs for the level-3 commitment of a `writer` body; a reader holds no delete key.
 #[test]
-fn head_keys_and_tokens_spec_sync_5() {
+fn head_keys_and_delete_keys_spec_sync_5() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
     let b = net.node(2, &[]);
@@ -116,8 +116,10 @@ fn head_keys_and_tokens_spec_sync_5() {
     let body = net.engine(a).bodies(&c).unwrap().remove(0);
     let sealed = seal_body(&body, &mut SeededRng::from_u64(3)).unwrap();
     let p = Prefix::parse(&sealed.blob).unwrap();
-    let toks = net.engine(b).tokens_of(&c, &body.parts);
-    assert!(toks.iter().any(|(lvl, t)| *lvl == 3 && p.match_token(t.expose()) == Some(3)), "a writer derives the level-3 token: {:?}", toks.iter().map(|x| x.0).collect::<Vec<_>>());
+    let ds = net.engine(b).delete_secrets_of(&c, &body.parts);
+    let d = [7u8; 32];
+    let k3 = p.key_at(3).unwrap();
+    assert!(ds.iter().any(|(lvl, dk)| *lvl == 3 && osis_crypto::verify_delete(&k3, &d, &dk.sign(p.salt(), &body.blind, &d)).is_ok()), "a writer holds the level-3 key: {:?}", ds.iter().map(|x| x.0).collect::<Vec<_>>());
     net.pair(a, r);
-    assert!(net.engine(r).tokens_of(&c, &body.parts).iter().all(|(lvl, _)| *lvl != 3));
+    assert!(net.engine(r).delete_secrets_of(&c, &body.parts).is_empty());
 }

@@ -110,7 +110,7 @@ pub fn salt(n: u64) -> [u8; 16] {
 }
 
 /// A blob with a version 1 prefix (salt from `n`, expiry, commitments), then body bytes.
-pub fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 17]>) -> Vec<u8> {
+pub fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 33]>) -> Vec<u8> {
     let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), commitments).unwrap().to_bytes();
     let h = hash(&n.to_le_bytes());
     b.extend((0..20 + (n % 32) as usize).map(|i| h[i % 32]));

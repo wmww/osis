@@ -95,14 +95,14 @@ fn salt(n: u64) -> [u8; 16] {
 }
 
 /// A blob with a version 1 prefix (salt from `n`, expiry, commitments), then `size` body bytes.
-fn blob_sized(n: u64, expiry: u64, commitments: Vec<[u8; 17]>, size: usize) -> Vec<u8> {
+fn blob_sized(n: u64, expiry: u64, commitments: Vec<[u8; 33]>, size: usize) -> Vec<u8> {
     let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), commitments).unwrap().to_bytes();
     let h = hash(&n.to_le_bytes());
     b.extend((0..size).map(|i| h[i % 32]));
     b
 }
 
-fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 17]>) -> Vec<u8> {
+fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 33]>) -> Vec<u8> {
     blob_sized(n, expiry, commitments, 20 + (n % 32) as usize)
 }
 
@@ -265,6 +265,9 @@ fn sync(label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, gained: Vec
 }
 
 // spec/wire.md §11.1, spec/sync.md §6: Hellos at once, clock offset from three round trips, diagnostic above a few seconds
+/// A header blind (spec/crypto.md §7).
+const HB: [u8; 16] = [0x4b; 16];
+
 #[test]
 fn handshake_and_clock_offset() {
     let net = Net::new(1, 3_000);
@@ -500,7 +503,7 @@ fn upload_rules() {
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry_by(blob(5), &old.write), l.entry(blob(6))] });
     assert!(matches!(&ev[..], [ClientEvent::EntryStatus { codes, head: Some(h), .. }] if *codes == vec![Code::NOT_HEAD, Code::OK] && *h == child), "{ev:?}");
     net.open(0, &l);
-    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6), None, None).unwrap();
+    let item = DeleteItem::sign(&l.head_keys().delete, &l.id, bid(6), None).unwrap();
     let ev = net.run(0, Command::Delete { label: l.id, items: vec![item] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let ev = net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(6))] });
@@ -569,27 +572,28 @@ fn deposit_budget() {
     assert!(evs.iter().any(|e| matches!(e, Event::Added { stamp: None, .. })));
 }
 
-// spec/sync.md §5, spec/crypto.md §7: deletes by key and by token (level 3 write key, levels 1-2 sync key), timed deletes
+// spec/sync.md §5, spec/crypto.md §7: deletes by key and by a level's delete key (level 3 write key, levels 1-2 sync key), timed deletes
 #[test]
 fn deletes() {
     let mut net = Net::new(1, 0);
     let l = Label::new();
     net.setup(&l);
     net.open(0, &l);
-    let commit = |level: u8, t: &Secret32, n: u64| osis_crypto::commitment(level, &osis_crypto::token_hash(t.expose()), &salt(n)).unwrap();
+    let dk = |t: &Secret32| osis_crypto::DeleteSecret::derive(t);
+    let commit = |level: u8, t: &Secret32, n: u64| osis_crypto::commitment(level, &dk(t).verifying_key(), &salt(n), &HB).unwrap();
     let (t1, t3, t9) = (s32(1), s32(3), s32(9));
     let b3 = blob_with(10, 0, vec![commit(3, &t3, 10)]);
     let b1 = blob_with(11, 0, vec![commit(1, &t1, 11)]);
     let b_timed = blob(12);
     net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(b_timed.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], at: Option<u64>, t: Option<&Secret32>, signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(b), at.map(WallMs), t).unwrap();
-    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, None, Some(&t3), &k.sync), item(&b3, None, Some(&t9), &k.write), item(&b1, None, Some(&t1), &k.sync)] });
-    assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK]);
-    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, None, Some(&t3), &k.write)] });
+    let item = |b: &[u8], n: u64, by: (u8, &Secret32), signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(by.1), by.0, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
+    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.sync), item(&b3, 10, (3, &t9), &k.write), item(&b3, 10, (1, &t3), &k.sync), item(&b1, 11, (1, &t1), &k.sync)] });
+    assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
+    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b3, 10, (3, &t3), &k.write)] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let (_, cursor) = events_of(&net.run(0, sync(l.id, None, vec![], vec![])));
-    let ev = net.run(0, Command::Delete { label: l.id, items: vec![item(&b_timed, Some(T0 + 5000), None, &k.delete)] });
+    let ev = net.run(0, Command::Delete { label: l.id, items: vec![DeleteItem::sign(&k.delete, &l.id, osis_label::blob_id(&b_timed), Some(WallMs(T0 + 5000))).unwrap()] });
     assert_eq!(statuses(&ev), vec![Code::OK]);
     net.store.sweep(T0 + 5000);
     let (evs, _) = events_of(&net.run(0, sync(l.id, cursor, vec![], vec![])));

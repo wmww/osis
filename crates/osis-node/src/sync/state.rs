@@ -62,8 +62,9 @@ pub enum Kind {
     /// Not opened: a chunk, tree node or page (filler wrap), a blob under an epoch not held, or
     /// a blob not fetched yet.
     Unknown,
-    /// A commit blob holding these parts.
-    Commit { commit: CommitId, parts: Vec<(usize, usize)> },
+    /// A commit blob holding these parts, with its prefix salt (a delete-key signature is made
+    /// for it, spec/crypto.md §7).
+    Commit { commit: CommitId, parts: Vec<(usize, usize)>, salt: [u8; 16] },
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
@@ -257,7 +258,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
     };
     match &e.kind {
         Kind::Unknown => w.u8(0),
-        Kind::Commit { commit, parts } => encode_parts(w.u8(1).raw(&commit.0), parts),
+        Kind::Commit { commit, parts, salt } => encode_parts(w.u8(6).raw(&commit.0).raw(salt), parts),
         Kind::Inbox(None) => w.u8(2),
         Kind::Inbox(Some(c)) => w.u8(5).raw(&c.0),
         Kind::Bad => w.u8(3),
@@ -275,10 +276,13 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         _ => None,
     };
     let kind = match r.u8()? {
-        1 => {
+        6 => {
             let commit = CommitId(r.arr()?);
-            Kind::Commit { commit, parts: decode_parts(&mut r)? }
+            let salt = r.arr()?;
+            Kind::Commit { commit, parts: decode_parts(&mut r)?, salt }
         }
+        // a commit entry stored before entries kept their blob's salt: opened again
+        1 => Kind::Unknown,
         2 => Kind::Inbox(None),
         5 => Kind::Inbox(Some(CommitId(r.arr()?))),
         3 => Kind::Bad,
@@ -1018,6 +1022,17 @@ fn decode_sent(v: &[u8]) -> Result<SentInbox> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec: none (local store format): a commit entry keeps its blob's salt (tag 6) and round
+    // trips; one stored before (tag 1, no salt) loads as not opened, never a failed load.
+    #[test]
+    fn commit_entry_salt_and_older_layout() {
+        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![(0, 1)], salt: [9; 16] } };
+        let back = decode_entry(&encode_entry(&e)).unwrap();
+        assert!(matches!(back.kind, Kind::Commit { salt, .. } if salt == [9; 16]));
+        let old = encode_parts(Wr::new().raw(&[3; WRAP_LEN]).u8(0).u8(0).u8(1).raw(&[1; 32]), &[(0, 1)]).take();
+        assert!(matches!(decode_entry(&old).unwrap().kind, Kind::Unknown));
+    }
 
     // spec/sync.md §3 (re-sends are the sender's policy): an inbox delivery record that does not
     // decode is skipped, never a failed load of the sync state.

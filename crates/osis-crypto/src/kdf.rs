@@ -57,8 +57,10 @@ pub const WRAP: &str = "wrap";
 pub const DELTA: &str = "delta";
 pub const LINK: &str = "link";
 pub const LINK_TREE: &str = "link tree";
-/// Delete tokens (spec/crypto.md §7).
-pub const DELETE_TOKEN: &str = "delete token";
+/// Delete keys, their blinding factor and blinded signing nonce (spec/crypto.md §7).
+pub const DELETE_KEY: &str = "delete key";
+pub const DELETE_BLIND: &str = "delete blind";
+pub const DELETE_NONCE: &str = "delete nonce";
 /// Label role keys (spec/sync.md §2).
 pub const LABEL_SYNC: &str = "label sync";
 pub const LABEL_WRITE: &str = "label write";
@@ -70,9 +72,9 @@ pub const LAN_TAG: &str = "lan tag";
 pub const LAN_SIG: &str = "lan sig";
 
 /// Every kdf purpose, for distinctness checks and vectors.
-pub const PURPOSES: [&str; 23] = [
+pub const PURPOSES: [&str; 25] = [
     THING_READ, THING_WRITE, THING_ADMIN, ROLE_READ, ROLE_WRITE, ROLE_ADMIN, SIGN, KEM, CREATION_NONCE, BOX, HISTORY, WRAP,
-    DELTA, LINK, LINK_TREE, DELETE_TOKEN, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
+    DELTA, LINK, LINK_TREE, DELETE_KEY, DELETE_BLIND, DELETE_NONCE, LABEL_SYNC, LABEL_WRITE, LABEL_DELETE, LABEL_DEPOSIT, LABEL_CLAIM, LAN_TAG, LAN_SIG,
 ];
 
 // Full derive_key contexts used directly (not through `kdf`).
@@ -117,7 +119,7 @@ mod tests {
         all.extend(Domain::ALL.iter().map(|d| d.as_str().to_string()));
         let set: BTreeSet<&String> = all.iter().collect();
         assert_eq!(set.len(), all.len());
-        assert_eq!(all.len(), 23 + 5 + 10);
+        assert_eq!(all.len(), 25 + 5 + 10);
     }
 
     // spec/crypto.md §1: kdf = keyed_hash(derive_key("osis v1 " + purpose, secret), input).
