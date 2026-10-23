@@ -470,6 +470,22 @@ fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
     assert_eq!(entries(&mut lp), want, "after a restart");
 }
 
+// spec/crdt.md §8, §2.2: a snapshot carrying a write stamped after the snapshot's own `ts` is bad
+// input (so a node's next stamp exceeds every stamp it holds); one stamped at it applies.
+#[test]
+fn snapshot_future_stamp_refused_spec_crdt_8() {
+    let (mut lp, d, _, _) = setup(57);
+    let m_ak = ak("/x/m");
+    lp.advance(1_000);
+    let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let later = osis_core::Ts::make(WallMs(lp.peers[2].engine.now().0 + 1_000), 0).unwrap();
+    let a = lp.peers[0].engine.tid();
+    let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, later, 1 << 42, "c", "x"));
+    assert_eq!(lp.peers[0].engine.ingest(&bad, Vec::new()).unwrap_err().class(), osis_core::ErrorClass::BadInput);
+    let ok = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "x"));
+    lp.peers[0].engine.ingest(&ok, Vec::new()).unwrap();
+}
+
 // spec/permissions.md §7 (a write is imported from a snapshot covering it, else its own commit):
 // a writer's snapshot whose frontier claims Bob's write without carrying it does not make a move
 // lose it: the copy imports it from Bob's commit (the current state holds it), and the
@@ -576,6 +592,19 @@ fn put_at(lp: &mut LocalPeer, i: usize, t: Tid, path: &[&str], v: Value) {
 // Bob's commit.
 #[test]
 fn entry_created_after_demotion_spec_perm_5_2() {
+    entry_created_after_demotion(true);
+}
+
+// spec/permissions.md §5.1 (un-merge is a function of the held set): as
+// `entry_created_after_demotion_spec_perm_5_2`, with Dave receiving Carol's write inside "late"
+// before her snapshot (dated after it, as §8 requires): "late" stays.
+#[test]
+#[ignore = "issues/unmerge-nested-write-order.md"]
+fn entry_created_after_demotion_write_first_spec_perm_5_1() {
+    entry_created_after_demotion(false);
+}
+
+fn entry_created_after_demotion(snapshot_first: bool) {
     let (mut lp, d, b, _) = setup(61);
     lp.peers.push(osis_node::local_peer::Peer::new(6100, T0).unwrap());
     lp.sync_all().unwrap();
@@ -594,12 +623,18 @@ fn entry_created_after_demotion_spec_perm_5_2() {
     sync(&mut lp, 1, 2);
     put_at(&mut lp, 2, d, &["late", "b"], s("2"));
     let st = lp.peers[2].engine.state(&d, &ak("/x/m")).unwrap().unwrap();
+    // after every stamp it carries (spec/crdt.md §8)
+    lp.advance(1);
     let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    assert!(st.max_ts().unwrap() < now);
     let snap = forge_snapshot(&mut lp, 2, d, &ak("/x/m"), now, st);
-    lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
+    let snap_id = match lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap() { osis_node::Ingested::Applied(id) => id, x => panic!("{x:?}") };
     // Dave: Alice's and Carol's commits (the snapshot among them), none of Bob's
     for from in [0, 2] {
-        let pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+        let mut pks: Vec<_> = packages(&mut lp, from).into_iter().filter(|p| lp.peers[from].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
+        if snapshot_first {
+            pks.sort_by_key(|p| p.id != snap_id);
+        }
         for pk in &pks {
             lp.deliver(3, pk).unwrap();
         }

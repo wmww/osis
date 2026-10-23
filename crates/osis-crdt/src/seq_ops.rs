@@ -189,6 +189,42 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             }
             insert_run(w, &mut out, anchor, cs);
         }
+        Op::InsertAfter { anchor, items } => {
+            // a new insert has the greatest stamp at its anchor: placed right after it (§6.1)
+            if let Some(a) = anchor
+                && !s.rec(a).is_some_and(|e| is_visible(e, text))
+            {
+                return Err(Error::Mismatch("anchor is not a visible element"));
+            }
+            let cs = contents(w, text, view, items)?;
+            if cs.is_empty() {
+                return Ok(None);
+            }
+            insert_run(w, &mut out, anchor.clone().map_or(Anchor::Head, Anchor::Dot), cs);
+        }
+        Op::DeleteDots { dots } => {
+            if dots.len() as u64 > osis_core::format::MAX_DELTA_BARE {
+                return Err(Error::Mismatch("delete longer than MAX_DELTA_BARE"));
+            }
+            if !dots.iter().all(|d| s.holds(d)) {
+                return Err(Error::Mismatch("deleted element not in the state"));
+            }
+            if dots.iter().collect::<HashSet<_>>().len() != dots.len() {
+                return Err(Error::Mismatch("element deleted twice"));
+            }
+            let d = w.delta_stamp();
+            // one record per run of consecutive dots (§5.7 delete)
+            let mut runs: Vec<(Dot, u64)> = Vec::new();
+            for x in dots {
+                match runs.last_mut() {
+                    Some((f, n)) if f.src == x.src && f.ctr.checked_add(*n) == Some(x.ctr) => *n += 1,
+                    _ => runs.push((x.clone(), 1)),
+                }
+            }
+            for (first, span) in runs {
+                out.elems_mut().insert(first, SeqElem { deleted: Some((d.clone(), true)), span, ..SeqElem::bare() });
+            }
+        }
         Op::Delete { at, len } => {
             let vis = visible(s);
             let l = &vis.0;

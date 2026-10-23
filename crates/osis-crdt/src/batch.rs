@@ -21,8 +21,8 @@ fn too_deep(op: &PathOp) -> bool {
     keys || match &op.op {
         Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
         Op::Edit { base, new } => base.deeper_than(room) || new.deeper_than(room),
-        Op::Insert { items, .. } => items.iter().any(|v| v.deeper_than(room)),
-        Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } => false,
+        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(|v| v.deeper_than(room)),
+        Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::DeleteDots { .. } => false,
     }
 }
 

@@ -726,6 +726,18 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
             }
         }
     }
+    // carried writes are stamped no later than the commit carrying them (spec/crdt.md §8,
+    // spec/permissions.md §7), so a node's next stamp exceeds every stamp it holds (§2.2)
+    for (_, _, d) in parts {
+        let carried = match d {
+            osis_commit::Decoded::Snapshot(s) => Some(&s.fragment),
+            osis_commit::Decoded::Delta(x) if h.kind == Kind::Import => Some(&x.fragment),
+            osis_commit::Decoded::Delta(_) => None,
+        };
+        if carried.and_then(osis_crdt::Fragment::max_ts).is_some_and(|t| t > h.ts) {
+            return Err(crate::error::Error::BadInput("carried write stamped after its commit"));
+        }
+    }
     for (ai, _, d) in parts {
         let (osis_commit::Decoded::Snapshot(s), Some(a)) = (d, h.aspects.get(*ai)) else { continue };
         for (c, v) in &s.authors {

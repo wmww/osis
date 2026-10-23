@@ -410,7 +410,17 @@ impl Engine {
     }
 }
 
-pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
+pub(crate) fn commit_in(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
+    let mut placed = Vec::new();
+    let r = commit_placed(tx, m, &mut placed);
+    for (tid, ak) in placed {
+        tx.end_edits(&tid, &ak);
+    }
+    r
+}
+
+/// `commit_in`, noting in `placed` the aspects whose op `Tx::place_op` resolved.
+fn commit_placed(tx: &mut Tx<'_>, mut m: Mutation, placed: &mut Vec<(Tid, Ak)>) -> Result<Option<CommitId>> {
     let node = match m.signer {
         Some(k) if tx.core.key_actors.contains_key(&k) => k,
         Some(_) => return Err(Error::Misuse("signer not held")),
@@ -478,7 +488,16 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             Some(f) => crate::engine::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
             None => crate::engine::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
+        // a local insert or delete by index into a paged sequence: through its stored placement
+        let place = match (&paths, am.ops.as_slice()) {
+            (None, [op]) => tx.place_op(&tid, &ak, op, ts)?,
+            _ => None,
+        };
+        if place.is_some() {
+            placed.push((tid, ak.clone()));
+        }
         match paths {
+            _ if place.is_some() => {}
             Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
             None => tx.load(&tid, &ak)?,
         }
@@ -490,17 +509,33 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
+        // the ops by index, should the resolved op not fit the state (a stale placement)
+        let by_index = place.as_ref().map(|_| am.ops.clone());
+        if let (Some(p), Some(op)) = (place, am.ops.first_mut()) {
+            crate::engine::pages::resolve_op(op, p);
+        }
         let lo = match m.form {
             Form::Node => tx.txn.counter(&tid, &ak)?,
             Form::Commit => next_ctr,
         };
-        let w = Writer::new(ts, own_source(m.form, node), lo);
         let empty = Fragment::default();
         let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
-        let out = match &view {
-            Some(v) => run_ops(state, w, &am.ops, v)?,
-            None => run_ops(state, w, &am.ops, &AnyView)?,
+        let run = |state: &Fragment, ops: &[PathOp]| match &view {
+            Some(v) => run_ops(state, Writer::new(ts, own_source(m.form, node), lo), ops, v),
+            None => run_ops(state, Writer::new(ts, own_source(m.form, node), lo), ops, &AnyView),
+        };
+        let out = match (run(state, &am.ops), by_index) {
+            (Ok(o), _) => o,
+            (Err(_), Some(ops)) => {
+                // load whole and resolve by index instead
+                tx.end_edits(&tid, &ak);
+                tx.load(&tid, &ak)?;
+                let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
+                am.ops = ops;
+                run(state, &am.ops)?
+            }
+            (Err(e), None) => return Err(e),
         };
         let w2 = Writer::new(ts, own_source(m.form, node), lo);
         let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
