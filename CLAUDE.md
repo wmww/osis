@@ -24,3 +24,9 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - When talking directly to humans, write especially simply and concisely. Avoid details or jargon unless critical for correctness.
 - Avoid recording dates or time estimates unless asked, remember you can always recover dates from git
 - To test, interact with and screenshot GUI apps use the gui-testing skill from https://github.com/wmww/agent-skills.
+
+## Building and testing
+- Use only the command forms in notes/testing.md (Build hygiene): `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo clippy-net`, `cargo test --release --workspace -- --ignored`, `cargo run --release --bin sim-sweep`, `cargo test-net`. Narrow with `--test it <module>::` and name filters. Never `-p`, other `--features`, or per-command `CARGO_INCREMENTAL`/`RUSTFLAGS`/`CARGO_TARGET_DIR`: each new combination builds and keeps another copy of the tree.
+- The merge gate is `tools/gate.sh` (every check in order; it sweeps the build dir itself).
+- New integration tests go in the crate's one test binary (`tests/it/`), not new `tests/*.rs` files. Tier-1 tests stay under a few seconds each and never assert on wall time.
+- Worktrees: each checkout builds into its own in-tree `target/`; `git worktree add` seeds it from the main checkout (hook: `git config core.hooksPath .githooks`, once per clone). Remove finished worktrees with `git worktree remove`.
