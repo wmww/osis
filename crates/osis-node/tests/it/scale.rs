@@ -301,13 +301,15 @@ fn text_undo_and_first_access_cost() {
     m.set(t, &TEXT, &Value::Str(text)).unwrap();
     e.commit(m).unwrap().unwrap();
     let w0 = bytes.load(Ordering::Relaxed);
+    osis_node::costs::take();
     let t1 = Instant::now();
     let mut m = Mutation::new();
     m.op(t, &TEXT, PathOp { path: vec![], op: Op::Insert { at: n / 2, items: vec![Value::Str("XYZ".into())] } }).unwrap();
     let id = e.commit(m).unwrap().unwrap();
     let insert = t1.elapsed();
     let w1 = bytes.load(Ordering::Relaxed);
-    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included)", w1 - w0);
+    let blocks = osis_node::costs::take().iter().find(|x| x.0 == "placement block write").map_or(0, |x| x.2);
+    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included), {blocks} placement blocks written", w1 - w0);
     drop(e);
     let t2 = Instant::now();
     let mut e = reopen.open(&batches, &bytes);
@@ -346,8 +348,9 @@ fn text_range_and_edit_cost() {
     let mut rng = SeededRng::from_u64(5);
     let at = (osis_crypto::RngCore::next_u64(&mut rng) % (n as u64 - 100)) as usize;
     let measure = |name: &str, t0: Instant| {
-        let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
-        println!("text {n} chars, new session: {name} {:?}, {loads} pages loaded", t0.elapsed());
+        let c = osis_node::costs::take();
+        let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+        println!("text {n} chars, new session: {name} {:?}, {} pages loaded, {} placement blocks written", t0.elapsed(), count("state page load"), count("placement block write"));
     };
     lp.peers[1].restart(41).unwrap();
     osis_node::costs::take();

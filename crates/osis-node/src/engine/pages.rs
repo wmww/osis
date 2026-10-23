@@ -665,6 +665,8 @@ fn write_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut Page
         let id = match old.remove(&b.addr()) {
             Some((o, id)) if o.same(&b) => id,
             _ => {
+                // counted: scale tests read the number of blocks written
+                let _s = crate::costs::span("placement block write");
                 let id = next;
                 next += 1;
                 txn.table_put(pt, &place_key(set, Some(id)), block_row(&b), shred)?;
