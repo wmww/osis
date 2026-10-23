@@ -762,10 +762,14 @@ impl SyncEngine {
                     changed = true;
                     dropped.insert(id);
                     self.touched.commits.insert(id);
-                    if let Some(h) = self.engine.header(&id)
-                        && h.kind.is_membership()
-                    {
-                        self.touched.keys = true;
+                    if let Some(h) = self.engine.header(&id) {
+                        if h.kind.is_membership() {
+                            self.touched.keys = true;
+                        }
+                        // a late creation record (`note_created`)
+                        let created = h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid);
+                        self.touched.things.extend(created.clone());
+                        roots.extend(created);
                     }
                 }
                 crate::Event::Roster { thing } => {

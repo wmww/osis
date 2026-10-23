@@ -29,7 +29,7 @@ pub(crate) struct Touched {
     pub things: BTreeSet<Tid>,
     /// Blobs that arrived (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
-    /// Things whose roles changed (`Core::roles_moved`).
+    /// Things whose roles changed (`Held::reach` of changed rosters and owner links).
     pub moved: BTreeSet<Tid>,
     /// Actors that got or lost secrets of their own (the reader actors under them).
     pub actors: BTreeSet<Tid>,
@@ -293,12 +293,11 @@ impl SyncEngine {
 
     /// What membership changes that leave the actor of `g` alone move under its label `l`
     /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
-    /// and of the `/label`s its home label publishes, whose roles changed (perm's components:
-    /// the target's reach, or a component evaluated anew) or whose owner chain holds a thing
-    /// whose secrets or keys a write changed (reader actors, delete keys); the label's commits
-    /// on other things whose roles changed (a superset's foreign deltas); other nodes' cards
-    /// (their author's departure); deletes waiting for a key. A label they reach takes its
-    /// roster horizon again.
+    /// and of the `/label`s its home label publishes, whose roles changed (`Held::reach` of the
+    /// changed rosters and owner links) or whose owner chain holds an actor that got or lost
+    /// secrets of its own (reader actors); the label's own commits with a delta on such a thing
+    /// (a superset's foreign deltas); other nodes' cards (their author's departure); deletes
+    /// waiting for a key. A label they reach takes its roster horizon again.
     fn membership_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
         if std::mem::take(&mut w.keys) {
             w.commits.extend(std::mem::take(&mut w.keyless));
@@ -330,12 +329,15 @@ impl SyncEngine {
                 hit = true;
             }
         }
-        for t in moved.iter().filter(|t| !closure.contains(t) && !published.contains(t)) {
-            for c in self.commits_on_thing(t) {
-                if self.state.entries_of(l, &c).next().is_some() {
-                    w.commits.insert(c);
-                    hit = true;
-                }
+        // the label's own commits once: an entry's foreign deltas read their reader actors
+        let mut seen: BTreeMap<Tid, bool> = BTreeMap::new();
+        let cs: Vec<CommitId> = self.state.by_label_commit.range((*l, CommitId([0; 32]))..=(*l, CommitId([0xff; 32]))).map(|((_, c), _)| *c).collect();
+        for c in cs {
+            let Some(h) = self.engine.header(&c) else { continue };
+            let found = h.aspects.iter().any(|a| moved.contains(&a.tid) || !actors.is_empty() && *seen.entry(a.tid).or_insert_with(|| under(&a.tid)));
+            if found {
+                w.commits.insert(c);
+                hit = true;
             }
         }
         if !moved.is_empty() {
