@@ -133,7 +133,8 @@ pub fn frag(f: &m::Frag) -> Fragment {
 /// (timing tests).
 pub fn check_lin(f: &Fragment) {
     let all = |it: &mut dyn Iterator<Item = &Fragment>| it.for_each(check_lin);
-    if !matches!(f, Fragment::Seq(s) if s.elems().len() > 10_000) {
+    let big = |f: &Fragment| matches!(f, Fragment::Seq(s) if s.elems().len() > 10_000);
+    if !big(f) && !matches!(f, Fragment::Slots(x) if x.members.values().any(big)) {
         assert_eq!(f.present(), f.written().is_some(), "presence");
     }
     match f {
@@ -148,7 +149,13 @@ pub fn check_lin(f: &Fragment) {
         Fragment::Enum(x) => all(&mut x.payloads.values()),
         Fragment::Map(x) => all(&mut x.entries.values().filter_map(|e| e.frag.as_deref())),
         Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => all(&mut elems.values().filter_map(|e| e.frag.as_deref())),
-        Fragment::Slots(x) => all(&mut x.members.values()),
+        Fragment::Slots(x) => {
+            // a lone member is chosen without a scan (§7 Read): it beats the register
+            if let (Some(r), [m]) = (&x.reg, x.members.values().collect::<Vec<_>>().as_slice()) {
+                assert!(Fragment::Register(r.clone()).all_max() <= m.all_max(), "lone member chosen");
+            }
+            all(&mut x.members.values())
+        }
         Fragment::Register(_) => {}
     }
 }

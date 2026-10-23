@@ -433,6 +433,50 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
     assert_eq!(j, s.fragment);
 }
 
+/// §7 (`seq_lin`): joins at a `Slots` position that leave its register and effective reset as
+/// they are (text edits of a text upgraded from a string) follow the text member's cached
+/// placement and read like the model (the join itself is checked against a whole pass).
+#[test]
+fn slots_join_follows_cache_spec_7() {
+    use crdt_model::value::Value as MValue;
+    // whether the join followed the cached placement: no whole pass, still cached
+    let put = |d: MFrag, m: &mut Option<MFrag>, ours: &mut Fragment| {
+        mapply(m, d.clone());
+        let _ = ours.read();
+        let _ = crate::seq_lin::probe();
+        ours.join(frag(&d));
+        let text = match &*ours {
+            Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text),
+            f => Some(f),
+        };
+        let followed = crate::seq_lin::probe().1 == 0 && matches!(text, Some(Fragment::Seq(x)) if x.lin_check().is_some());
+        crate::testutil::check_lin(ours);
+        assert_eq!(ours.read(), m.as_ref().and_then(|x| x.read()).map(|v| crate::testutil::value(&v)));
+        followed
+    };
+    let (mut joins, mut kept) = (0, 0);
+    for seed in 0..6 {
+        let mut r = Rng(seed | 1);
+        let (mut m, mut ours) = (None, Fragment::default());
+        let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+        put(mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
+        let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+        put(mops::create(&mut w, &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
+        let mut w = MWriter::new(MSource::node(3), 101 << 16, 1);
+        for k in 0..40 {
+            w.next_commit((102 + k) << 16);
+            let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) else { continue };
+            let was = matches!(ours, Fragment::Slots(_));
+            let followed = put(d, &mut m, &mut ours);
+            if was && matches!(ours, Fragment::Slots(_)) {
+                joins += 1;
+                kept += usize::from(followed);
+            }
+        }
+    }
+    assert!(joins >= 50 && kept * 10 >= joins * 9, "{kept} of {joins} followed");
+}
+
 // ---- §3.3 rule 7 for runs (writer of node 1, range [3, 6), ts 5·2^16)
 
 fn text_with(runs: Vec<Value>) -> Value {
