@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+test = false
+doctest = false
+
 [lints]
 workspace = true
 

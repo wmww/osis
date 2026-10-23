@@ -5,6 +5,13 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[lib]
+doctest = false
+
+[[bin]]
+name = "membership-model"
+test = false
+
 # Reference model: style lints off; correctness is checked by its tests.
 [lints.rust]
 unsafe_code = "forbid"

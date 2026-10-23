@@ -7,11 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+doctest = false
+
 [lints]
 workspace = true
 
 [[bin]]
 name = "osis"
+test = false
 path = "src/main.rs"
 
 [dependencies]

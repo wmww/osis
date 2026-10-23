@@ -227,6 +227,12 @@ fn run_past_counter_range_rejected_spec_2_3() {
     assert_eq!(both(&delta(5, 4)), (false, false), "element 8 lies at hi");
 }
 
+/// Mutations per commit of a differential history: 8 in tier 1, 40 with `OSIS_SLOW` (about
+/// 1 s per case in debug at 40). The case count follows `PROPTEST_CASES`.
+fn per() -> usize {
+    if std::env::var_os("OSIS_SLOW").is_some() { 40 } else { 8 }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
@@ -234,7 +240,7 @@ proptest! {
     #[test]
     fn seq_decoder_matches_model_spec_3_3(seed in any::<u64>()) {
         let inner = Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
-        if let Err(e) = differential(seed, &[Ty::Text, Ty::List(Box::new(inner))], 40) {
+        if let Err(e) = differential(seed, &[Ty::Text, Ty::List(Box::new(inner))], per()) {
             prop_assert!(false, "{}", e);
         }
     }
@@ -243,7 +249,7 @@ proptest! {
     /// sequences), and register and text at one position (snapshot `Slots`, §7), mutated.
     #[test]
     fn kitchen_sink_decoder_matches_model_spec_3_3(seed in any::<u64>()) {
-        if let Err(e) = differential(seed, &[kitchen_sink(), Ty::Register, Ty::Text], 40) {
+        if let Err(e) = differential(seed, &[kitchen_sink(), Ty::Register, Ty::Text], per()) {
             prop_assert!(false, "{}", e);
         }
     }

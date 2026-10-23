@@ -1,5 +1,5 @@
-//! osis-bench: a dependency-free bench harness (benches/, `cargo bench -p osis-bench`) and the
-//! size budgets (tests/budgets.rs, tier 2). Numbers are tracked by the nightly workflow, never
+//! osis-bench: a dependency-free bench harness (benches/, `cargo bench --workspace`) and the
+//! size budgets (tests/it/budgets.rs, tier 2). Numbers are tracked by the nightly workflow, never
 //! gated; budgets are. Conventions: notes/testing.md.
 //! Layer 9 (notes/architecture.md). Notes: notes/testing.md.
 #![forbid(unsafe_code)]
@@ -48,7 +48,7 @@ pub fn bench<T>(name: &str, bytes: Option<usize>, mut f: impl FnMut() -> T) -> f
     median
 }
 
-/// Asserts a byte budget (tests/budgets.rs): `actual <= budget`, printing both so the nightly log
+/// Asserts a byte budget (tests/it/budgets.rs): `actual <= budget`, printing both so the nightly log
 /// tracks the margin.
 pub fn assert_budget(name: &str, actual: usize, budget: usize) {
     println!("budget {name} {actual} / {budget} bytes");

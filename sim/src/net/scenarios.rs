@@ -497,7 +497,7 @@ pub fn large_edits(seed: u64) -> Res<Report> {
 /// Pass work sets against full passes (spec/sync.md §6, §7): two replicating servers, an admin
 /// and two writers writing at random under faults, then compactions (snapshots), keep-at-most
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
-/// under `with_full_passes`, it must give the same run (`sim/tests/work_sets.rs`).
+/// under `with_full_passes`, it must give the same run (`sim/tests/it/work_sets.rs`).
 pub fn work_sets(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3e7);
     let mut sim = sim("work_sets", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });

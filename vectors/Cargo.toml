@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+test = false
+doctest = false
+
 [lints]
 workspace = true
 
@@ -21,4 +25,5 @@ osis-label.workspace = true
 
 [[bin]]
 name = "gen-vectors"
+test = false
 path = "src/bin/gen-vectors.rs"

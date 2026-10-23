@@ -20,14 +20,14 @@ What runs where (details and latest numbers: notes/testing.md):
 - Tier 1, `cargo test --workspace`: everything below the sim's long scenarios; green.
 - Tier 2, `cargo test --release --workspace -- --ignored --skip sweep`: scale checks, budgets, long sim scenarios, the localhost CLI session; known failures each have an issue.
 - Nightly: fuzzing, `sim-sweep`, `models/tla/run.sh small`, coverage.
-- Behind features, off by default: QUIC (`quic`; the CLI and server binary have it on), the redb file store (`file-store`/`file-backend`), iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `--features` (tier 2).
+- Behind features, off by default: QUIC (`quic`; the CLI and server binary have it on), the redb file store (`file-store`/`file-backend`), iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2).
 
 How to run:
-- CLI: `cargo run -p osis-cli -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
-- Server: `cargo run -p osis-server --features bin -- --help` (or `osis serve`); prints `quic://host:port#key`.
-- Standard data scenarios: `cargo test -p osis-std`.
-- Sim: `cargo run --release -p osis-sim --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
-- Models: `models/tla/run.sh small` (Java); `cargo test -p crdt-model`, `-p membership-model`.
+- CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local server (notes/cli.md).
+- Server: `cargo run --bin osis-server -- --help` (or `osis serve`); prints `quic://host:port#key`.
+- Standard data scenarios: osis-std's tests in `cargo test --workspace`.
+- Sim: `cargo run --release --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
+- Models: `models/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --release --bin membership-model`.
 
 Known open (issues/): owner tradeoffs stated in user terms (crdt-undo-absent-positions, aspect-key-format); cost residues (perm-eval-cost, node-core-gaps, node-sequences-not-paged, crdt-seq-linearization-cost); rough edges (node-sync-gaps, node-chain-check-skips-owner-links, perm-resnapshot-self-undermining-drop (test detector only), link-race-edge-only-pending); api-deferred (queries are a design pass); tests-unbuilt (10^4-seed sweep, model refactors).
 
