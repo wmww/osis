@@ -1174,8 +1174,12 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIn
             }
             if base + y.1 > lo {
                 let Some(runs) = get_block(txn, pt, set, y)? else { return damaged() };
-                let vis = runs.iter().filter(|r| r.shown).flat_map(|r| (0..r.n).map(|i| r.dot(i)));
-                dots.extend(vis.skip(lo.saturating_sub(base)).take(hi.min(base + y.1) - base.max(lo)));
+                let mut v = base;
+                for r in runs.iter().filter(|r| r.shown) {
+                    let n = usize::try_from(r.n).unwrap_or(usize::MAX);
+                    dots.extend((lo.max(v)..hi.min(v.saturating_add(n))).map(|i| r.dot((i - v) as u64)));
+                    v = v.saturating_add(n);
+                }
             }
             base += y.1;
         }
