@@ -173,6 +173,9 @@ pub(crate) struct Walked {
     pub edges: Edges,
     pub applied: BTreeMap<WriteId, Applied>,
     pub demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
+    /// Class falls (§5.1 step 4) by (node, thing), in walk order: the points of the writes
+    /// whose audit of the node's writes on the thing ran.
+    pub falls: BTreeMap<(Tid, Tid), Vec<Point>>,
     /// The rest of the walk's state, to continue it past its last write (`Timeline::extend`).
     pub rest: Rest,
 }
@@ -211,9 +214,12 @@ impl Walked {
                 if let Some(v) = self.demotions.get(&(*x, *o)).cloned() {
                     self.demotions.insert((*x, *l), v);
                 }
+                if let Some(v) = self.falls.get(&(*x, *o)).cloned() {
+                    self.falls.insert((*x, *l), v);
+                }
             }
         }
-        let has = self.rest.log.iter().any(|u| matches!(u, Undo::Demotion((_, n)) if deps.contains_key(n)));
+        let has = self.rest.log.iter().any(|u| matches!(u, Undo::Demotion((_, n)) | Undo::Fall((_, n)) if deps.contains_key(n)));
         if !has {
             return Some(());
         }
@@ -222,12 +228,16 @@ impl Walked {
         let mut log = Vec::with_capacity(old.len());
         for u in old {
             at.push(log.len());
-            let k = if let Undo::Demotion(k) = &u { Some(*k) } else { None };
+            let k = match &u {
+                Undo::Demotion(k) => Some((*k, false)),
+                Undo::Fall(k) => Some((*k, true)),
+                _ => None,
+            };
             log.push(u);
-            if let Some((x, n)) = k {
+            if let Some(((x, n), fall)) = k {
                 let mut stack: Vec<Tid> = deps.get(&n).cloned().unwrap_or_default();
                 while let Some(l) = stack.pop() {
-                    log.push(Undo::Demotion((x, l)));
+                    log.push(if fall { Undo::Fall((x, l)) } else { Undo::Demotion((x, l)) });
                     stack.extend(deps.get(&l).into_iter().flatten().copied());
                 }
             }
@@ -266,6 +276,7 @@ pub(crate) enum Undo {
     Candidate(CommitId, Option<Applied>),
     ByAuthorTarget((Tid, Tid)),
     Demotion((Tid, Tid)),
+    Fall((Tid, Tid)),
 }
 
 pub(crate) struct Outcome {
@@ -449,6 +460,7 @@ struct Pass<'a> {
     candidates: BTreeMap<CommitId, Applied>,
     history: Vec<Change>,
     demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
+    falls: BTreeMap<(Tid, Tid), Vec<Point>>,
     /// `roles_from` per node over the current edges: the answer, the ts it was computed at
     /// and the earliest `until` it followed. Dropped when an edge of a node it reaches changes.
     roles: BTreeMap<Tid, Roles>,
@@ -474,18 +486,18 @@ impl<'a> Pass<'a> {
     }
 
     fn new(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, initial: Edges) -> Pass<'a> {
-        Pass::resume(input, epoch, dropped, Walked { edges: initial.clone(), initial, history: Vec::new(), applied: BTreeMap::new(), demotions: BTreeMap::new(), rest: Rest::default() })
+        Pass::resume(input, epoch, dropped, Walked { edges: initial.clone(), initial, history: Vec::new(), applied: BTreeMap::new(), demotions: BTreeMap::new(), falls: BTreeMap::new(), rest: Rest::default() })
     }
 
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
-        let Walked { initial, history, edges, applied, demotions, rest } = w;
+        let Walked { initial, history, edges, applied, demotions, falls, rest } = w;
         let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks } = rest;
-        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, roles: BTreeMap::new(), log, marks }
+        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), log, marks }
     }
 
     fn finish(self) -> (Walked, BTreeMap<WriteId, Point>) {
         let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter, candidates: self.candidates, log: self.log, marks: self.marks };
-        (Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, rest }, self.dropped)
+        (Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, falls: self.falls, rest }, self.dropped)
     }
 
     /// Back to the state before item `i`.
@@ -545,6 +557,14 @@ impl<'a> Pass<'a> {
                         v.pop();
                         if v.is_empty() {
                             self.demotions.remove(&k);
+                        }
+                    }
+                }
+                Undo::Fall(k) => {
+                    if let Some(v) = self.falls.get_mut(&k) {
+                        v.pop();
+                        if v.is_empty() {
+                            self.falls.remove(&k);
                         }
                     }
                 }
@@ -757,6 +777,8 @@ impl<'a> Pass<'a> {
                     }
                 }
                 if now.class < held.class {
+                    self.falls.entry((x, n)).or_default().push(aud.point);
+                    self.log.push(Undo::Fall((x, n)));
                     grew |= self.audit(&x, &n, now.class, held.class, aud);
                 }
             }

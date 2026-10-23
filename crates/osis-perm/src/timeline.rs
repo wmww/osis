@@ -235,6 +235,11 @@ impl Timeline {
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
         self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
+    /// Points of the writes that dropped `node`'s class on `thing` in the settled walk (§5.1
+    /// step 4), in timeline order.
+    pub fn falls(&self, node: &Tid, thing: &Tid) -> &[Point] {
+        self.walked.falls.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
+    }
     pub fn membership_commit(&self, id: &CommitId) -> Option<&Arc<MembershipCommit>> {
         self.commits.get(id)
     }

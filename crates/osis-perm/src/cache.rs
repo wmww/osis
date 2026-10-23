@@ -21,7 +21,7 @@ use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-const FORMAT: &[u8] = b"osis-perm walk cache 1";
+const FORMAT: &[u8] = b"osis-perm walk cache 2";
 
 /// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
 /// held `/created` records (by tid; a record's tid fixes its content).
@@ -356,6 +356,14 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             w.bool(d.ledger);
         }
     }
+    w.len(wk.falls.len());
+    for (k, ps) in &wk.falls {
+        w.pair(k);
+        w.len(ps.len());
+        for p in ps {
+            w.point(p);
+        }
+    }
     let r = &wk.rest;
     w.len(r.prior.len());
     for (k, e) in &r.prior {
@@ -444,6 +452,10 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             }
             Undo::Demotion(k) => {
                 w.u8(8);
+                w.pair(k);
+            }
+            Undo::Fall(k) => {
+                w.u8(9);
                 w.pair(k);
             }
         }
@@ -730,6 +742,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         }
         demotions.insert(k, v);
     }
+    let falls = (0..r.len()?).map(|_| Some((r.pair()?, (0..r.len()?).map(|_| r.point()).collect::<Option<Vec<_>>>()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let prior = (0..r.len()?).map(|_| Some((r.pair()?, r.edge()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let dead = (0..r.len()?).map(|_| r.pair()).collect::<Option<BTreeSet<_>>>()?;
     let prior_node = (0..r.len()?).map(|_| Some((r.pair()?, r.edge_map()?))).collect::<Option<BTreeMap<_, _>>>()?;
@@ -748,6 +761,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
             6 => Undo::Candidate(r.cid()?, r.opt(R::applied)?),
             7 => Undo::ByAuthorTarget(r.pair()?),
             8 => Undo::Demotion(r.pair()?),
+            9 => Undo::Fall(r.pair()?),
             _ => return None,
         });
     }
@@ -761,6 +775,6 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         return None;
     }
     let rest = Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks };
-    let walked = Walked { initial, history, edges, applied, demotions, rest };
+    let walked = Walked { initial, history, edges, applied, demotions, falls, rest };
     Some(Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach })
 }

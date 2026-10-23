@@ -654,7 +654,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_core::CommitId])
 }
 
 // spec/permissions.md §5.1 step 4 (D only grows), §6 (epoch starts; a re-snapshot's roster):
-// issues/perm-resnapshot-self-undermining-drop.md, seed 6's shape. n0 removes A2 from A0 (W,
+// osis-perm joint neutrality seed 6's shape (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W,
 // unseen by n1) and grants n1 write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The
 // full walk drops W and G (R is a fall while W stands) and keeps them dropped after R stops being
 // one; n1's roster snapshot of A0 has A2 admin, so replayed R is no fall and G stands. Device A
