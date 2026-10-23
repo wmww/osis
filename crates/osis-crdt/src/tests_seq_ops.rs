@@ -1343,7 +1343,7 @@ fn placement_blocks_read_by_index_spec_6() {
     let mut a = Replica::new(1);
     let text: String = (0..3000).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
     a.commit(1, &[op(Op::Set(s(&text)))], &text_view());
-    let vis = |f: &Fragment| f.placement().unwrap().iter().flat_map(|b| b.visible().cloned().collect::<Vec<_>>()).collect::<Vec<_>>();
+    let vis = |f: &Fragment| f.placement().unwrap().0.iter().flat_map(|b| b.visible().cloned().collect::<Vec<_>>()).collect::<Vec<_>>();
     for (k, o) in [Op::Insert { at: 1500, items: vec![s("XYZ")] }, Op::Delete { at: 10, len: 3 }, Op::Move { at: 2000, len: 4, to: 7 }].into_iter().enumerate() {
         a.commit(k as u64 + 2, &[op(o)], &text_view());
         // the blocks are a whole pass's
@@ -1353,4 +1353,90 @@ fn placement_blocks_read_by_index_spec_6() {
         assert_eq!(a.state.read_elems(&dots), Some(s(&all.chars().skip(1490).take(30).collect::<String>())), "step {k}");
         assert_eq!(a.state.read_elems(&a.state.visible_range(0..usize::MAX).unwrap()), Some(s(&all)));
     }
+}
+
+/// The placement order of a sequence `f` (§6.1), hidden elements included: (element, shown).
+fn full_order(f: &Fragment) -> Vec<(crate::Dot, bool)> {
+    let Fragment::Seq(sq) = f else { return Vec::new() };
+    let l = sq.lin();
+    l.p.iter_from(0).flat_map(|r| (0..r.span).map(move |i| (crate::seq_span::nth(&r.dot, i), r.shown))).collect()
+}
+
+/// §5.7 insert, delete; §6.1: on states from random concurrent histories (some commits missing:
+/// hidden subtrees; moves; range records from a snapshot), an insert by anchor (the visible
+/// element before the index, or HEAD) and a delete by the dots of the placement slice write what
+/// the same ops by index write; the new elements land directly after their anchor in the
+/// placement order (a new insert has the greatest stamp there), and a delete changes no element's
+/// place, only its visibility. What a node keeping the placement apart relies on.
+#[test]
+fn resolved_insert_delete_match_index_ops_spec_6_1() {
+    let mut r = Rng(31);
+    let (mut inserts, mut deletes) = (0, 0);
+    for round in 0..80 {
+        let text = round % 2 == 0;
+        let ty = if text { Ty::Text } else { list_ty() };
+        let view = TyView(ty.clone());
+        let commits = crate::testutil::history(&mut r, std::slice::from_ref(&ty), 3, 6);
+        let mut ms = None;
+        for c in &commits {
+            if !r.chance(1, 8) {
+                mapply(&mut ms, c.delta.clone());
+            }
+        }
+        let Some(mut ms) = ms else { continue };
+        ms.prune(None);
+        let mut st = frag(&ms);
+        if r.chance(1, 3) {
+            st = rebooted(&st);
+        }
+        if !matches!(st, Fragment::Seq(_)) {
+            continue;
+        }
+        for k in 0..6u64 {
+            let order = full_order(&st);
+            let vis: Vec<crate::Dot> = order.iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
+            let n = vis.len();
+            let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
+            let (by_index, resolved) = if n == 0 || r.chance(1, 2) {
+                let at = r.below(n + 1);
+                let items = if text { vec![s("pq")] } else { vec![value(&random_value(&mut r, match &ty { Ty::List(e) => e, _ => unreachable!() }, 1))] };
+                let anchor = at.checked_sub(1).map(|i| vis[i].clone());
+                inserts += 1;
+                (Op::Insert { at, items: items.clone() }, Op::InsertAfter { anchor, items })
+            } else {
+                let at = r.below(n);
+                let len = 1 + r.below((n - at).min(5));
+                let i0 = order.iter().position(|x| x.0 == vis[at]).unwrap();
+                let i1 = order.iter().position(|x| x.0 == vis[at + len - 1]).unwrap();
+                deletes += 1;
+                (Op::Delete { at, len }, Op::DeleteDots { dots: order[i0..=i1].iter().map(|x| x.0.clone()).collect() })
+            };
+            let d1 = crate::ops::leaf(&mut w(), Some(&st), &view, &by_index, true).unwrap();
+            let d2 = crate::ops::leaf(&mut w(), Some(&st), &view, &resolved, true).unwrap();
+            assert_eq!(d1, d2, "round {round} step {k}: {by_index:?}");
+            let Some(d) = d2 else { continue };
+            let mut next = st.clone();
+            next.join(d);
+            let after = full_order(&next);
+            match &resolved {
+                Op::InsertAfter { anchor, .. } => {
+                    let at = anchor.as_ref().map_or(0, |a| order.iter().position(|x| x.0 == *a).unwrap() + 1);
+                    let new = after.len() - order.len();
+                    let mut want = order.clone();
+                    let made: Vec<(crate::Dot, bool)> = after[at..at + new].to_vec();
+                    assert!(made.iter().all(|(d, shown)| *shown && d.src == node(9)), "round {round} step {k}: new elements directly after the anchor");
+                    want.splice(at..at, made);
+                    assert_eq!(after, want, "round {round} step {k}");
+                }
+                Op::DeleteDots { dots } => {
+                    let gone: std::collections::HashSet<&crate::Dot> = dots.iter().collect();
+                    let want: Vec<(crate::Dot, bool)> = order.iter().map(|(d, sh)| (d.clone(), *sh && !gone.contains(d))).collect();
+                    assert_eq!(after, want, "round {round} step {k}");
+                }
+                _ => unreachable!(),
+            }
+            st = next;
+        }
+    }
+    assert!(inserts > 100 && deletes > 100, "{inserts} inserts, {deletes} deletes");
 }

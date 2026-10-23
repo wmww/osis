@@ -478,6 +478,8 @@ pub(crate) trait SeqRead {
     fn placed(&self) -> Arc<Lin>;
     /// The record starting at `d` (a visible element's is its own).
     fn rec(&self, d: &Dot) -> Option<&SeqElem>;
+    /// Whether a record holds element `d`.
+    fn holds(&self, d: &Dot) -> bool;
 }
 
 impl SeqRead for Seq {
@@ -489,6 +491,9 @@ impl SeqRead for Seq {
     }
     fn rec(&self, d: &Dot) -> Option<&SeqElem> {
         self.elems.get(d)
+    }
+    fn holds(&self, d: &Dot) -> bool {
+        crate::seq_span::find(&self.elems, d).is_some()
     }
 }
 
@@ -586,6 +591,9 @@ impl SeqRead for Layered<'_> {
     }
     fn rec(&self, d: &Dot) -> Option<&SeqElem> {
         self.top.get(d).or_else(|| self.base.elems.get(d))
+    }
+    fn holds(&self, d: &Dot) -> bool {
+        crate::seq_span::find(&self.top, d).is_some() || crate::seq_span::find(&self.base.elems, d).is_some()
     }
 }
 

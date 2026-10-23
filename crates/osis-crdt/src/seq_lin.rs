@@ -123,6 +123,10 @@ impl PlacedBlock {
     pub fn visible(&self) -> impl Iterator<Item = &Dot> + '_ {
         self.0.rows.iter().filter(|r| r.shown).map(|r| &r.dot)
     }
+    /// Every placed node in order, hidden ones included: first element, element count, shown.
+    pub fn rows(&self) -> impl Iterator<Item = (&Dot, u64, bool)> + '_ {
+        self.0.rows.iter().map(|r| (&r.dot, r.span, r.shown))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -767,6 +771,11 @@ impl Lin {
         let cyc = placed.cyc.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect();
         let at = Lin::map_of(&placed, p.cap);
         Lin { p, waiting: placed.waiting, cyc, at }
+    }
+
+    /// Whether an anchor names no element (a write waits for its creation).
+    pub(crate) fn waits(&self) -> bool {
+        !self.waiting.is_empty()
     }
 
     /// Rows, blocks and block size (tests).

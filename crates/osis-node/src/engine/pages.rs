@@ -646,7 +646,7 @@ fn write_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut Page
     if !fresh {
         clear_placement(txn, pt, set, shred)?;
     }
-    let blocks = c.placement().ok_or(Error::Corrupt("state sequence"))?;
+    let blocks = c.placement().ok_or(Error::Corrupt("state sequence"))?.0;
     let mut out = Vec::new();
     for (id, b) in (0u64..).zip(blocks.into_iter().filter(|b| b.shown() > 0)) {
         // counted: scale tests read the number of blocks written

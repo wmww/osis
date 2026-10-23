@@ -97,6 +97,14 @@ pub enum Op {
     Insert { at: usize, items: Vec<Value> },
     /// Sequence delete of `len` visible elements from `at` (§5.7).
     Delete { at: usize, len: usize },
+    /// `Insert` with its anchor resolved (§5.7, §6.1): after the visible element `anchor`
+    /// (`None`: HEAD). A caller holding the placement apart (a node's stored placement) writes
+    /// by anchor without the state's placement; the anchor's record must be in the state.
+    InsertAfter { anchor: Option<Dot>, items: Vec<Value> },
+    /// `Delete` with its range resolved (§5.7): `dots` is the slice of the placement order from
+    /// the first to the last visible element deleted, hidden elements inside included. Each must
+    /// lie in a record of the state.
+    DeleteDots { dots: Vec<Dot> },
     /// Sequence move of `len` visible elements from `at` so the range starts at index `to` of the
     /// sequence without it (§5.7).
     Move { at: usize, len: usize, to: usize },
@@ -460,7 +468,7 @@ pub(crate) fn leaf<V: View>(w: &mut Writer, cur: Option<&Fragment>, view: &V, op
                 .ok_or(Error::Mismatch("inc needs a counter, max or min"))?;
             Ok(Some(contribution(w, kind, a.clone())))
         }
-        Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. } => {
+        Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. } | Op::InsertAfter { .. } | Op::DeleteDots { .. } => {
             let text = seq_text(view, op)?;
             let slot = present_slot(cur, if text { Encoding::Text } else { Encoding::List });
             let s = match slot.as_deref() {

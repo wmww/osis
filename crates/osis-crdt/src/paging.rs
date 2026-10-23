@@ -56,11 +56,15 @@ impl Fragment {
         })
     }
 
-    /// A sequence's placement (§6) as blocks of its visible elements in order (built on first
-    /// use, then cached); `None` for other encodings.
-    pub fn placement(&self) -> Option<Vec<crate::seq_lin::PlacedBlock>> {
+    /// A sequence's placement (§6) as blocks of its placed nodes in order (built on first use,
+    /// then cached), and whether an anchor names no element (a write waits for its creation);
+    /// `None` for other encodings.
+    pub fn placement(&self) -> Option<(Vec<crate::seq_lin::PlacedBlock>, bool)> {
         match self.chosen_member() {
-            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.blocks()),
+            MemberRef::Frag(Fragment::Seq(s)) => {
+                let l = s.lin();
+                Some((l.p.blocks(), l.waits()))
+            }
             _ => None,
         }
     }
