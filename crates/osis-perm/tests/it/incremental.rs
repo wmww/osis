@@ -28,6 +28,9 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
             if part.demotions(n, &t) != full.demotions(n, &t) {
                 return Some(format!("demotions of {n:?} on {t:?}"));
             }
+            if part.falls(n, &t) != full.falls(n, &t) {
+                return Some(format!("falls of {n:?} on {t:?}: part {:?} full {:?}", part.falls(n, &t), full.falls(n, &t)));
+            }
         }
         if part.epoch_start(&t) != full.epoch_start(&t) {
             return Some(format!("epoch start of {t:?}"));
@@ -528,6 +531,7 @@ fn extend_over_commits_and_leaves_together() {
         for t in after.things() {
             for n in &nodes {
                 assert_eq!(tl.demotions(n, &t), full.demotions(n, &t), "sample {s}: demotions of {n:?} on {t:?}");
+                assert_eq!(tl.falls(n, &t), full.falls(n, &t), "sample {s}: falls of {n:?} on {t:?}");
                 assert_eq!(tl.standing(n, &t, At::END), full.standing(n, &t, At::END), "sample {s}");
             }
         }

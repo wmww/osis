@@ -27,6 +27,8 @@ pub(crate) struct Held {
     created: BTreeMap<Tid, CreationRecord>,
     /// Member -> things it is named on (edge writes, rosters, ledgers), with counts.
     members: BTreeMap<Tid, BTreeMap<Tid, usize>>,
+    /// Thing -> members named on it (the same pairs as `members`).
+    named: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Owner -> things it owns (by creation records).
     owned: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> what it holds here (an ID's edge commit and roster snapshots).
@@ -34,8 +36,8 @@ pub(crate) struct Held {
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
     /// Count changes (rollbacks included), of anything and of what `validity::reaches` reads:
-    /// the edge writes, a record replaced or removed, and a new owner link to a thing that
-    /// leads further (named as a member, owning something) (`apply::waits`).
+    /// the edge writes, a record replaced or removed, and a new record of a thing named as a
+    /// member or owning a held thing (its owner link) (`apply::waits`).
     generation: u64,
     edges: u64,
     /// Things whose creation record `create` added since `take_records`.
@@ -68,9 +70,9 @@ impl Held {
         self.members.get(member).into_iter().flat_map(|m| m.keys())
     }
 
-    /// Things `owner` owns (by held creation records).
-    pub fn owned(&self, owner: &Tid) -> impl Iterator<Item = &Tid> {
-        self.owned.get(owner).into_iter().flatten()
+    /// Members named on `thing` (edge writes, rosters, ledgers).
+    pub fn members_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
+        self.named.get(thing).into_iter().flatten()
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
@@ -107,8 +109,9 @@ impl Held {
         }
         self.touched.insert(t);
         self.generation += 1;
-        let leads = matches!(self.created.get(&t), Some(CreationRecord::Thing { .. })) && (self.members.contains_key(&t) || self.owned.get(&t).is_some_and(|o| !o.is_empty()));
-        if old.is_some() || leads {
+        // `reaches` climbs from a member to its owners: a record of a member or of an owner
+        // of held things may complete a path
+        if old.is_some() || self.members.contains_key(&t) || self.owned.get(&t).is_some_and(|o| !o.is_empty()) {
             self.edges += 1;
         }
         old
@@ -120,10 +123,17 @@ impl Held {
             let n = e.entry(t).or_default();
             if add {
                 *n += 1;
+                self.named.entry(t).or_default().insert(m);
             } else {
                 *n = n.saturating_sub(1);
                 if *n == 0 {
                     e.remove(&t);
+                    if let Some(x) = self.named.get_mut(&t) {
+                        x.remove(&m);
+                        if x.is_empty() {
+                            self.named.remove(&t);
+                        }
+                    }
                 }
             }
             if e.is_empty() {

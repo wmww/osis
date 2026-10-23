@@ -260,16 +260,23 @@ impl World {
     }
 }
 
-/// Sticky residue (notes/permissions.md, models/tla/membership M2): the drops whose cause R is,
-/// in the settled walk, not an applied fall of the dropped write's author on its target (R was
-/// dropped, or with the write dropped R is no fall). They stay dropped since D only grows, so
-/// the answer depends on the order drops were found, and a roster snapshot can repair them.
+/// Sticky residue (notes/permissions.md, models/tla/membership M2): the drops whose cause R is
+/// not, in the settled walk, an applied fall of the dropped write's author X on its target N
+/// past the write's class (R was dropped, or with the write dropped R is no fall, or not
+/// through that class). The write's class is X's class on N just before it in the settled
+/// walk. They stay dropped since D only grows, so the answer depends on the order drops were
+/// found, and a roster snapshot can repair them.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
     let by = |w: &WriteId| match w {
-        WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target))),
-        WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing)),
+        WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
+        WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
     };
-    tl.dropped().iter().filter(|(w, p)| by(w).is_none_or(|(x, n)| !tl.falls(&x, &n).contains(p))).map(|(w, _)| *w).collect()
+    let audits = |w: &WriteId, p: &osis_perm::Point| {
+        let Some((x, n, at)) = by(w) else { return false };
+        let class = tl.class(&x, &n, osis_perm::At::before(at));
+        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held)
+    };
+    tl.dropped().iter().filter(|(w, p)| !audits(w, p)).map(|(w, _)| *w).collect()
 }
 
 /// Whether `tl` has sticky residue (`residue`).

@@ -30,4 +30,4 @@ pub use roster::RosterState;
 pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
 pub use types::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, WriteId, MEMBERS};
-pub use walk::{Applied, Attr, Demotion};
+pub use walk::{Applied, Attr, Demotion, Fall};

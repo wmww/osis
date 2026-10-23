@@ -802,3 +802,33 @@ fn owner_chain_depth_edge_chain_spec_perm_1() {
         }
     }
 }
+
+// spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it
+// owns thousands of things that own more (more than any walk-size cap): its write on C
+// applies (the chain search goes backward from C, never through n0's owned things).
+#[test]
+#[ignore = "tier 2"]
+fn chain_found_past_owned_flood_spec_perm_4() {
+    let mut lp = net(2, 77);
+    lp.sync_all().unwrap();
+    let n0 = lp.peers[0].engine.tid();
+    let g1 = new_thing(&mut lp, 1);
+    let g2 = new_thing(&mut lp, 1);
+    let c = new_thing(&mut lp, 1);
+    lp.sync_all().unwrap();
+    set_edge(&mut lp.peers[1].engine, g1, n0, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[1].engine, g2, g1, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[1].engine, c, g2, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    for _ in 0..21 {
+        let mut m = Mutation::new();
+        for _ in 0..200 {
+            let a = lp.peers[0].engine.new_thing(&mut m, n0);
+            lp.peers[0].engine.new_thing(&mut m, a);
+        }
+        lp.peers[0].commit(m).unwrap();
+    }
+    write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")));
+}

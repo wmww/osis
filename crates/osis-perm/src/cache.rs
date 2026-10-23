@@ -16,7 +16,7 @@ use crate::graph::{Class, Edges, Owner, Owners};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId};
-use crate::walk::{Applied, Attr, Change, Demotion, Input, Outcome, Rest, Undo, Walked};
+use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Rest, Undo, Walked};
 use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -360,8 +360,10 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     for (k, ps) in &wk.falls {
         w.pair(k);
         w.len(ps.len());
-        for p in ps {
-            w.point(p);
+        for f in ps {
+            w.point(&f.point);
+            w.class(f.now);
+            w.class(f.held);
         }
     }
     let r = &wk.rest;
@@ -742,7 +744,8 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         }
         demotions.insert(k, v);
     }
-    let falls = (0..r.len()?).map(|_| Some((r.pair()?, (0..r.len()?).map(|_| r.point()).collect::<Option<Vec<_>>>()?))).collect::<Option<BTreeMap<_, _>>>()?;
+    let fall = |r: &mut R| Some(Fall { point: r.point()?, now: r.class()?, held: r.class()? });
+    let falls = (0..r.len()?).map(|_| Some((r.pair()?, (0..r.len()?).map(|_| fall(r)).collect::<Option<Vec<_>>>()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let prior = (0..r.len()?).map(|_| Some((r.pair()?, r.edge()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let dead = (0..r.len()?).map(|_| r.pair()).collect::<Option<BTreeSet<_>>>()?;
     let prior_node = (0..r.len()?).map(|_| Some((r.pair()?, r.edge_map()?))).collect::<Option<BTreeMap<_, _>>>()?;

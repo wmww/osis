@@ -63,7 +63,7 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     // a snapshot may repair sticky residue (models/tla/membership MC_sticky_snap): it only
     // undoes drops, never adds them, and only residue drops
     let undone: BTreeSet<WriteId> = after.applied.iter().chain(&compacted.applied).filter(|w| !before.applied.contains(w)).copied().collect();
-    if !residue.is_empty() && before.applied.is_subset(&after.applied) && before.applied.is_subset(&compacted.applied) && undone.is_subset(&residue) {
+    if !undone.is_empty() && before.applied.is_subset(&after.applied) && before.applied.is_subset(&compacted.applied) && undone.is_subset(&residue) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
