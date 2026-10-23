@@ -4,6 +4,7 @@
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;
+use osis_core::CommitId;
 use crate::error::{Error, Result};
 use osis_core::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
@@ -246,6 +247,10 @@ impl Core {
     /// Notes `/keys` of `actor`: keysets mean secrets of its own (spec/permissions.md §3).
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
+            // its published delete keys replace any inbox hint
+            if self.delete_hints.contains_key(actor) {
+                self.delete_hints.remove(actor);
+            }
             if self.own_keys.insert(*actor) {
                 // reader actors of things below it change
                 self.bodies.clear();
@@ -322,6 +327,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &[Creation
             _ => None,
         };
         // else the keys an inbox payload named, until `/keys` arrives
+        tx.core.promote_hints();
         let hinted = || match tx.core.delete_hints.get(&b) {
             Some(Value::List(x)) => x.get(usize::from(r != Role::Admin)).and_then(|v| if let Value::Bytes(k) = v { VerifyingKey::from_slice(k).ok() } else { None }),
             _ => None,
@@ -352,21 +358,52 @@ impl crate::Engine {
         self.run(|tx| own_delete_keys(tx, &t))
     }
 
-    /// Notes the delete keys an inbox payload names (spec/wire.md §9): listed for those things
-    /// until their `/keys` arrives. As trustworthy as the granter; a lie only spoils deletion.
-    pub(crate) fn note_delete_hints(&mut self, things: &[osis_label::InboxThing]) -> Result<()> {
+    /// Notes the delete keys the inbox payload of commit `c` names (spec/wire.md §9) as
+    /// candidates: kept only once `c` applies valid ([`Core::promote_hints`]).
+    pub(crate) fn note_delete_hints(&mut self, c: CommitId, things: &[osis_label::InboxThing]) -> Result<()> {
         let hints: Vec<(Tid, Value)> = things.iter().filter_map(|t| t.delete_keys.map(|(a, w)| (t.tid, Value::List(vec![Value::Bytes(a.to_bytes().to_vec()), Value::Bytes(w.to_bytes().to_vec())])))).collect();
         if hints.is_empty() {
             return Ok(());
         }
         self.run(|tx| {
-            for (t, v) in hints {
-                if tx.core.delete_hints.get(&t) != Some(&v) {
-                    tx.core.delete_hints.insert(t, v);
-                }
+            let cands = &mut tx.core.hint_candidates;
+            if !cands.contains_key(&c) && cands.len() >= MAX_HINT_COMMITS {
+                cands.pop_first();
             }
+            cands.entry(c).or_insert(hints);
+            tx.core.promote_hints();
             Ok(())
         })
+    }
+}
+
+/// Inbox commits whose hints wait for their commit to apply.
+const MAX_HINT_COMMITS: usize = 64;
+
+impl Core {
+    /// Keeps the hints of candidate commits that applied: a thing's hint only from a commit
+    /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
+    /// only while no hint and no `/keys` with keysets is held for it (the first stays).
+    pub(crate) fn promote_hints(&mut self) {
+        let applied: Vec<CommitId> = self.hint_candidates.keys().filter(|c| self.commits.contains_key(c)).copied().collect();
+        for c in applied {
+            let Some(hints) = self.hint_candidates.remove(&c) else { continue };
+            let Some(m) = self.commits.get(&c) else { continue };
+            let h = m.header.clone();
+            let ok: Vec<(Tid, Value)> = hints
+                .into_iter()
+                .filter(|(t, _)| {
+                    let mut touched = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).peekable();
+                    touched.peek().is_some() && touched.all(|(i, _)| m.valid.get(i).copied().unwrap_or(false))
+                })
+                .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
+                .collect();
+            for (t, v) in ok {
+                if !self.delete_hints.contains_key(&t) && !self.own_keys.contains(&t) {
+                    self.delete_hints.insert(t, v);
+                }
+            }
+        }
     }
 }
 

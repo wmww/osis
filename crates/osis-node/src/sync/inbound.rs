@@ -416,8 +416,10 @@ impl SyncEngine {
             for s in keys {
                 let kem = role_kem(&s);
                 if let Ok((_, payload)) = osis_label::open_inbox_blob(&bytes, &actor, &kem) {
-                    self.engine.note_delete_hints(&payload.things)?;
                     let pt = osis_core::encode(&payload.commit);
+                    if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
+                        self.engine.note_delete_hints(c.id(), &payload.things)?;
+                    }
                     for t in &payload.things {
                         if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
                             // a sender's word: servers only, never a node to dial (`peer://`)

@@ -926,6 +926,13 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let old_head = net.server_path(sv, &l).last().unwrap().clone();
     let sync = net.engine(w).head_keys(&g, gl.index, &old_head).unwrap().sync.unwrap();
     let hb = net.engine(w).header(&cw).unwrap().blind;
+    // positive control: the same delete verifies against the head before the removal
+    for (b, k) in &blobs {
+        let EntryKind::Commit { salt, .. } = k else { unreachable!() };
+        let item = osis_label::DeleteItem::sign_by(&sync, &dk, level, salt, &hb, &l, *b, None).unwrap();
+        let prefix = osis_label::Prefix::parse(&net.engine(w).blob(b).unwrap().unwrap()).unwrap();
+        item.verify(&old_head, Some(&prefix)).unwrap();
+    }
     // the admin removes w with a rotation and steps the label
     let (at, wt) = (net.tid(a), net.tid(w));
     let e = net.engine(a);

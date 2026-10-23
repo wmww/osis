@@ -203,8 +203,11 @@ pub(crate) struct Core {
     /// Things known to have secrets of their own (a `/keys` with keysets).
     pub own_keys: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
-    /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9).
+    /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
+    /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
     pub delete_hints: JMap<Tid, osis_core::Value>,
+    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
+    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_core::Value)>>,
     /// `/was` index: t -> things whose `/was` reads t.
     pub was: JSetMap<Tid, Tid>,
     /// The `/was` each thing reads.
@@ -395,6 +398,7 @@ impl Core {
             secrets: JMap::default(),
             own_keys: JSet::default(),
             delete_hints: JMap::default(),
+            hint_candidates: BTreeMap::new(),
             was: JSetMap::default(),
             was_of: JMap::default(),
             moved: JMap::default(),

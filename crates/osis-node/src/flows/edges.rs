@@ -410,10 +410,10 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        self.note_delete_hints(&p.things)?;
         let bytes = osis_core::encode(&p.commit);
         let id = CommitBlob::decode(&bytes)?.id();
         self.ingest(&bytes, Vec::new())?;
+        self.note_delete_hints(id, &p.things)?;
         let mut done = Done::default();
         if self.core.commits.contains_key(&id) {
             done.deliveries.push(Delivery::Certificate { commits: vec![id], under: a });
