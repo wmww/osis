@@ -69,6 +69,11 @@ impl Fragment {
         }
     }
 
+    /// The greatest `ts` of any stamp inside (resets, `W` and value-less writes included).
+    pub fn max_ts(&self) -> Option<osis_core::Ts> {
+        self.all_max().map(|s| s.ts)
+    }
+
     /// The dots of a sequence's visible elements `r` (by index, clamped to its length), in
     /// order; `None` for other encodings.
     pub fn visible_range(&self, r: std::ops::Range<usize>) -> Option<Vec<Dot>> {

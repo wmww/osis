@@ -99,7 +99,9 @@ pub enum Op {
     Delete { at: usize, len: usize },
     /// `Insert` with its anchor resolved (§5.7, §6.1): after the visible element `anchor`
     /// (`None`: HEAD). A caller holding the placement apart (a node's stored placement) writes
-    /// by anchor without the state's placement; the anchor's record must be in the state.
+    /// by anchor without the state's placement; the anchor's record must be in the state. The new
+    /// elements land right after the anchor when the writer's `ts` is above every stamp of the
+    /// sequence (§2.2: true of a node's own commits).
     InsertAfter { anchor: Option<Dot>, items: Vec<Value> },
     /// `Delete` with its range resolved (§5.7): `dots` is the slice of the placement order from
     /// the first to the last visible element deleted, hidden elements inside included. Each must

@@ -540,12 +540,12 @@ impl Tx<'_> {
 
     /// Resolves a local insert or delete by index into a paged sequence through its stored
     /// placement (`pages::place_op`), loading only what it needs; `None`: load whole instead.
-    pub fn place_op(&mut self, tid: &Tid, ak: &Ak, op: &osis_crdt::PathOp) -> Result<Option<pages::Placed>> {
+    pub fn place_op(&mut self, tid: &Tid, ak: &Ak, op: &osis_crdt::PathOp, ts: osis_core::Ts) -> Result<Option<pages::Placed>> {
         self.load_lazy(tid, ak)?;
         if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
             return Ok(None);
         }
-        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::place_op(txn, tid, ak, idx, f, op))?.flatten())
+        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::place_op(txn, tid, ak, idx, f, op, ts))?.flatten())
     }
 
     /// Forgets the edits `place_op` noted on `(tid, ak)`.

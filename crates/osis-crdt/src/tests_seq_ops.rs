@@ -1440,3 +1440,59 @@ fn resolved_insert_delete_match_index_ops_spec_6_1() {
     }
     assert!(inserts > 100 && deletes > 100, "{inserts} inserts, {deletes} deletes");
 }
+
+/// §7, §5.7, §6.1: on an upgraded text (embedded `Derived` chars at a `Slots` position) an insert
+/// by anchor and a delete by dots write what the index ops write. And the precondition of
+/// landing right after the anchor: a sibling there stamped above the writer's `ts` (which §2.2
+/// and §8 rule out for a node's own commits) still gets the same delta, but places first.
+#[test]
+fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
+    let tv = TyView(Ty::Text);
+    let mut st = crate::ops::leaf(&mut Writer::new(ts(100 << 16), node(8), 1), None, &TyView(Ty::Register), &Op::Set(s("hello wide world of embedded chars")), true).unwrap().unwrap();
+    let mut r = Rng(77);
+    let text_of = |f: &Fragment| -> Fragment {
+        match f {
+            Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text).cloned().unwrap(),
+            f => f.clone(),
+        }
+    };
+    let (mut ctr, mut derived_del) = (1, 0);
+    for k in 0..60u64 {
+        let w = || Writer::new(ts((200 + k) << 16), node(9), ctr);
+        let order = full_order(&text_of(&st));
+        let vis: Vec<crate::Dot> = order.iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
+        let n = vis.len();
+        let (by_index, resolved) = if n < 3 || r.chance(1, 3) {
+            let at = r.below(n + 1);
+            (Op::Insert { at, items: vec![s("pq")] }, Op::InsertAfter { anchor: at.checked_sub(1).map(|i| vis[i].clone()), items: vec![s("pq")] })
+        } else {
+            let at = r.below(n);
+            let len = 1 + r.below((n - at).min(4));
+            let i0 = order.iter().position(|x| x.0 == vis[at]).unwrap();
+            let i1 = order.iter().position(|x| x.0 == vis[at + len - 1]).unwrap();
+            let dots: Vec<crate::Dot> = order[i0..=i1].iter().map(|x| x.0.clone()).collect();
+            derived_del += usize::from(dots.iter().any(|d| d.src.is_derived()));
+            (Op::Delete { at, len }, Op::DeleteDots { dots })
+        };
+        let d1 = crate::ops::leaf(&mut w(), Some(&st), &tv, &by_index, true).unwrap();
+        let d2 = crate::ops::leaf(&mut w(), Some(&st), &tv, &resolved, true).unwrap();
+        assert_eq!(d1, d2, "step {k}: {by_index:?}");
+        let Some(d) = d2 else { continue };
+        ctr += 10;
+        st.join(d);
+    }
+    assert!(derived_del > 5, "{derived_del} deletes over embedded chars");
+    // skew: a sibling at the anchor stamped above the writer's ts
+    let vis: Vec<crate::Dot> = full_order(&text_of(&st)).iter().filter(|x| x.1).map(|x| x.0.clone()).collect();
+    let anchor = vis[3].clone();
+    let d = crate::ops::leaf(&mut Writer::new(ts(1_000_000 << 16), node(5), 1), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("ZZ")] }, true).unwrap().unwrap();
+    st.join(d);
+    let w = || Writer::new(ts(500 << 16), node(9), 5000);
+    let d1 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::Insert { at: 4, items: vec![s("Y")] }, true).unwrap();
+    let d2 = crate::ops::leaf(&mut w(), Some(&st), &tv, &Op::InsertAfter { anchor: Some(anchor.clone()), items: vec![s("Y")] }, true).unwrap();
+    assert_eq!(d1, d2);
+    st.join(d2.unwrap());
+    let after = full_order(&text_of(&st));
+    let ai = after.iter().position(|x| x.0 == anchor).unwrap();
+    assert_eq!(after[ai + 1].0.src, node(5), "the newer sibling places first");
+}

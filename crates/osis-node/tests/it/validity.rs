@@ -470,6 +470,22 @@ fn hostile_snapshot_strips_only_its_dots_spec_perm_5_2() {
     assert_eq!(entries(&mut lp), want, "after a restart");
 }
 
+// spec/crdt.md §8, §2.2: a snapshot carrying a write stamped after the snapshot's own `ts` is bad
+// input (so a node's next stamp exceeds every stamp it holds); one stamped at it applies.
+#[test]
+fn snapshot_future_stamp_refused_spec_crdt_8() {
+    let (mut lp, d, _, _) = setup(57);
+    let m_ak = ak("/x/m");
+    lp.advance(1_000);
+    let now = osis_core::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let later = osis_core::Ts::make(WallMs(lp.peers[2].engine.now().0 + 1_000), 0).unwrap();
+    let a = lp.peers[0].engine.tid();
+    let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, later, 1 << 42, "c", "x"));
+    assert_eq!(lp.peers[0].engine.ingest(&bad, Vec::new()).unwrap_err().class(), osis_core::ErrorClass::BadInput);
+    let ok = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "x"));
+    lp.peers[0].engine.ingest(&ok, Vec::new()).unwrap();
+}
+
 // spec/permissions.md §7 (a write is imported from a snapshot covering it, else its own commit):
 // a writer's snapshot whose frontier claims Bob's write without carrying it does not make a move
 // lose it: the copy imports it from Bob's commit (the current state holds it), and the

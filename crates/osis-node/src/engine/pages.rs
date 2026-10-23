@@ -597,8 +597,10 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
 // A paged sequence keeps its placement order, hidden elements included, in the aspect's
 // placement table, so a read by index loads only the pages holding the elements it reads and a
 // local insert or delete by index loads and writes a few rows and pages (`place_op`):
-// - top (`set ‖ 0`): `[next row ID, waits, [[group ID, visible count]*]]` (`waits`: an anchor
-//   names no element, so a new element might be some write's anchor and place it);
+// - top (`set ‖ 0`): `[next row ID, waits, ts, [[group ID, visible count]*]]` (`waits`: an
+//   anchor names no element, so a new element might be some write's anchor and place it; `ts`:
+//   the greatest stamp `ts` in the sequence, which a local edit's `ts` must exceed for its new
+//   elements to land right after their anchor);
 // - group (`set ‖ 2 ‖ u64 ID`): `[[block ID, visible count]*]` in order;
 // - block (`set ‖ 1 ‖ u64 ID`): runs `[[first dot, count, shown]*]` in order (consecutive counters
 //   of one source, consecutive in the order, all shown or all hidden).
@@ -624,8 +626,8 @@ fn is_seq(set: &PageSet) -> bool {
 /// write keeps the placement (`write_touched`).
 #[derive(Clone, Debug)]
 enum Edit {
-    Insert { at: usize },
-    Delete { at: usize, len: usize },
+    Insert { at: usize, ts: u64 },
+    Delete { at: usize, len: usize, ts: u64 },
 }
 
 /// What a local insert or delete by index resolves to (`place_op`, `resolve_op`).
@@ -658,6 +660,8 @@ impl Run {
 struct Top {
     next: u64,
     waits: bool,
+    /// The greatest stamp `ts` in the sequence (an upper bound).
+    ts: u64,
     groups: Vec<(u64, usize)>,
 }
 
@@ -728,12 +732,12 @@ fn parse_pairs(xs: &[Value]) -> Option<Vec<(u64, usize)>> {
 
 fn top_row(t: &Top) -> Vec<u8> {
     let groups = Value::List(t.groups.iter().map(|(id, n)| Value::List(vec![uint(*id), uint(*n as u64)])).collect());
-    osis_core::encode(&Value::List(vec![uint(t.next), Value::Bool(t.waits), groups]))
+    osis_core::encode(&Value::List(vec![uint(t.next), Value::Bool(t.waits), uint(t.ts), groups]))
 }
 
 fn parse_top(b: &[u8]) -> Option<Top> {
     match decode_row(b)?.as_slice() {
-        [Value::Int(next), Value::Bool(waits), Value::List(gs)] => Some(Top { next: u64::try_from(*next).ok()?, waits: *waits, groups: parse_pairs(gs)? }),
+        [Value::Int(next), Value::Bool(waits), Value::Int(ts), Value::List(gs)] => Some(Top { next: u64::try_from(*next).ok()?, waits: *waits, ts: u64::try_from(*ts).ok()?, groups: parse_pairs(gs)? }),
         _ => None,
     }
 }
@@ -914,7 +918,7 @@ fn write_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut Page
             push_run(&mut runs, Run { first: d.clone(), n, shown });
         }
     }
-    let mut top = Top { next: 0, waits, groups: Vec::new() };
+    let mut top = Top { next: 0, waits, ts: c.max_ts().map_or(0, |t| t.to_u64()), groups: Vec::new() };
     let mut group: Vec<(u64, usize)> = Vec::new();
     let (mut block, mut bytes) = (Vec::new(), 0);
     let mut runs = runs.into_iter().peekable();
@@ -970,9 +974,13 @@ fn clear_placement(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, shred: S
 /// The slice of the placement order a delete of `len` visible elements from `at` covers, from
 /// the first to the last, hidden elements inside included (spec/crdt.md §5.7); `None` out of
 /// range, damaged or longer than `MAX_DELTA_BARE`. With `apply`, hides them in the stored
-/// placement (the top, the groups and blocks it passes).
-fn delete_walk(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, len: usize, apply: bool) -> Result<Option<Vec<Dot>>> {
+/// placement (the top, the groups and blocks it passes) by an edit at `ts` (`apply`).
+fn delete_walk(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, len: usize, apply: Option<u64>) -> Result<Option<Vec<Dot>>> {
     let Some(mut top) = get_top(txn, pt, set)? else { return Ok(None) };
+    if let Some(ts) = apply {
+        top.ts = top.ts.max(ts);
+    }
+    let apply = apply.is_some();
     let Some(mut c) = locate(txn, pt, set, &top, Some(at))? else { return Ok(None) };
     let mut dots = Vec::new();
     let mut left = len;
@@ -1032,8 +1040,9 @@ fn delete_walk(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, l
 
 /// Puts `n` new visible elements from `first` right after visible element `at - 1` (HEAD for
 /// 0) in the stored placement; `false` if damaged.
-fn place_insert(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, first: Dot, n: u64) -> Result<bool> {
+fn place_insert(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, first: Dot, n: u64, ts: u64) -> Result<bool> {
     let Some(mut top) = get_top(txn, pt, set)? else { return Ok(false) };
+    top.ts = top.ts.max(ts);
     let Some(mut c) = locate(txn, pt, set, &top, at.checked_sub(1))? else { return Ok(false) };
     let p = match at.checked_sub(1) {
         None => 0,
@@ -1054,10 +1063,14 @@ fn place_insert(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, at: usize, 
 /// Resolves a local insert or delete by index into the paged sequence it addresses through the
 /// sequence's stored placement, loading the pages along the path and those holding the anchor
 /// or the deleted elements; the write that follows keeps the placement (`write_touched`).
-/// `None` where it does not apply (another op, an index in the path, a sequence not paged or
-/// loaded whole, a placement missing, damaged or waiting on an anchor, an index out of range):
-/// the caller loads the state whole and resolves by index.
-pub fn place_op(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, op: &osis_crdt::PathOp) -> Result<Option<Placed>> {
+/// `ts` is the edit's: it must exceed every stamp of the sequence (spec/crdt.md §2.2, §8: a node
+/// holds no stamp above a commit it applied), so a new element lands right after its anchor
+/// (§6.1). `None` where it does not apply (another op, an index in the path, a sequence not
+/// paged or loaded whole, a placement missing, damaged or waiting on an anchor, a stamp in the
+/// sequence not below `ts`, an index out of range): the caller loads the state whole and
+/// resolves by index.
+pub fn place_op(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, op: &osis_crdt::PathOp, ts: osis_core::Ts) -> Result<Option<Placed>> {
+    let ts = ts.to_u64();
     use osis_crdt::Op;
     if !matches!(op.op, Op::Insert { .. } | Op::Delete { .. }) || op.path.iter().any(|s| matches!(s, PathSeg::Index(_))) {
         return Ok(None);
@@ -1067,7 +1080,7 @@ pub fn place_op(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageInd
     let at = walk(txn, tid, ak, t, idx, f, &op.path)?;
     let [p] = at.as_slice() else { return Ok(None) };
     let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s) && !s.whole && !s.stale) else { return Ok(None) };
-    let Some(top) = get_top(txn, pt, set)?.filter(|t| !t.waits) else { return Ok(None) };
+    let Some(top) = get_top(txn, pt, set)?.filter(|t| !t.waits && t.ts < ts) else { return Ok(None) };
     let (placed, edit) = match &op.op {
         Op::Insert { at, .. } => {
             let anchor = match at.checked_sub(1) {
@@ -1079,14 +1092,14 @@ pub fn place_op(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageInd
                     Some(d)
                 }
             };
-            (Placed::Anchor(anchor), Edit::Insert { at: *at })
+            (Placed::Anchor(anchor), Edit::Insert { at: *at, ts })
         }
         Op::Delete { at, len } => {
-            let Some(dots) = delete_walk(txn, pt, set, *at, *len, false)? else { return Ok(None) };
+            let Some(dots) = delete_walk(txn, pt, set, *at, *len, None)? else { return Ok(None) };
             for d in &dots {
                 ensure_dot(txn, t, set, f, d)?;
             }
-            (Placed::Dots(dots), Edit::Delete { at: *at, len: *len })
+            (Placed::Dots(dots), Edit::Delete { at: *at, len: *len, ts })
         }
         _ => return Ok(None),
     };
@@ -1117,7 +1130,7 @@ pub fn end_edits(idx: &mut PageIndex) {
 fn keep_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, edit: &Edit, dots: &[Dot]) -> Result<bool> {
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(false) };
     match edit {
-        Edit::Insert { at } => {
+        Edit::Insert { at, ts } => {
             let mut new: Vec<&Dot> = dots.iter().collect();
             new.sort();
             new.dedup();
@@ -1126,9 +1139,9 @@ fn keep_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, 
             if new.iter().zip(0..).any(|(d, i)| d.src != first.src || first.ctr.checked_add(i) != Some(d.ctr)) {
                 return Ok(false);
             }
-            place_insert(txn, pt, set, *at, first, n)
+            place_insert(txn, pt, set, *at, first, n, *ts)
         }
-        Edit::Delete { at, len } => Ok(delete_walk(txn, pt, set, *at, *len, true)?.is_some()),
+        Edit::Delete { at, len, ts } => Ok(delete_walk(txn, pt, set, *at, *len, Some(*ts))?.is_some()),
     }
 }
 
@@ -2049,7 +2062,7 @@ mod tests {
                 // whole: resolved through the stored placement, the op runs on the pages loaded
                 // and writes what the op by index writes on the whole state
                 if wi == 0
-                    && let Some(placed) = place_op(&mut txn, &tid, &ak, &mut idx, &mut f, &op).unwrap()
+                    && let Some(placed) = place_op(&mut txn, &tid, &ak, &mut idx, &mut f, &op, Ts::from_u64(ts).unwrap()).unwrap()
                 {
                     let mut rop = op.clone();
                     resolve_op(&mut rop, placed);
@@ -2198,7 +2211,7 @@ mod tests {
             };
             let op = PathOp { path: field(), op };
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            let placed = place_op(&mut txn, &tid, &ak, &mut idx, &mut f, &op).unwrap().unwrap_or_else(|| panic!("step {step}: not through the placement"));
+            let placed = place_op(&mut txn, &tid, &ak, &mut idx, &mut f, &op, Ts::from_u64(ts).unwrap()).unwrap().unwrap_or_else(|| panic!("step {step}: not through the placement"));
             let mut rop = op.clone();
             resolve_op(&mut rop, placed);
             let w = || Writer::new(Ts::from_u64(ts).unwrap(), me.clone(), ctr);
@@ -2233,6 +2246,55 @@ mod tests {
             f
         };
         assert_eq!(whole.read(), st.read());
+    }
+
+    // spec/crdt.md §2.2, §6.1: a new insert lands right after its anchor only when its stamp is
+    // the greatest there. A sibling stamped above the local clock (a snapshot from before the
+    // reader rule of §8) keeps index edits off the stored placement until a later `ts`; then
+    // they go through it and the stored order equals a whole pass.
+    #[test]
+    fn seq_cold_edits_need_greatest_ts_spec_crdt_6_1() {
+        let mut rng = osis_crypto::SeededRng::from_u64(191);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let me = Source::node(Tid::from_bytes([1; 15]));
+        let view = SeqView::Root(true);
+        let field = || vec![PathSeg::Field(1)];
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), me.clone(), 1);
+        let mut st = create(&mut w, &view, &seq_value(true, 4_000)).unwrap();
+        let mut ctr = w.range().hi;
+        // another node's insert after element 100, stamped far ahead
+        let far = 1_000_000u64 << 16;
+        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(far).unwrap(), Source::node(Tid::from_bytes([2; 15])), 1));
+        b.apply(&PathOp { path: field(), op: Op::Insert { at: 101, items: seq_items(true, 7, 2) } }, &view).unwrap();
+        st.join(b.finish().unwrap().0);
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        for (step, ts) in [(0u64, 2 << 16), (1, far), (2, far + 1), (3, far + 2)] {
+            let op = PathOp { path: field(), op: Op::Insert { at: 101, items: seq_items(true, 20 + step, 1) } };
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            let placed = place_op(&mut txn, &tid, &ak, &mut idx, &mut f, &op, Ts::from_u64(ts).unwrap()).unwrap();
+            assert_eq!(placed.is_some(), ts > far, "step {step}: through the placement iff its ts is above every stamp");
+            let Some(placed) = placed else { continue };
+            let mut rop = op.clone();
+            resolve_op(&mut rop, placed);
+            let w = || Writer::new(Ts::from_u64(ts).unwrap(), me.clone(), ctr);
+            let mut b = Batch::new(&f, w());
+            b.apply(&rop, &view).unwrap();
+            let (delta, range) = b.finish().unwrap();
+            let mut b = Batch::new(&st, w());
+            b.apply(&op, &view).unwrap();
+            assert!(b.finish() == Some((delta.clone(), range)), "step {step}: same delta as by index");
+            ctr = range.hi;
+            let t = touch_of(&delta, Some(&idx)).unwrap();
+            assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+            f.join(delta.clone());
+            st.join(delta);
+            assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)));
+            let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+            let pt = txn.table(&tid, &ak, PLACE_TABLE).unwrap().unwrap();
+            assert!(stored_order(&mut txn, pt, set).unwrap() == order_whole(&st), "step {step}: stored order differs from a whole pass");
+        }
     }
 
     /// The number of pages of `set` in the store.
