@@ -14,7 +14,7 @@ use osis_core::format::PAGE_TARGET;
 use osis_core::{Ak, Tid, Value};
 use osis_crdt::{Dot, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlacedBlock, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::ops::Range as Span;
 
 /// Encoded bytes per local page, about (a store unit is 8 KB; a larger page is split).
@@ -48,15 +48,8 @@ struct PageSet {
     loaded: BTreeMap<Vec<u8>, Range>,
     /// Every page of the set is loaded.
     whole: bool,
-    /// A sequence's placement blocks as this session last wrote them (`None`: not written yet).
-    placed: Option<Placed>,
-}
-
-/// The persisted placement blocks of a paged sequence, in order, with their row IDs.
-#[derive(Clone, Debug)]
-struct Placed {
-    blocks: Vec<(PlacedBlock, u64)>,
-    next: u64,
+    /// A sequence's stored placement was invalidated in this session (its summary removed).
+    stale: bool,
 }
 
 impl PageSet {
@@ -287,7 +280,7 @@ fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment
         let enc = u64::try_from(*enc).ok().and_then(Encoding::from_id).ok_or_else(bad)?;
         let s = steps(&path);
         idx.paths.insert(&s);
-        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false, placed: None });
+        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false, stale: false });
     }
     Ok((f, idx))
 }
@@ -571,12 +564,13 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
 // A paged sequence keeps its placement in the aspect's placement table, so a read by index
 // loads only the pages holding the elements it reads: a summary row (`[[block ID, visible
 // count]*]` in order) and per block a row of its visible elements in order (runs `[[first dot,
-// count]*]` of consecutive counters of one source). The blocks are the crdt's placement blocks
-// (`Fragment::placement`) holding visible elements; a write rewrites those its change made
-// anew, and the summary. Exact, not a superset: every write of a sequence's pages writes it
-// from the whole placement (sequence writes load the whole sequence); rebuildable (written
-// with the layout, the unit tag names its rules; missing or damaged rows are rebuilt by a read,
-// `Ranged::Damaged`).
+// count]*]` of consecutive counters of one source), the crdt's placement blocks
+// (`Fragment::placement`) holding visible elements. Invalidated on write, rebuilt on read: a
+// layout (`write_full`) writes it whole; the first write of the sequence's pages in a session
+// removes the summary (`invalidate_placement`); a read by index finding no summary (or a
+// damaged row) reads the sequence whole and lays the placement out anew (`Ranged::Damaged`,
+// `rebuild_placement`). So it is exact whenever present, and costs an edit one leaf per
+// session. Rebuildable: the unit tag names its rules.
 
 fn is_seq(set: &PageSet) -> bool {
     matches!(set.enc, Encoding::List | Encoding::Text)
@@ -641,47 +635,41 @@ fn parse_summary(b: &[u8]) -> Option<Vec<(u64, usize)>> {
         .collect()
 }
 
-/// Writes the placement of the paged sequence `set` (`c`, whole): the blocks holding visible
-/// elements that this session has not written as they are, the summary if any changed, and
-/// drops the rows of blocks gone. With nothing written this session (`placed` unset) it lays
-/// the placement out anew (`fresh`: the table holds no row of the set).
+/// Lays out the placement of the paged sequence `set` (`c`, loaded whole): every block holding
+/// visible elements, then the summary (`fresh`: the table holds no row of the set; else the old
+/// rows go first).
 fn write_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, c: &Fragment, fresh: bool, shred: Shred) -> Result<()> {
-    let blocks = c.placement().ok_or(Error::Corrupt("state sequence"))?;
+    if !set.whole {
+        return Err(Error::Corrupt("state sequence not loaded"));
+    }
     let pt = txn.create_table(tid, ak, PLACE_TABLE)?;
-    let (mut old, old_ids, mut next) = match set.placed.take() {
-        Some(p) => {
-            let ids: Vec<u64> = p.blocks.iter().map(|x| x.1).collect();
-            (p.blocks.into_iter().map(|(b, id)| (b.addr(), (b, id))).collect::<HashMap<_, _>>(), Some(ids), p.next)
-        }
-        None => {
-            if !fresh {
-                clear_placement(txn, pt, set, shred)?;
-            }
-            (HashMap::new(), None, 0)
-        }
-    };
+    if !fresh {
+        clear_placement(txn, pt, set, shred)?;
+    }
+    let blocks = c.placement().ok_or(Error::Corrupt("state sequence"))?;
     let mut out = Vec::new();
-    for b in blocks.into_iter().filter(|b| b.shown() > 0) {
-        let id = match old.remove(&b.addr()) {
-            Some((o, id)) if o.same(&b) => id,
-            _ => {
-                // counted: scale tests read the number of blocks written
-                let _s = crate::costs::span("placement block write");
-                let id = next;
-                next += 1;
-                txn.table_put(pt, &place_key(set, Some(id)), block_row(&b), shred)?;
-                id
-            }
-        };
+    for (id, b) in (0u64..).zip(blocks.into_iter().filter(|b| b.shown() > 0)) {
+        // counted: scale tests read the number of blocks written
+        let _s = crate::costs::span("placement block write");
+        txn.table_put(pt, &place_key(set, Some(id)), block_row(&b), shred)?;
         out.push((b, id));
     }
-    for (_, id) in old.into_values() {
-        txn.table_remove(pt, &place_key(set, Some(id)), shred)?;
+    txn.table_put(pt, &place_key(set, None), summary_row(&out), shred)?;
+    set.stale = false;
+    Ok(())
+}
+
+/// Invalidates the stored placement of the paged sequence `set` (a write changed it): removes
+/// its summary, once per session; the next read by index finds none and lays it out anew
+/// (`Ranged::Damaged`, `rebuild_placement`). The block rows stay until then (dots only).
+fn invalidate_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, shred: Shred) -> Result<()> {
+    if set.stale {
+        return Ok(());
     }
-    if old_ids.is_none_or(|o| !o.iter().eq(out.iter().map(|x| &x.1))) {
-        txn.table_put(pt, &place_key(set, None), summary_row(&out), shred)?;
+    if let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? {
+        txn.table_remove(pt, &place_key(set, None), shred)?;
     }
-    set.placed = Some(Placed { blocks: out, next });
+    set.stale = true;
     Ok(())
 }
 
@@ -722,7 +710,9 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIn
     let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return damaged() };
     let Some(sum) = txn.table_get(pt, &place_key(set, None))?.as_deref().and_then(parse_summary) else { return damaged() };
     let total: usize = sum.iter().map(|x| x.1).sum();
-    let (lo, hi) = (r.start.min(total), r.end.min(total));
+    // a reversed range is empty
+    let lo = r.start.min(total);
+    let hi = r.end.min(total).max(lo);
     let (mut dots, mut base) = (Vec::with_capacity(hi.saturating_sub(lo)), 0);
     for (id, n) in sum {
         if base >= hi {
@@ -743,10 +733,6 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIn
 /// Lays the placement of the paged sequence at `p` out anew (its pages loaded whole).
 pub fn rebuild_placement(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, p: &[Step]) -> Result<()> {
     let (Some(set), Some(c)) = (idx.sets.get_mut(p), f.at_steps(p)) else { return Ok(()) };
-    if !set.whole {
-        return Err(Error::Corrupt("state sequence not loaded"));
-    }
-    set.placed = None;
     write_placement(txn, tid, ak, set, c, false, Shred::No)
 }
 
@@ -853,7 +839,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     for (i, p) in paged.into_iter().enumerate() {
         let c = f.at_steps(&p).ok_or(Error::Corrupt("state collection"))?;
-        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false, placed: None };
+        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false, stale: false };
         write_set(txn, t, kt, &mut set, c, &idx.nested(&p))?;
         if is_seq(&set) {
             write_placement(txn, tid, ak, &mut set, c, true, Shred::No)?;
@@ -960,7 +946,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             return Ok(None);
         }
         if is_seq(set) {
-            write_placement(txn, tid, ak, set, c, false, shred)?;
+            invalidate_placement(txn, tid, ak, set, shred)?;
         }
     }
     if !touch.skeleton {
@@ -1464,10 +1450,14 @@ mod tests {
     // whole, and a read by index in a fresh session loads a few pages and reads what the whole
     // state reads.
     #[test]
-    fn seq_placement_differential_spec_crdt_6() {
-        for text in [true, false] {
-            seq_placement_run(text, if text { 6_000 } else { 1_000 });
-        }
+    fn seq_placement_differential_text_spec_crdt_6() {
+        seq_placement_run(true, 6_000);
+    }
+
+    // As `seq_placement_differential_text_spec_crdt_6`, for a list.
+    #[test]
+    fn seq_placement_differential_list_spec_crdt_6() {
+        seq_placement_run(false, 1_000);
     }
 
     fn seq_placement_run(text: bool, n: u64) {
@@ -1494,36 +1484,13 @@ mod tests {
         let mut orng = osis_crypto::SeededRng::from_u64(183);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let mut old = st.clone();
-        let (mut in_place, mut kept, mut fresh_item) = (0, 0, n);
-        for step in 0..24 {
+        // writer 1's deltas, for strips and shreds of their bodies
+        let mut received: Vec<(Fragment, osis_crdt::CounterRange)> = Vec::new();
+        let (mut in_place, mut kept, mut fresh_item, mut rebuilt) = (0, 0, n, 0);
+        let mut kinds = [0usize; 4];
+        for step in 0..18 {
             ts += 1 << 16;
-            let wi = r(3) as usize % 2;
-            let base = if wi == 1 { &old } else { &st };
-            let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).map_or(0, |v| v.len()) as u64;
-            let op = match r(8) {
-                0..=2 => {
-                    let k = 1 + r(3);
-                    fresh_item += k;
-                    Op::Insert { at: r(len + 1) as usize, items: seq_items(text, fresh_item, k) }
-                }
-                3 | 4 => {
-                    let most = if r(5) == 0 { 600 } else { 20 };
-                    Op::Delete { at: r(len) as usize, len: 1 + r(most) as usize }
-                }
-                5 | 6 => {
-                    let l = 1 + r(10);
-                    Op::Move { at: r(len) as usize, len: l as usize, to: r(len.saturating_sub(l) + 1) as usize }
-                }
-                _ => Op::Insert { at: 0, items: seq_items(text, fresh_item, 1) },
-            };
-            let op = PathOp { path: field(), op };
-            let mut b = Batch::new(base, Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), ctrs[wi]));
-            if b.apply(&op, &view).is_err() {
-                continue;
-            }
-            let Some((delta, range)) = b.finish() else { continue };
-            ctrs[wi] = range.hi;
-            // the running session (its placement written this session) or a fresh one
+            // the running session (its placement invalidated already, or not) or a fresh one
             let (mut f, mut idx) = match session.take() {
                 Some(x) if r(2) == 0 => {
                     kept += 1;
@@ -1531,42 +1498,133 @@ mod tests {
                 }
                 _ => open(&unit, &SALT).unwrap(),
             };
-            let touch = touch_of(&delta, Some(&idx));
-            match &touch {
-                Some(t) => assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap()),
-                None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
-            }
-            st.join(delta.clone());
-            f.join(delta);
-            let done = match &touch {
-                Some(t) => write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap(),
-                None => None,
-            };
-            in_place += usize::from(done.is_some());
-            match done {
-                Some(Some(u)) => unit = u,
-                Some(None) => {}
-                None => {
-                    load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                    let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-                    unit = u;
-                    idx = i.unwrap();
+            let kind = r(12);
+            if kind >= 8 && !received.is_empty() || kind >= 10 {
+                let k = (kind - 8) as usize;
+                kinds[k] += 1;
+                match k {
+                    // an expiry or purge of a received body: its writes held value-less
+                    0 | 1 => {
+                        let (body, range) = received[r(received.len() as u64) as usize].clone();
+                        let pred = move |d: &Dot| d.owner().src == Source::node(Tid::from_bytes([2; 15])) && (range.lo..range.hi).contains(&d.owner().ctr);
+                        let touch = touch_of(&body, Some(&idx));
+                        let t = touch.clone().unwrap();
+                        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+                        let done = if k == 0 {
+                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap()
+                        } else {
+                            // a dropped body: the same content, pages rewritten shredded
+                            write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::Yes).unwrap().is_some()
+                        };
+                        if k == 0 {
+                            st.strip(&pred);
+                        }
+                        if !done {
+                            load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                            let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+                            unit = u;
+                            idx = i.unwrap();
+                        } else if let Some(u) = (k == 0).then(|| skeleton_unit(&f, &idx).unwrap()) {
+                            unit = u;
+                        }
+                    }
+                    // a validity rebuild: the whole state written again
+                    2 => {
+                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+                        unit = u;
+                        idx = i.unwrap();
+                    }
+                    // the layout before the placement (tag 5): laid out anew, then edited on
+                    _ => {
+                        let mut old5 = unit.clone();
+                        old5[1] = 5;
+                        txn.drop_table(&tid, &ak, PLACE_TABLE).unwrap();
+                        let w5 = legacy(&mut txn, &tid, &ak, &old5).unwrap().unwrap();
+                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&w5), true, &SALT).unwrap();
+                        unit = u;
+                        f = w5;
+                        idx = i.unwrap();
+                    }
+                }
+            } else {
+                let wi = r(3) as usize % 2;
+                let base = if wi == 1 { &old } else { &st };
+                let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).map_or(0, |v| v.len()) as u64;
+                let op = match r(8) {
+                    0..=2 => {
+                        let k = 1 + r(3);
+                        fresh_item += k;
+                        Op::Insert { at: r(len + 1) as usize, items: seq_items(text, fresh_item, k) }
+                    }
+                    3 | 4 => {
+                        let most = if r(5) == 0 { 600 } else { 20 };
+                        Op::Delete { at: r(len) as usize, len: 1 + r(most) as usize }
+                    }
+                    5 | 6 => {
+                        let l = 1 + r(10);
+                        Op::Move { at: r(len) as usize, len: l as usize, to: r(len.saturating_sub(l) + 1) as usize }
+                    }
+                    _ => Op::Insert { at: 0, items: seq_items(text, fresh_item, 1) },
+                };
+                let op = PathOp { path: field(), op };
+                let mut b = Batch::new(base, Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), ctrs[wi]));
+                let Some((delta, range)) = b.apply(&op, &view).ok().and_then(|_| b.finish()) else {
+                    session = Some((f, idx));
+                    continue;
+                };
+                ctrs[wi] = range.hi;
+                if wi == 1 {
+                    received.push((delta.clone(), range));
+                }
+                let touch = touch_of(&delta, Some(&idx));
+                match &touch {
+                    Some(t) => assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, t).unwrap()),
+                    None => load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap(),
+                }
+                st.join(delta.clone());
+                f.join(delta);
+                let done = match &touch {
+                    Some(t) => write_touched(&mut txn, &mut idx, &tid, &ak, &f, t, Shred::No).unwrap(),
+                    None => None,
+                };
+                in_place += usize::from(done.is_some());
+                match done {
+                    Some(Some(u)) => unit = u,
+                    Some(None) => {}
+                    None => {
+                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+                        unit = u;
+                        idx = i.unwrap();
+                    }
+                }
+                if wi == 0 && r(3) == 0 {
+                    old = st.clone();
                 }
             }
             session = Some((f, idx));
-            if wi == 0 && r(3) == 0 {
-                old = st.clone();
-            }
             // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
             if step % 6 == 5 {
                 assert!(encode(&whole(&mut txn, &unit)).unwrap() == encode(&st).unwrap(), "step {step}");
             }
-            // the stored placement is a whole pass's
+            // the stored placement, when present, is a whole pass's; when invalidated, a read
+            // lays it out anew from the whole sequence (in the one session, as the engine does)
             let want = vis_whole(&st);
-            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            let Ranged::Read(p, dots, total) = seq_range(&mut txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap() else { panic!("step {step}: no placement") };
-            assert_eq!((dots.len(), total), (want.len(), want.len()), "step {step}: {op:?}");
-            assert!(dots == want, "step {step}: placement differs from a whole pass ({op:?})");
+            let read_all = |txn: &mut Transaction<'_>, unit: &[u8]| {
+                let (mut f, mut idx) = open(unit, &SALT).unwrap();
+                seq_range(txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap()
+            };
+            if let Ranged::Damaged(p) = read_all(&mut txn, &unit) {
+                rebuilt += 1;
+                let (mut f, mut idx) = session.take().unwrap();
+                ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &field()).unwrap();
+                rebuild_placement(&mut txn, &tid, &ak, &mut idx, &f, &p).unwrap();
+                session = Some((f, idx));
+            }
+            let Ranged::Read(p, dots, total) = read_all(&mut txn, &unit) else { panic!("step {step}: no placement after a rebuild") };
+            assert_eq!((dots.len(), total), (want.len(), want.len()), "step {step}");
+            assert!(dots == want, "step {step}: placement differs from a whole pass");
             assert_eq!(p, vec![Step::Field(1)]);
             // a read by index in a fresh session: a few pages
             let lo = r(want.len() as u64) as usize;
@@ -1578,9 +1636,15 @@ mod tests {
             assert!(pages < total_pages, "step {step}: {pages} of {total_pages} pages loaded");
             let ref_seq = st.at(&field()).unwrap();
             assert_eq!(f.at_steps(&p).unwrap().read_elems(&dots), ref_seq.read_elems(&ref_seq.visible_range(lo..lo + 40).unwrap()), "step {step}");
+            // a reversed range reads empty
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            let Ranged::Read(_, dots, _) = seq_range(&mut txn, &tid, &ak, &mut idx, &mut f, &field(), std::ops::Range { start: 10, end: 5 }).unwrap() else { panic!() };
+            assert!(dots.is_empty());
         }
-        assert!(in_place >= 10, "{in_place} of 24 written in place");
+        assert!(in_place >= 8, "{in_place} written in place");
         assert!(kept >= 4, "{kept} steps in a running session");
+        assert!(rebuilt >= 4, "{rebuilt} placements rebuilt");
+        assert!(kinds.iter().all(|k| *k >= 1), "strip, shred, validity rebuild, legacy: {kinds:?}");
     }
 
     /// The number of pages of `set` in the store.
@@ -1589,8 +1653,8 @@ mod tests {
         txn.table_range(t, &set.prefix(), Some(&set.id.saturating_add(1).to_be_bytes()), 10_000).unwrap().len()
     }
 
-    // spec: none (local store layout); notes/local-store.md (Units): a sequence's stored
-    // placement is rebuildable: a state of the layout before it (unit tag 5) is laid out anew
+    // spec/crdt.md §6 (the placement is a function of state); notes/local-store.md (Units): a
+    // sequence's stored placement is rebuildable: a state of the layout before it (unit tag 5) is laid out anew
     // with it; a damaged or missing summary or block row reads as damaged, and laid out anew
     // from the whole sequence it reads by index again.
     #[test]

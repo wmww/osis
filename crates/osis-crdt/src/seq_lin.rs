@@ -110,20 +110,11 @@ fn shows(e: &SeqElem, text: bool) -> (bool, Option<char>) {
 }
 
 /// One block of a sequence's placement, for a node keeping its visible elements by index
-/// (notes/node.md, Paged state). Changes copy the blocks they touch, so a block a join leaves
-/// alone stays the same block (`same`).
+/// (notes/node.md, Paged state).
 #[derive(Clone, Debug)]
 pub struct PlacedBlock(Arc<Block>);
 
 impl PlacedBlock {
-    /// Whether both are the same block (not merely equal).
-    pub fn same(&self, o: &PlacedBlock) -> bool {
-        Arc::ptr_eq(&self.0, &o.0)
-    }
-    /// An identity for lookups: equal for the same block while either is held.
-    pub fn addr(&self) -> usize {
-        Arc::as_ptr(&self.0).addr()
-    }
     /// Visible elements in the block.
     pub fn shown(&self) -> usize {
         self.0.shown

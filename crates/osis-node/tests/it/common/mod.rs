@@ -39,6 +39,7 @@ aspect /t/list: list<string>;
 aspect /t/text: text;
 aspect /t/blob: blob;
 aspect /t/book: book;
+aspect /t/docs: map<string, text>;
 "#,
 );
 
@@ -62,6 +63,7 @@ pub const LIST: Aspect<Value> = Aspect::new("/t/list", &TEST);
 pub const TEXT: Aspect<Value> = Aspect::new("/t/text", &TEST);
 pub const BLOB: Aspect<Value> = Aspect::new("/t/blob", &TEST);
 pub const BOOK: Aspect<Value> = Aspect::new("/t/book", &TEST);
+pub const DOCS: Aspect<Value> = Aspect::new("/t/docs", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
