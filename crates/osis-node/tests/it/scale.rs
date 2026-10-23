@@ -691,3 +691,66 @@ fn sync_pass_cost() {
         n *= 10;
     }
 }
+
+// spec/sync.md §6, §7; spec/permissions.md §4; spec/requirements.md, Scale: a membership change
+// re-judges only the labels whose verdicts can read it. 10 labels of `OSIS_SCALE_LABEL` (default
+// 10^3) content commits each at one server, a writer and a reader; then an edge write on an
+// actor no label's closure reaches (it should judge about nothing), then one on the first
+// label's group (only that label's entries).
+#[test]
+#[ignore = "tier 2"]
+fn sync_membership_pass_cost() {
+    let n: usize = std::env::var("OSIS_SCALE_LABEL").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000);
+    let mut net = net::Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let c = net.node(3, &[sv]);
+    let addr = net.address(sv);
+    let groups: Vec<Tid> = (0..10).map(|i| net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1 + i)).collect();
+    let t0 = Instant::now();
+    for g in &groups {
+        let things: Vec<Tid> = (0..10).map(|i| net.item(a, *g, *g, &format!("t{i}"))).collect();
+        for i in 0..n {
+            net.write(a, things[i % things.len()], &format!("v{i}"));
+        }
+    }
+    let fill = t0.elapsed();
+    let t1 = Instant::now();
+    net.run();
+    let first = t1.elapsed();
+    net.pair(c, a);
+    net.advance(61_000);
+    let stats = |net: &mut net::Net| (net.sync(a).pass_stats(), net.sync(b).pass_stats());
+    let me = net.tid(a);
+    let other = net.tid(c);
+    // an actor of this node no label's closure holds
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let u = e.new_thing(&mut m, me);
+    m.set(u, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    net.run();
+    net.advance(61_000);
+    let s0 = stats(&mut net);
+    let t2 = Instant::now();
+    net::set_edge(net.engine(a), u, other, Role::Read);
+    net.run();
+    let unrelated = t2.elapsed();
+    let s1 = stats(&mut net);
+    net.advance(61_000);
+    let s2 = stats(&mut net);
+    let t3 = Instant::now();
+    net::set_edge(net.engine(a), groups[0], other, Role::Read);
+    net.run();
+    let related = t3.elapsed();
+    let s3 = stats(&mut net);
+    let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
+    println!(
+        "10 labels x {n} commits: writes {fill:?}, first sync {first:?}; unrelated edge {unrelated:?}, (passes, full, bodies, entries) writer {:?} reader {:?}; related edge {related:?}, writer {:?} reader {:?}",
+        d(s0.0, s1.0),
+        d(s0.1, s1.1),
+        d(s2.0, s3.0),
+        d(s2.1, s3.1)
+    );
+}
