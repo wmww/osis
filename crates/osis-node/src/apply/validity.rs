@@ -413,21 +413,27 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
     }
 }
 
-/// Do held edge writes lead from `author` (as member, through member actors) to a thing on
-/// `chain`? (The author's chain certificates, spec/permissions.md §4.)
+/// Does a path of held edge writes and owner links lead from `author` to a thing on `chain`?
+/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs membership
+/// edges and owner links, as perm's effective role counts them.) Searched backward from
+/// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the members named on
+/// it, so the search stays within what has authority over the chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
-    let mut frontier = vec![*author];
-    let mut seen: BTreeSet<Tid> = BTreeSet::new();
-    while let Some(x) = frontier.pop() {
-        if !seen.insert(x) || seen.len() > 4096 {
-            continue;
-        }
-        // the things `x` is named on as a member (edge writes, rosters, ledgers)
-        for t in core.held.named_on(&x) {
-            if chain.contains(t) {
+    let held = &core.held;
+    let mut stack: Vec<Tid> = chain.to_vec();
+    let mut seen: BTreeSet<Tid> = chain.iter().copied().collect();
+    while let Some(t) = stack.pop() {
+        let owner = match held.created(&t) {
+            Some(CreationRecord::Thing { owner, .. }) => Some(owner),
+            _ => None,
+        };
+        for y in owner.into_iter().chain(held.members_of(&t)) {
+            if y == author {
                 return true;
             }
-            frontier.push(*t);
+            if seen.insert(*y) {
+                stack.push(*y);
+            }
         }
     }
     false

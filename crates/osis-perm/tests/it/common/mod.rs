@@ -260,12 +260,28 @@ impl World {
     }
 }
 
-/// Sticky residue (notes/permissions.md, models/tla/membership M2): a drop whose cause was
-/// dropped too. Its writes stay dropped, so the answer depends on the order drops were found,
-/// and a roster snapshot can repair it.
+/// Sticky residue (notes/permissions.md, models/tla/membership M2): the drops whose cause R is
+/// not, in the settled walk, an applied fall of the dropped write's author X on its target N
+/// past the write's class (R was dropped, or with the write dropped R is no fall, or not
+/// through that class). The write's class is X's class on N just before it in the settled
+/// walk. They stay dropped since D only grows, so the answer depends on the order drops were
+/// found, and a roster snapshot can repair them.
+pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
+    let by = |w: &WriteId| match w {
+        WriteId::Op(c, k) => tl.membership_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
+        WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
+    };
+    let audits = |w: &WriteId, p: &osis_perm::Point| {
+        let Some((x, n, at)) = by(w) else { return false };
+        let class = tl.class(&x, &n, osis_perm::At::before(at));
+        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held)
+    };
+    tl.dropped().iter().filter(|(w, p)| !audits(w, p)).map(|(w, _)| *w).collect()
+}
+
+/// Whether `tl` has sticky residue (`residue`).
 pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
-    let dropped: BTreeSet<CommitId> = tl.dropped().keys().map(WriteId::commit).collect();
-    tl.dropped().values().any(|p| dropped.contains(&p.commit))
+    !residue(tl).is_empty()
 }
 
 /// The commit IDs of dropped writes.

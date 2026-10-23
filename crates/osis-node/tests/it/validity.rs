@@ -8,7 +8,7 @@ use common::*;
 use osis_core::Classified;
 use osis_core::{Role, Tid, Value, WallMs};
 use osis_node::local_peer::LocalPeer;
-use osis_node::{Event, Mutation};
+use osis_node::{Event, Ingested, Mutation, Reason};
 use osis_perm::DemotionScope;
 use osis_schema::Codec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -654,7 +654,7 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_core::CommitId])
 }
 
 // spec/permissions.md §5.1 step 4 (D only grows), §6 (epoch starts; a re-snapshot's roster):
-// issues/perm-resnapshot-self-undermining-drop.md, seed 6's shape. n0 removes A2 from A0 (W,
+// osis-perm joint neutrality seed 6's shape (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W,
 // unseen by n1) and grants n1 write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The
 // full walk drops W and G (R is a fall while W stands) and keeps them dropped after R stops being
 // one; n1's roster snapshot of A0 has A2 admin, so replayed R is no fall and G stands. Device A
@@ -675,9 +675,6 @@ fn resnapshot_residue_heals_on_sync_spec_perm_6() {
         lp.peers[1].commit(m).unwrap();
         t
     };
-    // n0 also holds an admin edge on A1 (issues/node-chain-check-skips-owner-links.md)
-    set_edge(&mut lp.peers[0].engine, a1, n0, Some(edge(Role::Admin)), None);
-    lp.sync_all().unwrap();
     set_edge(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Admin)), None);
     lp.sync_all().unwrap();
     set_edge(&mut lp.peers[0].engine, a1, a2, Some(edge(Role::Write)), None);
@@ -727,4 +724,111 @@ fn resnapshot_residue_heals_on_sync_spec_perm_6() {
         assert_eq!(lp.peers[i].engine.roster(&a0), lp.peers[1].engine.roster(&a0), "device {i}");
         assert_eq!(lp.peers[i].engine.roster(&a2), lp.peers[1].engine.roster(&a2), "device {i}");
     }
+}
+
+fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result<Option<osis_core::CommitId>> {
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s(v)).unwrap();
+    lp.peers[i].commit(m)
+}
+
+// spec/permissions.md §1 (paths climb owner links and edges), §4 (chain certificates): n0 owns
+// A, A writes B, B admin of C (n1 owns B and C). n0's write on C applies at n0 and a receiver; a
+// node with no path may not write C. A fresh receiver given n0's certificates for C but A's
+// `/created` (the owner-link step) keeps the write pending on n0's chain until it arrives.
+#[test]
+fn owner_then_edge_chain_applies_spec_perm_1() {
+    let mut lp = net(3, 62);
+    lp.sync_all().unwrap();
+    let n0 = lp.peers[0].engine.tid();
+    let a = new_thing(&mut lp, 0);
+    let b = new_thing(&mut lp, 1);
+    let c = new_thing(&mut lp, 1);
+    lp.sync_all().unwrap();
+    let ab = set_edge(&mut lp.peers[1].engine, b, a, Some(edge(Role::Write)), None);
+    let bc = set_edge(&mut lp.peers[1].engine, c, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    assert!(write_reg(&mut lp, 2, c, "n2").is_err(), "no path: no write");
+    let w = write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
+    sync(&mut lp, 0, 2);
+    for i in [0, 2] {
+        assert_eq!(lp.peers[i].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")), "peer {i}");
+    }
+    // the certificates carry the edges and A's `/created`
+    let certs = lp.peers[0].engine.certificates(&c);
+    let created = |e: &osis_node::Engine, id: &osis_core::CommitId, t: Tid| e.header(id).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "/created"));
+    let a_rec = *certs.keys().find(|id| created(&lp.peers[0].engine, id, a)).expect("A's /created certified");
+    assert!(certs.contains_key(&ab) && certs.contains_key(&bc));
+    let mut fresh = net(1, 63);
+    for id in certs.keys().filter(|id| **id != a_rec) {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        fresh.deliver(0, &pk).unwrap();
+    }
+    let pk = lp.peers[0].engine.package(&w).unwrap().unwrap();
+    let r = fresh.deliver(0, &pk).unwrap();
+    assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(x)) if x == n0), "{r:?}");
+    let pk = lp.peers[0].engine.package(&a_rec).unwrap().unwrap();
+    fresh.deliver(0, &pk).unwrap();
+    assert!(fresh.peers[0].engine.pending().is_empty());
+    assert_eq!(fresh.peers[0].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")));
+}
+
+// spec/permissions.md §1 (`MAX_OWNER_DEPTH`): n0 owns a chain of things down to one link past
+// the cap. Owner links count on a path as perm's effective role counts them: an edge on C to
+// the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
+#[test]
+fn owner_chain_depth_edge_chain_spec_perm_1() {
+    use osis_core::format::MAX_OWNER_DEPTH;
+    let mut lp = net(3, 64);
+    lp.sync_all().unwrap();
+    let mut owner = lp.peers[0].engine.tid();
+    let mut chain = Vec::new();
+    for _ in 0..=MAX_OWNER_DEPTH {
+        let mut m = Mutation::new();
+        owner = lp.peers[0].engine.new_thing(&mut m, owner);
+        lp.peers[0].commit(m).unwrap();
+        chain.push(owner);
+    }
+    let (at_cap, past) = (chain[MAX_OWNER_DEPTH - 1], chain[MAX_OWNER_DEPTH]);
+    for (k, member) in [at_cap, past].into_iter().enumerate() {
+        let c = new_thing(&mut lp, 1);
+        lp.sync_all().unwrap();
+        set_edge(&mut lp.peers[1].engine, c, member, Some(edge(Role::Admin)), None);
+        lp.sync_all().unwrap();
+        write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
+        sync(&mut lp, 0, 2);
+        for i in [0, 2] {
+            assert_eq!(lp.peers[i].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")), "case {k} peer {i}");
+        }
+    }
+}
+
+// spec/permissions.md §1, §4: n0 reaches C only through edges n0 -> G1 -> G2 -> C while it
+// owns thousands of things that own more (more than any walk-size cap): its write on C
+// applies (the chain search goes backward from C, never through n0's owned things).
+#[test]
+#[ignore = "tier 2"]
+fn chain_found_past_owned_flood_spec_perm_4() {
+    let mut lp = net(2, 77);
+    lp.sync_all().unwrap();
+    let n0 = lp.peers[0].engine.tid();
+    let g1 = new_thing(&mut lp, 1);
+    let g2 = new_thing(&mut lp, 1);
+    let c = new_thing(&mut lp, 1);
+    lp.sync_all().unwrap();
+    set_edge(&mut lp.peers[1].engine, g1, n0, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[1].engine, g2, g1, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[1].engine, c, g2, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    for _ in 0..21 {
+        let mut m = Mutation::new();
+        for _ in 0..200 {
+            let a = lp.peers[0].engine.new_thing(&mut m, n0);
+            lp.peers[0].engine.new_thing(&mut m, a);
+        }
+        lp.peers[0].commit(m).unwrap();
+    }
+    write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    assert_eq!(lp.peers[1].engine.get(&c, &ak("/t/reg")).unwrap(), Some(s("n0")));
 }

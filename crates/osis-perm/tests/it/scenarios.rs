@@ -531,3 +531,25 @@ fn writer_cannot_write_edges() {
         assert_eq!(tl.roster(&g, At::END), before);
     }
 }
+
+/// §5.1 step 4 (sticky residue, notes/permissions.md): n1 removes n2 (admin) from G, a genuine
+/// fall that drops n2's grant of n3 (unseen by n1): no residue. Then n0 removes n1, dropping
+/// n1's removal of n2; the grant stays dropped though its cause no longer applies: residue.
+#[test]
+fn residue_classifies_sticky_and_genuine_spec_perm_5() {
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let g = w.thing(n[0]);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[0], g, n[1], edge(Admin), 0, &all);
+    w.set(n[0], g, n[2], edge(Admin), 0, &all);
+    w.set(n[2], g, n[3], edge(Write), 2, &[(n[0], 2)]);
+    w.set(n[1], g, n[2], None, 4, &[]);
+    let tl = eval(&w);
+    assert_eq!(tl.dropped().len(), 1);
+    assert!(residue(&tl).is_empty(), "a genuine fall is no residue");
+    w.set(n[0], g, n[1], None, 6, &[]);
+    let tl = eval(&w);
+    assert_eq!(tl.dropped().len(), 2);
+    assert_eq!(residue(&tl).len(), 1);
+}
