@@ -107,7 +107,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 8 | store missing, locked, or (on `init`) not empty |
 
 ## Tests
-tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, Unsupported commands, the command-table coverage check). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/apps.md).
+tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, Unsupported commands, the command-table coverage check). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
 
 ## Not built
 A daemon other invocations proxy to (so the CLI can inspect a store an app holds open; the lock is the answer for now); `edit_text` sessions (keystroke editing is a UI concern; `edit` covers scripts); shell completion, REPL, colour, paging; aliases beyond `me`/`node`/`home`; bearer read (`open_link`).

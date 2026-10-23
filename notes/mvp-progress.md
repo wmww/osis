@@ -26,7 +26,7 @@ One line per subsystem, with what proves it (crate tests unless named otherwise)
 - **Ephemeral** : signals verified, rate-limited, never stored, replay window; expiring writes and heartbeats: osis-node `signals_spec_sync_9`, `replayed_signal_dropped_spec_sync_9`; sim `disappearing`, `keep_at_most`.
 - **API** (osis): typed and untyped keys, writes and edits, text sessions, watches, undo/redo, sharing, streaming, sync status: `crates/osis/tests/` (`api.rs`, `sharing.rs`, `history.rs`, `watch.rs`, `sync.rs`).
 - **CLI** (osis-cli): the command table over the API: `tests/it/cli.rs`, `syntax.rs`; `localhost.rs` (a real `osis serve` and three devices; tier 2).
-- **Apps**: notes-app, chat, folder end to end in osis-sim `World` (tier 1; notes/apps.md).
+- **Apps**: notes-app, chat, folder end to end in osis-sim `World` (tier 1; since removed, notes/std.md).
 - **Adversaries**: sim `evil_server`, `evil_server_drops`, `removed_replayer`, `malformed_blobs`, `deposit_flood` with their expected outcomes; fuzzing (15 targets, no crash); two fresh-agent security review passes (notes/testing.md, Security reviews).
 - **Models**: TLA+ `sync` and `rotation` pass every instance but the accepted residue (`MC_drop_refresh`); models/crdt and models/membership as differential oracles.
 

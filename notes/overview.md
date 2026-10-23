@@ -53,4 +53,5 @@ Known open (issues/): owner tradeoffs stated in user terms (crdt-undo-absent-pos
 - notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).
 - notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
 - notes/testing.md: tiers, vectors, fuzzing, simulator, budgets, policy checks; notes/testing-map.md: the generated spec-to-test map.
+- notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order).
 - notes/explainer.md: the docs site.

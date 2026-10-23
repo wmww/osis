@@ -1,0 +1,62 @@
+# The first-party app
+> Summary: Design direction for the first-party osis app over osis-std (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
+
+## Direction (owner)
+- Fresh and timeless, not a bundle of generic apps over osis types. Bright colors, flatish but not distinctly flat, its own look rather than the native aesthetic.
+- Oriented around data, not functionality: no "tab for notes, tab for calendar". Views show whatever combination of things they can meaningfully place.
+- Responsive and lightweight on every device; webview is out. Native first, web later.
+- Build first in something light, simple and running everywhere; if the UX suffers, rebuild differently. Taking on platform work (Rust embedding, possibly an iOS shell of our own) is accepted for the sake of the right foundations in text, accessibility and low-level control.
+- Convergent design, not a mobile/desktop split: one layout keyed on width and input kind, phone layout designed first, desktop adds columns. Touch on desktop supported.
+
+## Model
+- **The thing is the unit.** No `kind` aspect exists (notes/tags.md); a thing is whatever its aspects make it, and may be several kinds (a meeting note is note and event).
+- **Facet views.** Kind-specific views exist because aspects do not map 1:1 onto UI. Opening a thing picks the best-matching view for the aspects present (event aspects plus `/body` → the calendar view, which includes the freeform text area; `/body` alone → the notes view). When several views apply and none covers every aspect, the thing offers them side by side (tabs or a scroll list; not decided, not important).
+- **Schema fallback view**, behind a context menu: shows and edits every aspect of a thing from its schema-declared types alone. Covers things whose schema the app has but no view for.
+- **Create** offers a kind selector (note, event, contact, ...) plus "empty thing".
+- **Lenses** are few and fixed: a filter plus an arrangement over all things, each admitting only what it can place. Time (event times; faint creation and edit ticks for the rest, from commit timestamps), People (contacts and profiles plus what links to them), Tags (the graph as navigation, with color), Search as the primary way in, and a home lens mixing today, recently touched things and people. User structure lives in tags and links, not in lenses.
+- **Tags filter.** Tags also narrow a lens or find things within a collection.
+- **Every thing shows** its tags, what links to it (`db.backlinks`), who can see it (roster) and its history (undo). Placing into a shared tag confirms the reach (notes/tags.md guideline).
+- Backlinks from markdown (`/body` has no tid reference syntax): the owner is taking that to the library side. Not an app concern until then.
+
+## Look
+- Color comes from the data: `/tag.color` tints things, the chrome stays calm. The palette is the user's, which is what keeps it timeless.
+- Flatish: soft elevation and warmth on cards, depth cues for stacking and drag, no decorative gradients. Vello's blurred rounded rects make this cheap.
+
+## State in osis
+- All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
+- Durable view state (open things, lens, filters, layout, window management if it grows) as things in a person-private group: a view can be moved between devices, and between apps or toolkits, and saved and restored. Not specified or built on the first pass, but the architecture assumes it.
+- Ephemeral view state (selection, expanded panels, scroll anchor) as in-memory non-synced things, which the owner has queued for the osis API. Hot live state across devices, if ever, goes through signals (notes/ephemeral.md), not commits.
+- Needed from the API (asks for the library side): in-memory things must support watches, queries and backlinks exactly like stored things; and a mode where the app pumps the watch dispatcher on its own (UI) thread, removing the cross-thread hop and ordering questions.
+
+## Layers
+- **State**: osis (above).
+- **Actions**: a toolkit-free Rust crate. Widgets emit intents (open, tag, share, edit); the crate turns them into osis writes and holds all behavior and policy, including the share confirmation.
+- **Driver**: Masonry-specific glue. Watches fire, the driver edits the retained widget tree through Masonry's mutation API. Two pieces written once: marshaling watch callbacks onto the UI thread (until the dispatcher-pump mode exists), and a keyed list reconciler turning a changed query result into insert/move/remove on a list widget.
+- **Widgets**: our own look as Masonry widgets.
+- A toolkit swap rewrites driver and widgets only; state and behavior survive. The earlier idea of a separate "view model" crate dissolves into the view-state schema plus the actions crate.
+
+## Toolkit: Masonry without Xilem
+Masonry is a retained widget tree designed to sit under other frontends; Xilem's job is to own app state and diff it into Masonry. With osis owning the state and delivering fine-grained changes (watches per aspect, live queries over a visible range), Xilem solves a problem we do not have. What we get: Vello (2D, GPU compute; vello_hybrid for low-end GPUs and WebGL, vello_cpu as a no-GPU fallback), Parley (the best Rust text stack: rich layout, IME), AccessKit designed in, a renderer abstraction, and a funded multi-contributor org.
+
+Costs: pre-1.0 with breaking releases (the layout system changed in Q1 2026): pin versions, upgrade deliberately, keep the driver small so churn lands in one place. Thinner docs than Slint, so agents read source. Small stock widget set: we build our own anyway.
+
+Alternatives weighed:
+- **Slint**: the most mature on all six targets today (1.15 in Feb 2026 brought Android/iOS safe areas and virtual keyboard; viewers in both app stores; mobile is Rust-only), excellent tooling and docs, tiny runtime, software renderer, royalty-free license for apps (verify terms). Against: UI in a separate DSL, drawing limited to paths, plain-text editing only, less low-level control. Would have been the pick under "light and simple now" alone.
+- **Makepad**: the only Rust toolkit shipping web plus all five native targets from one codebase (1.0 ~April 2025; Robrix, Moly), shader-level custom drawing by default. Against: thin docs, small team, unusual DSL, no accessibility, needs a GPU, no 2026 release notes found.
+- **Xilem** on top of Masonry: duplicates osis's reactivity.
+- **egui**: lightest and everywhere, but the look is hard to escape and mobile text input is weak. **iced**, **GPUI**: desktop only. **Dioxus native**: immature, mobile is webview. **Compose Multiplatform**: Kotlin, JVM desktop. Flutter and webviews excluded by the owner.
+
+## Platform work accepted
+- Desktop (Linux, Windows, macOS): winit, works today. Start here; test with the gui-testing skill.
+- Android: winit plus android-activity; IME is the rough spot and under active Linebender work (IME moving onto ui-events); AccessKit has an Android backend.
+- iOS: winit's backend is thinly exercised, IME weak, no AccessKit backend. Expect a UIKit shell of our own hosting the render surface and feeding touch, keyboard and VoiceOver into Masonry.
+- Web: later; needs WebGPU for Vello proper, vello_hybrid/vello_cpu for a canvas fallback.
+
+## Text
+Parley's plain editor exists; rich editing does not. The markdown editor is ours: an editor over Parley layouts with styled spans, first as a styled-source editor (headings larger, links colored, markup visible), not WYSIWYG. Also the one place a plain-text fallback is acceptable early.
+
+## Prototype order
+1. Linux desktop: a Thing view with the facet-selection logic, the Tags lens, view state in osis from day one.
+2. An Android build within the first few iterations so the convergent layout stays honest.
+3. Time and People lenses, search, the schema fallback view.
+4. iOS shell, web, durable view-state spec.
