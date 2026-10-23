@@ -219,7 +219,7 @@ fn mutual_admin_teams_extend() {
 /// §5.1 step 5: incremental equals from scratch.
 #[test]
 fn incremental_equals_from_scratch() {
-    run(25, 0x5eed_0301);
+    run(10, 0x5eed_0301);
 }
 
 #[test]

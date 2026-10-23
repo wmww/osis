@@ -567,10 +567,9 @@ fn close_spec_api_handle() {
     assert!(weak.upgrade().is_none(), "closed when close() returns");
 }
 
-// spec/data-model.md §5 (Depth: writers refuse deeper values); notes/api.md Errors: values past the limits
-// fail with an error, never a panic: deep nesting, a huge string, a huge map
-#[test]
-fn values_past_limits_error_spec_data_model() {
+/// Writes a value nested past the depth limit, a string of `string` bytes and a map of `map`
+/// entries; the database errs or accepts, never panics, and keeps working.
+fn values_past_limits(string: usize, map: i64) {
     let db = db(1);
     let mut w = db.write();
     let t = w.create(db.me(), Place::Unsynced).unwrap();
@@ -580,14 +579,29 @@ fn values_past_limits_error_spec_data_model() {
         deep = Value::List(vec![deep]);
     }
     assert!(db.write_with(|w| w.at(t, ak("/t/deep")).set(&deep)).is_err(), "nesting past the depth limit accepted");
-    let huge = Value::Str("x".repeat(8 << 20));
+    let huge = Value::Str("x".repeat(string));
     db.write_with(|w| w.at(t, ak("/t/huge")).set(&huge)).unwrap();
     assert_eq!(db.get(t, ak("/t/huge")).unwrap(), Some(huge));
-    let big: BTreeMap<Value, Value> = (0..200_000i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+    let big: BTreeMap<Value, Value> = (0..map).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let _ = db.write_with(|w| w.at(t, ak("/t/map")).set(&Value::Map(big)));
     // still working
     db.write_with(|w| w.at(t, ak("/t/x")).set(&Value::Int(1))).unwrap();
     assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Int(1)));
+}
+
+// spec/data-model.md §5 (Depth: writers refuse deeper values); notes/api.md Errors: values past the limits
+// fail with an error, never a panic: deep nesting, a large string (chunked), a large map (paged)
+#[test]
+fn values_past_limits_error_spec_data_model() {
+    values_past_limits(1 << 20, 20_000);
+}
+
+// spec/data-model.md §5; notes/api.md Errors: as above at an 8 MiB string and a 200k-entry map
+// (over 20 s in debug).
+#[test]
+#[ignore = "tier 2"]
+fn values_past_limits_huge_spec_data_model() {
+    values_past_limits(8 << 20, 200_000);
 }
 
 // notes/api.md Writes (`create_expiring`, `expires`, `write_with`), spec/commits.md §6: a thing

@@ -60,6 +60,10 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 2
 
+# osis-crypto instantiates the generic AEAD, hash and curve code: optimized like a dependency.
+[profile.dev.package.osis-crypto]
+opt-level = 2
+
 [profile.test]
 inherits = "dev"
 

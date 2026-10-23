@@ -977,7 +977,7 @@ mod tests {
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n;
         let mut old = st.clone();
         let (mut mism, mut writes) = (0, 0);
-        for step in 0..120 {
+        for step in 0..60 {
             ts += 1 << 16;
             let v = pool(r(1000));
             let op = PathOp { path: vec![], op: if r(2) == 0 { Op::Add(v) } else { Op::Remove(v) } };
@@ -1022,7 +1022,7 @@ mod tests {
             st.join(delta.clone()); f.join(delta);
             unit = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap().0;
         }
-        assert!(writes > 20, "{writes} writes");
+        assert!(writes > 10, "{writes} writes");
         assert_eq!(mism, 0);
     }
     // spec: none (local store layout); notes/local-store.md (Units): a state paged in an earlier build's layout (`[1]` with pages

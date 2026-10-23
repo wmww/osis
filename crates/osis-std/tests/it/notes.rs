@@ -150,7 +150,8 @@ fn large_body_streams() {
     let phone = add_device(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();
-    let doc: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+    // just above `CHUNK_THRESHOLD`: a large value
+    let doc: String = (0..13_000).map(|i| format!("line {i}\n")).collect();
     laptop.write_with(|w| w.at(note, BODY).set_stream(doc.as_bytes())).unwrap();
     w.run();
     assert!(matches!(phone.get(note, BODY), Err(Error::TooLarge { .. })));

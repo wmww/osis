@@ -8,14 +8,28 @@ use osis_sim::net::with_full_passes;
 use osis_sim::replay;
 
 fn same(name: &str, seed: u64) {
-    let work = replay(name, seed).unwrap_or_else(|f| panic!("{f}"));
-    let full = with_full_passes(|| replay(name, seed)).unwrap_or_else(|f| panic!("full passes: {f}"));
+    // the two runs on two threads (`with_full_passes` is per thread)
+    let (work, full) = std::thread::scope(|s| {
+        let full = s.spawn(|| with_full_passes(|| replay(name, seed)));
+        (replay(name, seed), full.join().unwrap())
+    });
+    let work = work.unwrap_or_else(|f| panic!("{f}"));
+    let full = full.unwrap_or_else(|f| panic!("full passes: {f}"));
     assert_eq!(work, full, "{name} seed {seed}: work sets {work:?}, full passes {full:?}");
 }
 
-// spec/sync.md §6, §7: random writes on two replicating servers, snapshots, keep-at-most,
-// expiry, a purge and a demotion: work sets give the full passes' run.
+// spec/sync.md §6, §7: keep-at-most writes, their drops and compaction under crashes: work sets
+// give the full passes' run.
 #[test]
+fn work_sets_keep_at_most_seed_1() {
+    same("keep_at_most", 1);
+}
+
+// spec/sync.md §6, §7: random writes on two replicating servers, snapshots, keep-at-most,
+// expiry, a purge and a demotion: work sets give the full passes' run (about 20 s per run in
+// debug).
+#[test]
+#[ignore = "tier 2"]
 fn work_sets_seed_1() {
     same("work_sets", 1);
 }

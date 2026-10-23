@@ -198,8 +198,9 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     let mut m = osis_node::Mutation::new();
     let u = e.new_thing(&mut m, me);
     let at = WallMs(e.now().0 + 5_000);
-    for i in 0..800 {
-        let ak = Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap();
+    // few aspects with long keys: the list just above `CHUNK_THRESHOLD`
+    for i in 0..160 {
+        let ak = Ak::new(format!("/u/{}{i:05}", "a".repeat(900))).unwrap();
         m.set(u, &ak, &s("v")).unwrap();
         m.expires(u, &ak, at).unwrap();
     }

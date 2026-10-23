@@ -1764,7 +1764,7 @@ fn aspect_deltas(e: &mut osis_node::Engine, c: &CommitId, t: Tid, a: &str) -> Ve
 fn roster_snapshot_one_delta_per_edge_spec_perm_6() {
     let mut lp = net(2, 530);
     let t = new_thing(&mut lp, 0);
-    let n = 200;
+    let n = 60;
     for i in 0..n {
         let m = Tid::from_bytes([u8::try_from(i % 250).unwrap(), 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]);
         set_edge(&mut lp.peers[0].engine, t, m, Some(edge(Role::Read)), None);

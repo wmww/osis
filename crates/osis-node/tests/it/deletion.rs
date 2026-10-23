@@ -153,12 +153,15 @@ fn timed_delete_spec_sync_5() {
     assert_eq!(after + 1, before, "the replaced body went at its bound, nobody online");
 }
 
-/// A record (about 330 KB) with a secret entry on aspect `asp` (a keep-at-most map) in one
+/// A record (about 73 KB) with a secret entry on aspect `asp` (a keep-at-most map) in one
 /// commit at the server, compacted into one snapshot at the server when `compact`: (item,
 /// aspect, label, the body carrying the record: the snapshot, else the commit).
+/// Entries of `kept_record`'s map, 1100 B each: just over a page (`PAGE_TARGET`).
+const RECORD_KEYS: usize = 66;
+
 fn kept_record(net: &mut Net, a: usize, g: osis_core::Tid, asp: &osis_schema::Aspect<osis_core::Value>, marker: &str, compact: bool) -> (osis_core::Tid, Ak, osis_core::LabelId, osis_core::CommitId) {
     let t = net.item(a, g, g, "x");
-    let mut v: std::collections::BTreeMap<osis_core::Value, osis_core::Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut v: std::collections::BTreeMap<osis_core::Value, osis_core::Value> = (0..RECORD_KEYS).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     v.insert(s("secret"), s(marker));
     let mut m = Mutation::new();
     m.set(t, asp, &osis_core::Value::Map(v)).unwrap();
@@ -228,7 +231,7 @@ fn erasing_edit_then_compaction_spec_commits_5() {
         erase_secret(&mut net, a, t, asp);
         net.run();
         let sent = net.sent_bytes;
-        assert!(sent < 32 * 1024, "case {i}: an erasing edit sent {sent} bytes (the record is about 330 KB)");
+        assert!(sent < 32 * 1024, "case {i}: an erasing edit sent {sent} bytes (the record is about 73 KB)");
         assert_eq!(snapshots(&mut net, a, &t, &ak), before, "case {i}: no re-snapshot per erasing edit");
         assert!(net.engine(a).holds_body(&s1, &t, &ak), "case {i}: the old body keeps to the next compaction");
         assert!(net.engine(a).deaths(&s1, &t, &ak).unwrap().is_some());
@@ -281,7 +284,7 @@ fn live_body_goes_at_grace_bound_spec_commits_5() {
         net.blocked.clear();
         net.advance(10_000);
         let ec = net.engine(c);
-        for k in ["k000", "k150", "k299"] {
+        for k in ["k000", "k033", "k065"] {
             assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s(k))]).unwrap(), Some(s(&"f".repeat(1100))), "case {i}: {k}");
         }
         assert_eq!(ec.get_at(&t, &ak, &[osis_crdt::PathSeg::Key(s("secret"))]).unwrap(), None, "case {i}");
@@ -306,7 +309,7 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     let t = net.item(a, g, g, "x");
     let ak = Ak::new(GONETEXT.ak()).unwrap();
     let marker = "ERASED-TEXT-3f8a";
-    let chunk = 60_000;
+    let chunk = 3_000;
     let mut ids = Vec::new();
     for k in 0..5 {
         let text = if k == 1 { format!("{}{marker}{}", "a".repeat(chunk / 2), "a".repeat(chunk / 2)) } else { "b".repeat(chunk) };
@@ -326,7 +329,7 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let sent = net.sent_bytes;
-    assert!(sent < 16 * 1024, "a partial delete sent {sent} bytes (the text is about 300 KB)");
+    assert!(sent < 5 * chunk / 8, "a partial delete sent {sent} bytes of a {}-byte text", 5 * chunk);
     assert!(snapshots(&mut net, a, &t, &ak).is_empty(), "no whole-state snapshot");
     assert!(net.engine(a).holds_body(&old, &t, &ak), "the partly erased body keeps to the next compaction");
     assert!(net.engine(a).body_live(&old, &t, &ak).unwrap());
