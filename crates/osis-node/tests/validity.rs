@@ -644,3 +644,87 @@ fn commit_form_carried_writes_judged_spec_perm_5_2() {
     };
     assert_eq!(keys, BTreeSet::from([s("alice")]));
 }
+
+/// Delivers commits `ids` of peer `from` to peer `to`.
+fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_core::CommitId]) {
+    for id in ids {
+        let pk = lp.peers[from].engine.package(id).unwrap().unwrap();
+        lp.deliver(to, &pk).unwrap();
+    }
+}
+
+// spec/permissions.md §5.1 step 4 (D only grows), §6 (epoch starts; a re-snapshot's roster):
+// issues/perm-resnapshot-self-undermining-drop.md, seed 6's shape. n0 removes A2 from A0 (W,
+// unseen by n1) and grants n1 write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The
+// full walk drops W and G (R is a fall while W stands) and keeps them dropped after R stops being
+// one; n1's roster snapshot of A0 has A2 admin, so replayed R is no fall and G stands. Device A
+// (full history) and device B (n1, the compactor) disagree until B's snapshot reaches A; then A,
+// B and late joiners (with or without W) agree on the snapshot's answer.
+#[test]
+fn resnapshot_residue_heals_on_sync_spec_perm_6() {
+    let mut lp = net(5, 61);
+    lp.sync_all().unwrap();
+    let (n0, n1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    // A0 owned by n1, A1 by n0, A2 by A0; A1 admin on A0, A2 write on A1
+    let a0 = new_thing(&mut lp, 1);
+    let a1 = new_thing(&mut lp, 0);
+    let a2 = {
+        let mut m = Mutation::new();
+        let t = lp.peers[1].engine.new_thing(&mut m, a0);
+        m.set(t, &REG, &s("a2")).unwrap();
+        lp.peers[1].commit(m).unwrap();
+        t
+    };
+    // n0 also holds an admin edge on A1 (issues/node-chain-check-skips-owner-links.md)
+    set_edge(&mut lp.peers[0].engine, a1, n0, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    set_edge(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    set_edge(&mut lp.peers[0].engine, a1, a2, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    // n0 through A1: A2 admin on A0, then removed (W); n1 write on A2 (G); A1 admin on A2
+    let step = |lp: &mut LocalPeer| lp.advance(1000);
+    step(&mut lp);
+    let c1 = set_edge(&mut lp.peers[0].engine, a0, a2, Some(edge(Role::Admin)), None);
+    step(&mut lp);
+    let w = set_edge(&mut lp.peers[0].engine, a0, a2, None, None);
+    step(&mut lp);
+    set_edge(&mut lp.peers[0].engine, a2, n1, Some(edge(Role::Write)), None);
+    step(&mut lp);
+    let c6 = set_edge(&mut lp.peers[0].engine, a2, a1, Some(edge(Role::Admin)), None);
+    // n1 has c1 and c6, not W or G, when it lowers A1 to write on A0 (R)
+    send(&mut lp, 0, 1, &[c1, c6]);
+    step(&mut lp);
+    let scope = DemotionScope { membership: BTreeMap::from([(n0, BTreeSet::from([a0, a2]))]), content: BTreeMap::new() };
+    let now = lp.peers[1].engine.now();
+    let f = lp.peers[1].engine.frontier(&scope, now).unwrap();
+    set_edge(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Write)), Some(f.to_value()));
+    // devices A (2) and B (1) hold the full history
+    for i in [1, 2] {
+        sync(&mut lp, 0, i);
+        sync(&mut lp, 1, i);
+    }
+    let has_g = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&a2).contains_key(&n1);
+    assert!(lp.peers[2].engine.roster(&a0).contains_key(&a2), "W dropped: A2 stays admin on A0");
+    assert!(!has_g(&lp, 2) && !has_g(&lp, 1), "the full walk keeps G dropped (sticky)");
+    // B compacts A0: it judges from its own snapshot and G stands; A has not got it yet
+    let snap = *lp.peers[1].engine.roster_snapshot(&a0, None).unwrap().commits.last().unwrap();
+    assert!(has_g(&lp, 1), "B: G stands under its snapshot");
+    assert!(!has_g(&lp, 2), "A: G dropped until the snapshot arrives");
+    send(&mut lp, 1, 2, &[snap]);
+    assert!(has_g(&lp, 2), "A adopts the snapshot as A0's epoch start: G stands");
+    assert_eq!(lp.peers[2].engine.roster(&a0), lp.peers[1].engine.roster(&a0));
+    assert_eq!(lp.peers[2].engine.roster(&a2), lp.peers[1].engine.roster(&a2));
+    // late joiners: one gets everything, one everything but W (as a compacted relay serves it)
+    sync(&mut lp, 1, 3);
+    let all_but_w: Vec<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| *c != w).collect();
+    send(&mut lp, 1, 4, &all_but_w);
+    for i in [0, 3, 4] {
+        if i == 0 {
+            sync(&mut lp, 1, 0);
+        }
+        assert!(has_g(&lp, i), "device {i}: G stands");
+        assert_eq!(lp.peers[i].engine.roster(&a0), lp.peers[1].engine.roster(&a0), "device {i}");
+        assert_eq!(lp.peers[i].engine.roster(&a2), lp.peers[1].engine.roster(&a2), "device {i}");
+    }
+}
