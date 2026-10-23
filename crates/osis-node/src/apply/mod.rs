@@ -775,6 +775,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
         }
     }
+    // a commit read before the record it needs (a nested edge write `ts`-ordered before its
+    // grant: another node's clock) is derived now, as it was when that record arrived
+    validity::resolve_unresolved(tx)?;
     if fast {
         crate::engine::index::update_timelines_saved(tx)?;
     } else {

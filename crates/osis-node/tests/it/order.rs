@@ -540,4 +540,9 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Read) }];
     check(1038, &h, 0, 8, 4).unwrap();
+    // seed 1558: C lowers its own edge (a nested write into the roster snapshot's entry) with a
+    // clock behind A's, so it sorts before that snapshot: an open read it first and left it
+    // waiting for the entry's creation, which a fresh apply had resolved
+    let h = vec![Demote { by: 0, t: 5, member: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, member: 2, role: Some(Role::Read) }];
+    check(1558, &h, 0, 8, 4).unwrap();
 }
