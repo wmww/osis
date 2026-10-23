@@ -13,7 +13,7 @@
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
 //! - `content`: §5.2 per-delta content validity.
-//! Binary: `cargo run --release -p membership-model -- [samples] [mode]`; `cargo test` runs
+//! Binary: `cargo run --release --bin membership-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 
 pub mod content;

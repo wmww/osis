@@ -711,14 +711,15 @@ mod tests {
             fn dedup(&self, _: &Tid) -> Option<Secret32> {
                 Some(osis_crypto::dedup_secret(self.0.nonce()))
             }
-            fn admin(&self, _: &Tid) -> Option<Secret32> {
-                None
+            // made-up delete keys (servers' business)
+            fn admin_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([3; 32])).verifying_key())
             }
-            fn chain_write(&self) -> Option<Secret32> {
-                None
+            fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([1; 32])).verifying_key())
             }
-            fn write(&self, _: &Tid) -> Option<Secret32> {
-                None
+            fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+                Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key())
             }
         }
         let ak = osis_core::Ak::new("/secrets").unwrap();

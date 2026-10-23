@@ -17,7 +17,7 @@ pub fn inbox() -> VecFile {
     let recipient = Tid::from_bytes([0x02; 15]);
     let payload = InboxPayload {
         commit: Value::List(vec![Value::List(vec![]), Value::Bytes(vec![0; 64]), Value::List(vec![])]),
-        things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), label: LabelId([0x04; 16]), servers: vec![Address { url: "quic://server.example:4433".into(), key: [0x06; 32] }] }],
+        things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), label: LabelId([0x04; 16]), servers: vec![Address { url: "quic://server.example:4433".into(), key: [0x06; 32] }], delete_keys: Some((osis_crypto::DeleteSecret::derive(&s32(0x07)).verifying_key(), osis_crypto::DeleteSecret::derive(&s32(0x08)).verifying_key())) }],
     };
     let (salt, eph, m) = ([0x36u8; 16], [0x37u8; 32], [0x38u8; 32]);
     let now = WallMs(1_700_000_000_000);

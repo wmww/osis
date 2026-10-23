@@ -31,6 +31,7 @@ membership-model = { path = "models/membership" }
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
 ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize", "fast"] }
+curve25519-dalek = { version = "4.1", default-features = false, features = ["zeroize", "precomputed-tables"] }
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
 libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem768"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
@@ -57,6 +58,10 @@ debug = "line-tables-only"
 
 # Dependencies only (workspace crates stay at dev opt-level): crypto and hashing in debug are slow.
 [profile.dev.package."*"]
+opt-level = 2
+
+# osis-crypto instantiates the generic AEAD, hash and curve code: optimized like a dependency.
+[profile.dev.package.osis-crypto]
 opt-level = 2
 
 [profile.release]

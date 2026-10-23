@@ -10,53 +10,48 @@ use crate::blob::{Level, Prefix, frame, open};
 use crate::Error;
 use osis_core::{BlobId, ChunkParams, Link, WallMs};
 use osis_crdt::{PageError, PageParams, PageSink, PageSource};
-use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, commitment, delete_token, link_hash, token_hash};
+use osis_crypto::{CryptoRngCore, SUITE_1, Secret32, VerifyingKey, commitment, link_hash};
 use std::collections::{BTreeSet, HashMap};
 
 /// How the chunk, tree-node and page blobs of one delta (or one header list) are framed: the
-/// thing's dedup secret keys the content hashes; expiry and token secrets go into each prefix
+/// thing's dedup secret keys the content hashes; expiry and delete keys go into each prefix
 /// (spec/wire.md §5, spec/crypto.md §7).
 #[derive(Clone)]
 pub struct Framing {
     pub dedup: Secret32,
     pub expiry: Option<WallMs>,
-    /// `(level, token secret)`; a chunk token is `kdf("delete token", secret, prefix salt)`.
-    pub tokens: Vec<(Level, Secret32)>,
+    /// `(level, delete key)`, blinded by each blob's salt and `blind`.
+    pub keys: Vec<(Level, VerifyingKey)>,
+    /// The blind of the commit's header (spec/crypto.md §7).
+    pub blind: [u8; 16],
 }
 
-/// Token level of the author-chain write secret (spec/crypto.md §7); the others are thing secrets.
+/// Level of the author-chain delete key (spec/crypto.md §7); the others are the thing's.
 const AUTHOR_CHAIN: Level = 2;
 
 impl Framing {
     /// Whether a blob framed earlier keeps its encryption when a delta framed with `self` reuses
-    /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its thing-secret token
-    /// commitments (admin and thing write secret) are exactly this framing's under its salt.
-    /// Author-chain tokens need not match.
-    pub fn keeps(&self, prefix: &Prefix) -> bool {
+    /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
+    /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt and
+    /// `blind`, the blind of the header that introduced it. Author-chain commitments need not
+    /// match.
+    pub fn keeps(&self, prefix: &Prefix, blind: &[u8; 16]) -> bool {
         let expiry_ok = match (prefix.expiry(), self.expiry) {
             (None, _) => true,
             (Some(_), None) => false,
             (Some(old), Some(new)) => old >= new,
         };
         let salt = prefix.salt();
-        let mine: Result<BTreeSet<[u8; 17]>, _> = self
-            .tokens
-            .iter()
-            .filter(|(l, _)| *l != AUTHOR_CHAIN)
-            .map(|(l, s)| commitment(*l, &token_hash(delete_token(s, salt).expose()), salt))
-            .collect();
-        let theirs: BTreeSet<[u8; 17]> = prefix.commitments().iter().filter(|c| c[0] != AUTHOR_CHAIN).copied().collect();
+        let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != AUTHOR_CHAIN).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
+        let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != AUTHOR_CHAIN).copied().collect();
         expiry_ok && mine.is_ok_and(|m| m == theirs)
     }
 }
 
-/// One blob written: its ID, prefix salt and chunk token hashes in `Framing::tokens` order (the
-/// header's chunk list, spec/wire.md §4; osis-commit's `AspectWrite::chunks` takes ID and salt).
+/// One blob written (the header's chunk list, spec/wire.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
     pub id: BlobId,
-    pub salt: [u8; 16],
-    pub token_hashes: Vec<[u8; 16]>,
 }
 
 /// Where blobs go.
@@ -140,8 +135,9 @@ impl<'a> BlobWriter<'a> {
         if old.suite != SUITE_1 || crate::blob::blob_id(&blob) != old.blob {
             return Ok(None);
         }
+        let Some(blind) = self.reuse.and_then(|r| r.blinds.get(&old.blob)) else { return Ok(None) };
         Ok(match open(&blob, &Secret32::from_bytes(old.key)) {
-            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix) => Some(old),
+            Ok((prefix, pt)) if pt == bytes && self.framing.keeps(&prefix, blind) => Some(old),
             _ => None,
         })
     }
@@ -157,12 +153,11 @@ impl<'a> BlobWriter<'a> {
     /// Frames `plaintext` as a blob whose link carries `hash`.
     pub fn put_blob(&mut self, hash: [u8; 32], plaintext: &[u8]) -> Result<Link, Error> {
         let salt = Prefix::random_salt(self.rng);
-        let secrets: Vec<(Level, &Secret32)> = self.framing.tokens.iter().map(|(l, s)| (*l, s)).collect();
-        let (prefix, token_hashes) = Prefix::for_chunk(salt, self.framing.expiry, &secrets)?;
+        let prefix = Prefix::for_keys(salt, &self.framing.blind, self.framing.expiry, &self.framing.keys)?;
         let (key, blob) = frame(&prefix, plaintext, self.rng)?;
         let id = crate::blob::blob_id(&blob);
         self.store.put(id, blob)?;
-        self.written.push(Written { id, salt, token_hashes });
+        self.written.push(Written { id });
         Ok(Link { hash, blob: id, suite: SUITE_1, key: *key.expose() })
     }
 }
@@ -218,15 +213,19 @@ pub struct Reuse {
     framing: Framing,
     chunks: HashMap<[u8; 32], Link>,
     nodes: HashMap<[u8; 32], (Link, [u8; 32])>,
+    /// The blind of the header that introduced each indexed blob.
+    blinds: HashMap<BlobId, [u8; 16]>,
 }
 
 impl Reuse {
     /// Walks the tree under `root` through the held node blobs (each verified; a missing,
     /// corrupt or foreign node just indexes nothing below it), visiting at most
-    /// `max_len / CHUNK_MIN + 1` chunk links. Only `Storage` fails.
-    pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
-        let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new() };
-        let framing = &r.framing;
+    /// `max_len / CHUNK_MIN + 1` chunk links. `blind_of` gives the blind of the header that
+    /// introduced a blob (none: never kept). Only `Storage` fails.
+    pub fn index(root: &Link, framing: Framing, fetch: &mut dyn BlobFetch, blind_of: &mut dyn FnMut(&BlobId) -> Option<[u8; 16]>, params: ChunkParams, max_len: usize) -> Result<Reuse, Error> {
+        let mut r = Reuse { framing, chunks: HashMap::new(), nodes: HashMap::new(), blinds: HashMap::new() };
+        let framing = r.framing.clone();
+        let framing = &framing;
         let mut budget = (max_len / params.min.max(1)).saturating_add(1);
         let mut stack = vec![(*root, None)];
         let mut seen = std::collections::HashSet::new();
@@ -235,7 +234,7 @@ impl Reuse {
                 continue;
             }
             let Some((prefix, level, kids)) = Self::node(framing, fetch, &link, expect)? else { continue };
-            if framing.keeps(&prefix) {
+            if blind_of(&link.blob).is_some_and(|b| framing.keeps(&prefix, &b)) {
                 r.nodes.insert(link.hash, (link, kids_digest(&kids)));
             }
             for (l, _) in kids.into_iter().rev() {
@@ -247,6 +246,9 @@ impl Reuse {
                     return Ok(r);
                 }
                 budget -= 1;
+                if let Some(b) = blind_of(&l.blob) {
+                    r.blinds.insert(l.blob, b);
+                }
                 r.chunks.entry(l.hash).or_insert(l);
             }
         }
@@ -350,11 +352,15 @@ mod tests {
     }
 
     fn framing() -> Framing {
-        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), tokens: vec![(1, Secret32::from_bytes([1; 32])), (3, Secret32::from_bytes([3; 32]))] }
+        Framing { dedup: Secret32::from_bytes([7; 32]), expiry: Some(WallMs(99)), keys: vec![(1, dk(1)), (3, dk(3))], blind: [4; 16] }
+    }
+
+    fn dk(b: u8) -> osis_crypto::VerifyingKey {
+        osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key()
     }
 
     // spec/wire.md §6, spec/crypto.md §6: chunk and node blobs round trip through framing; the
-    // reader verifies blob IDs and content hashes; prefixes carry expiry and chunk tokens.
+    // reader verifies blob IDs and content hashes; prefixes carry expiry and the blinded keys.
     #[test]
     fn blob_round_trip() {
         let f = framing();
@@ -369,9 +375,7 @@ mod tests {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
             assert_eq!(p.expiry(), Some(WallMs(99)));
             assert_eq!(p.commitments().len(), 2);
-            let tok = osis_crypto::delete_token(&f.tokens[1].1, p.salt());
-            assert_eq!(p.match_token(tok.expose()), Some(3));
-            assert_eq!(wr.token_hashes[1], osis_crypto::token_hash(tok.expose()));
+            assert_eq!(p.key_at(3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind).to_bytes()));
         }
         let dedup = f.dedup.clone();
         let mut r = BlobReader::new(&dedup, &mut store);
@@ -433,7 +437,7 @@ mod tests {
     }
 
     // spec/crdt.md §8, spec/sync.md §6, spec/commits.md §1: a paged snapshot goes out through
-    // BlobWriter (pages framed with the delta's expiry and tokens, listed for the chunk list) and
+    // BlobWriter (pages framed with the delta's expiry and delete keys, listed for the chunk list) and
     // back through BlobReader; without a page the commit cannot apply (Missing, fetch and retry).
     #[test]
     fn paged_snapshot() {
@@ -455,7 +459,7 @@ mod tests {
         assert!(written.len() > 3);
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
-            assert_eq!((p.expiry(), wr.token_hashes.len(), p.salt()), (f.expiry, 2, &wr.salt));
+            assert_eq!((p.expiry(), p.commitments().len()), (f.expiry, 2));
         }
         let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
         assert_eq!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)).unwrap().fragment, snap.fragment);

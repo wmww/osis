@@ -2,7 +2,7 @@
 > Summary: The first edit or read of a large text or list in a session loads all of it (about 0.2 s for 10^5 characters), and writing a whole collection loads every page of a large state. Map keys, set values, struct fields and joins of received changes load only their pages.
 > Tags: performance, node, storage, crdt
 
-Repro: `cargo test --release -p osis-node --test scale -- --ignored --nocapture text_undo_and_first_access_cost`.
+Repro: `cargo test --release -p osis-node --test it scale::text_undo_and_first_access_cost -- --ignored --nocapture`.
 
 Done (notes/node.md, Paged state): collections paged at any depth below struct fields, enum payloads and map entries; lazy loading of the pages a read by key, a write to map keys, fields or set values (the value index), or a join touches; undo footprints by dot (text included); `/secrets` ingestion of the touched entries; body drops, expiry and purge rewrite the touched pages only.
 

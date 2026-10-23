@@ -256,16 +256,25 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     lp.sync(1, 0).unwrap();
     // the largest frontier of this shape at or under the threshold
     let tw = |n: u64| BTreeMap::from([("/t/tags".to_string(), BTreeMap::from([(x, n)]))]);
-    let mut f = ct::Frontier { writes: BTreeMap::from([(t, tw(1))]), commits: BTreeSet::new() };
+    let frontier = |n: u32| {
+        let mut f = ct::Frontier { writes: BTreeMap::from([(t, tw(1))]), commits: BTreeSet::new() };
+        for i in 0..n {
+            let b = i.to_be_bytes();
+            f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tw(5));
+        }
+        f
+    };
     let size = |f: &ct::Frontier| osis_core::encode(&f.to_value()).len();
-    let mut i = 0u32;
-    while size(&f) <= CHUNK_THRESHOLD {
-        let b = i.to_be_bytes();
-        f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tw(5));
-        i += 1;
+    // binary search for the most extra entries that fit
+    let (mut lo, mut hi) = (0u32, 1u32);
+    while size(&frontier(hi)) <= CHUNK_THRESHOLD {
+        (lo, hi) = (hi, hi * 2);
     }
-    let b = (i - 1).to_be_bytes();
-    f.writes.remove(&Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if size(&frontier(mid)) <= CHUNK_THRESHOLD { lo = mid } else { hi = mid }
+    }
+    let f = frontier(lo);
     assert!(size(&f) <= CHUNK_THRESHOLD && size(&f) + 64 > CHUNK_THRESHOLD);
     edge(&mut lp, t, x, None, Some(f.to_value()));
     let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();

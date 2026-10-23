@@ -127,7 +127,7 @@ pub fn three_persons_two_servers(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A removed writer's bodies deleted by token (spec/sync.md §5 deletion by token; spec/commits.md
+/// A removed writer's bodies deleted by delete key (spec/sync.md §5 deletion by delete key; spec/commits.md
 /// §5): W writes a writer-purgeable aspect, the admin removes W, then a remaining writer (no
 /// delete key) purges W's body while the admin is away; it is gone from the server and from
 /// every honest node.
@@ -159,7 +159,7 @@ pub fn removed_writer(seed: u64) -> Res<Report> {
     if sim.engine(b)?.header(&cw).is_none() {
         return Err(sim.fail("B never received W's body"));
     }
-    // the admin is away: B purges W's body and deletes it by token
+    // the admin is away: B purges W's body and deletes it by delete key
     sim.node_down(a)?;
     purge(&mut sim, b, cw, t)?;
     sim.run(30)?;
@@ -497,7 +497,7 @@ pub fn large_edits(seed: u64) -> Res<Report> {
 /// Pass work sets against full passes (spec/sync.md §6, §7): two replicating servers, an admin
 /// and two writers writing at random under faults, then compactions (snapshots), keep-at-most
 /// and expiring writes, a purge, a demotion of a writer, time past the bounds. Run as is and
-/// under `with_full_passes`, it must give the same run (`sim/tests/work_sets.rs`).
+/// under `with_full_passes`, it must give the same run (`sim/tests/it/work_sets.rs`).
 pub fn work_sets(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x3e7);
     let mut sim = sim("work_sets", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });

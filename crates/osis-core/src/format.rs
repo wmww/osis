@@ -49,8 +49,6 @@ pub const TREE_MAX_LEVEL: u64 = 48;
 
 /// Blob framing version (spec/wire.md §5). fixed.
 pub const BLOB_FRAMING_VERSION: u8 = 1;
-/// Most token commitments in a blob prefix (spec/wire.md §2, §5). fixed.
-pub const MAX_COMMITMENTS: usize = 16;
 /// Most keys in a claim set (spec/wire.md §2, §8). fixed.
 pub const MAX_CLAIMS: usize = 65_536;
 

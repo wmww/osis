@@ -29,7 +29,7 @@ vector_files! {
     keys_seed => "keys/seed.vec",
     box_boxes => "box/boxes.vec",
     wrap_wrap => "wrap/wrap.vec",
-    token_tokens => "token/tokens.vec",
+    delete_keys => "delete/keys.vec",
     sign_signatures => "sign/signatures.vec",
     schema_core => "schema/core.vec",
     proto_messages => "proto/messages.vec",

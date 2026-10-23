@@ -4,8 +4,8 @@
 use crate::epoch::{ActorEpochs, SUITE};
 use crate::Error;
 use osis_core::Role;
-use osis_crypto::{Epoch, Secret32, role_kem};
-use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, KemKey, Keys, Keyset, SecretBox, Secrets};
+use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
+use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, KemKey, Keys, Keyset, SecretBox, Secrets, SigningKey};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn to_schema(e: &Epoch) -> ct::Epoch {
@@ -24,20 +24,29 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
     HistoryKey { role, epoch: to_schema(epoch) }
 }
 
-/// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` (spec/crypto.md §3).
+/// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
+/// (spec/crypto.md §3, §7).
 pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
-    Keyset { epoch: to_schema(epoch), kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()), suite: SUITE }
+    Keyset {
+        epoch: to_schema(epoch),
+        kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
+        suite: SUITE,
+        delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
+    }
 }
 
 /// Drops reading-only candidates that contradict the actor's published keysets (`/keys`): the
-/// keyset of an epoch names the KEM key derived from its genuine secret (spec/crypto.md §3), so a
+/// keyset of an epoch names the KEM and delete keys derived from its genuine secret (spec/crypto.md §3), so a
 /// planted secret for a published epoch never stays. Returns whether any went.
 pub fn prune_reading(epochs: &mut ActorEpochs, keys: &Keys) -> bool {
     let mut any = false;
     for r in crate::epoch::ROLES {
         let Some(ks) = keyset_of(keys, r) else { continue };
         let Ok(e) = from_schema(&ks.epoch) else { continue };
-        any |= epochs.role_mut(r).retain_reading(&e, |s| keyset(&e, s).kem_key == ks.kem_key);
+        any |= epochs.role_mut(r).retain_reading(&e, |s| {
+            let k = keyset(&e, s);
+            k.kem_key == ks.kem_key && k.delete_key == ks.delete_key
+        });
     }
     any
 }

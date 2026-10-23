@@ -66,7 +66,7 @@ pub struct Event {
 /// `until`, an explicit demotion auditing after such an end or the standing a demoter kept)
 /// need `until` and self-removal, which this model lacks (`joint.rs` has self-removal,
 /// `edges.rs` both); osis-perm's re-snapshot runs over joint and edges histories
-/// (`tests/roster.rs`) cover them.
+/// (`tests/it/roster.rs`) cover them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
     pub member: usize,

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Multi-GB large value streamed within a memory bound (tier 2, release; numbers in
-//! notes/testing.md, "Scale checks"): `OSIS_LARGE_MIB=1024 cargo test --release -p osis-label
+//! notes/testing.md, "Scale checks"): `OSIS_LARGE_MIB=1024 cargo test --release --workspace
 //! --test scale -- --ignored --nocapture`. Blobs go to files under the target dir.
 
 use osis_core::BlobId;
@@ -63,7 +63,7 @@ fn multi_gb_value_streams() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let mut store = DiskBlobs(dir.clone());
-    let framing = Framing { dedup: Secret32::from_bytes([7; 32]), expiry: None, tokens: Vec::new() };
+    let framing = Framing { dedup: Secret32::from_bytes([7; 32]), expiry: None, keys: Vec::new(), blind: [0; 16] };
     let mut rng = SeededRng::from_u64(1);
     let mut buf = vec![0u8; MIB];
     reset_peak();

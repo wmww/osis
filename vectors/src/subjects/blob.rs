@@ -6,13 +6,13 @@ use super::{FixedRng, case, generated_header, s32};
 use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_core::{Link, Value, WallMs, encode};
-use osis_crypto::{SUITE_1, aead, link_hash, link_tree_hash, pad};
+use osis_crypto::{DeleteSecret, SUITE_1, aead, link_hash, link_tree_hash, pad};
 use osis_label::{Error, Prefix, frame, open, tree::node_plaintext};
 
 const SPEC: &str = "spec/wire.md §5";
 
-fn c(level: u8, b: u8) -> [u8; 17] {
-    let mut x = [b; 17];
+fn c(level: u8, b: u8) -> [u8; 33] {
+    let mut x = [b; 33];
     x[0] = level;
     x
 }
@@ -33,9 +33,9 @@ fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
     let got = Prefix::parse(bytes);
     let want = match rule {
         "framing" => Error::UnknownFraming(bytes[0]),
-        "prefix-order" => Error::Malformed("commitments not strictly ascending"),
+        "prefix-order" => Error::Malformed("commitment levels not strictly ascending"),
         "prefix-level" => Error::Malformed("commitment level"),
-        "prefix-count" => Error::Malformed("more than MAX_COMMITMENTS"),
+        "prefix-count" => Error::Malformed("more than 3 commitments"),
         "prefix-short" => Error::Malformed("short prefix"),
         _ => panic!("unknown rule {rule}"),
     };
@@ -48,35 +48,34 @@ pub fn prefixes() -> VecFile {
     let salt = [0x21; 16];
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
     cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![c(2, 0x22)]).unwrap()));
-    // Commitments derived from (level, token hash) pairs under the prefix salt.
-    let tokens = [(1u8, [0x23u8; 16]), (2, [0x24; 16]), (3, [0x25; 16])];
-    let p = Prefix::for_tokens(salt, None, &tokens).unwrap();
-    let pairs: Vec<String> = tokens.iter().map(|(l, h)| format!("{l}:{}", hex(h))).collect();
-    cases.push(prefix_case("three commitments from token hashes", &p).with("tokens", pairs.join(",")));
-    let many: Vec<[u8; 17]> = (0..16).map(|i| c(1 + i % 3, i)).collect();
-    cases.push(prefix_case("sixteen commitments", &Prefix::new(salt, Some(WallMs(1)), many).unwrap()));
+    // Commitments derived from (level, delete key) pairs under the prefix salt.
+    let keys: Vec<(u8, osis_crypto::VerifyingKey)> = [(1u8, 0x23u8), (2, 0x24), (3, 0x25)].iter().map(|(l, b)| (*l, DeleteSecret::derive(&s32(*b)).verifying_key())).collect();
+    let hb = [0x26u8; 16];
+    let p = Prefix::for_keys(salt, &hb, None, &keys).unwrap();
+    let pairs: Vec<String> = keys.iter().map(|(l, k)| format!("{l}:{}", hex(&k.to_bytes()))).collect();
+    cases.push(prefix_case("three commitments from delete keys", &p).with("keys", pairs.join(",")).with("header-blind", hex(&hb)));
 
-    let base = Prefix::new(salt, None, vec![c(1, 1), c(1, 2)]).unwrap().to_bytes();
+    let base = Prefix::new(salt, None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
     let mut b = base.clone();
-    b[26..43].copy_from_slice(&c(1, 2));
-    b[43..60].copy_from_slice(&c(1, 1));
+    b[26..59].copy_from_slice(&c(2, 2));
+    b[59..92].copy_from_slice(&c(1, 1));
     cases.push(reject("commitments unsorted", &b, "prefix-order"));
     let mut b = base.clone();
-    b[43..60].copy_from_slice(&c(1, 1));
-    cases.push(reject("commitments duplicate", &b, "prefix-order"));
+    b[59..92].copy_from_slice(&c(1, 2));
+    cases.push(reject("two commitments at one level", &b, "prefix-order"));
     let mut b = base.clone();
     b[26] = 0;
     cases.push(reject("commitment level 0", &b, "prefix-level"));
     let mut b = base.clone();
-    b[43] = 4;
+    b[59] = 4;
     cases.push(reject("commitment level 4", &b, "prefix-level"));
     let mut b = Prefix::new(salt, None, vec![]).unwrap().to_bytes();
-    b[25] = 17;
-    for i in 0..17u8 {
-        b.extend(c(1, i));
+    b[25] = 4;
+    for i in 1..=4u8 {
+        b.extend(c(i.min(3), i));
     }
-    cases.push(reject("seventeen commitments", &b, "prefix-count"));
-    cases.push(reject("truncated", &base[..50], "prefix-short"));
+    cases.push(reject("four commitments", &b, "prefix-count"));
+    cases.push(reject("truncated", &base[..80], "prefix-short"));
     let mut b = base;
     b[0] = 2;
     cases.push(reject("unknown framing version", &b, "framing"));
@@ -101,17 +100,20 @@ fn blob_case(name: &str, spec: &str, prefix: &Prefix, plaintext: &[u8], key: [u8
 pub fn blobs() -> VecFile {
     let dedup = s32(0x07);
     let mut cases = Vec::new();
-    // Chunk: prefix with the chunk token of an `admin` delta (level 1, secret 0x26).
+    // Chunk: prefix committing to the delete key of an `admin` delta (level 1, secret 0x26).
     let salt = [0x27; 16];
     let secret = s32(0x26);
-    let (p, hashes) = Prefix::for_chunk(salt, Some(WallMs(1_800_000_000_000)), &[(1, &secret)]).unwrap();
+    let dk = DeleteSecret::derive(&secret).verifying_key();
+    let hb = [0x2c; 16];
+    let p = Prefix::for_keys(salt, &hb, Some(WallMs(1_800_000_000_000)), &[(1, dk)]).unwrap();
     let chunk = b"osis chunk bytes".to_vec();
     let (r, l1) = blob_case("chunk blob", "spec/wire.md §6", &p, &chunk, [0x28; 32], link_hash(&dedup, &chunk));
     cases.push(
         r.with("dedup", hex(dedup.expose()))
-            .with("token-secret", hex(secret.expose()))
-            .with("token-level", "1")
-            .with("chunk-token-hash", hex(&hashes[0])),
+            .with("delete-secret", hex(secret.expose()))
+            .with("delete-level", "1")
+            .with("delete-key", hex(&dk.to_bytes()))
+            .with("header-blind", hex(&hb)),
     );
     // Tree node over that chunk, with its length.
     let node = node_plaintext(1, &[(l1, chunk.len() as u64)]).unwrap();

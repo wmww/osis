@@ -1,8 +1,8 @@
 //! Structural validation of a resolved header (spec/wire.md §4, spec/commits.md §2, §5, §6).
 
 use crate::cbor::strictly_ascending;
-use crate::header::{FOREVER, Header, Kind, aspect_key, purge_value, token_value};
-use crate::retention::{CREATED, check_retention, fixed_retention, token_levels};
+use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
+use crate::retention::{CREATED, check_retention, delete_levels, fixed_retention};
 use crate::Error;
 use osis_core::format::FORMAT_VERSION;
 use osis_schema::PurgeBy;
@@ -13,7 +13,7 @@ const ROSTER_AKS: [&str; 2] = ["/members", "/tenures"];
 impl Header {
     /// Checks every layout rule and every rule of spec/commits.md §2 a header shows: sort orders,
     /// indices, ranges, kinds and aspect classes, fixed retention, expiry, purge, frontier,
-    /// origins, token levels. Linked lists must be resolved first.
+    /// origins, delete levels. Linked lists must be resolved first.
     pub fn validate(&self) -> Result<(), Error> {
         if !self.is_resolved() {
             return Err(Error::Missing);
@@ -28,7 +28,7 @@ impl Header {
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
         ord(strictly_ascending(&self.purge, |p| osis_core::encode(&purge_value(p))), "purge not sorted and distinct")?;
-        ord(strictly_ascending(&self.tokens, |t| osis_core::encode(&token_value(t))), "tokens not sorted and distinct")?;
+        ord(strictly_ascending(&self.keys, |t| osis_core::encode(&key_value(t))), "delete keys not sorted and distinct")?;
         ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;
@@ -37,7 +37,7 @@ impl Header {
             return Err(Error::Invalid("node-form membership commit"));
         }
         let wall = self.ts.wall_ms().0;
-        let mut used = vec![false; self.tokens.len()];
+        let mut used = vec![false; self.keys.len()];
         for a in &self.aspects {
             let ak = a.ak.as_str();
             // indices and ranges
@@ -47,10 +47,10 @@ impl Header {
             if a.schema.is_some_and(|i| i >= self.schemas.len()) {
                 return Err(Error::Malformed("schema index out of range"));
             }
-            ord(strictly_ascending(&a.tokens, |i| *i), "aspect tokens not ascending")?;
-            let mut levels = Vec::with_capacity(a.tokens.len());
-            for i in &a.tokens {
-                let tok = self.tokens.get(*i).ok_or(Error::Malformed("token index out of range"))?;
+            ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
+            let mut levels = Vec::with_capacity(a.keys.len());
+            for i in &a.keys {
+                let tok = self.keys.get(*i).ok_or(Error::Malformed("delete key index out of range"))?;
                 if let Some(u) = used.get_mut(*i) {
                     *u = true;
                 }
@@ -82,14 +82,10 @@ impl Header {
             } else if kind == Kind::ContentSnapshot && a.retention.by != PurgeBy::Writer {
                 return Err(Error::Invalid("compaction-snapshot delta not purgeable by writer"));
             }
-            // levels as listed (ascending, since tokens sort by level first): exactly those the
-            // retention calls for; only level 1 may be missing (a writer without the admin
-            // secret: content, or a non-admin's membership write; provisional,
-            // issues/token-admin-secret.md)
-            let required = token_levels(&a.retention, kind);
-            let without_admin: Vec<u8> = required.iter().copied().filter(|l| *l != 1).collect();
-            if levels != required && levels != without_admin {
-                return Err(Error::Invalid("token levels do not match the retention"));
+            // levels as listed (ascending, since keys sort by level first): exactly those the
+            // retention calls for
+            if levels != delete_levels(&a.retention, kind) {
+                return Err(Error::Invalid("delete levels do not match the retention"));
             }
             // expiry
             if let Some(t) = a.expires {
@@ -110,13 +106,17 @@ impl Header {
         if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
             return Err(Error::Invalid("roster snapshot of several things"));
         }
+        // one author chain: at most one level-2 key (header-list blobs commit to it alone)
+        if self.keys.iter().filter(|k| k.level == 2).count() > 1 {
+            return Err(Error::Invalid("more than one level-2 delete key"));
+        }
         if used.iter().any(|u| !u) {
-            return Err(Error::Malformed("token no aspect calls for"));
+            return Err(Error::Malformed("delete key no aspect calls for"));
         }
         for c in &self.chunks {
-            ord(strictly_ascending(&c.tokens, |t| t.0), "chunk tokens not ascending")?;
-            if c.tokens.iter().any(|t| t.0 >= self.tokens.len()) {
-                return Err(Error::Malformed("chunk token index out of range"));
+            ord(strictly_ascending(&c.keys, |i| *i), "chunk delete keys not ascending")?;
+            if c.keys.iter().any(|i| *i >= self.keys.len()) {
+                return Err(Error::Malformed("chunk delete key index out of range"));
             }
         }
         if !self.purge.is_empty() {

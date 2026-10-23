@@ -4,7 +4,7 @@ use rand_core::CryptoRngCore;
 use std::fmt;
 use zeroize::Zeroize;
 
-/// A 32-byte secret: role secret, seed, blob key, token. Zeroized on drop; `Debug` redacted.
+/// A 32-byte secret: role secret, seed, blob key. Zeroized on drop; `Debug` redacted.
 #[derive(Clone)]
 pub struct Secret32([u8; 32]);
 

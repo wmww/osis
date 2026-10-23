@@ -37,6 +37,7 @@ const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const BOX_WRITTEN: &[u8] = b"node/box written";
 const OWN_KEYS: &[u8] = b"node/own keys";
+const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 const CARRIED: &[u8] = b"node/carried";
 const AUTHORS: &[u8] = b"node/authors";
@@ -510,6 +511,8 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, BOX_WRITTEN, &c.box_written, &k)?;
     let k = if all { c.own_keys.iter().cloned().collect() } else { c.own_keys.logged() };
     put_set(txn, OWN_KEYS, &c.own_keys, &k)?;
+    let k = if all { c.delete_hints.keys().cloned().collect() } else { c.delete_hints.logged() };
+    put_map(txn, DELETE_HINTS, &c.delete_hints, &k)?;
     let k = if all { c.snapshots.keys().cloned().collect() } else { c.snapshots.logged() };
     put_map(txn, SNAPSHOTS, &c.snapshots, &k)?;
     let k = if all { c.carried.keys().cloned().collect() } else { c.carried.logged() };
@@ -693,6 +696,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, _) in scan::<Tid>(tx, OWN_KEYS)? {
         tx.core.own_keys.insert(k);
+    }
+    for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
+        tx.core.delete_hints.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, osis_core::Ak)>(tx, SNAPSHOTS)? {
         tx.core.snapshots.insert(k, dec(&v)?);

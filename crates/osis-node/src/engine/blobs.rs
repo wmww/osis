@@ -5,10 +5,10 @@ use osis_core::{BlobId, Link, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::Transaction;
 
-/// Blobs of one transaction; records what it wrote (ID and prefix salt).
+/// Blobs of one transaction; records what it wrote.
 pub struct TxBlobs<'t, 'a> {
     pub txn: &'t mut Transaction<'a>,
-    pub written: Vec<(BlobId, [u8; 16])>,
+    pub written: Vec<BlobId>,
 }
 
 impl<'t, 'a> TxBlobs<'t, 'a> {
@@ -24,9 +24,8 @@ fn store_err(e: osis_store::Error) -> osis_label::Error {
 
 impl osis_label::BlobSink for TxBlobs<'_, '_> {
     fn put(&mut self, id: BlobId, blob: Vec<u8>) -> Result<(), osis_label::Error> {
-        let salt = *osis_label::Prefix::parse(&blob)?.salt();
         self.txn.put_blob(&id, blob).map_err(store_err)?;
-        self.written.push((id, salt));
+        self.written.push(id);
         Ok(())
     }
 }

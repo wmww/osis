@@ -1009,7 +1009,7 @@ mod tests {
             assert!(p0.engine.creation(&t).is_some());
             assert_eq!(p0.engine.get(&t, &reg).unwrap(), Some(Value::Int(i as i64 + 1)));
         }
-        // the owner's tree: the last thing's delete tokens derive from its owner's secrets
+        // the owner's tree: the last thing's delete keys derive from its owner's secrets
         // through the two created above it (spec/crypto.md §3, §7)
         let mut m = Mutation::new();
         let d = p0.engine.new_thing(&mut m, x);
@@ -1020,7 +1020,7 @@ mod tests {
         let id = p0.commit(m).unwrap().unwrap();
         let h = p0.engine.header(&id).unwrap();
         let wf = h.aspects.iter().find(|w| w.tid == f && w.ak == reg).unwrap();
-        let levels: Vec<u8> = wf.tokens.iter().map(|i| h.tokens[*i].level).collect();
+        let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
         // a writer of X gets no admin on what it creates below X: no edges there
         let adm = ct::Edge { role: Role::Admin, until: None, invite: None, since: None };
