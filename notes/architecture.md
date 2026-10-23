@@ -18,7 +18,7 @@ Workspace root `Cargo.toml`: members `crates/*`, `models/crdt`, `models/membersh
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |
 | 6 | `osis-server` | server | blind node used as a server: `BackendStore`, sans-I/O `Hub`, async `driver` (default feature `driver`: tokio and transport `link`; `quic`; `file-backend`; `bin` for the binary) |
-| 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows; default feature `driver` (tokio driver, transport `link`); `quic`, `iroh`, `lan` (the driver's LAN loop), `relay` (tier-2 relay tests), `cost-stats` (phase timers, `osis_node::costs`; on in its own tests through a dev-dependency on itself) |
+| 7 | `osis-node` | node-core, node-sync, membership-flows | engine, apply, retention, labeling, sync engine, flows; default feature `driver` (tokio driver, transport `link`); `quic`, `iroh`, `lan` (the driver's LAN loop), `relay` (tier-2 relay tests); phase timers `osis_node::costs` (always compiled, recording on a thread once it calls `costs::take`) |
 | 8 | `osis` | api | public API; the only crate apps depend on: the handle owns the node's `SyncEngine`; sync runs on a tokio driver (`Runtime::Tokio`/`Own`) over osis-transport `link` sessions (`quic` feature for `Transport::Quic`; `iroh` adds co-readers over iroh, `lan` the LAN loop; `file-store` for the redb store) |
 | 9 | `osis-cli` | cli | binary `osis` (osis `file-store` + `quic`, server `bin`) |
 | 9 | `osis-vectors` (`vectors/`) | test-infra | conformance vector format, runner, generator, freeze check, fuzz seed corpora |

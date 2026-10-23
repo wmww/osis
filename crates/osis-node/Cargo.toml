@@ -26,8 +26,6 @@ tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread"
 
 [dev-dependencies]
 osis-server.workspace = true
-# phase timers in scale tests
-osis-node = { path = ".", default-features = false, features = ["cost-stats"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [features]
@@ -42,5 +40,3 @@ iroh = ["driver", "osis-transport/iroh"]
 lan = ["driver", "osis-transport/lan"]
 # Tier-2 tests of peers through a self-hosted iroh-relay on localhost.
 relay = ["iroh", "osis-transport/relay"]
-# Phase timers (`costs`) for scale tests.
-cost-stats = []

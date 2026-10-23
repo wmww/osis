@@ -1,54 +1,40 @@
-//! Phase timers for scale tests (feature `cost-stats`; without it every span is a no-op).
-//! Spans nest and count inclusively, per thread.
+//! Phase timers for scale tests. A thread records spans once it has called `take` (tests call it
+//! to reset before measuring); until then every span is one thread-local read. Always compiled, so
+//! test and non-test builds share one set of artifacts. Spans nest and count inclusively, per thread.
 
-#[cfg(feature = "cost-stats")]
-mod imp {
-    use std::cell::RefCell;
-    use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
-    thread_local! {
-        static COSTS: RefCell<BTreeMap<&'static str, (Duration, u64)>> = const { RefCell::new(BTreeMap::new()) };
-    }
+thread_local! {
+    static ON: Cell<bool> = const { Cell::new(false) };
+    static COSTS: RefCell<BTreeMap<&'static str, (Duration, u64)>> = const { RefCell::new(BTreeMap::new()) };
+}
 
-    pub struct Span(&'static str, Instant);
+pub(crate) struct Span(Option<(&'static str, Instant)>);
 
-    pub fn span(name: &'static str) -> Span {
-        Span(name, Instant::now())
-    }
+#[inline]
+pub(crate) fn span(name: &'static str) -> Span {
+    Span(ON.with(Cell::get).then(|| (name, Instant::now())))
+}
 
-    impl Drop for Span {
-        fn drop(&mut self) {
-            let d = self.1.elapsed();
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some((name, start)) = self.0 {
+            let d = start.elapsed();
             COSTS.with(|c| {
                 let mut c = c.borrow_mut();
-                let e = c.entry(self.0).or_default();
+                let e = c.entry(name).or_default();
                 e.0 += d;
                 e.1 += 1;
             });
         }
     }
-
-    /// The time and count per phase since the last `take` on this thread.
-    pub fn take() -> Vec<(&'static str, Duration, u64)> {
-        COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()).into_iter().map(|(k, (d, n))| (k, d, n)).collect())
-    }
 }
 
-#[cfg(not(feature = "cost-stats"))]
-mod imp {
-    pub struct Span;
-
-    #[inline(always)]
-    pub fn span(_: &'static str) -> Span {
-        Span
-    }
-
-    /// Empty without the `cost-stats` feature.
-    pub fn take() -> Vec<(&'static str, std::time::Duration, u64)> {
-        Vec::new()
-    }
+/// The time and count per phase since the last `take` on this thread; the first call turns
+/// recording on for this thread (and returns nothing).
+pub fn take() -> Vec<(&'static str, Duration, u64)> {
+    ON.with(|on| on.set(true));
+    COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()).into_iter().map(|(k, (d, n))| (k, d, n)).collect())
 }
-
-pub use imp::take;
-pub(crate) use imp::span;

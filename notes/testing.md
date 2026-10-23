@@ -107,7 +107,7 @@ fuzz/README.md: running, the target table (live and planned per crate), crash ha
 - Final tier 2 (toplevel, `cargo test --release --workspace --no-fail-fast -- --ignored --skip sweep`): 86 passed, 2 failed: chat `costs_join_message_removal` (passes since the certificate fix, issues/chat-costs.md) and osis-store `pager::tests::shape_reduced_arity` (since fixed: it expected the i-th value at slot i, but units start at slot 1; slot 0 is the catalog's).
 
 ## Scale checks
-Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6). No perf or ptrace on the box: profile with `valgrind --tool=callgrind` on a release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` (own target dir), or with `osis_node::costs` phase timers (`costs::span(name)` in the engine, `costs::take()` in a test; feature `cost-stats`, on in osis-node's tests).
+Tier 2 (`#[ignore]`, release), against spec/requirements.md (Scale). Measured at hardening on a shared 4-core box; `OSIS_SCALE_MAX` caps the sizes of the map checks (default 10^6). No perf or ptrace on the box: profile with `valgrind --tool=callgrind` on a release build with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` (own target dir), or with `osis_node::costs` phase timers (`costs::span(name)` in the engine, `costs::take()` in a test: the first call turns recording on for its thread).
 
 | check | how to run (`cargo test --release ... -- --ignored --nocapture`) | numbers | verdict |
 |---|---|---|---|

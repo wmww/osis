@@ -1,3 +1,12 @@
+# One artifact set per checkout: never pass CARGO_INCREMENTAL, RUSTFLAGS or CARGO_TARGET_DIR per
+# command (notes/testing.md, Build hygiene).
+[build]
+incremental = false
+
+# Tier-2 networking tests (QUIC, iroh, LAN, relay): the one feature set they are run with.
+[alias]
+test-net = "test --release --workspace --features osis/lan,osis-node/quic,osis-node/relay"
+
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"

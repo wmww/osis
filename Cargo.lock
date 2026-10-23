@@ -2722,7 +2722,6 @@ dependencies = [
  "osis-crypto",
  "osis-keys",
  "osis-label",
- "osis-node",
  "osis-perm",
  "osis-proto",
  "osis-schema",
