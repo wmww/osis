@@ -17,13 +17,16 @@ use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
 use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
 use osis_core::{Ak, BlobId, CommitId, Tid, Ts};
-use osis_crdt::{Death, Fragment, Frontiers};
+use osis_crdt::{Fragment, Frontiers};
 use osis_perm::{At, Point, PurgeBy};
 use osis_schema::core_types::is_membership_class;
 use osis_store::Shred;
 use std::collections::BTreeSet;
 
+mod deaths;
 pub(crate) mod forget;
+
+pub(crate) use deaths::{Due, drop_residues, load_deaths_due, mark_deaths_due, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -110,7 +113,7 @@ pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (B
 }
 
 /// First and last death so far over a body's deltas.
-fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
+pub(crate) fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -> Result<Option<(Ts, Ts)>> {
     let mut out: Option<(Ts, Ts)> = None;
     for ai in members {
         let Some(a) = h.aspects.get(*ai) else { continue };
@@ -126,199 +129,27 @@ fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, members: &[usize]) -
 
 /// Whether deaths count for a delta's body: only a relative keep bound reads them (spec/commits.md
 /// §5), so no other body gets death records.
-fn bounded(a: &osis_commit::AspectEntry) -> bool {
+pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
     a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some()
 }
 
 /// The aspect index of `(tid, ak)` in held commit `c`, if that part is not dropped.
-fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
+pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.commits.get(c)?;
     let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
     (!m.dropped.contains(&(ai, 0))).then_some(ai)
 }
 
-/// The held bodies with a relative bound carrying write `dot` of `(tid, ak)` when it died at
-/// `at`: its own commit's, and every compaction snapshot taken before `at` whose frontier holds
-/// it (a snapshot carries every write live at its time up to its frontier, spec/crdt.md §8).
-/// Commit-form writes are found in their own commit only (snapshots keep no frontier for them).
-/// Dropped bodies are not.
-fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Vec<(CommitId, usize)> {
-    let mut out = Vec::new();
-    let held = |c: &CommitId| held_part(core, c, tid, ak).filter(|ai| core.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).is_some_and(bounded));
-    if let Some(c) = core.commit_of(tid, ak, dot)
-        && let Some(ai) = held(&c)
-    {
-        out.push((c, ai));
-    }
-    if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
-        for (ts, s, fr) in core.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
-            if *ts < at
-                && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
-                && let Some(ai) = held(s)
-            {
-                out.push((*s, ai));
-            }
-        }
-    }
-    out
-}
-
-/// Records the deaths a join of a delta in `(ts, ID)` order reported (`replays` false): per
-/// body, first and last so far, on every held body with a relative bound carrying the write;
-/// drops bodies past keep at most (spec/commits.md §5).
-pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
-    let mut bodies = BTreeSet::new();
-    for d in deaths {
-        for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
-            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
-            let (body, _) = body_class(tx.core, &h, &c, ai);
-            tx.txn.note_death(tid, ak, &body, d.at)?;
-            bodies.insert((c, ai));
-        }
-    }
-    for (c, ai) in bodies {
-        check_at_most(tx, &c, ai)?;
-    }
-    Ok(())
-}
-
-/// Whether a valid delta of `c` (header `h`) on `(tid, ak)` needs the aspect's deaths replayed
-/// (`rejudge_deaths`) instead of taken from its join. A join reports deaths against the state,
-/// which gives each write its earliest superseder (spec/crdt.md §4.8) only for a delta sorting
-/// after every held commit of the aspect and carrying no copies of others' writes; and only
-/// bodies with a relative bound keep deaths.
-pub(crate) fn replays(core: &Core, c: &CommitId, h: &Header, tid: &Tid, ak: &Ak) -> bool {
-    let Some(held) = core.by_aspect.get(&(*tid, ak.clone())) else { return false };
-    let late = !h.kind.has_own_writes() || held.last().is_some_and(|x| x.1 != *c);
-    late && any_bounded(core, tid, ak)
-}
-
-fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
-    core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, x)| core.commits.get(x).is_some_and(|m| m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && bounded(a))))
-}
-
-/// Marks `(tid, ak)` for `rejudge_deaths` once, at the end of the transaction or, within a
-/// node-sync step, before its deaths are next read (`settle_deaths`): a step of late deltas
-/// costs one replay per aspect, not one per delta. Until then its death records may be off
-/// either way (a validity flip can remove a superseder), so its keep-at-most bounds wait for the
-/// replay (`check_at_most`).
-pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if tx.core.deaths_due.insert((*tid, ak.clone())) {
-        tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?;
-    }
-    Ok(())
-}
-
-/// `Engine::settle_deaths` in `tx`.
-pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
-    let due: Vec<(Tid, Ak)> = tx.core.deaths_due.iter().cloned().collect();
-    for (tid, ak) in due {
-        // unmarked first: `check_at_most` skips marked aspects
-        tx.core.deaths_due.remove(&(tid, ak.clone()));
-        tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
-        rejudge_deaths(tx, &tid, &ak)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn load_deaths_due(tx: &mut Tx<'_>) -> Result<()> {
-    let mut v = Vec::new();
-    tx.scan(records::DEATHS_DUE, |k, _| {
-        let mut r = Rd::new(k);
-        v.push((r.tid()?, r.ak()?));
-        Ok(())
-    })?;
-    tx.core.deaths_due.extend(v);
-    Ok(())
-}
-
-/// Deaths of `(tid, ak)` from scratch, then its keep-at-most bounds again: after a delta out of
-/// `(ts, ID)` order (`replays`) or a validity flip. Each write dies at the earliest `ts` among
-/// the applied commits superseding it (spec/crdt.md §4.8): the held bodies are joined in `(ts,
-/// ID)` order (valid writes only; each body without the writes another held body owns, so a
-/// snapshot's copies play at their own commit), then the state (live writes of dropped bodies);
-/// a write dies at the first join superseding it. Every held body with a relative bound gets the
-/// first and last of its writes' deaths. A function of the held bodies and the state, so nodes
-/// holding the same commits agree. Residue: a dropped body whose superseding write left the
-/// state no longer dates the writes it superseded (issues/deaths-dropped-superseder.md). Cost: the aspect's held bodies and whole
-/// state, per replay.
-pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if any_bounded(tx.core, tid, ak) {
-        replay_deaths(tx, tid, ak)?;
-    }
-    recheck_at_most(tx, tid, ak)
-}
-
-fn replay_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let invalid = crate::apply::invalid_of(tx.core, tid, ak);
-    let mut st = Fragment::default();
-    let mut ch = osis_crdt::Changes::new();
-    for c in &held {
-        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
-        let parts = {
-            let _s = crate::costs::span("deaths: read bodies");
-            crate::apply::held_parts(tx, c, ai)?
-        };
-        let _s = crate::costs::span("deaths: join");
-        for d in parts {
-            let mut f = match d {
-                Decoded::Delta(x) => x.fragment,
-                Decoded::Snapshot(x) => x.fragment,
-            };
-            let core = &*tx.core;
-            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)) || core.commit_of(tid, ak, d).is_some_and(|x| x != *c && held_part(core, &x, tid, ak).is_some()));
-            st.join_into(f, None, &mut ch);
-        }
-    }
-    {
-        let _s = crate::costs::span("deaths: state");
-        tx.load(tid, ak)?;
-        if let Some(Some(cur)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
-            st.join_into(cur, None, &mut ch);
-        }
-    }
-    let mut got: std::collections::BTreeMap<(CommitId, usize), (Ts, Ts)> = std::collections::BTreeMap::new();
-    for d in ch.deaths() {
-        for k in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
-            let e = got.entry(k).or_insert((d.at, d.at));
-            *e = (e.0.min(d.at), e.1.max(d.at));
-        }
-    }
-    for c in &held {
-        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
-        let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { continue };
-        if !h.aspects.get(ai).is_some_and(bounded) {
-            continue;
-        }
-        let (body, _) = body_class(tx.core, &h, c, ai);
-        let d = got.get(&(*c, ai)).map(|(first, last)| osis_store::Deaths { first: *first, last: *last });
-        tx.txn.set_death(tid, ak, &body, d)?;
-    }
-    Ok(())
-}
-
-/// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
-/// again: their deaths or live writes may have changed (spec/commits.md §5).
-fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    for c in held {
-        let Some(m) = tx.core.commits.get(&c) else { continue };
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        if m.dropped.contains(&(ai, 0)) || m.header.aspects.get(ai).is_none_or(|a| a.retention.at_most.rel.is_none()) {
-            continue;
-        }
-        check_at_most(tx, &c, ai)?;
-    }
-    Ok(())
-}
-
-fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(m) = tx.core.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (body, members) = body_class(tx.core, &m.header, c, ai);
-    // deaths awaiting a replay may be early: its `recheck_at_most` judges the body
-    if members.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.deaths_due.contains(&(x.tid, x.ak.clone()))) {
+    // deaths awaiting a replay may be early: the replay judges the body
+    let due: Vec<(Tid, Ak)> = members.iter().filter_map(|x| m.header.aspects.get(*x)).map(|x| (x.tid, x.ak.clone())).filter(|k| tx.core.deaths_due.contains_key(k)).collect();
+    if !due.is_empty() {
+        for (t, a) in due {
+            deaths::mark(tx, &t, &a, Due::Recheck(*c, ai))?;
+        }
         return Ok(());
     }
     let d = class_deaths(tx, &m.header, &body, &members)?;
@@ -358,6 +189,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     // the dropped deltas, to find what of the state holds copies of their writes
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect();
+    deaths::keep_residue(tx, c, ai, &bodies)?;
     if let Some(blob) = tx.get_commit(c)? {
         let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
@@ -635,6 +467,15 @@ impl Engine {
         })
     }
 
+    /// Replays the deaths of `(tid, ak)` from every held body and residue, as a validity flip
+    /// does (tests: the batched and windowed replays must agree with it).
+    #[doc(hidden)]
+    pub fn replay_deaths(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
+        self.settle_deaths()?;
+        let (tid, ak) = (*tid, ak.clone());
+        self.run(|tx| rejudge_deaths(tx, &tid, &ak))
+    }
+
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
         self.settle_deaths()?;
@@ -881,7 +722,7 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -
     Ok(false)
 }
 
-fn frag(d: Decoded) -> Fragment {
+pub(crate) fn frag(d: Decoded) -> Fragment {
     match d {
         Decoded::Delta(x) => x.fragment,
         Decoded::Snapshot(x) => x.fragment,

@@ -393,9 +393,8 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
 
 // spec/crdt.md §4.8: X < W < Y on a kept register, W's body under keep at most 0 (dropped when
 // Y kills it). In order, X dies at W; a lagging writer's V (older than X) arriving last replays
-// the aspect without W's body, so X dies at Y: one held set, two deaths.
+// the aspect without W's body (was: X died at Y there); so does a replay of every body.
 #[test]
-#[ignore = "issues/deaths-dropped-superseder.md"]
 fn deaths_alike_after_superseder_dropped_spec_crdt_4_8() {
     use osis_schema::{Bound, PurgeBy, Retention};
     let mut lp = net(4, 77);
@@ -431,7 +430,100 @@ fn deaths_alike_after_superseder_dropped_spec_crdt_4_8() {
         }
         assert!(!lp.peers[to].engine.holds_body(&w, &t, &k));
         got.push(lp.peers[to].engine.deaths(&x, &t, &k).unwrap());
+        lp.peers[to].engine.replay_deaths(&t, &k).unwrap();
+        got.push(lp.peers[to].engine.deaths(&x, &t, &k).unwrap());
     }
     let tw = lp.peers[0].engine.header(&w).unwrap().ts;
-    assert_eq!(got, vec![Some((tw, tw)); 2]);
+    assert_eq!(got, vec![Some((tw, tw)); 4]);
+}
+
+fn set_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, op: Op) -> osis_core::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op }).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/crdt.md §4.8, uniform retention: on a kept set X adds e and W removes it; a snapshot
+// covers W, whose body goes (no dead write: past its bound) while X's stays; Y, a lagging
+// writer's remove of e older than the snapshot, beats W's reset in the state. A node holding
+// W's body dates X at W; the compactor, which replays without it, did so at Y.
+#[test]
+fn deaths_alike_after_superseder_compacted_spec_crdt_4_8() {
+    let mut lp = net(3, 78);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    lp.advance(10);
+    let x = set_op(&mut lp, 0, t, Op::Add(s("e")));
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let w = set_op(&mut lp, 0, t, Op::Remove(s("e")));
+    lp.advance(10);
+    let y = set_op(&mut lp, 1, t, Op::Remove(s("e")));
+    lp.advance(10);
+    let k = ak("/t/keptset");
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    let tw = lp.peers[0].engine.header(&w).unwrap().ts;
+    assert_eq!(lp.peers[0].engine.deaths(&x, &t, &k).unwrap(), Some((tw, tw)));
+    lp.peers[0].engine.drop_body(&w, &t, &k).unwrap();
+    sync(&mut lp, 1, 0);
+    assert!(lp.peers[0].engine.header(&y).is_some());
+    for p in &all {
+        lp.deliver(2, p).unwrap();
+    }
+    for i in [0, 2] {
+        assert_eq!(lp.peers[i].engine.deaths(&x, &t, &k).unwrap(), Some((tw, tw)), "node {i}");
+        lp.peers[i].engine.replay_deaths(&t, &k).unwrap();
+        assert_eq!(lp.peers[i].engine.deaths(&x, &t, &k).unwrap(), Some((tw, tw)), "node {i} replayed");
+    }
+}
+
+// spec/crdt.md §4.8: two snapshots carry K's write on a kept register; Z kills it, Z2 then Z,
+// and the second snapshot, taken after Z2 by a writer that saw neither, carries it again. With
+// K's body dropped (nothing older held: no residue) a replay meets the write in both snapshots;
+// the second copy is not dated again at Z2 (was: the first snapshot's last death at Z2).
+#[test]
+fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
+    let mut lp = net(4, 79);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    let k = ak("/t/kept");
+    lp.advance(10);
+    let kc = set(&mut lp, 0, t, &KEPT, "k");
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    // peer 2's typed write registers the schema its snapshot takes bounds from
+    set(&mut lp, 2, t, &REG, "r");
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    let z = set(&mut lp, 1, t, &KEPT, "z");
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    set(&mut lp, 0, t, &KEPT, "z2");
+    lp.advance(10);
+    let s2 = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    assert!(lp.peers[2].engine.header(&s2).unwrap().aspects[0].retention.at_least.rel.is_some());
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id));
+    all.sort_by_key(|p| lp.peers[0].engine.header(&p.id).or_else(|| lp.peers[2].engine.header(&p.id)).unwrap().ts);
+    for p in &all {
+        lp.deliver(3, p).unwrap();
+    }
+    let tz = lp.peers[0].engine.header(&z).unwrap().ts;
+    let e = &mut lp.peers[3].engine;
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
+    e.drop_body(&kc, &t, &k).unwrap();
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
 }

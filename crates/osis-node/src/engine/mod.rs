@@ -267,8 +267,11 @@ pub(crate) struct Core {
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,
-    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`).
-    pub deaths_due: JSet<(Tid, Ak)>,
+    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`) and what it must judge.
+    pub deaths_due: JSetMap<(Tid, Ak), crate::retention::Due>,
+    /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
+    /// where known (`retention::first_bounded`); forgotten on rollback.
+    pub first_bounded: HashMap<(Tid, Ak), Option<(Ts, CommitId)>>,
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
@@ -368,6 +371,7 @@ impl Core {
     /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
     /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
+        self.first_bounded.clear();
         if self.dirty || !self.written.is_empty() {
             self.waits.clear();
             self.dirty = false;
@@ -448,7 +452,8 @@ impl Core {
             check_ingest: false,
             key_actors: BTreeMap::new(),
             lost_due: JSet::default(),
-            deaths_due: JSet::default(),
+            deaths_due: JSetMap::default(),
+            first_bounded: HashMap::new(),
             defer_deaths: false,
             changed: None,
             live_trees: BTreeMap::new(),
