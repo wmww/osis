@@ -108,6 +108,7 @@ macro_rules! journaled {
         c.commits.$m();
         c.invalid.$m();
         c.by_aspect.$m();
+        c.copies.$m();
         c.snapshots.$m();
         c.carried.$m();
         c.by_thing.$m();
@@ -135,7 +136,6 @@ macro_rules! journaled {
         c.lost_due.$m();
         c.deaths_due.$m();
         c.first_bounded.$m();
-        c.lasts.$m();
         c.departures.$m();
         c.secrets_unresolved.$m();
     }};
@@ -176,6 +176,8 @@ pub(crate) struct Core {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// The commits of `by_aspect` carrying copies of others' writes (snapshots, imports).
+    pub copies: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
@@ -274,8 +276,6 @@ pub(crate) struct Core {
     /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
     /// where known (`retention::first_bounded`).
     pub first_bounded: JMap<(Tid, Ak), Option<(Ts, CommitId)>>,
-    /// Last deaths of the held bounded bodies per aspect, where loaded (`retention::Lasts`).
-    pub lasts: crate::retention::LastsIndex,
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
@@ -433,6 +433,7 @@ impl Core {
             commits: JMap::default(),
             invalid: JSetMap::default(),
             by_aspect: JSetMap::default(),
+            copies: JSetMap::default(),
             snapshots: JMap::default(),
             carried: JMap::default(),
             by_thing: JSetMap::default(),
@@ -473,7 +474,6 @@ impl Core {
             lost_due: JSet::default(),
             deaths_due: JSetMap::default(),
             first_bounded: JMap::default(),
-            lasts: Default::default(),
             defer_deaths: false,
             changed: None,
             live_trees: BTreeMap::new(),

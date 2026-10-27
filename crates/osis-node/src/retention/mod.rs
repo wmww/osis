@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 mod deaths;
 pub(crate) mod forget;
 
-pub(crate) use deaths::{Due, LastsIndex, drop_residues, load_deaths_due, mark_deaths_due, mark_if_bounded, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
+pub(crate) use deaths::{Due, drop_residues, write_last_deaths_all, load_deaths_due, mark_deaths_due, mark_if_bounded, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -197,7 +197,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
     tx.core.forget_live(&a.tid, &a.ak);
-    deaths::note_last(tx.core, &a.tid, &a.ak, c, None);
+    deaths::drop_last(tx, &a.tid, &a.ak, c, ai)?;
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
@@ -753,10 +753,9 @@ mod tests {
     use osis_core::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
-    // spec/crdt.md §4.8 (deaths), notes/node.md Rollback: a late delta loads the last-death
-    // index (70 kept writes before it); a transaction replaying a second late delta's deaths,
-    // then failing, undoes only its own changes to it: still loaded, equal to a fresh load
-    // from the death records.
+    // spec/crdt.md §4.8 (deaths), notes/node.md Rollback: a late delta reads the last-death
+    // rows (70 kept writes before it); a transaction replaying a second late delta's deaths,
+    // then failing, leaves the rows as the death records give them.
     #[test]
     fn failed_tx_keeps_last_deaths_spec_crdt_4_8() {
         use osis_schema::{Bound, PurgeBy, Retention};
@@ -788,35 +787,21 @@ mod tests {
         }
         let pks = lp.packages(1).unwrap();
         let pk = |c| pks.iter().find(|p| p.id == c).unwrap().clone();
-        // aspects loaded, and whether each equals a fresh load
-        let loaded = |e: &mut crate::Engine| {
-            e.run(|tx| {
-                let keys = tx.core.lasts.keys();
-                let mut same = true;
-                for (t, a) in &keys {
-                    let fresh = super::deaths::load_lasts(tx, t, a)?;
-                    same &= tx.core.lasts.get(&(*t, a.clone())) == Some(&fresh);
-                }
-                Ok((keys.len(), same))
-            })
-            .unwrap()
-        };
         lp.deliver(0, &pk(late[0])).unwrap();
-        assert_eq!(loaded(&mut lp.peers[0].engine), (1, true));
+        assert!(lp.peers[0].engine.last_deaths_stale().unwrap().is_empty());
         lp.peers[0].engine.defer_deaths(true).unwrap();
         lp.deliver(0, &pk(late[1])).unwrap();
         let e = &mut lp.peers[0].engine;
-        let k = (t, ak.clone());
         let r = e.run(|tx| {
-            let before = tx.core.lasts.get(&k).cloned();
+            let before = super::deaths::rows_from(tx, &t, &ak, osis_core::Ts::default())?;
             super::settle_due(tx)?;
-            assert_ne!(tx.core.lasts.get(&k), before.as_ref(), "the replay changes the index");
+            assert_ne!(super::deaths::rows_from(tx, &t, &ak, osis_core::Ts::default())?, before, "the replay changes the rows");
             Err::<(), _>(crate::error::Error::BadInput("test"))
         });
         assert!(r.is_err());
-        assert_eq!(loaded(e), (1, true), "after the failed transaction");
+        assert!(e.last_deaths_stale().unwrap().is_empty(), "after the failed transaction");
         e.defer_deaths(false).unwrap();
-        assert_eq!(loaded(e), (1, true));
+        assert!(e.last_deaths_stale().unwrap().is_empty());
     }
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
