@@ -279,10 +279,9 @@ pub(crate) struct Core {
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
-    /// Commits whose record, parts, validity, bodies or timers changed since node-sync last
-    /// took them (`Engine::take_changed`; `None`: no node-sync, nothing kept). A mark from an
-    /// aborted transaction stays: one extra judgment.
-    pub changed: Option<BTreeSet<CommitId>>,
+    /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
+    /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
+    pub changed: Option<Changed>,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
@@ -298,6 +297,22 @@ pub(crate) struct Core {
     /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
     /// derived from them (the sync engine's co-readers) compare it.
     pub generation: u64,
+}
+
+/// What node-sync judges again (`Core::changed`).
+#[derive(Debug, Default)]
+pub struct Changed {
+    /// Commits whose record, parts, validity, deaths, bodies or timers changed.
+    pub commits: BTreeSet<CommitId>,
+    /// Aspects whose state changed other than by a valid write's join (a validity flip, an
+    /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
+    pub aspects: BTreeSet<(Tid, Ak)>,
+}
+
+impl Changed {
+    pub fn is_empty(&self) -> bool {
+        self.commits.is_empty() && self.aspects.is_empty()
+    }
 }
 
 /// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
@@ -347,14 +362,15 @@ impl Core {
     /// Marks commit `c` changed for node-sync (`changed`).
     pub fn mark_changed(&mut self, c: CommitId) {
         if let Some(s) = &mut self.changed {
-            s.insert(c);
+            s.commits.insert(c);
         }
     }
 
-    /// Marks every commit with a delta on `(tid, ak)` changed (`mark_changed`).
+    /// Marks the state of `(tid, ak)` changed for node-sync (`changed`): the commits whose
+    /// parts changed are marked on their own.
     pub fn mark_aspect_changed(&mut self, tid: &Tid, ak: &Ak) {
         if let Some(s) = &mut self.changed {
-            s.extend(self.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
+            s.aspects.insert((*tid, ak.clone()));
         }
     }
 
@@ -986,9 +1002,9 @@ impl Engine {
         self.core.events.subscribe()
     }
 
-    /// The commits changed since the last call (`Core::changed`), keeping them from now on.
-    pub(crate) fn take_changed(&mut self) -> BTreeSet<CommitId> {
-        self.core.changed.replace(BTreeSet::new()).unwrap_or_default()
+    /// What changed since the last call (`Core::changed`), keeping it from now on.
+    pub(crate) fn take_changed(&mut self) -> Changed {
+        self.core.changed.replace(Changed::default()).unwrap_or_default()
     }
 
     /// Runs `f` in one store transaction; events go out once it is durable.

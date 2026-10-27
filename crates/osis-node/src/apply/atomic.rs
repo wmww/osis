@@ -317,6 +317,8 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, cha
     }
     // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
     crate::retention::mark_if_bounded(tx, tid, ak)?;
+    // others' writes went: what waits on the aspect's state is judged again
+    tx.core.mark_aspect_changed(tid, ak);
     changed.insert((*tid, ak.clone()));
     touched.whole(tid, ak);
     Ok(())
@@ -333,6 +335,7 @@ fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut
             rebuild(tx, tid, ak)?;
         }
         crate::retention::mark_deaths_due(tx, tid, ak)?;
+        tx.core.mark_aspect_changed(tid, ak);
         changed.insert((*tid, ak.clone()));
         touched.whole(tid, ak);
     }
