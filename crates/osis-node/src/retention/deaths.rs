@@ -125,7 +125,9 @@ pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &Header) {
 /// as its residue when a held bounded body of the aspect sorts at or before it (they may date
 /// that body's writes, spec/crdt.md §4.8; a write dies only at a greater stamp), then drops the
 /// residues no held bounded body sorts at or before any more. Residues carry no app data
-/// (spec/crdt.md §4.7). Cost: O(one body), plus once per dropped commit the step past it.
+/// (spec/crdt.md §4.7); a snapshot's or import's keeps only copies of writes whose own commit
+/// is neither held nor a residue. Cost: O(one body) (a snapshot's: plus the aspect's residue
+/// keys), plus once per dropped commit the step past it.
 pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(m) = tx.core.commits.get(c) else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
@@ -140,8 +142,18 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
         for x in rest {
             f.join_into(x.clone(), None, &mut Changes::new());
         }
+        if copies(tx.core, c) {
+            // copies a replay plays at their own commit (held, or a residue) are not kept: a
+            // snapshot's residue would hold the aspect's whole state
+            let kept = residue_ids(tx, &tid, &ak)?;
+            let core = &*tx.core;
+            f.remove_dots(&|d| core.commit_of(&tid, &ak, d).is_some_and(|x| x != *c && (held_part(core, &x, &tid, &ak).is_some() || kept.contains(&x))));
+        }
         f.strip(&|_| true);
-        tx.txn.put_local(&records::dropped_key(&tid, &ak, ts, c), &crate::engine::state::encode(&f)?, Shred::No)?;
+        // a window never reads a snapshot's residue (it replays whole there), so none is empty
+        if !(f.is_empty() && copies(tx.core, c)) {
+            tx.txn.put_local(&records::dropped_key(&tid, &ak, ts, c), &crate::engine::state::encode(&f)?, Shred::No)?;
+        }
     }
     if first == Some(me) {
         let gone: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flat_map(|s| s.range(me..)).take_while(|x| next.is_none_or(|n| x.0 < n.0)).copied().collect();
@@ -167,6 +179,18 @@ pub(crate) fn drop_residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     tx.core.first_bounded.remove(&(*tid, ak.clone()));
     tx.core.lasts.remove(&(*tid, ak.clone()));
     Ok(())
+}
+
+/// The commits of `(tid, ak)` with a residue.
+fn residue_ids(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeSet<CommitId>> {
+    let mut out = BTreeSet::new();
+    tx.scan(&records::aspect_key(records::DROPPED, tid, ak), |k, _| {
+        let mut r = Rd::new(k);
+        r.u64()?;
+        out.insert(CommitId(r.arr()?));
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<CommitId, Fragment>> {
