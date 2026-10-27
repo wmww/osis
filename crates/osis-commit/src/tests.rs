@@ -59,6 +59,16 @@ fn header_round_trip() {
     assert_eq!(h.id().0, osis_core::hash::hash(&b));
 }
 
+// spec/wire.md §4: a stored header (verified on arrival) reads back as `from_value` reads it,
+// without the delete keys' point checks
+#[test]
+fn stored_header_reads_alike_spec_wire_4() {
+    let h = sample_header();
+    let v = h.to_value();
+    assert_eq!(Header::from_stored_value(&v).unwrap(), Header::from_value(&v).unwrap());
+    assert_eq!(Header::from_stored_value(&v).unwrap(), h);
+}
+
 // spec/wire.md §4: a field change changes the commit ID.
 #[test]
 fn id_covers_fields() {

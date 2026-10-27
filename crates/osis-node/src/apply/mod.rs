@@ -699,7 +699,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
-        crate::engine::index::load(tx)?;
+        {
+            let _s = crate::costs::span("open: index");
+            crate::engine::index::load(tx)?;
+        }
+        let _s = crate::costs::span("open: adapt");
         // perm's inputs: the edge writes of the membership commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
@@ -713,6 +717,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
             validity::add_membership(tx, &h, &id, &parts)?;
         }
+        drop(_s);
     } else {
         // applied commits
         let mut recs = Vec::new();
@@ -780,6 +785,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // grant: another node's clock) is derived now, as it was when that record arrived
     validity::resolve_unresolved(tx)?;
     if fast {
+        let _s = crate::costs::span("open: walks");
         crate::engine::index::update_timelines_saved(tx)?;
     } else {
         tx.core.update_timelines();

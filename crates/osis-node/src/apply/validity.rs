@@ -62,9 +62,10 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
     m.entries().map(|(d, _, k, f)| (d.clone(), k.cloned(), f.cloned())).collect()
 }
 
-/// A `/members` entry as perm's adaptation reads it: dot, key, and its fragment's value (`None`:
-/// no fragment, an entry reset; `Some(None)`: a fragment reading nothing).
-pub(crate) type Entry = (Dot, Option<Value>, Option<Option<Value>>);
+/// A `/members` entry as perm's adaptation reads it: dot, the member its key names (`None`: a
+/// key that is no tid), and the edge its fragment reads (`None`: no fragment, an entry reset;
+/// `Some(None)`: a fragment reading no well-formed edge).
+pub(crate) type Entry = (Dot, Option<Tid>, Option<Option<Edge>>);
 
 /// One held `/members` or `/tenures` part of a membership commit as perm's adaptation reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +87,21 @@ impl EdgeParts {
         for (ai, _, d) in parts {
             let f = fragment(d);
             match h.aspects.get(*ai).map(|a| a.ak.as_str()) {
-                Some("/members") => out.push((*ai, EdgePart::Members(entries(f).into_iter().map(|(d, k, x)| (d, k, x.map(|x| x.read()))).collect()))),
+                Some("/members") => out.push((
+                    *ai,
+                    EdgePart::Members(
+                        entries(f)
+                            .into_iter()
+                            .map(|(d, k, x)| {
+                                let m = match k {
+                                    Some(Value::Tid(m)) => Some(m),
+                                    _ => None,
+                                };
+                                (d, m, x.map(|x| x.read().as_ref().and_then(edge_of)))
+                            })
+                            .collect(),
+                    ),
+                )),
                 Some("/tenures") => out.push((*ai, EdgePart::Tenures(match f.read() {
                     Some(Value::Set(s)) => s.into_iter().collect(),
                     _ => Vec::new(),
@@ -118,7 +133,7 @@ impl EdgeParts {
 fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> bool {
     let mut new = false;
     for (d, k, _) in es {
-        if let Some(Value::Tid(m)) = k
+        if let Some(m) = k
             && own.is_some_and(|o| o.owns(d.owner()))
             && core.member_keys.get(&(*target, d.clone())).is_none()
         {
@@ -140,9 +155,9 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
     for (d, k, v) in es {
         let created = own.is_some_and(|o| o.owns(d.owner()));
         match (k, v) {
-            (Some(Value::Tid(m)), Some(v)) if created => {
-                if let Some(e) = v.as_ref().and_then(edge_of) {
-                    per.insert(*m, Some(e));
+            (Some(m), Some(v)) if created => {
+                if let Some(e) = v {
+                    per.insert(*m, Some(*e));
                     set.insert(*m);
                 }
             }
@@ -407,8 +422,8 @@ fn add_membership_in(core: &mut Core, h: &Header, id: &CommitId, parts: &EdgePar
                     EdgePart::Members(es) => {
                         e.2 = dots_of(h, *ai);
                         for (_, k, v) in es {
-                            if let (Some(Value::Tid(m)), Some(edge)) = (k, v.as_ref().and_then(|v| v.as_ref()).and_then(edge_of)) {
-                                e.0.insert(*m, edge);
+                            if let (Some(m), Some(Some(edge))) = (k, v) {
+                                e.0.insert(*m, *edge);
                             }
                         }
                     }
