@@ -16,12 +16,9 @@ impl SyncEngine {
     /// Carries out a flow's result (call it with every `Done` a flow returns).
     pub fn carry_out(&mut self, done: Done) -> Result<Vec<Action>> {
         if done.drop_lost {
-            for d in &done.deliveries {
-                if let Delivery::First { under, .. } = d {
-                    self.leaving.extend(under.iter().copied());
-                }
-            }
-            if self.leaving.is_empty() {
+            if done.deliveries.iter().any(|d| matches!(d, Delivery::First { under, .. } if !under.is_empty())) {
+                self.drop_when_idle = true;
+            } else {
                 self.drop_lost()?;
             }
         }
@@ -104,18 +101,8 @@ impl SyncEngine {
         }
     }
 
-    /// Records a flow's deliveries; the next step sends them. A key actor's own departure
-    /// (`Done::departed`) is ignored by the cover check while its commits are placed.
+    /// Records a flow's deliveries; the next step sends them.
     pub(crate) fn take_done(&mut self, done: Done) -> Result<()> {
-        let added: Vec<Tid> = done.departed.iter().copied().filter(|t| self.leaving.insert(*t)).collect();
-        let r = self.take_deliveries(done);
-        for t in added {
-            self.leaving.remove(&t);
-        }
-        r
-    }
-
-    fn take_deliveries(&mut self, done: Done) -> Result<()> {
         for d in done.deliveries {
             match d {
                 // sealed and sent from its record once its commit is placed (`send_inbox`)

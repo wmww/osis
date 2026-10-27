@@ -341,10 +341,9 @@ pub struct SyncEngine {
     pub(crate) resealed: BTreeSet<osis_core::CommitId>,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_core::CommitId>,
-    /// Things this node removed itself from (a self-removal not yet uploaded): its own departure
-    /// does not stop sealing under their actors (it leaks nothing to the leaver; the rotation is
-    /// the next admin's). Its lost secrets are dropped once every label is idle.
-    pub(crate) leaving: BTreeSet<Tid>,
+    /// A self-removal was carried out: its lost secrets are dropped once every label is idle
+    /// (it is uploaded by then).
+    pub(crate) drop_when_idle: bool,
     /// Reopens in a row per (connection, label).
     pub(crate) reopens: BTreeMap<(ConnId, LabelId), u32>,
     /// Sessions of forgotten labels whose pushes the server is still to stop.
@@ -450,7 +449,7 @@ impl SyncEngine {
             outbox,
             local_inbox: Vec::new(),
             inbox_sent: BTreeMap::new(),
-            leaving: BTreeSet::new(),
+            drop_when_idle: false,
             fetching: BTreeMap::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
@@ -578,8 +577,8 @@ impl SyncEngine {
             self.diag(format!("dropping lost secrets: {e}"));
         }
         // a self-removal is up: drop what was lost
-        if !self.leaving.is_empty() && self.is_idle() && self.conns.values().any(|c| c.up) {
-            self.leaving.clear();
+        if self.drop_when_idle && self.is_idle() && self.conns.values().any(|c| c.up) {
+            self.drop_when_idle = false;
             if let Err(e) = self.drop_lost() {
                 self.diag(format!("dropping lost secrets: {e}"));
             }
@@ -932,24 +931,42 @@ impl SyncEngine {
 
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
-    /// encrypt under.
+    /// encrypt under (`placing`).
     pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
-        if self.engine.core.is_key_actor(&a) || self.leaving.contains(&a) || self.leaving.contains(g) {
+        if self.engine.core.is_key_actor(&a) {
             return Ok(Default::default());
         }
         let (done, still) = self.engine.ensure_rotated(&a)?;
         self.take_done(done)?;
-        Ok(still)
+        if still.is_empty() {
+            return Ok(still);
+        }
+        self.placing(&a)
     }
 
     /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
     pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
-        if self.engine.core.is_key_actor(&a) || self.leaving.contains(&a) || self.leaving.contains(g) {
+        if self.engine.core.is_key_actor(&a) {
             return Ok(Default::default());
         }
-        self.engine.run(|tx| crate::rotation::uncovered_roles(tx, &a))
+        self.placing(&a)
+    }
+
+    /// The roles of `a` uncovered by a known departure, a departure by this node's own
+    /// self-removal not counted until that commit is placed (spec/crypto.md §4).
+    fn placing(&mut self, a: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+        let mut deps = Vec::new();
+        for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
+            if let Some(c) = own
+                && !self.placed(&c)?
+            {
+                continue;
+            }
+            deps.push(d);
+        }
+        self.engine.run(|tx| crate::rotation::uncovered_roles_of(tx, a, deps))
     }
 
     /// The servers and co-reader nodes to keep connections to (true: a node).
