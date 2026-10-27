@@ -232,8 +232,10 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             }
         }
         if !valid.get(ai).copied().unwrap_or(false) {
-            // others' writes already joined may sit under its creations
+            // others' writes already joined may sit under its creations; its sequence records
+            // stay as hidden anchors (what un-merging it gives, spec/crdt.md §4.6)
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
+                join_into_state(tx, &a.tid, &a.ak, f.clone())?;
                 unmerge_fell(tx, &a.tid, &a.ak, Some(f))?;
                 changed.insert((a.tid, a.ak.clone()));
                 touched.whole(&a.tid, &a.ak);

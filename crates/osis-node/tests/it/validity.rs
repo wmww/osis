@@ -984,3 +984,124 @@ fn carried_writes_recorded_alike_in_any_order_spec_perm_5_2() {
     }
     assert_eq!(seen[0], seen[1]);
 }
+
+// spec/crdt.md §4.6, spec/permissions.md §5.2, spec/requirements.md Decentralization: paged
+// states (a map, a set, a map in a struct field, a text, a list) where B's writes land on random
+// pages and A writes under B's creations (a value in B's entry, chars after B's); C, who never
+// saw B's writes, revokes B. A's un-merge (in place, or rebuilt where B overwrote A's)
+// equals a fresh node given everything with B's writes last (was: B's text records arriving
+// invalid were not kept as hidden anchors there), before and after a restart, reads by range
+// included; nothing B wrote reads.
+#[test]
+fn unmerge_paged_matches_fresh_spec_crdt_4_6() {
+    unmerge_paged(0);
+}
+
+#[test]
+fn unmerge_paged_rebuilt_matches_fresh_spec_crdt_4_6() {
+    unmerge_paged(1);
+}
+
+fn unmerge_paged(seed: u64) {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    {
+        let (mut lp, d, b, _) = setup(80 + seed);
+        let c = lp.peers[2].engine.tid();
+        set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Admin)), None);
+        let pad = "x".repeat(40);
+        let key = |i: usize, sfx: &str| s(&format!("key-{i:05}{sfx}"));
+        let big: BTreeMap<Value, Value> = (0..3000).map(|i| (key(i, ""), s(&pad))).collect();
+        let tagset: BTreeSet<Value> = (0..3000).map(|i| key(i, &pad)).collect();
+        let text: String = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
+        let mut m = Mutation::new();
+        m.set(d, &BIG, &Value::Map(big.clone())).unwrap();
+        m.set(d, &TAGS, &Value::Set(tagset)).unwrap();
+        m.set(d, &BOOK, &Value::Map([(Value::Int(0), Value::Map(big)), (Value::Int(1), s("n"))].into_iter().collect())).unwrap();
+        m.set(d, &TEXT, &Value::Str(text)).unwrap();
+        m.set(d, &LIST, &Value::List((0..3000).map(|i| key(i, &pad)).collect())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let mut x = 0x9e37_79b9_7f4a_7c15u64 ^ seed;
+        let mut r = |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n.max(1) as u64) as usize
+        };
+        let op = |lp: &mut LocalPeer, i: usize, a: &osis_schema::Aspect<Value>, path: Vec<PathSeg>, op: Op| {
+            let mut m = Mutation::new();
+            m.op(d, a, PathOp { path, op }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap();
+        };
+        let ins = |at: usize, v: &str| Op::Insert { at, items: vec![s(v)] };
+        // B's writes, each on a random page; A's under some of them
+        let mut b_keys = Vec::new();
+        let mut text_at = Vec::new();
+        for j in 0..4 {
+            let k = key(r(3000), "b");
+            b_keys.push(k.clone());
+            op(&mut lp, 1, &BIG, vec![PathSeg::Key(k.clone())], Op::Set(s(&format!("B{j}"))));
+            op(&mut lp, 1, &TAGS, vec![], Op::Add(k.clone()));
+            op(&mut lp, 1, &BOOK, vec![PathSeg::Field(0), PathSeg::Key(k)], Op::Set(s("B")));
+            let at = r(20_000);
+            text_at.push(at);
+            op(&mut lp, 1, &TEXT, vec![], ins(at, "BB"));
+            op(&mut lp, 1, &LIST, vec![], ins(r(3000), "B"));
+        }
+        if seed == 1 {
+            // overwrites and deletes of A's: un-merging needs A's bodies again
+            op(&mut lp, 1, &BIG, vec![PathSeg::Key(key(r(3000), ""))], Op::Set(s("B")));
+            op(&mut lp, 1, &TEXT, vec![], Op::Delete { at: r(20_000), len: 3 });
+            op(&mut lp, 1, &TAGS, vec![], Op::Remove(key(r(3000), &pad)));
+        }
+        sync(&mut lp, 1, 0);
+        for (k, at) in b_keys.iter().zip(&text_at).take(3) {
+            op(&mut lp, 0, &BIG, vec![PathSeg::Key(k.clone())], Op::Set(s("A-under-B")));
+            op(&mut lp, 0, &BOOK, vec![PathSeg::Field(0), PathSeg::Key(k.clone())], Op::Set(s("A-under-B")));
+            // somewhere in or right after B's chars (indexes shift a little; any spot will do)
+            op(&mut lp, 0, &TEXT, vec![], ins(at + 1, "a"));
+        }
+        op(&mut lp, 0, &BIG, vec![PathSeg::Key(key(r(3000), "a"))], Op::Set(s("A")));
+        // C revokes B unseen
+        let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+        let now = lp.peers[2].engine.now();
+        let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
+        let rv = set_edge(&mut lp.peers[2].engine, d, b, None, Some(f.to_value()));
+        let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == rv).unwrap();
+        osis_node::costs::take();
+        lp.deliver(0, &pk).unwrap();
+        let costs = osis_node::costs::take();
+        let n = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
+        assert_eq!((n("rejudge: unmerge"), n("rejudge: rebuild")), (5, 0), "seed {seed}: validity only fell");
+        // the fresh node: B's writes last
+        let pks = packages(&mut lp, 0);
+        let is_b = |lp: &LocalPeer, id: &osis_core::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_membership(&lp.peers[0].engine, id));
+        let mut fresh = osis_node::local_peer::Peer::new(8000 + seed, lp.peers[0].engine.now()).unwrap();
+        for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
+            fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
+        }
+        let aks = ["/t/big", "/t/tags", "/t/book", "/t/text", "/t/list"].map(ak);
+        for round in 0..2 {
+            if round == 1 {
+                lp.peers[0].restart(900 + seed).unwrap();
+            }
+            for a in &aks {
+                let e = &mut lp.peers[0].engine;
+                let got = (e.get(&d, a).unwrap(), e.state(&d, a).unwrap());
+                assert_eq!(got, (fresh.engine.get(&d, a).unwrap(), fresh.engine.state(&d, a).unwrap()), "seed {seed} round {round} {a:?}");
+                let v = format!("{:?}", got.0);
+                assert!(!v.contains("\"B") && !v.contains("b\"") && !v.contains("A-under-B") && !v.contains('B'), "seed {seed} {a:?}: B's writes read");
+            }
+            for (a, len) in [(&aks[3], 20_003), (&aks[4], 3000)] {
+                let lo = r(len - 60);
+                let whole = lp.peers[0].engine.get(&d, a).unwrap();
+                let want = match whole {
+                    Some(Value::Str(t)) => Some(Value::Str(t.chars().skip(lo).take(50).collect())),
+                    Some(Value::List(l)) => Some(Value::List(l[lo..lo + 50].to_vec())),
+                    v => panic!("{v:?}"),
+                };
+                assert_eq!(lp.peers[0].engine.get_range(&d, a, &[], lo..lo + 50).unwrap(), want, "seed {seed} round {round} {a:?} range");
+            }
+        }
+    }
+}
