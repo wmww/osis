@@ -1,9 +1,10 @@
 //! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one server
 //! judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
-//! the engine applied it or changed one of its aspects (validity, expiry, purge, a late delta),
-//! a snapshot or a newer card write of its aspects changed under the label, its thing got its
-//! creation record or entered or left the closure, a drop (compaction, keep at most), a time
+//! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
+//! timer, its thing's creation record, a validity flip, expiry, purge or late delta on one of its
+//! aspects), a snapshot or a newer card write of its aspects changed under the label, its thing
+//! entered or left the closure, a time
 //! bound passed (keep at least, expiry), the state of an aspect its verdict waits on changed
 //! (liveness, a keep-at-most bound), a role it reads changed (`membership_moved`), or it was
 //! judged while unsettled and that ended. Anything else (open, a change of the label actor's
@@ -16,18 +17,15 @@ use crate::labeling::HeadKeys;
 use osis_core::{Ak, BlobId, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Changes the engine reported, for every label (`SyncEngine::engine_events`).
+/// Changes for every label (`SyncEngine::engine_events`, `spread_touches`).
 #[derive(Default)]
 pub(crate) struct Touched {
     pub full: bool,
+    /// The engine's changed commits (`Engine::take_changed`) and this node's own drops.
     pub commits: BTreeSet<CommitId>,
-    /// Every commit on these aspects (a validity flip, expiry, purge, late delta).
-    pub aspects: BTreeSet<(Tid, Ak)>,
-    /// Aspects whose state changed (an applied write): the commits waiting on them.
+    /// The aspects of changed commits: the commits waiting on their state.
     pub states: BTreeSet<(Tid, Ak)>,
-    /// Things whose creation record arrived: every commit on them.
-    pub things: BTreeSet<Tid>,
-    /// Blobs that arrived (a body linking them uploads them now).
+    /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
     /// Things whose roles changed (`Held::reach` of changed rosters and owner links).
     pub moved: BTreeSet<Tid>,
@@ -230,14 +228,14 @@ impl Note {
 use super::state::Kind;
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::Body;
+use crate::labeling::{Body, BodyCtx};
 use osis_core::LabelId;
 
 impl SyncEngine {
     /// Readies work set `w` of label `l` of `g` for a pass: due times and waited-on aspect
     /// states move their commits in, touched aspects, things and the closure's changes expand
     /// to their commits, the aggregates follow. Returns whether the pass judges everything.
-    pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work) -> bool {
+    pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) -> bool {
         let now = self.now();
         let later = w.due.split_off(&now.saturating_add(1));
         for (_, cs) in std::mem::replace(&mut w.due, later) {
@@ -254,16 +252,15 @@ impl SyncEngine {
             }
         }
         w.commits.extend(self.commits_of(l, &w.blobs));
-        let closure = self.engine.closure(g);
         // a change of the label's own actor's roster (every entry's author may stand anew on
         // it) or of whether it has secrets of its own
         let x = self.engine.group_actor(g);
         let own = w.moved.contains(&x) || w.actors.contains(&x);
         let full = w.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
         if full {
-            self.go_full(g, l, w, &closure);
+            self.go_full(g, l, w, closure);
         } else {
-            self.membership_moved(g, l, w, &closure);
+            self.membership_moved(g, l, w, closure);
             w.things.extend(closure.symmetric_difference(&w.closure).copied());
             // a snapshot changes coverage of its aspects; a node's newer card write makes its
             // older card stale (spec/permissions.md §4)
@@ -287,7 +284,9 @@ impl SyncEngine {
             let (cs, bs) = (w.commits.clone(), w.blobs.clone());
             self.aggregate(g, l, w, &cs, &bs);
         }
-        w.closure = closure;
+        if w.closure != *closure {
+            w.closure = closure.clone();
+        }
         full
     }
 
@@ -512,13 +511,12 @@ impl SyncEngine {
 
     /// The bodies label `l` of `g` should hold among the commits of `scope`
     /// (`bodies_under`).
-    pub(super) fn bodies_in(&mut self, g: &Tid, l: &LabelId, scope: &Scope) -> Result<Vec<Body>> {
+    pub(super) fn bodies_in(&mut self, ctx: &BodyCtx, g: &Tid, l: &LabelId, scope: &Scope) -> Result<Vec<Body>> {
         let Scope::Some { commits, .. } = scope else { return self.bodies_under(g, l) };
-        let ctx = self.engine.body_ctx(g);
         let replaced = self.is_replaced(g, l);
         let mut out = Vec::new();
         for c in commits {
-            let mut bs = self.engine.commit_bodies_under(&ctx, c)?;
+            let mut bs = self.engine.commit_bodies_under(ctx, c)?;
             if replaced {
                 bs.retain(|b| b.membership);
             }
