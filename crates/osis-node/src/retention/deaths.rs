@@ -630,6 +630,11 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
             let have = death_of(tx, tid, ak, &c, ai)?.map(|d| (d.first, d.last));
             debug_assert!(have == want.get(&(c, ai)).copied(), "window deaths of {c:?} on {tid:?} {ak:?}: {have:?}, a whole replay {:?}", want.get(&(c, ai)));
         }
+        // the last-death index, where loaded, is what the records give
+        if tx.core.lasts.get(&k).is_some() {
+            let fresh = load_lasts(tx, tid, ak)?;
+            debug_assert!(tx.core.lasts.get(&k) == Some(&fresh), "last deaths of {tid:?} {ak:?} differ from the records");
+        }
     }
     Ok(Some(judged.into_iter().collect()))
 }
