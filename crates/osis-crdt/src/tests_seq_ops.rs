@@ -1533,8 +1533,9 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
 #[test]
 fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     let mut r = Rng(43);
-    let (mut runs, mut moves, mut multi, mut loaded, mut total) = (0, 0, 0, 0, 0);
+    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits) = (0, 0, 0, 0, 0, 0);
     for round in 0..80 {
+        let mut stale = None;
         let text = round % 2 == 0;
         let ty = if text { Ty::Text } else { list_ty() };
         let view = TyView(ty.clone());
@@ -1571,7 +1572,19 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
                     },
                 }
             };
-            let ops: Vec<Op> = (0..1 + r.below(2)).map(|_| mk(&mut r)).collect();
+            let mut ops: Vec<Op> = (0..1 + r.below(2)).map(|_| mk(&mut r)).collect();
+            // an edit (what a text session writes): against the read, or a stale one
+            if r.chance(1, 3) {
+                let base = if r.chance(1, 4) { stale.clone() } else { st.read() };
+                if let Some(base) = base {
+                    let new = edited(&mut r, &base, &ty);
+                    ops.insert(0, Op::Edit { base, new });
+                    edits += 1;
+                }
+            }
+            if k == 0 {
+                stale = st.read();
+            }
             multi += usize::from(ops.len() > 1);
             let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
             let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
@@ -1592,15 +1605,46 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
             }
             assert!(got == want, "round {round} step {k}: {ops:?}\n got {got:?}\n want {want:?}");
             runs += 1;
-            loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
-            total += pg.whole.top().blocks.len();
+            // (an edit against a stale read, or after another op, loads whole)
+            if !ops.iter().any(|o| matches!(o, Op::Edit { .. })) {
+                loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
+                total += pg.whole.top().blocks.len();
+            }
             if let Some((d, _)) = want {
                 st.join(d);
             }
         }
     }
-    assert!(runs > 200 && moves > 50 && multi > 50, "{runs} runs, {moves} moves, {multi} two-op commits");
+    assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits");
     assert!(loaded * 3 < total * 2, "{loaded} of {total} blocks loaded");
+}
+
+/// `base` with one random change: a splice of a text, an item removed, replaced or inserted in
+/// a list.
+fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
+    match base {
+        Value::Str(x) => {
+            let mut c: Vec<char> = x.chars().collect();
+            let at = r.below(c.len() + 1);
+            let del = r.below((c.len() - at).min(4) + 1);
+            c.splice(at..at + del, "ed".chars().take(r.below(3)));
+            Value::Str(c.into_iter().collect())
+        }
+        Value::List(x) => {
+            let Ty::List(e) = ty else { return base.clone() };
+            let mut x = x.clone();
+            let at = r.below(x.len() + 1);
+            match r.below(3) {
+                0 if at < x.len() => {
+                    x.remove(at);
+                }
+                1 if at < x.len() => x[at] = value(&random_value(r, e, 1)),
+                _ => x.insert(at, value(&random_value(r, e, 1))),
+            }
+            Value::List(x)
+        }
+        _ => base.clone(),
+    }
 }
 
 /// §5.7 Ops, §6.1, §8 (`seq_place`): larger random histories than
@@ -1730,4 +1774,70 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
     }
     assert!(runs > 200 && low > 80 && piles > 40, "{runs} runs, {low} skewed, {piles} piles");
     assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
+}
+
+/// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): on a text of many blocks held in part, an
+/// edit against the current read (what a text session writes) loads only the blocks and records
+/// around its change and writes what it writes on the whole state; one against a stale read (a
+/// concurrent change elsewhere) or of the whole text matches whole, also equal.
+#[test]
+fn edit_on_partial_placement_loads_its_window_spec_5_7() {
+    let mut r = Rng(71);
+    let view = TyView(Ty::Text);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    let mut st = create(&mut w, &view, &s(&"abcdefghij".repeat(300))).unwrap();
+    // scattered inserts, so records and blocks are many
+    for k in 0..60u64 {
+        let n = full_order(&st).iter().filter(|x| x.1).count();
+        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), node(2), 1 + 10 * k));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] } }, &view).unwrap();
+        st.join(b.finish().unwrap().0);
+    }
+    let (mut few, mut stale_whole) = (0, 0);
+    let mut stale = st.read().unwrap();
+    for k in 0..40u64 {
+        let Fragment::Seq(sq) = &st else { panic!() };
+        let sq = sq.clone();
+        let cur = st.read().unwrap();
+        let base = match k % 4 {
+            3 => stale.clone(),
+            _ => cur.clone(),
+        };
+        let new = match k % 8 {
+            // every char changed: the window is the whole text
+            7 => s("whole"),
+            _ => edited(&mut r, &base, &Ty::Text),
+        };
+        let op = Op::Edit { base: base.clone(), new };
+        let w = || Writer::new(ts((200 + k) << 16), node(9), 1000 + 10 * k);
+        let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
+            let mut b = Batch::new(f, w());
+            b.apply(&PathOp { path: Vec::new(), op: op.clone() }, &view).ok()?;
+            b.finish()
+        };
+        let want = run(&st);
+        let mut pg = crate::tests_seq::Pager::new(&sq, 40);
+        let mut got = None;
+        for _ in 0..64 {
+            got = run(&pg.part());
+            if !pg.absorb() {
+                break;
+            }
+        }
+        assert!(got == want, "step {k}: {op:?}");
+        let (all, stubs) = (pg.whole.top().blocks.len(), pg.p.stubs().0.len());
+        if base == cur && k % 8 != 7 {
+            assert!(all > 20 && all - stubs <= 3 && pg.loaded.len() <= 10, "step {k}: {} of {all} blocks, {} pages", all - stubs, pg.loaded.len());
+            few += 1;
+        } else if base != cur {
+            stale_whole += usize::from(stubs == 0);
+        }
+        if let Some((d, _)) = want {
+            st.join(d);
+        }
+        if k % 4 == 1 {
+            stale = st.read().unwrap();
+        }
+    }
+    assert!(few >= 20 && stale_whole >= 5, "{few} edits at their window, {stale_whole} stale edits matched whole");
 }
