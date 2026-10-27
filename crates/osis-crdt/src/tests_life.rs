@@ -127,6 +127,25 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
     if unmerge_in_place(&mut fast, &author) {
         assert_eq!(fast.read(), u1.read(), "fast path agrees");
     }
+    // per delta (spec/permissions.md §5.2): in place equals the join of the held bodies each
+    // without its writes, unless `dots_supersede` says it may not
+    for c in &commits {
+        let (src, lo, hi) = (source(&c.w.source), c.w.lo, c.w.hi());
+        let pred = |d: &Dot| d.src == src && lo <= d.ctr && d.ctr < hi;
+        let mut want = Fragment::default();
+        for mut b in commits.iter().map(|c| frag(&c.delta)).chain(std::iter::once(state.clone())) {
+            b.remove_dots(&pred);
+            want.join(b);
+        }
+        if !state.dots_supersede(&pred) {
+            let mut fast = state.clone();
+            if fast.holds_dots(&pred) {
+                fast.remove_dots(&pred);
+                fast.prune(None, &mut crate::changes::Changes::new());
+            }
+            assert_eq!(fast, want, "in-place un-merge of one delta agrees");
+        }
+    }
 }
 
 /// §8 bootstrap from a snapshot, then concurrent edits of type `ty`.

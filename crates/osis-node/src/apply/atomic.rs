@@ -233,9 +233,11 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             }
         }
         if !valid.get(ai).copied().unwrap_or(false) {
-            // others' writes already joined may sit under its creations
+            // others' writes already joined may sit under its creations; its sequence records
+            // stay as hidden anchors (what un-merging it gives, spec/crdt.md §4.6)
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
-                rebuild(tx, &a.tid, &a.ak)?;
+                join_into_state(tx, &a.tid, &a.ak, f.clone())?;
+                unmerge_fell(tx, &a.tid, &a.ak, Some(f))?;
                 changed.insert((a.tid, a.ak.clone()));
                 touched.whole(&a.tid, &a.ak);
             }
@@ -257,7 +259,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         let _s = crate::costs::span("apply: put_commit");
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
-    unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
+    unmerge_carried(tx, &unmerge, &mut changed, &mut touched, true)?;
     for (tid, ak) in &replays {
         crate::retention::mark_deaths_due(tx, tid, ak)?;
     }
@@ -296,11 +298,16 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     Ok(())
 }
 
-/// Rebuilds the aspects a snapshot just held carries invalid writes on (`carries_invalid`),
-/// once the commit is stored so its own body joins too.
-fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+/// Un-merges the aspects a snapshot just held carries invalid writes on (`carries_invalid`),
+/// once the commit is stored so its own body joins too: in place for a snapshot new here
+/// (`fresh`: its carried judgments only add invalid writes), else rebuilt.
+fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched, fresh: bool) -> Result<()> {
     for (tid, ak) in unmerge {
-        rebuild(tx, tid, ak)?;
+        if fresh {
+            unmerge_fell(tx, tid, ak, None)?;
+        } else {
+            rebuild(tx, tid, ak)?;
+        }
         crate::retention::mark_deaths_due(tx, tid, ak)?;
         changed.insert((*tid, ak.clone()));
         touched.whole(tid, ak);
@@ -393,7 +400,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
-    unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
+    unmerge_carried(tx, &unmerge, &mut changed, &mut touched, false)?;
     for (tid, ak) in &replays {
         crate::retention::mark_deaths_due(tx, tid, ak)?;
     }
@@ -579,11 +586,52 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
     v.and_then(|v| osis_schema::AspectKey::decode(&osis_schema::core_types::GROUP, &v).ok()).map(|g| (g.items, g.subgroups))
 }
 
+/// Un-merges `(tid, ak)` after validity only fell (deltas or carried writes newly invalid, none
+/// valid again): the state without the writes of every delta invalid here, in place, when that
+/// is what `rebuild` gives (none of them supersedes a write in the state, spec/crdt.md §4.6);
+/// else `rebuild`. `fell`: the bodies of what fell, when known: a paged state then loads and
+/// rewrites only the pages holding their dots (else the whole state). No other body is read.
+pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<()> {
+    let invalid = invalid_of(tx.core, tid, ak);
+    let bad = |d: &osis_crdt::Dot| invalid.iter().any(|o| o.owns(d));
+    tx.load_lazy(tid, ak)?;
+    let k = (*tid, ak.clone());
+    let touch = fell.as_ref().and_then(|f| crate::engine::pages::touch_of(f, tx.core.pages.get(&k)));
+    tx.ensure_touch(tid, ak, &touch)?;
+    let in_place = match tx.core.states.get(&k).and_then(Option::as_ref) {
+        None => None,
+        Some(cur) if cur.dots_supersede(&bad) => return rebuild(tx, tid, ak),
+        Some(cur) => Some(cur.holds_dots(&bad)),
+    };
+    if in_place == Some(true) {
+        let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
+        st.remove_dots(&bad);
+        st.prune(None, &mut Changes::new());
+        let st = (!st.is_empty()).then_some(st);
+        tx.core.touch();
+        tx.core.written.push(k);
+        tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
+    }
+    // in place is what rebuilding gives
+    #[cfg(debug_assertions)]
+    {
+        let want = rebuilt(tx, tid, ak)?;
+        debug_assert!(tx.state(tid, ak)? == want.as_ref(), "in-place un-merge of {tid:?} {ak:?} differs from a rebuild");
+    }
+    Ok(())
+}
+
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):
 /// the join of the current state (a snapshot this node holds) and every held body, each first
 /// stripped of the writes of the deltas now invalid here (by counter range or commit ID, so the
 /// author's valid deltas, dropped bodies included, keep theirs).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    let st = rebuilt(tx, tid, ak)?;
+    tx.set_state(tid, ak, st, Shred::Yes, false)
+}
+
+/// What `rebuild` writes.
+fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
     let held: Vec<(osis_core::Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
     let invalid = invalid_of(tx.core, tid, ak);
     let mut bodies: Vec<Fragment> = Vec::new();
@@ -604,6 +652,5 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         st.join_into(b, None, &mut ch);
     }
     strip_valueless(tx.core, tid, ak, &mut st);
-    let st = (!st.is_empty()).then_some(st);
-    tx.set_state(tid, ak, st, Shred::Yes, false)
+    Ok((!st.is_empty()).then_some(st))
 }
