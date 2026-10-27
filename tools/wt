@@ -32,7 +32,7 @@ claims = common / "wt-claims"
 def wt_of(arg):
     p = Path(arg).resolve() if arg else Path(git("rev-parse", "--show-toplevel"))
     if p.parent != home or not p.name.startswith("wt"):
-        sys.exit(f"wt: {p} is not a task worktree")
+        sys.exit(f"wt: {p} is not a task worktree (run from inside one, or pass its path: tools/wt release .worktrees/wtN)")
     return p
 
 
@@ -74,6 +74,7 @@ def release(arg=None):
         sys.exit(f"wt: {path} has uncommitted or untracked files; commit or remove them first")
     git("checkout", "-q", "--detach", cwd=path)
     (claims / path.name).unlink(missing_ok=True)
+    print(f"released {path}")
 
 
 def trim(keep=2):
