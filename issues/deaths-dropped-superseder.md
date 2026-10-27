@@ -1,11 +1,9 @@
-# Deaths still depend on order once a superseding body is dropped
-> Summary: The deaths replay (`retention::rejudge_deaths`) cannot see the writes of dropped bodies that left the state, so after such a drop a replay can date a write's death later than the in-order join did; nodes holding the same commits then keep different bounds (always later, never earlier, than spec/crdt.md §4.8).
-> Tags: retention, node
+# A body arriving after a residue went may die later
+> Summary: Dropped bodies keep their writes value-less as residues (`retention/deaths.rs`) only while a held bounded body sorts at or before them, so a body arriving later, older than every held bounded body, can die later than at a node that held it before the drop (never earlier); keeping residues forever would be exact.
+> Tags: retention, node, owner-call
 
-Repro: `cargo test --workspace --test it retention::deaths_alike_after_superseder_dropped -- --ignored`. X < W < Y on a kept register, W under keep at most 0: Y kills W and drops its body. In order, X died at W. A lagging writer's V (older than X) arriving afterwards replays the aspect without W, so X dies at Y.
+Repro: none pinned (needs a lagging writer's body older than everything held under a bounded keep, arriving after a superseder's body dropped and its residue went).
 
-Same mechanism, uniform retention: a keep-at-least set, element e added by X, removed by W; a compaction drops W's body (live, no dead write: past its bound) while X's stays to W + D; a concurrent remove Y (offline writer, `ts` before the snapshot) kills W's reset in the state. A node that replays after the drop dates X at Y, one that judged X while holding W at W. Also: two snapshots carrying one write of a dropped commit, the later taken after the write died, record it dead again at a later winner (pushes `last` late).
+Fixed: deaths are a function of the applied set while the residue lives (retention.rs `deaths_alike_after_*`; the order harness compares every order with a whole replay). A residue W dates only writes with a lower stamp, so it is dropped once no held bounded body sorts at or before it. A body V arriving after that, with W its earliest superseder, dies at a later superseder (bounded by what superseded W): kept longer, under keep at most past its bound by up to that gap. A store from an earlier build has no residues for bodies it already dropped (same effect, plus their live writes come from the state as before).
 
-Effect: every recorded death is the `ts` of an applied superseder, so a replay's deaths are never earlier than the spec's; the late node holds longer. Keep at least: it judges the body must-hold after another node deleted it at the server and re-uploads it for up to Y − W. Keep at most: it keeps erased data past the bound by up to Y − W.
-
-Fix direction: the replay needs each dropped superseder's stamp. Per-write death records (a write is not identified by its stamp: path identities needed), or a small per-aspect record of the stamps of dropped bodies' writes kept until every body they could date is gone.
+Owner question: keep residues forever (exact; a few bytes per dropped write, growth like tombstones, spec/requirements.md Scale; keeps the timing of every erased write under keep at most) or accept the window above (current)?

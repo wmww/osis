@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 mod deaths;
 pub(crate) mod forget;
 
-pub(crate) use deaths::{Due, drop_residues, load_deaths_due, mark_deaths_due, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
+pub(crate) use deaths::{Due, Lasts, drop_residues, load_deaths_due, mark_deaths_due, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -197,6 +197,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
     tx.core.forget_live(&a.tid, &a.ak);
+    deaths::note_last(tx.core, &a.tid, &a.ak, c, None);
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
     tx.shred_bodies(&a.tid, &a.ak, &bodies)
 }
