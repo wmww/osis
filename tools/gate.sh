@@ -2,6 +2,7 @@
 # The merge gate (notes/testing.md, Build hygiene), in order, failing fast; then a sweep of the
 # build dir (artifacts are fresh right after the gate, so the sweep's own liveness build compiles
 # nothing and only stale artifacts go). Usage: tools/gate.sh [--sweep-seeds N]   (from the repo root)
+# Decides the seeds from git here, then reruns itself through tools/b: one sync, one lock hold.
 # The sim sweep (dev profile, the tests' artifacts) runs with 30 seeds when the branch touches
 # the simulator, a crate it depends on (all but osis-cli, osis-std, osis-bench) or Cargo.toml/lock
 # since its merge base with main (always on main itself); --sweep-seeds N forces N seeds, 0 skips.
@@ -20,6 +21,7 @@ if [ -z "$seeds" ]; then
     seeds=0
   fi
 fi
+[ -n "$OSIS_B_HELD" ] || exec "$(dirname "$0")/b" -- tools/gate.sh --sweep-seeds "$seeds"
 step() { printf '== %s\n' "$*"; "$@"; }
 step cargo build --workspace --all-targets --locked
 step cargo test --workspace --locked
