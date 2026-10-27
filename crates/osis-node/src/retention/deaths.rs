@@ -275,6 +275,15 @@ pub(crate) fn mark(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, item: Due) -> Result<()>
     Ok(())
 }
 
+/// Marks `(tid, ak)` for a replay of every held body if one has a relative bound (others'
+/// writes un-merged under an invalid commit's creations).
+pub(crate) fn mark_if_bounded(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if first_bounded(tx.core, tid, ak).is_some() {
+        mark_deaths_due(tx, tid, ak)?;
+    }
+    Ok(())
+}
+
 /// Marks `(tid, ak)` for a replay of every held body.
 pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     mark(tx, tid, ak, Due::Full)

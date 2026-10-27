@@ -385,7 +385,12 @@ fn deaths_text(e: &mut osis_node::Engine) -> String {
 /// in-order joins, batched and windowed replays must give what it gives).
 fn replay_differs(p: &mut Peer) -> Option<String> {
     let before = deaths_text(&mut p.engine);
-    for (t, a) in p.engine.all_aspects().unwrap() {
+    // every aspect a held commit names, absent ones too (un-merged nested writes)
+    let mut aspects = BTreeSet::new();
+    for id in p.engine.commit_ids() {
+        aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
+    }
+    for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }
     first_diff(&[("deaths", before)], &[("deaths", deaths_text(&mut p.engine))])
@@ -682,5 +687,9 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // record was written, which then held it undropped (a reopen disagreed)
     let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
     check(1053, &h, 0, 8, 4).unwrap();
+    // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
+    // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
+    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
+    check(1173, &h, 4, 2, 1).unwrap();
 }
 
