@@ -426,9 +426,17 @@ pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let elems = s.elems_mut();
     cut_chains(elems, e);
     elems.retain(|d, el| prune_elem(d, el, text, e, ch));
-    // what a reset left bare is one range per stretch: the next pass places a node each
+}
+
+/// `prune_elems` for a join that raised the sequence's own reset: what it left bare is merged
+/// into one range per stretch, so the next pass places a node each. Only here: a join raising a
+/// reset is written whole (a paged state's pages laid out anew), while other prunes (`strip`,
+/// un-merge) rewrite only the pages they touch, and a merge reaching another page would leave a
+/// record spanning past its page's end.
+pub(crate) fn prune_reset(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    prune_elems(s, e, ch);
     if e.is_some() {
-        coalesce_in(elems);
+        coalesce_in(s.elems_mut());
     }
 }
 
