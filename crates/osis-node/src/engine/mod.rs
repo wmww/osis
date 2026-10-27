@@ -1035,6 +1035,8 @@ impl Engine {
             self.run(|tx| {
                 for (tid, ak) in &stale {
                     crate::apply::rejoin(tx, tid, ak)?;
+                    // judged anew as after a validity flip (spec/crdt.md §4.8)
+                    crate::retention::rejudge_deaths(tx, tid, ak)?;
                 }
                 index::write_all(tx)
             })?;
