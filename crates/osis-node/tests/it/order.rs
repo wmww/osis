@@ -69,7 +69,7 @@ enum Step {
     Advance { who: Option<usize>, ms: u64 },
 }
 
-const OPS: u8 = 23;
+const OPS: u8 = 27;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -84,13 +84,16 @@ fn aspect_of(op: u8) -> Ak {
         14 => "/t/list",
         15 => "/t/rec",
         // with a keep bound (deaths count only there): registers, a map under keep at most 0
-        // (bodies drop as they die), a kept set, a kept nested write
+        // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
+        // kept text, a kept text in a map entry
         16 => "/t/kept",
         17 => "/t/short",
         18 => "/t/gone",
         19 | 20 => "/t/gonemap",
         21 => "/t/keptset",
-        _ => "/t/map",
+        22 | 25 => "/t/map",
+        23 | 24 => "/t/text",
+        _ => "/t/docs",
     })
 }
 
@@ -101,7 +104,7 @@ fn keep_of(op: u8) -> Option<Retention> {
     let at_least = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
     let at_most = |rel| Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(rel) } });
     match op % OPS {
-        16 | 21 | 22 => at_least,
+        16 | 21..=26 => at_least,
         17 => at_most(HOUR / 2),
         18..=20 => at_most(0),
         _ => None,
@@ -137,6 +140,8 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         21 if v.is_multiple_of(2) => PathOp { path: vec![], op: Op::Add(s(&format!("t{}", k % 3))) },
         21 => PathOp { path: vec![], op: Op::Remove(s(&format!("t{}", k % 3))) },
         22 => PathOp { path: vec![key(k), PathSeg::Field(1)], op: Op::Set(Value::Int(v as i64)) },
+        // kept twins of text inserts and deletes, map removals, text in a map entry
+        23..=26 => return content_op([10, 11, 5, 8][(op % OPS - 23) as usize], k, v),
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
