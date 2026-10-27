@@ -546,7 +546,7 @@ fn extend_over_commits_and_leaves_together() {
     assert!(extended > 10, "{extended}");
 }
 
-/// spec/commits.md §4 (overlapping node-form `/members` ranges void both commits), §5.1:
+/// spec/commits.md §4 (overlapping node-form `/members` ranges void both commits), spec/permissions.md §5.1:
 /// writes after every held one go on by `Timelines::append` alone while their ranges are
 /// disjoint; one overlapping a held range (or a voided one) takes the general path, and every
 /// step equals an evaluation from scratch.
@@ -678,4 +678,85 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
     let held = w.held();
     inc.update_touched(&held, &touched(&prev, &held));
     assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+}
+
+/// Random small histories built to drop and un-drop (few nodes, every one an admin at first;
+/// grants, removals, demotions with partial frontiers, invites, `until`, a team, sometimes a
+/// roster snapshot held from the start), the second half arriving late in random order through
+/// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
+/// updates `Timelines::append` did alone.
+fn adversarial(samples: u64, seed: u64) -> usize {
+    use osis_core::Role::{Admin, Read, Write};
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    let mut appended = 0;
+    for s in 0..samples {
+        let mut w = World::new();
+        let n = w.nodes(5);
+        let k = n[0];
+        let g = w.thing(k);
+        let team = w.thing(k);
+        let targets = [g, g, g, team];
+        for (i, x) in n.iter().enumerate().skip(1) {
+            w.set(k, if i == 4 { team } else { g }, *x, edge(Admin), 1, &[]);
+        }
+        w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
+        if rng.below(4) == 0 {
+            w.snapshot(k, g, &[(n[1], osis_perm::Edge::new(Admin)), (n[2], osis_perm::Edge::new(Admin)), (team, osis_perm::Edge::new(Admin))], 2 + rng.below(20) as u64, &[]);
+        }
+        let mut late = Vec::new();
+        for _ in 0..10 + rng.below(10) {
+            let author = n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }];
+            let target = targets[rng.below(targets.len())];
+            let member = if target == g && rng.below(5) == 0 { team } else { n[1 + rng.below(4)] };
+            let e = match rng.below(7) {
+                0 | 1 => None,
+                2 => edge(Read),
+                3 => edge(Write),
+                4 => edge_inv(Write, Some(Read), None),
+                5 => edge_inv(Admin, None, Some(5 + rng.below(25) as u64)),
+                _ => edge(Admin),
+            };
+            let t = 2 + rng.below(30) as u64;
+            // a frontier covering some of what came before
+            let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(32) as u64)).collect() };
+            let id = w.set(author, target, member, e, t, &[]);
+            if let Some(c) = w.commits.iter_mut().find(|c| c.id == id) {
+                for (x, r) in &recv {
+                    c.recv.entry(*x).or_insert(*r);
+                }
+            }
+            if rng.below(2) == 0 {
+                late.push(id);
+            }
+        }
+        let order = rng.perm(late.len());
+        let mut skip: BTreeSet<_> = late.iter().copied().collect();
+        let mut prev = w.held_without(&skip);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        for (step, i) in order.into_iter().enumerate() {
+            skip.remove(&late[i]);
+            let held = w.held_without(&skip);
+            inc.update_touched(&held, &touched(&prev, &held));
+            appended += inc.appended();
+            if let Some(d) = check(&held, &inc, &n) {
+                panic!("seed {seed:#x} sample {s} step {step}: {d}");
+            }
+            prev = held;
+        }
+    }
+    appended
+}
+
+/// §5.1 steps 4-5, §6: late arrivals through `update_touched` equal from scratch.
+#[test]
+fn append_adversarial_equals_from_scratch() {
+    assert!(adversarial(30, 0x5eed_0311) > 0);
+}
+
+#[test]
+#[ignore]
+fn append_adversarial_equals_from_scratch_large() {
+    assert!(adversarial(3_000, 0x5eed_0312) > 0);
 }
