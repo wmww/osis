@@ -693,6 +693,26 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
     elems.retain(|d, el| el.keeps(d));
 }
 
+/// `Fragment::dots_supersede` of a sequence: a flag or a position write (other than an element's
+/// own creation, which `remove_dots` keeps) of theirs, or one inside another's list element.
+pub(crate) fn dots_supersede(s: &Seq, pred: &dyn Fn(&Dot) -> bool) -> bool {
+    s.elems().iter().any(|(d, el)| {
+        el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner()))
+            || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))
+            || (!pred(d.owner()) && matches!(&el.content, SeqContent::Frag(f) if f.dots_supersede(pred)))
+    })
+}
+
+/// `Fragment::holds_dots` of a sequence.
+pub(crate) fn holds_dots(s: &Seq, pred: &dyn Fn(&Dot) -> bool) -> bool {
+    s.elems().iter().any(|(d, el)| {
+        (pred(d.owner()) && !matches!(el.content, SeqContent::None))
+            || el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner()))
+            || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))
+            || matches!(&el.content, SeqContent::Frag(f) if f.holds_dots(pred))
+    })
+}
+
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.
 /// Their stamps `(s.ts, Derived(s.dot), i)` already order right after `s` (`Dot`'s order, §2.2).
 pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
