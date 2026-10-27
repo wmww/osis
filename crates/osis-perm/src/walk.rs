@@ -1537,7 +1537,6 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &MembershipCommit, k
 pub(crate) struct Items {
     initial: Edges,
     list: Vec<(Point, u8, Tid, Tid, Item)>,
-    at: BTreeMap<CommitId, usize>,
 }
 
 impl Items {
@@ -1547,30 +1546,24 @@ impl Items {
         self.list.partition_point(|a| (a.0, a.1, a.2, a.3) < k)
     }
 
-    /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n).
-    pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
-        let zero = Tid::from_bytes([0; 15]);
-        let mut moved = false;
-        for c in new {
-            let k = (c.point(), 1, zero, zero);
-            let i = self.place(c);
-            moved |= i < self.list.len();
-            self.list.insert(i, (k.0, 1, zero, zero, Item::Commit(c.clone())));
-            self.at.insert(c.id, i);
-        }
-        if moved {
-            self.reindex();
+    /// The index of commit or snapshot `id` of `input` (points are unique, so it is where its
+    /// point goes).
+    pub fn index(&self, input: &Input, id: &CommitId) -> Option<usize> {
+        let p = input.commits.get(id).map(|c| c.point()).or_else(|| input.snaps.get(id).map(|s| s.point()))?;
+        let i = self.list.partition_point(|a| (a.0, a.1) < (p, 1));
+        match &self.list.get(i)?.4 {
+            Item::Commit(c) if c.id == *id => Some(i),
+            Item::Snap(s) if s.id == *id => Some(i),
+            _ => None,
         }
     }
 
-    fn reindex(&mut self) {
-        self.at.clear();
-        for (i, it) in self.list.iter().enumerate() {
-            match &it.4 {
-                Item::Commit(c) => self.at.insert(c.id, i),
-                Item::Snap(s) => self.at.insert(s.id, i),
-                Item::Virtual(_) => None,
-            };
+    /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n) (a move).
+    pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
+        let zero = Tid::from_bytes([0; 15]);
+        for c in new {
+            let i = self.place(c);
+            self.list.insert(i, (c.point(), 1, zero, zero, Item::Commit(c.clone())));
         }
     }
 }
@@ -1604,9 +1597,7 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
         list.push((s.point(), 1, zero, zero, Item::Snap(s.clone())));
     }
     list.sort_by_key(|a| (a.0, a.1, a.2, a.3));
-    let mut out = Items { initial, list, at: BTreeMap::new() };
-    out.reindex();
-    out
+    Items { initial, list }
 }
 
 enum Step {
@@ -1632,8 +1623,8 @@ impl Pass<'_> {
                 Item::Virtual(v) => self.virtual_write(v),
             };
             if restart {
-                let first = self.fresh.iter().filter_map(|w| items.at.get(&w.commit())).min();
-                return Step::Restart(first.copied().unwrap_or(0));
+                let first = self.fresh.iter().filter_map(|w| items.index(self.input, &w.commit())).min();
+                return Step::Restart(first.unwrap_or(0));
             }
         }
         Step::Done
@@ -1693,7 +1684,7 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
             if let Some(j) = cut {
                 for w in walked.rest.found.split_off(j) {
                     dropped.remove(&w);
-                    from = from.min(it.at.get(&w.commit()).copied().unwrap_or(0));
+                    from = from.min(it.index(input, &w.commit()).unwrap_or(0));
                 }
             }
             reach = dropped.values().max().copied();

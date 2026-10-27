@@ -164,6 +164,63 @@ impl Edges {
             }
         }
     }
+    /// Sets `changes` in each of `states`, consecutive kept states in order: a map two
+    /// neighbours shared before stays shared (one copy per run of states sharing it).
+    pub fn set_all<'a>(states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
+        /// The target's and the member's maps before and after a change, in the previous state.
+        type Was = ((Option<Arc<BTreeMap<Tid, Edge>>>, Option<Arc<BTreeMap<Tid, Edge>>>), (Option<Arc<BTreeSet<Tid>>>, Option<Arc<BTreeSet<Tid>>>));
+        fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+            match (a, b) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+        }
+        let mut last: Vec<Was> = Vec::new();
+        for s in states {
+            let s = Arc::make_mut(s);
+            for (j, (m, t, e)) in changes.iter().enumerate() {
+                let old_t = s.by_target.get(t).cloned();
+                let old_m = s.by_member.get(m).cloned();
+                let prev = last.get(j);
+                let new_t = match prev {
+                    Some((p, _)) if same(&p.0, &old_t) => p.1.clone(),
+                    _ => {
+                        let mut v = old_t.as_deref().cloned().unwrap_or_default();
+                        match e {
+                            Some(e) => v.insert(*m, *e),
+                            None => v.remove(m),
+                        };
+                        (!v.is_empty()).then(|| Arc::new(v))
+                    }
+                };
+                let new_m = match prev {
+                    Some((_, p)) if same(&p.0, &old_m) => p.1.clone(),
+                    _ => {
+                        let mut v = old_m.as_deref().cloned().unwrap_or_default();
+                        match e {
+                            Some(_) => v.insert(*t),
+                            None => v.remove(t),
+                        };
+                        (!v.is_empty()).then(|| Arc::new(v))
+                    }
+                };
+                match &new_t {
+                    Some(v) => s.by_target.insert(*t, v.clone()),
+                    None => s.by_target.remove(t),
+                };
+                match &new_m {
+                    Some(v) => s.by_member.insert(*m, v.clone()),
+                    None => s.by_member.remove(m),
+                };
+                let x = ((old_t, new_t), (old_m, new_m));
+                match last.get_mut(j) {
+                    Some(l) => *l = x,
+                    None => last.push(x),
+                }
+            }
+        }
+    }
     /// Edges on `target`, by member.
     pub fn members(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
         self.by_target.get(target).into_iter().flat_map(|m| m.iter())
