@@ -390,3 +390,48 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
     };
     assert!(run(false) == run(true), "the undo in a lazily loaded session equals the whole state's");
 }
+
+// spec/crdt.md §4.8: X < W < Y on a kept register, W's body under keep at most 0 (dropped when
+// Y kills it). In order, X dies at W; a lagging writer's V (older than X) arriving last replays
+// the aspect without W's body, so X dies at Y: one held set, two deaths.
+#[test]
+#[ignore = "issues/deaths-dropped-superseder.md"]
+fn deaths_alike_after_superseder_dropped_spec_crdt_4_8() {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut lp = net(4, 77);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let v = set(&mut lp, 1, t, &KEPT, "v");
+    lp.advance(10);
+    let x = set(&mut lp, 0, t, &KEPT, "x");
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.retention(t, &KEPT, Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } }).unwrap();
+    m.set(t, &KEPT, &s("w")).unwrap();
+    let w = lp.peers[0].commit(m).unwrap().unwrap();
+    // W's body as sent before Y dropped it
+    let wpk = packages(&mut lp, 0).into_iter().find(|p| p.id == w).unwrap();
+    lp.advance(10);
+    let y = set(&mut lp, 0, t, &KEPT, "y");
+    let mut pks = packages(&mut lp, 0);
+    pks.extend(packages(&mut lp, 1));
+    let pk = |c: &osis_core::CommitId| if *c == w { wpk.clone() } else { pks.iter().find(|p| p.id == *c).unwrap().clone() };
+    let rest: Vec<_> = pks.iter().filter(|p| ![v, x, w, y].contains(&p.id)).cloned().collect();
+    let k = ak("/t/kept");
+    let mut got = Vec::new();
+    for (to, order) in [(2, [v, x, w, y]), (3, [x, w, y, v])] {
+        for p in &rest {
+            lp.deliver(to, p).unwrap();
+        }
+        for c in order {
+            lp.deliver(to, &pk(&c)).unwrap();
+        }
+        assert!(!lp.peers[to].engine.holds_body(&w, &t, &k));
+        got.push(lp.peers[to].engine.deaths(&x, &t, &k).unwrap());
+    }
+    let tw = lp.peers[0].engine.header(&w).unwrap().ts;
+    assert_eq!(got, vec![Some((tw, tw)); 2]);
+}

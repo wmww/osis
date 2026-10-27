@@ -205,7 +205,7 @@ fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 /// a write dies at the first join superseding it. Every held body with a relative bound gets the
 /// first and last of its writes' deaths. A function of the held bodies and the state, so nodes
 /// holding the same commits agree. Residue: a dropped body whose superseding write left the
-/// state no longer dates the writes it superseded. Cost: the aspect's held bodies and whole
+/// state no longer dates the writes it superseded (issues/deaths-dropped-superseder.md). Cost: the aspect's held bodies and whole
 /// state, per such delta.
 pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if any_bounded(tx.core, tid, ak) {
