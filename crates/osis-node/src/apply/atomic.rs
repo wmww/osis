@@ -258,7 +258,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
     for (tid, ak) in &replays {
-        crate::retention::rejudge_deaths(tx, tid, ak)?;
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
     }
     {
         let _s = crate::costs::span("apply: retention");
@@ -300,7 +300,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
     for (tid, ak) in unmerge {
         rebuild(tx, tid, ak)?;
-        crate::retention::rejudge_deaths(tx, tid, ak)?;
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
+        crate::retention::recheck_at_most(tx, tid, ak)?;
         changed.insert((*tid, ak.clone()));
         touched.whole(tid, ak);
     }
@@ -394,7 +395,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
     for (tid, ak) in &replays {
-        crate::retention::rejudge_deaths(tx, tid, ak)?;
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
     }
     if edges && let Some(all) = &all {
         tx.core.held.remove(id);

@@ -133,6 +133,7 @@ macro_rules! journaled {
         c.box_written.$m();
         c.authors.$m();
         c.lost_due.$m();
+        c.deaths_due.$m();
         c.departures.$m();
         c.secrets_unresolved.$m();
     }};
@@ -266,6 +267,8 @@ pub(crate) struct Core {
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,
+    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`).
+    pub deaths_due: JSet<(Tid, Ak)>,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
@@ -424,6 +427,7 @@ impl Core {
             check_ingest: false,
             key_actors: BTreeMap::new(),
             lost_due: JSet::default(),
+            deaths_due: JSet::default(),
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),

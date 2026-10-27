@@ -207,6 +207,28 @@ fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 /// holding the same commits agree. Residue: a dropped body whose superseding write left the
 /// state no longer dates the writes it superseded (issues/deaths-dropped-superseder.md). Cost: the aspect's held bodies and whole
 /// state, per such delta.
+/// Marks `(tid, ak)` for `rejudge_deaths` once, before its deaths are next read (`settle_deaths`):
+/// a batch of late deltas costs one replay per aspect, not one per delta. Until then its death
+/// records may be later than the spec's (never earlier), and keep-at-most bounds judged at apply
+/// with them later too.
+pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    if tx.core.deaths_due.insert((*tid, ak.clone())) {
+        tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn load_deaths_due(tx: &mut Tx<'_>) -> Result<()> {
+    let mut v = Vec::new();
+    tx.scan(records::DEATHS_DUE, |k, _| {
+        let mut r = Rd::new(k);
+        v.push((r.tid()?, r.ak()?));
+        Ok(())
+    })?;
+    tx.core.deaths_due.extend(v);
+    Ok(())
+}
+
 pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if any_bounded(tx.core, tid, ak) {
         replay_deaths(tx, tid, ak)?;
@@ -221,7 +243,12 @@ fn replay_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut ch = osis_crdt::Changes::new();
     for c in &held {
         let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
-        for d in crate::apply::held_parts(tx, c, ai)? {
+        let parts = {
+            let _s = crate::costs::span("deaths: read bodies");
+            crate::apply::held_parts(tx, c, ai)?
+        };
+        let _s = crate::costs::span("deaths: join");
+        for d in parts {
             let mut f = match d {
                 Decoded::Delta(x) => x.fragment,
                 Decoded::Snapshot(x) => x.fragment,
@@ -231,9 +258,12 @@ fn replay_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             st.join_into(f, None, &mut ch);
         }
     }
-    tx.load(tid, ak)?;
-    if let Some(Some(cur)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
-        st.join_into(cur, None, &mut ch);
+    {
+        let _s = crate::costs::span("deaths: state");
+        tx.load(tid, ak)?;
+        if let Some(Some(cur)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
+            st.join_into(cur, None, &mut ch);
+        }
     }
     let mut got: std::collections::BTreeMap<(CommitId, usize), (Ts, Ts)> = std::collections::BTreeMap::new();
     for d in ch.deaths() {
@@ -257,7 +287,7 @@ fn replay_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
 /// again: their deaths or live writes may have changed (spec/commits.md §5).
-fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+pub(crate) fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in held {
         let Some(m) = tx.core.commits.get(&c) else { continue };
@@ -479,6 +509,23 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
 }
 
 impl Engine {
+    /// Replays the deaths of the aspects marked by `mark_deaths_due`, in one transaction. Every
+    /// read of deaths or bounds runs it first.
+    pub(crate) fn settle_deaths(&mut self) -> Result<()> {
+        if self.core.deaths_due.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            let due: Vec<(Tid, Ak)> = tx.core.deaths_due.iter().cloned().collect();
+            for (tid, ak) in due {
+                rejudge_deaths(tx, &tid, &ak)?;
+                tx.core.deaths_due.remove(&(tid, ak.clone()));
+                tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
     /// parked for drift.
     pub fn tick(&mut self) -> Result<()> {
@@ -488,6 +535,7 @@ impl Engine {
     /// `tick`, returning the commits whose timers fired (node-sync forgets the dropped bodies'
     /// blobs and judges them again).
     pub(crate) fn tick_drops(&mut self) -> Result<BTreeSet<CommitId>> {
+        self.settle_deaths()?;
         let n = self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
@@ -570,6 +618,7 @@ impl Engine {
 
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
+        self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
         let (h, r, d) = self.run(|tx| {
             let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
@@ -585,6 +634,7 @@ impl Engine {
 
     /// First and last death so far of the writes of the body holding aspect `ak` of `c`.
     pub fn deaths(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<(Ts, Ts)>> {
+        self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
             let ai = aspect_index(tx, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;

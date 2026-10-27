@@ -786,6 +786,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     }
     keys::load_unresolved(tx)?;
     crate::rotation::load_lost_due(tx)?;
+    crate::retention::load_deaths_due(tx)?;
     let mut pend = Vec::new();
     let mut after: Option<CommitId> = None;
     loop {
