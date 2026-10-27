@@ -70,9 +70,10 @@ def main():
             if msg.get("out_dir"):
                 paths.append(msg["out_dir"])
             if msg.get("reason") == "compiler-artifact" and msg["filenames"]:
-                prof = next((d.parent for d in Path(msg["filenames"][0]).parents if d.name in UNITS), None)
-                key = (prof, norm(msg["target"]["name"]))
-                units[key] = units.get(key, 0) + 1
+                f0 = Path(msg["filenames"][0])  # a bin's is uplifted: <profile>/<name>
+                prof = next((d.parent for d in f0.parents if d.name in UNITS), f0.parent)
+                unit = json.dumps([msg[k] for k in ("package_id", "target", "profile", "features")])
+                units.setdefault((prof, norm(msg["target"]["name"])), set()).add(unit)
             for f in map(Path, paths):
                 for part in f.parts:
                     live.update(HASH.findall(part))
@@ -100,7 +101,7 @@ def main():
             by_crate.setdefault(e.name.rsplit("-", 1)[0], []).append(e)
         for crate, dirs in by_crate.items():
             dirs.sort(key=lambda e: e.stat().st_mtime, reverse=True)
-            keep = 0 if a.drop_incremental else units.get((prof, crate), 0)
+            keep = 0 if a.drop_incremental else len(units.get((prof, crate), ()))
             doomed += dirs[keep:]
 
     freed = sum(map(real_size, doomed))
