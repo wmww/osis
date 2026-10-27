@@ -13,7 +13,7 @@ paths (package-relative) mean the same thing in both checkouts.
   incremental/, uplifted files, deps/*.d    skipped
   source files      each one identical to the main checkout's gets its mtime,
                     so cargo sees it as old as the main checkout's artifacts;
-                    the rest keep the checkout's (newer) mtime and rebuild
+                    the rest are touched and rebuild
 
 Idempotent; a no-op in the main checkout or once the build dir exists, so it is
 safe to run from a post-checkout hook. Run inside the new worktree.
@@ -59,21 +59,26 @@ def seed_profile(src, dst):
 
 
 def same_mtimes(top, main_co):
-    """Tracked files identical to the main checkout's take its mtimes, and so do
-    their directories where both list the same names (a build script may watch a
-    directory: cargo then takes the newest mtime under it)."""
+    """Files identical to the main checkout's take its mtimes, and so do their
+    directories where both list the same names (a build script may watch a
+    directory: cargo then takes the newest mtime under it). Every other file and
+    directory is touched: a source older than the copied artifacts (a worktree
+    reseeded after deleting its target/) would otherwise pass as built."""
     def take(rel, same):
         a, b = top / rel, main_co / rel
         try:
             if a.exists() and b.exists() and same(a, b):
                 st = b.stat()
                 os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
+            elif a.exists():
+                os.utime(a)
         except OSError:
             pass
-    rels = [r for r in (run("git", "ls-files", "-z", cwd=top) or "").split("\0") if r]
+    ls = run("git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", cwd=top)
+    rels = [r for r in (ls or "").split("\0") if r]
     for r in rels:
         take(r, lambda a, b: a.read_bytes() == b.read_bytes())
-    for d in {Path(r).parent for r in rels}:
+    for d in {p for r in rels for p in Path(r).parents}:
         take(d, lambda a, b: sorted(os.listdir(a)) == sorted(os.listdir(b)))
 
 
