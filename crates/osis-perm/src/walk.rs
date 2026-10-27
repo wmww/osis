@@ -22,7 +22,7 @@
 //!   entries (`since` = `until`) included.
 
 use crate::content::{overlapping, Range};
-use crate::graph::{Class, Edges, EdgesAt, Owners, Reads, Standing, View};
+use crate::graph::{Class, Dense, Edges, EdgesAt, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{lowers, Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, WriteId, MEMBERS};
 use osis_core::{CommitId, Role, Tid, Ts, WallMs};
@@ -349,10 +349,6 @@ impl Input {
 /// (`Pass::roles`), more by backward searches from what their standings read (a cost choice:
 /// the values are equal).
 const FORWARD_MAX: usize = 4;
-
-/// At most this many things whose roles may fall are searched again after an edge narrowed
-/// (`View::roles_repaired`); more drop the cached roles (a cost choice).
-const REPAIR_MAX: usize = 32;
 
 /// One change to the edge state in the final walk, for time queries.
 #[derive(Clone, Debug)]
@@ -836,12 +832,10 @@ fn widest_changes((rm, cur): (Option<Role>, Option<Role>), old: Option<Edge>, ne
     let Some(rm) = rm else { return Widest::Same };
     let alive = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts)));
     let (o, n) = (alive(old).map(|e| rm.min(e.role)), alive(new).map(|e| rm.min(e.role)));
-    if alive(new).is_some_and(|e| e.until.is_some()) {
-        // `best`'s expiry does not know the new `until`
+    if alive(new).is_some_and(|e| e.until.is_some()) || (o > n && o == cur) {
+        // `best`'s expiry does not know the new `until`; or the old edge may have been the
+        // only path that wide
         Widest::Unknown
-    } else if let (Some(o), true) = (o, o > n && o == cur) {
-        // the old edge may have been the only path that wide
-        Widest::Narrowed(o)
     } else if n > cur {
         Widest::Raised
     } else {
@@ -853,8 +847,6 @@ enum Widest {
     Same,
     /// Only raised, from the edge's member on.
     Raised,
-    /// The old edge gave the target exactly this, and the new one less (`roles_repaired`).
-    Narrowed(Role),
     Unknown,
 }
 
@@ -886,8 +878,8 @@ struct Pass<'a> {
     /// `roles_from` per node over the current edges (`Roles`). Dropped when an edge of a node
     /// it reaches changes.
     roles: BTreeMap<Tid, Roles>,
-    /// `dense_ids` of the input.
-    ids: BTreeMap<Tid, usize>,
+    /// The edge state by dense index (`edges` mirrored).
+    graph: Dense,
     log: Vec<Undo>,
     marks: Vec<(usize, usize)>,
     /// A continued walk: how many history changes are still the continued walk's, and that
@@ -926,20 +918,6 @@ impl Roles {
         Arc::make_mut(&mut self.best).extend(raised);
     }
 
-    /// Sets or removes (`None`) entries.
-    fn set(&mut self, ids: &BTreeMap<Tid, usize>, changed: BTreeMap<Tid, Option<Role>>) {
-        let best = Arc::make_mut(&mut self.best);
-        for (t, r) in changed {
-            if let Some(d) = ids.get(&t).and_then(|i| self.dense.get_mut(*i)) {
-                *d = r;
-            }
-            match r {
-                Some(r) => best.insert(t, r),
-                None => best.remove(&t),
-            };
-        }
-    }
-
     /// The role on `t`, `i` its dense index if it has one.
     fn on(&self, t: &Tid, i: Option<usize>) -> Option<Role> {
         match i {
@@ -953,17 +931,19 @@ impl Roles {
     }
 }
 
-/// Dense indexes of every entity a role can be held on: nodes, things with an owner link or
-/// owning one, and both ends of every edge any held write can set.
-fn dense_ids(input: &Input) -> BTreeMap<Tid, usize> {
-    let mut all: BTreeSet<Tid> = input.nodes.clone();
-    for (t, _) in input.owners.links() {
-        all.insert(*t);
-        all.extend(input.owners.owned(t));
+impl Input {
+    /// `Dense` over every entity a role can be held on: nodes, things with an owner link or
+    /// owning one, both ends of every edge any held write can set.
+    pub(crate) fn dense(&self, edges: &Edges) -> Dense {
+        let mut all: BTreeSet<Tid> = self.nodes.clone();
+        for (t, _) in self.owners.links() {
+            all.insert(*t);
+            all.extend(self.owners.owned(t));
+        }
+        all.extend(self.ever.targets.keys().copied());
+        all.extend(self.ever.members.keys().copied());
+        Dense::new(&self.owners, all, edges)
     }
-    all.extend(input.ever.targets.keys().copied());
-    all.extend(input.ever.members.keys().copied());
-    all.into_iter().enumerate().map(|(i, t)| (t, i)).collect()
 }
 
 impl<'a> Pass<'a> {
@@ -972,8 +952,18 @@ impl<'a> Pass<'a> {
         if let Some(r) = self.roles.get(&x).filter(|r| r.fresh(ts)) {
             return r.best.clone();
         }
-        let (b, exp) = self.view(ts).roles_expiring(&x);
-        let r = Roles::new(b, &self.ids, ts, exp);
+        let r = match self.graph.roles(&x, ts) {
+            Some((dense, mut reached, exp)) => {
+                reached.sort_unstable();
+                let best: BTreeMap<Tid, Role> = reached.iter().filter_map(|i| Some((*self.graph.tids.get(*i)?, dense.get(*i).copied().flatten()?))).collect();
+                debug_assert!(self.view(ts).roles_expiring(&x) == (best.clone(), exp));
+                Roles { best: Arc::new(best), dense, at: ts, exp }
+            }
+            None => {
+                let (b, exp) = self.view(ts).roles_expiring(&x);
+                Roles::new(b, &self.graph.ids, ts, exp)
+            }
+        };
         let b = r.best.clone();
         self.roles.insert(x, r);
         b
@@ -986,7 +976,8 @@ impl<'a> Pass<'a> {
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
         let Walked { initial, history, edges, applied, demotions, falls, rest } = w;
         let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found } = rest;
-        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), ids: dense_ids(input), log, marks, untouched: None, found }
+        let graph = input.dense(&edges);
+        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), graph, log, marks, untouched: None, found }
     }
 
     /// `Outcome::common` of this walk.
@@ -1008,7 +999,10 @@ impl<'a> Pass<'a> {
         while self.log.len() > l {
             let Some(u) = self.log.pop() else { break };
             match u {
-                Undo::Edge(m, t, e) => self.edges.set(m, t, e),
+                Undo::Edge(m, t, e) => {
+                    self.graph.set(&m, &t, e);
+                    self.edges.set(m, t, e);
+                }
                 Undo::Dead(k, on) => {
                     if on {
                         self.dead.insert(k);
@@ -1088,6 +1082,7 @@ impl<'a> Pass<'a> {
 
     fn set_edge(&mut self, m: Tid, t: Tid, e: Option<Edge>) {
         self.log.push(Undo::Edge(m, t, self.edges.get(&m, &t).copied()));
+        self.graph.set(&m, &t, e);
         self.edges.set(m, t, e);
     }
 
@@ -1147,47 +1142,48 @@ impl<'a> Pass<'a> {
         let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&member).contains(a));
         let was = self.edges.get(&member, &target).copied();
         let mut raise = Vec::new();
-        let mut narrowed = Vec::new();
-        let (mi, ti) = (self.ids.get(&member).copied(), self.ids.get(&target).copied());
+        let (mi, ti) = (self.graph.ids.get(&member).copied(), self.graph.ids.get(&target).copied());
         self.roles.retain(|x, r| match widest_changes((r.on(&member, mi), r.on(&target, ti)), was, edge, point.ts) {
             Widest::Same => true,
             Widest::Raised => {
                 raise.push(*x);
                 true
             }
-            Widest::Narrowed(o) if r.fresh(point.ts) => {
-                narrowed.push((*x, o));
-                true
-            }
-            Widest::Narrowed(_) | Widest::Unknown => false,
+            Widest::Unknown => false,
         });
         self.set_edge(member, target, edge);
         for x in raise {
-            let view = View::new(&self.input.owners, &self.edges, Some(point.ts));
             if let Some(r) = self.roles.get_mut(&x) {
-                let (raised, e) = view.roles_raised_expiring(&r.best, &[member]);
-                r.raise(&self.ids, raised);
+                #[cfg(debug_assertions)]
+                let old = r.best.clone();
+                let e = match self.graph.raise(&mut r.dense, &member, point.ts) {
+                    Some((raised, e)) => {
+                        let best = Arc::make_mut(&mut r.best);
+                        for i in raised {
+                            if let (Some(t), Some(Some(v))) = (self.graph.tids.get(i), r.dense.get(i)) {
+                                best.insert(*t, *v);
+                            }
+                        }
+                        #[cfg(debug_assertions)]
+                        {
+                            let (raised, until) = View::new(&self.input.owners, &self.edges, Some(point.ts)).roles_raised_expiring(&old, &[member]);
+                            let mut want = (*old).clone();
+                            want.extend(raised);
+                            debug_assert!(*r.best == want && e == until, "raised roles of {x:?}");
+                        }
+                        e
+                    }
+                    None => {
+                        let view = View::new(&self.input.owners, &self.edges, Some(point.ts));
+                        let (raised, e) = view.roles_raised_expiring(&r.best, &[member]);
+                        r.raise(&self.graph.ids, raised);
+                        e
+                    }
+                };
                 r.exp = match (r.exp, e) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
                 };
-            }
-        }
-        for (x, o) in narrowed {
-            let view = View::new(&self.input.owners, &self.edges, Some(point.ts));
-            let Some(r) = self.roles.get_mut(&x) else { continue };
-            match view.roles_repaired(&x, &r.best, &target, o, REPAIR_MAX) {
-                Some((changed, e)) => {
-                    r.set(&self.ids, changed);
-                    r.exp = match (r.exp, e) {
-                        (Some(a), Some(b)) => Some(a.min(b)),
-                        (a, b) => a.or(b),
-                    };
-                    debug_assert!(*r.best == view.roles_from(&x), "repaired roles of {x:?}");
-                }
-                None => {
-                    self.roles.remove(&x);
-                }
             }
         }
         self.set_setter(key, by);
@@ -1253,7 +1249,9 @@ impl<'a> Pass<'a> {
         };
         // what the target reaches and what standings on each of those read, for every x (only
         // when some x's standings there may change)
-        let mut reach: Option<(BTreeSet<Tid>, BTreeMap<Tid, Reads>)> = None;
+        // (and which of those things read each entity's roles)
+        type Reach = (BTreeSet<Tid>, BTreeMap<Tid, Reads>, BTreeMap<Tid, BTreeSet<Tid>>);
+        let mut reach: Option<Reach> = None;
         let mut grew = false;
         for x in xs {
             let restored = match (base, mine.get(&x)) {
@@ -1284,16 +1282,24 @@ impl<'a> Pass<'a> {
                 let before = self.view(ts).patched(member, target, Some(restored));
                 vec![(target, view.standing_from(chain, role, &small, &target), before.standing_from(chain, role, &small, &target))]
             } else {
-                let (ns, reads) = reach.get_or_insert_with(|| {
+                let (ns, reads, readers) = reach.get_or_insert_with(|| {
                     let view = self.view(ts);
                     let ns = view.reach_forward(&target);
-                    let reads = ns.iter().map(|n| (*n, view.reads(n))).collect();
-                    (ns, reads)
+                    let reads: BTreeMap<Tid, Reads> = ns.iter().map(|n| (*n, view.reads(n))).collect();
+                    let mut readers: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+                    for (n, rd) in &reads {
+                        for k in std::iter::once(n).chain(&rd.up).chain(rd.invites.iter().map(|(m, _)| m)) {
+                            readers.entry(*k).or_default().insert(*n);
+                        }
+                    }
+                    (ns, reads, readers)
                 });
                 let best = self.roles(x, ts);
+                let raised = if wider { self.raised_with(x, (member, target), restored, ts) } else { None };
                 let before = self.view(ts).patched(member, target, Some(restored));
                 let (best_was, raised) = if wider {
-                    let raised = before.roles_raised(&best, &[member]);
+                    let raised = raised.unwrap_or_else(|| before.roles_raised(&best, &[member]));
+                    debug_assert!(raised == before.roles_raised(&best, &[member]));
                     let mut b = (*best).clone();
                     b.extend(raised.iter().map(|(t, r)| (*t, *r)));
                     (b, Some(raised))
@@ -1303,10 +1309,17 @@ impl<'a> Pass<'a> {
                 // A standing reads the role on the thing, on its owner chain and on its members
                 // with an invite; only the target's members differ between the views.
                 let target_before = before.reads(&target);
-                let reads_raised = |n: &Tid, rd: &Reads| {
-                    raised.as_ref().is_none_or(|r| *n == target || r.contains_key(n) || rd.up.iter().any(|y| r.contains_key(y)) || rd.invites.iter().any(|(m, _)| r.contains_key(m)))
+                // only the things whose reads the raise reaches (and the target) can differ
+                let mut affected: BTreeSet<Tid> = BTreeSet::new();
+                let ns = match &raised {
+                    Some(r) => {
+                        affected.extend(ns.get(&target));
+                        affected.extend(r.keys().filter_map(|k| readers.get(k)).flatten());
+                        &affected
+                    }
+                    None => &*ns,
                 };
-                let reads = ns.iter().filter_map(|n| reads.get(n).map(|rd| (n, rd))).filter(|(n, rd)| reads_raised(n, rd));
+                let reads = ns.iter().filter_map(|n| reads.get(n).map(|rd| (n, rd)));
                 reads.map(|(n, rd)| (*n, rd.standing(&x, &best, n), if *n == target { &target_before } else { rd }.standing(&x, &best_was, n))).collect()
             };
             for (n, now, held) in pairs {
@@ -1327,6 +1340,21 @@ impl<'a> Pass<'a> {
             }
         }
         grew
+    }
+
+    /// What x's cached roles (fresh at `ts`) gain with edge (member, target) set to `restored`
+    /// (`roles_raised` over the patched view), by `Dense`.
+    fn raised_with(&mut self, x: Tid, (member, target): (Tid, Tid), restored: Edge, ts: Ts) -> Option<BTreeMap<Tid, Role>> {
+        if !(self.graph.ids.contains_key(&member) && self.graph.ids.contains_key(&target)) {
+            return None;
+        }
+        let mut d = self.roles.get(&x).filter(|r| r.fresh(ts))?.dense.clone();
+        let cur = self.edges.get(&member, &target).copied();
+        self.graph.set(&member, &target, Some(restored));
+        let r = self.graph.raise(&mut d, &member, ts);
+        self.graph.set(&member, &target, cur);
+        let (raised, _) = r?;
+        Some(raised.into_iter().filter_map(|i| Some((*self.graph.tids.get(i)?, d.get(i).copied().flatten()?))).collect())
     }
 
     /// Whether `roles(x, ts)` is cached.
