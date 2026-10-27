@@ -613,3 +613,43 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
     // a keeps edge admin through the team: no fall, nothing dropped
     assert!(inc.get(&g).unwrap().dropped().is_empty());
 }
+
+/// §5.1 step 2, §6: late writes in the middle of a history that apply nothing there (by a node
+/// with no authority at that point; on a thing before its epoch start) leave the walk as it is
+/// (`Timeline::append` judges them over the edge state at their place), equal to an evaluation
+/// from scratch.
+#[test]
+fn late_writes_applying_nothing_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (k, a, x) = (n[0], n[1], n[4]);
+    let (g, h) = (w.thing(k), w.thing(k));
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    w.set(k, h, x, edge(Read), 1, &[]);
+    for i in 0..40u64 {
+        w.set(a, g, n[2 + (i % 2) as usize], edge(if (i / 2) % 2 == 0 { Read } else { Write }), 2 + 2 * i, &[]);
+        // x writes on h (rejected: read only) and on g (rejected), early on
+        if i < 2 {
+            w.set(x, h, n[2], edge(Write), 3 + 2 * i, &[]);
+            w.set(x, g, n[3], edge(Write), 3 + 2 * i, &[]);
+        }
+    }
+    w.snapshot(k, h, &[(x, osis_perm::Edge::new(Read))], 50, &[]);
+    // late: x's writes in the middle (rejected), k's write on h before its epoch start
+    let late = [w.set(x, h, n[3], edge(Write), 41, &[]), w.set(x, g, n[2], edge(Admin), 43, &[]), w.set(k, h, n[2], edge(Write), 45, &[])];
+    let mut skip: BTreeSet<_> = late.into_iter().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    assert!(inc.get(&h).unwrap().epoch_start(&h).is_some());
+    for id in late {
+        skip.remove(&id);
+        let held = w.held_without(&skip);
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+        prev = held;
+    }
+}

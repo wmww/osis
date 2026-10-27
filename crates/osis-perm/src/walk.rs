@@ -932,36 +932,7 @@ impl<'a> Pass<'a> {
     /// How op `k` of `c` applies against the state before `c` (§5.1 step 2, §2).
     fn judge(&self, c: &MembershipCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
         let op = c.ops.get(k)?;
-        let (a, m, t) = (c.author, op.member, op.target);
-        if m == t || self.input.owners.owner_actor(&t) == Some(m) || op.edge.is_some_and(|e| !e.well_formed()) {
-            return None;
-        }
-        let view = self.view(c.ts);
-        let old = self.edges.get(&m, &t);
-        let new = op.edge.map(|e| Edge { since: None, ..e });
-        let st = view.standing(&a, best, &t);
-        // Self-removal (§2): lowering one's own edge, or an edge of a member one is admin of
-        // when that is the only authority one has (no owner-chain or edge-admin authority on
-        // the target); otherwise the write is an explicit demotion by its class there.
-        let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
-        if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
-            // A single-use redemption's self-removal is attributed like its grant (§5.1).
-            if let (true, Class::Invite(l)) = (m == a, st.class)
-                && c.ops.iter().any(|o| o.member != a)
-            {
-                return Some(Attr::By(Class::Invite(l)));
-            }
-            return Some(Attr::SelfRemoval);
-        }
-        match st.class {
-            Class::Chain | Class::Edge => Some(Attr::By(st.class)),
-            Class::Invite(l) => {
-                let free = old.is_none_or(|o| !o.alive_at(Some(c.ts)));
-                let ok = new.is_some_and(|e| e.role <= l) && free;
-                ok.then_some(Attr::By(Class::Invite(l)))
-            }
-            Class::None => None,
-        }
+        judge(&self.view(c.ts), self.edges.get(&op.member, &op.target), c, k, best)
     }
 
     fn commit(&mut self, c: &MembershipCommit) -> bool {
@@ -1068,6 +1039,40 @@ impl<'a> Pass<'a> {
     }
 }
 
+/// How op `k` of `c` applies against `view` (edges before `c`, at its `ts`), `old` the
+/// edge it writes there and `best` its author's roles (§5.1 step 2, §2).
+pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &MembershipCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
+    let op = c.ops.get(k)?;
+    let (a, m, t) = (c.author, op.member, op.target);
+    if m == t || view.owners.owner_actor(&t) == Some(m) || op.edge.is_some_and(|e| !e.well_formed()) {
+        return None;
+    }
+    let new = op.edge.map(|e| Edge { since: None, ..e });
+    let st = view.standing(&a, best, &t);
+    // Self-removal (§2): lowering one's own edge, or an edge of a member one is admin of
+    // when that is the only authority one has (no owner-chain or edge-admin authority on
+    // the target); otherwise the write is an explicit demotion by its class there.
+    let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
+    if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
+        // A single-use redemption's self-removal is attributed like its grant (§5.1).
+        if let (true, Class::Invite(l)) = (m == a, st.class)
+            && c.ops.iter().any(|o| o.member != a)
+        {
+            return Some(Attr::By(Class::Invite(l)));
+        }
+        return Some(Attr::SelfRemoval);
+    }
+    match st.class {
+        Class::Chain | Class::Edge => Some(Attr::By(st.class)),
+        Class::Invite(l) => {
+            let free = old.is_none_or(|o| !o.alive_at(Some(c.ts)));
+            let ok = new.is_some_and(|e| e.role <= l) && free;
+            ok.then_some(Attr::By(Class::Invite(l)))
+        }
+        Class::None => None,
+    }
+}
+
 /// The items of a walk in order under epoch starts `epoch`, and the index of each commit
 /// and snapshot.
 pub(crate) struct Items {
@@ -1077,23 +1082,33 @@ pub(crate) struct Items {
 }
 
 impl Items {
+    /// Where commit `c` goes in the list.
+    pub fn place(&self, c: &MembershipCommit) -> usize {
+        let k = (c.point(), 1, Tid::from_bytes([0; 15]), Tid::from_bytes([0; 15]));
+        self.list.partition_point(|a| (a.0, a.1, a.2, a.3) < k)
+    }
+
+    pub fn index(&self, id: &CommitId) -> Option<usize> {
+        self.at.get(id).copied()
+    }
+
     /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n).
     pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
         let zero = Tid::from_bytes([0; 15]);
         let mut moved = false;
         for c in new {
             let k = (c.point(), 1, zero, zero);
-            let i = self.list.partition_point(|a| (a.0, a.1, a.2, a.3) < k);
+            let i = self.place(c);
             moved |= i < self.list.len();
             self.list.insert(i, (k.0, 1, zero, zero, Item::Commit(c.clone())));
             self.at.insert(c.id, i);
         }
         if moved {
-            self.index();
+            self.reindex();
         }
     }
 
-    fn index(&mut self) {
+    fn reindex(&mut self) {
         self.at.clear();
         for (i, it) in self.list.iter().enumerate() {
             match &it.4 {
@@ -1135,7 +1150,7 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
     }
     list.sort_by_key(|a| (a.0, a.1, a.2, a.3));
     let mut out = Items { initial, list, at: BTreeMap::new() };
-    out.index();
+    out.reindex();
     out
 }
 
