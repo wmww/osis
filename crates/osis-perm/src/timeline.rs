@@ -201,7 +201,7 @@ impl Timeline {
         if !self.input.can_append(new, self.epoch_changed) {
             return Err(Box::new(self));
         }
-        let idle = self.idle(new);
+        let idle = self.idle(new, from);
         self.input.append(new);
         self.items.add(new);
         if idle {
@@ -226,9 +226,13 @@ impl Timeline {
     /// Whether every op of `new` (commits before the end of the walk) applies nothing at its
     /// place in the walk: rejected or before its target's epoch start, judged over the edge
     /// state there (§5.1 step 2), and its author already has a held write on each target no
-    /// later (falls read the earliest, `Walked::falls`). Then no state changes at any item, and
-    /// the walk with them is this one.
-    fn idle(&self, new: &[Arc<MembershipCommit>]) -> bool {
+    /// later (falls read the earliest, `Walked::falls`), and no drop was found at or after
+    /// the earliest (an earlier walk of the round, before that drop, may see one apply). Then
+    /// no state changes at any item, and the walk with them is this one.
+    fn idle(&self, new: &[Arc<MembershipCommit>], from: Point) -> bool {
+        if self.dropped.values().any(|p| *p >= from) {
+            return false;
+        }
         let marks = &self.walked.rest.marks;
         new.iter().all(|c| {
             let Some(&(_, h)) = marks.get(self.items.place(c)) else { return false };

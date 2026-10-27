@@ -653,3 +653,29 @@ fn late_writes_applying_nothing_spec_permissions_5_1() {
         prev = held;
     }
 }
+
+/// §5.1 steps 4-5 (D only grows across the walks): a late write that applies nothing in the
+/// final walk may apply in an earlier walk, before a later drop took its author's authority,
+/// and drop there; a's removal of x applies while b's grant to a stands, dropping x's grant to
+/// y, and stays dropped after k's removal of b drops that grant.
+#[test]
+fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Write};
+    let mut w = World::new();
+    let n = w.nodes(6);
+    let (k, a, b, x, y, z) = (n[0], n[1], n[2], n[3], n[4], n[5]);
+    let g = w.thing(k);
+    w.set(k, g, b, edge(Admin), 1, &[]);
+    w.set(k, g, x, edge(Admin), 1, &[]);
+    w.set(b, g, a, edge(Admin), 2, &[]);
+    w.set(x, g, y, edge(Write), 2, &[]);
+    w.set(a, g, z, edge(Write), 3, &[]);
+    w.set(k, g, b, None, 6, &[]);
+    let late = w.set(a, g, x, None, 4, &[]);
+    let prev = w.held_without(&BTreeSet::from([late]));
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let held = w.held();
+    inc.update_touched(&held, &touched(&prev, &held));
+    assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+}
