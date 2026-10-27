@@ -147,6 +147,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
     // aspect units and per-aspect records
     for (t, ak) in &aspects {
         tx.txn.drop_aspect(t, ak)?;
+        super::drop_residues(tx, t, ak)?;
         for p in [b"a/".as_slice(), records::RECEIPT, records::VALUELESS, records::PURGES] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }

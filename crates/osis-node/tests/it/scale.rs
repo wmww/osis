@@ -759,11 +759,12 @@ fn sync_membership_pass_cost() {
 // spec/crdt.md §4.8 (deaths whatever the arrival order), spec/requirements.md, Scale (no
 // operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
 // than all of them. Each late delta applied and its deaths read alone, then 5 more in one batch
-// read once (`Engine::defer_deaths`): an unbounded set (no deaths kept) against a keep-at-least one
-// (deaths replayed once per aspect per batch). `OSIS_SCALE_N` sets N (default 3000).
+// read once (`Engine::defer_deaths`), then one 5 commits late: an unbounded set (no deaths kept)
+// against a keep-at-least one (each batch replays the window its late deltas can change).
+// `OSIS_SCALE_N` sets N (default 3000).
 #[test]
 #[ignore = "tier 2"]
-fn late_delta_deaths_cost() {
+fn late_delta_deaths_cost_spec_crdt_4_8() {
     let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
     for (name, asp, key) in [("unbounded set", &TAGS, "/s/tags"), ("keep-at-least set", &KEPT, "/s/kept")] {
         let mut lp = osis_node::local_peer::LocalPeer::new(2, 41, WallMs(1_700_000_000_000)).unwrap();
@@ -811,7 +812,19 @@ fn late_delta_deaths_cost() {
         let batch = t2.elapsed();
         let t3 = Instant::now();
         add(&mut lp, 0, "z".into());
-        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {:?}", t3.elapsed());
+        let local = t3.elapsed();
+        // a late delta from the recent past: 5 commits sort after it
+        lp.advance(1);
+        let recent = add(&mut lp, 1, "recent".into());
+        lp.advance(1);
+        for i in 0..5 {
+            add(&mut lp, 0, format!("r{i}"));
+        }
+        let pks = lp.packages(1).unwrap();
+        let t4 = Instant::now();
+        lp.deliver(0, &pks.iter().find(|p| p.id == recent).unwrap().clone()).unwrap();
+        lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
+        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {local:?}; a recent late delta {:?}", t4.elapsed());
         for (k, d, c) in osis_node::costs::take() {
             println!("  {k}: {d:?} ({c})");
         }
