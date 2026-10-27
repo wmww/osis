@@ -527,3 +527,38 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tz, tz)));
 }
+
+fn map_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_core::Tid, path: Vec<osis_crdt::PathSeg>, v: Value) -> osis_core::CommitId {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut m = Mutation::new();
+    m.retention(t, &MAP, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }).unwrap();
+    m.op(t, &MAP, PathOp { path, op: Op::Set(v) }).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/crdt.md §4.8: on a kept map, B (another writer) and then C write inside A's entry. In
+// order, A's field dies at B and B's at C; a replay of every body agrees (was: a replay
+// stripped B's and C's writes as copies of A's entry, so B had no death and A's died at C).
+#[test]
+fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
+    use osis_crdt::PathSeg;
+    let mut lp = net(2, 80);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    lp.advance(10);
+    let a = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k"))], item("x", 1));
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let b = map_op(&mut lp, 1, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(2));
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    let c = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(3));
+    let k = ak("/t/map");
+    let e = &mut lp.peers[0].engine;
+    let (tb, tc) = (e.header(&b).unwrap().ts, e.header(&c).unwrap().ts);
+    let want = (e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap());
+    assert_eq!(want, (Some((tb, tb)), Some((tc, tc))));
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!((e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap()), want);
+}
