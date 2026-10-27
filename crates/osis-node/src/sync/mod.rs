@@ -425,6 +425,8 @@ impl SyncEngine {
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
         let events = engine.subscribe();
+        // keeps the changed commits from now on (`Engine::take_changed`)
+        engine.take_changed();
         let mut state = State::load(&mut engine)?;
         // deposits not answered before a restart go again
         let outbox = state.outbox.values().map(|o| local::Outgoing { label: o.label, server: o.server.clone(), blob: o.blob.clone(), wrap: o.wrap, sig: o.sig, after: 0, tries: 0 }).collect();
@@ -597,18 +599,13 @@ impl SyncEngine {
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {
         match ev {
             Event::Tick => {
-                // keep-at-most drops change no read, so no engine event says so: forget the
-                // dropped bodies' blobs and let the labels judge them again (spec/commits.md §5)
                 // the carrier of a live write goes before its body (spec/commits.md §5)
                 for (c, aspects) in self.engine.due_live_drops()? {
                     self.snapshot_first(&aspects, &c)?;
                 }
-                let due = self.engine.tick_drops()?;
-                if !due.is_empty() {
-                    self.touched.commits.extend(due.iter().copied());
-                    self.mark_dirty();
-                    self.forget_dropped(Some(&due))?;
-                }
+                // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
+                self.engine.tick()?;
+                self.engine_events()?;
                 self.timers(out)?;
                 self.serve_timers(out);
                 self.relink_lost()?;
@@ -691,27 +688,22 @@ impl SyncEngine {
         }
     }
 
-    /// Drains engine events: changes mark every open label for a pass; remote membership
-    /// commits restart `complete_pass` for the actors they touch.
+    /// Drains the engine's changes: the changed commits (`Engine::take_changed`) go to every
+    /// label's work set and mark every open label for a pass; events carry membership: roles
+    /// moved, keys, and remote membership commits restart `complete_pass` for the actors they
+    /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
-        let mut dropped: BTreeSet<osis_core::CommitId> = BTreeSet::new();
         // things whose roster or creation record changed
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         while let Ok(e) = self.events.try_recv() {
             match e {
-                crate::Event::Applied { id, origin, changed: aspects, .. } => {
+                crate::Event::Applied { id, origin, .. } => {
                     changed = true;
-                    dropped.insert(id);
                     self.placed_cache.0 = u64::MAX;
-                    self.touched.commits.insert(id);
-                    self.touched.states.extend(aspects);
                     if let Some(h) = self.engine.header(&id) {
-                        // a creation record moves the reader actors of the thing's bodies
-                        self.touched.things.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
+                        // a creation record moves the roles downstream of the thing
                         roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
-                        // its chunks may have come with it
-                        self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
                         if let Some(ls) = self.listers.as_mut() {
                             for ch in &h.chunks {
                                 ls.entry(ch.blob).or_default().insert(id);
@@ -757,24 +749,15 @@ impl SyncEngine {
                     if aspects.iter().any(|(_, a)| osis_schema::core_types::is_membership_class(a.as_str())) {
                         self.touched.keys = true;
                     }
-                    for (t, a) in &aspects {
-                        dropped.extend(self.engine.core.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
-                    }
-                    self.touched.aspects.extend(aspects);
                 }
-                // late parts: other labels holding the commit judge its bodies again
                 crate::Event::Joined { id } => {
                     changed = true;
-                    dropped.insert(id);
-                    self.touched.commits.insert(id);
                     if let Some(h) = self.engine.header(&id) {
                         if h.kind.is_membership() {
                             self.touched.keys = true;
                         }
                         // a late creation record (`note_created`)
-                        let created = h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid);
-                        self.touched.things.extend(created.clone());
-                        roots.extend(created);
+                        roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
                     }
                 }
                 crate::Event::Roster { thing } => {
@@ -798,11 +781,22 @@ impl SyncEngine {
             self.own_keys = now;
             changed = true;
         }
+        // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
+        // waiting on a linked blob), and the blobs of their dropped parts
+        let cs = self.engine.take_changed();
+        for c in &cs {
+            if let Some(h) = self.engine.header(c) {
+                self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+                self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
+            }
+        }
+        changed |= !cs.is_empty();
         if changed {
             self.mark_dirty();
             let all = self.touched.full || self.cfg.full_passes;
-            self.forget_dropped(if all { None } else { Some(&dropped) })?;
+            self.forget_dropped(if all { None } else { Some(&cs) })?;
         }
+        self.touched.commits.extend(cs);
         Ok(())
     }
 
@@ -817,9 +811,7 @@ impl SyncEngine {
                 let w = &mut lc.work;
                 w.full |= t.full;
                 w.commits.extend(t.commits.iter().chain(&carriers).copied());
-                w.aspects.extend(t.aspects.iter().cloned());
                 w.states.extend(t.states.iter().cloned());
-                w.things.extend(t.things.iter().copied());
                 w.blobs.extend(t.blobs.iter().copied());
                 w.moved.extend(t.moved.iter().copied());
                 w.actors.extend(t.actors.iter().copied());
