@@ -392,11 +392,16 @@ fn as_aspect(v: &Value) -> Result<AspectEntry, Error> {
 }
 
 pub(crate) fn as_key(v: &Value) -> Result<DeleteKey, Error> {
-    let [l, k] = as_list(v)? else { return Err(Error::Malformed("delete key arity")) };
-    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("delete level"))?;
-    let key = DeleteKey { level, key: as_bytes(k)? };
+    let key = as_key_unchecked(v)?;
     key.verifying_key()?;
     Ok(key)
+}
+
+/// `as_key` without the point check (a stored header, checked when it arrived).
+fn as_key_unchecked(v: &Value) -> Result<DeleteKey, Error> {
+    let [l, k] = as_list(v)? else { return Err(Error::Malformed("delete key arity")) };
+    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (1..=3).contains(l)).ok_or(Error::Malformed("delete level"))?;
+    Ok(DeleteKey { level, key: as_bytes(k)? })
 }
 
 fn as_chunk(v: &Value) -> Result<ChunkEntry, Error> {
@@ -439,7 +444,7 @@ impl Header {
         Ok(())
     }
 
-    fn take_position(&mut self, f: ListField, v: &Value) -> Result<(), Error> {
+    fn take_position(&mut self, f: ListField, v: &Value, stored: bool) -> Result<(), Error> {
         let inner = if f == ListField::Frontier {
             match as_opt(v)? {
                 None => return Ok(()),
@@ -452,7 +457,12 @@ impl Header {
             self.links.set(f, Some(*l));
             return Ok(());
         }
-        if osis_core::encode(inner).len() > CHUNK_THRESHOLD {
+        if stored {
+            if f == ListField::Keys {
+                self.keys = items(inner, as_key_unchecked)?;
+                return Ok(());
+            }
+        } else if osis_core::encode(inner).len() > CHUNK_THRESHOLD {
             return Err(Error::Malformed("inline list above CHUNK_THRESHOLD"));
         }
         self.set_list(f, inner)
@@ -460,6 +470,16 @@ impl Header {
 
     /// Reads a header from its value. Linked lists stay unresolved.
     pub fn from_value(v: &Value) -> Result<Header, Error> {
+        Header::from_value_as(v, false)
+    }
+
+    /// `from_value` of a header this node verified when it arrived (a stored commit record):
+    /// without the checks that cost (delete keys' points, inline list sizes); the same header.
+    pub fn from_stored_value(v: &Value) -> Result<Header, Error> {
+        Header::from_value_as(v, true)
+    }
+
+    fn from_value_as(v: &Value, stored: bool) -> Result<Header, Error> {
         let items = as_list(v)?;
         let version = as_uint(items.first().ok_or(Error::Malformed("empty header"))?)?;
         if version > FORMAT_VERSION {
@@ -504,12 +524,12 @@ impl Header {
             origins: Vec::new(),
             links: Links::default(),
         };
-        h.take_position(ListField::Aspects, aspects)?;
-        h.take_position(ListField::Chunks, chunks)?;
-        h.take_position(ListField::Purge, purge)?;
-        h.take_position(ListField::Keys, keys)?;
-        h.take_position(ListField::Frontier, frontier)?;
-        h.take_position(ListField::Origins, origins)?;
+        h.take_position(ListField::Aspects, aspects, stored)?;
+        h.take_position(ListField::Chunks, chunks, stored)?;
+        h.take_position(ListField::Purge, purge, stored)?;
+        h.take_position(ListField::Keys, keys, stored)?;
+        h.take_position(ListField::Frontier, frontier, stored)?;
+        h.take_position(ListField::Origins, origins, stored)?;
         Ok(h)
     }
 

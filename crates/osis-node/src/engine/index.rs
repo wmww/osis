@@ -251,10 +251,55 @@ impl<A: Rec, B: Rec, C: Rec, D: Rec> Rec for (A, B, C, D) {
     }
 }
 
+impl Rec for osis_perm::Point {
+    fn to(&self) -> Value {
+        Value::List(vec![self.ts.to(), self.node.to(), self.commit.to()])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let (ts, node, commit) = Rec::from(v)?;
+        Some(osis_perm::Point { ts, node, commit })
+    }
+}
+impl<T: Rec> Rec for Option<T> {
+    fn to(&self) -> Value {
+        Value::List(self.iter().map(Rec::to).collect())
+    }
+    fn from(v: &Value) -> Option<Self> {
+        match v {
+            Value::List(l) if l.is_empty() => Some(None),
+            Value::List(l) if l.len() == 1 => Some(Some(T::from(l.first()?)?)),
+            _ => None,
+        }
+    }
+}
+impl Rec for osis_perm::Edge {
+    fn to(&self) -> Value {
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to()])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(x) = v else { return None };
+        let [role, until, invite, since] = x.as_slice() else { return None };
+        let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
+        let e = osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)? };
+        // as `validity::edge_of` reads them
+        e.well_formed().then_some(e)
+    }
+}
+impl Rec for u64 {
+    fn to(&self) -> Value {
+        uint(*self)
+    }
+    fn from(v: &Value) -> Option<Self> {
+        match v {
+            Value::Int(i) => u64::try_from(*i).ok(),
+            _ => None,
+        }
+    }
+}
+
 impl Rec for crate::apply::validity::EdgeParts {
     fn to(&self) -> Value {
         use crate::apply::validity::EdgePart;
-        let opt = |x: &Option<Value>| Value::List(x.iter().cloned().collect());
         Value::List(
             self.0
                 .iter()
@@ -267,9 +312,9 @@ impl Rec for crate::apply::validity::EdgeParts {
                                 .map(|(d, k, v)| {
                                     let v = match v {
                                         None => Value::Int(0),
-                                        Some(v) => opt(v),
+                                        Some(v) => v.to(),
                                     };
-                                    Value::List(vec![records::dot_value(d), opt(k), v])
+                                    Value::List(vec![records::dot_value(d), k.to(), v])
                                 })
                                 .collect(),
                         ),
@@ -281,12 +326,6 @@ impl Rec for crate::apply::validity::EdgeParts {
     }
     fn from(v: &Value) -> Option<Self> {
         use crate::apply::validity::EdgePart;
-        let opt = |x: &Value| -> Option<Option<Value>> {
-            match x {
-                Value::List(l) if l.len() <= 1 => Some(l.first().cloned()),
-                _ => None,
-            }
-        };
         let Value::List(x) = v else { return None };
         let mut out = Vec::with_capacity(x.len());
         for p in x {
@@ -304,9 +343,9 @@ impl Rec for crate::apply::validity::EdgeParts {
                                 let [d, k, v] = e.as_slice() else { return None };
                                 let v = match v {
                                     Value::Int(0) => None,
-                                    v => Some(opt(v)?),
+                                    v => Some(Rec::from(v)?),
                                 };
-                                Some((records::dot_of(d).ok()?, opt(k)?, v))
+                                Some((records::dot_of(d).ok()?, Rec::from(k)?, v))
                             })
                             .collect::<Option<Vec<_>>>()?,
                     ),
@@ -403,6 +442,7 @@ fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
 /// The `EDGES` rows of the held membership commits; an error when one is missing or does not
 /// decode (the open then rebuilds).
 pub(crate) fn load_edges(tx: &mut Tx<'_>) -> Result<BTreeMap<CommitId, crate::apply::validity::EdgeParts>> {
+    let _s = crate::costs::span("open: edges rows");
     let t = tx.txn.index(EDGES)?;
     let lim = |n: usize| osis_core::Limits { max_depth: 2 * osis_core::format::MAX_OBJECT_DEPTH, max_bytes: n };
     let mut out = BTreeMap::new();
@@ -628,6 +668,7 @@ pub(crate) fn old_judgments(tx: &mut Tx<'_>) -> Option<OldJudgments> {
 /// derived from membership bodies.
 pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     // commit records: the head and the header only, no part decoded
+    let hs = crate::costs::span("open: headers");
     let mut metas = Vec::new();
     tx.scan(records::COMMIT, |k, v| {
         let id = CommitId(k.try_into().map_err(|_| Error::Corrupt("commit record key"))?);
@@ -639,10 +680,12 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         if osis_core::hash::hash(hb) != id.0 {
             return Err(Error::Corrupt("commit record"));
         }
-        let h = osis_commit::Header::from_value(&hv).map_err(|_| Error::Corrupt("commit record header"))?;
+        let h = osis_commit::Header::from_stored_value(&hv).map_err(|_| Error::Corrupt("commit record header"))?;
         metas.push((id, head, h));
         Ok(())
     })?;
+    drop(hs);
+    let _ms = crate::costs::span("open: metas");
     let mut rows: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     let t = tx.txn.index(PARTS)?;
     let mut from = Vec::new();
@@ -682,6 +725,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         tx.core.commits.insert(id, Meta { header: h, received: head.received, origin: head.origin, valid, dropped: head.dropped });
         tx.core.index_validity(&id);
     }
+    drop(_ms);
     for (k, v) in scan::<(Tid, Dot)>(tx, BOX_KEYS)? {
         tx.core.box_keys.insert(k, dec(&v)?);
     }
