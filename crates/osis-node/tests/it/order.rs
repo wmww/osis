@@ -462,8 +462,7 @@ fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
         let pk = &played.packs[i];
         let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-        // not roster snapshots: issues/late-roster-part-timeline.md
-        if ais.len() > 1 && b.header.kind != osis_commit::Kind::RosterSnapshot {
+        if ais.len() > 1 {
             let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
             b.parts.retain(|x| x.ai == keep);
             late.push(i);
