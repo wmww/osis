@@ -41,17 +41,20 @@ pub(crate) fn base_cmp(a: &Source, b: &Source) -> Ordering {
 /// as the sequence `(d.src, d.ctr, i)`, any other dot as `(src, ctr)`, so an embedded write sorts
 /// right after the write it embeds and before anything else above it.
 pub(crate) fn dot_cmp(a: &Dot, b: &Dot, base: &dyn Fn(&Source, &Source) -> Ordering) -> Ordering {
-    let split = |d: &Dot| -> (Dot, Option<u64>) {
-        match d.src.kind() {
-            SourceKind::Derived(x) => (x.clone(), Some(d.ctr)),
-            _ => (d.clone(), None),
-        }
-    };
     if Arc::ptr_eq(&a.src.0, &b.src.0) {
         return a.ctr.cmp(&b.ctr);
     }
-    let ((x, i), (y, j)) = (split(a), split(b));
+    let ((x, i), (y, j)) = (split_dot(a), split_dot(b));
     base(&x.src, &y.src).then(x.ctr.cmp(&y.ctr)).then(i.cmp(&j))
+}
+
+/// `(d, None)`, or for a `Derived(x)` dot `(x, Some(d.ctr))`: borrowed, so a comparison clones no
+/// source.
+fn split_dot(d: &Dot) -> (&Dot, Option<u64>) {
+    match d.src.kind() {
+        SourceKind::Derived(x) => (x, Some(d.ctr)),
+        _ => (d, None),
+    }
 }
 
 /// A shared, cheaply cloned source: a state holds a pointer per write, not 15 or 32 bytes. Equal
@@ -118,14 +121,14 @@ impl Ord for Source {
         if Arc::ptr_eq(&self.0, &o.0) {
             return Ordering::Equal;
         }
-        let split = |s: &Source| -> (Source, Option<u64>) {
+        fn split(s: &Source) -> (&Source, Option<u64>) {
             match s.kind() {
-                SourceKind::Derived(d) => (d.src.clone(), Some(d.ctr)),
-                _ => (s.clone(), None),
+                SourceKind::Derived(d) => (&d.src, Some(d.ctr)),
+                _ => (s, None),
             }
-        };
+        }
         let ((x, i), (y, j)) = (split(self), split(o));
-        base_cmp(&x, &y).then(i.cmp(&j))
+        base_cmp(x, y).then(i.cmp(&j))
     }
 }
 impl PartialOrd for Source {
