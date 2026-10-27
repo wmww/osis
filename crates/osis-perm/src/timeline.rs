@@ -5,7 +5,7 @@ use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{Edge, MembershipCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
-use osis_core::{CommitId, Role, Tid, Ts};
+use osis_core::{CommitId, CreationRecord, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -55,6 +55,8 @@ pub struct Timeline {
     /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
     /// component) is.
     pub(crate) memo: Memo,
+    /// Commits the last `append` placed without walking again.
+    pub(crate) placed: usize,
 }
 
 /// `first_held` by (node, thing, role).
@@ -153,6 +155,7 @@ impl Timeline {
             reach: out.reach,
             checkpoints,
             memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
+            placed: 0,
         }
     }
 
@@ -193,59 +196,84 @@ impl Timeline {
     }
 
     /// This timeline with membership commits `new` added (not held here, on things of this
-    /// timeline, by and for its nodes): `extend` without gathering the held set again, so its
-    /// cost follows the walk from the earliest new commit on. `Err(self)`, unchanged, when
-    /// `extend` would not hold or the inputs would change otherwise (`Input::can_append`).
-    pub fn append(mut self, new: &[Arc<MembershipCommit>]) -> Result<Timeline, Box<Timeline>> {
-        let Some(from) = new.iter().map(|c| c.point()).min() else { return Ok(self) };
-        if !self.input.can_append(new, self.epoch_changed) {
-            return Err(Box::new(self));
-        }
-        let idle = self.idle(new, from);
-        self.input.append(new);
-        self.items.add(new);
-        if idle {
-            // the walk is unchanged but for an item each that changes nothing (the state before
-            // it is the state before the next); chain certificates list held writes
-            let mut at: Vec<usize> = new.iter().filter_map(|c| self.items.index(&c.id)).collect();
-            at.sort_unstable();
-            let marks = &mut self.walked.rest.marks;
-            for i in at {
-                let m = marks.get(i).copied().unwrap_or((self.walked.rest.log.len(), self.walked.history.len()));
-                marks.insert(i, m);
-            }
-            self.memo.certs = std::sync::OnceLock::new();
+    /// timeline, by and for its nodes or nodes that reach nothing here) and the `/created` of
+    /// key actors `keys` new here (nodes `new` names, nothing else held of them): `extend`
+    /// without gathering the held set again. Each commit, in timeline order, is placed in the walk
+    /// without walking again where that is exact (`Walked::insert`: it applies nothing, or no
+    /// later item reads what it changes); from the first that is not, the walk goes on from
+    /// it. `Err(self)`, unchanged, when `extend` would not hold or the inputs would change
+    /// otherwise (`Input::can_append`).
+    pub fn append(mut self, new: &[Arc<MembershipCommit>], keys: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
+        if new.is_empty() {
             return Ok(self);
         }
-        let kept = Kept::of(&mut self);
-        let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, .. } = self;
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) });
-        Ok(Timeline::from_kept(input, out, Some(kept)))
+        if !self.input.can_append(new, self.epoch_changed) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) {
+            return Err(Box::new(self));
+        }
+        for (t, r) in keys {
+            self.input.owners.insert(*t, r);
+        }
+        let mut new = new.to_vec();
+        new.sort_by_key(|c| c.point());
+        // chain certificates list held writes
+        self.memo.certs = std::sync::OnceLock::new();
+        self.placed = 0;
+        for (j, c) in new.iter().enumerate() {
+            let p = c.point();
+            let early = c.ops.iter().all(|o| self.input.first_write.get(&(c.author, o.target)).is_some_and(|q| *q < p));
+            let mut fresh: BTreeSet<Tid> = c.ops.iter().map(|o| o.member).filter(|m| self.input.owners.owner_actor(m).is_none()).collect();
+            fresh.extend(c.ops.iter().map(|o| o.target).filter(|t| self.input.owners.is_key(t)));
+            fresh.insert(c.author);
+            fresh.retain(|t| !self.input.nodes.contains(t));
+            self.input.append(std::slice::from_ref(c));
+            let h = self.walked.rest.marks.get(self.items.place(c)).map_or(self.walked.history.len(), |m| m.1);
+            let (base, pos) = self.kept_before(h);
+            let mut at = EdgesAt::new(&base);
+            for x in self.walked.history.iter().take(h).skip(pos) {
+                at.set(x.member, x.target, x.edge);
+            }
+            match self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, &mut at, early, &fresh) {
+                walk::Placement::Idle => {
+                    self.items.add(std::slice::from_ref(c));
+                    self.placed += 1;
+                }
+                walk::Placement::Inserted(h) => {
+                    self.items.add(std::slice::from_ref(c));
+                    self.changed_from(h, p);
+                    self.placed += 1;
+                }
+                walk::Placement::Declined => {
+                    let rest = new.get(j..).unwrap_or_default();
+                    self.input.append(rest.get(1..).unwrap_or_default());
+                    self.items.add(rest);
+                    let kept = Kept::of(&mut self);
+                    let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, placed, .. } = self;
+                    let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from: p, items: Some(items) });
+                    return Ok(Timeline { placed, ..Timeline::from_kept(input, out, Some(kept)) });
+                }
+            }
+        }
+        Ok(self)
     }
 
-    /// Whether every op of `new` (commits before the end of the walk) applies nothing at its
-    /// place in the walk: rejected or before its target's epoch start, judged over the edge
-    /// state there (§5.1 step 2), and its author already has a held write on each target no
-    /// later (falls read the earliest, `Walked::falls`), and no drop was found at or after
-    /// the earliest (an earlier walk of the round, before that drop, may see one apply). Then
-    /// no state changes at any item, and the walk with them is this one.
-    fn idle(&self, new: &[Arc<MembershipCommit>], from: Point) -> bool {
-        if self.dropped.values().any(|p| *p >= from) {
-            return false;
+    /// The newest kept edge state at or before history change `h`, and its change index.
+    fn kept_before(&self, h: usize) -> (Arc<Edges>, usize) {
+        let k = (h / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
+        match self.checkpoints.get(k) {
+            Some(e) => (e.clone(), k * CHECKPOINT),
+            None => (Arc::new(self.walked.initial.clone()), 0),
         }
-        let marks = &self.walked.rest.marks;
-        new.iter().all(|c| {
-            let Some(&(_, h)) = marks.get(self.items.place(c)) else { return false };
-            let mut edges = EdgesAt::new(&self.walked.initial);
-            self.advance(&mut edges, 0, h);
-            let view = View::at(&self.input.owners, &edges, Some(c.ts));
-            let best = view.roles_from(&c.author);
-            c.ops.iter().enumerate().all(|(k, o)| {
-                let early = self.input.first_write.get(&(c.author, o.target)).is_some_and(|p| *p <= c.point());
-                let before_start = self.epoch_starts.get(&o.target).and_then(|s| self.input.snaps.get(s)).is_some_and(|s| c.point() < s.point());
-                early && (before_start || walk::judge(&view, edges.get(&o.member, &o.target), c, k, &best).is_none())
-            })
-        })
+    }
+
+    /// The history changed from change `h` on (point `p`): kept states and answers past it go.
+    fn changed_from(&mut self, h: usize, p: Point) {
+        let mut cps = std::mem::take(&mut self.checkpoints);
+        cps.truncate(h / CHECKPOINT + 1);
+        self.checkpoints = checkpoints(&self.walked, cps);
+        let fh = std::mem::take(&mut *self.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut fh = fh;
+        fh.retain(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
+        self.memo = Memo { first_held: Mutex::new(fh), ..Memo::default() };
     }
 
     /// The things `input` adds by their `/created`, with their owners: leaves the walk never
