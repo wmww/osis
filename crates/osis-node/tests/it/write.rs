@@ -559,3 +559,81 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     restart(&mut p);
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
 }
+
+// spec/crdt.md §4.2 and §5.7 (`replace` and `remove_aspect` leave the old elements as bare
+// anchors), §6, §8: a paged 10^5-char text replaced by another (its old records left bare, merged
+// into range records), then edited by index and read by range, each in a new session, agrees
+// with a plain-string model and with a whole read; after `remove_aspect` it reads absent, and a
+// new text over the twice-reset anchors edits and reads alike.
+#[test]
+fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
+    let mut p = peer(11);
+    let me = p.engine.tid();
+    let a = ak("/w/text");
+    let text = |n: u32, off: u32| -> Vec<char> { (0..n).map(|i| char::from_u32(0x1F600 + (i + off) % 64).unwrap()).collect() };
+    let mut m = Mutation::new();
+    let t = p.engine.new_thing(&mut m, me);
+    m.set(t, &TEXT_AK, &Value::Str(text(100_000, 0).into_iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let session = std::cell::Cell::new(200);
+    let restart = |p: &mut Peer| {
+        session.set(session.get() + 1);
+        p.restart(session.get()).unwrap();
+        osis_node::costs::take();
+    };
+    let pages = || osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+    let mut edits = |p: &mut Peer, model: &mut Vec<char>, what: &str| {
+        for step in 0..8 {
+            restart(p);
+            let op = if step % 3 == 2 {
+                let at = r(model.len() - 10);
+                let len = 1 + r(8);
+                model.drain(at..at + len);
+                Op::Delete { at, len }
+            } else {
+                let at = r(model.len() + 1);
+                model.splice(at..at, "ab".chars());
+                Op::Insert { at, items: vec![Value::Str("ab".into())] }
+            };
+            let mut m = Mutation::new();
+            m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
+            p.engine.commit(m).unwrap().unwrap();
+            // the first edit after the reset finds no placement (laid out by the read after it)
+            let n = pages();
+            assert!(step == 0 || n <= 4, "{what} step {step}: {n} pages loaded");
+            restart(p);
+            let lo = r(model.len() - 50);
+            assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "{what} step {step}");
+        }
+        restart(p);
+        assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())), "{what}");
+    };
+    // a replace: the old 10^5 elements bare under the new ones
+    restart(&mut p);
+    let mut model = text(100_000, 7);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    edits(&mut p, &mut model, "replace");
+    // remove_aspect: absent, then a new text over the twice-reset anchors
+    restart(&mut p);
+    let mut m = Mutation::new();
+    m.remove_aspect(t, &TEXT_AK).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    restart(&mut p);
+    assert_eq!(p.engine.get(&t, &a).unwrap(), None);
+    assert_eq!(p.engine.get_range(&t, &a, &[], 0..10).unwrap(), None);
+    restart(&mut p);
+    let mut model = text(30_000, 3);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT_AK, &Value::Str(model.iter().collect())).unwrap();
+    p.engine.commit(m).unwrap().unwrap();
+    edits(&mut p, &mut model, "after remove_aspect");
+}

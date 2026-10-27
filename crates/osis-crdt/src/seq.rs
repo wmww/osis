@@ -10,7 +10,7 @@
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::{Lin, Plan};
-use crate::seq_span::{Elems, Recs, chain_cut, cut_chains, elems_eq, last_of, nth, piece, split_at};
+use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
 use std::collections::BTreeMap;
@@ -393,7 +393,7 @@ fn join_one(s: &mut Seq, dot: Dot, de: SeqElem, e: Option<&Stamp>, ch: &mut Chan
 /// record, first cutting a creation chain that straddles `e`.
 fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
-    let cut = chain_cut(&dot, &de, e).or_else(|| if existing { s.elems.get(&dot).and_then(|se| chain_cut(&dot, se, e)) } else { None });
+    let cut = chain_cut(&dot, &de, e).or_else(|| if existing && e.is_some() { s.elems.get(&dot).and_then(|se| chain_cut(&dot, se, e)) } else { None });
     if let Some(c) = cut {
         if existing {
             split_at(&mut s.elems, &nth(&dot, c));
@@ -426,6 +426,18 @@ pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let elems = s.elems_mut();
     cut_chains(elems, e);
     elems.retain(|d, el| prune_elem(d, el, text, e, ch));
+}
+
+/// `prune_elems` for a join that raised the sequence's own reset: what it left bare is merged
+/// into one range per stretch, so the next pass places a node each. Only here: a join raising a
+/// reset is written whole (a paged state's pages laid out anew), while other prunes (`strip`,
+/// un-merge) rewrite only the pages they touch, and a merge reaching another page would leave a
+/// record spanning past its page's end.
+pub(crate) fn prune_reset(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    prune_elems(s, e, ch);
+    if e.is_some() {
+        coalesce_in(s.elems_mut());
+    }
 }
 
 /// Greatest stamp inside the elements; with `valued`, only presence-counting writes (§4.3).

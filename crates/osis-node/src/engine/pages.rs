@@ -1943,7 +1943,20 @@ mod tests {
         seq_placement_run(false, 1_000);
     }
 
+    // spec/crdt.md §4.2, §5.7 (`replace`: the old elements stay as bare anchors), §6, §8: as
+    // `seq_placement_differential_text_spec_crdt_6` over a text replaced before the edits (its
+    // old records merged into range records), with long received inserts (strips of them leave
+    // value-less runs that span pages).
+    #[test]
+    fn seq_placement_differential_after_reset_spec_crdt_6() {
+        seq_placement_run_with(true, 6_000, true);
+    }
+
     fn seq_placement_run(text: bool, n: u64) {
+        seq_placement_run_with(text, n, false)
+    }
+
+    fn seq_placement_run_with(text: bool, n: u64, reset: bool) {
         let mut rng = osis_crypto::SeededRng::from_u64(181);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_core::Ak::new("/app/seq").unwrap());
@@ -1954,6 +1967,16 @@ mod tests {
         let mut w = Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), 1);
         let mut st = create(&mut w, &view, &seq_value(text, n)).unwrap();
         let mut ctrs = [w.range().hi, 1];
+        if reset {
+            ts += 1 << 16;
+            let items = seq_items(text, n, n);
+            let v = if text { Value::Str(items.iter().map(|v| if let Value::Str(x) = v { x.as_str() } else { "" }).collect()) } else { Value::List(items) };
+            let mut b = Batch::new(&st, Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
+            b.apply(&PathOp { path: field(), op: Op::Replace(v) }, &view).unwrap();
+            let (d, range) = b.finish().unwrap();
+            ctrs[0] = range.hi;
+            st.join(d);
+        }
         let mut txn = store.transaction(&mut rng).unwrap();
         let (mut unit, i0) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
         let i0 = i0.unwrap();
@@ -1972,7 +1995,7 @@ mod tests {
         let (mut in_place, mut kept, mut fresh_item, mut rebuilt, mut cold, mut kept_placement) = (0, 0, n, 0, 0, 0);
         let idx_of = |unit: &[u8]| open(unit, &SALT).unwrap().1;
         let mut kinds = [0usize; 4];
-        for step in 0..36 {
+        for step in 0..if reset { 48 } else { 36 } {
             ts += 1 << 16;
             // the running session (its placement invalidated already, or not) or a fresh one
             let (mut f, mut idx) = match session.take() {
@@ -2037,7 +2060,7 @@ mod tests {
                 let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).map_or(0, |v| v.len()) as u64;
                 let op = match r(8) {
                     0..=2 => {
-                        let k = 1 + r(3);
+                        let k = if reset && wi == 1 && r(2) == 0 { 4000 } else { 1 + r(3) };
                         fresh_item += k;
                         Op::Insert { at: r(len + 1) as usize, items: seq_items(text, fresh_item, k) }
                     }
@@ -2104,6 +2127,17 @@ mod tests {
             }
             end_edits(&mut idx);
             session = Some((f, idx));
+            // every stored page holds whole records: none starts before its range or ends past it
+            if let Some(set) = idx_of(&unit).sets.values().find(|s| is_seq(s)) {
+                let t = table(&mut txn, &tid, &ak).unwrap();
+                for (_, v) in txn.table_range(t, &set.prefix(), Some(&set.id.saturating_add(1).to_be_bytes()), 10_000).unwrap() {
+                    let ((lo, hi), pf) = parse_page_row(&v).unwrap();
+                    for (d, span) in pf.elem_spans() {
+                        let last = Dot { src: d.src.clone(), ctr: d.ctr + span - 1 };
+                        assert!(lo.as_ref().is_none_or(|l| *l <= d) && hi.as_ref().is_none_or(|h| last < *h), "step {step}: record {d:?}+{span} outside its page {lo:?}..{hi:?}");
+                    }
+                }
+            }
             // pages hold what a snapshot carries (deleted chars dropped): compare those bytes
             if step % 6 == 5 {
                 assert!(encode(&whole(&mut txn, &unit)).unwrap() == encode(&st).unwrap(), "step {step}");

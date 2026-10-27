@@ -655,6 +655,35 @@ fn budget_big_text_spec_6() {
     let _ = v;
 }
 
+/// §4.2, §6: a received replace leaves the old records bare, merged into range records (one per
+/// stretch of dots), so the next whole pass places a node per stretch; a newer concurrent insert
+/// anchored inside the old text splits its range and still places (worked example "Reset against
+/// a newer insert").
+#[test]
+fn reset_coalesces_bare_records_spec_6() {
+    let mut a = Replica::new(1);
+    for k in 0..20u64 {
+        a.commit(k + 1, &[op(Op::Insert { at: 5 * k as usize, items: vec![s("abcde")] })], &text_view());
+    }
+    let base = a.state.clone();
+    let mut b = Replica { state: base.clone(), src: node(2), lo: 1 };
+    let (newer, src, range) = b.commit(50, &[op(Op::Insert { at: 37, items: vec![s("q")] })], &text_view()).unwrap();
+    let newer = wired(&newer, &src, range, 50);
+    let (d, src, range) = a.commit(40, &[op(Op::Replace(s("xyz")))], &text_view()).unwrap();
+    let d = wired(&d, &src, range, 40);
+    for (x, y) in [(d.clone(), newer.clone()), (newer, d)] {
+        let mut st = base.clone();
+        let _ = read_str(&st);
+        st.join(x);
+        st.join(y);
+        crate::testutil::check_lin(&st);
+        assert_eq!(read_str(&st), "xyzq");
+        let Fragment::Seq(q) = &st else { panic!() };
+        // xyz, q, and the 100 old elements as at most three ranges (q's anchor splits one)
+        assert!(q.elems().len() <= 7, "{} records", q.elems().len());
+    }
+}
+
 /// §6 (`seq_lin`): typing and deleting at random places, joined by another replica, keeps the
 /// cached placement (no whole pass) and it equals a whole pass.
 #[test]
