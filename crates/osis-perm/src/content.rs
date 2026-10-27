@@ -8,6 +8,16 @@ use crate::types::{Dots, Edge, Point};
 use osis_core::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A node's roles replayed over the history up to change `pos` (`first_held_uncached`), and
+/// the first change after which it held the replayed role on each thing (`None`: from the
+/// beginning).
+pub(crate) struct Replay {
+    pos: usize,
+    best: BTreeMap<Tid, Role>,
+    expires: Option<WallMs>,
+    first: BTreeMap<Tid, Option<Point>>,
+}
+
 /// Validity of one delta.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Validity {
@@ -92,17 +102,27 @@ impl Timeline {
     /// reach changes none of them; a wider edge raises them in place; only an edge that may
     /// have carried a role narrowing, or one expiring, searches again. Between two searches
     /// roles only fall (edges expire), so the first change after which they hold is found.
+    /// The replay is kept per (node, role) and goes on where it stopped, recording each
+    /// thing at the first change after which the node holds the role on it, so the queries
+    /// of one node replay the history once.
     fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
-        let holds = |best: &BTreeMap<Tid, Role>| best.get(thing).copied() >= Some(required);
-        let mut edges = EdgesAt::new(&self.walked.initial);
-        let (mut best, mut expires) = View::at(&self.input.owners, &edges, Some(Ts::default())).roles_expiring(x);
-        if holds(&best) {
-            return Some(None);
+        let mut replays = self.memo.replays.lock().unwrap_or_else(|e| e.into_inner());
+        let r = replays.entry((*x, required)).or_insert_with(|| {
+            let edges = EdgesAt::new(&self.walked.initial);
+            let (best, expires) = View::at(&self.input.owners, &edges, Some(Ts::default())).roles_expiring(x);
+            let first = best.iter().filter(|(_, r)| **r >= required).map(|(t, _)| (*t, None)).collect();
+            Replay { pos: 0, best, expires, first }
+        });
+        if let Some(p) = r.first.get(thing) {
+            return Some(*p);
         }
+        let mut edges = EdgesAt::new(&self.walked.initial);
         let mut pos = 0;
-        for (i, c) in self.walked.history.iter().enumerate() {
+        while let Some(c) = self.walked.history.get(r.pos) {
+            let i = r.pos;
+            r.pos += 1;
             // `best` is exact while nothing expired, else at least the roles
-            let Some(&level) = best.get(&c.member) else { continue };
+            let Some(&level) = r.best.get(&c.member) else { continue };
             let ts = c.point.ts;
             self.advance(&mut edges, pos, i);
             let old = edges.get(&c.member, &c.target).copied();
@@ -110,19 +130,31 @@ impl Timeline {
             pos = i + 1;
             let view = View::at(&self.input.owners, &edges, Some(ts));
             let gives = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts))).map(|e| level.min(e.role));
-            let (was, now, cur) = (gives(old), gives(c.edge), best.get(&c.target).copied());
-            if expires.is_some_and(|u| ts.wall_ms() >= u) || (was.is_some() && was >= cur && now < was) {
-                (best, expires) = view.roles_expiring(x);
+            let (was, now, cur) = (gives(old), gives(c.edge), r.best.get(&c.target).copied());
+            if r.expires.is_some_and(|u| ts.wall_ms() >= u) || (was.is_some() && was >= cur && now < was) {
+                (r.best, r.expires) = view.roles_expiring(x);
+                for (t, role) in &r.best {
+                    if *role >= required {
+                        r.first.entry(*t).or_insert(Some(c.point));
+                    }
+                }
             } else if now > cur {
-                let (raised, until) = view.roles_raised_expiring(&best, &[c.member]);
-                best.extend(raised);
-                expires = earliest(expires, until);
+                let (raised, until) = view.roles_raised_expiring(&r.best, &[c.member]);
+                for (t, role) in &raised {
+                    if *role >= required {
+                        r.first.entry(*t).or_insert(Some(c.point));
+                    }
+                }
+                r.best.extend(raised);
+                r.expires = earliest(r.expires, until);
             }
-            expires = earliest(expires, c.edge.and_then(|e| e.until));
-            if holds(&best) {
-                return Some(Some(c.point));
+            r.expires = earliest(r.expires, c.edge.and_then(|e| e.until));
+            if let Some(p) = r.first.get(thing) {
+                return Some(*p);
             }
         }
+        // replayed to the end: only `first` is read again
+        r.best = BTreeMap::new();
         None
     }
 

@@ -68,6 +68,8 @@ type Valid = BTreeMap<(Point, Tid, String, crate::types::Dots, Role), crate::con
 #[derive(Default)]
 pub(crate) struct Memo {
     pub first_held: Mutex<FirstHeld>,
+    /// `first_held`'s replays by (node, role), to go on with.
+    pub replays: Mutex<BTreeMap<(Tid, Role), crate::content::Replay>>,
     pub valid: Mutex<Valid>,
     /// `roles_of` at `At::END`, per node.
     pub roles_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
