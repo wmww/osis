@@ -1,6 +1,6 @@
 //! Tags the persisted index (`engine::index`) with a hash of the sources its judgments may
-//! follow from: the `src` of the node and of each `osis-*` crate in its `[dependencies]` (which
-//! include their own path dependencies), so a change that could change a judgment re-judges
+//! follow from: the `src` of the node and of every `osis-*` crate it depends on (transitively,
+//! through `[dependencies]`), so a change that could change a judgment re-judges
 //! everything once at open, and edits to other crates rebuild nothing here.
 
 use std::path::{Path, PathBuf};
@@ -23,16 +23,25 @@ fn main() {
     // Relative to the package (a build script's working dir): absolute paths in
     // rerun-if-changed would make every checkout's fingerprint differ (tools/seed-target.py).
     let crates = PathBuf::from("..");
-    println!("cargo:rerun-if-changed=Cargo.toml");
-    let manifest = std::fs::read_to_string("Cargo.toml").unwrap_or_default();
-    let deps = manifest.split("\n[").find(|s| s.starts_with("dependencies]")).unwrap_or_default();
-    let mut roots: Vec<PathBuf> = deps
-        .lines()
-        .filter_map(|l| l.strip_prefix("osis-"))
-        .map(|l| format!("osis-{}", l.split(['.', ' ', '=']).next().unwrap_or_default()))
-        .chain(["osis-node".to_owned()])
-        .map(|c| crates.join(c).join("src"))
-        .collect();
+    let mut names = vec!["osis-node".to_owned()];
+    let mut i = 0;
+    while let Some(c) = names.get(i).cloned() {
+        i += 1;
+        let manifest = crates.join(&c).join("Cargo.toml");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        let text = std::fs::read_to_string(&manifest).unwrap_or_else(|_| {
+            println!("cargo:warning=index tag: cannot read {}", manifest.display());
+            String::new()
+        });
+        let deps = text.split("\n[").find(|s| s.starts_with("dependencies]")).unwrap_or_default();
+        for l in deps.lines().filter_map(|l| l.strip_prefix("osis-")) {
+            let d = format!("osis-{}", l.split(['.', ' ', '=']).next().unwrap_or_default());
+            if !names.contains(&d) {
+                names.push(d);
+            }
+        }
+    }
+    let mut roots: Vec<PathBuf> = names.iter().map(|c| crates.join(c).join("src")).collect();
     roots.sort();
     let mut all = Vec::new();
     for r in &roots {
