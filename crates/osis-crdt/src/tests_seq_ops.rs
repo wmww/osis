@@ -1525,3 +1525,80 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
     let ai = after.iter().position(|x| x.0 == anchor).unwrap();
     assert_eq!(after[ai + 1].0.src, node(5), "the newer sibling places first");
 }
+
+/// §5.7 Ops, §6, §8 (`seq_place`): ops by index (insert, delete, move, paste; two in one commit)
+/// on a sequence held in part as a node holds a paged one (records in pages, the placement's
+/// blocks and dot-map chunks loaded on a miss and the ops run again) write what they write on
+/// the whole state, loading part of it.
+#[test]
+fn index_ops_on_partial_placement_match_whole_spec_5_7() {
+    let mut r = Rng(43);
+    let (mut runs, mut moves, mut multi, mut loaded, mut total) = (0, 0, 0, 0, 0);
+    for round in 0..80 {
+        let text = round % 2 == 0;
+        let ty = if text { Ty::Text } else { list_ty() };
+        let view = TyView(ty.clone());
+        let commits = crate::testutil::history(&mut r, std::slice::from_ref(&ty), 3, 6);
+        let mut ms = None;
+        for c in &commits {
+            if !r.chance(1, 8) {
+                mapply(&mut ms, c.delta.clone());
+            }
+        }
+        let Some(mut ms) = ms else { continue };
+        ms.prune(None);
+        let mut st = frag(&ms);
+        if r.chance(1, 3) {
+            st = rebooted(&st);
+        }
+        for k in 0..4u64 {
+            let Fragment::Seq(sq) = &st else { break };
+            let sq = sq.clone();
+            let n = full_order(&st).iter().filter(|x| x.1).count();
+            let mut mk = |r: &mut Rng| -> Op {
+                let at = r.below(n.max(1));
+                let len = 1 + r.below((n.saturating_sub(at)).clamp(1, 6));
+                match r.below(if text { 4 } else { 3 }) {
+                    0 => Op::Insert { at: r.below(n + 1), items: if text { vec![s("pq")] } else { vec![value(&random_value(r, match &ty { Ty::List(e) => e, _ => unreachable!() }, 1))] } },
+                    1 => Op::Delete { at, len },
+                    2 => {
+                        moves += 1;
+                        Op::Move { at, len, to: r.below(n.saturating_sub(len) + 1) }
+                    }
+                    _ => match crate::seq_ops::cut_dots(&st, at, len.min(n - at.min(n))) {
+                        Ok(dots) if !dots.is_empty() => Op::Paste { dots, at: r.below(n + 1) },
+                        _ => Op::Delete { at, len },
+                    },
+                }
+            };
+            let ops: Vec<Op> = (0..1 + r.below(2)).map(|_| mk(&mut r)).collect();
+            multi += usize::from(ops.len() > 1);
+            let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
+            let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
+                let mut b = Batch::new(f, w());
+                for o in &ops {
+                    b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
+                }
+                b.finish()
+            };
+            let want = run(&st);
+            let mut pg = crate::tests_seq::Pager::new(&sq, 1 + r.below(8));
+            let mut got = None;
+            for _ in 0..64 {
+                got = run(&pg.part());
+                if !pg.absorb() {
+                    break;
+                }
+            }
+            assert!(got == want, "round {round} step {k}: {ops:?}\n got {got:?}\n want {want:?}");
+            runs += 1;
+            loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
+            total += pg.whole.top().blocks.len();
+            if let Some((d, _)) = want {
+                st.join(d);
+            }
+        }
+    }
+    assert!(runs > 200 && moves > 50 && multi > 50, "{runs} runs, {moves} moves, {multi} two-op commits");
+    assert!(loaded * 3 < total * 2, "{loaded} of {total} blocks loaded");
+}
