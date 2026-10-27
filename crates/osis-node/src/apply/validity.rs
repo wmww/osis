@@ -641,6 +641,7 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     }
     let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h, ai) };
     let required = core.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
+    let _s = crate::costs::span("rejudge: delta_valid");
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
@@ -879,17 +880,24 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         tx.core.update_timelines();
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // aspects where something became valid again: re-merging needs the held bodies
+    let mut rose: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // per aspect, the parts that went invalid (their bodies say which pages to un-merge)
+    let mut fell: BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = BTreeMap::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
     let things = std::mem::take(&mut tx.core.stale_things);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
+    let gather = crate::costs::span("rejudge: gather");
     let mut ids = explicit.clone();
     if all {
         ids.extend(tx.core.commits.keys().copied());
     } else {
         ids.extend(things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()));
     }
+    drop(gather);
+    let judge = crate::costs::span("rejudge: judge");
     for id in ids {
         let Some(m) = tx.core.commits.get(&id) else { continue };
         let h = m.header.clone();
@@ -903,6 +911,11 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                     && let Some(x) = h.aspects.get(ai)
                 {
                     flipped.insert((x.tid, x.ak.clone()));
+                    if *b {
+                        rose.insert((x.tid, x.ak.clone()));
+                    } else {
+                        fell.entry((x.tid, x.ak.clone())).or_default().push((id, ai));
+                    }
                     if x.ak.as_str() == "/secrets" {
                         secrets_flips.push((id, ai, *b));
                     }
@@ -915,7 +928,9 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             tx.core.index_validity(&id);
         }
     }
+    drop(judge);
     // writes carried by snapshots without their commit, on the same things
+    let mut carried_fell: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
     for k in aspects {
         let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
@@ -923,6 +938,12 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         for c in v.iter_mut() {
             let now = carried_invalid(tx.core, &k.0, &k.1, c);
             if now != c.invalid {
+                if c.invalid.iter().any(|x| !now.contains(x)) {
+                    rose.insert(k.clone());
+                }
+                // carried writes lie anywhere: no body to find their pages by
+                fell.remove(&k);
+                carried_fell.insert(k.clone());
                 c.invalid = now;
                 any = true;
             }
@@ -940,7 +961,15 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
     if rebuild {
         for (tid, ak) in &flipped {
-            super::rebuild(tx, tid, ak)?;
+            if rose.contains(&(*tid, ak.clone())) {
+                let _s = crate::costs::span("rejudge: rebuild");
+                super::rebuild(tx, tid, ak)?;
+            } else {
+                let _s = crate::costs::span("rejudge: unmerge");
+                let k = (*tid, ak.clone());
+                let bodies = if carried_fell.contains(&k) { None } else { fell_bodies(tx, fell.get(&k).map(Vec::as_slice).unwrap_or_default())? };
+                super::atomic::unmerge_fell(tx, tid, ak, bodies)?;
+            }
             crate::retention::mark_deaths_due(tx, tid, ak)?;
         }
     }
@@ -953,6 +982,24 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         }
     }
     Ok(flipped.into_iter().collect())
+}
+
+/// The bodies of `parts` joined into one fragment (their pages are where un-merging them
+/// changes a state), or `None` when one is not held whole (dropped, partly received).
+fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fragment>> {
+    let mut out = Fragment::default();
+    let mut ch = osis_crdt::Changes::new();
+    for (id, ai) in parts {
+        let n = tx.core.commits.get(id).filter(|m| m.dropped.iter().all(|(a, _)| a != ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
+        let bodies = super::held_parts(tx, id, *ai)?;
+        if bodies.is_empty() || n != Some(bodies.len()) {
+            return Ok(None);
+        }
+        for d in &bodies {
+            out.join_into(fragment(d).clone(), None, &mut ch);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Whether `author` lowering `member`'s edge on `target` at `ts` is a self-removal
