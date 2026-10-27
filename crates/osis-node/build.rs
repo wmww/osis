@@ -21,7 +21,7 @@ fn files(p: &Path, out: &mut Vec<PathBuf>) {
 
 fn main() {
     // Relative to the package (a build script's working dir): absolute paths in
-    // rerun-if-changed would make every checkout's fingerprint differ (tools/seed-target.py).
+    // rerun-if-changed would tie the fingerprint to one checkout path.
     let crates = PathBuf::from("..");
     let mut names = vec!["osis-node".to_owned()];
     let mut i = 0;
