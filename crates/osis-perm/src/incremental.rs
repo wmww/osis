@@ -106,6 +106,8 @@ pub struct Timelines {
     restored: usize,
     /// Components the last update continued by `Timeline::append` alone.
     appended: usize,
+    /// Commits those placed without walking again.
+    placed: usize,
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -210,10 +212,31 @@ impl Timelines {
     /// Else what changed, the things of the components continued, and whether all of them
     /// were (else the general path must run: the ones continued are then cache hits).
     fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<Tid>, bool)> {
-        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>);
+        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>);
         let mut work: BTreeMap<u64, Work> = BTreeMap::new();
+        // A node new to every walk (nothing held of its own but its key actor's `/created`, in
+        // no component or alone in one) joins the one component whose new commits name it.
+        let lone = |x: &Tid| -> Option<Option<CreationRecord>> {
+            if !held.edge_commits(x).is_empty() || !held.roster_snapshots(x).is_empty() {
+                return None;
+            }
+            let rec = held.created(x);
+            if rec.as_ref().is_some_and(|r| !matches!(r, CreationRecord::KeyActor { .. }) || r.tid() != *x) {
+                return None;
+            }
+            match self.of.get(x) {
+                None => Some(rec),
+                Some(j) => self.comps.get(j).is_some_and(|c| c.inputs.0.len() == 1 && c.inputs.1.is_empty() && c.inputs.2.len() == usize::from(rec.is_some())).then_some(rec),
+            }
+        };
+        let mut joining: BTreeMap<Tid, u64> = BTreeMap::new();
+        let mut unplaced = Vec::new();
         for t in touched {
-            let i = *self.of.get(t)?;
+            let Some(&i) = self.of.get(t) else {
+                lone(t)?;
+                unplaced.push(*t);
+                continue;
+            };
             let c = self.comps.get(&i)?;
             let old = c.per.get(t);
             if c.inputs.2.contains(t) != held.created(t).is_some() {
@@ -240,9 +263,15 @@ impl Timelines {
                 } else {
                     let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.member, &o.target]));
                     for x in names {
-                        if !c.inputs.0.contains(x) {
+                        if c.inputs.0.contains(x) {
+                            continue;
+                        }
+                        // (one below the root would move it: saved walks are under the root)
+                        let rec = lone(x).filter(|_| c.inputs.0.first().is_some_and(|r| r < x))?;
+                        if *joining.entry(*x).or_insert(i) != i {
                             return None;
                         }
+                        w.2.insert(*x, rec);
                     }
                     w.0.insert(m.id, m);
                 }
@@ -252,13 +281,18 @@ impl Timelines {
             }
             w.1.insert(*t, ids);
         }
+        if unplaced.iter().any(|t| !joining.contains_key(t)) {
+            return None;
+        }
         self.appended = 0;
+        self.placed = 0;
         let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
-        for (i, (new, per)) in work {
+        for (i, (new, per, join)) in work {
             let Some(mut c) = self.comps.remove(&i) else { continue };
             if !new.is_empty() {
                 let list: Vec<Arc<MembershipCommit>> = new.values().cloned().collect();
-                match c.tl.append(&list) {
+                let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
+                match c.tl.append(&list, &keys) {
                     Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
@@ -267,10 +301,29 @@ impl Timelines {
                     }
                 }
                 self.appended += 1;
+                self.placed += c.tl.placed;
                 c.inputs.1.extend(new.keys().copied());
+                for (x, rec) in join {
+                    if let Some(j) = self.of.insert(x, i) {
+                        // its lone component
+                        self.comps.remove(&j);
+                        self.unsaved.remove(&j);
+                    }
+                    c.inputs.0.insert(x);
+                    if rec.is_some() {
+                        c.inputs.2.insert(x);
+                    }
+                }
                 changed.extended.extend(per.iter().filter(|(_, ids)| ids.iter().any(|x| new.contains_key(x))).map(|(t, _)| *t));
                 things.extend(c.inputs.0.iter().copied());
                 self.unsaved.insert(i);
+                // held under every target, touched or not
+                for m in new.values() {
+                    for o in &m.ops {
+                        c.per.entry(o.target).or_default().insert(m.id);
+                        changed.extended.insert(o.target);
+                    }
+                }
             }
             c.per.extend(per);
             self.comps.insert(i, c);
@@ -337,6 +390,7 @@ impl Timelines {
         self.changed.clear();
         self.restored = 0;
         self.appended = 0;
+        self.placed = 0;
         for (root, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
             let (tl, basis, dirty) = match cache.remove(&inputs) {
@@ -521,6 +575,11 @@ impl Timelines {
     /// held-set gathering).
     pub fn appended(&self) -> usize {
         self.appended
+    }
+
+    /// Commits the last update placed in a walk without walking again (`Timeline::append`).
+    pub fn placed(&self) -> usize {
+        self.placed
     }
 
     /// The timeline of the component holding `thing` (and every node with a path to it).
