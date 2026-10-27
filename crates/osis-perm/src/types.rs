@@ -135,6 +135,23 @@ impl MembershipCommit {
     pub fn point(&self) -> Point {
         Point { ts: self.ts, node: self.author, commit: self.id }
     }
+
+    /// Whether `o` is this record as an input to the walk: every field, frontiers by their
+    /// sizes (fixed by the commit ID, `HeldSet`), as the saved-walk tag covers it. A record can
+    /// grow under its ID (a part that arrives late).
+    pub(crate) fn same_input(&self, o: &MembershipCommit) -> bool {
+        (self.id, self.ts, self.author, self.actor, &self.ops) == (o.id, o.ts, o.author, o.actor, &o.ops) && same_frontier(&self.frontier, &o.frontier)
+    }
+}
+
+/// Frontiers as the walk's input compares them: by their sizes (`MembershipCommit::same_input`).
+fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
+    let shape = |f: &Frontier| (f.writes.len(), f.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum::<usize>(), f.commits.len());
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || shape(a) == shape(b),
+        _ => false,
+    }
 }
 
 /// A tenure ledger entry (spec/data-model.md §9 `tenure`; spec/permissions.md §6).
@@ -164,6 +181,14 @@ pub struct RosterSnapshot {
 impl RosterSnapshot {
     pub fn point(&self) -> Point {
         Point { ts: self.ts, node: self.author, commit: self.id }
+    }
+
+    /// `MembershipCommit::same_input` for a roster snapshot (its `/tenures` part may arrive
+    /// after its `/members` part).
+    pub(crate) fn same_input(&self, o: &RosterSnapshot) -> bool {
+        (self.id, self.ts, self.author, self.actor, self.thing, self.dots, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, o.dots, &o.roster)
+            && self.ledger.len() == o.ledger.len()
+            && self.ledger.iter().zip(&o.ledger).all(|(a, b)| (a.member, a.role, a.since, a.until) == (b.member, b.role, b.since, b.until) && same_frontier(&a.frontier, &b.frontier))
     }
 }
 
