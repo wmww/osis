@@ -1,0 +1,5 @@
+# Splitting osis-node so edits cascade through less of the tree
+> Summary: osis-node is 30k lines (sync 9.7k, engine 8.3k, apply 5.2k, retention 1.7k, flows 1.6k, labeling 1.1k, rotation 1.1k); an edit anywhere in it recompiles the whole crate, then the thin crates above and the test binaries (about 8 s warm). The sync layer is sans-I/O over the engine (notes/architecture.md), so `sync/`, `flows/`, `labeling/`, `rotation/` could sit in a crate above a core of `engine/`, `apply/`, `retention/`: a sync-only edit would skip the core and the two halves would build in parallel.
+> Tags: node, build
+
+Expected gain: a few seconds per edit cycle in the upper layer, a shorter clean build; nothing for the large cascades (an osis-crdt or osis-commit change rebuilds 17 crates in 10-16 s warm), which are the layering. Worth doing when someone is restructuring that code anyway, not as a build fix on its own. Measure with the baseline in notes/build.md before and after. osis-crdt (16.7k lines) has no comparable seam: its sequence, map and codec parts share types throughout.
