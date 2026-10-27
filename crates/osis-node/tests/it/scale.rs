@@ -309,8 +309,8 @@ fn text_undo_and_first_access_cost() {
     let id = e.commit(m).unwrap().unwrap();
     let insert = t1.elapsed();
     let w1 = bytes.load(Ordering::Relaxed);
-    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included; the session's first: invalidates the stored placement)", w1 - w0);
-    // later edits in the session: the placement is invalidated already
+    println!("text {n} chars: one insert {insert:?}, store writes {} B (undo buffer included; the text is loaded whole: the write keeps the stored placement)", w1 - w0);
+    // later edits in the session keep it too
     let k = 10;
     for i in 0..k {
         let mut m = Mutation::new();
@@ -334,10 +334,10 @@ fn text_undo_and_first_access_cost() {
 
 // spec/crdt.md §5.7 (ops resolve by index against the placement), §6, §8; spec/requirements.md,
 // Scale (a change costs O(change)): a 10^5-char text, each step in a new session: a read of 100
-// chars at a random index, one local insert (through the stored placement, §6.1), one received
-// insert, then two reads (the first lays the placement the join invalidated out anew); then local
-// inserts and deletes by index at random places; pages loaded and written (`state page load`,
-// `state page write` spans), placement rows written, store bytes and time.
+// chars at a random index, one local insert (through the stored placement), one received insert
+// (the join follows the stored placement), then two reads; then local inserts, deletes and moves
+// by index at random places and an undo; pages loaded and written (`state page load`, `state
+// page write` spans), placement rows written, store bytes and time.
 #[test]
 #[ignore = "tier 2"]
 fn text_range_and_edit_cost() {
@@ -384,9 +384,8 @@ fn text_range_and_edit_cost() {
     let t0 = Instant::now();
     lp.deliver(1, &pk).unwrap();
     measure("one received insert", t0);
-    // the edits invalidated the stored placement: the first read by index lays it out anew, the
-    // next reads only its pages
-    for name in ["read of 100 chars after edits (lays out the placement)", "next read of 100 chars"] {
+    // the edits kept the stored placement: reads load only their pages
+    for name in ["read of 100 chars after edits", "next read of 100 chars"] {
         lp.peers[1].restart(44).unwrap();
         osis_node::costs::take();
         let t0 = Instant::now();
@@ -401,8 +400,9 @@ fn text_range_and_edit_cost() {
         want.insert_str(*i, x);
     }
     assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Str(want)));
-    // local inserts and deletes by index at random places, each in a new session (the typing hot
-    // path): pages loaded, placement rows written, store bytes written
+    // local inserts, deletes and moves by index at random places, each in a new session (the
+    // typing hot path), then an undo of the last: pages loaded, placement rows written, store
+    // bytes written
     let (mut e, _, bytes, reopen) = engine_reopenable(8);
     let me = e.tid();
     let mut m = Mutation::new();
@@ -410,17 +410,25 @@ fn text_range_and_edit_cost() {
     m.set(t, &TEXT, &Value::Str(text.clone())).unwrap();
     e.commit(m).unwrap().unwrap();
     let mut want: Vec<char> = text.chars().collect();
-    for step in 0..8 {
+    let mut last = None;
+    for step in 0..9 {
         drop(e);
         e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
         osis_node::costs::take();
         let w0 = bytes.load(Ordering::Relaxed);
         let t0 = Instant::now();
         let r = osis_crypto::RngCore::next_u64(&mut rng) as usize;
-        let (name, op) = if step % 2 == 0 {
+        let before = want.clone();
+        let (name, op) = if step % 3 == 0 {
             let at = r % want.len();
             want.splice(at..at, "XYZ".chars());
             ("insert of 3 chars", Op::Insert { at, items: vec![Value::Str("XYZ".into())] })
+        } else if step % 3 == 2 {
+            let at = r % (want.len() - 4);
+            let moved: Vec<char> = want.drain(at..at + 4).collect();
+            let to = (r / 7) % (want.len() + 1);
+            want.splice(to..to, moved);
+            ("move of 4 chars", Op::Move { at, len: 4, to })
         } else {
             let at = r % (want.len() - 5);
             want.drain(at..at + 5);
@@ -428,14 +436,30 @@ fn text_range_and_edit_cost() {
         };
         let mut m = Mutation::new();
         m.op(t, &TEXT, PathOp { path: vec![], op }).unwrap();
-        e.commit(m).unwrap().unwrap();
+        last = Some((e.commit(m).unwrap().unwrap(), before));
         let c = osis_node::costs::take();
         let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
         println!("text {n} chars, new session: local {name} {:?}, {} pages loaded, {} pages and {} placement rows written, store writes {} B", t0.elapsed(), count("state page load"), count("state page write"), count("placement block write") + count("placement row write"), bytes.load(Ordering::Relaxed) - w0);
     }
+    let (id, before) = last.unwrap();
     drop(e);
     let mut e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
-    assert_eq!(e.get(&t, &a).unwrap(), Some(Value::Str(want.into_iter().collect())));
+    osis_node::costs::take();
+    let (w0, t0) = (bytes.load(Ordering::Relaxed), Instant::now());
+    e.undo(&id).unwrap().unwrap();
+    let c = osis_node::costs::take();
+    let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    println!("text {n} chars, new session: undo of the last {:?}, {} pages loaded, {} placement rows written, store writes {} B", t0.elapsed(), count("state page load"), count("placement block write") + count("placement row write"), bytes.load(Ordering::Relaxed) - w0);
+    drop(e);
+    let mut e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
+    osis_node::costs::take();
+    let t0 = Instant::now();
+    let got = e.get_range(&t, &a, &[], 500..600).unwrap();
+    let c = osis_node::costs::take();
+    let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
+    println!("text {n} chars, new session: read of 100 chars after them {:?}, {} pages loaded", t0.elapsed(), count("state page load"));
+    assert_eq!(got, Some(Value::Str(before[500..600].iter().collect())));
+    assert_eq!(e.get(&t, &a).unwrap(), Some(Value::Str(before.into_iter().collect())));
 }
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node

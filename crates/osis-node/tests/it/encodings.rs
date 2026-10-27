@@ -240,10 +240,10 @@ fn range_delta_rewrites_its_pages_spec_crdt_8() {
 }
 
 // spec/crdt.md §5.7 (Read: the visible elements in placement order), §6, §8: a read by index
-// range of a paged list (its placement kept with its pages; invalidated by the edits, laid out
-// anew by the first read) and of a small text, in new sessions, after a concurrent writer's
-// insert and a move: what the whole read holds there, clamped to the length; absent or not a
-// sequence reads `None`.
+// range of a paged list (its placement kept with its pages, and through the edits) and of a
+// small text, in new sessions, after a concurrent writer's insert and a move: what the whole
+// read holds there, clamped to the length, loading a few pages; absent or not a sequence reads
+// `None`.
 #[test]
 fn range_reads_by_index_spec_crdt_5_7() {
     let mut lp = net(2, 23);
@@ -268,12 +268,12 @@ fn range_reads_by_index_spec_crdt_5_7() {
         let Some(Value::List(all)) = lp.peers[p].engine.get(&t, &ak("/t/list")).unwrap() else { panic!() };
         assert_eq!(all.len(), 2501);
         assert!(all.contains(&s("from b")));
-        // the edits invalidated the stored placement: the first read by index lays it out anew
+        // the edits kept the stored placement: no read lays it out anew
         lp.peers[p].restart(59).unwrap();
         osis_node::costs::take();
         assert_eq!(lp.peers[p].engine.get_range(&t, &ak("/t/list"), &[], 0..2).unwrap(), Some(Value::List(all[0..2].to_vec())));
         let loads = osis_node::costs::take().iter().find(|x| x.0 == "state page load").map_or(0, |x| x.2);
-        assert!(loads >= 6, "the rebuild loads the whole list: {loads} pages");
+        assert!((1..=3).contains(&loads), "kept through the edits: {loads} pages");
         for r in [1195..1210, 1490..1510, 0..3, 2495..2600] {
             // a new session: nothing loaded
             lp.peers[p].restart(60 + r.start as u64).unwrap();

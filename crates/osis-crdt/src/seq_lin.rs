@@ -369,6 +369,11 @@ impl Placement {
         self.shift.get(b).copied().unwrap_or(0)
     }
 
+    /// Placed nodes.
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
     /// Visible nodes.
     pub(crate) fn shown(&self) -> usize {
         self.shown

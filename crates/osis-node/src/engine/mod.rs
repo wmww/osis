@@ -565,21 +565,20 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Resolves a local insert or delete by index into a paged sequence through its stored
-    /// placement (`pages::place_op`), loading only what it needs; `None`: load whole instead.
-    pub fn place_op(&mut self, tid: &Tid, ak: &Ak, op: &osis_crdt::PathOp, ts: osis_core::Ts) -> Result<Option<pages::Placed>> {
+    /// Prepares ops by index into paged sequences to run on the pages loaded, through their
+    /// stored placements (`pages::attach_ops`); `false`: load whole instead.
+    pub fn attach_ops(&mut self, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp]) -> Result<bool> {
         self.load_lazy(tid, ak)?;
         if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
-            return Ok(None);
+            return Ok(false);
         }
-        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::place_op(txn, tid, ak, idx, f, op, ts))?.flatten())
+        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops))? == Some(true))
     }
 
-    /// Forgets the edits `place_op` noted on `(tid, ak)`.
-    pub fn end_edits(&mut self, tid: &Tid, ak: &Ak) {
-        if let Some(idx) = self.core.pages.get_mut(&(*tid, ak.clone())) {
-            pages::end_edits(idx);
-        }
+    /// Loads what ops run on the pages loaded missed (`pages::absorb`): `Some(true)` run them
+    /// again, `Some(false)` nothing missed, `None` load whole.
+    pub fn absorb(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::absorb(txn, tid, ak, idx, f))?.flatten())
     }
 
     /// The visible elements `r` (by index, clamped) of the sequence at `path` (op path segments):
