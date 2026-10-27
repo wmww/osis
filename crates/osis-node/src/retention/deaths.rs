@@ -34,20 +34,89 @@ pub(crate) enum Due {
 
 /// The last deaths of an aspect's held bounded bodies with one, by last death, so a window
 /// finds the bodies dying after a late `ts` without reading every record (`Core::lasts`).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Lasts {
     by_last: BTreeSet<(Ts, Ts, CommitId)>,
     of: HashMap<CommitId, (Ts, Ts)>,
 }
 
 impl Lasts {
-    fn set(&mut self, c: CommitId, ts: Ts, last: Option<Ts>) {
-        if let Some((t, l)) = self.of.remove(&c) {
+    /// Sets `c`'s entry (`None`: no last death); its previous one, as `(ts, last)`.
+    fn set(&mut self, c: CommitId, ts: Ts, last: Option<Ts>) -> Option<(Ts, Ts)> {
+        let old = self.of.remove(&c);
+        if let Some((t, l)) = old {
             self.by_last.remove(&(l, t, c));
         }
         if let Some(l) = last {
             self.of.insert(c, (ts, l));
             self.by_last.insert((l, ts, c));
+        }
+        old
+    }
+}
+
+/// `Lasts` per aspect where loaded, journaled: a failed transaction undoes its own changes
+/// (notes/node.md Rollback) and the rest stays loaded.
+#[derive(Debug, Default)]
+pub(crate) struct LastsIndex {
+    map: HashMap<(Tid, Ak), Lasts>,
+    log: Vec<LastsUndo>,
+}
+
+#[derive(Debug)]
+enum LastsUndo {
+    Loaded((Tid, Ak)),
+    Set((Tid, Ak), CommitId, Option<(Ts, Ts)>),
+    Removed((Tid, Ak), Lasts),
+}
+
+impl LastsIndex {
+    pub fn get(&self, k: &(Tid, Ak)) -> Option<&Lasts> {
+        self.map.get(k)
+    }
+    fn load(&mut self, k: (Tid, Ak), l: Lasts) {
+        if let Some(old) = self.map.insert(k.clone(), l) {
+            self.log.push(LastsUndo::Removed(k.clone(), old));
+        }
+        self.log.push(LastsUndo::Loaded(k));
+    }
+    fn set(&mut self, k: &(Tid, Ak), c: CommitId, ts: Ts, last: Option<Ts>) {
+        if let Some(l) = self.map.get_mut(k) {
+            let old = l.set(c, ts, last);
+            self.log.push(LastsUndo::Set(k.clone(), c, old));
+        }
+    }
+    fn remove(&mut self, k: &(Tid, Ak)) {
+        if let Some(old) = self.map.remove(k) {
+            self.log.push(LastsUndo::Removed(k.clone(), old));
+        }
+    }
+    /// The aspects loaded (tests).
+    #[cfg(test)]
+    pub fn keys(&self) -> Vec<(Tid, Ak)> {
+        self.map.keys().cloned().collect()
+    }
+}
+
+impl crate::engine::journal::Journaled for LastsIndex {
+    fn commit(&mut self) {
+        self.log.clear();
+    }
+    fn rollback(&mut self) {
+        while let Some(u) = self.log.pop() {
+            match u {
+                LastsUndo::Loaded(k) => {
+                    self.map.remove(&k);
+                }
+                LastsUndo::Set(k, c, old) => {
+                    if let Some(l) = self.map.get_mut(&k) {
+                        l.set(c, old.map_or(Ts::default(), |x| x.0), old.map(|x| x.1));
+                    }
+                }
+                LastsUndo::Removed(k, l) => {
+                    self.map.insert(k, l);
+                }
+            }
         }
     }
 }
@@ -55,24 +124,28 @@ impl Lasts {
 /// Keeps `Core::lasts` of `(tid, ak)` (where loaded) after `c`'s record changed.
 pub(crate) fn note_last(core: &mut Core, tid: &Tid, ak: &Ak, c: &CommitId, last: Option<Ts>) {
     let Some(ts) = core.commits.get(c).map(|m| m.header.ts) else { return };
-    if let Some(l) = core.lasts.get_mut(&(*tid, ak.clone())) {
-        l.set(*c, ts, last);
+    core.lasts.set(&(*tid, ak.clone()), *c, ts, last);
+}
+
+/// `Lasts` of `(tid, ak)` from the death records.
+pub(crate) fn load_lasts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Lasts> {
+    let mut l = Lasts::default();
+    let held: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
+    for (ts, c) in held {
+        let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
+        l.set(c, ts, death_of(tx, tid, ak, &c, ai)?.map(|d| d.last));
     }
+    Ok(l)
 }
 
 /// `Core::lasts` of `(tid, ak)`, loaded from the records once per session.
 fn lasts<'a>(tx: &'a mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<&'a Lasts> {
     let k = (*tid, ak.clone());
-    if !tx.core.lasts.contains_key(&k) {
-        let mut l = Lasts::default();
-        let held: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flatten().copied().collect();
-        for (ts, c) in held {
-            let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
-            l.set(c, ts, death_of(tx, tid, ak, &c, ai)?.map(|d| d.last));
-        }
-        tx.core.lasts.insert(k.clone(), l);
+    if tx.core.lasts.get(&k).is_none() {
+        let l = load_lasts(tx, tid, ak)?;
+        tx.core.lasts.load(k.clone(), l);
     }
-    Ok(tx.core.lasts.entry(k).or_default())
+    tx.core.lasts.get(&k).ok_or(crate::error::Error::Corrupt("lasts"))
 }
 
 /// Below this many bodies before the last late delta, a window reads their records instead of
@@ -113,10 +186,9 @@ fn next_bounded(core: &Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> Optio
 /// A commit just indexed (`apply::index_commit`): the first held bounded body of its aspects.
 pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &Header) {
     for a in h.aspects.iter().filter(|a| bounded(a)) {
-        if let Some(f) = core.first_bounded.get_mut(&(a.tid, a.ak.clone()))
-            && f.is_none_or(|f| (h.ts, *id) < f)
-        {
-            *f = Some((h.ts, *id));
+        let k = (a.tid, a.ak.clone());
+        if core.first_bounded.get(&k).is_some_and(|f| f.is_none_or(|f| (h.ts, *id) < f)) {
+            core.first_bounded.insert(k, Some((h.ts, *id)));
         }
     }
 }
@@ -472,7 +544,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
     // bodies at or before a late delta with a death after the first one
     let before: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
-    let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN && !tx.core.lasts.contains_key(&k) {
+    let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN && tx.core.lasts.get(&k).is_none() {
         // few bodies before: their records, without loading the index
         let mut v = Vec::new();
         for (ts, c) in before {
