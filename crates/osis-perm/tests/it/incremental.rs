@@ -820,6 +820,59 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
     }
 }
 
+/// §5.1 steps 2-4: late writes placed in a history of many kept edge states: near its start,
+/// at its end, forty between the same two kept states (one ts, both authors), several in one
+/// update; then one that supersedes a placed write and a removal of their author, which walk
+/// again from kept states the placements moved. Each equals an evaluation from scratch.
+#[test]
+fn late_writes_across_kept_states_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(56);
+    let (k, a, b) = (n[0], n[1], n[2]);
+    let g = w.thing(k);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    w.set(k, g, b, edge(Admin), 1, &[]);
+    for i in 0..160u64 {
+        let e = match i % 4 {
+            0 => None,
+            1 => edge(Read),
+            _ => edge(Write),
+        };
+        w.set(if i % 2 == 0 { a } else { b }, g, n[3 + (i % 3) as usize], e, 10 + 2 * i, &[]);
+    }
+    // (batch, late write, placed without a walk)
+    let mut late = vec![(0, w.set(k, g, n[6], edge(Read), 2, &[]), true), (1, w.set(a, g, n[7], edge(Write), 400, &[]), true)];
+    for j in 0..40 {
+        late.push((2 + j / 3, w.set([a, b][j % 2], g, n[8 + j], edge(Read), 201 + 2 * (j % 2) as u64, &[]), true));
+    }
+    late.push((20, w.set(b, g, n[6], None, 51, &[]), false));
+    late.push((21, w.set(k, g, a, None, 199, &[]), false));
+    let mut skip: BTreeSet<_> = late.iter().map(|l| l.1).collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    let watch = [a, n[3], n[6], n[7], n[9], n[47]];
+    let mut i = 0;
+    while i < late.len() {
+        let batch: Vec<_> = late.iter().skip(i).take_while(|l| l.0 == late[i].0).collect();
+        i += batch.len();
+        for l in &batch {
+            skip.remove(&l.1);
+        }
+        let held = w.held_without(&skip);
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        let want = batch.iter().take_while(|l| l.2).count();
+        assert_eq!(inc.placed(), want, "batch {}", batch[0].0);
+        if batch[0].0 % 5 == 0 || batch[0].0 > 14 {
+            assert!(check(&held, &inc, &watch).is_none(), "batch {}: {:?}", batch[0].0, check(&held, &inc, &watch));
+        }
+        prev = held;
+    }
+}
+
 /// §5.1: a member new to the group (a key actor whose `/created` alone is held, or no record
 /// at all) granted late joins the group's walk by `Timelines::append` (a node no earlier write
 /// names reaches nothing before it), not by an evaluation from scratch, as does one whose
