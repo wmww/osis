@@ -52,6 +52,9 @@ struct PageSet {
     place: Place,
     /// Its block list's group rows as stored (`write_place` writes those that change).
     groups: Vec<Vec<u8>>,
+    /// A change of the sequence may be under way (`ensure_touch`, until `write_touched`): the
+    /// stored placement may no longer be the records' (`place_whole` leaves it).
+    pending: bool,
 }
 
 impl PageSet {
@@ -282,7 +285,7 @@ fn open_tagged(unit_state: &[u8], salt: &[u8; 32], tag: i64) -> Result<(Fragment
         let enc = u64::try_from(*enc).ok().and_then(Encoding::from_id).ok_or_else(bad)?;
         let s = steps(&path);
         idx.paths.insert(&s);
-        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new() });
+        idx.sets.insert(s, PageSet { id: u32::try_from(*id).map_err(|_| bad())?, salt: *salt, path, enc, loaded: BTreeMap::new(), whole: false, place: Place::Unread, groups: Vec::new(), pending: false });
     }
     Ok((f, idx))
 }
@@ -474,6 +477,7 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Pag
     for (p, dots) in &touch.elems {
         let Some(set) = idx.sets.get_mut(p) else { return Ok(false) };
         if is_seq(set) {
+            set.pending = true;
             if set.whole {
                 continue;
             }
@@ -502,7 +506,7 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
     let _s = crate::costs::span("placement prefetch");
     let at = steps(&set.path);
     // about one whole pass's work at most, then the join drops the placement
-    let budget = 2 * pl.len().max(1024);
+    let budget = pl.len().max(1024);
     let mut work = 0;
     for _ in 0..PREFETCH {
         pl.cover(cover_of(set));
@@ -1109,12 +1113,11 @@ fn clear_placement(txn: &mut Transaction<'_>, pt: Table, set: &PageSet, shred: S
 fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet, f: &mut Fragment) -> Result<()> {
     let _s = crate::costs::span("placement whole");
     let at = steps(&set.path);
-    let mut p = match held(txn, tid, ak, set)? {
-        Some(p) => p,
-        None => {
-            attach(f, set, None);
-            return Ok(());
-        }
+    let held = if set.pending { None } else { held(txn, tid, ak, set)? };
+    let Some(mut p) = held else {
+        // a whole pass of the records as they are (the next write writes it whole)
+        attach(f, set, None);
+        return Ok(());
     };
     let (bs, cs) = p.stubs();
     let ok = match txn.table(tid, ak, PLACE_TABLE)? {
@@ -1336,7 +1339,7 @@ pub fn write_full(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, f: Option<&Frag
     }
     for (i, p) in paged.into_iter().enumerate() {
         let c = f.at_steps(&p).ok_or(Error::Corrupt("state collection"))?;
-        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false, place: Place::Missing, groups: Vec::new() };
+        let mut set = PageSet { id: u32::try_from(i).map_err(|_| Error::Corrupt("state sets"))?, salt: *salt, path: keyed(f, &p), enc: c.encoding(), loaded: BTreeMap::new(), whole: false, place: Place::Missing, groups: Vec::new(), pending: false };
         write_set(txn, t, kt, &mut set, c, &idx.nested(&p))?;
         if is_seq(&set) {
             write_placement(txn, tid, ak, &mut set, c, Shred::No)?;
@@ -1458,6 +1461,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             if !kept {
                 invalidate_placement(txn, tid, ak, set, shred)?;
             }
+            set.pending = false;
         }
     }
     if !touch.skeleton {
@@ -2369,6 +2373,10 @@ mod tests {
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        // the stored placement, loaded whole, is the sequence's: what its writes follow
+        let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+        let Place::Held(p) = &set.place else { panic!("placement read") };
+        assert!(!p.is_partial() && f.at(&field()).unwrap().seq_place_cached().unwrap().diff(p) == Some(Default::default()), "attached as stored");
         let mut orng = osis_crypto::SeededRng::from_u64(193);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         for step in 0..30u64 {
@@ -2412,6 +2420,21 @@ mod tests {
         let (mut f, mut idx) = open(&unit, &SALT).unwrap();
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         assert_eq!(f.read(), st.read());
+        // a join held in part whose pages do not fit is written whole (`set_state_touched`):
+        // the placement written is the joined records', not the one stored before the join
+        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(200 << 16).unwrap(), me.clone(), ctr));
+        b.apply(&PathOp { path: field(), op: Op::Insert { at: 7, items: seq_items(true, 99, 3) } }, &view).unwrap();
+        let (delta, _) = b.finish().unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), true, &SALT).unwrap();
+        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+        let t = touch_of(&delta, Some(&idx)).unwrap();
+        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+        f.join(delta.clone());
+        st.join(delta);
+        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+        let (_, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+        let set = i.unwrap().sets.into_values().find(is_seq).unwrap();
+        assert!(stored_place(&mut txn, &tid, &ak, &set).unwrap().order() == place_whole_pass(&st).order(), "written whole after the join");
     }
 
     /// The number of pages of `set` in the store.
