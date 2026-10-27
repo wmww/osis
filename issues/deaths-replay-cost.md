@@ -1,11 +1,13 @@
-# Deaths replay costs the aspect's history per batch with a late delta
-> Summary: On an aspect with a relative keep bound (every `/members`, any keep-at-least or keep-at-most content aspect), a batch holding a delta out of `(ts, ID)` order, a snapshot or a validity flip re-joins every held body and the whole state once (`retention::settle_due`; batched per node-sync step by `Engine::defer_deaths`): O(aspect history) per such batch, against spec/requirements.md Scale.
+# Deaths replays left O(aspect history)
+> Summary: A late writer delta replays only the window it can change (`retention/deaths.rs` `window`), but snapshots or imports at or after the window, a residue-less dropped body in it, and validity flips still replay every held body and the whole state; the first window per aspect per session loads every held body's death record.
 > Tags: node, retention, performance
 
-Batched (one replay per marked aspect per transaction, or per node-sync step): a sync step of many late deltas costs one replay, so an out-of-order `/members` history is no longer O(n²). Left: each sync pass with a late delta on a bounded aspect pays one replay.
+Repro: `cargo test --release --workspace --test it scale::late_delta_deaths_cost -- --ignored --nocapture` (`OSIS_SCALE_N`), alone after `free -g`.
 
-Measured (`cargo test --release --workspace --test it scale::late_delta_deaths_cost -- --ignored --nocapture`, `OSIS_SCALE_N` sets N; a set of N one-element commits, late deltas by another writer older than all of them): N = 3000: unbounded 2-3 ms per late delta, keep-at-least 115-165 ms each, 123-173 ms for 5 in one batch. N = 10^4: unbounded 2-6 ms, keep-at-least 380 ms each and for the batch; of that, reading and decrypting the held bodies 285 ms (about 29 µs each), joins 16 ms, the state 8 ms. Concurrent writers make about half the received deltas late, so a bounded aspect of 10^4 held commits costs about 0.4 s per sync pass that brings a late change.
+Measured (N = 10^4, release): a late delta 380 -> 6 ms, 5 in a batch 380 -> 15 ms, one 5 commits late 2 ms (110 ms the first time in a session: `Lasts` loads); notes/node.md, Deaths.
 
-Before: only keep-at-most aspects paid, joining the delta with the bodies under a pending keep-at-most timer (few) plus a scan of every timer record.
-
-Fix direction: skip reading bodies a late delta cannot change: a body whose last death is at or before the late delta's `ts` is final, but the replay still needs the state as of that position to judge later bodies (per-write deaths would give it; issues/deaths-dropped-superseder.md has the same root). Or keep decoded bodies of bounded aspects cached between passes (memory: the aspect's history).
+Left:
+- Whole replay (O(held bodies + residues + state)): any validity flip on a bounded aspect, a snapshot or import arriving, a late delta when a snapshot sorts at or after the window's start (every late delta older than the aspect's last compaction), or a dropped body in the window without a residue (common on keep-at-most aspects; cheap there, few bodies held).
+- `Lasts` loads every held bounded body's death record once per aspect per session (about 11 µs each), and stays in memory (O(held bounded bodies)); a persisted index by last death would avoid both.
+- `window` scans the commits after its start in memory for snapshots and imports (O(bodies after it)).
+- The window itself spans from the first changed body to its latest death: a late delta superseding a write that lived long (a map key written once and overwritten much later) replays every body in between.
