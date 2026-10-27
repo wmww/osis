@@ -55,10 +55,12 @@ indexing_slicing = "deny"
 
 [profile.dev]
 debug = "line-tables-only"
+opt-level = 1
 
 # Dependencies only (workspace crates stay at dev opt-level): crypto and hashing in debug are slow.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 # osis-crypto instantiates the generic AEAD, hash and curve code: optimized like a dependency.
 [profile.dev.package.osis-crypto]

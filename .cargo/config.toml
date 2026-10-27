@@ -1,17 +1,12 @@
 # One artifact set per checkout: never pass CARGO_INCREMENTAL, RUSTFLAGS or CARGO_TARGET_DIR per
 # command (notes/testing.md, Build hygiene).
-[build]
-incremental = false
 
 # Networking code (QUIC, iroh, LAN, relay): the one feature set its tier-2 tests and lints use.
+# Dev profile like every other per-branch command: no release set outside explicit benches.
 [alias]
-test-net = "test --release --workspace --features osis/lan,osis-node/quic,osis-node/relay"
-clippy-net = "clippy --release --workspace --all-targets --features osis/lan,osis-node/quic,osis-node/relay"
+test-net = "test --workspace --features osis/lan,osis-node/quic,osis-node/relay"
+clippy-net = "clippy --workspace --all-targets --features osis/lan,osis-node/quic,osis-node/relay"
 
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"
-
-# Optional fast linker: enable locally if installed, never required.
-# [target.x86_64-unknown-linux-gnu]
-# rustflags = ["-C", "link-arg=-fuse-ld=mold"]

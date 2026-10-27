@@ -5,5 +5,5 @@
 set -e
 dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; m=json.load(sys.stdin); print(m.get("build_directory") or m["target_directory"])')
 set -- --also "clippy --workspace --all-targets -- -D warnings" --also "clippy-net -- -D warnings" "$@"
-ls "$dir"/release/deps/libiroh_relay-*.rlib >/dev/null 2>&1 && set -- --also "test-net --no-run" "$@"
+ls "$dir"/debug/deps/libiroh_relay-*.rlib >/dev/null 2>&1 && set -- --also "test-net --no-run" "$@"
 exec python3 "$(dirname "$0")/sweep-target.py" "$@"
