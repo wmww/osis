@@ -1,6 +1,8 @@
 # Keep-at-most drops before a validity flip depend on order
 > Summary: A body under keep at most dropped when its write was killed stays dropped if the killer (or the body's own write) later turns invalid, while a node that judged it invalid first never drops it: nodes holding the same commits then differ in what they hold (spec/requirements.md Decentralization).
-> Tags: retention, node
+> Tags: retention, node, owner-call
+
+The decision (user terms): an erased keep-at-most body cannot come back, so either every node waits before erasing while an offline admin could still invalidate the killer (erasure is then not prompt), or the spec states that nodes may differ in what they hold here. Recommendation: accept and state it in spec/commits.md §5 (the data is erased, never revealed; the difference is only how long one node keeps it).
 
 Repro: the order harness with keep-at-most writes by members (order.rs restricts ops 17-20 to the owner because of this); shrunk: `vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, member: 2, at: 3, to_read: false }]` (seed 1053), and seed 1024 `vec![Write { by: 0, t: 7, op: 18, k: 0, v: 9 }, Edge { by: 0, t: 0, member: 2, role: Some(Read) }, Write { by: 2, t: 4, op: 18, k: 2, v: 4 }]`.
 
