@@ -142,6 +142,13 @@ impl SeqPlace {
     pub fn diff(&self, old: &SeqPlace) -> Option<PlaceDiff> {
         self.0.diff(&old.0)
     }
+    /// Placed nodes, hidden ones included.
+    pub fn len(&self) -> usize {
+        self.0.p.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// Visible elements.
     pub fn shown(&self) -> usize {
         self.0.p.shown()
