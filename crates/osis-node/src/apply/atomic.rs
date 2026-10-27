@@ -240,6 +240,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
                 join_into_state(tx, &a.tid, &a.ak, f.clone())?;
                 unmerge_fell(tx, &a.tid, &a.ak, Some(f))?;
+                // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
+                crate::retention::mark_if_bounded(tx, &a.tid, &a.ak)?;
                 changed.insert((a.tid, a.ak.clone()));
                 touched.whole(&a.tid, &a.ak);
             }
