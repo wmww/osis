@@ -1602,3 +1602,132 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     assert!(runs > 200 && moves > 50 && multi > 50, "{runs} runs, {moves} moves, {multi} two-op commits");
     assert!(loaded * 3 < total * 2, "{loaded} of {total} blocks loaded");
 }
+
+/// §5.7 Ops, §6.1, §8 (`seq_place`): larger random histories than
+/// `index_ops_on_partial_placement_match_whole_spec_5_7` (many blocks), ops by index whose
+/// commit ts is often below stamps already at their anchor (clock skew, a carried write), piles
+/// of concurrent inserts from many writers at one index (more siblings than a block), and the
+/// joins of held-back commits and of those piles: on a sequence held in part, ops write what
+/// they write on the whole state, and a followed join is a whole pass (`partial_follow`).
+#[test]
+fn partial_placement_skew_piles_and_joins_spec_6_1() {
+    let mut r = Rng(977);
+    let (mut runs, mut low, mut piles, mut joins, mut followed) = (0, 0, 0, 0, 0);
+    for round in 0..48 {
+        let text = round % 2 == 0;
+        let ty = if text { Ty::Text } else { list_ty() };
+        let view = TyView(ty.clone());
+        let commits = crate::testutil::history(&mut r, std::slice::from_ref(&ty), 4, 12);
+        let (mut ms, mut held) = (None, Vec::new());
+        for c in &commits {
+            if r.chance(1, 6) {
+                held.push(c.delta.clone());
+            } else {
+                mapply(&mut ms, c.delta.clone());
+            }
+        }
+        let Some(mut ms) = ms else { continue };
+        ms.prune(None);
+        let mut st = frag(&ms);
+        if r.chance(1, 3) {
+            st = rebooted(&st);
+        }
+        let item = |r: &mut Rng| if text { s("xy") } else { value(&random_value(r, match &ty { Ty::List(e) => e, _ => unreachable!() }, 1)) };
+        let mut join_check = |st: &mut Fragment, d: Fragment, r: &mut Rng, joins: &mut usize, followed: &mut usize| {
+            if let (Fragment::Seq(sq), Fragment::Seq(ds)) = (&*st, &d) {
+                *joins += 1;
+                *followed += usize::from(crate::tests_seq::partial_follow(sq, ds, 1 + r.below(6)).is_some());
+            }
+            st.join(d);
+        };
+        for k in 0..6u64 {
+            let Fragment::Seq(sq) = &st else { break };
+            let sq = sq.clone();
+            let n = full_order(&st).iter().filter(|x| x.1).count();
+            // half the time a skewed clock below the history's stamps (inserts only: a move or
+            // delete below the stamps it overwrites breaks §2.2's clock rule, which `Batch` checks)
+            let skew = r.chance(1, 2);
+            low += usize::from(skew);
+            // above the sequence's reset, which would prune what the commit writes
+            let floor = st.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
+            let t = if skew { floor + 1 + r.below(100) as u64 } else { 200 + k };
+            let pin = r.below(n + 1);
+            let ops: Vec<Op> = (0..1 + r.below(3))
+                .map(|_| {
+                    let at = r.below(n.max(1));
+                    let len = 1 + r.below((n.saturating_sub(at)).clamp(1, 12));
+                    match if skew { 0 } else { r.below(5) } {
+                        0 | 1 => Op::Insert { at: pin, items: vec![item(&mut r)] },
+                        2 => Op::Delete { at, len },
+                        _ => Op::Move { at, len, to: r.below(n.saturating_sub(len) + 1) },
+                    }
+                })
+                .collect();
+            let w = || Writer::new(ts(t << 16), node(20 + k as u8), 1);
+            let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
+                let mut b = Batch::new(f, w());
+                for o in &ops {
+                    b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).ok()?;
+                }
+                b.finish()
+            };
+            let want = run(&st);
+            let mut pg = crate::tests_seq::Pager::new(&sq, 1 + r.below(6));
+            let mut got = None;
+            for _ in 0..64 {
+                got = run(&pg.part());
+                if !pg.absorb() {
+                    break;
+                }
+            }
+            if got != want {
+                let f = pg.part();
+                let mut b = Batch::new(&f, w());
+                for o in &ops {
+                    eprintln!("op {o:?} -> {:?}", b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).map(|_| ()));
+                    eprintln!("misses {:?}", pg.p.misses());
+                }
+                eprintln!("finish none? {:?}", b.finish().is_none());
+                for m in 1..=ops.len() {
+                    let r2 = |f: &Fragment| { let mut b = Batch::new(f, w()); for o in &ops[..m] { if b.apply(&PathOp { path: Vec::new(), op: o.clone() }, &view).is_err() { return None } } b.finish() };
+                    eprintln!("prefix {m}: equal {}", r2(&st) == r2(&f));
+                }
+                let mut b = Batch::new(&st, w());
+                b.apply(&PathOp { path: Vec::new(), op: ops[0].clone() }, &view).unwrap();
+                let v1 = b.view();
+                b.apply(&PathOp { path: Vec::new(), op: ops[1].clone() }, &view).unwrap();
+                let v2 = b.view();
+                eprintln!("whole vis after op1 {} after op2 {}", full_order(&v1).iter().filter(|x| x.1).count(), full_order(&v2).iter().filter(|x| x.1).count());
+                eprintln!("n {n} part-loaded pages {:?} stubs {:?}", pg.loaded, pg.p.stubs());
+            }
+            assert!(got == want, "round {round} step {k} ts {t}: {ops:?}\n got {got:?}\n want {want:?}");
+            runs += 1;
+            if let Some((d, _)) = want {
+                join_check(&mut st, d, &mut r, &mut joins, &mut followed);
+            }
+            // a pile: writers at one index of this state, each unaware of the others
+            if r.chance(1, 3) {
+                piles += 1;
+                let base = st.clone();
+                let n = full_order(&base).iter().filter(|x| x.1).count();
+                let at = r.below(n + 1);
+                let mut ds = Vec::new();
+                for j in 0..12u64 {
+                    let floor = base.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
+                    let t = if r.chance(1, 2) { floor + 1 + r.below(300) as u64 } else { 400 + j };
+                    let mut b = Batch::new(&base, Writer::new(ts((t << 16) + j), node(40 + j as u8 + 12 * (k as u8 % 4)), 1 + 100 * k));
+                    b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at, items: vec![item(&mut r)] } }, &view).unwrap();
+                    ds.extend(b.finish().map(|x| x.0));
+                }
+                for d in ds {
+                    join_check(&mut st, d, &mut r, &mut joins, &mut followed);
+                }
+            }
+        }
+        for d in held {
+            join_check(&mut st, frag(&d), &mut r, &mut joins, &mut followed);
+        }
+    }
+    assert!(runs > 200 && low > 80 && piles > 40, "{runs} runs, {low} skewed, {piles} piles");
+    assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
+}

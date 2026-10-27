@@ -59,11 +59,15 @@ pub struct Seq {
     /// use, kept up by joins that add elements, move them or change flags and content, dropped
     /// by any other change of `elems`. Not part of equality.
     lin: OnceLock<Arc<Lin>>,
+    /// Set while the records are held in part (a placement held in part attached, kept when the
+    /// placement is dropped): record lookups outside the pages loaded, and a whole pass over the
+    /// records, are misses (`seq_lin::Partial`). Not part of equality.
+    part: Option<Arc<Partial>>,
 }
 
 impl Clone for Seq {
     fn clone(&self) -> Seq {
-        Seq { text: self.text, meta: self.meta.clone(), elems: self.elems.clone(), lin: self.lin.clone() }
+        Seq { text: self.text, meta: self.meta.clone(), elems: self.elems.clone(), lin: self.lin.clone(), part: self.part.clone() }
     }
 }
 
@@ -85,7 +89,7 @@ impl Seq {
         Seq::new(text, Meta::default(), BTreeMap::new())
     }
     pub(crate) fn new(text: bool, meta: Meta, elems: Elems) -> Seq {
-        Seq { text, meta, elems, lin: OnceLock::new() }
+        Seq { text, meta, elems, lin: OnceLock::new(), part: None }
     }
     pub fn encoding(&self) -> Encoding {
         if self.text { Encoding::Text } else { Encoding::List }
@@ -122,6 +126,11 @@ impl Seq {
         if let Some(l) = self.lin.get() {
             return l.clone();
         }
+        // over records held in part a whole pass is wrong: a miss (of every record unless what
+        // else was missed may let the next run follow instead)
+        if let Some(p) = &self.part {
+            p.whole_pass();
+        }
         let l = Arc::new(Lin::build(&self.elems, self.text));
         if self.elems.len() >= LIN_MIN {
             let _ = self.lin.set(l.clone());
@@ -135,17 +144,18 @@ impl Seq {
     /// Caches `l` as the placement (`None`: drops it).
     pub(crate) fn set_lin(&mut self, l: Option<Arc<Lin>>) {
         self.lin = OnceLock::new();
+        self.part = l.as_ref().and_then(|l| l.partial().cloned());
         if let Some(l) = l {
             let _ = self.lin.set(l);
         }
     }
     /// The handle a placement held in part notes its misses in.
     fn part(&self) -> Option<Arc<Partial>> {
-        self.lin.get().and_then(|l| l.partial().cloned())
+        self.part.clone()
     }
     /// Whether the record lookup of `d` is outside the pages loaded (a miss noted).
     fn uncovered(&self, d: &Dot) -> bool {
-        self.lin.get().and_then(|l| l.partial()).is_some_and(|p| !p.covers(d, d))
+        self.part.as_ref().is_some_and(|p| !p.covers(d, d))
     }
     /// Whether a cached placement is held and equals a whole pass (tests).
     #[cfg(test)]
@@ -562,18 +572,15 @@ pub(crate) fn has_written(s: &Seq) -> bool {
             || e.deleted.is_some()
             || matches!(&e.content, SeqContent::Frag(f) if f.present() || f.reset().is_some())
     });
-    match s.lin.get().filter(|l| l.partial().is_some()) {
-        Some(l) if !any => {
-            if l.p.shown() > 0 {
-                return true;
-            }
-            if let Some(p) = l.partial() {
-                p.all();
-            }
-            false
-        }
-        _ => any,
+    if any {
+        return true;
     }
+    let Some(p) = &s.part else { return false };
+    if s.lin.get().is_some_and(|l| l.p.shown() > 0) {
+        return true;
+    }
+    p.all();
+    false
 }
 
 /// Whether any record exists (emptiness, §4.2).

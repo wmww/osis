@@ -127,6 +127,16 @@ impl Partial {
             m.all = true;
         })
     }
+    /// Notes a whole pass over the records held: void; a look at every record unless blocks,
+    /// chunks or records were missed (loading those may let the next run follow instead).
+    pub(crate) fn whole_pass(&self) {
+        self.with(|m| {
+            m.count += 1;
+            if m.blocks.is_empty() && m.chunks.is_empty() && m.recs.is_empty() {
+                m.all = true;
+            }
+        })
+    }
     pub(crate) fn count(&self) -> usize {
         self.with(|m| m.count)
     }
