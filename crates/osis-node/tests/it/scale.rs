@@ -897,3 +897,83 @@ fn validity_flip_cost_spec_permissions_5_2() {
         println!("  {k}: {d:?} ({c})");
     }
 }
+
+/// Sets key `k` of map aspect `asp` of `t` to `v` at node `n`, one commit.
+fn put_key(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, k: &str, v: &str) -> osis_core::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, asp, PathOp { path: vec![PathSeg::Key(net::s(k))], op: Op::Set(net::s(v)) }).unwrap();
+    net.engine(n).commit(m).unwrap().unwrap()
+}
+
+// spec/sync.md §6, §7; spec/commits.md §5; spec/requirements.md, Scale: a change to one body of
+// a big aspect judges O(change), not the aspect. N one-key commits on one thing (`OSIS_SCALE_N`,
+// default 10^3) at one server, a writer and a reader: (1) under keep at most (every body live,
+// waiting for its timed delete) one more key, then one overwriting a key (kills one body); (2)
+// under an expiry, an older commit expiring alone; (3) N things in the group, one write (the
+// closure taken once per pass). The passes' (passes, full, bodies, entries) at both nodes.
+#[test]
+#[ignore = "tier 2"]
+fn sync_aspect_pass_cost() {
+    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000);
+    let d = |x: osis_node::sync::PassStats, y: osis_node::sync::PassStats| (y.passes - x.passes, y.full - x.full, y.bodies - x.bodies, y.entries - x.entries);
+    let mut net = net::Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Read)], &[sv]);
+    let t = net.item(a, g, g, "t");
+    let u = net.item(a, g, g, "u");
+    // expires 30 min before the N below
+    put_key(&mut net, a, u, &net::BRIEFMAP, "first", "v");
+    net.run();
+    net.advance(1_800_000);
+    let t0 = Instant::now();
+    for i in 0..n {
+        put_key(&mut net, a, t, &net::SHORTMAP, &format!("k{i}"), "v");
+        put_key(&mut net, a, u, &net::BRIEFMAP, &format!("k{i}"), "v");
+    }
+    net.run();
+    let fill = t0.elapsed();
+    net.advance(61_000);
+    let stats = |net: &mut net::Net| (net.sync(a).pass_stats(), net.sync(b).pass_stats());
+    let s0 = stats(&mut net);
+    let t1 = Instant::now();
+    put_key(&mut net, a, t, &net::SHORTMAP, "new", "v");
+    net.run();
+    let one = t1.elapsed();
+    let s1 = stats(&mut net);
+    net.advance(1_000);
+    let s2 = stats(&mut net);
+    let t2 = Instant::now();
+    put_key(&mut net, a, t, &net::SHORTMAP, "k0", "w");
+    net.run();
+    let kill = t2.elapsed();
+    let s3 = stats(&mut net);
+    println!("keep-at-most map of {n} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting one {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
+    // the expiring map: its first commit expires alone, the N stay
+    let s4 = stats(&mut net);
+    let t3 = Instant::now();
+    net.advance(1_800_000);
+    let exp = t3.elapsed();
+    let s5 = stats(&mut net);
+    println!("expiring map of {n} live commits: an older one expiring {exp:?} (in a 30 min tick), writer {:?} reader {:?}", d(s4.0, s5.0), d(s4.1, s5.1));
+    // a big closure
+    let e = net.engine(a);
+    let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    let mut m = Mutation::new();
+    for _ in 0..n {
+        let x = e.new_thing(&mut m, g);
+        items.items.insert(x);
+    }
+    m.set(g, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap();
+    net.run();
+    net.advance(61_000);
+    let s6 = stats(&mut net);
+    let t4 = Instant::now();
+    net.write(a, t, "one more");
+    net.run();
+    let w = t4.elapsed();
+    let s7 = stats(&mut net);
+    println!("closure of {n} things: one write {w:?}, writer {:?} reader {:?}", d(s6.0, s7.0), d(s6.1, s7.1));
+}

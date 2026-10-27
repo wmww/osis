@@ -875,11 +875,13 @@ mod tests {
         assert!(e.take_changed().is_empty());
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(e.take_changed().contains(&c), "applied");
+        assert!(e.take_changed().commits.contains(&c), "applied");
         e.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
         let got = e.take_changed();
-        assert!(got.contains(&c) && got.contains(&first), "every commit on the flipped aspect");
+        assert!(got.commits.contains(&c), "the flipped commit");
+        assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");
+        assert!(got.aspects.contains(&(t, ak.clone())), "the flipped aspect's state");
         e.drop_body(&first, &t, &ak).unwrap();
-        assert!(e.take_changed().contains(&first), "dropped");
+        assert!(e.take_changed().commits.contains(&first), "dropped");
     }
 }

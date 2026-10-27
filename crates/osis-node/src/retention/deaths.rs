@@ -312,6 +312,8 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
             let (body, _) = body_class(tx.core, &h, &c, ai);
             let n = tx.txn.note_death(tid, ak, &body, d.at)?;
             note_last(tx.core, tid, ak, &c, Some(n.last));
+            // node-sync judges the bodies a write killed again (bounds, liveness)
+            tx.core.mark_changed(c);
             bodies.insert((c, ai));
         }
     }
@@ -509,8 +511,13 @@ fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, u
 fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: Option<(Ts, Ts)>) -> Result<()> {
     let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let (body, _) = body_class(tx.core, &h, c, ai);
-    tx.txn.set_death(tid, ak, &body, d.map(|(first, last)| osis_store::Deaths { first, last }))?;
-    note_last(tx.core, tid, ak, c, d.map(|x| x.1));
+    let d = d.map(|(first, last)| osis_store::Deaths { first, last });
+    // node-sync judges again only the bodies whose deaths moved
+    if tx.core.changed.is_some() && tx.txn.death(tid, ak, &body)? != d {
+        tx.core.mark_changed(*c);
+    }
+    tx.txn.set_death(tid, ak, &body, d)?;
+    note_last(tx.core, tid, ak, c, d.map(|x| x.last));
     Ok(())
 }
 

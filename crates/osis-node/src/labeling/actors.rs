@@ -92,10 +92,9 @@ impl Engine {
     }
 
     /// The things of a group's closure: the group and every thing whose `/groups` holds it.
-    pub fn closure(&self, g: &Tid) -> BTreeSet<Tid> {
-        let mut out = self.core.group_items(g);
-        out.insert(*g);
-        out
+    /// The same `Arc` while it does not change (`Groups::closures`).
+    pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
+        self.core.groups.closure(g)
     }
 
     /// Things with a `/label` held.

@@ -1016,11 +1016,13 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         }
         m.valid = now;
         tx.core.index_validity(&id);
+        tx.core.mark_changed(id);
     }
     drop(judge);
     // writes carried by snapshots without their commit, on the same things
     let mut carried_fell: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
+    let mut snaps: BTreeSet<CommitId> = BTreeSet::new();
     for k in aspects {
         let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
         let mut any = false;
@@ -1035,11 +1037,15 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                 carried_fell.insert(k.clone());
                 c.invalid = now;
                 any = true;
+                snaps.insert(c.snap);
             }
         }
         if any {
             tx.core.carried.insert(k.clone(), v);
             flipped.insert(k);
+        }
+        for c in std::mem::take(&mut snaps) {
+            tx.core.mark_changed(c);
         }
     }
     // what was not re-judged has not changed

@@ -2,9 +2,9 @@
 //! (cycles allowed), contain the thing. Kept incrementally: a `/group` change recomputes only the
 //! changed group and the groups above it (O(their reach)), never every group.
 
-use super::Core;
 use osis_core::Tid;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A `/group` definition: (items, subgroups).
 pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
@@ -18,8 +18,10 @@ pub(crate) struct Groups {
     parents: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Thing -> groups containing it, transitively (`/groups`).
     pub of: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Group -> things it contains, transitively (its closure without itself).
-    pub items: BTreeMap<Tid, BTreeSet<Tid>>,
+    /// Group -> its closure: itself and the things it contains, transitively (groups that
+    /// contain something). The same `Arc` while the closure does not change, so node-sync
+    /// reuses what it derived from it (`Arc::ptr_eq`).
+    pub closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Definitions replaced by the running transaction (`Journaled`).
     log: Vec<(Tid, Option<Def>)>,
 }
@@ -54,25 +56,41 @@ impl Groups {
         seen
     }
 
-    fn unlist(&mut self, a: &Tid) {
-        for x in self.items.remove(a).unwrap_or_default() {
-            if let Some(s) = self.of.get_mut(&x) {
+    /// Removes `a`'s closure and what derives from it; the closure, if any.
+    fn unlist(&mut self, a: &Tid) -> Option<Arc<BTreeSet<Tid>>> {
+        let old = self.closures.remove(a)?;
+        // `a` itself is in `of[a]` only when `a` reaches itself: removing it is right either way
+        for x in old.iter() {
+            if let Some(s) = self.of.get_mut(x) {
                 s.remove(a);
                 if s.is_empty() {
-                    self.of.remove(&x);
+                    self.of.remove(x);
                 }
             }
         }
+        Some(old)
     }
 
-    fn list(&mut self, a: &Tid) {
+    /// Lists `a`'s closure, keeping `old` (its closure before) when it is unchanged.
+    fn list(&mut self, a: &Tid, old: Option<Arc<BTreeSet<Tid>>>) {
         let r = self.reach(a);
         for x in &r {
             self.of.entry(*x).or_default().insert(*a);
         }
         if !r.is_empty() {
-            self.items.insert(*a, r);
+            let mut c = r;
+            c.insert(*a);
+            let c = match old {
+                Some(o) if *o == c => o,
+                _ => Arc::new(c),
+            };
+            self.closures.insert(*a, c);
         }
+    }
+
+    /// The closure of `g`: itself and every thing it contains.
+    pub fn closure(&self, g: &Tid) -> Arc<BTreeSet<Tid>> {
+        self.closures.get(g).cloned().unwrap_or_else(|| Arc::new(BTreeSet::from([*g])))
     }
 
     /// Sets (or with `None` removes) the definition of group `g` and updates what derives from it.
@@ -86,8 +104,11 @@ impl Groups {
 
     fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
         let above = self.above(&g);
+        let mut old = BTreeMap::new();
         for a in &above {
-            self.unlist(a);
+            if let Some(c) = self.unlist(a) {
+                old.insert(*a, c);
+            }
         }
         if let Some((_, subs)) = self.defs.remove(&g) {
             for s in subs {
@@ -106,7 +127,7 @@ impl Groups {
             self.defs.insert(g, d);
         }
         for a in &above {
-            self.list(a);
+            self.list(a, old.remove(a));
         }
     }
 
@@ -130,10 +151,10 @@ impl Groups {
     /// Derives everything from the definitions: O(sum of each group's reach).
     pub fn rebuild(&mut self) {
         self.of.clear();
-        self.items.clear();
+        self.closures.clear();
         let gs: Vec<Tid> = self.defs.keys().copied().collect();
         for g in gs {
-            self.list(&g);
+            self.list(&g, None);
         }
     }
 }
@@ -149,12 +170,7 @@ impl super::journal::Journaled for Groups {
     }
 }
 
-impl Core {
-    /// The things of group `g`'s closure without `g` itself.
-    pub(crate) fn group_items(&self, g: &Tid) -> BTreeSet<Tid> {
-        self.groups.items.get(g).cloned().unwrap_or_default()
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -209,7 +225,12 @@ mod tests {
                     inv.entry(*a).or_default().insert(*x);
                 }
             }
-            assert_eq!(g.items, inv);
+            for (a, c) in &g.closures {
+                let mut want = inv.remove(a).unwrap_or_default();
+                want.insert(*a);
+                assert_eq!(**c, want);
+            }
+            assert!(inv.is_empty());
         }
     }
 }
