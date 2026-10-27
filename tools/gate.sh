@@ -3,16 +3,20 @@
 # build dir (artifacts are fresh right after the gate, so the sweep's own liveness build compiles
 # nothing and only stale artifacts go). Usage: tools/gate.sh [--sweep-seeds N]   (from the repo root)
 # The sim sweep (dev profile, the tests' artifacts) runs with 30 seeds when the branch touches
-# osis-node, osis-perm, osis-commit, osis-crdt or the simulator since its merge base with main
-# (always on main itself); --sweep-seeds N forces N seeds, 0 skips it.
+# the simulator, a crate it depends on (all but osis-cli, osis-std, osis-bench) or Cargo.toml/lock
+# since its merge base with main (always on main itself); --sweep-seeds N forces N seeds, 0 skips.
 set -e
 seeds=
-[ "$1" = "--sweep-seeds" ] && seeds=$2
+case "$1" in
+  "") ;;
+  --sweep-seeds) case "$2" in ''|*[!0-9]*) echo "usage: $0 [--sweep-seeds N]" >&2; exit 2;; esac; seeds=$2 ;;
+  *) echo "usage: $0 [--sweep-seeds N]" >&2; exit 2 ;;
+esac
 if [ -z "$seeds" ]; then
   seeds=30
   base=$(git merge-base HEAD main 2>/dev/null || true)
   if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- \
-      crates/osis-node crates/osis-perm crates/osis-commit crates/osis-crdt sim; then
+      Cargo.toml Cargo.lock sim crates ':!crates/osis-cli' ':!crates/osis-std' ':!crates/osis-bench'; then
     seeds=0
   fi
 fi
