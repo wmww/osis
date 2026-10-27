@@ -190,6 +190,8 @@ pub struct PassStats {
     /// Bodies judged for upload, entries judged for deletion.
     pub bodies: u64,
     pub entries: u64,
+    /// Walks of a changed closure (`set_syncing` of its things).
+    pub closures: u64,
 }
 
 /// One label on one connection.
@@ -355,6 +357,8 @@ pub struct SyncEngine {
     pub(crate) covered_judged: BTreeSet<(osis_core::CommitId, osis_core::CommitId, Tid, osis_core::Ak)>,
     /// What passes did so far (`pass_stats`).
     pub(crate) stats: PassStats,
+    /// Each group's closure as last walked (`sync_closure`).
+    pub(crate) synced_closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
     /// The commits whose headers list each chunk blob (`dropped_chunks`; built on first use,
@@ -479,6 +483,7 @@ impl SyncEngine {
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
+            synced_closures: BTreeMap::new(),
             touched: work::Touched::default(),
             own_keys: BTreeSet::new(),
             listers: None,
@@ -569,6 +574,12 @@ impl SyncEngine {
         for e in [r.err(), settled.err()].into_iter().flatten() {
             self.diag(format!("sync: {e}"));
         }
+        // what the passes' replays marked: judged by the next pass
+        if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
+            && let Err(e) = self.engine_events()
+        {
+            self.diag(format!("sync: {e}"));
+        }
         // to the open labels' work sets now: with none (offline, LAN or local labels only) the
         // changes go (a label opened later judges everything)
         self.spread_touches();
@@ -643,6 +654,8 @@ impl SyncEngine {
                 self.lost(conn);
             }
         }
+        // the step's deaths replays before its passes: they mark the bodies whose deaths moved
+        self.engine.settle_deaths()?;
         self.engine_events()?;
         if std::mem::take(&mut self.members_moved) {
             self.members_changed(out);
@@ -784,14 +797,17 @@ impl SyncEngine {
         }
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
-        let cs = self.engine.take_changed();
-        for c in &cs {
+        let ch = self.engine.take_changed();
+        for c in &ch.commits {
             if let Some(h) = self.engine.header(c) {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                 self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
             }
         }
-        changed |= !cs.is_empty();
+        changed |= !ch.is_empty();
+        self.touched.states.extend(ch.aspects.iter().cloned());
+        self.touched.whole.extend(ch.aspects);
+        let cs = ch.commits;
         if changed {
             self.mark_dirty();
             let all = self.touched.full || self.cfg.full_passes;
@@ -813,6 +829,7 @@ impl SyncEngine {
                 w.full |= t.full;
                 w.commits.extend(t.commits.iter().chain(&carriers).copied());
                 w.states.extend(t.states.iter().cloned());
+                w.whole.extend(t.whole.iter().cloned());
                 w.blobs.extend(t.blobs.iter().copied());
                 w.moved.extend(t.moved.iter().copied());
                 w.actors.extend(t.actors.iter().copied());

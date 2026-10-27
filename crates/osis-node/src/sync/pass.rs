@@ -81,6 +81,18 @@ enum Fate {
     Delete(Why, osis_label::DeleteItem),
 }
 
+/// What a keep-at-most body before its timed delete waits on (`keep_at_most_due`), its aspect.
+enum AtMost {
+    /// No write died: only a death (it marks the body) or another change of the aspect's state
+    /// (`Work::at_most`) changes its bound or liveness.
+    Live(Tid, Ak),
+    /// A write died: any write may also drop the dots it still holds (`Work::waits`).
+    Dead(Tid, Ak),
+}
+
+/// A timed delete due: the entry and its time (`keep_at_most_due`).
+type TimedDue = Option<(Entry, u64)>;
+
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
@@ -136,11 +148,7 @@ impl SyncEngine {
         // the group's closure, taken once for the pass; atomic apply waits for its deltas
         // (spec/commits.md §4)
         let ctx = self.engine.body_ctx(&g);
-        for t in &ctx.closure {
-            if !self.engine.core.syncing.contains(t) {
-                self.engine.set_syncing(*t, true)?;
-            }
-        }
+        self.sync_closure(&g, &ctx.closure)?;
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
@@ -155,6 +163,22 @@ impl SyncEngine {
             lc.work = w;
         }
         r
+    }
+
+    /// Atomic apply waits for the deltas of every thing of `g`'s closure (spec/commits.md §4):
+    /// walked only when the closure changed since the last time (`Groups::closures`).
+    fn sync_closure(&mut self, g: &Tid, closure: &std::sync::Arc<BTreeSet<Tid>>) -> Result<()> {
+        if self.synced_closures.get(g).is_some_and(|c| super::work::same_closure(c, closure)) {
+            return Ok(());
+        }
+        self.stats.closures += 1;
+        for t in closure.iter() {
+            if !self.engine.core.syncing.contains(t) {
+                self.engine.set_syncing(*t, true)?;
+            }
+        }
+        self.synced_closures.insert(*g, closure.clone());
+        Ok(())
     }
 
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
@@ -372,6 +396,9 @@ impl SyncEngine {
         for (k, cs) in left.waits {
             w.waits.entry(k).or_default().extend(cs);
         }
+        for (k, cs) in left.at_most {
+            w.at_most.entry(k).or_default().extend(cs);
+        }
         for (b, cs) in left.links {
             w.links.entry(b).or_default().extend(cs);
         }
@@ -458,11 +485,8 @@ impl SyncEngine {
         if !read_ok || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
             return Ok(());
         }
-        for t in self.engine.closure(&g) {
-            if !self.engine.core.syncing.contains(&t) {
-                self.engine.set_syncing(t, true)?;
-            }
-        }
+        let closure = self.engine.closure(&g);
+        self.sync_closure(&g, &closure)?;
         // served by nobody else: judged whole each time (no work sets)
         let mut w = Work::idle(true);
         self.rebuild(&g, &l, &mut w);
@@ -762,19 +786,21 @@ impl SyncEngine {
     /// A body under a relative keep-at-most with a known bound and no live write, held by entry
     /// `id` under `l` (spec/commits.md §5): its entry and bound, for a timed delete. A body with
     /// a live write gets none: it goes at the next compaction or its bound, carried then
-    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect.
-    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(Entry, u64)>> {
+    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect. `None`: not
+    /// under a relative keep-at-most; else what the body waits on and, when due, entry and bound.
+    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(AtMost, TimedDue)>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
         if a.retention.at_most.rel.is_none() {
             return Ok(None);
         }
+        let (tid, ak) = (a.tid, a.ak.clone());
         // deaths and bound first: liveness costs a look through the state (cached per aspect)
-        let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { return Ok(None) };
-        if self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
-            return Ok(None);
+        let Some(t) = self.engine.body_keep(&b.commit, &tid, &ak)?.at_most else { return Ok(Some((AtMost::Live(tid, ak), None))) };
+        if self.engine.body_live(&b.commit, &tid, &ak).unwrap_or(true) {
+            return Ok(Some((AtMost::Dead(tid, ak), None)));
         }
-        Ok(self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))
+        Ok(Some((AtMost::Dead(tid, ak), self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))))
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
@@ -1951,11 +1977,15 @@ impl SyncEngine {
                 left.commits.insert(b.commit);
                 continue;
             }
-            // judged again when a write on the aspect changes its bound or liveness
-            if let Some(a) = self.engine.header(&b.commit).and_then(|h| b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.retention.at_most.rel.is_some()).map(|a| (a.tid, a.ak.clone()))) {
-                left.wait(a.0, a.1, b.commit);
-            }
-            let Some((e, t)) = self.keep_at_most_due(&l, b, &id)? else { continue };
+            let Some((a, due)) = self.keep_at_most_due(&l, b, &id)? else { continue };
+            let Some((e, t)) = due else {
+                // judged again when its bound or liveness changes (`AtMost`)
+                match a {
+                    AtMost::Live(t, k) => left.wait_at_most(t, k, b.commit),
+                    AtMost::Dead(t, k) => left.wait(t, k, b.commit),
+                }
+                continue;
+            };
             match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
                 Some(item) => {
                     left.commits.insert(b.commit);

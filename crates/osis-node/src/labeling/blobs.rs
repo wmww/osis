@@ -65,7 +65,7 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
 
 /// A group as `Engine::commit_bodies_under` sees it.
 pub(crate) struct BodyCtx {
-    pub closure: std::collections::BTreeSet<Tid>,
+    pub closure: std::sync::Arc<std::collections::BTreeSet<Tid>>,
     pub actor: Tid,
     pub published: std::collections::BTreeSet<Tid>,
 }
