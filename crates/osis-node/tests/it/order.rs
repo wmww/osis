@@ -5,7 +5,8 @@
 //! (grants, demotions with frontiers before, inside and after the demoted writes, re-grants,
 //! self-removals, roster and compaction snapshots, things created under things in later
 //! commits, writes inside map entries, struct fields and nested texts, undo, expiry, partial
-//! syncs) are delivered, as one held set, to fresh nodes in several arrival orders: every
+//! syncs) are delivered, as one held set, to fresh nodes in several arrival orders (two of them
+//! also with multi-aspect commits split into a part and late parts): every
 //! order must give the same per-delta verdicts, reads and states of every aspect, rosters,
 //! pending set, persisted index and timelines, and a reopen and a rebuild must give them too.
 
@@ -57,8 +58,9 @@ enum Step {
     New { by: usize, parent: usize, write: bool },
     /// `by` puts entry `k` (a struct, or a text when `text`) on `t`, sends that commit to
     /// `other` alone, `other` writes inside the entry and, when `compact`, compacts the aspect:
-    /// another's write nested under a creation that may be invalid.
-    Nested { by: usize, other: usize, t: usize, k: u8, text: bool, compact: bool },
+    /// another's write nested under a creation that may be invalid; `also`: the put's commit
+    /// writes the register too (two parts, one may arrive late).
+    Nested { by: usize, other: usize, t: usize, k: u8, text: bool, compact: bool, also: bool },
     /// `by` undoes one of its last commits.
     Undo { by: usize, back: u8 },
     /// Every commit `from` holds to `to`.
@@ -166,7 +168,9 @@ fn random_step(rng: &mut Rng) -> Step {
         23 | 24 => Step::New { by: rng.pick(&[0, 0, 2]), parent: t, write: rng.below(2) == 0 },
         25..=28 => {
             let other = (by + 1 + rng.below(2) as usize) % 3;
-            Step::Nested { by, other, t, k: rng.below(3) as u8, text: rng.below(2) == 0, compact: rng.below(3) != 0 }
+            // one draw: `compact` as before `also` (x % 6 % 3 == x % 3)
+            let (k, text, c) = (rng.below(3) as u8, rng.below(2) == 0, rng.below(6));
+            Step::Nested { by, other, t, k, text, compact: c % 3 != 0, also: c >= 3 }
         }
         29 => Step::Undo { by, back: rng.below(3) as u8 },
         30..=32 => {
@@ -308,10 +312,13 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 }
                 Some(by)
             }
-            Step::Nested { by, other, t, k, text, compact } => {
+            Step::Nested { by, other, t, k, text, compact, also } => {
                 let (put, inner) = if text { (8, 8) } else { (3, 4) };
                 let (a, po) = content_op(put, k, 1);
                 let mut m = Mutation::new();
+                if also {
+                    let _ = m.set(th(t), &REG, &s("also"));
+                }
                 if m.op(th(t), &a, po).is_ok() && let Ok(Some(id)) = lp.peers[by].commit(m) {
                     marks[by].push(lp.peers[by].engine.now());
                     let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
@@ -444,6 +451,33 @@ fn deliver(played: &Played, order: &[usize]) -> Peer {
     p
 }
 
+/// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
+/// those of one of them only (a seeded pick), the rest of it as late parts at the end, in
+/// reverse (spec/commits.md §4: a late delta joins on arrival).
+fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
+    let mut p = Peer::new(FRESH, played.now).unwrap();
+    p.engine.set_walk_cache_min(1);
+    let mut late = Vec::new();
+    for &i in order {
+        let pk = &played.packs[i];
+        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
+        // not roster snapshots: issues/late-roster-part-timeline.md
+        if ais.len() > 1 && b.header.kind != osis_commit::Kind::RosterSnapshot {
+            let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
+            b.parts.retain(|x| x.ai == keep);
+            late.push(i);
+        }
+        let _ = p.engine.ingest(&b.encode(), pk.blobs.clone());
+    }
+    for &i in late.iter().rev() {
+        let pk = &played.packs[i];
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    let _ = p.engine.reexamine();
+    p
+}
+
 fn first_diff(a: &[(&'static str, String)], b: &[(&'static str, String)]) -> Option<String> {
     for ((name, x), (_, y)) in a.iter().zip(b) {
         if x != y {
@@ -572,6 +606,15 @@ fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: us
                 return Err(format!("held {held:?} of {} commits (base {}), order #{k} {order:?}: {d}", played.packs.len(), played.base));
             }
         }
+        // the first two orders with late parts
+        if let Some(w) = &want {
+            for (k, order) in orders.iter().take(2).enumerate() {
+                let mut p = deliver_split(&played, order, &mut rng);
+                if let Some(d) = first_diff(w, &judged(&mut p, &played.things)).or_else(|| replay_differs(&mut p)) {
+                    return Err(format!("held {held:?}, order #{k} {order:?} with late parts: {d}"));
+                }
+            }
+        }
     }
     Ok(tried)
 }
@@ -675,7 +718,7 @@ fn check_deaths(seed: u64, steps: &[Step]) {
 #[test]
 fn arrival_order_found_histories_spec_crdt_4_6() {
     use Step::*;
-    let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Read) }];
+    let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, member: 2, role: Some(Role::Read) }];
     check(1038, &h, 0, 8, 4).unwrap();
     // seed 1558: C lowers its own edge (a nested write into the roster snapshot's entry) with a
     // clock behind A's, so it sorts before that snapshot: an open read it first and left it
@@ -689,7 +732,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     check(1053, &h, 0, 8, 4).unwrap();
     // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
     // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
-    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
+    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
     check(1173, &h, 4, 2, 1).unwrap();
 }
 

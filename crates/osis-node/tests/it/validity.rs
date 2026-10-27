@@ -1106,3 +1106,83 @@ fn unmerge_paged(seed: u64) {
         }
     }
 }
+
+// spec/crdt.md §4.6 (un-merge is a function of the held set), spec/commits.md §4 (a late
+// delta joins on arrival): Bob, removed, puts entry "late", text "BB" and a register in one
+// commit; Carol writes inside "late" and between Bob's chars. Dave gets Bob's commit with only
+// its register part, the rest later, Carol's commit anywhere among them: Carol's map write goes
+// with Bob's creation and Bob's chars stay hidden anchors, as at Eve, who held Bob's commit
+// whole before Carol's; a node never getting the rest agrees with itself in either order.
+#[test]
+fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
+    let (mut lp, d, b, _) = setup(91);
+    lp.peers.push(osis_node::local_peer::Peer::new(9100, T0).unwrap());
+    lp.peers.push(osis_node::local_peer::Peer::new(9101, T0).unwrap());
+    lp.sync_all().unwrap();
+    let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
+    put_at(&mut lp, 1, d, &["k"], one("a", "1"));
+    lp.sync_all().unwrap();
+    lp.advance(DAY);
+    revoke(&mut lp, 0, d, b);
+    lp.advance(DAY);
+    let mut m = Mutation::new();
+    m.op(d, &ak("/x/m"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("late"))], op: osis_crdt::Op::Set(one("a", "1")) }).unwrap();
+    m.op(d, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("B"), s("B")] } }).unwrap();
+    m.set(d, &REG, &s("bob")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 2);
+    let mut m = Mutation::new();
+    m.op(d, &ak("/x/m"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("late")), osis_crdt::PathSeg::Key(s("b"))], op: osis_crdt::Op::Set(s("2")) }).unwrap();
+    m.op(d, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 1, items: vec![s("c")] } }).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    let n = *lp.peers[2].engine.commit_ids().iter().max_by_key(|id| lp.peers[2].engine.header(id).unwrap().ts).unwrap();
+    let base: Vec<_> = packages(&mut lp, 0);
+    let ck = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    let nk = lp.peers[2].engine.package(&n).unwrap().unwrap();
+    let h = lp.peers[1].engine.header(&c).unwrap();
+    let mut partial = osis_commit::CommitBlob::decode(&ck.bytes).unwrap();
+    partial.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "/t/reg");
+    let partial = partial.encode();
+    let feed = |lp: &mut LocalPeer, i: usize, seq: &[&[u8]]| {
+        for p in &base {
+            lp.deliver(i, p).unwrap();
+        }
+        for bytes in seq {
+            lp.peers[i].engine.ingest(bytes, Vec::new()).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+    };
+    feed(&mut lp, 4, &[&ck.bytes, &nk.bytes]);
+    let look = |lp: &mut LocalPeer, i: usize| {
+        let e = &mut lp.peers[i].engine;
+        let mut out = Vec::new();
+        for a in [ak("/x/m"), ak("/t/reg"), ak("/t/text")] {
+            out.push(format!("{:?}\n{:?}", e.get(&d, &a).unwrap(), e.state(&d, &a).unwrap()));
+        }
+        // the index lines naming Bob's and Carol's commits (each node has its own identity)
+        let mine = [format!("{c:?}"), format!("{n:?}")];
+        out.push(index_of(e).lines().filter(|l| l.starts_with("invalid ") || (l.starts_with("commit ") && mine.iter().any(|x| l.contains(x.as_str())))).collect::<Vec<_>>().join("\n"));
+        out
+    };
+    let want = look(&mut lp, 4);
+    assert!(!want[0].contains("late"), "Eve: {}", want[0]);
+    let orders: [&[&[u8]]; 3] = [&[&nk.bytes, &partial, &ck.bytes], &[&partial, &nk.bytes, &ck.bytes], &[&partial, &ck.bytes, &nk.bytes]];
+    for (k, seq) in orders.iter().enumerate() {
+        let i = lp.peers.len();
+        let now = lp.peers[0].engine.now();
+        lp.peers.push(osis_node::local_peer::Peer::new(9200 + k as u64, now).unwrap());
+        feed(&mut lp, i, seq);
+        assert_eq!(look(&mut lp, i), want, "order {k}");
+    }
+    // the map and text parts never come: alike either way too
+    let mut seen = Vec::new();
+    for (k, seq) in [[&nk.bytes, &partial], [&partial, &nk.bytes]].iter().enumerate() {
+        let i = lp.peers.len();
+        let now = lp.peers[0].engine.now();
+        lp.peers.push(osis_node::local_peer::Peer::new(9300 + k as u64, now).unwrap());
+        feed(&mut lp, i, &seq.map(|x| x.as_slice()));
+        seen.push(look(&mut lp, i));
+    }
+    assert_eq!(seen[0], seen[1], "partial");
+    assert!(!seen[0][0].contains("late"), "partial: {}", seen[0][0]);
+}
