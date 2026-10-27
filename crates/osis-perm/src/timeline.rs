@@ -287,6 +287,10 @@ impl Timeline {
     /// moves by `n` and takes them; answers past `p` go.
     fn inserted(&mut self, h: usize, n: usize, p: Point) {
         let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.member, c.target, c.edge)).collect();
+        // a history that was empty kept no state: the initial one, so later gaps get split
+        if self.checkpoints.is_empty() {
+            self.checkpoints.push((0, Arc::new(self.walked.initial.clone())));
+        }
         let k = self.checkpoints.partition_point(|c| c.0 <= h);
         let later = self.checkpoints.get_mut(k..).unwrap_or_default();
         for c in later.iter_mut() {
