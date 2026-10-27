@@ -2001,8 +2001,17 @@ mod tests {
     /// Items of the sequence: 4-byte chars (a text) or 30-byte strings (a list).
     fn seq_items(text: bool, from: u64, n: u64) -> Vec<Value> {
         (from..from + n)
-            .map(|i| if text { Value::Str(char::from_u32(0x1F600 + (i % 64) as u32).unwrap().to_string()) } else { Value::Str(format!("item-{i:08}-padding-padding")) })
+            // a text not periodic (an edit's window repeated elsewhere matches whole)
+            .map(|i| if text { Value::Str(char::from_u32(0x1F600 + (mix(i) % 64) as u32).unwrap().to_string()) } else { Value::Str(format!("item-{i:08}-padding-padding")) })
             .collect()
+    }
+
+    /// splitmix64's finalizer.
+    fn mix(i: u64) -> u64 {
+        let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     fn seq_value(text: bool, n: u64) -> Value {

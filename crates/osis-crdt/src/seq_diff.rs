@@ -293,6 +293,14 @@ pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &
 /// to apply at base's own indices (`edit`).
 const CTX: usize = 32;
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: `edit` always matches whole (the reference the window is compared with).
+    pub(crate) static WHOLE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: edits resolved at their window.
+    pub(crate) static WINDOWED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Where `edit` finds base's elements in the current read.
 struct Rebase {
     /// Current elements: dot and list content.
@@ -342,13 +350,23 @@ enum Window {
 
 /// The current elements around the changed region `mid` of `base` when the read has base's
 /// length and equals it over `mid` widened by `CTX` (`eq`: a base element and a current
-/// record).
-fn window<T>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid: &Range<usize>, eq: impl Fn(&T, &SeqElem) -> bool) -> Window {
+/// record), and that stretch of base occurs nowhere else in base: else a concurrent shift (a
+/// delete before it, an insert after it) could put other elements of the same content there,
+/// and matching whole aligns differently (periodic text, runs of one char).
+fn window<T: PartialEq>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid: &Range<usize>, eq: impl Fn(&T, &SeqElem) -> bool) -> Window {
     if vis.len() != base.len() {
         return Window::Differs;
     }
     let lo = mid.start.saturating_sub(CTX);
     let hi = mid.end.saturating_add(CTX).min(base.len());
+    let at = base.get(lo..hi).unwrap_or_default();
+    if !at.is_empty() && base.windows(at.len()).enumerate().any(|(k, x)| k != lo && x == at) {
+        return Window::Differs;
+    }
+    #[cfg(test)]
+    if WHOLE_ONLY.get() {
+        return Window::Differs;
+    }
     let rows = vis.0.p.vis_range(lo..hi);
     let (mut missed, mut differs) = (rows.len() != hi - lo, false);
     let mut cur = Vec::with_capacity(rows.len());
@@ -368,7 +386,11 @@ fn window<T>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid: &Range<usi
     match (missed, differs) {
         (true, _) => Window::Missed,
         (false, true) => Window::Differs,
-        (false, false) => Window::Here(Rebase { cur, to_cur: None, lo, changed: HashMap::new() }),
+        (false, false) => {
+            #[cfg(test)]
+            WINDOWED.set(WINDOWED.get() + 1);
+            Window::Here(Rebase { cur, to_cur: None, lo, changed: HashMap::new() })
+        }
     }
 }
 
