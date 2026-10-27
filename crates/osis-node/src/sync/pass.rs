@@ -9,7 +9,7 @@ use super::state::{BlobRec, Entry, Kind, ServerKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::{Body, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
+use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
 use osis_commit::Kind as CKind;
 use osis_core::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_core::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};
@@ -133,17 +133,19 @@ impl SyncEngine {
         if self.reregister(conn, l, out)? {
             return Ok(());
         }
-        // atomic apply waits for the closure's deltas (spec/commits.md §4)
-        for t in self.engine.closure(&g) {
-            if !self.engine.core.syncing.contains(&t) {
-                self.engine.set_syncing(t, true)?;
+        // the group's closure, taken once for the pass; atomic apply waits for its deltas
+        // (spec/commits.md §4)
+        let ctx = self.engine.body_ctx(&g);
+        for t in &ctx.closure {
+            if !self.engine.core.syncing.contains(t) {
+                self.engine.set_syncing(*t, true)?;
             }
         }
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
         let Some(mut w) = self.conns.get_mut(&conn).and_then(|c| c.labels.get_mut(&l)).map(|lc| std::mem::replace(&mut lc.work, Work::idle(false))) else { return Ok(()) };
-        let r = self.judge_label(conn, server, g, l, keys, read_ok, head.map(|h| h.id()), &mut w, out);
+        let r = self.judge_label(conn, server, g, l, &ctx, keys, read_ok, head.map(|h| h.id()), &mut w, out);
         if r.is_err() {
             w.full = true;
         }
@@ -158,11 +160,20 @@ impl SyncEngine {
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
     /// everything when it says so or an input of the pass changed (`work`).
     #[allow(clippy::too_many_arguments)]
-    fn judge_label(&mut self, conn: ConnId, server: ServerKey, g: Tid, l: LabelId, keys: HeadKeys, read_ok: bool, head: Option<osis_label::StepId>, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
-        let mut full = self.prepare(&g, &l, w);
+    fn judge_label(&mut self, conn: ConnId, server: ServerKey, g: Tid, l: LabelId, ctx: &BodyCtx, keys: HeadKeys, read_ok: bool, head: Option<osis_label::StepId>, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
+        let mut full = self.prepare(&g, &l, w, &ctx.closure);
         let mut scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
         self.stats.passes += 1;
         self.refetch(conn, server, l, w, out)?;
+        // commits the refetch applied may move the closure or published groups: judged with
+        // what holds now, as the inputs record it
+        let fresh;
+        let ctx = if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty()) {
+            fresh = self.engine.body_ctx(&g);
+            &fresh
+        } else {
+            ctx
+        };
         self.pull(conn, &g, l, &mut scope, w);
         self.check_linked_prefixes(l, &scope)?;
         let unsettled = self.unsettled_of(!w.unopened.is_empty())?;
@@ -175,7 +186,7 @@ impl SyncEngine {
             roles: Inputs::roles(&keys, read_ok),
             replaced,
             actor: self.engine.group_actor(&g),
-            published: self.engine.body_ctx(&g).published,
+            published: ctx.published.clone(),
             may_rotate: self.may_rotate_read(&g),
             held: self.engine.epochs(&g),
         };
@@ -213,7 +224,7 @@ impl SyncEngine {
         let mut left = Left::default();
         let entries = w.snaps.clone();
         let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
-        let mut bodies = self.bodies_in(&g, &l, &scope)?;
+        let mut bodies = self.bodies_in(ctx, &g, &l, &scope)?;
         let judged: BTreeSet<CommitId> = match &scope {
             Scope::Some { commits, .. } => commits.clone(),
             Scope::All => BTreeSet::new(),
@@ -345,7 +356,7 @@ impl SyncEngine {
         // entries touched during the pass are judged against their commits' bodies too
         if let Scope::Some { commits, .. } = &scope {
             let more = Scope::Some { commits: commits.difference(&judged).copied().collect(), blobs: BTreeSet::new() };
-            bodies.extend(self.bodies_in(&g, &l, &more)?);
+            bodies.extend(self.bodies_in(ctx, &g, &l, &more)?);
         }
         self.deletions(conn, server, l, &g, &keys, &bodies, &snaps, settled, &scope, &mut left, out)?;
         if quiet && settled {

@@ -518,6 +518,9 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
             }
         }
     }
+    for (t, a) in &purged {
+        tx.core.mark_aspect_changed(t, a);
+    }
     if !purged.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Purge, changed: purged.iter().cloned().collect() });
         changed.extend(purged);
@@ -546,16 +549,10 @@ impl Engine {
     }
 
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
-    /// parked for drift.
+    /// parked for drift. The commits whose timers fired are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
-        self.tick_drops().map(|_| ())
-    }
-
-    /// `tick`, returning the commits whose timers fired (node-sync forgets the dropped bodies'
-    /// blobs and judges them again).
-    pub(crate) fn tick_drops(&mut self) -> Result<BTreeSet<CommitId>> {
         self.settle_deaths()?;
-        let n = self.run(|tx| {
+        self.run(|tx| {
             let now = tx.now().0;
             let mut due = Vec::new();
             tx.scan(records::TIMER, |k, v| {
@@ -566,8 +563,9 @@ impl Engine {
                 Ok(())
             })?;
             let mut changed = BTreeSet::new();
-            let n: BTreeSet<CommitId> = due.iter().map(|x| x.1).collect();
             for (k, c, ai, kind) in due {
+                // judged again by node-sync whatever the timer did
+                tx.core.mark_changed(c);
                 tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                 match kind {
                     T_EXPIRY => expire(tx, &c, ai, &mut changed)?,
@@ -575,13 +573,15 @@ impl Engine {
                     _ => check_at_most(tx, &c, ai)?,
                 }
             }
+            for (t, a) in &changed {
+                tx.core.mark_aspect_changed(t, a);
+            }
             if !changed.is_empty() {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
-            Ok(n)
+            Ok(())
         })?;
-        self.reexamine()?;
-        Ok(n)
+        self.reexamine()
     }
 
     /// The bodies the due keep-at-most timers will drop with a live write, as (commit, every
@@ -925,5 +925,39 @@ mod tests {
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
+    }
+
+    // spec/sync.md §6 (work sets): node-sync's change hook marks a commit whose validity flipped
+    // (a backdated removal of its author), and one whose body was dropped; nothing is kept
+    // until node-sync asks.
+    #[test]
+    fn changed_marks_flips_and_drops_spec_sync_6() {
+        let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let ak = Ak::new("/x/a").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ak, &Value::Int(0)).unwrap();
+        let first = lp.peers[0].commit(m).unwrap().unwrap();
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        lp.peers[0].engine.grant(&t, &w, &write).unwrap();
+        lp.sync_all().unwrap();
+        let before = lp.peers[0].engine.now();
+        lp.advance(60_000);
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Int(1)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.core.changed.is_none(), "kept only for node-sync");
+        assert!(e.take_changed().is_empty());
+        lp.sync(1, 0).unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert!(e.take_changed().contains(&c), "applied");
+        e.demote(&t, &Demotion { member: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        let got = e.take_changed();
+        assert!(got.contains(&c) && got.contains(&first), "every commit on the flipped aspect");
+        e.drop_body(&first, &t, &ak).unwrap();
+        assert!(e.take_changed().contains(&first), "dropped");
     }
 }

@@ -938,6 +938,9 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
         debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
     }
+    for (tid, ak) in &flipped {
+        tx.core.mark_aspect_changed(tid, ak);
+    }
     if rebuild {
         for (tid, ak) in &flipped {
             super::rebuild(tx, tid, ak)?;

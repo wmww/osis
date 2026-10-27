@@ -272,6 +272,10 @@ pub(crate) struct Core {
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
+    /// Commits whose record, parts, validity, bodies or timers changed since node-sync last
+    /// took them (`Engine::take_changed`; `None`: no node-sync, nothing kept). A mark from an
+    /// aborted transaction stays: one extra judgment.
+    pub changed: Option<BTreeSet<CommitId>>,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
@@ -331,6 +335,20 @@ impl Core {
             }
             !commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|x| x.tid == *tid && x.ak == *ak))
         });
+    }
+
+    /// Marks commit `c` changed for node-sync (`changed`).
+    pub fn mark_changed(&mut self, c: CommitId) {
+        if let Some(s) = &mut self.changed {
+            s.insert(c);
+        }
+    }
+
+    /// Marks every commit with a delta on `(tid, ak)` changed (`mark_changed`).
+    pub fn mark_aspect_changed(&mut self, tid: &Tid, ak: &Ak) {
+        if let Some(s) = &mut self.changed {
+            s.extend(self.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1));
+        }
     }
 
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
@@ -432,6 +450,7 @@ impl Core {
             lost_due: JSet::default(),
             deaths_due: JSet::default(),
             defer_deaths: false,
+            changed: None,
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -767,6 +786,7 @@ impl Tx<'_> {
     /// the caller already read of `blob` with `edge_parts_of`, else decoded here).
     pub fn put_commit(&mut self, id: &CommitId, blob: &CommitBlob, meta: &Meta, shred: Shred, edges: Option<&crate::apply::validity::EdgeParts>) -> Result<()> {
         self.core.bodies.remove(id);
+        self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
         if meta.header.kind.is_membership() {
@@ -956,6 +976,11 @@ impl Engine {
     /// A channel of engine events, sent after durability.
     pub fn subscribe(&mut self) -> Receiver<Event> {
         self.core.events.subscribe()
+    }
+
+    /// The commits changed since the last call (`Core::changed`), keeping them from now on.
+    pub(crate) fn take_changed(&mut self) -> BTreeSet<CommitId> {
+        self.core.changed.replace(BTreeSet::new()).unwrap_or_default()
     }
 
     /// Runs `f` in one store transaction; events go out once it is durable.

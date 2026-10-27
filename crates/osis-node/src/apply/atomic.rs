@@ -144,6 +144,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
             let touching: Vec<CommitId> = tx.core.by_aspect.iter().filter(|((t, _), _)| *t == a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
             for c in touching {
                 tx.core.bodies.remove(&c);
+                tx.core.mark_changed(c);
             }
             any = true;
         }
@@ -424,6 +425,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         }
     }
     tx.core.events.queue(Event::Joined { id: *id });
+    for (t, a) in &changed {
+        tx.core.mark_aspect_changed(t, a);
+    }
     if !changed.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::LateDelta, changed: changed.into_iter().collect() });
     }
