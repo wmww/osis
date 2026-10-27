@@ -53,11 +53,16 @@ expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
 
+# Tier 1, tier 2 and sweeps all run this profile (notes/testing.md, Build hygiene). opt-level 1:
+# tests several times faster for slower compiles; line tables keep backtraces' file:line, and
+# unpacked split debuginfo keeps the rest beside the objects instead of in every test binary.
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 1
+split-debuginfo = "unpacked"
 
-# Dependencies only (workspace crates stay at dev opt-level): crypto and hashing in debug are slow.
+# Dependencies only: crypto and hashing unoptimized are slow; no debuginfo (frames in
+# dependencies show no file:line).
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
