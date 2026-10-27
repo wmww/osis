@@ -85,6 +85,8 @@ pub(crate) struct Input {
     /// Every edge any held write, roster or ledger can set (any role, any time), member to
     /// targets and target to members: what any reach in any walk follows besides owner links.
     pub ever: Ever,
+    /// The commits and snapshots voided by overlapping ranges, as held (`holds_same`).
+    pub voided: (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<CommitId, Arc<RosterSnapshot>>),
 }
 
 /// Edges at any time, both ways (`Input::ever`).
@@ -173,6 +175,7 @@ impl Input {
             e.1 = e.1.max(r.hi);
         }
         let void = overlapping(ranges);
+        let voided = (commits.iter().filter(|(id, _)| void.contains(*id)).map(|(id, c)| (*id, c.clone())).collect(), snaps.iter().filter(|(id, _)| void.contains(*id)).map(|(id, s)| (*id, s.clone())).collect());
         commits.retain(|id, _| !void.contains(id));
         snaps.retain(|id, _| !void.contains(id));
         // Who can hold a class: key actors, authors, and members that may be nodes.
@@ -218,7 +221,25 @@ impl Input {
             let e = first_write.entry((a, t)).or_insert(p);
             *e = (*e).min(p);
         }
-        Input { owners, commits, snaps, nodes, ever_admins, first_write, ranges: by_key, ever }
+        Input { owners, commits, snaps, nodes, ever_admins, first_write, ranges: by_key, ever, voided }
+    }
+
+    /// Whether `c` is held here with this content (a record can grow under its ID: a part
+    /// that arrives late).
+    pub fn holds_commit(&self, c: &MembershipCommit) -> bool {
+        self.commits.get(&c.id).or_else(|| self.voided.0.get(&c.id)).is_some_and(|o| o.same_input(c))
+    }
+
+    /// `holds_commit` for a roster snapshot.
+    pub fn holds_snapshot(&self, s: &RosterSnapshot) -> bool {
+        self.snaps.get(&s.id).or_else(|| self.voided.1.get(&s.id)).is_some_and(|o| o.same_input(s))
+    }
+
+    /// Whether every record held here is held in `other` with the same content.
+    pub fn kept_in(&self, other: &Input) -> bool {
+        let commits = self.commits.values().chain(self.voided.0.values());
+        let snaps = self.snaps.values().chain(self.voided.1.values());
+        commits.into_iter().all(|c| other.holds_commit(c)) && snaps.into_iter().all(|s| other.holds_snapshot(s))
     }
 
     /// What reaches any of `seeds` (included) at any time: owner links and `ever` edges.

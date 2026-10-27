@@ -246,7 +246,8 @@ impl Timelines {
             let w = work.entry(i).or_default();
             for s in held.roster_snapshots(t) {
                 if ids.insert(s.id) {
-                    if !old.is_some_and(|p| p.contains(&s.id)) {
+                    // the same snapshot, its content too (a part may arrive late)
+                    if !old.is_some_and(|p| p.contains(&s.id)) || (s.thing == *t && !c.tl.input.holds_snapshot(&s)) {
                         return None;
                     }
                     kept += 1;
@@ -257,6 +258,9 @@ impl Timelines {
                     continue;
                 }
                 if old.is_some_and(|p| p.contains(&m.id)) {
+                    if !c.tl.input.holds_commit(&m) {
+                        return None;
+                    }
                     kept += 1;
                 } else if c.inputs.1.contains(&m.id) {
                     return None;
@@ -393,7 +397,15 @@ impl Timelines {
         self.placed = 0;
         for (root, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
-            let (tl, basis, dirty) = match cache.remove(&inputs) {
+            // the same IDs, and the same records under them (a part may arrive late)
+            let hit = match cache.remove(&inputs) {
+                Some((tl, basis, _)) if !tl.holds_same(&part, &inputs.0) => {
+                    self.retire(&inputs, basis);
+                    None
+                }
+                x => x,
+            };
+            let (tl, basis, dirty) = match hit {
                 Some(x) => x,
                 None => {
                     evaluated += 1;
