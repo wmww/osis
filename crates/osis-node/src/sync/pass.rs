@@ -90,6 +90,9 @@ enum AtMost {
     Dead(Tid, Ak),
 }
 
+/// A timed delete due: the entry and its time (`keep_at_most_due`).
+type TimedDue = Option<(Entry, u64)>;
+
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
@@ -785,7 +788,7 @@ impl SyncEngine {
     /// a live write gets none: it goes at the next compaction or its bound, carried then
     /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect. `None`: not
     /// under a relative keep-at-most; else what the body waits on and, when due, entry and bound.
-    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(AtMost, Option<(Entry, u64)>)>> {
+    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(AtMost, TimedDue)>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
         if a.retention.at_most.rel.is_none() {
