@@ -10,12 +10,12 @@
 //! or not) brings the node's chain for the same thing at its point, since whether its class fell
 //! depends on its other paths there.
 
-use crate::graph::{EdgesAt, View};
+use crate::graph::{Dense, View};
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
 use crate::types::{Edge, Point, RosterSnapshot, WriteId};
 use crate::walk;
-use osis_core::{CommitId, Role, Tid, Ts};
+use osis_core::{CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -38,79 +38,73 @@ type EdgeValue = (Point, Option<Edge>, Option<CommitId>);
 /// A processed closure state's point and chain.
 type Chain = (Point, BTreeSet<Tid>);
 
-/// History positions `lo..=hi`, the ts when it matters, and the roles (`Fwds`).
-type Held = (usize, usize, Option<Ts>, BTreeMap<Tid, Role>);
-
-/// `roles_from` per node, kept across points: with no `until` on an edge out of what the node
-/// reaches, it holds across history changes of edges out of things it does not reach (only an
-/// edge out of something reached is followed).
-#[derive(Default)]
-struct Fwds {
-    /// Per node: history positions `lo..=hi` over which the roles hold, the ts they were
-    /// found at when they depend on it, and the roles.
-    by: BTreeMap<Tid, Held>,
+/// The edge state at one history position by dense index (`Dense`), moved between positions
+/// by applying the changes in between or their previous values, with `roles_from` per node
+/// and `reach_backward` per thing at the current point.
+struct Chains {
+    dense: Dense,
+    /// History changes applied.
+    h: usize,
+    /// Per history change: the edge's value before it.
+    prev: Vec<Option<Edge>>,
+    at: Option<Point>,
+    roles: BTreeMap<Tid, (Vec<Option<Role>>, Vec<usize>)>,
+    backs: BTreeMap<Tid, Vec<bool>>,
 }
 
-impl Fwds {
-    /// `node`'s roles at history position `h`, `view` the state there.
-    fn get(&mut self, tl: &Timeline, node: &Tid, h: usize, view: &View<'_>) -> &BTreeMap<Tid, Role> {
-        let holds = match self.by.get(node) {
-            Some((lo, hi, at, b)) if at.is_none_or(|ts| *lo == h && *hi == h && view.ts == Some(ts)) => {
-                let (a, z) = if h < *lo { (h, *lo) } else { (*hi, h.max(*hi)) };
-                tl.walked.history.get(a..z).unwrap_or_default().iter().all(|c| !b.contains_key(&c.member))
-            }
-            _ => false,
-        };
-        let e = self.by.entry(*node).or_insert_with(|| (h, h, None, BTreeMap::new()));
-        if holds {
-            e.0 = e.0.min(h);
-            e.1 = e.1.max(h);
-        } else {
-            let (b, _, timeless) = view.roles_search(node);
-            *e = (h, h, if timeless { None } else { view.ts.or(Some(Ts::default())) }, b);
-        }
-        debug_assert!(e.3 == view.roles_from(node));
-        &e.3
-    }
-}
-
-/// `reach_backward` per thing, kept across points: what reaches a thing depends only on which
-/// edges exist (any role, any `until`), so it holds across history changes that create or
-/// remove no edge into what reaches it (one into anything else adds or removes no path to it).
-struct Backs {
-    /// Per history change: whether it creates or removes an edge.
-    exists: Vec<bool>,
-    /// Per thing: history positions `lo..=hi` (states after that many changes) over which the
-    /// set holds.
-    by: BTreeMap<Tid, (usize, usize, BTreeSet<Tid>)>,
-}
-
-impl Backs {
-    fn new(tl: &Timeline) -> Backs {
-        let mut on: BTreeSet<(Tid, Tid)> = tl.walked.initial.iter().map(|(m, t, _)| (*m, *t)).collect();
-        let exists = tl.walked.history.iter().map(|c| if c.edge.is_some() { on.insert((c.member, c.target)) } else { on.remove(&(c.member, c.target)) }).collect();
-        Backs { exists, by: BTreeMap::new() }
+impl Chains {
+    fn new(tl: &Timeline) -> Chains {
+        let mut cur: BTreeMap<(Tid, Tid), Edge> = tl.walked.initial.iter().map(|(m, t, e)| ((*m, *t), *e)).collect();
+        let prev = tl
+            .walked
+            .history
+            .iter()
+            .map(|c| match c.edge {
+                Some(e) => cur.insert((c.member, c.target), e),
+                None => cur.remove(&(c.member, c.target)),
+            })
+            .collect();
+        Chains { dense: tl.input.dense(&tl.walked.initial), h: 0, prev, at: None, roles: BTreeMap::new(), backs: BTreeMap::new() }
     }
 
-    /// What reaches `thing` at history position `h`, `view` the state there.
-    fn get(&mut self, tl: &Timeline, thing: &Tid, h: usize, view: &View<'_>) -> &BTreeSet<Tid> {
-        let holds = match self.by.get(thing) {
-            Some((lo, hi, b)) => {
-                let (a, z) = if h < *lo { (h, *lo) } else { (*hi, h.max(*hi)) };
-                let changes = tl.walked.history.get(a..z).unwrap_or_default().iter().zip(self.exists.get(a..z).unwrap_or_default());
-                changes.into_iter().all(|(c, e)| !*e || !b.contains(&c.target))
+    /// Things on any path from `node` to `thing` just before `at` (`None`: not `whole`).
+    fn chain(&mut self, tl: &Timeline, node: &Tid, thing: &Tid, at: Point) -> Option<BTreeSet<Tid>> {
+        if self.at != Some(at) {
+            let h = tl.walked.history.partition_point(|c| c.point < at);
+            if h != self.h {
+                self.backs.clear();
             }
-            None => false,
-        };
-        let e = self.by.entry(*thing).or_insert_with(|| (h, h, BTreeSet::new()));
-        if holds {
-            e.0 = e.0.min(h);
-            e.1 = e.1.max(h);
-        } else {
-            *e = (h, h, view.reach_backward(thing));
+            while self.h < h {
+                let c = tl.walked.history.get(self.h)?;
+                self.dense.set(&c.member, &c.target, c.edge);
+                self.h += 1;
+            }
+            while self.h > h {
+                self.h -= 1;
+                let c = tl.walked.history.get(self.h)?;
+                self.dense.set(&c.member, &c.target, self.prev.get(self.h).copied().flatten());
+            }
+            self.at = Some(at);
+            self.roles.clear();
         }
-        debug_assert!(e.2 == view.reach_backward(thing));
-        &e.2
+        if !self.dense.whole {
+            return None;
+        }
+        if !self.roles.contains_key(node) {
+            let (best, reached, _) = self.dense.roles(node, at.ts)?;
+            self.roles.insert(*node, (best, reached));
+        }
+        if !self.backs.contains_key(thing) {
+            let b = self.dense.back(thing)?;
+            self.backs.insert(*thing, b);
+        }
+        let ((_, reached), to) = (self.roles.get(node)?, self.backs.get(thing)?);
+        let mut on: Vec<usize> = reached.iter().copied().filter(|i| to.get(*i).copied().unwrap_or(false)).collect();
+        on.sort_unstable();
+        let mut c: BTreeSet<Tid> = on.iter().filter_map(|i| self.dense.tids.get(*i).copied()).collect();
+        c.insert(*node);
+        c.insert(*thing);
+        Some(c)
     }
 }
 
@@ -181,14 +175,22 @@ impl Timeline {
         })
     }
 
-    /// Things on any path from `node` to `thing` just before `at`, given the edge state there
-    /// and a cache of `roles_from` at that point.
-    #[allow(clippy::too_many_arguments)]
-    fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, h: usize, edges: &EdgesAt<'_>, fwds: &mut Fwds, backs: &mut Backs) -> BTreeSet<Tid> {
-        let view = View::at(&self.input.owners, edges, Some(at.ts));
-        let from = fwds.get(self, node, h, &view);
-        let to = backs.get(self, thing, h, &view);
-        let mut c: BTreeSet<Tid> = if from.len() <= to.len() { from.keys().filter(|t| to.contains(t)).copied().collect() } else { to.iter().filter(|t| from.contains_key(t)).copied().collect() };
+    /// Things on any path from `node` to `thing` just before `at`, from the edge state there
+    /// (by a search over `View`, when `Chains` has no dense state).
+    fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, chains: &mut Chains) -> BTreeSet<Tid> {
+        if let Some(c) = chains.chain(self, node, thing, at) {
+            #[cfg(debug_assertions)]
+            debug_assert!(c == self.chain_searched(node, thing, at));
+            return c;
+        }
+        self.chain_searched(node, thing, at)
+    }
+
+    fn chain_searched(&self, node: &Tid, thing: &Tid, at: Point) -> BTreeSet<Tid> {
+        let edges = self.edges_at(Some(at));
+        let view = View::at(&self.input.owners, &edges, Some(at.ts));
+        let to = view.reach_backward(thing);
+        let mut c: BTreeSet<Tid> = view.roles_from(node).into_keys().filter(|t| to.contains(t)).collect();
         c.insert(*node);
         c.insert(*thing);
         c
@@ -231,9 +233,7 @@ impl Timeline {
         // can queue a later point, so a point's state may be built again when the walk returns
         let mut todo: BTreeSet<(Point, Tid, Tid)> = seeds.into_iter().map(|(n, t, p)| (p, n, t)).collect();
         let mut seen: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
-        let mut at: Option<(Point, usize, EdgesAt<'_>)> = None;
-        let mut backs = Backs::new(self);
-        let mut fwds = Fwds::default();
+        let mut chains = Chains::new(self);
         // n's chains at later demotions go in rounds, so each round visits a point once
         let mut later: BTreeSet<(Point, Tid, Tid)> = BTreeSet::new();
         let mut on_chains: BTreeSet<Tid> = BTreeSet::new();
@@ -251,11 +251,7 @@ impl Timeline {
             if !seen.insert((p, n, t)) {
                 continue;
             }
-            if at.as_ref().is_none_or(|a| a.0 != p) {
-                at = Some((p, self.walked.history.partition_point(|c| c.point < p), self.edges_at(Some(p))));
-            }
-            let Some((_, h, edges)) = at.as_mut() else { continue };
-            let chain = self.chain_things(&n, &t, p, *h, edges, &mut fwds, &mut backs);
+            let chain = self.chain_things(&n, &t, p, &mut chains);
             // what an earlier state of (n, t) with a chain containing this one added covers
             // all this one would: its later writes, commits, things and snapshot members
             let done = covered.entry((n, t)).or_default();

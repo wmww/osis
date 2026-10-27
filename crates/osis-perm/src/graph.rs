@@ -45,7 +45,12 @@ impl Standing {
 pub struct Owners {
     owner: BTreeMap<Tid, Owner>,
     owned: BTreeMap<Tid, Vec<Tid>>,
+    /// `chain` of every thing with a link, found on first use.
+    chains: std::sync::OnceLock<BTreeMap<Tid, Chain>>,
 }
+
+/// A thing's strict ancestors by ownership, nearest first, and the key actor at the top.
+type Chain = (Vec<Tid>, Option<Tid>);
 
 impl Owners {
     /// From the held `/created` records; one that does not hash to its tid is ignored.
@@ -69,6 +74,7 @@ impl Owners {
             self.owned.entry(y).or_default().push(t);
         }
         self.owner.insert(t, link);
+        self.chains = std::sync::OnceLock::new();
     }
     /// Every owner link, by thing.
     pub fn links(&self) -> impl Iterator<Item = (&Tid, &Owner)> {
@@ -94,6 +100,11 @@ impl Owners {
     /// chain reaches one (`t` itself for a key actor) within `MAX_OWNER_DEPTH` owner links
     /// (spec/permissions.md §1: a deeper thing has no owner chain). O(`MAX_OWNER_DEPTH`).
     pub fn chain(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
+        let chains = self.chains.get_or_init(|| self.owner.keys().map(|t| (*t, self.chain_searched(t))).collect());
+        chains.get(t).cloned().unwrap_or_else(|| self.chain_searched(t))
+    }
+
+    fn chain_searched(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let mut up = Vec::new();
         let mut cur = *t;
         for _ in 0..=MAX_OWNER_DEPTH {
@@ -272,6 +283,162 @@ impl<'a> EdgesAt<'a> {
     }
 }
 
+/// Roles by dense index, the indexes reached, and the earliest `until` followed
+/// (`Dense::roles`).
+pub(crate) type DenseRoles = (Vec<Option<Role>>, Vec<usize>, Option<WallMs>);
+
+/// An edge state by dense index, for searches without map lookups per edge (the same answers
+/// as `View`'s): a fixed set of entities, what each owns and is owned by, and the edges out of
+/// and into each, kept in step with `set`.
+pub(crate) struct Dense {
+    pub ids: BTreeMap<Tid, usize>,
+    pub tids: Vec<Tid>,
+    owned: Vec<Vec<usize>>,
+    owner: Vec<Option<usize>>,
+    out: Vec<Vec<(usize, Edge)>>,
+    inc: Vec<Vec<usize>>,
+    /// Every edge set has both ends indexed (else callers search through `View`).
+    pub whole: bool,
+}
+
+impl Dense {
+    pub fn new(owners: &Owners, all: BTreeSet<Tid>, edges: &Edges) -> Dense {
+        let tids: Vec<Tid> = all.into_iter().collect();
+        let ids: BTreeMap<Tid, usize> = tids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+        let owned = tids.iter().map(|t| owners.owned(t).iter().filter_map(|y| ids.get(y).copied()).collect()).collect();
+        let owner = tids.iter().map(|t| owners.owner_actor(t).and_then(|o| ids.get(&o).copied())).collect();
+        let n = tids.len();
+        let mut g = Dense { out: vec![Vec::new(); n], inc: vec![Vec::new(); n], ids, tids, owned, owner, whole: true };
+        for (m, t, e) in edges.iter() {
+            g.set(m, t, Some(*e));
+        }
+        g
+    }
+
+    pub fn set(&mut self, member: &Tid, target: &Tid, edge: Option<Edge>) {
+        let (Some(&m), Some(&t)) = (self.ids.get(member), self.ids.get(target)) else {
+            self.whole &= edge.is_none();
+            return;
+        };
+        let Some(out) = self.out.get_mut(m) else { return };
+        let at = out.iter().position(|x| x.0 == t);
+        match (at, edge) {
+            (Some(i), Some(e)) => {
+                if let Some(x) = out.get_mut(i) {
+                    x.1 = e;
+                }
+            }
+            (Some(i), None) => {
+                out.swap_remove(i);
+                if let Some(inc) = self.inc.get_mut(t)
+                    && let Some(j) = inc.iter().position(|x| *x == m)
+                {
+                    inc.swap_remove(j);
+                }
+            }
+            (None, Some(e)) => {
+                out.push((t, e));
+                if let Some(inc) = self.inc.get_mut(t) {
+                    inc.push(m);
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    /// `View::roles_expiring` of `x` at `ts`: the roles by index, the indexes reached, and
+    /// the earliest `until` followed. `None` when not `whole` or `x` has no index.
+    pub fn roles(&self, x: &Tid, ts: Ts) -> Option<DenseRoles> {
+        let &xi = self.ids.get(x).filter(|_| self.whole)?;
+        let mut best: Vec<Option<Role>> = vec![None; self.tids.len()];
+        *best.get_mut(xi)? = Some(Role::Admin);
+        let mut reached = vec![xi];
+        let mut expires: Option<WallMs> = None;
+        for level in [Role::Admin, Role::Write, Role::Read] {
+            let mut stack: Vec<usize> = reached.iter().copied().filter(|i| best.get(*i).copied().flatten() == Some(level)).collect();
+            while let Some(e) = stack.pop() {
+                let mut relax = |y: usize, v: Role, stack: &mut Vec<usize>| {
+                    if let Some(b) = best.get_mut(y)
+                        && b.is_none_or(|b| v > b)
+                    {
+                        if b.is_none() {
+                            reached.push(y);
+                        }
+                        *b = Some(v);
+                        if v == level {
+                            stack.push(y);
+                        }
+                    }
+                };
+                for &y in self.owned.get(e).into_iter().flatten() {
+                    relax(y, level, &mut stack);
+                }
+                for (t, edge) in self.out.get(e).into_iter().flatten() {
+                    if edge.alive_at(Some(ts)) {
+                        if let Some(u) = edge.until {
+                            expires = Some(expires.map_or(u, |e| e.min(u)));
+                        }
+                        relax(*t, level.min(edge.role), &mut stack);
+                    }
+                }
+            }
+        }
+        Some((best, reached, expires))
+    }
+
+    /// `View::roles_raised_expiring` from `seed` over roles `best` by index, raised in place:
+    /// the indexes raised and the earliest `until` followed.
+    pub fn raise(&self, best: &mut [Option<Role>], seed: &Tid, ts: Ts) -> Option<(Vec<usize>, Option<WallMs>)> {
+        let &si = self.ids.get(seed).filter(|_| self.whole)?;
+        let mut expires: Option<WallMs> = None;
+        let mut raised = Vec::new();
+        let mut stack: Vec<usize> = best.get(si).copied().flatten().map(|_| si).into_iter().collect();
+        while let Some(e) = stack.pop() {
+            let Some(level) = best.get(e).copied().flatten() else { continue };
+            let mut raise = |y: usize, v: Role, stack: &mut Vec<usize>| {
+                if let Some(b) = best.get_mut(y)
+                    && b.is_none_or(|b| v > b)
+                {
+                    *b = Some(v);
+                    raised.push(y);
+                    stack.push(y);
+                }
+            };
+            for &y in self.owned.get(e).into_iter().flatten() {
+                raise(y, level, &mut stack);
+            }
+            for (t, edge) in self.out.get(e).into_iter().flatten() {
+                if edge.alive_at(Some(ts)) {
+                    if let Some(u) = edge.until {
+                        expires = Some(expires.map_or(u, |e| e.min(u)));
+                    }
+                    raise(*t, level.min(edge.role), &mut stack);
+                }
+            }
+        }
+        Some((raised, expires))
+    }
+
+    /// `View::reach_backward` of `start`: by index, whether each reaches it.
+    pub fn back(&self, start: &Tid) -> Option<Vec<bool>> {
+        let &si = self.ids.get(start).filter(|_| self.whole)?;
+        let mut seen = vec![false; self.tids.len()];
+        *seen.get_mut(si)? = true;
+        let mut stack = vec![si];
+        while let Some(e) = stack.pop() {
+            for &y in self.owner.get(e).into_iter().flatten().chain(self.inc.get(e).into_iter().flatten()) {
+                if let Some(s) = seen.get_mut(y)
+                    && !*s
+                {
+                    *s = true;
+                    stack.push(y);
+                }
+            }
+        }
+        Some(seen)
+    }
+}
+
 /// What a standing on a thing reads besides the node's roles: the thing's owner chain (and
 /// the key actor at its top) and its members holding an invite (edges alive).
 pub struct Reads {
@@ -295,10 +462,6 @@ impl Reads {
         Standing { class, role }
     }
 }
-
-/// The roles `View::roles_repaired` changed (`None`: no longer reached), and the earliest
-/// `until` among the edges it followed.
-pub type Repaired = (BTreeMap<Tid, Option<Role>>, Option<WallMs>);
 
 /// One edge set to a value over an edge state: (member, target, value).
 pub type Patch = (Tid, Tid, Option<Edge>);
@@ -378,14 +541,6 @@ impl<'a> View<'a> {
     /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
     /// later ts before that, while no edge of a node it reaches changes.
     pub fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
-        let (best, expires, _) = self.roles_search(x);
-        (best, expires)
-    }
-
-    /// `roles_expiring`, and whether no edge out of what `x` reaches has an `until` (then the
-    /// answer is the same at every ts, while no edge out of what it reaches changes).
-    pub fn roles_search(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>, bool) {
-        let mut timeless = true;
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in [Role::Admin, Role::Write, Role::Read] {
@@ -403,7 +558,6 @@ impl<'a> View<'a> {
                     relax(y, level, &mut stack);
                 }
                 self.each_target(&e, |t, edge| {
-                    timeless &= edge.until.is_none();
                     if edge.alive_at(self.ts) {
                         if let Some(u) = edge.until {
                             expires = Some(expires.map_or(u, |e| e.min(u)));
@@ -413,7 +567,7 @@ impl<'a> View<'a> {
                 });
             }
         }
-        (best, expires, timeless)
+        (best, expires)
     }
 
     /// What `x`'s roles gain over `best`, its roles over edges this view dominates (every
@@ -449,109 +603,6 @@ impl<'a> View<'a> {
             });
         }
         (raised, expires)
-    }
-
-    /// `x`'s roles after one edge out of what it reaches was narrowed (this view has the new
-    /// value), given `best`, its roles before (exact then, at this view's ts), where the old
-    /// edge gave `t` exactly `o`, `best[t]`: the entries that change (`None`: no longer
-    /// reached) and the earliest `until` among the edges it followed; `None` when more than
-    /// `limit` things may change (search again). A thing whose role falls has a widest path
-    /// through the edge, so it holds at most `o`, and every thing after the edge on that path
-    /// falls too (one that kept its role would keep the path's role for the rest); a thing with
-    /// a supporter, an edge into it as wide as its role from `x` or from a thing holding more
-    /// than `o` (which keeps its role), keeps its role. So what may fall is reached from `t`
-    /// through things holding at most `o` and unsupported; those are searched again from the
-    /// edges into them, everything else being exact.
-    pub fn roles_repaired(&self, x: &Tid, best: &BTreeMap<Tid, Role>, t: &Tid, o: Role, limit: usize) -> Option<Repaired> {
-        let mut expires: Option<WallMs> = None;
-        let mut out = BTreeMap::new();
-        if t == x || best.get(t) != Some(&o) {
-            return Some((out, expires));
-        }
-        let supported = |y: &Tid, b: Role| {
-            let keeps = |u: &Tid| u == x || best.get(u).is_some_and(|r| *r > o);
-            if self.owners.owner_actor(y).is_some_and(|u| keeps(&u) && best.get(&u).is_some_and(|r| *r >= b)) {
-                return true;
-            }
-            let mut found = false;
-            self.each_member(y, |u, edge| {
-                found = found || (edge.alive_at(self.ts) && edge.role >= b && keeps(u) && best.get(u).is_some_and(|r| *r >= b));
-            });
-            found
-        };
-        // what may fall
-        let mut s: BTreeSet<Tid> = BTreeSet::new();
-        if supported(t, o) {
-            return Some((out, expires));
-        }
-        s.insert(*t);
-        let mut stack = vec![*t];
-        while let Some(e) = stack.pop() {
-            let mut next: Vec<Tid> = self.owners.owned(&e).to_vec();
-            self.each_target(&e, |y, edge| {
-                if edge.alive_at(self.ts) {
-                    next.push(*y);
-                }
-            });
-            for y in next {
-                let Some(&b) = best.get(&y) else { continue };
-                if y == *x || b > o || s.contains(&y) || supported(&y, b) {
-                    continue;
-                }
-                if s.len() >= limit {
-                    return None;
-                }
-                s.insert(y);
-                stack.push(y);
-            }
-        }
-        // their roles from the edges into them from outside, then within, widest first
-        let mut cand: BTreeMap<Tid, Role> = BTreeMap::new();
-        for y in &s {
-            let mut v: Option<Role> = self.owners.owner_actor(y).filter(|u| !s.contains(u)).and_then(|u| best.get(&u).copied());
-            self.each_member(y, |u, edge| {
-                if let (true, Some(&bu)) = (edge.alive_at(self.ts) && !s.contains(u), best.get(u)) {
-                    if let Some(until) = edge.until {
-                        expires = Some(expires.map_or(until, |e| e.min(until)));
-                    }
-                    v = v.max(Some(bu.min(edge.role)));
-                }
-            });
-            if let Some(v) = v {
-                cand.insert(*y, v);
-            }
-        }
-        for level in [Role::Admin, Role::Write, Role::Read] {
-            let mut stack: Vec<Tid> = cand.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
-            while let Some(e) = stack.pop() {
-                let mut relax = |y: Tid, v: Role, stack: &mut Vec<Tid>| {
-                    if s.contains(&y) && cand.get(&y).is_none_or(|&b| v > b) {
-                        cand.insert(y, v);
-                        if v == level {
-                            stack.push(y);
-                        }
-                    }
-                };
-                for &y in self.owners.owned(&e) {
-                    relax(y, level, &mut stack);
-                }
-                self.each_target(&e, |y, edge| {
-                    if edge.alive_at(self.ts) {
-                        if let Some(u) = edge.until {
-                            expires = Some(expires.map_or(u, |e| e.min(u)));
-                        }
-                        relax(*y, level.min(edge.role), &mut stack);
-                    }
-                });
-            }
-        }
-        for y in s {
-            let v = cand.get(&y).copied();
-            if best.get(&y).copied() != v {
-                out.insert(y, v);
-            }
-        }
-        Some((out, expires))
     }
 
     /// Every entity's effective role on `y` (`roles_from(x)[y]` for each `x`): the widest
