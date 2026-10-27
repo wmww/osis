@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Task worktrees with warm targets: <repo>/.worktrees/wt<N> (gitignored), each with its own
+in-tree target/ kept between tasks, so a task's first build recompiles only what its branch
+changed. Policy: two stay warm per device; more are created when more agents run at once and
+trimmed again after.
+
+  tools/wt claim <branch> [<base>]   lowest free worktree (a new one if none), <branch> checked out
+                                     (made from <base>, default main, if new); prints its path
+  tools/wt release [<path>]          free it (default: the one containing cwd); must be clean
+  tools/wt trim [<keep>]             remove free worktrees beyond the <keep> (default 2) lowest-numbered
+  tools/wt list
+
+A claim is a marker in the common git dir, created atomically; release detaches HEAD (files
+untouched, the branch is free to merge or delete) and removes the marker.
+"""
+import os, shutil, subprocess, sys, time
+from pathlib import Path
+
+
+def git(*args, cwd=None):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"wt: git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir"))
+home = common.parent / ".worktrees"
+claims = common / "wt-claims"
+
+
+def wt_of(arg):
+    p = Path(arg).resolve() if arg else Path(git("rev-parse", "--show-toplevel"))
+    if p.parent != home or not p.name.startswith("wt"):
+        sys.exit(f"wt: {p} is not a task worktree")
+    return p
+
+
+def clean(path):
+    return not git("status", "--porcelain", cwd=path)
+
+
+def claim(branch, base="main"):
+    claims.mkdir(exist_ok=True)
+    n = 1
+    while True:
+        try:
+            fd = os.open(claims / f"wt{n}", os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            break
+        except FileExistsError:
+            n += 1
+    path = home / f"wt{n}"
+    os.write(fd, f"{branch} (claimed {time.strftime('%Y-%m-%d %H:%M')})\n".encode())
+    os.close(fd)
+    try:
+        if not path.exists():
+            home.mkdir(exist_ok=True)
+            git("worktree", "add", "-q", "--detach", str(path), base)
+            print(f"wt: new worktree {path}: its first build is a cold one (a few minutes)", file=sys.stderr)
+        if not clean(path):
+            sys.exit(f"wt: {path} has uncommitted changes")
+        exists = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
+                                cwd=path, capture_output=True).returncode == 0
+        git("checkout", "-q", *([branch] if exists else ["-b", branch, base]), cwd=path)
+    except SystemExit:
+        (claims / f"wt{n}").unlink()
+        raise
+    print(path)
+
+
+def release(arg=None):
+    path = wt_of(arg)
+    if not clean(path):
+        sys.exit(f"wt: {path} has uncommitted or untracked files; commit or remove them first")
+    git("checkout", "-q", "--detach", cwd=path)
+    (claims / path.name).unlink(missing_ok=True)
+
+
+def trim(keep=2):
+    free = sorted((p for p in home.glob("wt*") if not (claims / p.name).exists()),
+                  key=lambda p: int(p.name[2:]))
+    for p in free[int(keep):]:
+        if not clean(p):
+            print(f"wt: {p} is dirty, kept", file=sys.stderr)
+            continue
+        git("worktree", "remove", "--force", str(p))
+        shutil.rmtree(p, ignore_errors=True)
+        print(f"removed {p}")
+
+
+def show():
+    for p in sorted(home.glob("wt*"), key=lambda p: int(p.name[2:])):
+        c = claims / p.name
+        print(p, c.read_text().strip() if c.exists() else "free")
+
+
+cmd, *rest = sys.argv[1:] or ["help"]
+if cmd == "claim" and 1 <= len(rest) <= 2:
+    claim(*rest)
+elif cmd == "release" and len(rest) <= 1:
+    release(*rest)
+elif cmd == "trim" and len(rest) <= 1:
+    trim(*rest)
+elif cmd == "list" and not rest:
+    show()
+else:
+    sys.exit(__doc__)
