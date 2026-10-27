@@ -101,7 +101,9 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
     all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
 }
 
-fn run(samples: u64, seed: u64) {
+/// Returns how many updates `Timelines::append` did alone.
+fn run(samples: u64, seed: u64) -> usize {
+    let mut appended = 0;
     let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
@@ -160,6 +162,7 @@ fn run(samples: u64, seed: u64) {
                 let held = held_at(&w, &skip, &leaves, step + 1);
                 if around {
                     inc.update_touched(&held, &touched(&prev, &held));
+                    appended += inc.appended();
                 } else {
                     inc.update(&held);
                 }
@@ -172,6 +175,7 @@ fn run(samples: u64, seed: u64) {
         // Nothing changed: nothing is evaluated again.
         assert_eq!(inc.update(&w.held()), 0);
     }
+    appended
 }
 
 /// §5.1 step 5, §6: two sibling teams that are admins of each other (owner-chain authority on
@@ -222,13 +226,13 @@ fn mutual_admin_teams_extend() {
 /// §5.1 step 5: incremental equals from scratch.
 #[test]
 fn incremental_equals_from_scratch() {
-    run(10, 0x5eed_0301);
+    assert!(run(10, 0x5eed_0301) > 0);
 }
 
 #[test]
 #[ignore]
 fn incremental_equals_from_scratch_large() {
-    run(2_000, 0x5eed_0302);
+    assert!(run(2_000, 0x5eed_0302) > 0);
 }
 
 /// A `/created` arriving before, between or after the commits naming its thing: the cached
@@ -290,6 +294,7 @@ fn leaves_and_appends_extend() {
     let held = w.held();
     let c = inc.update_touched(&held, &touched_of(&prev, &held));
     assert_eq!(c.extended, BTreeSet::from([g]), "{c:?}");
+    assert_eq!(inc.appended(), 1);
     assert!(check(&held, &inc, &n).is_none());
 }
 
@@ -327,6 +332,7 @@ fn late_write_mid_history_keeps_states_exact() {
     let all = w.held();
     let c = inc.update_touched(&all, &touched_of(&held, &all));
     assert!(c.evaluated.is_empty(), "{c:?}");
+    assert_eq!(inc.appended(), 1);
     assert!(check(&all, &inc, &n).is_none(), "{:?}", check(&all, &inc, &n));
 }
 
@@ -538,4 +544,36 @@ fn extend_over_commits_and_leaves_together() {
         assert_eq!(tl.dropped(), full.dropped(), "sample {s}");
     }
     assert!(extended > 10, "{extended}");
+}
+
+/// spec/commits.md §4 (overlapping node-form `/members` ranges void both commits), §5.1:
+/// writes after every held one go on by `Timelines::append` alone while their ranges are
+/// disjoint; one overlapping a held range (or a voided one) takes the general path, and every
+/// step equals an evaluation from scratch.
+#[test]
+fn append_declines_overlapping_ranges_spec_commits_4() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let (k, a) = (n[0], n[1]);
+    let g = w.thing(k);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    // members already known: a new node always takes the general path
+    w.set(k, g, n[2], edge(Read), 2, &[]);
+    w.set(k, g, n[3], edge(Read), 3, &[]);
+    let mut held = w.held();
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    // (member, role, range, appended alone)
+    let steps = [(n[2], Write, (0, 2), true), (n[3], Read, (2, 4), true), (n[2], Read, (3, 5), false), (n[3], Write, (4, 6), false), (n[2], Write, (6, 7), true)];
+    for (i, (m, r, (lo, hi), alone)) in steps.into_iter().enumerate() {
+        let op = osis_perm::EdgeOp { target: g, member: m, edge: edge(r), dots: osis_perm::Dots::Node { lo, hi } };
+        let id = osis_core::CommitId([0x40 + i as u8; 32]);
+        held.add_commit(osis_perm::MembershipCommit { id, ts: ts(10 + i as u64), author: a, actor: a, frontier: None, ops: vec![op] });
+        inc.update_touched(&held, &BTreeSet::from([g]));
+        assert_eq!(inc.appended() == 1, alone, "step {i}");
+        assert!(check(&held, &inc, &n).is_none(), "step {i}: {:?}", check(&held, &inc, &n));
+    }
+    let full = Timeline::evaluate(&held);
+    assert!(full.membership_commit(&osis_core::CommitId([0x41; 32])).is_none(), "voided");
 }

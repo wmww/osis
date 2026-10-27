@@ -79,7 +79,13 @@ pub(crate) struct Input {
     pub ever_admins: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The earliest held write (edge op or roster snapshot) per (author, target).
     pub first_write: BTreeMap<(Tid, Tid), Point>,
+    /// Node-form `/members` ranges of every gathered commit and snapshot, voided ones
+    /// included, by (node, thing), with their largest end: what `can_append` checks against.
+    pub ranges: BTreeMap<(Tid, Tid), (Spans, u64)>,
 }
+
+/// Node-form ranges `[lo, hi)` with their commits.
+pub(crate) type Spans = Vec<(u64, u64, CommitId)>;
 
 impl Input {
     /// Whether owner-chain authority on some thing with a roster snapshot may come through that
@@ -87,12 +93,18 @@ impl Input {
     /// of anything on the way, transitively, at any time. Otherwise the epoch starts have a
     /// unique fixed point (`drive`).
     pub fn cyclic(&self) -> bool {
+        self.cyclic_with(&[])
+    }
+
+    /// `cyclic` with the admin edges `extra` (target, member) also held.
+    fn cyclic_with(&self, extra: &[(Tid, Tid)]) -> bool {
         let things: BTreeSet<Tid> = self.snaps.values().map(|s| s.thing).collect();
         things.iter().any(|t| {
             let mut seen = BTreeSet::new();
             let mut stack = vec![*t];
             while let Some(e) = stack.pop() {
-                let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_admins.get(&e).into_iter().flatten().copied());
+                let more = extra.iter().filter(|x| x.0 == e).map(|x| x.1);
+                let up = self.owners.owner_actor(&e).into_iter().chain(self.ever_admins.get(&e).into_iter().flatten().copied()).chain(more);
                 for y in up {
                     if y == *t {
                         return true;
@@ -123,14 +135,21 @@ impl Input {
         }
         // Overlapping node-form ranges on `/members` void both commits (spec/commits.md §4);
         // the node voids commits overlapping on its other aspects before handing them over.
-        let ranges = commits
+        let ranges: Vec<Range> = commits
             .values()
             .flat_map(|c| c.ops.iter().map(move |o| (c.id, c.author, o.target, o.dots)))
             .chain(snaps.values().map(|s| (s.id, s.author, s.thing, s.dots)))
             .filter_map(|(commit, node, tid, d)| match d {
                 Dots::Node { lo, hi } => Some(Range { commit, node, tid, ak: MEMBERS.to_string(), lo, hi }),
                 Dots::Commit => None,
-            });
+            })
+            .collect();
+        let mut by_key: BTreeMap<(Tid, Tid), (Spans, u64)> = BTreeMap::new();
+        for r in ranges.iter().filter(|r| r.lo < r.hi) {
+            let e = by_key.entry((r.node, r.tid)).or_default();
+            e.0.push((r.lo, r.hi, r.commit));
+            e.1 = e.1.max(r.hi);
+        }
         let void = overlapping(ranges);
         commits.retain(|id, _| !void.contains(id));
         snaps.retain(|id, _| !void.contains(id));
@@ -161,7 +180,62 @@ impl Input {
             let e = first_write.entry((a, t)).or_insert(p);
             *e = (*e).min(p);
         }
-        Input { owners, commits, snaps, nodes, ever_admins, first_write }
+        Input { owners, commits, snaps, nodes, ever_admins, first_write, ranges: by_key }
+    }
+
+    /// Whether `new` (commits not held here) can join this input without changing anything but
+    /// the commits (`append`): no new node (author or member that may be one), no thing
+    /// without an owner link here becoming owned, no overlapping node-form range (a void,
+    /// spec/commits.md §4), and with an epoch start ever changed, no membership cycle
+    /// (`Timeline::extend`'s conditions).
+    pub fn can_append(&self, new: &[Arc<MembershipCommit>], epoch_changed: bool) -> bool {
+        let mut mine: BTreeMap<(Tid, Tid), Spans> = BTreeMap::new();
+        let mut admins = Vec::new();
+        for c in new {
+            if self.commits.contains_key(&c.id) || !self.nodes.contains(&c.author) {
+                return false;
+            }
+            for o in &c.ops {
+                if self.owners.owner_actor(&o.member).is_none() && !self.nodes.contains(&o.member) {
+                    return false;
+                }
+                if o.edge.is_some_and(|e| e.role == Role::Admin) {
+                    admins.push((o.target, o.member));
+                }
+                let Dots::Node { lo, hi } = o.dots else { continue };
+                if lo >= hi {
+                    continue;
+                }
+                let k = (c.author, o.target);
+                let clash = |v: &[(u64, u64, CommitId)]| v.iter().any(|&(l, h, x)| x != c.id && l < hi && lo < h);
+                if self.ranges.get(&k).is_some_and(|(v, max)| *max > lo && clash(v)) || mine.get(&k).is_some_and(|v| clash(v)) {
+                    return false;
+                }
+                mine.entry(k).or_default().push((lo, hi, c.id));
+            }
+        }
+        !(epoch_changed && self.cyclic_with(&admins))
+    }
+
+    /// Adds `new`, which `can_append` accepted.
+    pub fn append(&mut self, new: &[Arc<MembershipCommit>]) {
+        for c in new {
+            for o in &c.ops {
+                if o.edge.is_some_and(|e| e.role == Role::Admin) {
+                    self.ever_admins.entry(o.target).or_default().insert(o.member);
+                }
+                let e = self.first_write.entry((c.author, o.target)).or_insert(c.point());
+                *e = (*e).min(c.point());
+                if let Dots::Node { lo, hi } = o.dots
+                    && lo < hi
+                {
+                    let r = self.ranges.entry((c.author, o.target)).or_default();
+                    r.0.push((lo, hi, c.id));
+                    r.1 = r.1.max(hi);
+                }
+            }
+            self.commits.insert(c.id, c.clone());
+        }
     }
 }
 
@@ -300,6 +374,12 @@ pub(crate) struct Outcome {
     /// The furthest point a walk under the final starts other than the final walk reached
     /// (where it restarted): a walk is the final one's prefix up to here only.
     pub reach: Option<Point>,
+    /// The final walk's items (`None`: not built, `items` builds them).
+    pub items: Option<Items>,
+    /// For a continued walk that kept its initial state: how many history changes it shares
+    /// with the walk it continued, and the point of that walk's first change not shared
+    /// (`None`: it shares them all).
+    pub common: Option<(usize, Option<Point>)>,
 }
 
 /// A converged evaluation to continue: its outcome, and the earliest point of the commits
@@ -311,6 +391,8 @@ pub(crate) struct Resume {
     pub epoch_changed: bool,
     pub reach: Option<Point>,
     pub from: Point,
+    /// The walk's items over `input`, when kept (else built).
+    pub items: Option<Items>,
 }
 
 /// A write placed by an epoch start's roster and ledger.
@@ -476,6 +558,9 @@ struct Pass<'a> {
     roles: BTreeMap<Tid, Roles>,
     log: Vec<Undo>,
     marks: Vec<(usize, usize)>,
+    /// A continued walk: how many history changes are still the continued walk's, and that
+    /// walk's changes after them (moved out by `rollback`).
+    untouched: Option<(usize, Vec<Change>)>,
 }
 
 type Roles = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
@@ -502,7 +587,15 @@ impl<'a> Pass<'a> {
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
         let Walked { initial, history, edges, applied, demotions, falls, rest } = w;
         let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks } = rest;
-        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), log, marks }
+        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), log, marks, untouched: None }
+    }
+
+    /// `Outcome::common` of this walk.
+    fn common(&self) -> Option<(usize, Option<Point>)> {
+        let (n, stash) = self.untouched.as_ref()?;
+        let same = |a: &Change, b: &Change| (a.point, a.member, a.target, a.edge) == (b.point, b.member, b.target, b.edge);
+        let k = self.history.get(*n..).unwrap_or_default().iter().zip(stash).take_while(|(a, b)| same(a, b)).count();
+        Some((n + k, stash.get(k).map(|c| c.point)))
     }
 
     fn finish(self) -> (Walked, BTreeMap<WriteId, Point>) {
@@ -580,7 +673,16 @@ impl<'a> Pass<'a> {
                 }
             }
         }
-        self.history.truncate(h);
+        match &mut self.untouched {
+            Some((n, stash)) if h < *n => {
+                let mut tail = self.history.split_off(h);
+                tail.truncate(*n - h);
+                tail.append(stash);
+                *stash = tail;
+                *n = h;
+            }
+            _ => self.history.truncate(h),
+        }
         self.marks.truncate(i);
         self.roles.clear();
     }
@@ -964,13 +1066,42 @@ impl<'a> Pass<'a> {
 
 /// The items of a walk in order under epoch starts `epoch`, and the index of each commit
 /// and snapshot.
-struct Items {
+pub(crate) struct Items {
     initial: Edges,
     list: Vec<(Point, u8, Tid, Tid, Item)>,
     at: BTreeMap<CommitId, usize>,
 }
 
-fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
+impl Items {
+    /// Adds commits not yet listed, in order: O(log n) each at the end, else O(n).
+    pub fn add(&mut self, new: &[Arc<MembershipCommit>]) {
+        let zero = Tid::from_bytes([0; 15]);
+        let mut moved = false;
+        for c in new {
+            let k = (c.point(), 1, zero, zero);
+            let i = self.list.partition_point(|a| (a.0, a.1, a.2, a.3) < k);
+            moved |= i < self.list.len();
+            self.list.insert(i, (k.0, 1, zero, zero, Item::Commit(c.clone())));
+            self.at.insert(c.id, i);
+        }
+        if moved {
+            self.index();
+        }
+    }
+
+    fn index(&mut self) {
+        self.at.clear();
+        for (i, it) in self.list.iter().enumerate() {
+            match &it.4 {
+                Item::Commit(c) => self.at.insert(c.id, i),
+                Item::Snap(s) => self.at.insert(s.id, i),
+                Item::Virtual(_) => None,
+            };
+        }
+    }
+}
+
+pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
     let mut list: Vec<(Point, u8, Tid, Tid, Item)> = Vec::new();
     let zero = Tid::from_bytes([0; 15]);
     let mut initial = Edges::default();
@@ -999,15 +1130,9 @@ fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
         list.push((s.point(), 1, zero, zero, Item::Snap(s.clone())));
     }
     list.sort_by_key(|a| (a.0, a.1, a.2, a.3));
-    let mut at = BTreeMap::new();
-    for (i, it) in list.iter().enumerate() {
-        match &it.4 {
-            Item::Commit(c) => at.insert(c.id, i),
-            Item::Snap(s) => at.insert(s.id, i),
-            Item::Virtual(_) => None,
-        };
-    }
-    Items { initial, list, at }
+    let mut out = Items { initial, list, at: BTreeMap::new() };
+    out.index();
+    out
 }
 
 enum Step {
@@ -1083,9 +1208,11 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
         }
         Some(r) => {
             (epoch, epoch_changed, reach) = (r.epoch_starts, r.epoch_changed, r.reach);
-            it = items(input, &epoch);
+            it = r.items.unwrap_or_else(|| items(input, &epoch));
             from = it.list.partition_point(|x| x.0 < r.from);
+            let n = r.walked.history.len();
             p = Pass::resume(input, epoch.clone(), r.dropped, r.walked);
+            p.untouched = Some((n, Vec::new()));
         }
     }
     let (mut passes, mut round) = (0, 0);
@@ -1105,8 +1232,9 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
         }
         let next = p.choose(&excluded);
         if next == epoch {
+            let common = p.common();
             let (walked, dropped) = p.finish();
-            return Outcome { walked, dropped, epoch_starts: epoch, passes, epoch_changed, reach };
+            return Outcome { walked, dropped, epoch_starts: epoch, passes, epoch_changed, reach, items: Some(it), common };
         }
         if round >= limit {
             let (a, b): (BTreeSet<CommitId>, BTreeSet<CommitId>) = (epoch.values().copied().collect(), next.values().copied().collect());
