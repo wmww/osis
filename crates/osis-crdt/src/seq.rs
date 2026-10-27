@@ -570,14 +570,7 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
 /// in part (a placement held in part attached) are written if a visible element is placed (it
 /// has a creation or content that reads); else, if none loaded is, the lookup misses them all.
 pub(crate) fn has_written(s: &Seq) -> bool {
-    let any = s.elems.iter().any(|(d, e)| {
-        let creation = e.creation_counts();
-        (creation && e.created.is_some())
-            || e.pos.iter().any(|p| creation || p.0.dot != *d)
-            || e.deleted.is_some()
-            || matches!(&e.content, SeqContent::Frag(f) if f.present() || f.reset().is_some())
-    });
-    if any {
+    if any_written(&s.elems) {
         return true;
     }
     let Some(p) = &s.part else { return false };
@@ -586,6 +579,17 @@ pub(crate) fn has_written(s: &Seq) -> bool {
     }
     p.all();
     false
+}
+
+/// Whether a record holds a presence-counting write (`has_written` of the records loaded).
+fn any_written(m: &Elems) -> bool {
+    m.iter().any(|(d, e)| {
+        let creation = e.creation_counts();
+        (creation && e.created.is_some())
+            || e.pos.iter().any(|p| creation || p.0.dot != *d)
+            || e.deleted.is_some()
+            || matches!(&e.content, SeqContent::Frag(f) if f.present() || f.reset().is_some())
+    })
 }
 
 /// Whether any record exists (emptiness, §4.2).
@@ -629,14 +633,17 @@ impl SeqRead for Seq {
 }
 
 /// A state's sequence with a batch's writes joined over it, without copying the state: what the
-/// batch's next op there resolves against (§4.5). `top` holds the joined record of every dot the
-/// batch wrote, each lined up with the state's record of that dot (same key and span) or new;
-/// `lin` is the state's placement followed through them.
+/// batch's next op there resolves against (§4.5). `top` holds the batch's new records and every
+/// state record its writes meet, copied whole, then split where the writes land and joined with
+/// them, so it shadows the state's records it overlaps; `lin` is the state's placement followed
+/// through them.
 pub(crate) struct Layered<'s> {
     base: &'s Seq,
     top: Elems,
     w: Option<Stamp>,
     lin: Arc<Lin>,
+    /// `has_written(base)`, once looked at.
+    base_written: OnceLock<bool>,
 }
 
 /// The records of a `Layered`: the batch's over the state's.
@@ -655,10 +662,10 @@ impl Recs for Union<'_> {
 }
 
 impl<'s> Layered<'s> {
-    /// `base` ⊔ `d` (a batch's writes, no reset); `None` where a record does not line up with
-    /// the state's or the placement cannot follow (the caller copies instead).
+    /// `base` ⊔ `d` (a batch's writes, no reset); `None` where the placement cannot follow (the
+    /// caller copies instead).
     pub(crate) fn new(base: &'s Seq, d: Seq) -> Option<Layered<'s>> {
-        let mut l = Layered { base, top: Elems::new(), w: base.meta.w.clone(), lin: base.lin() };
+        let mut l = Layered { base, top: Elems::new(), w: base.meta.w.clone(), lin: base.lin(), base_written: OnceLock::new() };
         l.join(d).then_some(l)
     }
 
@@ -671,25 +678,38 @@ impl<'s> Layered<'s> {
         let mut plans = Vec::with_capacity(d.elems.len());
         let mut ch = Changes::new();
         for (dot, de) in d.elems {
-            match self.top.get(&dot) {
-                Some(r) if r.span != de.span => return false,
-                Some(_) => {}
-                None => match (Covered { elems: &self.base.elems, part: self.base.part().as_deref() }).find(&dot) {
-                    Some((k, r)) if *k == dot && r.span == de.span => {
-                        self.top.insert(dot.clone(), r.clone());
-                    }
-                    Some(_) => return false,
-                    None if de.span != 1 => return false,
-                    None => {}
-                },
-            }
+            // the state's records this one meets go to `top` whole (the join below splits them
+            // there), so `top` shadows every element of a record it holds part of
+            let last = nth(&dot, de.span.max(1) - 1);
             let part = self.base.part();
+            let base = Covered { elems: &self.base.elems, part: part.as_deref() };
+            let Some(mut meets) = base.starting(&dot, &last) else { return false };
+            meets.extend(base.find(&dot));
+            for (k, r) in meets {
+                if crate::seq_span::find(&self.top, k).is_none() {
+                    self.top.insert(k.clone(), r.clone());
+                }
+            }
+            if crate::seq_span::find(&self.top, &dot).is_none() && de.span != 1 {
+                return false;
+            }
+            let n = plans.len();
             if !self.lin.plan(&Union { base: Covered { elems: &self.base.elems, part: part.as_deref() }, top: &self.top }, &dot, &de, &mut plans) {
                 return false;
             }
             let mut t = Seq::new(self.base.text, Meta::default(), std::mem::take(&mut self.top));
+            let was = ch.take_changed();
             join_one(&mut t, dot.clone(), de, None, &mut ch);
             self.top = t.elems;
+            // a record that changed nothing moves nothing; only the records it split need their
+            // rows cut (`join_elems_in`)
+            if !ch.is_changed() {
+                let tail = plans.split_off(n);
+                plans.extend(tail.into_iter().filter(|p| matches!(p.1, Plan::Cut)));
+            }
+            if was {
+                ch.touch();
+            }
             if !self.top.contains_key(&dot) {
                 return false;
             }
@@ -700,7 +720,7 @@ impl<'s> Layered<'s> {
 
     /// Present (§4.3) as the joined state would be.
     pub(crate) fn present(&self) -> bool {
-        self.w.is_some() || has_written(self.base) || has_written(&Seq::new(self.base.text, Meta::default(), self.top.clone()))
+        self.w.is_some() || any_written(&self.top) || *self.base_written.get_or_init(|| has_written(self.base))
     }
 
     /// The joined state, copied (checks).
@@ -728,6 +748,55 @@ impl SeqRead for Layered<'_> {
     }
     fn holds(&self, d: &Dot) -> bool {
         crate::seq_span::find(&self.top, d).is_some() || self.base.holds(d)
+    }
+}
+
+/// What a batch's kept view of a sequence checks after each op (`Batch::apply`), at the op's
+/// elements only: the batch's records `a` there, pruned under the reset `e` from above and
+/// joined with the op's `d`, equal the net effect's records there; elsewhere the net effect
+/// leaves `a`'s records as they were, unless it omits an element the commit made (§4.5), which
+/// only a removal in `d` (seen here) or a position write of `d` no longer naming such an
+/// element (refused) can start.
+pub(crate) struct Foot {
+    dots: Vec<Dot>,
+    j: Fragment,
+    e: Option<Stamp>,
+}
+
+impl Foot {
+    /// `None`: check on copies instead.
+    pub(crate) fn new(a: &Seq, d: &Seq, w: &crate::ops::Writer, e: Option<&Stamp>) -> Option<Foot> {
+        if d.meta.reset.is_some() || a.text != d.text {
+            return None;
+        }
+        let dots: Vec<Dot> = d.elems.iter().flat_map(|(k, e)| (0..e.span).map(move |i| nth(k, i))).collect();
+        let mut sa = Elems::new();
+        for x in &dots {
+            let de = crate::seq_span::elem(&d.elems, x)?;
+            let prev = crate::seq_span::elem(&a.elems, x);
+            if let Some(p) = &prev {
+                let mut pos = p.pos.clone();
+                pos.extend(de.pos.iter().cloned());
+                top2(&mut pos);
+                if p.pos.iter().any(|q| matches!(&q.1, Anchor::Dot(y) if w.made(y)) && !pos.iter().any(|r| r.1 == q.1)) {
+                    return None;
+                }
+                sa.insert(x.clone(), p.clone().into_owned());
+            }
+        }
+        let mut ch = Changes::new();
+        let mut j = Fragment::Seq(Seq::new(a.text, a.meta.clone(), sa));
+        j.prune(e, &mut ch);
+        j.join_into(Fragment::Seq(d.clone()), e, &mut ch);
+        Some(Foot { dots, j, e: e.cloned() })
+    }
+
+    /// Whether the net effect `n` holds the joined records at the op's elements.
+    pub(crate) fn matches(&self, n: &Seq) -> bool {
+        let sn = self.dots.iter().filter_map(|x| crate::seq_span::elem(&n.elems, x).map(|e| (x.clone(), e.into_owned()))).collect();
+        let mut sn = Fragment::Seq(Seq::new(n.text, n.meta.clone(), sn));
+        sn.prune(self.e.as_ref(), &mut Changes::new());
+        sn == self.j
     }
 }
 
