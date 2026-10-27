@@ -19,13 +19,14 @@ fn files(p: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn main() {
-    let dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let crates = dir.join("..");
+    // Relative to the package (a build script's working dir): absolute paths in
+    // rerun-if-changed would make every checkout's fingerprint differ (tools/seed-target.py).
+    let crates = PathBuf::from("..");
     let mut roots: Vec<PathBuf> = match std::fs::read_dir(&crates) {
         Ok(rd) => rd.flatten().map(|e| e.path().join("src")).filter(|p| p.is_dir()).collect(),
         Err(_) => {
             println!("cargo:warning=index tag: cannot read {}", crates.display());
-            vec![dir.join("src")]
+            vec![PathBuf::from("src")]
         }
     };
     roots.sort();

@@ -58,16 +58,23 @@ def seed_profile(src, dst):
                 os.link(f, dst / e.name / f.name)
 
 
-def same_mtimes(top, main_co):  # tracked files identical to the main checkout's take its mtime
-    files = run("git", "ls-files", "-z", cwd=top)
-    for rel in (files or "").split("\0"):
+def same_mtimes(top, main_co):
+    """Tracked files identical to the main checkout's take its mtimes, and so do
+    their directories where both list the same names (a build script may watch a
+    directory: cargo then takes the newest mtime under it)."""
+    def take(rel, same):
         a, b = top / rel, main_co / rel
         try:
-            if a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes():
+            if a.exists() and b.exists() and same(a, b):
                 st = b.stat()
                 os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
         except OSError:
             pass
+    rels = [r for r in (run("git", "ls-files", "-z", cwd=top) or "").split("\0") if r]
+    for r in rels:
+        take(r, lambda a, b: a.read_bytes() == b.read_bytes())
+    for d in {Path(r).parent for r in rels}:
+        take(d, lambda a, b: sorted(os.listdir(a)) == sorted(os.listdir(b)))
 
 
 def main():
