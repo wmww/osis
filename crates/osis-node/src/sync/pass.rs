@@ -165,6 +165,15 @@ impl SyncEngine {
         let mut scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
         self.stats.passes += 1;
         self.refetch(conn, server, l, w, out)?;
+        // commits the refetch applied may move the closure or published groups: judged with
+        // what holds now, as the inputs record it
+        let fresh;
+        let ctx = if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty()) {
+            fresh = self.engine.body_ctx(&g);
+            &fresh
+        } else {
+            ctx
+        };
         self.pull(conn, &g, l, &mut scope, w);
         self.check_linked_prefixes(l, &scope)?;
         let unsettled = self.unsettled_of(!w.unopened.is_empty())?;
@@ -194,7 +203,8 @@ impl SyncEngine {
         if w.inputs.as_ref() != Some(&inputs) && !full {
             full = true;
             scope = Scope::All;
-            self.go_full(&g, &l, w, &ctx.closure);
+            let closure = w.closure.clone();
+            self.go_full(&g, &l, w, &closure);
             self.check_linked_prefixes(l, &scope)?;
         }
         w.inputs = Some(inputs);
