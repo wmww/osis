@@ -32,6 +32,11 @@ impl Backend for Counting {
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.batches.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(batch.bytes() as u64, Ordering::Relaxed);
+        // OSIS_SCALE_ROWS: each row written, by kind (`u` unit, `n` key-tree node) and slot
+        if std::env::var_os("OSIS_SCALE_ROWS").is_some() {
+            let rows: Vec<String> = batch.ops.iter().filter_map(|o| match o { osis_store::Op::Put(k, v) => Some(format!("{}{}:{}", char::from(k[0]), k.get(1..9).map_or(0, |x| u64::from_be_bytes(x.try_into().unwrap())), v.len())), _ => None }).collect();
+            println!("rows: {}", rows.join(" "));
+        }
         self.inner.commit(batch)
     }
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
@@ -336,8 +341,9 @@ fn text_undo_and_first_access_cost() {
 // Scale (a change costs O(change)): a 10^5-char text, each step in a new session: a read of 100
 // chars at a random index, one local insert (through the stored placement), one received insert
 // (the join follows the stored placement), then two reads; then local inserts, deletes and moves
-// by index at random places and an undo; pages loaded and written (`state page load`, `state
-// page write` spans), placement rows written, store bytes and time.
+// by index at random places, edits as a text session writes them, and an undo; pages loaded and
+// written (`state page load`, `state page write` spans), placement rows written, store bytes and
+// time.
 #[test]
 #[ignore = "tier 2"]
 fn text_range_and_edit_cost() {
@@ -411,7 +417,7 @@ fn text_range_and_edit_cost() {
     e.commit(m).unwrap().unwrap();
     let mut want: Vec<char> = text.chars().collect();
     let mut last = None;
-    for step in 0..9 {
+    for step in 0..11 {
         drop(e);
         e = reopen.open(&Arc::new(AtomicU64::new(0)), &bytes);
         osis_node::costs::take();
@@ -419,7 +425,13 @@ fn text_range_and_edit_cost() {
         let t0 = Instant::now();
         let r = osis_crypto::RngCore::next_u64(&mut rng) as usize;
         let before = want.clone();
-        let (name, op) = if step % 3 == 0 {
+        let (name, op) = if step >= 9 {
+            // what a text session writes: the whole text before and after
+            let at = r % (want.len() - 5);
+            let base = Value::Str(want.iter().collect());
+            want.splice(at..at + 2, "EDIT".chars());
+            ("edit (2 chars replaced by 4)", Op::Edit { base, new: Value::Str(want.iter().collect()) })
+        } else if step % 3 == 0 {
             let at = r % want.len();
             want.splice(at..at, "XYZ".chars());
             ("insert of 3 chars", Op::Insert { at, items: vec![Value::Str("XYZ".into())] })
@@ -438,6 +450,9 @@ fn text_range_and_edit_cost() {
         m.op(t, &TEXT, PathOp { path: vec![], op }).unwrap();
         last = Some((e.commit(m).unwrap().unwrap(), before));
         let c = osis_node::costs::take();
+        if std::env::var_os("OSIS_SCALE_ROWS").is_some() {
+            println!("costs: {c:?}");
+        }
         let count = |k: &str| c.iter().find(|x| x.0 == k).map_or(0, |x| x.2);
         println!("text {n} chars, new session: local {name} {:?}, {} pages loaded, {} pages and {} placement rows written, store writes {} B", t0.elapsed(), count("state page load"), count("state page write"), count("placement block write") + count("placement row write"), bytes.load(Ordering::Relaxed) - w0);
     }
