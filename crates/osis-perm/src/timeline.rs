@@ -9,8 +9,9 @@ use osis_core::{CommitId, Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-/// History changes between two kept edge states (`edges_at` replays at most this many).
-const CHECKPOINT: usize = 256;
+/// History changes between two kept edge states (`edges_at` replays at most this many as an
+/// overlay; a kept state shares its unchanged per-thing maps, `Edges`).
+const CHECKPOINT: usize = 32;
 
 /// When a query is evaluated: the edge state just before `point` (`None`: after every held
 /// write) with edges alive at `ts` (`None`: the end of time, where every `until` has passed).

@@ -77,6 +77,9 @@ fn bench_10k_edges() {
         let tl3 = Instant::now();
         inc.update(&held3);
         let late = tl3.elapsed();
+        let ts3 = Instant::now();
+        let passes3 = Timeline::evaluate(&held3).passes();
+        let scratch3 = ts3.elapsed();
         // what a node does per write: 100 writes after every held one, each its own update
         // around the thing it touched (`update_touched`), then taken out again
         let touched = std::collections::BTreeSet::from([doc]);
@@ -190,7 +193,7 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
