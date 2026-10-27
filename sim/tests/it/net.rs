@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Phase B scenarios (sync engines and blind servers engine to engine), seed 1 each: the quickest in tier
-//! 1 (osis-sim's whole tier 1 stays near 10 s), the rest tier 2 (`--release -- --ignored`).
+//! 1 (osis-sim's whole tier 1 stays near 10 s), the rest tier 2 (`-- --ignored`).
 //! Every run ends with the quiescent invariants (sim/src/net/check.rs: convergence by held
 //! deltas, member liveness and agreement, label required sets at servers, must-not-hold absent,
 //! deposit promotion, tombstones, purges, no ping-pong). A failure prints its seed and the

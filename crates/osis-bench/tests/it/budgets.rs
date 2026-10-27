@@ -1,4 +1,4 @@
-//! Size budgets (tier 2: `cargo test --release --workspace --test it budgets:: -- --ignored`). Each budget is a number from
+//! Size budgets (tier 2: `cargo test --workspace --test it budgets:: -- --ignored`). Each budget is a number from
 //! notes or spec plus a margin, cites its source, and fails on regression. Pending budgets (their
 //! crates have not landed) are listed in notes/testing.md, "Size budgets".
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

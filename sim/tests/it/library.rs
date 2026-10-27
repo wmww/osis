@@ -2,7 +2,7 @@
 //! Phase C: the scenario library, adversaries and version skew (sim/src/net/{library, adversary,
 //! skew}.rs), one seed each. Every run ends with the quiescent invariants. Scenarios an engine bug
 //! breaks are ignored with the issue's name; all but the quickest few
-//! (osis-sim's whole tier 1 stays near 10 s) are tier 2 (`--release -- --ignored`) and swept nightly by `sim-sweep`.
+//! (osis-sim's whole tier 1 stays near 10 s) are tier 2 (`-- --ignored`) and swept nightly by `sim-sweep`.
 
 use osis_sim::{Report, replay};
 

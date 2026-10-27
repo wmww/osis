@@ -2,7 +2,7 @@
 > Summary: On a 100,000-character text, typing, deletes, moves, multi-edit commits and writes splitting a snapshot's range records cost tens of µs, but a reset (~11 ms pass after it), a move of elements caught in an earlier move cycle, and a received delete of most of the text (~1.5 µs per element) still cost a whole pass or more.
 > Tags: performance, crdt
 
-Repro: `cargo test --release -p osis-crdt --lib -- --ignored budget_big_text_spec_6 --nocapture` prints the times (notes/crdt.md Timing; received deltas go through encode and decode).
+Repro: `cargo test --release --workspace --lib budget_big_text_spec_6 -- --ignored --nocapture` prints the times (notes/crdt.md Timing; received deltas go through encode and decode).
 
 Remains:
 - Fallbacks to a whole pass (full list in the `seq_lin` module doc): resets, a new `Derived` record or an anchor at an absent one (a virtual anchor), 256 or more newer siblings at one anchor; for moves also an element on a cycle a demotion broke (`Lin::cyc`) or a move closing a cycle, a written or dropped anchor that is unknown, a dropped anchor inside a range record, and a sibling whose old write a move in the same delta pushed out of its top two.

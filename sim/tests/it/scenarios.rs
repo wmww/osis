@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Phase A scenarios, seed 1 each: the quickest in tier 1 (the engine runs unoptimized in test
-//! builds), the rest tier 2 (`--release -- --ignored`); the sweep is tier 3 (`#[ignore]`, run it with `--release`).
+//! Phase A scenarios, seed 1 each: the quickest in tier 1 (osis-sim's tier 1 stays
+//! near 10 s), the rest tier 2 (`-- --ignored`); the sweep is tier 3 (`#[ignore]`, or `sim-sweep`).
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
 use osis_sim::{Report, SCENARIOS, replay};

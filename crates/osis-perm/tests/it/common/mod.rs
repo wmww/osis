@@ -430,7 +430,7 @@ pub fn snap_world(h: &membership_model::snapshot::SHist) -> SnapWorld {
 
 
 /// A random run's seed: `seed`, or `seed` xor `OSIS_PERM_SEED` (decimal) to sample other
-/// histories (`OSIS_PERM_SEED=1 cargo test --release --workspace -- --ignored`).
+/// histories (`OSIS_PERM_SEED=1 cargo test --workspace -- --ignored`).
 pub fn seeded(seed: u64) -> u64 {
     match std::env::var("OSIS_PERM_SEED") {
         Ok(v) => seed ^ v.parse::<u64>().unwrap_or_else(|_| panic!("OSIS_PERM_SEED={v:?} is not a decimal u64")),

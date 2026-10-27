@@ -20,7 +20,7 @@
 //! walk's code follows §5.1 step by step (`order`, `authority`, `audit`, `pass`, `eval`).
 //! Searches print each counterexample shrunk. `digest` hashes every verdict over random
 //! histories: a refactor must keep it (values in notes/testing.md, Models).
-//! Binary: `cargo run --release --bin membership-model -- [samples] [mode]`; `cargo test` runs
+//! Binary: `cargo run --bin membership-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 
 pub mod content;

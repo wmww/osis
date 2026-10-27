@@ -2,7 +2,7 @@
 > Summary: Granting someone new to a large tree re-checks every change in it (12-19 ms at 10^4 changes, depending on load; linear); a validity flip re-reads every held change of the aspect; opening still reads every commit header and re-adapts every membership change from the index (O(commits), no bodies decoded).
 > Tags: node, permissions, performance
 
-Repro: `cargo test --release -p osis-node --test it scale::membership_change_and_open_cost -- --ignored --nocapture`.
+Repro: `cargo test --release --workspace --test it scale::membership_change_and_open_cost -- --ignored --nocapture`.
 
 Done (notes/node.md: Validity, Snapshots vouch for nothing, Snapshots, Import, Open, Rollback): saved membership walks restored at open, imports from compaction snapshots with the origin's schema, element-level judging of snapshot-carried writes, deaths in every held body carrying a write, the persisted index, journaled rollback, re-judging per changed timeline, `Timelines::update_touched`, `/groups` incremental, the deletion and re-snapshot queues removed, perm's reading of membership commits persisted (`node/edges`: open decodes no body). A first sync's re-examination of pending commits (`apply/waits.rs`, notes/node.md Re-examination): 10^4 commits written while a reader syncs 580 s → 9.7 s with the pass work sets, the engine's ingest 3-4 s of it, linear (`scale.rs first_sync_cost`).
 

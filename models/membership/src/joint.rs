@@ -17,7 +17,7 @@
 //! restarts on
 //! any drop. Drops are sticky. No invites, `until` or snapshots here (edges.rs, snapshot.rs).
 //!
-//! Checked (`cargo run --release [samples] joint`, `cargo test`): termination, input-order
+//! Checked (`cargo run --bin membership-model [samples] joint`, `cargo test`): termination, input-order
 //! independence (with commit-ID ties), nothing dropped with nobody offline.
 
 use crate::{Rng, Role};

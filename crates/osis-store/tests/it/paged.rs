@@ -92,7 +92,7 @@ fn stream_and_positions() {
 
 // spec/crdt.md §8: large states page; spec/requirements.md, Scale: maps with millions of keys; a million small units; one edit
 // touches O(1) pages. Trend at 10^4..10^6 (`OSIS_SCALE_MAX` caps it), numbers in notes/testing.md
-// ("Scale checks"): `cargo test --release --workspace --test it paged::million_keys -- --ignored --nocapture`.
+// ("Scale checks"): `cargo test --workspace --test it paged::million_keys -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn million_keys() {

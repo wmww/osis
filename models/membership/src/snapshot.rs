@@ -13,7 +13,7 @@
 //! edge-admins never touch snapshots. A G edge removed while the device still holds the
 //! chain audits nothing (its class on G does not fall).
 //!
-//! Checked (`cargo run --release [samples] snapshot`, `cargo test`): compaction, that is
+//! Checked (`cargo run --bin membership-model [samples] snapshot`, `cargo test`): compaction, that is
 //! removing every write of a thing before any applied snapshot of it, never changes the
 //! result; nothing is dropped when nobody is offline; input order independence; bounded
 //! passes. A compaction point that a later backdated removal un-applies diverges from the

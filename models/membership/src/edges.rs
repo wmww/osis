@@ -18,7 +18,7 @@
 //! Links: L has (r, ∞, r) on K; redeem = L's commit adding the redeemer (single use: plus
 //! removing L's own edge).
 //!
-//! Checked (`cargo run --release [samples] edges|edges-prov`, `cargo test`): exhaustive tiers
+//! Checked (`cargo run --bin membership-model [samples] edges|edges-prov`, `cargo test`): exhaustive tiers
 //! plus random histories for termination, order independence, nothing dropped with nobody
 //! offline, projected rosters (a node holding only the writes relevant to one actor, closed
 //! under authors, computes that actor's authority as the full node does), writes by actors
