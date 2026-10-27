@@ -6,6 +6,7 @@ use crate::types::Edge;
 use osis_core::format::MAX_OWNER_DEPTH;
 use osis_core::{CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// A thing's owner link, from its verified `/created` record.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -109,11 +110,13 @@ impl Owners {
     }
 }
 
-/// An edge state: every current `/members` edge.
+/// An edge state: every current `/members` edge. The per-target and per-member maps are
+/// shared between clones until written (a kept state costs O(targets + members), not
+/// O(edges)).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edges {
-    by_target: BTreeMap<Tid, BTreeMap<Tid, Edge>>,
-    by_member: BTreeMap<Tid, BTreeSet<Tid>>,
+    by_target: BTreeMap<Tid, Arc<BTreeMap<Tid, Edge>>>,
+    by_member: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
 }
 
 impl Edges {
@@ -123,17 +126,25 @@ impl Edges {
     pub fn set(&mut self, member: Tid, target: Tid, edge: Option<Edge>) {
         match edge {
             Some(e) => {
-                self.by_target.entry(target).or_default().insert(member, e);
-                self.by_member.entry(member).or_default().insert(target);
+                if self.get(&member, &target) == Some(&e) {
+                    return;
+                }
+                Arc::make_mut(self.by_target.entry(target).or_default()).insert(member, e);
+                Arc::make_mut(self.by_member.entry(member).or_default()).insert(target);
             }
             None => {
+                if self.get(&member, &target).is_none() {
+                    return;
+                }
                 if let Some(m) = self.by_target.get_mut(&target) {
+                    let m = Arc::make_mut(m);
                     m.remove(&member);
                     if m.is_empty() {
                         self.by_target.remove(&target);
                     }
                 }
                 if let Some(s) = self.by_member.get_mut(&member) {
+                    let s = Arc::make_mut(s);
                     s.remove(&target);
                     if s.is_empty() {
                         self.by_member.remove(&member);

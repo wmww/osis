@@ -86,6 +86,8 @@ struct Comp {
     /// How many commits and snapshots the walk saved under the component's root (its first
     /// thing) covered, 0 if none was: what `to_save` measures growth against.
     basis: usize,
+    /// The commits and snapshots held under each thing (`Timelines::append`).
+    per: BTreeMap<Tid, BTreeSet<CommitId>>,
 }
 
 /// Timelines per component, cached across held-set changes.
@@ -102,6 +104,8 @@ pub struct Timelines {
     retired: BTreeSet<Tid>,
     /// Components the last update restored from a saved walk.
     restored: usize,
+    /// Components the last update continued by `Timeline::append` alone.
+    appended: usize,
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -173,6 +177,12 @@ impl Timelines {
     /// fewer commits of it (then continued by `Timeline::extend`, else evaluated). Equal to
     /// `update_touched` whatever `saved` returns.
     pub fn update_touched_cached(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Changed {
+        let fast = self.append(held, touched);
+        if let Some((c, things, true)) = &fast {
+            self.changed = things.clone();
+            self.restored = 0;
+            return c.clone();
+        }
         let mut region: BTreeSet<Tid> = BTreeSet::new();
         let mut queue: Vec<Tid> = touched.iter().copied().collect();
         while let Some(t) = queue.pop() {
@@ -184,7 +194,88 @@ impl Timelines {
             }
             queue.extend(links(held, &t).into_iter().filter(|x| !region.contains(x)));
         }
-        self.update_region(held, region, saved, salt).1
+        let mut changed = self.update_region(held, region, saved, salt).1;
+        // components `append` continued before one declined: cache hits there
+        if let Some((c, things, _)) = fast {
+            changed.extended.extend(c.extended);
+            self.changed.extend(things);
+        }
+        changed
+    }
+
+    /// The common case of `update_touched` in O(what changed): every touched thing is in a
+    /// component, with its `/created` and snapshots as before, and only gained membership
+    /// commits that join nothing (author, members and targets in its component); each such
+    /// component goes on by `Timeline::append`. `None`: the case does not apply, nothing done.
+    /// Else what changed, the things of the components continued, and whether all of them
+    /// were (else the general path must run: the ones continued are then cache hits).
+    fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<Tid>, bool)> {
+        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>);
+        let mut work: BTreeMap<u64, Work> = BTreeMap::new();
+        for t in touched {
+            let i = *self.of.get(t)?;
+            let c = self.comps.get(&i)?;
+            let old = c.per.get(t);
+            if c.inputs.2.contains(t) != held.created(t).is_some() {
+                return None;
+            }
+            let (mut kept, mut ids) = (0, BTreeSet::new());
+            let w = work.entry(i).or_default();
+            for s in held.roster_snapshots(t) {
+                if ids.insert(s.id) {
+                    if !old.is_some_and(|p| p.contains(&s.id)) {
+                        return None;
+                    }
+                    kept += 1;
+                }
+            }
+            for m in held.edge_commits(t) {
+                if !ids.insert(m.id) {
+                    continue;
+                }
+                if old.is_some_and(|p| p.contains(&m.id)) {
+                    kept += 1;
+                } else if c.inputs.1.contains(&m.id) {
+                    return None;
+                } else {
+                    let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.member, &o.target]));
+                    for x in names {
+                        if !c.inputs.0.contains(x) {
+                            return None;
+                        }
+                    }
+                    w.0.insert(m.id, m);
+                }
+            }
+            if kept != old.map_or(0, |p| p.len()) {
+                return None;
+            }
+            w.1.insert(*t, ids);
+        }
+        self.appended = 0;
+        let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
+        for (i, (new, per)) in work {
+            let Some(mut c) = self.comps.remove(&i) else { continue };
+            if !new.is_empty() {
+                let list: Vec<Arc<MembershipCommit>> = new.values().cloned().collect();
+                match c.tl.append(&list) {
+                    Ok(tl) => c.tl = tl,
+                    Err(tl) => {
+                        c.tl = *tl;
+                        self.comps.insert(i, c);
+                        return Some((changed, things, false));
+                    }
+                }
+                self.appended += 1;
+                c.inputs.1.extend(new.keys().copied());
+                changed.extended.extend(per.iter().filter(|(_, ids)| ids.iter().any(|x| new.contains_key(x))).map(|(t, _)| *t));
+                things.extend(c.inputs.0.iter().copied());
+                self.unsaved.insert(i);
+            }
+            c.per.extend(per);
+            self.comps.insert(i, c);
+        }
+        Some((changed, things, true))
     }
 
     /// Re-partitions `region` (a union of whole components, old and new) and evaluates its
@@ -245,6 +336,7 @@ impl Timelines {
         let mut changed = Changed::default();
         self.changed.clear();
         self.restored = 0;
+        self.appended = 0;
         for (root, inputs) in groups {
             let part = Part { held, things: &inputs.0 };
             let (tl, basis, dirty) = match cache.remove(&inputs) {
@@ -298,7 +390,8 @@ impl Timelines {
             if dirty {
                 self.unsaved.insert(i);
             }
-            self.comps.insert(i, Comp { inputs, tl, basis });
+            let per = inputs.0.iter().filter_map(|t| ids.get(t).map(|s| (*t, s.clone()))).collect();
+            self.comps.insert(i, Comp { inputs, tl, basis, per });
         }
         for (k, (_, basis, _)) in cache {
             self.retire(&k, basis);
@@ -422,6 +515,12 @@ impl Timelines {
     /// Components the last update restored from a saved walk.
     pub fn restored(&self) -> usize {
         self.restored
+    }
+
+    /// Components the last update continued by `Timeline::append` alone (no re-partition, no
+    /// held-set gathering).
+    pub fn appended(&self) -> usize {
+        self.appended
     }
 
     /// The timeline of the component holding `thing` (and every node with a path to it).

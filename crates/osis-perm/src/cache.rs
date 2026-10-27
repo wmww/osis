@@ -21,7 +21,7 @@ use osis_core::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-const FORMAT: &[u8] = b"osis-perm walk cache 2";
+const FORMAT: &[u8] = b"osis-perm walk cache 3";
 
 /// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
 /// held `/created` records (by tid; a record's tid fixes its content).
@@ -261,7 +261,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     // ending at it (a timeline continued over a held set handing out new Arcs holds equal
     // frontiers in other Arcs).
     let mut ledger_at: HashMap<Point, Vec<(FRef, &Arc<Frontier>)>> = HashMap::new();
-    for s in tl.snaps.values() {
+    for s in tl.input.snaps.values() {
         for (i, t) in s.ledger.iter().enumerate() {
             if let Some(f) = &t.frontier {
                 ledger_at.entry(t.until).or_default().push((FRef::Ledger(s.id, u32::try_from(i).ok()?), f));
@@ -275,7 +275,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
         let r = match got {
             Some(r) => r,
             None => {
-                let commit = tl.commits.get(&at.commit).and_then(|c| c.frontier.as_ref()).map(|g| (FRef::Commit(at.commit), g));
+                let commit = tl.input.commits.get(&at.commit).and_then(|c| c.frontier.as_ref()).map(|g| (FRef::Commit(at.commit), g));
                 let mut cands: Vec<(FRef, &Arc<Frontier>)> = commit.into_iter().chain(ledger_at.get(at).into_iter().flatten().copied()).collect();
                 // one candidate: that is where it came from; else by pointer, then by value
                 cands.sort_by_key(|(_, g)| !Arc::ptr_eq(g, f));
@@ -467,10 +467,11 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
         w.len(*l);
         w.len(*h);
     }
-    w.len(tl.dropped().len());
-    for (id, p) in tl.dropped() {
+    // D in the order the walks found it (`Rest::found`)
+    w.len(r.found.len());
+    for id in &r.found {
         w.wid(id);
-        w.point(p);
+        w.point(tl.dropped().get(id)?);
     }
     w.len(tl.epoch_starts().len());
     for (t, c) in tl.epoch_starts() {
@@ -487,7 +488,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     }
     let mut body = head.out;
     body.extend_from_slice(&w.out);
-    let mut out = tag(salt, &tl.owners, &tl.commits, &tl.snaps, &body).to_vec();
+    let mut out = tag(salt, &tl.input.owners, &tl.input.commits, &tl.input.snaps, &body).to_vec();
     out.extend_from_slice(&body);
     Some(out)
 }
@@ -769,7 +770,12 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         });
     }
     let marks = (0..r.len()?).map(|_| Some((r.usize()?, r.usize()?))).collect::<Option<Vec<_>>>()?;
-    let dropped = (0..r.len()?).map(|_| Some((r.wid()?, r.point()?))).collect::<Option<BTreeMap<_, _>>>()?;
+    let found = (0..r.len()?).map(|_| Some((r.wid()?, r.point()?))).collect::<Option<Vec<_>>>()?;
+    let dropped: BTreeMap<WriteId, Point> = found.iter().copied().collect();
+    if dropped.len() != found.len() {
+        return None;
+    }
+    let found = found.into_iter().map(|f| f.0).collect();
     let epoch_starts = (0..r.len()?).map(|_| Some((r.tid()?, r.cid()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let passes = r.usize()?;
     let epoch_changed = r.bool()?;
@@ -777,7 +783,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
     if !r.b.is_empty() {
         return None;
     }
-    let rest = Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks };
+    let rest = Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found };
     let walked = Walked { initial, history, edges, applied, demotions, falls, rest };
-    Some(Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach })
+    Some(Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach, items: None, common: None })
 }
