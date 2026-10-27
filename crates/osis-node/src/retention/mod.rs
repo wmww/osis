@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 mod deaths;
 pub(crate) mod forget;
 
-pub(crate) use deaths::{Due, Lasts, drop_residues, load_deaths_due, mark_deaths_due, mark_if_bounded, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
+pub(crate) use deaths::{Due, LastsIndex, drop_residues, load_deaths_due, mark_deaths_due, mark_if_bounded, mark_late, note_deaths, note_indexed, rejudge_deaths, replays, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -752,6 +752,72 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use osis_core::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
+
+    // spec/crdt.md §4.8 (deaths), notes/node.md Rollback: a late delta loads the last-death
+    // index (70 kept writes before it); a transaction replaying a second late delta's deaths,
+    // then failing, undoes only its own changes to it: still loaded, equal to a fresh load
+    // from the death records.
+    #[test]
+    fn failed_tx_keeps_last_deaths_spec_crdt_4_8() {
+        use osis_schema::{Bound, PurgeBy, Retention};
+        let mut lp = LocalPeer::new(2, 71, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let ak = Ak::new("/x/k").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(0)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None }).unwrap();
+        lp.sync_all().unwrap();
+        let kept = |lp: &mut LocalPeer, i: usize, v: &str| {
+            let mut m = Mutation::new();
+            m.retention(t, &ak, Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(86_400_000) }, at_most: Bound::default() }).unwrap();
+            m.set(t, &ak, &Value::Str(v.into())).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        for i in 0..70 {
+            lp.advance(1);
+            kept(&mut lp, 0, &format!("a{i}"));
+        }
+        lp.advance(1);
+        let late: Vec<_> = (0..2).map(|i| kept(&mut lp, 1, &format!("b{i}"))).collect();
+        lp.advance(1);
+        for i in 0..3 {
+            kept(&mut lp, 0, &format!("c{i}"));
+        }
+        let pks = lp.packages(1).unwrap();
+        let pk = |c| pks.iter().find(|p| p.id == c).unwrap().clone();
+        // aspects loaded, and whether each equals a fresh load
+        let loaded = |e: &mut crate::Engine| {
+            e.run(|tx| {
+                let keys = tx.core.lasts.keys();
+                let mut same = true;
+                for (t, a) in &keys {
+                    let fresh = super::deaths::load_lasts(tx, t, a)?;
+                    same &= tx.core.lasts.get(&(*t, a.clone())) == Some(&fresh);
+                }
+                Ok((keys.len(), same))
+            })
+            .unwrap()
+        };
+        lp.deliver(0, &pk(late[0])).unwrap();
+        assert_eq!(loaded(&mut lp.peers[0].engine), (1, true));
+        lp.peers[0].engine.defer_deaths(true).unwrap();
+        lp.deliver(0, &pk(late[1])).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let k = (t, ak.clone());
+        let r = e.run(|tx| {
+            let before = tx.core.lasts.get(&k).cloned();
+            super::settle_due(tx)?;
+            assert_ne!(tx.core.lasts.get(&k), before.as_ref(), "the replay changes the index");
+            Err::<(), _>(crate::error::Error::BadInput("test"))
+        });
+        assert!(r.is_err());
+        assert_eq!(loaded(e), (1, true), "after the failed transaction");
+        e.defer_deaths(false).unwrap();
+        assert_eq!(loaded(e), (1, true));
+    }
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
     // write made invalid (a backdated removal of its author) counts dead; a re-grant that makes

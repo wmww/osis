@@ -8,6 +8,6 @@ Measured (N = 10^4, release): a late delta 380 -> 6 ms, 5 in a batch 380 -> 15 m
 
 Left:
 - Whole replay (O(held bodies + residues + state)): any validity flip on a bounded aspect, a snapshot or import arriving, a late delta when a snapshot sorts at or after the window's start (every late delta older than the aspect's last compaction), or a dropped body in the window without a residue (common on keep-at-most aspects; cheap there, few bodies held).
-- `Lasts` loads every held bounded body's death record once per aspect per session (about 11 µs each), and stays in memory (O(held bounded bodies)); a persisted index by last death would avoid both.
+- `Lasts` loads every held bounded body's death record once per aspect per session (about 11 µs each; a failed transaction keeps it, journaled), and stays in memory (O(held bounded bodies)); a persisted index by last death would avoid both.
 - `window` scans the commits after its start in memory for snapshots and imports (O(bodies after it)).
 - The window itself spans from the first changed body to its latest death: a late delta superseding a write that lived long (a map key written once and overwritten much later) replays every body in between.
