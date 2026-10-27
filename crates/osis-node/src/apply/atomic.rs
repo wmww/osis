@@ -60,6 +60,9 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
         core.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        if a.ak.as_str() == "/label" {
+            core.labeled.insert(a.tid);
+        }
         if !h.kind.has_own_writes() {
             core.copies.insert((a.tid, a.ak.clone()), (h.ts, *id));
         }
@@ -108,7 +111,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();
-    tx.core.written.push(k.clone());
+    tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let ch = st.join(delta);
     let st = (!st.is_empty()).then_some(st);
@@ -668,7 +671,7 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
         st.prune(None, &mut Changes::new());
         let st = (!st.is_empty()).then_some(st);
         tx.core.touch();
-        tx.core.written.push(k);
+        tx.core.wrote(k);
         tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
     }
     // in place is what rebuilding gives

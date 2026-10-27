@@ -356,7 +356,7 @@ impl SyncEngine {
             }
         }
         if !queue.is_empty() {
-            let servers: Vec<osis_label::Address> = self.engine.group_labels(&g)?.into_iter().find(|x| x.id == l).map(|x| x.servers).unwrap_or_default();
+            let servers: Vec<osis_label::Address> = self.engine.labels_of(&g).into_iter().find(|x| x.id == l).map(|x| x.servers.clone()).unwrap_or_default();
             for (blob, wrap, d) in queue {
                 let id = osis_label::blob_id(&blob);
                 let at: Vec<osis_label::Address> = servers.iter().filter(|a| !self.state.is_present(&a.key, &l, &id)).cloned().collect();
@@ -893,7 +893,7 @@ impl SyncEngine {
     }
 
     pub(crate) fn is_replaced(&mut self, g: &Tid, l: &LabelId) -> bool {
-        self.engine.group_labels(g).unwrap_or_default().iter().any(|x| x.id == *l && x.replaced)
+        self.engine.labels_of(g).iter().any(|x| x.id == *l && x.replaced)
     }
 
     /// Aspects where a body is not established uncovered yet (spec/sync.md §6), so not
@@ -1647,7 +1647,7 @@ impl SyncEngine {
     /// several).
     fn recorded_child(&mut self, g: &Tid, l: &LabelId, head: &osis_label::StepId) -> Option<(osis_label::Step, osis_label::ClaimSet)> {
         let gl = self.group_label(g, l)?;
-        gl.steps.into_values().filter_map(|(s, c)| c.map(|c| (s, c))).filter(|(s, _)| s.prev == Some(*head)).min_by_key(|(s, _)| s.id())
+        gl.steps.values().filter_map(|(s, c)| c.clone().map(|c| (s.clone(), c))).filter(|(s, _)| s.prev == Some(*head)).min_by_key(|(s, _)| s.id())
     }
 
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot

@@ -462,11 +462,13 @@ impl SyncEngine {
             return c.clone();
         }
         let mut m = BTreeMap::new();
-        for (_, mut gl) in self.labels() {
+        for (_, gl) in self.labels() {
+            // borrowed unless a peer's step adds to it
+            let mut steps = std::borrow::Cow::Borrowed(&gl.steps);
             for (s, c) in self.peer_steps.get(&gl.id).into_iter().flatten() {
-                gl.steps.entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
+                steps.to_mut().entry(s.id()).or_insert_with(|| (s.clone(), c.clone()));
             }
-            if let Some(s) = ServedLabel::new(gl.group, &gl.steps) {
+            if let Some(s) = ServedLabel::new(gl.group, &steps) {
                 m.insert(gl.id, s);
             }
         }

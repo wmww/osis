@@ -119,6 +119,7 @@ macro_rules! journaled {
         c.valueless.$m();
         c.secrets.$m();
         c.own_keys.$m();
+        c.labeled.$m();
         c.delete_hints.$m();
         c.was.$m();
         c.was_of.$m();
@@ -207,6 +208,8 @@ pub(crate) struct Core {
     pub secrets: JMap<Tid, ActorEpochs>,
     /// Things known to have secrets of their own (a `/keys` with keysets).
     pub own_keys: JSet<Tid>,
+    /// Things with a `/label` delta held (`Engine::labeled_groups`).
+    pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
@@ -297,7 +300,16 @@ pub(crate) struct Core {
     /// Bumped whenever a transaction changes the indexes or a state, or rolls back: caches
     /// derived from them (the sync engine's co-readers) compare it.
     pub generation: u64,
+    /// `Engine::labels_of` per group: dropped when its `/label` state is written (`wrote`) and
+    /// on rollback.
+    pub(crate) labels: BTreeMap<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
+    /// `Engine::published_under` for every actor, with the counts it was taken at (held
+    /// records, `own_keys`, `labeled`).
+    pub(crate) published: Option<Published>,
 }
+
+/// `Core::published`: the counts it was taken at, the published things per actor.
+pub(crate) type Published = ((u64, u64, u64), BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>);
 
 /// What node-sync judges again (`Core::changed`).
 #[derive(Debug, Default)]
@@ -374,6 +386,14 @@ impl Core {
         }
     }
 
+    /// Notes that the running transaction writes the state of `k` (evicted on rollback).
+    pub fn wrote(&mut self, k: (Tid, Ak)) {
+        if k.1.as_str() == "/label" {
+            self.labels.remove(&k.0);
+        }
+        self.written.push(k);
+    }
+
     /// Notes that the running transaction changes the indexes or a state (drops derived caches).
     pub fn touch(&mut self) {
         self.live_trees.clear();
@@ -399,6 +419,7 @@ impl Core {
             self.bodies.clear();
             self.generation += 1;
             self.membership_changed();
+            self.labels.clear();
             for k in std::mem::take(&mut self.written) {
                 self.states.remove(&k);
                 self.pages.remove(&k);
@@ -445,6 +466,7 @@ impl Core {
             valueless: JMap::default(),
             secrets: JMap::default(),
             own_keys: JSet::default(),
+            labeled: JSet::default(),
             delete_hints: JMap::default(),
             hint_candidates: BTreeMap::new(),
             was: JSetMap::default(),
@@ -480,6 +502,8 @@ impl Core {
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
             generation: 0,
+            labels: BTreeMap::new(),
+            published: None,
         }
     }
 
@@ -535,7 +559,7 @@ impl Tx<'_> {
                 // an earlier build's layout is laid out anew, once
                 if let Some(whole) = pages::legacy(&mut self.txn, tid, ak, &u.state)? {
                     self.core.touch();
-                    self.core.written.push(k.clone());
+                    self.core.wrote(k.clone());
                     u.state = pages::write_full(&mut self.txn, tid, ak, Some(&whole), true, &self.core.key_salt)?.0;
                     self.txn.put_aspect(tid, ak, &u, Shred::No)?;
                 }
@@ -629,7 +653,7 @@ impl Tx<'_> {
         }
         self.ensure_paths(tid, ak, &[path.to_vec()])?;
         if let Some(p) = damaged {
-            self.core.written.push(k);
+            self.core.wrote(k);
             self.with_pages(tid, ak, |txn, idx, f| pages::rebuild_placement(txn, tid, ak, idx, f, &p))?;
         }
         Ok(self.cached(tid, ak).and_then(|f| f.at(path)).filter(Fragment::present).and_then(|s| s.read_elems(&s.visible_range(r)?)))
@@ -671,7 +695,7 @@ impl Tx<'_> {
         if osis_schema::core_types::is_membership_class(ak.as_str()) {
             self.core.membership_changed();
         }
-        self.core.written.push((*tid, ak.clone()));
+        self.core.wrote((*tid, ak.clone()));
         let mut unit = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
         let (bytes, idx) = pages::write_full(&mut self.txn, tid, ak, f.as_ref(), pages::is_paged(&unit.state), &self.core.key_salt)?;
         unit.state = bytes;
@@ -737,7 +761,7 @@ impl Tx<'_> {
                 self.ensure_touch(tid, ak, &Some(t.clone()))?;
             }
             self.core.touch();
-            self.core.written.push(k.clone());
+            self.core.wrote(k.clone());
             let done = self.with_pages(tid, ak, |txn, idx, f| {
                 for t in &touches {
                     if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
@@ -777,7 +801,7 @@ impl Tx<'_> {
                 self.ensure_touch(tid, ak, &Some(t.clone()))?;
             }
             self.core.touch();
-            self.core.written.push(k.clone());
+            self.core.wrote(k.clone());
             let done = self.with_pages(tid, ak, |txn, idx, f| {
                 if !pages::strip_touched(txn, idx, tid, ak, f, &touches, &pred)? {
                     return Ok(false);

@@ -51,7 +51,7 @@ pub(crate) struct Inputs {
     pub roles: (bool, bool, bool, bool, bool),
     pub replaced: bool,
     pub actor: Tid,
-    pub published: BTreeSet<Tid>,
+    pub published: Arc<BTreeSet<Tid>>,
     pub may_rotate: bool,
     /// The group's held epochs (wraps, unopened entries, rotation exceptions).
     pub held: Option<osis_keys::ActorEpochs>,
@@ -350,7 +350,7 @@ impl SyncEngine {
             false
         };
         let mut hit = false;
-        for t in closure.iter().chain(&published) {
+        for t in closure.iter().chain(published.iter()) {
             if moved.contains(t) || !actors.is_empty() && under(t) {
                 w.things.insert(*t);
                 hit = true;
