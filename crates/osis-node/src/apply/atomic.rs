@@ -235,16 +235,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             }
         }
         if !valid.get(ai).copied().unwrap_or(false) {
-            // others' writes already joined may sit under its creations; its sequence records
-            // stay as hidden anchors (what un-merging it gives, spec/crdt.md §4.6)
-            if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
-                join_into_state(tx, &a.tid, &a.ak, f.clone())?;
-                unmerge_fell(tx, &a.tid, &a.ak, Some(f))?;
-                // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
-                crate::retention::mark_if_bounded(tx, &a.tid, &a.ak)?;
-                changed.insert((a.tid, a.ak.clone()));
-                touched.whole(&a.tid, &a.ak);
-            }
+            arrived_invalid(tx, &a.tid, &a.ak, Some(f), &mut changed, &mut touched)?;
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
@@ -254,6 +245,13 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             changed.insert((a.tid, a.ak.clone()));
         }
         joined.push((a.tid, a.ak.clone(), replay, ch.into_deaths()));
+    }
+    // an invalid aspect whose part is not held: others' writes under its creations go too (the
+    // part may never come, or come late)
+    for (ai, a) in h.aspects.iter().enumerate() {
+        if !valid.get(ai).copied().unwrap_or(false) && !parts.iter().any(|p| p.0 == ai) {
+            arrived_invalid(tx, &a.tid, &a.ak, None, &mut changed, &mut touched)?;
+        }
     }
     {
         let _s = crate::costs::span("apply: put_commit");
@@ -299,6 +297,28 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     for thing in rosters {
         tx.core.events.queue(Event::Roster { thing });
     }
+    Ok(())
+}
+
+/// A delta invalid on arrival (`f`; `None`: its part is not held), on apply or late: others'
+/// writes already joined may sit under its creations, so the aspect un-merges as on a flip;
+/// its sequence records stay as hidden anchors (what un-merging it gives, spec/crdt.md §4.6).
+/// Edge and creation aspects reach perm instead.
+fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+    if matches!(ak.as_str(), "/members" | "/tenures" | "/created") {
+        return Ok(());
+    }
+    let held = f.is_some();
+    if let Some(f) = &f {
+        join_into_state(tx, tid, ak, f.clone())?;
+    }
+    if !unmerge_fell(tx, tid, ak, f)? && !held {
+        return Ok(());
+    }
+    // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
+    crate::retention::mark_if_bounded(tx, tid, ak)?;
+    changed.insert((*tid, ak.clone()));
+    touched.whole(tid, ak);
     Ok(())
 }
 
@@ -388,6 +408,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             }
         }
         if !meta.valid.get(ai).copied().unwrap_or(false) {
+            arrived_invalid(tx, &a.tid, &a.ak, Some(f), &mut changed, &mut touched)?;
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
@@ -596,7 +617,8 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
 /// is what `rebuild` gives (none of them supersedes a write in the state, spec/crdt.md §4.6);
 /// else `rebuild`. `fell`: the bodies of what fell, when known: a paged state then loads and
 /// rewrites only the pages holding their dots (else the whole state). No other body is read.
-pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<()> {
+/// Whether the state may have changed.
+pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<bool> {
     let invalid = invalid_of(tx.core, tid, ak);
     let bad = |d: &osis_crdt::Dot| invalid.iter().any(|o| o.owns(d));
     tx.load_lazy(tid, ak)?;
@@ -605,7 +627,7 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
     tx.ensure_touch(tid, ak, &touch)?;
     let in_place = match tx.core.states.get(&k).and_then(Option::as_ref) {
         None => None,
-        Some(cur) if cur.dots_supersede(&bad) => return rebuild(tx, tid, ak),
+        Some(cur) if cur.dots_supersede(&bad) => return rebuild(tx, tid, ak).map(|()| true),
         Some(cur) => Some(cur.holds_dots(&bad)),
     };
     if in_place == Some(true) {
@@ -623,7 +645,7 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
         let want = rebuilt(tx, tid, ak)?;
         debug_assert!(tx.state(tid, ak)? == want.as_ref(), "in-place un-merge of {tid:?} {ak:?} differs from a rebuild");
     }
-    Ok(())
+    Ok(in_place == Some(true))
 }
 
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):
