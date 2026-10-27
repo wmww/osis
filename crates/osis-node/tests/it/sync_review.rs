@@ -99,9 +99,9 @@ fn purge_leaves_no_copy_spec_commits_5() {
 }
 
 // spec/sync.md §6 (a must-not-hold blob holds nothing): writer a purges one delta of commit c
-// whose two-delta blob p is under the label; p waits for a carrier (its other write is live:
-// the snapshot a writes first), yet a's rewrite q goes up in that pass and is kept, also once
-// writer b (offline through the purge, p was its body) is back and applies the purge.
+// whose two-delta blob p is under the label; a's rewrite q goes up in that pass and is kept, also
+// once writer b (offline through the purge, p was its body) is back and applies the purge.
+// (node-sync deletes p at once: its dropped delta is value-less, so old code passed too.)
 #[test]
 fn purged_superset_holds_nothing_spec_sync_6() {
     let mut net = Net::new();
