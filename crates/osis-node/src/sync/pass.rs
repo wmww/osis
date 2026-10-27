@@ -727,6 +727,7 @@ impl SyncEngine {
             return Ok(Fate::Expired);
         }
         let (carried, need) = match why {
+            _ if !live => (true, Vec::new()),
             Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
             _ => self.carried(server, g, l, e, snaps)?,
         };
@@ -1706,7 +1707,9 @@ impl SyncEngine {
                 }
             }
         }
-        Ok(Some((classify(&f), true, aspects)))
+        // a body outside the required set holds no write this label must keep
+        let hold = classify(&f);
+        Ok(Some((hold, hold != Hold::MustNot(Why::Outside), aspects)))
     }
 
     /// Unopened entries present at `server` under replaced label `l` that only content commits
@@ -1970,19 +1973,22 @@ impl SyncEngine {
         self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
     }
 
-    /// Whether other entries under the label at the server carry every live write of dropped
-    /// entry `e` (spec/sync.md §7), and the aspects only a snapshot this node writes can carry.
+    /// Whether other entries under the label at the server carry every live write of
+    /// must-not-hold entry `e` the label's actor may read (spec/sync.md §7), and the aspects only
+    /// a snapshot this node writes can carry.
     /// A kept delta's: a blob of the commit holding it that is not must-not-hold (the dropping
     /// node's rewrite, `carried_by`) or a snapshot covering it; none is asked for while this node
     /// has such a blob placed. A dropped delta's: the snapshot that covered it when it was dropped.
     fn carried(&mut self, server: Option<&ServerKey>, g: &Tid, l: &LabelId, e: &Entry, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<(bool, Vec<(Tid, Ak)>)> {
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
         let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
+        let x = self.engine.group_actor(g);
         let (mut all, mut need) = (true, Vec::new());
         for p in parts {
             let Some(a) = m.header.aspects.get(p.0) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
-            if !self.part_live(&m.header, commit, p) {
+            // a delta the label's actor may not read is carried under its readers' labels
+            if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, p) {
                 continue;
             }
             let dropped = m.dropped.contains(p);
