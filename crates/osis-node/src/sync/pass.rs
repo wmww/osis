@@ -81,6 +81,15 @@ enum Fate {
     Delete(Why, osis_label::DeleteItem),
 }
 
+/// What a keep-at-most body before its timed delete waits on (`keep_at_most_due`), its aspect.
+enum AtMost {
+    /// No write died: only a death (it marks the body) or another change of the aspect's state
+    /// (`Work::at_most`) changes its bound or liveness.
+    Live(Tid, Ak),
+    /// A write died: any write may also drop the dots it still holds (`Work::waits`).
+    Dead(Tid, Ak),
+}
+
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
 
@@ -774,19 +783,21 @@ impl SyncEngine {
     /// A body under a relative keep-at-most with a known bound and no live write, held by entry
     /// `id` under `l` (spec/commits.md §5): its entry and bound, for a timed delete. A body with
     /// a live write gets none: it goes at the next compaction or its bound, carried then
-    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect.
-    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(Entry, u64)>> {
+    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect. `None`: not
+    /// under a relative keep-at-most; else what the body waits on and, when due, entry and bound.
+    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(AtMost, Option<(Entry, u64)>)>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
         if a.retention.at_most.rel.is_none() {
             return Ok(None);
         }
+        let (tid, ak) = (a.tid, a.ak.clone());
         // deaths and bound first: liveness costs a look through the state (cached per aspect)
-        let Some(t) = self.engine.body_keep(&b.commit, &a.tid, &a.ak)?.at_most else { return Ok(None) };
-        if self.engine.body_live(&b.commit, &a.tid, &a.ak).unwrap_or(true) {
-            return Ok(None);
+        let Some(t) = self.engine.body_keep(&b.commit, &tid, &ak)?.at_most else { return Ok(Some((AtMost::Live(tid, ak), None))) };
+        if self.engine.body_live(&b.commit, &tid, &ak).unwrap_or(true) {
+            return Ok(Some((AtMost::Dead(tid, ak), None)));
         }
-        Ok(self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))
+        Ok(Some((AtMost::Dead(tid, ak), self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))))
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
@@ -1963,12 +1974,15 @@ impl SyncEngine {
                 left.commits.insert(b.commit);
                 continue;
             }
-            // judged again when its bound or liveness changes: a write killing its writes marks
-            // it, other changes of the aspect's state wake it (`Work::at_most`)
-            if let Some(a) = self.engine.header(&b.commit).and_then(|h| b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.retention.at_most.rel.is_some()).map(|a| (a.tid, a.ak.clone()))) {
-                left.wait_at_most(a.0, a.1, b.commit);
-            }
-            let Some((e, t)) = self.keep_at_most_due(&l, b, &id)? else { continue };
+            let Some((a, due)) = self.keep_at_most_due(&l, b, &id)? else { continue };
+            let Some((e, t)) = due else {
+                // judged again when its bound or liveness changes (`AtMost`)
+                match a {
+                    AtMost::Live(t, k) => left.wait_at_most(t, k, b.commit),
+                    AtMost::Dead(t, k) => left.wait(t, k, b.commit),
+                }
+                continue;
+            };
             match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
                 Some(item) => {
                     left.commits.insert(b.commit);
