@@ -49,9 +49,9 @@ pub struct Timeline {
     /// The furthest point a walk under the final epoch starts other than the final one reached
     /// (the latest point of a drop in D; kept for the walk cache).
     pub(crate) reach: Option<Point>,
-    /// The edge state before history change `i * CHECKPOINT`, for `edges_at` (shared with
-    /// the timeline `extend` made this from).
-    checkpoints: Vec<Arc<Edges>>,
+    /// Kept edge states `(i, state before history change i)`, `i` increasing from 0, about
+    /// `CHECKPOINT` apart, for `edges_at` (shared with the timeline `extend` made this from).
+    checkpoints: Checkpoints,
     /// Answers of layer-2 queries, valid as long as this timeline (the held set of its
     /// component) is.
     pub(crate) memo: Memo,
@@ -77,18 +77,22 @@ pub(crate) struct Memo {
     pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
 }
 
+/// Kept edge states (`Timeline::checkpoints`).
+type Checkpoints = Vec<(usize, Arc<Edges>)>;
+
 /// The kept edge states of `w`'s history, going on from those in `out` (still valid for it).
-fn checkpoints(w: &walk::Walked, mut out: Vec<Arc<Edges>>) -> Vec<Arc<Edges>> {
-    let need = w.history.len().div_ceil(CHECKPOINT);
-    out.truncate(need);
-    if out.len() == need {
-        return out;
-    }
-    let start = out.len().saturating_sub(1) * CHECKPOINT;
-    let mut e = out.last().map_or_else(|| w.initial.clone(), |c| (**c).clone());
+fn checkpoints(w: &walk::Walked, mut out: Checkpoints) -> Checkpoints {
+    let len = w.history.len();
+    out.retain(|c| c.0 < len);
+    let (start, mut e) = match out.last() {
+        Some((i, c)) => (*i, (**c).clone()),
+        None => (0, w.initial.clone()),
+    };
+    let mut next = if out.is_empty() { 0 } else { start + CHECKPOINT };
     for (i, c) in w.history.iter().enumerate().skip(start) {
-        if i % CHECKPOINT == 0 && i / CHECKPOINT == out.len() {
-            out.push(Arc::new(e.clone()));
+        if i == next {
+            out.push((i, Arc::new(e.clone())));
+            next += CHECKPOINT;
         }
         e.set(c.member, c.target, c.edge);
     }
@@ -99,7 +103,7 @@ fn checkpoints(w: &walk::Walked, mut out: Vec<Arc<Edges>>) -> Vec<Arc<Edges>> {
 /// the history both share (the same initial state and changes up to the first that differs,
 /// `Outcome::common`).
 pub(crate) struct Kept {
-    checkpoints: Vec<Arc<Edges>>,
+    checkpoints: Checkpoints,
     first_held: FirstHeld,
 }
 
@@ -110,13 +114,13 @@ impl Kept {
     }
 
     /// The kept states and `first_held` answers still valid for `w`.
-    fn carry(self, w: &walk::Walked, common: Option<(usize, Option<Point>)>) -> (Vec<Arc<Edges>>, FirstHeld) {
+    fn carry(self, w: &walk::Walked, common: Option<(usize, Option<Point>)>) -> (Checkpoints, FirstHeld) {
         let mut cps = self.checkpoints;
         let mut fh = self.first_held;
         match common {
             // an answer found at a change before the first that differs stands
             Some((n, bound)) => {
-                cps.truncate(n / CHECKPOINT + 1);
+                cps.retain(|c| c.0 <= n);
                 fh.retain(|_, v| v.is_some_and(|p| p.is_none_or(|p| bound.is_none_or(|b| p < b))));
             }
             None => {
@@ -228,7 +232,8 @@ impl Timeline {
             fresh.insert(c.author);
             fresh.retain(|t| !self.input.nodes.contains(t));
             self.input.append(std::slice::from_ref(c));
-            let h = self.walked.rest.marks.get(self.items.place(c)).map_or(self.walked.history.len(), |m| m.1);
+            let n0 = self.walked.history.len();
+            let h = self.walked.rest.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let (base, pos) = self.kept_before(h);
             let mut at = EdgesAt::new(&base);
             for x in self.walked.history.iter().take(h).skip(pos) {
@@ -240,8 +245,10 @@ impl Timeline {
                     self.placed += 1;
                 }
                 walk::Placement::Inserted(h) => {
+                    drop(at);
+                    drop(base);
                     self.items.add(std::slice::from_ref(c));
-                    self.changed_from(h, p);
+                    self.inserted(h, self.walked.history.len() - n0, p);
                     self.placed += 1;
                 }
                 walk::Placement::Declined => {
@@ -268,18 +275,47 @@ impl Timeline {
 
     /// The newest kept edge state at or before history change `h`, and its change index.
     fn kept_before(&self, h: usize) -> (Arc<Edges>, usize) {
-        let k = (h / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
-        match self.checkpoints.get(k) {
-            Some(e) => (e.clone(), k * CHECKPOINT),
+        let k = self.checkpoints.partition_point(|c| c.0 <= h);
+        match k.checked_sub(1).and_then(|k| self.checkpoints.get(k)) {
+            Some((i, e)) => (e.clone(), *i),
             None => (Arc::new(self.walked.initial.clone()), 0),
         }
     }
 
-    /// The history changed from change `h` on (point `p`): kept states and answers past it go.
-    fn changed_from(&mut self, h: usize, p: Point) {
-        let mut cps = std::mem::take(&mut self.checkpoints);
-        cps.truncate(h / CHECKPOINT + 1);
-        self.checkpoints = checkpoints(&self.walked, cps);
+    /// `n` changes were inserted into the history at change `h` (point `p`) by
+    /// `Walked::insert`, which no later change touches the edges of: each later kept state
+    /// moves by `n` and takes them; answers past `p` go.
+    fn inserted(&mut self, h: usize, n: usize, p: Point) {
+        let changes: Vec<(Tid, Tid, Option<Edge>)> = self.walked.history.iter().skip(h).take(n).map(|c| (c.member, c.target, c.edge)).collect();
+        let k = self.checkpoints.partition_point(|c| c.0 <= h);
+        let later = self.checkpoints.get_mut(k..).unwrap_or_default();
+        for c in later.iter_mut() {
+            c.0 += n;
+        }
+        Edges::set_all(later.iter_mut().map(|c| &mut c.1), &changes);
+        // keep the gap the insert widened within twice the interval
+        let end = self.checkpoints.get(k).map_or(self.walked.history.len(), |c| c.0);
+        if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k)).cloned()
+            && end - i > 2 * CHECKPOINT
+        {
+            let mut e = (*base).clone();
+            for c in self.walked.history.iter().skip(i).take(CHECKPOINT) {
+                e.set(c.member, c.target, c.edge);
+            }
+            self.checkpoints.insert(k, (i + CHECKPOINT, Arc::new(e)));
+        }
+        #[cfg(debug_assertions)]
+        {
+            let mut e = self.walked.initial.clone();
+            let mut cps = self.checkpoints.iter().peekable();
+            for (i, c) in self.walked.history.iter().enumerate() {
+                while let Some((j, s)) = cps.next_if(|x| x.0 == i) {
+                    debug_assert!(**s == e, "kept state {j} after an insert at {h}");
+                }
+                e.set(c.member, c.target, c.edge);
+            }
+            debug_assert!(cps.next().is_none(), "kept states past the history");
+        }
         let fh = std::mem::take(&mut *self.memo.first_held.lock().unwrap_or_else(|e| e.into_inner()));
         let mut fh = fh;
         fh.retain(|_, v| v.is_some_and(|q| q.is_none_or(|q| q < p)));
@@ -363,12 +399,12 @@ impl Timeline {
     /// (`n >= pos`): from the newest kept state when that is past `pos`, the changes since as
     /// an overlay. O(CHECKPOINT), no copy.
     pub(crate) fn advance<'a>(&'a self, e: &mut EdgesAt<'a>, mut pos: usize, n: usize) {
-        let k = (n / CHECKPOINT).min(self.checkpoints.len().saturating_sub(1));
-        if k * CHECKPOINT > pos
-            && let Some(base) = self.checkpoints.get(k)
+        let k = self.checkpoints.partition_point(|c| c.0 <= n);
+        if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k))
+            && *i > pos
         {
             *e = EdgesAt::new(base);
-            pos = k * CHECKPOINT;
+            pos = *i;
         }
         for c in self.walked.history.iter().take(n).skip(pos) {
             e.set(c.member, c.target, c.edge);
