@@ -523,7 +523,9 @@ impl SyncEngine {
         &mut self.engine
     }
 
-    pub fn into_engine(self) -> Engine {
+    pub fn into_engine(mut self) -> Engine {
+        // nothing drains the change hook headless
+        self.engine.core.changed = None;
         self.engine
     }
 
