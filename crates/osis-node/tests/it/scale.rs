@@ -527,9 +527,13 @@ fn membership_change_and_open_cost() {
     let roster = e.roster(&things[1]);
     drop(e);
     for k in 0..2 {
+        osis_node::costs::take();
         let t6 = Instant::now();
         let e = reopen.open(&batches, &bytes);
         println!("open {k} with {n} edge writes held: {:?} ({} membership components restored from their saved walks)", t6.elapsed(), e.walks_restored());
+        for (k, d, c) in osis_node::costs::take() {
+            println!("  {k}: {d:?} ({c})");
+        }
         assert_eq!(e.roster(&things[1]), roster);
     }
     demotion_heavy_open();
