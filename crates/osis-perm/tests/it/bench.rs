@@ -65,15 +65,15 @@ fn bench_10k_edges() {
         let mut w2 = w.clone();
         let doc = *w.created.keys().last().unwrap();
         w2.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
-        let held2 = w2.held();
+        // a write arriving late, ordered in the middle of the history: its author's later
+        // commits list it in their frontiers already (`held2` lives on: the timelines hold its
+        // records, as a node's do its held set's; else the update would time freeing them)
+        let mut w3 = w2;
+        let late_id = w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+        let held2 = w3.held_without(&std::collections::BTreeSet::from([late_id]));
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
-        // a write arriving late, ordered in the middle of the history (`held2` lives on: the
-        // timelines hold its records, as a node's do its held set's; else the update would
-        // time freeing them)
-        let mut w3 = w2;
-        w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
         let mut held3 = w3.held();
         let tl3 = Instant::now();
         inc.update_touched(&held3, &std::collections::BTreeSet::from([doc]));
@@ -247,7 +247,9 @@ fn bench_certificates() {
     let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
     let (w, nodes) = org(n, &mut Rng(0x5eed_0401));
     let held = w.held();
+    let te = Instant::now();
     let tl = Timeline::evaluate(&held);
+    let eval = te.elapsed();
     let doc = *w.created.keys().last().unwrap();
     let end = osis_perm::Point { ts: ts(n as u64 + 10), node: nodes[1], commit: osis_core::CommitId([0xff; 32]) };
     let mid = tl.applied().values().nth(tl.applied().len() / 2).map(|a| a.point).unwrap();
@@ -255,5 +257,68 @@ fn bench_certificates() {
     let certs = tl.certificates(&nodes[1], &doc, end);
     let t1 = Instant::now();
     let certs_mid = tl.certificates(&nodes[2], &doc, mid);
-    eprintln!("{n} edge writes: chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
+    eprintln!("{n} edge writes: evaluate {eval:?}, chain certificates at the end {:?} ({} commits), at the middle {:?} ({} commits)", t1 - t0, certs.commits.len(), t1.elapsed(), certs_mid.commits.len());
+}
+
+// spec: none (cost measurement, issues/perm-eval-cost.md): layer-2 re-judging alone on the org
+// history (`OSIS_BENCH_N`, default 10^4), for profiling: 1000 admins' deltas (one per applied
+// write, by its author on its target) and members' deltas (one by each member granted write,
+// just after the grant), each on a fresh timeline.
+#[test]
+#[ignore]
+fn bench_deltas() {
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let (w, nodes) = org(n, &mut Rng(0x5eed_0401));
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
+    let deltas: Vec<_> = tl.applied().values().take(1000).map(|a| (a.point, a.target)).collect();
+    let t0 = Instant::now();
+    for (p, t) in &deltas {
+        let _ = tl.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+    }
+    let admins = t0.elapsed();
+    let fresh = Timeline::evaluate(&held);
+    let mut by_members = Vec::new();
+    for id in fresh.applied().keys() {
+        let osis_perm::WriteId::Op(c, k) = id else { continue };
+        let cm = fresh.membership_commit(c).unwrap();
+        let o = &cm.ops[*k as usize];
+        if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.member) {
+            let p = cm.point();
+            by_members.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.member, commit: osis_core::CommitId([0x11; 32]) }, o.target));
+        }
+    }
+    by_members.truncate(1000);
+    let t1 = Instant::now();
+    for (p, t) in &by_members {
+        let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+    }
+    eprintln!("{n} edge writes: {} admins' deltas cold {admins:?}, {} members' deltas cold {:?}", deltas.len(), by_members.len(), t1.elapsed());
+}
+
+// spec: none (cost measurement, issues/perm-eval-cost.md): one late write in the middle of the
+// org history placed without a walk (`OSIS_BENCH_N`, default 10^4), for profiling: a read grant
+// on a doc by an admin, through `update_touched`.
+#[test]
+#[ignore]
+fn bench_late_write() {
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let (w, nodes) = org(n, &mut Rng(0x5eed_0401));
+    let held = w.held();
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let doc = *w.created.keys().last().unwrap();
+    // as `bench_10k_edges`: one more write at the end first; the late write's author lists it
+    // in its later commits' frontiers
+    let mut w3 = w.clone();
+    w3.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
+    let late_id = w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+    let held2 = w3.held_without(&std::collections::BTreeSet::from([late_id]));
+    inc.update(&held2);
+    let held3 = w3.held();
+    let t0 = Instant::now();
+    inc.update_touched(&held3, &std::collections::BTreeSet::from([doc]));
+    let late = t0.elapsed();
+    eprintln!("{n} edge writes: a late write in the middle {late:?} ({} appended, {} placed)", inc.appended(), inc.placed());
+    drop((held, held2));
 }

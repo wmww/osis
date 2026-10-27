@@ -166,21 +166,67 @@ impl Edges {
     }
 }
 
-/// Edges set over a base edge state, both ways: an edge here replaces the base's (`None`:
-/// removed).
+/// Edges set over a base edge state: an edge here replaces the base's (`None`: removed). A
+/// few (at most a checkpoint interval), sorted by (member, target), with a 256-bit filter of
+/// the members and targets present so most lookups skip them.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
-    by_target: BTreeMap<Tid, BTreeMap<Tid, Option<Edge>>>,
-    by_member: BTreeMap<Tid, BTreeMap<Tid, Option<Edge>>>,
+    set: Vec<(Tid, Tid, Option<Edge>)>,
+    members: [u64; 4],
+    targets: [u64; 4],
+}
+
+/// `t`'s bit in an `Overlay` filter.
+fn bit(t: &Tid) -> (usize, u64) {
+    let b = t.as_bytes().last().copied().unwrap_or(0);
+    (usize::from(b >> 6), 1 << (b & 63))
+}
+
+fn has(mask: &[u64; 4], t: &Tid) -> bool {
+    let (i, m) = bit(t);
+    mask.get(i).is_some_and(|w| w & m != 0)
+}
+
+fn mark(mask: &mut [u64; 4], t: &Tid) {
+    let (i, m) = bit(t);
+    if let Some(w) = mask.get_mut(i) {
+        *w |= m;
+    }
 }
 
 impl Overlay {
     pub fn set(&mut self, member: Tid, target: Tid, edge: Option<Edge>) {
-        self.by_target.entry(target).or_default().insert(member, edge);
-        self.by_member.entry(member).or_default().insert(target, edge);
+        match self.set.binary_search_by(|x| (x.0, x.1).cmp(&(member, target))) {
+            Ok(i) => {
+                if let Some(x) = self.set.get_mut(i) {
+                    x.2 = edge;
+                }
+            }
+            Err(i) => self.set.insert(i, (member, target, edge)),
+        }
+        mark(&mut self.members, &member);
+        mark(&mut self.targets, &target);
     }
-    fn get(&self, member: &Tid, target: &Tid) -> Option<Option<Edge>> {
-        self.by_member.get(member).and_then(|m| m.get(target)).copied()
+    fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+    /// The edges of `member` set here, by target.
+    fn of_member(&self, member: &Tid) -> &[(Tid, Tid, Option<Edge>)] {
+        if !has(&self.members, member) {
+            return &[];
+        }
+        let lo = self.set.partition_point(|x| x.0 < *member);
+        let hi = self.set.partition_point(|x| x.0 <= *member);
+        self.set.get(lo..hi).unwrap_or_default()
+    }
+    /// The edges on `target` set here, by member.
+    fn of_target<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Option<Edge>)> + 's {
+        let any = has(&self.targets, target);
+        self.set.iter().filter(move |x| any && x.1 == *target).map(|x| (&x.0, &x.2))
+    }
+    fn get(&self, member: &Tid, target: &Tid) -> Option<&Option<Edge>> {
+        let m = self.of_member(member);
+        m.binary_search_by(|x| x.1.cmp(target)).ok().and_then(|i| m.get(i)).map(|x| &x.2)
     }
 }
 
@@ -200,27 +246,29 @@ impl<'a> EdgesAt<'a> {
         self.over.set(member, target, edge);
     }
     pub fn get(&self, member: &Tid, target: &Tid) -> Option<&Edge> {
-        match self.over.by_member.get(member).and_then(|m| m.get(target)) {
+        match self.over.get(member, target) {
             Some(e) => e.as_ref(),
             None => self.base.get(member, target),
         }
     }
     /// Edges on `target`, by member.
-    pub fn members(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
-        let over = self.over.by_target.get(target);
-        let base = self.base.members(target).filter(move |(m, _)| over.is_none_or(|o| !o.contains_key(*m)));
-        base.chain(over.into_iter().flatten().filter_map(|(m, e)| e.as_ref().map(|e| (m, e))))
+    pub fn members<'s>(&'s self, target: &'s Tid) -> impl Iterator<Item = (&'s Tid, &'s Edge)> + 's {
+        let over = &self.over;
+        let base = self.base.members(target).filter(move |(m, _)| over.get(m, target).is_none());
+        base.chain(over.of_target(target).filter_map(|(m, e)| e.as_ref().map(|e| (m, e))))
     }
     /// Targets of `member`'s edges.
-    pub fn targets(&self, member: &Tid) -> impl Iterator<Item = &Tid> {
-        let over = self.over.by_member.get(member);
-        let base = self.base.targets(member).filter(move |t| over.is_none_or(|o| !o.contains_key(*t)));
-        base.chain(over.into_iter().flatten().filter_map(|(t, e)| e.as_ref().map(|_| t)))
+    pub fn targets<'s>(&'s self, member: &'s Tid) -> impl Iterator<Item = &'s Tid> + 's {
+        let over = self.over.of_member(member);
+        let base = self.base.targets(member).filter(move |t| over.binary_search_by(|x| x.1.cmp(t)).is_err());
+        base.chain(over.iter().filter_map(|x| x.2.as_ref().map(|_| &x.1)))
     }
     pub fn iter(&self) -> impl Iterator<Item = (&Tid, &Tid, &Edge)> {
         let over = &self.over;
         let base = self.base.iter().filter(move |(m, t, _)| over.get(m, t).is_none());
-        base.chain(over.by_target.iter().flat_map(|(t, m)| m.iter().filter_map(move |(mem, e)| e.as_ref().map(|e| (mem, t, e)))))
+        let mut set: Vec<(&Tid, &Tid, &Edge)> = over.set.iter().filter_map(|x| x.2.as_ref().map(|e| (&x.0, &x.1, e))).collect();
+        set.sort_by_key(|x| (*x.1, *x.0));
+        base.chain(set)
     }
 }
 
@@ -248,6 +296,10 @@ impl Reads {
     }
 }
 
+/// The roles `View::roles_repaired` changed (`None`: no longer reached), and the earliest
+/// `until` among the edges it followed.
+pub type Repaired = (BTreeMap<Tid, Option<Role>>, Option<WallMs>);
+
 /// One edge set to a value over an edge state: (member, target, value).
 pub type Patch = (Tid, Tid, Option<Edge>);
 
@@ -267,7 +319,7 @@ impl<'a> View<'a> {
     }
     /// A view of a past edge state.
     pub fn at(owners: &'a Owners, edges: &'a EdgesAt<'a>, ts: Option<Ts>) -> View<'a> {
-        let over = Some(&edges.over).filter(|o| !o.by_member.is_empty());
+        let over = Some(&edges.over).filter(|o| !o.is_empty());
         View { owners, edges: edges.base, over, ts, patch: None }
     }
     /// The same view with edge (member, target) set to `edge`.
@@ -278,16 +330,16 @@ impl<'a> View<'a> {
     /// `f` on each edge of `member`: (target, value).
     fn each_target(&self, member: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
         let patch = self.patch.as_ref().filter(|p| p.0 == *member);
-        let over = self.over.and_then(|o| o.by_member.get(member));
+        let over = self.over.map_or(&[][..], |o| o.of_member(member));
         for t in self.edges.targets(member) {
-            if patch.is_some_and(|p| p.1 == *t) || over.is_some_and(|o| o.contains_key(t)) {
+            if patch.is_some_and(|p| p.1 == *t) || (!over.is_empty() && over.binary_search_by(|x| x.1.cmp(t)).is_ok()) {
                 continue;
             }
             if let Some(e) = self.edges.get(member, t) {
                 f(t, e);
             }
         }
-        for (t, e) in over.into_iter().flatten() {
+        for (_, t, e) in over {
             if let Some(e) = e.as_ref().filter(|_| patch.is_none_or(|p| p.1 != *t)) {
                 f(t, e);
             }
@@ -300,13 +352,13 @@ impl<'a> View<'a> {
     /// `f` on each edge on `target`: (member, value).
     fn each_member(&self, target: &Tid, mut f: impl FnMut(&Tid, &Edge)) {
         let patch = self.patch.as_ref().filter(|p| p.1 == *target);
-        let over = self.over.and_then(|o| o.by_target.get(target));
+        let over = self.over.filter(|o| has(&o.targets, target));
         for (m, e) in self.edges.members(target) {
-            if patch.is_none_or(|p| p.0 != *m) && over.is_none_or(|o| !o.contains_key(m)) {
+            if patch.is_none_or(|p| p.0 != *m) && over.is_none_or(|o| o.get(m, target).is_none()) {
                 f(m, e);
             }
         }
-        for (m, e) in over.into_iter().flatten() {
+        for (m, e) in over.into_iter().flat_map(|o| o.of_target(target)) {
             if let Some(e) = e.as_ref().filter(|_| patch.is_none_or(|p| p.0 != *m)) {
                 f(m, e);
             }
@@ -326,6 +378,14 @@ impl<'a> View<'a> {
     /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
     /// later ts before that, while no edge of a node it reaches changes.
     pub fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+        let (best, expires, _) = self.roles_search(x);
+        (best, expires)
+    }
+
+    /// `roles_expiring`, and whether no edge out of what `x` reaches has an `until` (then the
+    /// answer is the same at every ts, while no edge out of what it reaches changes).
+    pub fn roles_search(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>, bool) {
+        let mut timeless = true;
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in [Role::Admin, Role::Write, Role::Read] {
@@ -343,6 +403,7 @@ impl<'a> View<'a> {
                     relax(y, level, &mut stack);
                 }
                 self.each_target(&e, |t, edge| {
+                    timeless &= edge.until.is_none();
                     if edge.alive_at(self.ts) {
                         if let Some(u) = edge.until {
                             expires = Some(expires.map_or(u, |e| e.min(u)));
@@ -352,7 +413,7 @@ impl<'a> View<'a> {
                 });
             }
         }
-        (best, expires)
+        (best, expires, timeless)
     }
 
     /// What `x`'s roles gain over `best`, its roles over edges this view dominates (every
@@ -388,6 +449,109 @@ impl<'a> View<'a> {
             });
         }
         (raised, expires)
+    }
+
+    /// `x`'s roles after one edge out of what it reaches was narrowed (this view has the new
+    /// value), given `best`, its roles before (exact then, at this view's ts), where the old
+    /// edge gave `t` exactly `o`, `best[t]`: the entries that change (`None`: no longer
+    /// reached) and the earliest `until` among the edges it followed; `None` when more than
+    /// `limit` things may change (search again). A thing whose role falls has a widest path
+    /// through the edge, so it holds at most `o`, and every thing after the edge on that path
+    /// falls too (one that kept its role would keep the path's role for the rest); a thing with
+    /// a supporter, an edge into it as wide as its role from `x` or from a thing holding more
+    /// than `o` (which keeps its role), keeps its role. So what may fall is reached from `t`
+    /// through things holding at most `o` and unsupported; those are searched again from the
+    /// edges into them, everything else being exact.
+    pub fn roles_repaired(&self, x: &Tid, best: &BTreeMap<Tid, Role>, t: &Tid, o: Role, limit: usize) -> Option<Repaired> {
+        let mut expires: Option<WallMs> = None;
+        let mut out = BTreeMap::new();
+        if t == x || best.get(t) != Some(&o) {
+            return Some((out, expires));
+        }
+        let supported = |y: &Tid, b: Role| {
+            let keeps = |u: &Tid| u == x || best.get(u).is_some_and(|r| *r > o);
+            if self.owners.owner_actor(y).is_some_and(|u| keeps(&u) && best.get(&u).is_some_and(|r| *r >= b)) {
+                return true;
+            }
+            let mut found = false;
+            self.each_member(y, |u, edge| {
+                found = found || (edge.alive_at(self.ts) && edge.role >= b && keeps(u) && best.get(u).is_some_and(|r| *r >= b));
+            });
+            found
+        };
+        // what may fall
+        let mut s: BTreeSet<Tid> = BTreeSet::new();
+        if supported(t, o) {
+            return Some((out, expires));
+        }
+        s.insert(*t);
+        let mut stack = vec![*t];
+        while let Some(e) = stack.pop() {
+            let mut next: Vec<Tid> = self.owners.owned(&e).to_vec();
+            self.each_target(&e, |y, edge| {
+                if edge.alive_at(self.ts) {
+                    next.push(*y);
+                }
+            });
+            for y in next {
+                let Some(&b) = best.get(&y) else { continue };
+                if y == *x || b > o || s.contains(&y) || supported(&y, b) {
+                    continue;
+                }
+                if s.len() >= limit {
+                    return None;
+                }
+                s.insert(y);
+                stack.push(y);
+            }
+        }
+        // their roles from the edges into them from outside, then within, widest first
+        let mut cand: BTreeMap<Tid, Role> = BTreeMap::new();
+        for y in &s {
+            let mut v: Option<Role> = self.owners.owner_actor(y).filter(|u| !s.contains(u)).and_then(|u| best.get(&u).copied());
+            self.each_member(y, |u, edge| {
+                if let (true, Some(&bu)) = (edge.alive_at(self.ts) && !s.contains(u), best.get(u)) {
+                    if let Some(until) = edge.until {
+                        expires = Some(expires.map_or(until, |e| e.min(until)));
+                    }
+                    v = v.max(Some(bu.min(edge.role)));
+                }
+            });
+            if let Some(v) = v {
+                cand.insert(*y, v);
+            }
+        }
+        for level in [Role::Admin, Role::Write, Role::Read] {
+            let mut stack: Vec<Tid> = cand.iter().filter(|&(_, &r)| r == level).map(|(t, _)| *t).collect();
+            while let Some(e) = stack.pop() {
+                let mut relax = |y: Tid, v: Role, stack: &mut Vec<Tid>| {
+                    if s.contains(&y) && cand.get(&y).is_none_or(|&b| v > b) {
+                        cand.insert(y, v);
+                        if v == level {
+                            stack.push(y);
+                        }
+                    }
+                };
+                for &y in self.owners.owned(&e) {
+                    relax(y, level, &mut stack);
+                }
+                self.each_target(&e, |y, edge| {
+                    if edge.alive_at(self.ts) {
+                        if let Some(u) = edge.until {
+                            expires = Some(expires.map_or(u, |e| e.min(u)));
+                        }
+                        relax(*y, level.min(edge.role), &mut stack);
+                    }
+                });
+            }
+        }
+        for y in s {
+            let v = cand.get(&y).copied();
+            if best.get(&y).copied() != v {
+                out.insert(y, v);
+            }
+        }
+        Some((out, expires))
     }
 
     /// Every entity's effective role on `y` (`roles_from(x)[y]` for each `x`): the widest
