@@ -200,12 +200,47 @@ impl Timeline {
         if !self.input.can_append(new, self.epoch_changed) {
             return Err(Box::new(self));
         }
+        let idle = self.idle(new);
         self.input.append(new);
         self.items.add(new);
+        if idle {
+            // the walk is unchanged but for an item each that changes nothing (the state before
+            // it is the state before the next); chain certificates list held writes
+            let mut at: Vec<usize> = new.iter().filter_map(|c| self.items.index(&c.id)).collect();
+            at.sort_unstable();
+            let marks = &mut self.walked.rest.marks;
+            for i in at {
+                let m = marks.get(i).copied().unwrap_or((self.walked.rest.log.len(), self.walked.history.len()));
+                marks.insert(i, m);
+            }
+            self.memo.certs = std::sync::OnceLock::new();
+            return Ok(self);
+        }
         let kept = Kept::of(&mut self);
         let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, .. } = self;
         let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) });
         Ok(Timeline::from_kept(input, out, Some(kept)))
+    }
+
+    /// Whether every op of `new` (commits before the end of the walk) applies nothing at its
+    /// place in the walk: rejected or before its target's epoch start, judged over the edge
+    /// state there (§5.1 step 2), and its author already has a held write on each target no
+    /// later (falls read the earliest, `Walked::falls`). Then no state changes at any item, and
+    /// the walk with them is this one.
+    fn idle(&self, new: &[Arc<MembershipCommit>]) -> bool {
+        let marks = &self.walked.rest.marks;
+        new.iter().all(|c| {
+            let Some(&(_, h)) = marks.get(self.items.place(c)) else { return false };
+            let mut edges = EdgesAt::new(&self.walked.initial);
+            self.advance(&mut edges, 0, h);
+            let view = View::at(&self.input.owners, &edges, Some(c.ts));
+            let best = view.roles_from(&c.author);
+            c.ops.iter().enumerate().all(|(k, o)| {
+                let early = self.input.first_write.get(&(c.author, o.target)).is_some_and(|p| *p <= c.point());
+                let before_start = self.epoch_starts.get(&o.target).and_then(|s| self.input.snaps.get(s)).is_some_and(|s| c.point() < s.point());
+                early && (before_start || walk::judge(&view, edges.get(&o.member, &o.target), c, k, &best).is_none())
+            })
+        })
     }
 
     /// The things `input` adds by their `/created`, with their owners: leaves the walk never
