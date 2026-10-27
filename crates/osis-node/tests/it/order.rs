@@ -69,7 +69,7 @@ enum Step {
     Advance { who: Option<usize>, ms: u64 },
 }
 
-const OPS: u8 = 18;
+const OPS: u8 = 27;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -83,18 +83,30 @@ fn aspect_of(op: u8) -> Ak {
         13 => "/t/count",
         14 => "/t/list",
         15 => "/t/rec",
-        // registers with a keep bound (deaths count only there)
+        // with a keep bound (deaths count only there): registers, a map under keep at most 0
+        // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
+        // kept text, a kept text in a map entry
         16 => "/t/kept",
-        _ => "/t/short",
+        17 => "/t/short",
+        18 => "/t/gone",
+        19 | 20 => "/t/gonemap",
+        21 => "/t/keptset",
+        22 | 25 => "/t/map",
+        23 | 24 => "/t/text",
+        _ => "/t/docs",
     })
 }
 
-/// The retention of `op`'s writes when not the default: keep at least or at most 30 min.
+/// The retention of `op`'s writes when not the default: keep at least 30 min, or at most 30
+/// min or 0.
 fn keep_of(op: u8) -> Option<Retention> {
     let d = Some(HOUR / 2);
+    let at_least = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
+    let at_most = |rel| Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(rel) } });
     match op % OPS {
-        16 => Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() }),
-        17 => Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: d } }),
+        16 | 21..=26 => at_least,
+        17 => at_most(HOUR / 2),
+        18..=20 => at_most(0),
         _ => None,
     }
 }
@@ -123,6 +135,13 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         13 => PathOp { path: vec![], op: Op::Inc(Value::Int(1 + v as i64)) },
         14 => PathOp { path: vec![], op: Op::Insert { at, items: vec![s(&val)] } },
         15 => PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(s(&val)) },
+        19 => PathOp { path: vec![key(k)], op: Op::Set(s(&val)) },
+        20 => PathOp { path: vec![], op: Op::Remove(s(&format!("k{}", k % 3))) },
+        21 if v.is_multiple_of(2) => PathOp { path: vec![], op: Op::Add(s(&format!("t{}", k % 3))) },
+        21 => PathOp { path: vec![], op: Op::Remove(s(&format!("t{}", k % 3))) },
+        22 => PathOp { path: vec![key(k), PathSeg::Field(1)], op: Op::Set(Value::Int(v as i64)) },
+        // kept twins of text inserts and deletes, map removals, text in a map entry
+        23..=26 => return content_op([10, 11, 5, 8][(op % OPS - 23) as usize], k, v),
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
@@ -132,7 +151,13 @@ fn random_step(rng: &mut Rng) -> Step {
     let by = rng.below(3) as usize;
     let t = rng.below(8) as usize;
     match rng.below(40) {
-        0..=10 => Step::Write { by, t, op: rng.below(OPS as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 },
+        0..=10 => {
+            let op = rng.below(OPS as u64) as u8;
+            // keep at most only by the owner: a body dropped at a kill whose killer (or own
+            // write) later goes invalid stays dropped (issues/at-most-drop-before-flip.md)
+            let by = if (17..=20).contains(&op) { 0 } else { by };
+            Step::Write { by, t, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }
+        }
         11..=13 => Step::Edge { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) },
         14..=17 => Step::Demote { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), at: rng.below(6) as u8, to_read: rng.below(3) == 0 },
         18 => Step::Leave { by: rng.pick(&[1, 2]), t },
@@ -342,6 +367,35 @@ fn play(seed: u64, steps: &[Step]) -> Played {
     Played { packs, authors, base, things, now }
 }
 
+/// First and last deaths of every held body (spec/crdt.md §4.8).
+fn deaths_text(e: &mut osis_node::Engine) -> String {
+    let mut out = String::new();
+    let mut ids = e.commit_ids();
+    ids.sort();
+    for id in ids {
+        let Some(h) = e.header(&id) else { continue };
+        for a in &h.aspects {
+            let _ = writeln!(out, "death {id:?} {:?} {} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok());
+        }
+    }
+    out
+}
+
+/// Whether replaying every aspect's deaths from its held bodies and residues changes them (the
+/// in-order joins, batched and windowed replays must give what it gives).
+fn replay_differs(p: &mut Peer) -> Option<String> {
+    let before = deaths_text(&mut p.engine);
+    // every aspect a held commit names, absent ones too (un-merged nested writes)
+    let mut aspects = BTreeSet::new();
+    for id in p.engine.commit_ids() {
+        aspects.extend(p.engine.header(&id).into_iter().flat_map(|h| h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>()));
+    }
+    for (t, a) in aspects {
+        p.engine.replay_deaths(&t, &a).unwrap();
+    }
+    first_diff(&[("deaths", before)], &[("deaths", deaths_text(&mut p.engine))])
+}
+
 /// What a node holding `packs` judged and reads, as text, by part.
 fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     let e = &mut p.engine;
@@ -478,6 +532,9 @@ fn check(seed: u64, steps: &[Step], all_up_to: usize, random: usize, subsets: us
         for (k, order) in orders.iter().enumerate() {
             let mut p = deliver(&played, order);
             let got = judged(&mut p, &played.things);
+            if let Some(d) = replay_differs(&mut p) {
+                return Err(format!("held {held:?}, order #{k} {order:?}: a whole replay differs: {d}"));
+            }
             if want.is_some() {
                 // every order reopens alike too
                 p.engine.reload_index().unwrap();
@@ -625,4 +682,14 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // waiting for the entry's creation, which a fresh apply had resolved
     let h = vec![Demote { by: 0, t: 5, member: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, member: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, member: 2, role: Some(Role::Read) }];
     check(1558, &h, 0, 8, 4).unwrap();
+    // seed 1053 (spec/crdt.md §4.8): two writes of a keep-at-most-0 register with one `ts`; the
+    // later by commit ID lost by dot and died on arrival, and its drop went before its own
+    // record was written, which then held it undropped (a reopen disagreed)
+    let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }];
+    check(1053, &h, 0, 8, 4).unwrap();
+    // seed 1173 (spec/crdt.md §4.8): peer 0's kept write inside peer 1's entry dies at peer 2's;
+    // peer 1's creation arriving invalid un-merged both, and nothing replayed the deaths
+    let h = vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, member: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }];
+    check(1173, &h, 4, 2, 1).unwrap();
 }
+

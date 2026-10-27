@@ -39,6 +39,7 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
             core.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));
         }
     }
+    crate::retention::note_indexed(core, id, h);
 }
 
 /// Commits by the same node whose node-form ranges on one aspect overlap this one's
@@ -219,7 +220,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut touched = Touched::default();
     let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let mut replays: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // deaths after the commit's record: they may drop its own body (dead on arrival)
+    let mut joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)> = Vec::new();
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -238,6 +240,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             if !matches!(a.ak.as_str(), "/members" | "/tenures" | "/created") {
                 join_into_state(tx, &a.tid, &a.ak, f.clone())?;
                 unmerge_fell(tx, &a.tid, &a.ak, Some(f))?;
+                // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
+                crate::retention::mark_if_bounded(tx, &a.tid, &a.ak)?;
                 changed.insert((a.tid, a.ak.clone()));
                 touched.whole(&a.tid, &a.ak);
             }
@@ -249,19 +253,19 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        if replay {
-            replays.insert((a.tid, a.ak.clone()));
-        } else {
-            crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
-        }
+        joined.push((a.tid, a.ak.clone(), replay, ch.into_deaths()));
     }
     {
         let _s = crate::costs::span("apply: put_commit");
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched, true)?;
-    for (tid, ak) in &replays {
-        crate::retention::mark_deaths_due(tx, tid, ak)?;
+    for (tid, ak, replay, deaths) in &joined {
+        if *replay {
+            crate::retention::mark_late(tx, &id, &h, tid, ak, deaths)?;
+        } else {
+            crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        }
     }
     {
         let _s = crate::costs::span("apply: retention");
@@ -371,7 +375,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut changed = BTreeSet::new();
     let mut touched = Touched::default();
     let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let mut replays: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // deaths after the commit's record: they may drop its own body (dead on arrival)
+    let mut joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)> = Vec::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);
@@ -391,18 +396,18 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        if replay {
-            replays.insert((a.tid, a.ak.clone()));
-        } else {
-            crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
-        }
+        joined.push((a.tid, a.ak.clone(), replay, ch.into_deaths()));
     }
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched, false)?;
-    for (tid, ak) in &replays {
-        crate::retention::mark_deaths_due(tx, tid, ak)?;
+    for (tid, ak, replay, deaths) in &joined {
+        if *replay {
+            crate::retention::mark_late(tx, id, &h, tid, ak, deaths)?;
+        } else {
+            crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        }
     }
     if edges && let Some(all) = &all {
         tx.core.held.remove(id);
