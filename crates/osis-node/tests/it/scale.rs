@@ -818,3 +818,69 @@ fn late_delta_deaths_cost() {
     }
 }
 
+
+// spec/permissions.md §5.2, spec/crdt.md §4.6 (un-merge a function of the held set), spec/
+// requirements.md, Scale: a set of N one-element commits by the owner (0) and one add by writer B
+// (1); admin C (2), who never saw it, revokes B: the add goes invalid at the owner (a flip). Then
+// B's add written after the revoke reaches the owner invalid. Both un-merge in place (validity only
+// fell, the add supersedes nothing), O(state), no body read. `OSIS_SCALE_N` sets N (default 10^4).
+#[test]
+#[ignore = "tier 2"]
+fn validity_flip_cost_spec_permissions_5_2() {
+    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    let mut lp = osis_node::local_peer::LocalPeer::new(3, 43, WallMs(1_700_000_000_000)).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for (x, r) in [(b, Role::Write), (c, Role::Admin)] {
+        let mut m = Mutation::new();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    lp.sync_all().unwrap();
+    let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: String| {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(Value::Str(v)) }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let t0 = Instant::now();
+    for i in 0..n {
+        add(&mut lp, 0, format!("e{i}"));
+    }
+    let fill = t0.elapsed();
+    let bs = add(&mut lp, 1, "b".into());
+    let pk1 = lp.packages(1).unwrap();
+    lp.deliver(0, pk1.iter().find(|p| p.id == bs).unwrap()).unwrap();
+    // C revokes B without having seen the add
+    let scope = osis_perm::DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([t]))]), content: BTreeMap::from([(b, BTreeSet::from([t]))]) };
+    let now = lp.peers[2].engine.now();
+    let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    m.frontier(f.to_value());
+    let rv = lp.peers[2].commit(m).unwrap().unwrap();
+    let late = add(&mut lp, 1, "late".into());
+    let pk2 = lp.packages(2).unwrap();
+    let pk1 = lp.packages(1).unwrap();
+    let k = ak("/s/tags");
+    let tags = |lp: &mut osis_node::local_peer::LocalPeer| match lp.peers[0].engine.get(&t, &k).unwrap() {
+        Some(Value::Set(s)) => s.len(),
+        _ => 0,
+    };
+    assert_eq!(tags(&mut lp), n + 1);
+    osis_node::costs::take();
+    let t1 = Instant::now();
+    lp.deliver(0, pk2.iter().find(|p| p.id == rv).unwrap()).unwrap();
+    let flip = t1.elapsed();
+    assert_eq!(tags(&mut lp), n);
+    let t2 = Instant::now();
+    lp.deliver(0, pk1.iter().find(|p| p.id == late).unwrap()).unwrap();
+    let arrive = t2.elapsed();
+    assert_eq!(tags(&mut lp), n);
+    println!("n={n}: fill {fill:?}; revoke flipping one add invalid {flip:?}; an invalid add arriving {arrive:?}");
+    for (k, d, c) in osis_node::costs::take() {
+        println!("  {k}: {d:?} ({c})");
+    }
+}

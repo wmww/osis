@@ -6,7 +6,7 @@
 //! osis-commit cannot see (spec/commits.md §2).
 
 use crate::engine::write::required_role;
-use crate::engine::{Core, Owned, Tx};
+use crate::engine::{Core, Meta, Owned, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_core::{Ak, CommitId, CreationRecord, Role, Tid, Value};
@@ -613,23 +613,77 @@ pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
 pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> bool {
-    if core.void.contains(id) {
-        return false;
+    Judge::new(core).part(h, id, ai)
+}
+
+/// `part_valid` over many parts: what is per thing (owner depth, timeline) looked up once per
+/// run of parts on one thing.
+pub(crate) struct Judge<'a> {
+    core: &'a Core,
+    last: Option<(Tid, bool, Option<&'a osis_perm::Timeline>)>,
+    /// On the last thing: per (author, required role), from where its deltas are valid
+    /// whatever else (`Timeline::valid_from`).
+    from: BTreeMap<(Tid, Role), Option<Option<Point>>>,
+}
+
+impl<'a> Judge<'a> {
+    pub(crate) fn new(core: &'a Core) -> Judge<'a> {
+        Judge { core, last: None, from: BTreeMap::new() }
     }
-    let Some(a) = h.aspects.get(ai) else { return false };
+
+    /// (too deep, timeline) of `t`.
+    fn thing(&mut self, t: &Tid) -> (bool, Option<&'a osis_perm::Timeline>) {
+        match self.last {
+            Some((x, d, tl)) if x == *t => (d, tl),
+            _ => {
+                let v = (too_deep(self.core, t), self.core.timelines.get(t));
+                self.last = Some((*t, v.0, v.1));
+                self.from.clear();
+                v
+            }
+        }
+    }
+
+    pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
+        let core = self.core;
+        if core.void.contains(id) {
+            return false;
+        }
+        let Some(a) = h.aspects.get(ai) else { return false };
+        let ak = a.ak.as_str();
+        // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline); a
+        // compaction snapshot vouches for nothing: its carried writes are judged each as its
+        // author's (`Carried`, spec/permissions.md §5.2)
+        if ak == "/created" {
+            return true;
+        }
+        // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
+        // it applies (spec/permissions.md §1); judged per delta from creation records alone
+        let (deep, tl) = self.thing(&a.tid);
+        if deep {
+            return false;
+        }
+        if ak == "/members" || ak == "/tenures" || super::is_kind_snapshot(h.kind) {
+            return true;
+        }
+        let Some(tl) = tl else { return false };
+        // the author's deltas from its standing tenure on are valid, found once per author
+        if !core.rotation_role.contains_key(&(*id, ai)) && ak != "/secrets" {
+            let required = required_role(ak);
+            let from = *self.from.entry((h.author, required)).or_insert_with(|| tl.valid_from(&h.author, &a.tid, required));
+            let point = Point { ts: h.ts, node: h.author, commit: *id };
+            if from.is_some_and(|b| b.is_none_or(|b| b <= point)) {
+                debug_assert!(valid_on(core, tl, h, id, ai, a), "valid_from disagrees with delta_valid");
+                return true;
+            }
+        }
+        valid_on(core, tl, h, id, ai, a)
+    }
+}
+
+/// `part_valid` of a content part on its thing's timeline `tl`.
+fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
-    // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
-    // it applies (spec/permissions.md §1); judged per delta from creation records alone
-    if ak != "/created" && too_deep(core, &a.tid) {
-        return false;
-    }
-    // `/created` hashes to its tid; edge writes are layer 1 (reads go through the timeline); a
-    // compaction snapshot vouches for nothing: its carried writes are judged each as its
-    // author's (`Carried`, spec/permissions.md §5.2)
-    if ak == "/created" || ak == "/members" || ak == "/tenures" || super::is_kind_snapshot(h.kind) {
-        return true;
-    }
-    let Some(tl) = core.timelines.get(&a.tid) else { return false };
     let point = Point { ts: h.ts, node: h.author, commit: *id };
     // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2)
     if ak == "/secrets"
@@ -879,43 +933,93 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         tx.core.update_timelines();
     }
     let mut flipped: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // aspects where something became valid again: re-merging needs the held bodies
+    let mut rose: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // per aspect, the parts that went invalid (their bodies say which pages to un-merge)
+    let mut fell: BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = BTreeMap::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
     let things = std::mem::take(&mut tx.core.stale_things);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
-    let mut ids = explicit.clone();
-    if all {
-        ids.extend(tx.core.commits.keys().copied());
-    } else {
-        ids.extend(things.iter().flat_map(|t| tx.core.by_thing.get(t).into_iter().flatten().copied()));
-    }
-    for id in ids {
-        let Some(m) = tx.core.commits.get(&id) else { continue };
-        let h = m.header.clone();
-        // parts on things not re-judged keep their flag
-        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| if all || explicit.contains(&id) || h.aspects.get(ai).is_some_and(|a| things.contains(&a.tid)) { part_valid(tx.core, &h, &id, ai) } else { m.valid.get(ai).copied().unwrap_or(false) }).collect();
-        if tx.core.commits.get(&id).is_some_and(|m| m.valid != now)
-            && let Some(m) = tx.core.commits.get_mut(&id)
-        {
-            for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
-                if a != b
-                    && let Some(x) = h.aspects.get(ai)
-                {
-                    flipped.insert((x.tid, x.ak.clone()));
-                    if x.ak.as_str() == "/secrets" {
-                        secrets_flips.push((id, ai, *b));
-                    }
-                    if matches!(x.ak.as_str(), "/secrets" | "/keys") {
-                        intro_flips.insert(x.tid);
+    let judge = crate::costs::span("rejudge: judge");
+    // verdicts first (the core read only), each held commit once: by thing, a commit under the
+    // first re-judged thing among its aspects; then the commits re-judged whole
+    let mut news: Vec<(CommitId, Vec<bool>)> = Vec::new();
+    {
+        let core: &Core = tx.core;
+        let mut judge = Judge::new(core);
+        let mut one = |id: &CommitId, m: &Meta, whole: bool| {
+            let mut now: Option<Vec<bool>> = None;
+            for (ai, a) in m.header.aspects.iter().enumerate() {
+                // parts on things not re-judged keep their flag
+                if !(whole || things.contains(&a.tid)) {
+                    continue;
+                }
+                let v = judge.part(&m.header, id, ai);
+                let old = m.valid.get(ai).copied().unwrap_or(false);
+                if v != old {
+                    let n = now.get_or_insert_with(|| m.valid.clone());
+                    if let Some(x) = n.get_mut(ai) {
+                        *x = v;
                     }
                 }
             }
-            m.valid = now;
-            tx.core.index_validity(&id);
+            if let Some(n) = now {
+                news.push((*id, n));
+            }
+        };
+        if all {
+            for (id, m) in core.commits.iter() {
+                one(id, m, true);
+            }
+        } else {
+            for t in &things {
+                for id in core.by_thing.get(t).into_iter().flatten() {
+                    let Some(m) = core.commits.get(id) else { continue };
+                    let first = match m.header.aspects.as_slice() {
+                        [a] => Some(&a.tid),
+                        xs => xs.iter().map(|a| &a.tid).filter(|x| things.contains(x)).min(),
+                    };
+                    if first == Some(t) && !explicit.contains(id) {
+                        one(id, m, false);
+                    }
+                }
+            }
+            for id in &explicit {
+                if let Some(m) = core.commits.get(id) {
+                    one(id, m, true);
+                }
+            }
         }
     }
+    for (id, now) in news {
+        let Some(m) = tx.core.commits.get_mut(&id) else { continue };
+        let h = m.header.clone();
+        for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
+            if a != b
+                && let Some(x) = h.aspects.get(ai)
+            {
+                flipped.insert((x.tid, x.ak.clone()));
+                if *b {
+                    rose.insert((x.tid, x.ak.clone()));
+                } else {
+                    fell.entry((x.tid, x.ak.clone())).or_default().push((id, ai));
+                }
+                if x.ak.as_str() == "/secrets" {
+                    secrets_flips.push((id, ai, *b));
+                }
+                if matches!(x.ak.as_str(), "/secrets" | "/keys") {
+                    intro_flips.insert(x.tid);
+                }
+            }
+        }
+        m.valid = now;
+        tx.core.index_validity(&id);
+    }
+    drop(judge);
     // writes carried by snapshots without their commit, on the same things
+    let mut carried_fell: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
     for k in aspects {
         let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
@@ -923,6 +1027,12 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         for c in v.iter_mut() {
             let now = carried_invalid(tx.core, &k.0, &k.1, c);
             if now != c.invalid {
+                if c.invalid.iter().any(|x| !now.contains(x)) {
+                    rose.insert(k.clone());
+                }
+                // carried writes lie anywhere: no body to find their pages by
+                fell.remove(&k);
+                carried_fell.insert(k.clone());
                 c.invalid = now;
                 any = true;
             }
@@ -943,7 +1053,15 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
     if rebuild {
         for (tid, ak) in &flipped {
-            super::rebuild(tx, tid, ak)?;
+            if rose.contains(&(*tid, ak.clone())) {
+                let _s = crate::costs::span("rejudge: rebuild");
+                super::rebuild(tx, tid, ak)?;
+            } else {
+                let _s = crate::costs::span("rejudge: unmerge");
+                let k = (*tid, ak.clone());
+                let bodies = if carried_fell.contains(&k) { None } else { fell_bodies(tx, fell.get(&k).map(Vec::as_slice).unwrap_or_default())? };
+                super::atomic::unmerge_fell(tx, tid, ak, bodies)?;
+            }
             crate::retention::mark_deaths_due(tx, tid, ak)?;
         }
     }
@@ -956,6 +1074,24 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         }
     }
     Ok(flipped.into_iter().collect())
+}
+
+/// The bodies of `parts` joined into one fragment (their pages are where un-merging them
+/// changes a state), or `None` when one is not held whole (dropped, partly received).
+fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fragment>> {
+    let mut out = Fragment::default();
+    let mut ch = osis_crdt::Changes::new();
+    for (id, ai) in parts {
+        let n = tx.core.commits.get(id).filter(|m| m.dropped.iter().all(|(a, _)| a != ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
+        let bodies = super::held_parts(tx, id, *ai)?;
+        if bodies.is_empty() || n != Some(bodies.len()) {
+            return Ok(None);
+        }
+        for d in &bodies {
+            out.join_into(fragment(d).clone(), None, &mut ch);
+        }
+    }
+    Ok(Some(out))
 }
 
 /// Whether `author` lowering `member`'s edge on `target` at `ts` is a self-removal

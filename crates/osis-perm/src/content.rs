@@ -36,6 +36,14 @@ impl Timeline {
         v
     }
 
+    /// Where `node`'s deltas on `thing` needing `required` start being valid whatever their
+    /// `ak` and dots (`delta_valid`'s re-grant case): `Some(None)` every one, `Some(Some(p))`
+    /// those at or after `p`, `None` no such bound (judge each with `delta_valid`). For judging
+    /// many deltas of one author at once.
+    pub fn valid_from(&self, node: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
+        if self.role(node, thing, At::END) >= Some(required) { self.first_held(node, thing, required) } else { None }
+    }
+
     fn delta_valid_uncached(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
         let x = at.node;
         // A re-grant makes valid *again*: only writes from the start of X's first tenure of
