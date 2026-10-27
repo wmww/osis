@@ -136,11 +136,7 @@ impl SyncEngine {
         // the group's closure, taken once for the pass; atomic apply waits for its deltas
         // (spec/commits.md §4)
         let ctx = self.engine.body_ctx(&g);
-        for t in &ctx.closure {
-            if !self.engine.core.syncing.contains(t) {
-                self.engine.set_syncing(*t, true)?;
-            }
-        }
+        self.sync_closure(&g, &ctx.closure)?;
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
@@ -155,6 +151,22 @@ impl SyncEngine {
             lc.work = w;
         }
         r
+    }
+
+    /// Atomic apply waits for the deltas of every thing of `g`'s closure (spec/commits.md §4):
+    /// walked only when the closure changed since the last time (`Groups::closures`).
+    fn sync_closure(&mut self, g: &Tid, closure: &std::sync::Arc<BTreeSet<Tid>>) -> Result<()> {
+        if self.synced_closures.get(g).is_some_and(|c| super::work::same_closure(c, closure)) {
+            return Ok(());
+        }
+        self.stats.closures += 1;
+        for t in closure.iter() {
+            if !self.engine.core.syncing.contains(t) {
+                self.engine.set_syncing(*t, true)?;
+            }
+        }
+        self.synced_closures.insert(*g, closure.clone());
+        Ok(())
     }
 
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
@@ -372,6 +384,9 @@ impl SyncEngine {
         for (k, cs) in left.waits {
             w.waits.entry(k).or_default().extend(cs);
         }
+        for (k, cs) in left.at_most {
+            w.at_most.entry(k).or_default().extend(cs);
+        }
         for (b, cs) in left.links {
             w.links.entry(b).or_default().extend(cs);
         }
@@ -458,11 +473,8 @@ impl SyncEngine {
         if !read_ok || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
             return Ok(());
         }
-        for t in self.engine.closure(&g) {
-            if !self.engine.core.syncing.contains(&t) {
-                self.engine.set_syncing(t, true)?;
-            }
-        }
+        let closure = self.engine.closure(&g);
+        self.sync_closure(&g, &closure)?;
         // served by nobody else: judged whole each time (no work sets)
         let mut w = Work::idle(true);
         self.rebuild(&g, &l, &mut w);
@@ -1951,9 +1963,10 @@ impl SyncEngine {
                 left.commits.insert(b.commit);
                 continue;
             }
-            // judged again when a write on the aspect changes its bound or liveness
+            // judged again when its bound or liveness changes: a write killing its writes marks
+            // it, other changes of the aspect's state wake it (`Work::at_most`)
             if let Some(a) = self.engine.header(&b.commit).and_then(|h| b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.retention.at_most.rel.is_some()).map(|a| (a.tid, a.ak.clone()))) {
-                left.wait(a.0, a.1, b.commit);
+                left.wait_at_most(a.0, a.1, b.commit);
             }
             let Some((e, t)) = self.keep_at_most_due(&l, b, &id)? else { continue };
             match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {

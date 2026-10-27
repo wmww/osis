@@ -2,11 +2,10 @@
 //! judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
-//! timer, its thing's creation record, a validity flip, expiry, purge or late delta on one of its
-//! aspects), a snapshot or a newer card write of its aspects changed under the label, its thing
-//! entered or left the closure, a time
-//! bound passed (keep at least, expiry), the state of an aspect its verdict waits on changed
-//! (liveness, a keep-at-most bound), a role it reads changed (`membership_moved`), or it was
+//! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
+//! newer card write of its aspects changed under the label, its thing entered or left the
+//! closure, a time bound passed (keep at least, expiry), the state of an aspect its verdict
+//! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`membership_moved`), or it was
 //! judged while unsettled and that ended. Anything else (open, a change of the label actor's
 //! roster or own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
 //! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
@@ -16,6 +15,13 @@
 use crate::labeling::HeadKeys;
 use osis_core::{Ak, BlobId, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+/// Whether closures `a` and `b` are the same: one `Arc` while unchanged (`Groups::closures`;
+/// a group containing nothing gets a new one each time).
+pub(crate) fn same_closure(a: &Arc<BTreeSet<Tid>>, b: &Arc<BTreeSet<Tid>>) -> bool {
+    Arc::ptr_eq(a, b) || a.len() <= 1 && a == b
+}
 
 /// Changes for every label (`SyncEngine::engine_events`, `spread_touches`).
 #[derive(Default)]
@@ -25,6 +31,8 @@ pub(crate) struct Touched {
     pub commits: BTreeSet<CommitId>,
     /// The aspects of changed commits: the commits waiting on their state.
     pub states: BTreeSet<(Tid, Ak)>,
+    /// Aspects whose state changed other than by valid writes (`engine::Changed::aspects`).
+    pub whole: BTreeSet<(Tid, Ak)>,
     /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
     /// Things whose roles changed (`Held::reach` of changed rosters and owner links).
@@ -63,6 +71,7 @@ pub(crate) struct Work {
     pub blobs: BTreeSet<BlobId>,
     pub aspects: BTreeSet<(Tid, Ak)>,
     pub states: BTreeSet<(Tid, Ak)>,
+    pub whole: BTreeSet<(Tid, Ak)>,
     pub things: BTreeSet<Tid>,
     pub moved: BTreeSet<Tid>,
     pub actors: BTreeSet<Tid>,
@@ -77,8 +86,12 @@ pub(crate) struct Work {
     pub settled: Option<(bool, bool)>,
     /// Commits whose verdict changes at a time (raw-free corrected wall ms).
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
-    /// Commits whose verdict waits on an aspect's state (liveness, a keep-at-most bound).
+    /// Commits whose verdict waits on an aspect's state (liveness).
     pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    /// Keep-at-most bodies before their timed delete: a valid write changes their bound or
+    /// liveness only by killing their writes, which marks them (`retention::note_deaths`,
+    /// replays), so only the aspect's other state changes (`whole`) wake them.
+    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Blobs a body links that this node neither holds nor has an entry of: the commits that
     /// upload them once they arrive.
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
@@ -87,7 +100,7 @@ pub(crate) struct Work {
     /// membership write ahead of the clock): everything is judged then.
     pub until: Option<u64>,
     /// Aggregates over the label's entries, kept by the touches (rebuilt by a full pass).
-    pub closure: BTreeSet<Tid>,
+    pub closure: Arc<BTreeSet<Tid>>,
     pub unsettled: BTreeSet<Option<(Tid, Ak)>>,
     pub snaps: BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>,
     /// Entries that unwrap under a held read secret and are not opened.
@@ -114,6 +127,7 @@ impl Work {
             blobs: BTreeSet::new(),
             aspects: BTreeSet::new(),
             states: BTreeSet::new(),
+            whole: BTreeSet::new(),
             things: BTreeSet::new(),
             moved: BTreeSet::new(),
             actors: BTreeSet::new(),
@@ -123,10 +137,11 @@ impl Work {
             settled: None,
             due: BTreeMap::new(),
             waits: BTreeMap::new(),
+            at_most: BTreeMap::new(),
             links: BTreeMap::new(),
             inputs: None,
             until: None,
-            closure: BTreeSet::new(),
+            closure: Arc::new(BTreeSet::new()),
             unsettled: BTreeSet::new(),
             snaps: BTreeMap::new(),
             unopened: BTreeSet::new(),
@@ -143,6 +158,7 @@ impl Work {
         self.blobs.extend(o.blobs);
         self.aspects.extend(o.aspects);
         self.states.extend(o.states);
+        self.whole.extend(o.whole);
         self.things.extend(o.things);
         self.moved.extend(o.moved);
         self.actors.extend(o.actors);
@@ -177,6 +193,7 @@ pub(crate) struct Left {
     pub blobs: BTreeSet<BlobId>,
     pub due: BTreeMap<u64, BTreeSet<CommitId>>,
     pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     pub keyless: BTreeSet<CommitId>,
     pub held_back: BTreeSet<CommitId>,
@@ -189,6 +206,11 @@ impl Left {
 
     pub fn wait(&mut self, t: Tid, a: Ak, c: CommitId) {
         self.waits.entry((t, a)).or_default().insert(c);
+    }
+
+    /// Keep-at-most body `c` of `(t, a)` waits for its timed delete (`Work::at_most`).
+    pub fn wait_at_most(&mut self, t: Tid, a: Ak, c: CommitId) {
+        self.at_most.entry((t, a)).or_default().insert(c);
     }
 }
 
@@ -235,7 +257,7 @@ impl SyncEngine {
     /// Readies work set `w` of label `l` of `g` for a pass: due times and waited-on aspect
     /// states move their commits in, touched aspects, things and the closure's changes expand
     /// to their commits, the aggregates follow. Returns whether the pass judges everything.
-    pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) -> bool {
+    pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &Arc<BTreeSet<Tid>>) -> bool {
         let now = self.now();
         let later = w.due.split_off(&now.saturating_add(1));
         for (_, cs) in std::mem::replace(&mut w.due, later) {
@@ -243,6 +265,11 @@ impl SyncEngine {
         }
         for k in std::mem::take(&mut w.states).into_iter().chain(w.aspects.iter().cloned()) {
             if let Some(cs) = w.waits.remove(&k) {
+                w.commits.extend(cs);
+            }
+        }
+        for k in std::mem::take(&mut w.whole).into_iter().chain(w.aspects.iter().cloned()) {
+            if let Some(cs) = w.at_most.remove(&k) {
                 w.commits.extend(cs);
             }
         }
@@ -261,7 +288,10 @@ impl SyncEngine {
             self.go_full(g, l, w, closure);
         } else {
             self.membership_moved(g, l, w, closure);
-            w.things.extend(closure.symmetric_difference(&w.closure).copied());
+            // an unchanged closure is the same `Arc` (`Groups::closures`)
+            if !same_closure(closure, &w.closure) {
+                w.things.extend(closure.symmetric_difference(&w.closure).copied());
+            }
             // a snapshot changes coverage of its aspects; a node's newer card write makes its
             // older card stale (spec/permissions.md §4)
             let me = self.engine.tid();
@@ -284,9 +314,7 @@ impl SyncEngine {
             let (cs, bs) = (w.commits.clone(), w.blobs.clone());
             self.aggregate(g, l, w, &cs, &bs);
         }
-        if w.closure != *closure {
-            w.closure = closure.clone();
-        }
+        w.closure = closure.clone();
         full
     }
 
@@ -400,6 +428,8 @@ impl SyncEngine {
         w.aspects.clear();
         w.things.clear();
         w.waits.clear();
+        w.at_most.clear();
+        w.whole.clear();
         w.links.clear();
         w.due.clear();
         w.moved.clear();
