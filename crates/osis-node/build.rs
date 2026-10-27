@@ -1,6 +1,7 @@
 //! Tags the persisted index (`engine::index`) with a hash of the sources its judgments may
-//! follow from: every workspace crate's `src` (the node and all its path dependencies, so a
-//! change anywhere that could change a judgment re-judges everything once at open).
+//! follow from: the `src` of the node and of each `osis-*` crate in its `[dependencies]` (which
+//! include their own path dependencies), so a change that could change a judgment re-judges
+//! everything once at open, and edits to other crates rebuild nothing here.
 
 use std::path::{Path, PathBuf};
 
@@ -22,13 +23,16 @@ fn main() {
     // Relative to the package (a build script's working dir): absolute paths in
     // rerun-if-changed would make every checkout's fingerprint differ (tools/seed-target.py).
     let crates = PathBuf::from("..");
-    let mut roots: Vec<PathBuf> = match std::fs::read_dir(&crates) {
-        Ok(rd) => rd.flatten().map(|e| e.path().join("src")).filter(|p| p.is_dir()).collect(),
-        Err(_) => {
-            println!("cargo:warning=index tag: cannot read {}", crates.display());
-            vec![PathBuf::from("src")]
-        }
-    };
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    let manifest = std::fs::read_to_string("Cargo.toml").unwrap_or_default();
+    let deps = manifest.split("\n[").find(|s| s.starts_with("dependencies]")).unwrap_or_default();
+    let mut roots: Vec<PathBuf> = deps
+        .lines()
+        .filter_map(|l| l.strip_prefix("osis-"))
+        .map(|l| format!("osis-{}", l.split(['.', ' ', '=']).next().unwrap_or_default()))
+        .chain(["osis-node".to_owned()])
+        .map(|c| crates.join(c).join("src"))
+        .collect();
     roots.sort();
     let mut all = Vec::new();
     for r in &roots {
