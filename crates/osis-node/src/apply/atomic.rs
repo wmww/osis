@@ -30,6 +30,32 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::
     }
 }
 
+/// Forgets snapshot `id` of `(tid, ak)` when its body drops: its frontiers and carried writes
+/// are index entries derived from the body (spec/commits.md §5), which a rebuild cannot read.
+pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId) {
+    let k = (*tid, ak.clone());
+    if let Some(mut v) = core.snapshots.get(&k).cloned()
+        && v.iter().any(|x| x.1 == *id)
+    {
+        v.retain(|x| x.1 != *id);
+        if v.is_empty() {
+            core.snapshots.remove(&k);
+        } else {
+            core.snapshots.insert(k.clone(), v);
+        }
+    }
+    if let Some(mut v) = core.carried.get(&k).cloned()
+        && v.iter().any(|c| c.snap == *id)
+    {
+        v.retain(|c| c.snap != *id);
+        if v.is_empty() {
+            core.carried.remove(&k);
+        } else {
+            core.carried.insert(k, v);
+        }
+    }
+}
+
 /// Adds a commit to the per-aspect and node-form range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
