@@ -7,7 +7,7 @@ use crate::fragment::{Fragment, Meta};
 use crate::seq_lin::{Lin, Placement, Row};
 use crate::ops::{Op, Writer};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem, SeqRead, Vis, is_visible, top2, visible};
-use crate::seq_span::{elem, expand, nth};
+use crate::seq_span::{Elems, elem, expand, nth, split_at};
 use crate::stamp::{Dot, Stamp};
 use crate::undo::Undone;
 use crate::view::View;
@@ -313,12 +313,19 @@ pub(crate) fn wrap_element(d: Dot, content: Fragment) -> Seq {
 pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
     let text = acc.text;
     let d_meta = d.meta.clone();
-    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()) }, expand(acc.into_elems())) };
+    let (mut meta, mut elems) = if d_meta.reset.is_some() { (d_meta, BTreeMap::new()) } else { (Meta { reset: acc.meta.reset.clone(), w: d_meta.w.or(acc.meta.w.clone()) }, acc.into_elems()) };
+    // whether an element the commit made may now be omitted: one `d` removes, or one a position
+    // write of `d` stopped naming (earlier ops left none to omit)
+    let mut omit = false;
     for (dot, de) in expand(d.into_elems()) {
+        split_at(&mut elems, &dot);
+        split_at(&mut elems, &nth(&dot, 1));
         let prev = elems.remove(&dot).unwrap_or_else(SeqElem::bare);
         let mut pos = prev.pos;
+        let before: Vec<Anchor> = pos.iter().map(|p| p.1.clone()).collect();
         pos.extend(de.pos);
         top2(&mut pos);
+        omit |= before.iter().any(|a| matches!(a, Anchor::Dot(x) if w.made(x)) && !pos.iter().any(|p| p.1 == *a));
         // a list element reset drops the commit's earlier content of the element (same stamp)
         let content = match (prev.content, de.content) {
             (_, SeqContent::Frag(b)) if !text && de.deleted.is_some() => SeqContent::Frag(b),
@@ -332,19 +339,26 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
             // a deleted char is never carried (§3.3 rule 5)
             el.content = SeqContent::None;
         }
+        omit |= w.made(&dot) && el.created.is_some() && el.flag();
         elems.insert(dot, el);
     }
     // created and removed in this commit, and no write of the commit anchors at it: omitted (§4.5)
-    let mut omitted = false;
-    loop {
+    let gone = |elems: &Elems| {
         let named: HashSet<&Dot> = elems.values().flat_map(|e| e.created.iter().chain(e.pos.iter())).filter_map(|(_, a)| if let Anchor::Dot(x) = a { Some(x) } else { None }).collect();
-        let gone: Vec<Dot> = elems.iter().filter(|(d, e)| w.made(d) && e.created.is_some() && e.flag() && !named.contains(d)).map(|(d, _)| d.clone()).collect();
-        if gone.is_empty() {
-            break;
-        }
-        omitted = true;
-        for g in gone {
-            elems.remove(&g);
+        elems.iter().filter(|(d, e)| w.made(d) && e.created.is_some() && e.flag() && !named.contains(d)).map(|(d, _)| d.clone()).collect::<Vec<Dot>>()
+    };
+    debug_assert!(omit || gone(&elems).is_empty(), "overlay left an element to omit");
+    let mut omitted = false;
+    if omit {
+        loop {
+            let gone = gone(&elems);
+            if gone.is_empty() {
+                break;
+            }
+            omitted = true;
+            for g in gone {
+                elems.remove(&g);
+            }
         }
     }
     if omitted && elems.is_empty() && meta.w.is_none() {
