@@ -173,7 +173,7 @@ impl Timeline {
         if !input.snaps.keys().eq(self.input.snaps.keys()) || input.nodes != self.input.nodes {
             return None;
         }
-        if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) {
+        if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) {
             return None;
         }
         let leaves = self.leaves(&input)?;
@@ -254,6 +254,14 @@ impl Timeline {
             }
         }
         Ok(self)
+    }
+
+    /// Whether the commits and snapshots `held` holds on `things` are the ones walked here,
+    /// with the same content (a record can grow under its ID: a part that arrives late).
+    pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {
+        things.iter().all(|t| {
+            held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)) && held.roster_snapshots(t).iter().filter(|s| s.thing == *t).all(|s| self.input.holds_snapshot(s))
+        })
     }
 
     /// The newest kept edge state at or before history change `h`, and its change index.

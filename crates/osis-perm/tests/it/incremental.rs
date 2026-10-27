@@ -1053,3 +1053,59 @@ fn append_shapes_equals_from_scratch_large() {
     eprintln!("appended {appended} placed {placed}");
     assert!(placed > 1_000, "{appended} {placed}");
 }
+
+/// §5.1 step 5, §6: a held record replaced under its commit ID by a fuller one (a roster
+/// snapshot whose `/tenures` part arrives after its `/members` part; a commit with more of its
+/// edge writes) changes the input: through `update_touched`, after a restart from walks saved
+/// before, and with a cached component of the same IDs, equal to an evaluation from scratch.
+#[test]
+fn record_replaced_under_its_id_spec_permissions_6() {
+    use osis_core::Role::{Admin, Read, Write};
+    for fuller in [true, false] {
+        let mut w = World::new();
+        let n = w.nodes(4);
+        let k = n[0];
+        let g = w.thing(k);
+        w.set(k, g, n[1], edge(Admin), 1, &[]);
+        w.set(k, g, n[2], edge(Write), 2, &[]);
+        w.set(n[1], g, n[2], None, 5, &[]);
+        let s = w.snapshot(k, g, &[(n[1], osis_perm::Edge::new(Admin))], 10, &[]);
+        let c = w.set(n[1], g, n[3], edge(Read), 12, &[]);
+        let mut part = w.clone();
+        if fuller {
+            // the snapshot's `/tenures` part arrives late
+            w.snaps.iter_mut().find(|x| x.id == s).unwrap().ledger = vec![(n[2], Write, Some((2, k, None)), (5, n[1], None), true)];
+        } else {
+            // the commit's second edge write arrives late
+            w.commits.iter_mut().find(|x| x.id == c).unwrap().ops.push((g, n[2], edge(Admin)));
+            part.commits.iter_mut().find(|x| x.id == c).unwrap().ops.truncate(1);
+        }
+        let first = part.held();
+        let held = w.held();
+        // incrementally
+        let mut inc = Timelines::new();
+        inc.update(&first);
+        inc.update_touched(&held, &BTreeSet::from([g]));
+        assert!(check(&held, &inc, &n).is_none(), "{fuller}: {:?}", check(&held, &inc, &n));
+        // the general path (a cached component of the same IDs)
+        let mut inc = Timelines::new();
+        inc.update(&first);
+        inc.update(&held);
+        assert!(check(&held, &inc, &n).is_none(), "{fuller} (update): {:?}", check(&held, &inc, &n));
+        // a restart from walks saved over the partial records
+        let mut inc = Timelines::new();
+        inc.update(&first);
+        let mut disk = Disk::new();
+        store(&mut disk, inc.to_save(SALT, 1, true));
+        let inc = reopen(&held, &disk, SALT);
+        assert!(check(&held, &inc, &n).is_none(), "{fuller} (restart): {:?}", check(&held, &inc, &n));
+        // a walk continued over a new commit after the replacement
+        let mut more = w.clone();
+        more.set(n[1], g, n[3], None, 20, &[]);
+        let last = more.held();
+        let mut inc = Timelines::new();
+        inc.update(&first);
+        inc.update_touched(&last, &BTreeSet::from([g]));
+        assert!(check(&last, &inc, &n).is_none(), "{fuller} (with a new commit): {:?}", check(&last, &inc, &n));
+    }
+}
