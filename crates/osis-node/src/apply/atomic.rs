@@ -34,6 +34,9 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_core::
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
         core.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        if !h.kind.has_own_writes() {
+            core.copies.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        }
         core.by_thing.insert(a.tid, *id);
         if h.form == Form::Node && h.kind.has_own_writes() && a.lo < a.hi {
             core.ranges.insert((a.tid, a.ak.clone(), h.author), a.lo, (a.hi, *id));

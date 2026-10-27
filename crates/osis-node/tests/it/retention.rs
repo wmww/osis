@@ -586,3 +586,88 @@ fn snapshot_residue_skips_held_copies_spec_crdt_4_8() {
     assert!(n < 100, "residue of {n} bytes");
     e.replay_deaths(&t, &k).unwrap();
 }
+
+// spec/crdt.md §4.8, spec/commits.md §5: on a kept set a lagging writer's remove of an element,
+// older than a compaction snapshot the owner took after it, dates the element's death at the
+// remove; with the writer's later add in the same batch the window spans the snapshot, which
+// (no death of its own: nothing it carries dies after it) plays its copies there instead of a
+// replay of every body.
+#[test]
+fn late_delta_before_snapshot_windowed_spec_crdt_4_8() {
+    let mut lp = net(2, 82);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    let k = ak("/t/keptset");
+    let mut adds = Vec::new();
+    for i in 0..10 {
+        lp.advance(10);
+        adds.push(set_op(&mut lp, 0, t, Op::Add(s(&format!("e{i}")))));
+    }
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let late = set_op(&mut lp, 1, t, Op::Remove(s("e3")));
+    let tl = lp.peers[1].engine.header(&late).unwrap().ts;
+    for i in 10..20 {
+        lp.advance(10);
+        set_op(&mut lp, 0, t, Op::Add(s(&format!("e{i}"))));
+    }
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    set_op(&mut lp, 1, t, Op::Add(s("x")));
+    lp.advance(10);
+    set_op(&mut lp, 0, t, Op::Add(s("after")));
+    osis_node::costs::take();
+    // the writer's chain, then its late writes in one batch
+    lp.peers[0].engine.defer_deaths(true).unwrap();
+    sync(&mut lp, 1, 0);
+    lp.peers[0].engine.defer_deaths(false).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.deaths(&adds[3], &t, &k).unwrap(), Some((tl, tl)));
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&adds[3], &t, &k).unwrap(), Some((tl, tl)));
+    assert!(e.last_deaths_stale().unwrap().is_empty());
+}
+
+// notes/local-store.md (rebuildable indexes), spec/crdt.md §4.8: the last-death rows of a kept
+// register follow its death records; rows that do not parse are rebuilt by the next window that
+// reads them, and a rebuild of the persisted index writes them again from the records.
+#[test]
+fn last_death_rows_rebuilt_spec_crdt_4_8() {
+    let mut lp = net(2, 83);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    let k = ak("/t/kept");
+    for i in 0..70 {
+        lp.advance(10);
+        set(&mut lp, 0, t, &KEPT, &format!("a{i}"));
+    }
+    lp.advance(10);
+    let late: Vec<_> = (0..2).map(|i| set(&mut lp, 1, t, &KEPT, &format!("b{i}"))).collect();
+    lp.advance(10);
+    for i in 0..3 {
+        set(&mut lp, 0, t, &KEPT, &format!("c{i}"));
+    }
+    let pks = packages(&mut lp, 1);
+    let e = &mut lp.peers[0].engine;
+    assert!(e.last_deaths_stale().unwrap().is_empty());
+    assert!(e.damage_last_deaths(&t, &k).unwrap() > 64);
+    assert!(!e.last_deaths_stale().unwrap().is_empty());
+    // the writer's chain, then its late writes
+    for p in &pks {
+        lp.deliver(0, p).unwrap();
+    }
+    let e = &mut lp.peers[0].engine;
+    assert!(e.last_deaths_stale().unwrap().is_empty(), "rebuilt by the window");
+    let tb = e.header(&late[1]).unwrap().ts;
+    assert_eq!(e.deaths(&late[0], &t, &k).unwrap(), Some((tb, tb)));
+    e.damage_last_deaths(&t, &k).unwrap();
+    e.rebuild_index().unwrap();
+    assert!(e.last_deaths_stale().unwrap().is_empty(), "rebuilt with the index");
+}

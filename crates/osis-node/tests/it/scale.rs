@@ -805,13 +805,14 @@ fn sync_membership_pass_cost() {
 // operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
 // than all of them. Each late delta applied and its deaths read alone, then 5 more in one batch
 // read once (`Engine::defer_deaths`), then one 5 commits late: an unbounded set (no deaths kept)
-// against a keep-at-least one (each batch replays the window its late deltas can change).
+// against a keep-at-least one (each batch replays the window its late deltas can change), and
+// the keep-at-least one compacted after the N commits (the window plays the snapshot's copies).
 // `OSIS_SCALE_N` sets N (default 3000).
 #[test]
 #[ignore = "tier 2"]
 fn late_delta_deaths_cost_spec_crdt_4_8() {
     let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
-    for (name, asp, key) in [("unbounded set", &TAGS, "/s/tags"), ("keep-at-least set", &KEPT, "/s/kept")] {
+    for (name, asp, key, compact) in [("unbounded set", &TAGS, "/s/tags", false), ("keep-at-least set", &KEPT, "/s/kept", false), ("keep-at-least set, compacted", &KEPT, "/s/kept", true)] {
         let mut lp = osis_node::local_peer::LocalPeer::new(2, 41, WallMs(1_700_000_000_000)).unwrap();
         let me = lp.peers[0].engine.tid();
         let b = lp.peers[1].engine.tid();
@@ -837,9 +838,13 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
             ids.push(add(&mut lp, 0, format!("e{i}")));
         }
         let fill = t0.elapsed();
+        let k = ak(key);
+        if compact {
+            // every late delta below is older than the compaction
+            lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        }
         let pks = lp.packages(1).unwrap();
         let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
-        let k = ak(key);
         let mut each = Vec::new();
         for c in &late[..5] {
             let t1 = Instant::now();

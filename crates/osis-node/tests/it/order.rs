@@ -391,6 +391,11 @@ fn deaths_text(e: &mut osis_node::Engine) -> String {
 /// Whether replaying every aspect's deaths from its held bodies and residues changes them (the
 /// in-order joins, batched and windowed replays must give what it gives).
 fn replay_differs(p: &mut Peer) -> Option<String> {
+    // the last-death rows follow the death records
+    let stale = p.engine.last_deaths_stale().unwrap();
+    if !stale.is_empty() {
+        return Some(format!("last-death rows differ from the records on {stale:?}"));
+    }
     let before = deaths_text(&mut p.engine);
     // every aspect a held commit names, absent ones too (un-merged nested writes)
     let mut aspects = BTreeSet::new();

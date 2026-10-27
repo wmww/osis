@@ -32,124 +32,164 @@ pub(crate) enum Due {
     Recheck(CommitId, usize),
 }
 
-/// The last deaths of an aspect's held bounded bodies with one, by last death, so a window
-/// finds the bodies dying after a late `ts` without reading every record (`Core::lasts`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Lasts {
-    by_last: BTreeSet<(Ts, Ts, CommitId)>,
-    of: HashMap<CommitId, (Ts, Ts)>,
+/// The persisted index of the held bounded bodies' last deaths (a rebuildable store index:
+/// `engine::index::write_all` rebuilds it from the death records): per row aspect key + last
+/// death + `ts` (8 bytes each, big endian) + commit ID, no value; written with the death
+/// records it follows, so a window finds the bodies dying after a late `ts` without reading
+/// every record or holding them in memory.
+const LAST_DEATHS: &[u8] = b"node/last deaths";
+
+fn last_key(tid: &Tid, ak: &Ak, last: Ts, ts: Ts, c: &CommitId) -> Vec<u8> {
+    let mut k = records::aspect_key(&[], tid, ak);
+    k.extend_from_slice(&last.to_u64().to_be_bytes());
+    k.extend_from_slice(&ts.to_u64().to_be_bytes());
+    k.extend_from_slice(&c.0);
+    k
 }
 
-impl Lasts {
-    /// Sets `c`'s entry (`None`: no last death); its previous one, as `(ts, last)`.
-    fn set(&mut self, c: CommitId, ts: Ts, last: Option<Ts>) -> Option<(Ts, Ts)> {
-        let old = self.of.remove(&c);
-        if let Some((t, l)) = old {
-            self.by_last.remove(&(l, t, c));
-        }
-        if let Some(l) = last {
-            self.of.insert(c, (ts, l));
-            self.by_last.insert((l, ts, c));
-        }
-        old
+/// Moves `c`'s row on `(tid, ak)` from last death `old` to `new` (`None`: no row).
+fn put_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, old: Option<Ts>, new: Option<Ts>) -> Result<()> {
+    if old == new {
+        return Ok(());
     }
+    let Some(ts) = tx.core.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
+    let t = tx.txn.index(LAST_DEATHS)?;
+    if let Some(l) = old {
+        tx.txn.table_remove(t, &last_key(tid, ak, l, ts, c), Shred::No)?;
+    }
+    if let Some(l) = new {
+        tx.txn.table_put(t, &last_key(tid, ak, l, ts, c), Vec::new(), Shred::No)?;
+    }
+    Ok(())
 }
 
-/// `Lasts` per aspect where loaded, journaled: a failed transaction undoes its own changes
-/// (notes/node.md Rollback) and the rest stays loaded.
-#[derive(Debug, Default)]
-pub(crate) struct LastsIndex {
-    map: HashMap<(Tid, Ak), Lasts>,
-    log: Vec<LastsUndo>,
+/// Before part `ai` of `c` on `(tid, ak)` drops with its death record: removes its row.
+pub(crate) fn drop_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
+    let old = death_of(tx, tid, ak, c, ai)?.map(|d| d.last);
+    put_last(tx, tid, ak, c, old, None)
 }
 
-#[derive(Debug)]
-enum LastsUndo {
-    Loaded((Tid, Ak)),
-    Set((Tid, Ak), CommitId, Option<(Ts, Ts)>),
-    Removed((Tid, Ak), Lasts),
-}
-
-impl LastsIndex {
-    pub fn get(&self, k: &(Tid, Ak)) -> Option<&Lasts> {
-        self.map.get(k)
-    }
-    fn load(&mut self, k: (Tid, Ak), l: Lasts) {
-        if let Some(old) = self.map.insert(k.clone(), l) {
-            self.log.push(LastsUndo::Removed(k.clone(), old));
+/// The rows of `(tid, ak)` with a last death at or after `from`, as `(last, ts, ID)`; `None`
+/// when one does not parse.
+pub(super) fn rows_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, from: Ts) -> Result<Option<Vec<(Ts, Ts, CommitId)>>> {
+    let p = records::aspect_key(&[], tid, ak);
+    let t = tx.txn.index(LAST_DEATHS)?;
+    let end = [&p[..], &[0xff; 49]].concat();
+    let mut start = [&p[..], &from.to_u64().to_be_bytes()].concat();
+    let mut out = Vec::new();
+    loop {
+        let rows = tx.txn.table_range(t, &start, Some(&end), 256)?;
+        let n = rows.len();
+        for (k, _) in rows {
+            let Some(r) = k.get(p.len()..).filter(|r| r.len() == 48) else { return Ok(None) };
+            let mut r = Rd::new(r);
+            let (Some(last), Some(ts)) = (Ts::from_u64(r.u64()?), Ts::from_u64(r.u64()?)) else { return Ok(None) };
+            out.push((last, ts, CommitId(r.arr()?)));
+            start = [&k[..], &[0]].concat();
         }
-        self.log.push(LastsUndo::Loaded(k));
-    }
-    fn set(&mut self, k: &(Tid, Ak), c: CommitId, ts: Ts, last: Option<Ts>) {
-        if let Some(l) = self.map.get_mut(k) {
-            let old = l.set(c, ts, last);
-            self.log.push(LastsUndo::Set(k.clone(), c, old));
-        }
-    }
-    fn remove(&mut self, k: &(Tid, Ak)) {
-        if let Some(old) = self.map.remove(k) {
-            self.log.push(LastsUndo::Removed(k.clone(), old));
-        }
-    }
-    /// The aspects loaded (tests).
-    #[cfg(test)]
-    pub fn keys(&self) -> Vec<(Tid, Ak)> {
-        self.map.keys().cloned().collect()
-    }
-}
-
-impl crate::engine::journal::Journaled for LastsIndex {
-    fn commit(&mut self) {
-        self.log.clear();
-    }
-    fn rollback(&mut self) {
-        while let Some(u) = self.log.pop() {
-            match u {
-                LastsUndo::Loaded(k) => {
-                    self.map.remove(&k);
-                }
-                LastsUndo::Set(k, c, old) => {
-                    if let Some(l) = self.map.get_mut(&k) {
-                        l.set(c, old.map_or(Ts::default(), |x| x.0), old.map(|x| x.1));
-                    }
-                }
-                LastsUndo::Removed(k, l) => {
-                    self.map.insert(k, l);
-                }
-            }
+        if n < 256 {
+            return Ok(Some(out));
         }
     }
 }
 
-/// Keeps `Core::lasts` of `(tid, ak)` (where loaded) after `c`'s record changed.
-pub(crate) fn note_last(core: &mut Core, tid: &Tid, ak: &Ak, c: &CommitId, last: Option<Ts>) {
-    let Some(ts) = core.commits.get(c).map(|m| m.header.ts) else { return };
-    core.lasts.set(&(*tid, ak.clone()), *c, ts, last);
-}
-
-/// `Lasts` of `(tid, ak)` from the death records.
-pub(crate) fn load_lasts(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Lasts> {
-    let mut l = Lasts::default();
+/// The rows of `(tid, ak)` from its held bounded bodies' death records.
+fn fresh_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(Ts, Ts, CommitId)>> {
     let held: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
+    let mut out = Vec::new();
     for (ts, c) in held {
         let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
-        l.set(c, ts, death_of(tx, tid, ak, &c, ai)?.map(|d| d.last));
+        if let Some(d) = death_of(tx, tid, ak, &c, ai)? {
+            out.push((d.last, ts, c));
+        }
     }
-    Ok(l)
+    out.sort();
+    Ok(out)
 }
 
-/// `Core::lasts` of `(tid, ak)`, loaded from the records once per session.
-fn lasts<'a>(tx: &'a mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<&'a Lasts> {
-    let k = (*tid, ak.clone());
-    if tx.core.lasts.get(&k).is_none() {
-        let l = load_lasts(tx, tid, ak)?;
-        tx.core.lasts.load(k.clone(), l);
+/// Removes every row of `(tid, ak)`.
+fn clear_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, shred: Shred) -> Result<()> {
+    let p = records::aspect_key(&[], tid, ak);
+    let t = tx.txn.index(LAST_DEATHS)?;
+    let end = [&p[..], &[0xff; 49]].concat();
+    loop {
+        let rows = tx.txn.table_range(t, &p, Some(&end), 256)?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        for (k, _) in rows {
+            tx.txn.table_remove(t, &k, shred)?;
+        }
     }
-    tx.core.lasts.get(&k).ok_or(crate::error::Error::Corrupt("lasts"))
+}
+
+/// Rewrites the rows of `(tid, ak)` from its death records (one did not parse).
+fn rebuild_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    clear_rows(tx, tid, ak, Shred::No)?;
+    let t = tx.txn.index(LAST_DEATHS)?;
+    for (last, ts, c) in fresh_rows(tx, tid, ak)? {
+        tx.txn.table_put(t, &last_key(tid, ak, last, ts, &c), Vec::new(), Shred::No)?;
+    }
+    Ok(())
+}
+
+/// Writes every aspect's rows from the death records (`engine::index::write_all`, after the
+/// index tables were dropped). Cost: one record per held bounded body.
+pub(crate) fn write_last_deaths_all(tx: &mut Tx<'_>) -> Result<()> {
+    let aspects: Vec<(Tid, Ak)> = tx.core.by_aspect.keys().cloned().collect();
+    for (tid, ak) in aspects {
+        rebuild_rows(tx, &tid, &ak)?;
+    }
+    Ok(())
+}
+
+/// The bodies of `(tid, ak)` with a last death at or after `from`, as `(last, ts, ID)`; rows
+/// that do not parse rebuild the aspect's rows first.
+fn dying_after(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, from: Ts) -> Result<Vec<(Ts, Ts, CommitId)>> {
+    if let Some(v) = rows_from(tx, tid, ak, from)? {
+        return Ok(v);
+    }
+    rebuild_rows(tx, tid, ak)?;
+    rows_from(tx, tid, ak, from)?.ok_or(crate::error::Error::Corrupt("last deaths"))
+}
+
+impl crate::Engine {
+    /// Aspects whose last-death rows differ from their death records (tests).
+    #[doc(hidden)]
+    pub fn last_deaths_stale(&mut self) -> Result<Vec<(Tid, Ak)>> {
+        self.run(|tx| {
+            let aspects: Vec<(Tid, Ak)> = tx.core.by_aspect.keys().cloned().collect();
+            let mut out = Vec::new();
+            for (tid, ak) in aspects {
+                if rows_from(tx, &tid, &ak, Ts::default())? != Some(fresh_rows(tx, &tid, &ak)?) {
+                    out.push((tid, ak));
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Damages the last-death rows (tests): garbles every row of `(tid, ak)` (a key that does
+    /// not parse in its place).
+    #[doc(hidden)]
+    pub fn damage_last_deaths(&mut self, tid: &Tid, ak: &Ak) -> Result<usize> {
+        let (tid, ak) = (*tid, ak.clone());
+        self.run(|tx| {
+            let rows = rows_from(tx, &tid, &ak, Ts::default())?.unwrap_or_default();
+            clear_rows(tx, &tid, &ak, Shred::No)?;
+            let t = tx.txn.index(LAST_DEATHS)?;
+            for (last, ts, c) in &rows {
+                let mut k = last_key(&tid, &ak, *last, *ts, c);
+                k.truncate(k.len() - 3);
+                tx.txn.table_put(t, &k, Vec::new(), Shred::No)?;
+            }
+            Ok(rows.len())
+        })
+    }
 }
 
 /// Below this many bodies before the last late delta, a window reads their records instead of
-/// loading `Lasts`.
+/// the last-death rows (which also hold every body after it).
 const LASTS_MIN: usize = 64;
 
 const LO: CommitId = CommitId([0; 32]);
@@ -249,8 +289,7 @@ pub(crate) fn drop_residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
     tx.core.first_bounded.remove(&(*tid, ak.clone()));
-    tx.core.lasts.remove(&(*tid, ak.clone()));
-    Ok(())
+    clear_rows(tx, tid, ak, Shred::Yes)
 }
 
 /// The commits of `(tid, ak)` with a residue.
@@ -310,8 +349,12 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
         for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
             let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
             let (body, _) = body_class(tx.core, &h, &c, ai);
-            let n = tx.txn.note_death(tid, ak, &body, d.at)?;
-            note_last(tx.core, tid, ak, &c, Some(n.last));
+            let old = tx.txn.death(tid, ak, &body)?;
+            let n = osis_store::Deaths { first: old.map_or(d.at, |o| o.first.min(d.at)), last: old.map_or(d.at, |o| o.last.max(d.at)) };
+            if old != Some(n) {
+                tx.txn.set_death(tid, ak, &body, Some(n))?;
+                put_last(tx, tid, ak, &c, old.map(|o| o.last), Some(n.last))?;
+            }
             // node-sync judges the bodies a write killed again (bounds, liveness)
             tx.core.mark_changed(c);
             bodies.insert((c, ai));
@@ -390,8 +433,14 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
             tx.core.deaths_due.remove(&k, i);
         }
         tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
-        let judged = if items.contains(&Due::Full) { None } else { window(tx, &tid, &ak, &items)? };
+        let judged = if items.contains(&Due::Full) {
+            None
+        } else {
+            let _s = crate::costs::span("deaths: window");
+            window(tx, &tid, &ak, &items)?
+        };
         let Some(judged) = judged else {
+            let _s = crate::costs::span("deaths: whole replay");
             rejudge_deaths(tx, &tid, &ak)?;
             continue;
         };
@@ -512,13 +561,16 @@ fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: O
     let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let (body, _) = body_class(tx.core, &h, c, ai);
     let d = d.map(|(first, last)| osis_store::Deaths { first, last });
+    let old = tx.txn.death(tid, ak, &body)?;
+    if old == d {
+        return Ok(());
+    }
     // node-sync judges again only the bodies whose deaths moved
-    if tx.core.changed.is_some() && tx.txn.death(tid, ak, &body)? != d {
+    if tx.core.changed.is_some() {
         tx.core.mark_changed(*c);
     }
     tx.txn.set_death(tid, ak, &body, d)?;
-    note_last(tx.core, tid, ak, c, d.map(|x| x.last));
-    Ok(())
+    put_last(tx, tid, ak, c, old.map(|x| x.last), d.map(|x| x.last))
 }
 
 fn death_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<Option<osis_store::Deaths>> {
@@ -529,17 +581,22 @@ fn death_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Res
 
 /// Deaths of the bodies the late writer deltas in `items` can change, from a replay of the
 /// aspect's bodies (held, or a residue) from the first of those bodies to the latest death they
-/// can have; the bodies judged, or `None` when that window cannot judge them (a snapshot or
-/// import at or after its start or among them, a dropped body in it without a residue).
+/// can have, then the snapshots and imports after it, then the state if a dropped body there
+/// has no residue (as `replay_all`); the bodies judged, or `None` when that window cannot judge
+/// them (a snapshot or import among them, or at or after its start with a death after the first
+/// late `ts`).
 ///
 /// Exact (the records before the batch being exact): a write dies only at a greater stamp, so a
 /// late delta L changes only bodies sorting at or before it, and only their writes that died
 /// after its `ts` (their last death is later) or were live (its join killed them: `Killed`);
-/// its own writes die at or before the winner its join met (`Hint`). Every write of a body in
-/// the window dies at the same superseder as in a replay of every body, since nothing before
-/// the window's start supersedes it. Cost: the bodies from the first judged one to the latest
-/// death among them, plus the held records before the last late delta and the commits after
-/// the window's start (in memory).
+/// its own writes die at or before the winner its join met (`Hint`). A snapshot or import
+/// sorting after L carries older writes: L may date one of them earlier, before the snapshot,
+/// which then loses that death; one with no death after L's `ts` has none to lose. Every write
+/// of a body in the window dies at the same superseder as in a replay of every body, since
+/// nothing before the window's start supersedes it. Cost: the bodies from the first judged one
+/// to the latest death among them, the snapshots and imports after it, the state where a
+/// dropped body has no residue, plus the held records before the last late delta (under 64)
+/// or the last-death rows from the first late `ts`.
 fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<Vec<(CommitId, usize)>>> {
     let late: Vec<(Ts, CommitId)> = items.iter().filter_map(|i| if let Due::Late(t, c) = i { Some((*t, *c)) } else { None }).collect();
     let (Some(t_min), Some(t_max)) = (late.iter().map(|x| x.0).min(), late.iter().map(|x| x.0).max()) else { return Ok(Some(Vec::new())) };
@@ -551,7 +608,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
     // bodies at or before a late delta with a death after the first one
     let before: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
-    let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN && tx.core.lasts.get(&k).is_none() {
+    let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN {
         // few bodies before: their records, without loading the index
         let mut v = Vec::new();
         for (ts, c) in before {
@@ -563,7 +620,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         }
         v
     } else {
-        lasts(tx, tid, ak)?.by_last.range((t_min, Ts::default(), LO)..).copied().collect()
+        dying_after(tx, tid, ak, t_min)?
     };
     let dying = dying.into_iter().filter(|x| x.0 > t_min && x.1 <= t_max);
     for (last, ts, c) in dying {
@@ -587,31 +644,77 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         }
     }
     let Some(&(t_start, _)) = judge.keys().next() else { return Ok(Some(Vec::new())) };
-    // a snapshot's copies play at its position with their own stamps, and its records span
-    // writes from before the window
-    if judge.keys().any(|(_, c)| copies(tx.core, c)) || tx.core.snapshots.get(&k).is_some_and(|v| v.iter().any(|s| s.0 >= t_start)) {
+    // A snapshot's or import's record spans every write it carries, from before the window too:
+    // one judged, or one at or after the window's start with a death after the first late
+    // `ts` (a late delta may date a write it carries earlier, before it), replays whole. One
+    // dying by then keeps its record (only those it carries live a late delta can kill, and
+    // those name it `Killed`); its copies play at its position (`replay_all`).
+    if judge.keys().any(|(_, c)| copies(tx.core, c)) {
         return Ok(None);
     }
-    let core = &*tx.core;
-    if core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..)).any(|(_, c)| copies(core, c)) {
-        return Ok(None);
+    let after: Vec<(Ts, CommitId)> = tx.core.copies.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..)).copied().collect();
+    for (_, s) in &after {
+        if let Some(ai) = bounded_part(tx.core, s, tid, ak)
+            && death_of(tx, tid, ak, s, ai)?.is_some_and(|d| d.last > t_min)
+        {
+            return Ok(None);
+        }
     }
-    let fold: Vec<(Ts, CommitId)> = core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(u, HI))).copied().collect();
+    // the bodies through `u`, then the snapshots and imports after it: a copy's own commit may
+    // be one never held, with a stamp in the window
+    let mut fold: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(u, HI))).copied().collect();
+    fold.extend(after.iter().filter(|x| x.0 > u));
     let invalid = crate::apply::invalid_of(tx.core, tid, ak);
     let mut st = Fragment::default();
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
+    // whether a copy's own commit plays it (held, or a residue), per commit
+    let mut plays: HashMap<CommitId, bool> = HashMap::new();
+    let mut gone = false;
     for (ts, c) in &fold {
+        let cp = copies(tx.core, c);
+        if cp {
+            drop(crate::costs::span("deaths: window over copies"));
+        }
         let parts: Vec<Fragment> = match held_part(tx.core, c, tid, ak) {
             Some(ai) => crate::apply::held_parts(tx, c, ai)?.into_iter().map(frag).collect(),
             None => match tx.txn.get_local(&records::dropped_key(tid, ak, *ts, c))? {
                 Some(b) => vec![crate::engine::state::decode(&b)?],
-                None => return Ok(None),
+                None => {
+                    // its live writes are in the state
+                    gone = true;
+                    Vec::new()
+                }
             },
         };
         for mut f in parts {
-            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)));
-            join(&mut st, f, false, &mut deaths, &mut dead);
+            if cp {
+                let own = std::cell::RefCell::new(BTreeSet::new());
+                let core = &*tx.core;
+                f.holds_dots(&|d| {
+                    if let Some(x) = core.commit_of(tid, ak, d).filter(|x| x != c) {
+                        own.borrow_mut().insert(x);
+                    }
+                    false
+                });
+                for x in own.into_inner() {
+                    if let std::collections::hash_map::Entry::Vacant(e) = plays.entry(x) {
+                        let p = held_part(tx.core, &x, tid, ak).is_some() || tx.core.commits.get(&x).map(|m| m.header.ts).map(|t| tx.txn.get_local(&records::dropped_key(tid, ak, t, &x))).transpose()?.flatten().is_some();
+                        e.insert(p);
+                    }
+                }
+            }
+            let core = &*tx.core;
+            f.remove_dots(&|d| invalid.iter().any(|o| o.owns(d)) || (cp && core.commit_of(tid, ak, d).is_some_and(|x| x != *c && plays.get(&x).copied().unwrap_or(false))));
+            join(&mut st, f, cp, &mut deaths, &mut dead);
+        }
+    }
+    if gone {
+        let _s = crate::costs::span("deaths: window with the state");
+        // as `replay_all`: the live writes of dropped bodies without a residue
+        tx.load(tid, ak)?;
+        if let Some(Some(cur)) = tx.core.states.get(&k).cloned() {
+            join(&mut st, cur, false, &mut deaths, &mut dead);
         }
     }
     let judged: BTreeSet<(CommitId, usize)> = judge.iter().map(|((_, c), ai)| (*c, *ai)).collect();
@@ -637,11 +740,9 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
             let have = death_of(tx, tid, ak, &c, ai)?.map(|d| (d.first, d.last));
             debug_assert!(have == want.get(&(c, ai)).copied(), "window deaths of {c:?} on {tid:?} {ak:?}: {have:?}, a whole replay {:?}", want.get(&(c, ai)));
         }
-        // the last-death index, where loaded, is what the records give
-        if tx.core.lasts.get(&k).is_some() {
-            let fresh = load_lasts(tx, tid, ak)?;
-            debug_assert!(tx.core.lasts.get(&k) == Some(&fresh), "last deaths of {tid:?} {ak:?} differ from the records");
-        }
+        // the last-death rows are what the records give
+        let fresh = fresh_rows(tx, tid, ak)?;
+        debug_assert!(rows_from(tx, tid, ak, Ts::default())? == Some(fresh), "last deaths of {tid:?} {ak:?} differ from the records");
     }
     Ok(Some(judged.into_iter().collect()))
 }
