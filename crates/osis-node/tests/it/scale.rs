@@ -526,7 +526,8 @@ fn membership_change_and_open_cost() {
     }
     let roster = e.roster(&things[1]);
     drop(e);
-    for k in 0..2 {
+    // three opens: the box's load varies, the least is the cost
+    for k in 0..3 {
         osis_node::costs::take();
         let t6 = Instant::now();
         let e = reopen.open(&batches, &bytes);
