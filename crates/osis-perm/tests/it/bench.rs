@@ -53,8 +53,13 @@ fn bench_10k_edges() {
     // `OSIS_BENCH_N` picks one size (for profiling).
     let sizes: Vec<usize> = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).map_or(vec![1_000, 10_000], |n| vec![n]);
     for n in sizes {
-        let (w, nodes) = org(n, &mut rng);
-        let held = w.held();
+        let (mut w, nodes) = org(n, &mut rng);
+        // a write arriving late, ordered in the middle of the history: its author's later
+        // commits list it in their frontiers (held from the start without it)
+        let doc = *w.created.keys().last().unwrap();
+        let late_id = w.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+        let no_late = std::collections::BTreeSet::from([late_id]);
+        let held = w.held_without(&no_late);
         let t0 = Instant::now();
         let tl = Timeline::evaluate(&held);
         let scratch = t0.elapsed();
@@ -62,15 +67,11 @@ fn bench_10k_edges() {
         let mut inc = Timelines::new();
         inc.update(&held);
         let first = t1.elapsed();
-        let mut w2 = w.clone();
-        let doc = *w.created.keys().last().unwrap();
-        w2.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
-        // a write arriving late, ordered in the middle of the history: its author's later
-        // commits list it in their frontiers already (`held2` lives on: the timelines hold its
-        // records, as a node's do its held set's; else the update would time freeing them)
-        let mut w3 = w2;
-        let late_id = w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
-        let held2 = w3.held_without(&std::collections::BTreeSet::from([late_id]));
+        let mut w3 = w.clone();
+        w3.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
+        // (`held2` lives on: the timelines hold its records, as a node's do its held set's;
+        // else the update would time freeing them)
+        let held2 = w3.held_without(&no_late);
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
@@ -303,17 +304,18 @@ fn bench_deltas() {
 #[ignore]
 fn bench_late_write() {
     let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
-    let (w, nodes) = org(n, &mut Rng(0x5eed_0401));
-    let held = w.held();
+    let (mut w, nodes) = org(n, &mut Rng(0x5eed_0401));
+    // as `bench_10k_edges`: the late write's author lists it in its later commits' frontiers;
+    // one more write at the end first
+    let doc = *w.created.keys().last().unwrap();
+    let late_id = w.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
+    let no_late = std::collections::BTreeSet::from([late_id]);
+    let held = w.held_without(&no_late);
     let mut inc = Timelines::new();
     inc.update(&held);
-    let doc = *w.created.keys().last().unwrap();
-    // as `bench_10k_edges`: one more write at the end first; the late write's author lists it
-    // in its later commits' frontiers
     let mut w3 = w.clone();
     w3.set(nodes[1], doc, nodes[200], edge(Write), n as u64 + 5, &[]);
-    let late_id = w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
-    let held2 = w3.held_without(&std::collections::BTreeSet::from([late_id]));
+    let held2 = w3.held_without(&no_late);
     inc.update(&held2);
     let held3 = w3.held();
     let t0 = Instant::now();
