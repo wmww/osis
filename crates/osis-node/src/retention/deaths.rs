@@ -14,7 +14,7 @@ use osis_commit::Header;
 use osis_core::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Changes, Death, Fragment, Stamp};
 use osis_store::Shred;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What the replay of an aspect's deaths must judge (`Core::deaths_due`; persisted as the
 /// aspect's mark only, which an open reads as `Full`).
@@ -31,6 +31,53 @@ pub(crate) enum Due {
     /// A body whose keep-at-most check waited for the replay.
     Recheck(CommitId, usize),
 }
+
+/// The last deaths of an aspect's held bounded bodies with one, by last death, so a window
+/// finds the bodies dying after a late `ts` without reading every record (`Core::lasts`).
+#[derive(Debug, Default)]
+pub(crate) struct Lasts {
+    by_last: BTreeSet<(Ts, Ts, CommitId)>,
+    of: HashMap<CommitId, (Ts, Ts)>,
+}
+
+impl Lasts {
+    fn set(&mut self, c: CommitId, ts: Ts, last: Option<Ts>) {
+        if let Some((t, l)) = self.of.remove(&c) {
+            self.by_last.remove(&(l, t, c));
+        }
+        if let Some(l) = last {
+            self.of.insert(c, (ts, l));
+            self.by_last.insert((l, ts, c));
+        }
+    }
+}
+
+/// Keeps `Core::lasts` of `(tid, ak)` (where loaded) after `c`'s record changed.
+pub(crate) fn note_last(core: &mut Core, tid: &Tid, ak: &Ak, c: &CommitId, last: Option<Ts>) {
+    let Some(ts) = core.commits.get(c).map(|m| m.header.ts) else { return };
+    if let Some(l) = core.lasts.get_mut(&(*tid, ak.clone())) {
+        l.set(*c, ts, last);
+    }
+}
+
+/// `Core::lasts` of `(tid, ak)`, loaded from the records once per session.
+fn lasts<'a>(tx: &'a mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<&'a Lasts> {
+    let k = (*tid, ak.clone());
+    if !tx.core.lasts.contains_key(&k) {
+        let mut l = Lasts::default();
+        let held: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flatten().copied().collect();
+        for (ts, c) in held {
+            let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
+            l.set(c, ts, death_of(tx, tid, ak, &c, ai)?.map(|d| d.last));
+        }
+        tx.core.lasts.insert(k.clone(), l);
+    }
+    Ok(tx.core.lasts.entry(k).or_default())
+}
+
+/// Below this many bodies before the last late delta, a window reads their records instead of
+/// loading `Lasts`.
+const LASTS_MIN: usize = 64;
 
 const LO: CommitId = CommitId([0; 32]);
 const HI: CommitId = CommitId([0xff; 32]);
@@ -118,6 +165,7 @@ pub(crate) fn drop_residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
     tx.core.first_bounded.remove(&(*tid, ak.clone()));
+    tx.core.lasts.remove(&(*tid, ak.clone()));
     Ok(())
 }
 
@@ -166,7 +214,8 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
         for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
             let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
             let (body, _) = body_class(tx.core, &h, &c, ai);
-            tx.txn.note_death(tid, ak, &body, d.at)?;
+            let n = tx.txn.note_death(tid, ak, &body, d.at)?;
+            note_last(tx.core, tid, ak, &c, Some(n.last));
             bodies.insert((c, ai));
         }
     }
@@ -356,6 +405,7 @@ fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: O
     let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let (body, _) = body_class(tx.core, &h, c, ai);
     tx.txn.set_death(tid, ak, &body, d.map(|(first, last)| osis_store::Deaths { first, last }))?;
+    note_last(tx.core, tid, ak, c, d.map(|x| x.1));
     Ok(())
 }
 
@@ -388,15 +438,26 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut u = t_max;
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
     // bodies at or before a late delta with a death after the first one
-    let before: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).copied().collect();
-    for (ts, c) in before {
-        let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
-        if let Some(d) = death_of(tx, tid, ak, &c, ai)?
-            && d.last > t_min
-        {
-            judge.insert((ts, c), ai);
-            u = u.max(d.last);
+    let before: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
+    let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN && !tx.core.lasts.contains_key(&k) {
+        // few bodies before: their records, without loading the index
+        let mut v = Vec::new();
+        for (ts, c) in before {
+            if let Some(ai) = bounded_part(tx.core, &c, tid, ak)
+                && let Some(d) = death_of(tx, tid, ak, &c, ai)?
+            {
+                v.push((d.last, ts, c));
+            }
         }
+        v
+    } else {
+        lasts(tx, tid, ak)?.by_last.range((t_min, Ts::default(), LO)..).copied().collect()
+    };
+    let dying = dying.into_iter().filter(|x| x.0 > t_min && x.1 <= t_max);
+    for (last, ts, c) in dying {
+        let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
+        judge.insert((ts, c), ai);
+        u = u.max(last);
     }
     // bodies whose live writes a late delta killed, and the late deltas
     let named: BTreeSet<CommitId> = items.iter().filter_map(|i| if let Due::Killed(c) | Due::Late(_, c) = i { Some(*c) } else { None }).collect();

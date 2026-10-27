@@ -272,6 +272,9 @@ pub(crate) struct Core {
     /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
     /// where known (`retention::first_bounded`); forgotten on rollback.
     pub first_bounded: HashMap<(Tid, Ak), Option<(Ts, CommitId)>>,
+    /// Last deaths of the held bounded bodies per aspect, where loaded (`retention::Lasts`);
+    /// forgotten on rollback.
+    pub lasts: HashMap<(Tid, Ak), crate::retention::Lasts>,
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
@@ -372,6 +375,7 @@ impl Core {
     /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
         self.first_bounded.clear();
+        self.lasts.clear();
         if self.dirty || !self.written.is_empty() {
             self.waits.clear();
             self.dirty = false;
@@ -454,6 +458,7 @@ impl Core {
             lost_due: JSet::default(),
             deaths_due: JSetMap::default(),
             first_bounded: HashMap::new(),
+            lasts: HashMap::new(),
             defer_deaths: false,
             changed: None,
             live_trees: BTreeMap::new(),
