@@ -1,5 +1,5 @@
 #!/bin/sh
-# The merge gate (notes/testing.md, Build hygiene): every check in order, failing fast, each
+# The merge gate (notes/build.md): every check in order, failing fast, each
 # with its wall time. Run it in the task's worktree after `git rebase main`; main is only ever
 # fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N]   (from the worktree root)
 # The dev sim sweep (30 seeds) runs when the branch touches the simulator or a crate it has
