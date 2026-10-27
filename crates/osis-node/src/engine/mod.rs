@@ -269,6 +269,9 @@ pub(crate) struct Core {
     pub lost_due: JSet<Tid>,
     /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`).
     pub deaths_due: JSet<(Tid, Ak)>,
+    /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
+    /// within a step).
+    pub defer_deaths: bool,
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
@@ -428,6 +431,7 @@ impl Core {
             key_actors: BTreeMap::new(),
             lost_due: JSet::default(),
             deaths_due: JSet::default(),
+            defer_deaths: false,
             live_trees: BTreeMap::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
@@ -964,7 +968,10 @@ impl Engine {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
                 // the persisted index follows the in-memory indexes in the same transaction
-                let r = f(&mut tx);
+                let mut r = f(&mut tx);
+                if r.is_ok() && !tx.core.defer_deaths && !tx.core.deaths_due.is_empty() {
+                    r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
+                }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
                 let persisted = {

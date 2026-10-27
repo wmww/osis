@@ -207,13 +207,25 @@ fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 /// holding the same commits agree. Residue: a dropped body whose superseding write left the
 /// state no longer dates the writes it superseded (issues/deaths-dropped-superseder.md). Cost: the aspect's held bodies and whole
 /// state, per such delta.
-/// Marks `(tid, ak)` for `rejudge_deaths` once, before its deaths are next read (`settle_deaths`):
-/// a batch of late deltas costs one replay per aspect, not one per delta. Until then its death
+/// Marks `(tid, ak)` for `rejudge_deaths` once, at the end of the transaction or, within a
+/// node-sync step, before its deaths are next read (`settle_deaths`): a step of late deltas
+/// costs one replay per aspect, not one per delta. Until then its death
 /// records may be later than the spec's (never earlier), and keep-at-most bounds judged at apply
 /// with them later too.
 pub(crate) fn mark_deaths_due(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if tx.core.deaths_due.insert((*tid, ak.clone())) {
         tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?;
+    }
+    Ok(())
+}
+
+/// `Engine::settle_deaths` in `tx`.
+pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
+    let due: Vec<(Tid, Ak)> = tx.core.deaths_due.iter().cloned().collect();
+    for (tid, ak) in due {
+        rejudge_deaths(tx, &tid, &ak)?;
+        tx.core.deaths_due.remove(&(tid, ak.clone()));
+        tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
     }
     Ok(())
 }
@@ -509,21 +521,23 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
 }
 
 impl Engine {
-    /// Replays the deaths of the aspects marked by `mark_deaths_due`, in one transaction. Every
-    /// read of deaths or bounds runs it first.
+    /// Replays the deaths of the aspects marked by `mark_deaths_due`, in one transaction: every
+    /// transaction ends with it unless `Core::defer_deaths` (node-sync's steps), and every read
+    /// of deaths or bounds runs it first.
+    /// Batches deaths replays (spec/crdt.md §4.8): while on, a commit out of order marks its
+    /// aspect and the replay waits for the next read of deaths or bounds, so ingesting many
+    /// commits costs one replay per aspect; off replays what waits. node-sync turns it on for
+    /// each step.
+    pub fn defer_deaths(&mut self, on: bool) -> Result<()> {
+        self.core.defer_deaths = on;
+        if on { Ok(()) } else { self.settle_deaths() }
+    }
+
     pub(crate) fn settle_deaths(&mut self) -> Result<()> {
         if self.core.deaths_due.is_empty() {
             return Ok(());
         }
-        self.run(|tx| {
-            let due: Vec<(Tid, Ak)> = tx.core.deaths_due.iter().cloned().collect();
-            for (tid, ak) in due {
-                rejudge_deaths(tx, &tid, &ak)?;
-                tx.core.deaths_due.remove(&(tid, ak.clone()));
-                tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
-            }
-            Ok(())
-        })
+        self.run(settle_due)
     }
 
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits

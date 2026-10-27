@@ -759,8 +759,8 @@ fn sync_membership_pass_cost() {
 // spec/crdt.md §4.8 (deaths whatever the arrival order), spec/requirements.md, Scale (no
 // operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
 // than all of them. Each late delta applied and its deaths read alone, then 5 more in one batch
-// read once: an unbounded set (no deaths kept) against a keep-at-least one (deaths replayed once
-// per aspect per batch, `retention::settle_deaths`). `OSIS_SCALE_N` sets N (default 3000).
+// read once (`Engine::defer_deaths`): an unbounded set (no deaths kept) against a keep-at-least one
+// (deaths replayed once per aspect per batch). `OSIS_SCALE_N` sets N (default 3000).
 #[test]
 #[ignore = "tier 2"]
 fn late_delta_deaths_cost() {
@@ -803,10 +803,11 @@ fn late_delta_deaths_cost() {
         }
         osis_node::costs::take();
         let t2 = Instant::now();
+        lp.peers[0].engine.defer_deaths(true).unwrap();
         for c in &late[5..] {
             lp.deliver(0, &pk(c)).unwrap();
         }
-        lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
+        lp.peers[0].engine.defer_deaths(false).unwrap();
         let batch = t2.elapsed();
         let t3 = Instant::now();
         add(&mut lp, 0, "z".into());
