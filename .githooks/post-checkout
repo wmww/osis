@@ -1,4 +1,0 @@
-#!/bin/sh
-# Builds run in the shared build checkout via tools/b (notes/testing.md, Build hygiene).
-[ -d target ] && echo "warning: $(pwd)/target exists: build only via tools/b, then delete it" >&2
-exit 0
