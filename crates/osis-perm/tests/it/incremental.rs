@@ -577,3 +577,39 @@ fn append_declines_overlapping_ranges_spec_commits_4() {
     let full = Timeline::evaluate(&held);
     assert!(full.membership_commit(&osis_core::CommitId([0x41; 32])).is_none(), "voided");
 }
+
+/// §5.1 steps 4-5: a write arriving late before a demotion whose audit dropped an earlier write
+/// goes on from the dropped write (that drop is forgotten and found again), not from scratch;
+/// a later one that keeps the demoted node's class (a second admin edge) undoes the drop.
+#[test]
+fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
+    use osis_core::Role::{Admin, Read, Write};
+    let mut w = World::new();
+    let n = w.nodes(5);
+    let (k, a, b, m) = (n[0], n[1], n[2], n[3]);
+    let g = w.thing(k);
+    let team = w.thing(k);
+    w.set(k, g, a, edge(Admin), 1, &[]);
+    w.set(k, g, b, edge(Read), 1, &[]);
+    w.set(k, g, team, edge(Read), 1, &[]);
+    w.set(k, team, a, edge(Read), 1, &[]);
+    w.set(a, g, m, edge(Write), 2, &[]);
+    w.set(k, g, a, None, 6, &[]);
+    let late = [w.set(k, g, b, edge(Write), 3, &[]), w.set(k, g, team, edge(Admin), 4, &[]), w.set(k, team, a, edge(Admin), 5, &[])];
+    let mut skip: BTreeSet<_> = late.into_iter().collect();
+    let mut prev = w.held_without(&skip);
+    let mut inc = Timelines::new();
+    inc.update(&prev);
+    assert_eq!(inc.get(&g).unwrap().dropped().len(), 1);
+    for id in late {
+        skip.remove(&id);
+        let held = w.held_without(&skip);
+        let c = inc.update_touched(&held, &touched(&prev, &held));
+        assert!(c.evaluated.is_empty(), "{c:?}");
+        assert_eq!(inc.appended(), 1);
+        assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+        prev = held;
+    }
+    // a keeps edge admin through the team: no fall, nothing dropped
+    assert!(inc.get(&g).unwrap().dropped().is_empty());
+}

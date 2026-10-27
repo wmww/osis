@@ -347,6 +347,9 @@ pub(crate) struct Rest {
     pub log: Vec<Undo>,
     /// Per walked item: the log and history lengths before it.
     pub marks: Vec<(usize, usize)>,
+    /// D in the order the walks of the final round found it (`resume` keeps the drops found
+    /// before the first found at or after its point).
+    pub found: Vec<WriteId>,
 }
 
 /// The inverse of one change to the walk state.
@@ -389,7 +392,6 @@ pub(crate) struct Resume {
     pub dropped: BTreeMap<WriteId, Point>,
     pub epoch_starts: BTreeMap<Tid, CommitId>,
     pub epoch_changed: bool,
-    pub reach: Option<Point>,
     pub from: Point,
     /// The walk's items over `input`, when kept (else built).
     pub items: Option<Items>,
@@ -561,6 +563,7 @@ struct Pass<'a> {
     /// A continued walk: how many history changes are still the continued walk's, and that
     /// walk's changes after them (moved out by `rollback`).
     untouched: Option<(usize, Vec<Change>)>,
+    found: Vec<WriteId>,
 }
 
 type Roles = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
@@ -586,8 +589,8 @@ impl<'a> Pass<'a> {
 
     fn resume(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
         let Walked { initial, history, edges, applied, demotions, falls, rest } = w;
-        let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks } = rest;
-        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), log, marks, untouched: None }
+        let Rest { prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found } = rest;
+        Pass { input, epoch, dropped, fresh: Vec::new(), edges, initial, prior, dead, prior_node, applied, by_author_target, setter, candidates, history, demotions, falls, roles: BTreeMap::new(), log, marks, untouched: None, found }
     }
 
     /// `Outcome::common` of this walk.
@@ -599,7 +602,7 @@ impl<'a> Pass<'a> {
     }
 
     fn finish(self) -> (Walked, BTreeMap<WriteId, Point>) {
-        let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter, candidates: self.candidates, log: self.log, marks: self.marks };
+        let rest = Rest { prior: self.prior, dead: self.dead, prior_node: self.prior_node, by_author_target: self.by_author_target, setter: self.setter, candidates: self.candidates, log: self.log, marks: self.marks, found: self.found };
         (Walked { initial: self.initial, history: self.history, edges: self.edges, applied: self.applied, demotions: self.demotions, falls: self.falls, rest }, self.dropped)
     }
 
@@ -919,6 +922,7 @@ impl<'a> Pass<'a> {
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);
+                self.found.push(id);
                 grew = true;
             }
         }
@@ -1172,8 +1176,8 @@ pub(crate) fn run(input: &Input) -> Outcome {
 }
 
 /// Continues a converged evaluation over `input`, which adds membership commits at or after
-/// `r.from` (and nothing else): equal to `run` provided no walk but the final one reached
-/// `r.from` (`r.reach` before it), since every walk then reaches it as before.
+/// `r.from` (and nothing else): equal to `run`, since the drops found before the first one
+/// found at or after `r.from` are found again in the same order (see `drive`).
 pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
     drive(input, Some(r))
 }
@@ -1207,11 +1211,24 @@ fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
             from = 0;
         }
         Some(r) => {
-            (epoch, epoch_changed, reach) = (r.epoch_starts, r.epoch_changed, r.reach);
+            (epoch, epoch_changed) = (r.epoch_starts, r.epoch_changed);
             it = r.items.unwrap_or_else(|| items(input, &epoch));
             from = it.list.partition_point(|x| x.0 < r.from);
-            let n = r.walked.history.len();
-            p = Pass::resume(input, epoch.clone(), r.dropped, r.walked);
+            let (mut walked, mut dropped) = (r.walked, r.dropped);
+            // The drops found before the first found by a write at or after `r.from` are found
+            // again from scratch (every walk up to them saw only items before `r.from`); the
+            // rest may not be: forget them and go back to the first write they dropped (the
+            // final walk is the walk under the drops kept up to there).
+            let cut = walked.rest.found.iter().position(|w| dropped.get(w).is_none_or(|p| *p >= r.from));
+            if let Some(j) = cut {
+                for w in walked.rest.found.split_off(j) {
+                    dropped.remove(&w);
+                    from = from.min(it.at.get(&w.commit()).copied().unwrap_or(0));
+                }
+            }
+            reach = dropped.values().max().copied();
+            let n = walked.history.len();
+            p = Pass::resume(input, epoch.clone(), dropped, walked);
             p.untouched = Some((n, Vec::new()));
         }
     }

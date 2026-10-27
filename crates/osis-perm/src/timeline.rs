@@ -45,7 +45,8 @@ pub struct Timeline {
     epoch_starts: BTreeMap<Tid, CommitId>,
     passes: usize,
     pub(crate) epoch_changed: bool,
-    /// The furthest point a walk under the final epoch starts other than the final one reached.
+    /// The furthest point a walk under the final epoch starts other than the final one reached
+    /// (the latest point of a drop in D; kept for the walk cache).
     pub(crate) reach: Option<Point>,
     /// The edge state before history change `i * CHECKPOINT`, for `edges_at` (shared with
     /// the timeline `extend` made this from).
@@ -158,9 +159,10 @@ impl Timeline {
     /// snapshots plus more membership commits and new leaves (things only their `/created`
     /// names among the held commits and snapshots): the leaves first take their owner's
     /// demotions (`Walked::alias_leaves`), then the final walk is rolled back to the earliest
-    /// new commit and goes on from there instead of starting over (equal to `evaluate`).
-    /// `None` when that does not hold (another walk reached that point, a new thing an earlier
-    /// write names, or the inputs differ otherwise): evaluate.
+    /// new commit (or the first write a drop found after it dropped, D keeping what was found
+    /// before) and goes on from there instead of starting over (equal to `evaluate`). `None`
+    /// when that does not hold (a new node, a new thing an earlier write names, a membership
+    /// cycle after epoch starts changed, or the inputs differ otherwise): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
         // a new author or member could have changed how earlier writes were walked
@@ -182,10 +184,10 @@ impl Timeline {
         };
         // after epoch changes, going on from the old starts finds the same ones only when they
         // have a unique fixed point (walk::drive)
-        if reach.is_some_and(|r| r >= from) || (epoch_changed && input.cyclic()) {
+        if epoch_changed && input.cyclic() {
             return None;
         }
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from, items: None });
+        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: None });
         Some(Timeline::from_kept(input, out, Some(kept)))
     }
 
@@ -195,14 +197,14 @@ impl Timeline {
     /// `extend` would not hold or the inputs would change otherwise (`Input::can_append`).
     pub fn append(mut self, new: &[Arc<MembershipCommit>]) -> Result<Timeline, Box<Timeline>> {
         let Some(from) = new.iter().map(|c| c.point()).min() else { return Ok(self) };
-        if self.reach.is_some_and(|r| r >= from) || !self.input.can_append(new, self.epoch_changed) {
+        if !self.input.can_append(new, self.epoch_changed) {
             return Err(Box::new(self));
         }
         self.input.append(new);
         self.items.add(new);
         let kept = Kept::of(&mut self);
-        let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, reach, .. } = self;
-        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, reach, from, items: Some(items) });
+        let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, .. } = self;
+        let out = walk::resume(&input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) });
         Ok(Timeline::from_kept(input, out, Some(kept)))
     }
 
