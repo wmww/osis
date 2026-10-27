@@ -997,6 +997,7 @@ fn unmerge_paged_matches_fresh_spec_crdt_4_6() {
     unmerge_paged(0);
 }
 
+// As above, with B also overwriting and deleting A's data: the rebuild path (spec/crdt.md §4.6).
 #[test]
 fn unmerge_paged_rebuilt_matches_fresh_spec_crdt_4_6() {
     unmerge_paged(1);
