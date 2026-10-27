@@ -421,7 +421,7 @@ impl SyncEngine {
                         self.engine.note_delete_hints(c.id(), &payload.things)?;
                     }
                     for t in &payload.things {
-                        if self.engine.group_labels(&t.tid).unwrap_or_default().iter().all(|x| x.id != t.label) {
+                        if self.engine.labels_of(&t.tid).iter().all(|x| x.id != t.label) {
                             // a sender's word: servers only, never a node to dial (`peer://`)
                             self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned().collect(), via: None });
                         }

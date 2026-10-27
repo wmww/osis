@@ -97,8 +97,8 @@ impl SyncEngine {
     }
 
     /// The group label `l` as recorded, or a hint's.
-    pub(crate) fn group_label(&mut self, g: &Tid, l: &LabelId) -> Option<GroupLabel> {
-        self.engine.group_labels(g).ok()?.into_iter().find(|x| x.id == *l)
+    pub(crate) fn group_label(&mut self, g: &Tid, l: &LabelId) -> Option<std::sync::Arc<GroupLabel>> {
+        self.engine.labels_of(g).into_iter().find(|x| x.id == *l)
     }
 
     /// Open attempts in order: the known head, recorded steps deepest first by sync key, then

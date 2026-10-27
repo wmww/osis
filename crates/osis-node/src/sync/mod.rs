@@ -866,14 +866,14 @@ impl SyncEngine {
     /// secrets of; an admin also keeps its replaced labels until done with them at every server
     /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
     /// `/label` among them, and deletes the content entries; `retire_at`).
-    pub fn labels(&mut self) -> Vec<(Tid, GroupLabel)> {
+    pub fn labels(&mut self) -> Vec<(Tid, std::sync::Arc<GroupLabel>)> {
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
             if self.engine.epochs(&g).is_none_or(|e| e.read.held_newest_first().is_empty()) {
                 continue;
             }
             let admin = self.engine.role_on(&g) == Some(osis_core::Role::Admin);
-            for l in self.engine.group_labels(&g).unwrap_or_default() {
+            for l in self.engine.labels_of(&g) {
                 if l.replaced && admin && !self.state.retired.contains(&l.id) {
                     // a server where the label was lost may never settle a pass: a bound
                     let now = self.now();
@@ -985,7 +985,7 @@ impl SyncEngine {
         let mut m: BTreeMap<ServerKey, (Address, bool)> = self.cfg.servers.iter().map(|a| (a.key, (a.clone(), false))).collect();
         for (_, l) in self.labels() {
             // an admin's word: servers only (`peer://` nodes come from `/reach` or a link)
-            for a in l.servers.into_iter().filter(|a| !peers::is_peer(a)) {
+            for a in l.servers.iter().filter(|a| !peers::is_peer(a)).cloned() {
                 m.entry(a.key).or_insert((a, false));
             }
         }
@@ -1230,7 +1230,7 @@ impl SyncEngine {
         // a hint is done once the thing's `/label` names the label
         let hints: Vec<(LabelId, Tid)> = self.state.hints.iter().map(|(l, h)| (*l, h.thing)).collect();
         for (l, t) in hints {
-            if self.engine.group_labels(&t)?.iter().any(|x| x.id == l) {
+            if self.engine.labels_of(&t).iter().any(|x| x.id == l) {
                 self.state.remove_hint(&l);
             }
         }

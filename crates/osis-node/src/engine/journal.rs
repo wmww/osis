@@ -116,11 +116,13 @@ impl<K: Ord + Clone, V: Clone> Journaled for JMap<K, V> {
 pub(crate) struct JSet<T: Ord + Clone> {
     set: BTreeSet<T>,
     log: Vec<(T, bool)>,
+    /// Counts changes, rollbacks included (`changes`).
+    changes: u64,
 }
 
 impl<T: Ord + Clone> Default for JSet<T> {
     fn default() -> Self {
-        JSet { set: BTreeSet::new(), log: Vec::new() }
+        JSet { set: BTreeSet::new(), log: Vec::new(), changes: 0 }
     }
 }
 
@@ -136,6 +138,7 @@ impl<T: Ord + Clone> JSet<T> {
         let new = self.set.insert(t.clone());
         if new {
             self.log.push((t, false));
+            self.changes += 1;
         }
         new
     }
@@ -143,8 +146,13 @@ impl<T: Ord + Clone> JSet<T> {
         let was = self.set.remove(t);
         if was {
             self.log.push((t.clone(), true));
+            self.changes += 1;
         }
         was
+    }
+    /// A count that moves whenever the set may have changed (caches derived from it compare it).
+    pub fn changes(&self) -> u64 {
+        self.changes
     }
     pub fn extend(&mut self, it: impl IntoIterator<Item = T>) {
         for t in it {
@@ -163,6 +171,9 @@ impl<T: Ord + Clone> Journaled for JSet<T> {
         self.log.clear();
     }
     fn rollback(&mut self) {
+        if !self.log.is_empty() {
+            self.changes += 1;
+        }
         while let Some((t, was)) = self.log.pop() {
             if was {
                 self.set.insert(t);

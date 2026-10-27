@@ -7,6 +7,7 @@ use osis_core::{CreationRecord, LabelId, Role, Tid};
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
 const MAX_CHAIN: usize = osis_core::format::MAX_OWNER_DEPTH + 1;
@@ -99,20 +100,37 @@ impl Engine {
 
     /// Things with a `/label` held.
     pub fn labeled_groups(&self) -> Vec<Tid> {
-        let mut v: Vec<Tid> = self.core.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "/label").map(|(t, _)| *t).collect();
-        v.dedup();
-        v
+        self.core.labeled.iter().copied().collect()
     }
 
     /// The labels `/label` of `g` records, replaced ones included; records that do not parse
     /// are skipped.
     pub fn group_labels(&mut self, g: &Tid) -> Result<Vec<GroupLabel>> {
-        let Ok(Some(labels)) = self.get_typed(g, &ct::LABEL) else { return Ok(Vec::new()) };
+        Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
+    }
+
+    /// `group_labels`, shared: decoded once per write of the `/label` (`Core::labels`).
+    pub(crate) fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
+        if self.core.created(g).is_none() {
+            return Vec::new();
+        }
+        if let Some(v) = self.core.labels.get(g).cloned() {
+            #[cfg(debug_assertions)]
+            assert_eq!(format!("{:?}", self.decode_labels(g)), format!("{v:?}"), "labels_of({g}) cached");
+            return v;
+        }
+        let out = self.decode_labels(g);
+        self.core.labels.insert(*g, out.clone());
+        out
+    }
+
+    fn decode_labels(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
+        let Ok(Some(labels)) = self.get_typed(g, &ct::LABEL) else { return Vec::new() };
         let mut out = Vec::new();
         for (id, l) in labels {
             let Ok(steps) = osis_label::label_steps(&l) else { continue };
-            out.push(GroupLabel { group: *g, id, index: l.index, steps, servers: l.servers, replaced: l.replaced });
+            out.push(Arc::new(GroupLabel { group: *g, id, index: l.index, steps, servers: l.servers, replaced: l.replaced }));
         }
-        Ok(out)
+        out
     }
 }

@@ -67,7 +67,7 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
 pub(crate) struct BodyCtx {
     pub closure: std::sync::Arc<std::collections::BTreeSet<Tid>>,
     pub actor: Tid,
-    pub published: std::collections::BTreeSet<Tid>,
+    pub published: std::sync::Arc<std::collections::BTreeSet<Tid>>,
 }
 
 impl BodyCtx {
@@ -165,7 +165,7 @@ impl Engine {
 
     /// What `commit_bodies_under` needs of a group: its closure, actor and the things its home
     /// label publishes.
-    pub(crate) fn body_ctx(&self, g: &Tid) -> BodyCtx {
+    pub(crate) fn body_ctx(&mut self, g: &Tid) -> BodyCtx {
         BodyCtx { closure: self.closure(g), actor: self.group_actor(g), published: self.published_under(g) }
     }
 
@@ -204,27 +204,22 @@ impl Engine {
 
     /// Labeled groups whose nearest labeled owner-chain actor is `g` (its home label publishes
     /// their `/label`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
-    pub(crate) fn published_under(&self, g: &Tid) -> std::collections::BTreeSet<Tid> {
-        let mut out = std::collections::BTreeSet::new();
-        if !self.core.own_keys.contains(g) {
-            return out;
+    /// Taken for every actor at once, again only when a creation record, `own_keys` or the
+    /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
+    pub(crate) fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
+        let core = &mut self.core;
+        let at = (core.held.generation(), core.own_keys.changes(), core.labeled.changes());
+        if core.published.as_ref().is_none_or(|(k, _)| *k != at) {
+            let map = published_by_actor(core, &core.labeled);
+            core.published = Some((at, map.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
         }
-        let labeled: std::collections::BTreeSet<Tid> = self.labeled_groups().into_iter().collect();
-        for h in &labeled {
-            if h == g {
-                continue;
-            }
-            let mut cur = *h;
-            for _ in 0..64 {
-                let Some(osis_core::CreationRecord::Thing { owner, .. }) = self.core.created(&cur) else { break };
-                cur = *owner;
-                if labeled.contains(&cur) && self.core.own_keys.contains(&cur) {
-                    if cur == *g {
-                        out.insert(*h);
-                    }
-                    break;
-                }
-            }
+        let out = core.published.as_ref().and_then(|(_, m)| m.get(g).cloned()).unwrap_or_default();
+        // the cache and the `/label` index against a scan of every held aspect
+        #[cfg(debug_assertions)]
+        {
+            let scan: std::collections::BTreeSet<Tid> = core.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "/label").map(|(t, _)| *t).collect();
+            assert!(scan == *core.labeled, "labeled index {:?} vs held {scan:?}", *core.labeled);
+            assert_eq!(published_by_actor(core, &scan).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
         }
         out
     }
@@ -392,6 +387,26 @@ pub fn delete_item(keys: &HeadKeys, label: &LabelId, blob: BlobId, at: Option<Wa
         }
     }
     None
+}
+
+/// Labeled things by their nearest labeled owner-chain actor with secrets of its own
+/// (`Engine::published_under`).
+fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
+    let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
+    for h in labeled {
+        let mut cur = *h;
+        for _ in 0..64 {
+            let Some(osis_core::CreationRecord::Thing { owner, .. }) = core.created(&cur) else { break };
+            cur = *owner;
+            if labeled.contains(&cur) && core.own_keys.contains(&cur) {
+                if cur != *h {
+                    map.entry(cur).or_default().insert(*h);
+                }
+                break;
+            }
+        }
+    }
+    map
 }
 
 #[cfg(test)]
