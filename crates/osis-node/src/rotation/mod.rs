@@ -322,6 +322,41 @@ pub(crate) fn uncovered_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Depar
 /// The roles of `a` whose newest current epoch does not cover a known departure.
 pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
+    uncovered_roles_of(tx, a, deps)
+}
+
+/// `uncovered_roles` for placing (node-sync's cover check): this node's own self-removals
+/// count as no departure, so the leaver still places them under what it left (and a single-use
+/// redeemer under K, L's removal); they leak nothing it does not hold, and the rotation is the
+/// next rotator's. Derived from the commits, so a restart keeps it.
+pub(crate) fn uncovered_roles_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
+    let deps: Vec<Departure> = departures(tx, a)?.into_iter().filter(|d| !own_leaving(tx.core, a, d)).collect();
+    uncovered_roles_of(tx, a, deps)
+}
+
+/// Whether departure `d` (from `a`, or from the innermost actor on its way) is this node's own
+/// self-removal (spec/permissions.md §2): the newest applied write on the member's edge there
+/// lowers it and is a commit made here (signed by this node or a key actor it holds).
+fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> bool {
+    let t = d.via.last().unwrap_or(a);
+    let Some(tl) = core.timelines.get(t) else { return false };
+    let newest = tl
+        .applied()
+        .keys()
+        .filter_map(|w| match w {
+            WriteId::Op(c, i) => tl.membership_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|op| (mc, op))),
+            _ => None,
+        })
+        .filter(|(_, op)| op.target == *t && op.member == d.member)
+        .max_by_key(|(mc, _)| mc.point());
+    let Some((mc, op)) = newest else { return false };
+    let old = tl.edges_at(Some(mc.point())).get(&op.member, t).map(|e| e.role);
+    let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+    let own = mc.author == core.id.tid() || core.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
+    own && Departure::of_change(op.member, old, new).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.member, mc.ts)
+}
+
+fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
     if deps.is_empty() {
         return Ok(BTreeSet::new());
     }

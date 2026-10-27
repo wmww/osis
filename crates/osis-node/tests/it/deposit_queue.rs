@@ -196,24 +196,28 @@ fn projections_wait_for_the_full_commit_spec_sync_5() {
 
 // spec/sync.md §3, §5: a crash between a redemption's commit and carrying out its deliveries
 // loses neither: the inbox delivery's record was written in the commit's transaction, and
-// the deposit of the redeemer's own membership write is placed by its next pass. (A multi-use redemption: a
-// single-use one's self-removal of L leaves K's epoch uncovered once restarted, and nothing
-// is placed under K until a sharer device rotates it.)
+// the deposit of the redeemer's own membership write is placed by its next pass. Single use
+// too: L's self-removal is derived from the commit after the restart, so it holds back
+// nothing under K (spec/permissions.md §3).
 #[test]
 fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
-    let mut net = Net::new();
-    let (a, x, _, link, px, _) = link_setup(&mut net);
-    let done = net.engine(x).redeem(&link, &px, false).unwrap();
-    assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
-    drop(done);
-    net.restart(x, 77);
-    assert!(net.sync(x).deliveries_pending() > 0, "the inbox delivery reloaded unsent");
-    for _ in 0..3 {
-        net.run();
-        net.advance(61_000);
+    for single in [false, true] {
+        let mut net = Net::new();
+        let (a, x, _, link, px, _) = link_setup(&mut net);
+        let done = net.engine(x).redeem(&link, &px, single).unwrap();
+        assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
+        let c = *done.commits.last().unwrap();
+        drop(done);
+        net.restart(x, 77);
+        assert!(net.sync(x).deliveries_pending() > 0, "the inbox delivery reloaded unsent");
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        assert!(!entries_of(&mut net, x, &c).is_empty(), "single {single}: the redemption placed under K");
+        assert!(net.engine(a).roster(&link.k).contains_key(&px), "single {single}: the sharer applied the redemption");
+        assert_eq!(net.sync(x).deliveries_pending(), 0, "single {single}: the inbox blob went");
     }
-    assert!(net.engine(a).roster(&link.k).contains_key(&px), "the sharer applied the redemption");
-    assert_eq!(net.sync(x).deliveries_pending(), 0, "the inbox blob went");
 }
 
 // spec/sync.md §5 (a refused deposit at one server does not hold what another accepted),
