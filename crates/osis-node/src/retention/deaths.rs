@@ -63,10 +63,13 @@ fn put_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, old: Option<Ts>, 
     Ok(())
 }
 
-/// Before part `ai` of `c` on `(tid, ak)` drops with its death record: removes its row.
+/// Before part `ai` of `c` on `(tid, ak)` drops with its death record: removes its row,
+/// shredded as the record is.
 pub(crate) fn drop_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
-    let old = death_of(tx, tid, ak, c, ai)?.map(|d| d.last);
-    put_last(tx, tid, ak, c, old, None)
+    let (Some(l), Some(ts)) = (death_of(tx, tid, ak, c, ai)?.map(|d| d.last), tx.core.commits.get(c).map(|m| m.header.ts)) else { return Ok(()) };
+    let t = tx.txn.index(LAST_DEATHS)?;
+    tx.txn.table_remove(t, &last_key(tid, ak, l, ts, c), Shred::Yes)?;
+    Ok(())
 }
 
 /// The rows of `(tid, ak)` with a last death at or after `from`, as `(last, ts, ID)`; `None`
@@ -262,7 +265,7 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
             f.remove_dots(&|d| core.commit_of(&tid, &ak, d).is_some_and(|x| x != *c && (held_part(core, &x, &tid, &ak).is_some() || kept.contains(&x))));
         }
         f.strip(&|_| true);
-        // a window never reads a snapshot's residue (it replays whole there), so none is empty
+        // none for a snapshot's or import's left empty: a window meeting it joins the state
         if !(f.is_empty() && copies(tx.core, c)) {
             tx.txn.put_local(&records::dropped_key(&tid, &ak, ts, c), &crate::engine::state::encode(&f)?, Shred::No)?;
         }

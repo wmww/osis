@@ -671,3 +671,70 @@ fn last_death_rows_rebuilt_spec_crdt_4_8() {
     e.rebuild_index().unwrap();
     assert!(e.last_deaths_stale().unwrap().is_empty(), "rebuilt with the index");
 }
+
+// spec/requirements.md (Decentralization: deaths a function of the held set), spec/crdt.md
+// §4.8: on a kept set the owner drops its first add (no residue: nothing older held), takes two
+// snapshots carrying it, and a lagging writer's removes older than both arrive in one batch:
+// the window spans both snapshots, and every body's deaths equal a whole replay and those of
+// nodes taking the same commits in other orders.
+#[test]
+fn late_deltas_before_two_snapshots_alike_spec_crdt_4_8() {
+    let mut lp = net(4, 84);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    let k = ak("/t/keptset");
+    let mut adds = Vec::new();
+    for i in 0..10 {
+        lp.advance(10);
+        adds.push(set_op(&mut lp, 0, t, Op::Add(s(&format!("e{i}")))));
+    }
+    sync(&mut lp, 0, 1);
+    let early = packages(&mut lp, 0);
+    lp.advance(10);
+    set_op(&mut lp, 1, t, Op::Remove(s("e0")));
+    lp.advance(10);
+    set_op(&mut lp, 1, t, Op::Remove(s("e3")));
+    for i in 10..15 {
+        lp.advance(10);
+        set_op(&mut lp, 0, t, Op::Add(s(&format!("e{i}"))));
+    }
+    lp.advance(10);
+    lp.peers[0].engine.drop_body(&adds[0], &t, &k).unwrap();
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    set_op(&mut lp, 0, t, Op::Add(s("between")));
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    set_op(&mut lp, 1, t, Op::Add(s("x")));
+    lp.advance(10);
+    set_op(&mut lp, 0, t, Op::Add(s("after")));
+    let own = packages(&mut lp, 0);
+    let theirs: Vec<_> = packages(&mut lp, 1).into_iter().filter(|p| !own.iter().any(|q| q.id == p.id)).collect();
+    osis_node::costs::take();
+    lp.peers[0].engine.defer_deaths(true).unwrap();
+    sync(&mut lp, 1, 0);
+    lp.peers[0].engine.defer_deaths(false).unwrap();
+    let e0 = &lp.peers[0].engine;
+    let ids: Vec<_> = own.iter().chain(&theirs).map(|p| p.id).filter(|c| e0.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.ak == k))).collect();
+    let deaths = |e: &mut osis_node::Engine| ids.iter().map(|c| e.deaths(c, &t, &k).unwrap()).collect::<Vec<_>>();
+    let want = deaths(&mut lp.peers[0].engine);
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window over copies"), "{costs:?}");
+    assert!(!costs.contains(&"deaths: whole replay"), "{costs:?}");
+    assert!(want.iter().any(|d| d.is_some()));
+    // other orders: the late writer's commits first, or after the owner's
+    let early_ids: Vec<_> = early.iter().map(|p| p.id).collect();
+    // as the owner sends them now: the first add without its body
+    let (early, rest): (Vec<_>, Vec<_>) = own.iter().cloned().partition(|p| early_ids.contains(&p.id));
+    for (to, order) in [(2, [&early, &theirs, &rest]), (3, [&early, &rest, &theirs])] {
+        for p in order.into_iter().flatten() {
+            lp.deliver(to, p).unwrap();
+        }
+        assert_eq!(deaths(&mut lp.peers[to].engine), want, "node {to}");
+    }
+    lp.peers[0].engine.replay_deaths(&t, &k).unwrap();
+    assert_eq!(deaths(&mut lp.peers[0].engine), want, "a whole replay");
+    assert!(lp.peers[0].engine.last_deaths_stale().unwrap().is_empty());
+}
