@@ -197,8 +197,8 @@ fn projections_wait_for_the_full_commit_spec_sync_5() {
 // spec/sync.md §3, §5: a crash between a redemption's commit and carrying out its deliveries
 // loses neither: the inbox delivery's record was written in the commit's transaction, and
 // the deposit of the redeemer's own membership write is placed by its next pass. Single use
-// too: L's self-removal is derived from the commit after the restart, so it holds back
-// nothing under K (spec/permissions.md §3).
+// too: L's self-removal, derived from the stored commit after the restart, holds back nothing
+// under K until placed (spec/crypto.md §4).
 #[test]
 fn deliveries_survive_a_crash_before_carry_out_spec_sync_5() {
     for single in [false, true] {

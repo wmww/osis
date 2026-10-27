@@ -931,8 +931,7 @@ impl SyncEngine {
 
     /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
     /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
-    /// encrypt under; this node's own self-removals hold back nothing
-    /// (`rotation::uncovered_roles_placing`).
+    /// encrypt under (`placing`).
     pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(Default::default()) };
         if self.engine.core.is_key_actor(&a) {
@@ -943,7 +942,7 @@ impl SyncEngine {
         if still.is_empty() {
             return Ok(still);
         }
-        self.engine.run(|tx| crate::rotation::uncovered_roles_placing(tx, &a))
+        self.placing(&a)
     }
 
     /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
@@ -952,7 +951,22 @@ impl SyncEngine {
         if self.engine.core.is_key_actor(&a) {
             return Ok(Default::default());
         }
-        self.engine.run(|tx| crate::rotation::uncovered_roles_placing(tx, &a))
+        self.placing(&a)
+    }
+
+    /// The roles of `a` uncovered by a known departure, a departure by this node's own
+    /// self-removal not counted until that commit is placed (spec/crypto.md §4).
+    fn placing(&mut self, a: &Tid) -> Result<std::collections::BTreeSet<osis_core::Role>> {
+        let mut deps = Vec::new();
+        for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
+            if let Some(c) = own
+                && !self.placed(&c)?
+            {
+                continue;
+            }
+            deps.push(d);
+        }
+        self.engine.run(|tx| crate::rotation::uncovered_roles_of(tx, a, deps))
     }
 
     /// The servers and co-reader nodes to keep connections to (true: a node).
