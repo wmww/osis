@@ -10,12 +10,13 @@ entries nothing references. Over-deleting only ever costs a rebuild.
 Only profile dirs the invocations below touch are swept. Add the project's
 other canonical invocation shapes with --also, e.g.
   --also "build -p app --release --no-default-features"
-incremental/ can't be liveness-matched: keeps the newest 2 dirs per crate if
-touched in the last 7 days (--drop-incremental drops it all).
+incremental/ can't be liveness-matched (its dirs are named by crate name and a
+hash of their own): per profile and crate name it keeps as many of the newest
+dirs as there are live units of that name (--drop-incremental drops it all).
 
 Usage: sweep-target.py [--dry-run] [--drop-incremental] [--no-defaults] [--also "ARGS"]...
 """
-import argparse, fcntl, json, re, shlex, shutil, subprocess, sys, time
+import argparse, fcntl, json, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 HASH = re.compile(r"-([0-9a-f]{16})(?:\.|$)")
@@ -55,6 +56,7 @@ def main():
     if not a.no_defaults and (root / "release").is_dir():
         shapes.append("build --workspace --all-targets --release")  # covers `cargo test --release` binaries
     live, profiles, inodes, names = set(), set(), set(), set()
+    units = {}  # (profile dir, crate name) -> live units: bounds incremental/
     for shape in shapes + a.also:
         words = shlex.split(shape)
         cut = words.index("--") if "--" in words else len(words)  # keep `-- args` last
@@ -67,6 +69,10 @@ def main():
             paths = msg.get("filenames") or []
             if msg.get("out_dir"):
                 paths.append(msg["out_dir"])
+            if msg.get("reason") == "compiler-artifact" and msg["filenames"]:
+                prof = next((d.parent for d in Path(msg["filenames"][0]).parents if d.name in UNITS), None)
+                key = (prof, norm(msg["target"]["name"]))
+                units[key] = units.get(key, 0) + 1
             for f in map(Path, paths):
                 for part in f.parts:
                     live.update(HASH.findall(part))
@@ -92,11 +98,10 @@ def main():
         by_crate = {}
         for e in (prof / "incremental").glob("*"):
             by_crate.setdefault(e.name.rsplit("-", 1)[0], []).append(e)
-        cutoff = time.time() - 7 * 86400
-        for dirs in by_crate.values():
+        for crate, dirs in by_crate.items():
             dirs.sort(key=lambda e: e.stat().st_mtime, reverse=True)
-            doomed += [e for i, e in enumerate(dirs)
-                       if a.drop_incremental or i >= 2 or e.stat().st_mtime < cutoff]
+            keep = 0 if a.drop_incremental else units.get((prof, crate), 0)
+            doomed += dirs[keep:]
 
     freed = sum(map(real_size, doomed))
     if not a.dry_run:

@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """Give a git worktree its own cargo build dir, seeded from the main checkout's,
-so its first build compiles only the path crates instead of the whole dep tree.
+so its first build compiles only what differs from the main checkout.
 
 Checkouts must not *share* a target dir: cargo hashes path crates relative to
 the workspace root, so peers write the same `deps/libfoo-<hash>.rlib`, freshness
 comes down to mtimes, and one checkout can silently link another's code.
+Copying is safe for the same reason: the hashes and the fingerprints' source
+paths (package-relative) mean the same thing in both checkouts.
 
-  deps/             hardlinked: rustc replaces (unlinks) artifacts, never edits
+  deps/             hardlinked: rustc and the linker replace (unlink) outputs
   everything else   copied: cargo edits .fingerprint/ and build/ in place
-  path crates, incremental/, uplifted files, deps/*.d    skipped
+  incremental/, uplifted files, deps/*.d    skipped
+  source files      each one identical to the main checkout's gets its mtime,
+                    so cargo sees it as old as the main checkout's artifacts;
+                    the rest keep the checkout's (newer) mtime and rebuild
 
 Idempotent; a no-op in the main checkout or once the build dir exists, so it is
 safe to run from a post-checkout hook. Run inside the new worktree.
+Usage: seed-target.py [SOURCE_CHECKOUT]   (default: the main checkout)
 """
-import json, os, re, shutil, subprocess, sys
+import json, os, shutil, subprocess, sys
 from pathlib import Path
-
-HASHED = re.compile(r"^(?:lib)?(.+)-[0-9a-f]{16}(?:\..*)?$")
-
 
 def run(*cmd, cwd=None):
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
@@ -31,11 +34,6 @@ def meta(checkout, *extra):
 
 def build_dir(m):  # build.build-dir (cargo 1.91+) holds intermediates if set
     return Path(m.get("build_directory") or m["target_directory"])
-
-
-def local(name):  # artifact/unit belongs to a path crate (or is unhashed)
-    m = HASHED.match(name)
-    return m is None or m.group(1).replace("-", "_") in LOCAL
 
 
 def copy(src, dst):
@@ -54,20 +52,30 @@ def seed_profile(src, dst):
             continue  # uplifted outputs, locks, accelerators
         (dst / e.name).mkdir()
         for f in e.iterdir():
-            if e.name == "deps":
-                if not (local(f.name) or f.name.endswith(".d")):
-                    os.link(f, dst / e.name / f.name)
-            elif not (e.name in (".fingerprint", "build") and local(f.name)):
+            if e.name != "deps":
                 copy(f, dst / e.name / f.name)
+            elif not f.name.endswith(".d"):
+                os.link(f, dst / e.name / f.name)
+
+
+def same_mtimes(top, main_co):  # tracked files identical to the main checkout's take its mtime
+    files = run("git", "ls-files", "-z", cwd=top)
+    for rel in (files or "").split("\0"):
+        a, b = top / rel, main_co / rel
+        try:
+            if a.is_file() and b.is_file() and a.read_bytes() == b.read_bytes():
+                st = b.stat()
+                os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns))
+        except OSError:
+            pass
 
 
 def main():
-    global LOCAL
     top = run("git", "rev-parse", "--show-toplevel")
     common = run("git", "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not top or not common or Path(common).name != ".git":
         return
-    top, main_co = Path(top), Path(common).parent
+    top, main_co = Path(top), Path(sys.argv[1] if len(sys.argv) > 1 else Path(common).parent)
     if top == main_co or not (top / "Cargo.toml").exists():
         return
     dm, sm = meta(top, "--no-deps"), meta(main_co, "--no-deps")
@@ -79,9 +87,6 @@ def main():
     if dst.exists() or not src.is_dir():
         return
 
-    pkgs = (meta(top) or dm)["packages"]
-    LOCAL = {n.replace("-", "_") for p in pkgs if p.get("source") is None
-             for n in [p["name"]] + [t["name"] for t in p["targets"]]}
     tmp = dst.parent / f".{dst.name}.seed.{os.getpid()}"
     try:
         tmp.mkdir(parents=True)
@@ -105,6 +110,7 @@ def main():
                 st = f.stat()
                 f.write_bytes(data.replace(old, new))
                 os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+        same_mtimes(top, main_co)
         os.rename(tmp, dst)
         print(f"seed-target: seeded {dst} from {src}")
     except OSError as e:  # cross-filesystem link, lost race with a build, ...
