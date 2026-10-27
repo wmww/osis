@@ -561,7 +561,9 @@ impl SyncEngine {
         // one deaths replay per aspect per step (`retention::mark_deaths_due`)
         self.engine.core.defer_deaths = true;
         let r = self.step(ev, &mut out);
-        if let Err(e) = r.and_then(|_| self.engine.defer_deaths(false)) {
+        // off whatever the step returned: left on, no later transaction would settle
+        let settled = self.engine.defer_deaths(false);
+        for e in [r.err(), settled.err()].into_iter().flatten() {
             self.diag(format!("sync: {e}"));
         }
         // to the open labels' work sets now: with none (offline, LAN or local labels only) the
