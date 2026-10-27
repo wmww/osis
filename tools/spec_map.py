@@ -18,8 +18,7 @@ Exempt from `--uncited`: models/ (oracles, not the implementation) and tests who
 `spec: none` (client surfaces specified in notes/, not spec/).
 
 Usage (repo root):
-  python3 tools/spec_map.py            write notes/testing-map.md
-  python3 tools/spec_map.py --check    exit 1 if the committed map is stale
+  python3 tools/spec_map.py            write notes/testing-map.md (generated, gitignored)
   python3 tools/spec_map.py --uncited  exit 1 if some test cites nothing (CI)
   python3 tools/spec_map.py --gaps     exit 1 if a MUST or rule has neither a test nor an issue"""
 import glob, os, re, sys
@@ -283,12 +282,6 @@ def main():
         for p in problems:
             print(p)
         sys.exit(1 if open_r or problems else 0)
-    if "--check" in sys.argv:
-        current = open(OUT).read() if os.path.exists(OUT) else ""
-        if current != text:
-            print("notes/testing-map.md is stale: run python3 tools/spec_map.py")
-            sys.exit(1)
-        return
     with open(OUT, "w") as f:
         f.write(text)
     print(f"wrote {os.path.relpath(OUT, ROOT)}")

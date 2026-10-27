@@ -59,7 +59,6 @@ indexing_slicing = "deny"
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 1
-split-debuginfo = "unpacked"
 
 # Dependencies only: crypto and hashing unoptimized are slow; no debuginfo (frames in
 # dependencies show no file:line).

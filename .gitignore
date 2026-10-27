@@ -4,3 +4,4 @@ target/
 fuzz/target/
 fuzz/artifacts/
 fuzz/coverage/
+notes/testing-map.md

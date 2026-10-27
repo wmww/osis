@@ -1,10 +1,10 @@
 #!/bin/sh
-# The merge gate (notes/testing.md, Build hygiene), in order, failing fast; then a sweep of the
-# build dir (artifacts are fresh right after the gate, so the sweep's own liveness build compiles
-# nothing and only stale artifacts go). Usage: tools/gate.sh [--sweep-seeds N]   (from the repo root)
-# The sim sweep (dev profile, the tests' artifacts) runs with 30 seeds when the branch touches
-# the simulator, a crate it depends on (all but osis-cli, osis-std, osis-bench) or Cargo.toml/lock
-# since its merge base with main (always on main itself); --sweep-seeds N forces N seeds, 0 skips.
+# The merge gate (notes/testing.md, Build hygiene): every check in order, failing fast, each
+# with its wall time. Run it in the task's worktree after `git rebase main`; main is only ever
+# fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N]   (from the worktree root)
+# The dev sim sweep (30 seeds) runs when the branch touches the simulator or a crate it has
+# caught regressions in (sim/, osis-node, osis-perm, osis-crdt) or Cargo.toml/lock since its
+# merge base with main (always on main itself); --sweep-seeds N forces N seeds, 0 skips.
 set -e
 seeds=
 case "$1" in
@@ -16,12 +16,12 @@ if [ -z "$seeds" ]; then
   seeds=30
   base=$(git merge-base HEAD main 2>/dev/null || true)
   if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- \
-      Cargo.toml Cargo.lock sim crates ':!crates/osis-cli' ':!crates/osis-std' ':!crates/osis-bench'; then
+      Cargo.toml Cargo.lock sim crates/osis-node crates/osis-perm crates/osis-crdt; then
     seeds=0
   fi
 fi
-step() { printf '== %s\n' "$*"; "$@"; }
-step cargo build --workspace --all-targets --locked
+t0=$(date +%s)
+step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(date +%s) - s )); }
 step cargo test --workspace --locked
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo clippy-net --locked -- -D warnings
@@ -32,7 +32,6 @@ step cargo deny check
 if [ "$seeds" -gt 0 ]; then
   step cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900
 else
-  echo "== sim sweep skipped"
+  echo "== sim sweep skipped (no sweep-relevant change since main)"
 fi
-step tools/sweep.sh
-echo "== gate passed"
+echo "== gate passed ($(( $(date +%s) - t0 ))s)"
