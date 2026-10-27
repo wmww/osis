@@ -55,8 +55,13 @@ impl ManualClock {
         self.0.store(t.0, Ordering::SeqCst);
     }
     pub fn advance(&self, ms: u64) {
-        // fetch_update with saturation; never fails since the closure always returns Some.
-        let _ = self.0.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |t| Some(t.saturating_add(ms)));
+        // Saturating add by CAS loop (`fetch_update` is deprecated past the MSRV's replacement).
+        let mut cur = self.0.load(Ordering::SeqCst);
+        while let Err(seen) =
+            self.0.compare_exchange_weak(cur, cur.saturating_add(ms), Ordering::SeqCst, Ordering::SeqCst)
+        {
+            cur = seen;
+        }
     }
 }
 
