@@ -57,13 +57,17 @@ CoveredBy(A, S, b) == \/ b.ds = {}
                       \/ \E s \in S : s.c \in Snaps /\ s.c # b.c /\ s.c \in A
                                      /\ b.ds \subseteq Covers[s.c]
 \* sync §6 must-not-hold: purged, expired, past keep-at-most, or a strict
-\* subset of another held blob of the commit ("outside the required set" is
-\* not modeled: one label, everything in the closure).
-MustNot(A, H, b) ==
+\* subset of another held blob of the commit that is not itself must-not-hold
+\* ("outside the required set" is not modeled: one label, everything in the
+\* closure). The recursion reduces to BaseNot: a strict superset that is a
+\* strict subset of a held blob not BaseNot has that blob as a superset too.
+BaseNot(A, b) ==
   \/ \E d \in b.ds : Purged(A, d)
   \/ Expired(b)
   \/ now >= MostB(A, b)
-  \/ \E b2 \in H : b2.c = b.c /\ b.ds \subseteq b2.ds /\ b.ds # b2.ds
+MustNot(A, H, b) ==
+  \/ BaseNot(A, b)
+  \/ \E b2 \in H : b2.c = b.c /\ b.ds \subseteq b2.ds /\ b.ds # b2.ds /\ ~BaseNot(A, b2)
 \* sync §6 must-hold: before keep-at-least or established uncovered. "A body
 \* meeting a must-not-hold condition is must-not-hold whatever else holds".
 MustHold(A, H, S, b) == ~MustNot(A, H, b)
@@ -75,11 +79,14 @@ SameBody(x, b) == x.c = b.c /\ x.ds = b.ds
 \* sync §7: a covering snapshot under the label, as the node knows it.
 SnapAt(n, b) == CoveredBy(applied[n], srv \cap seen[n], b)
 One(d) == [c |-> DC(d), ds |-> {d}, v |-> 0]
-\* sync §6: the label holds a body when "a blob of the commit holding every
-\* delta of the body that no snapshot under the label covers" is there; else
-\* it lacks it. Snapshots as the node knows them (LHolds) or globally (GHolds).
-HoldsIn(b, cov(_)) == \E x \in srv : x.c = b.c /\ {d \in b.ds : ~cov(One(d))} \subseteq x.ds
-LHolds(n, b) == LET cov(o) == SnapAt(n, o) IN HoldsIn(b, cov)
+\* sync §6: the label holds a body when "a blob of the commit that is not
+\* must-not-hold and holds every delta of the body that no snapshot under the
+\* label covers" is there; else it lacks it. Snapshots and must-not-hold as
+\* the node knows them (LHolds) or globally (GHolds). A blob must-not-hold
+\* only as a strict subset has a holding superset, so BaseNot suffices.
+HoldsIn(b, A, cov(_)) == \E x \in srv : x.c = b.c /\ ~BaseNot(A, x)
+                                     /\ {d \in b.ds : ~cov(One(d))} \subseteq x.ds
+LHolds(n, b) == LET cov(o) == SnapAt(n, o) IN HoldsIn(b, applied[n], cov)
 \* sync §7: "another entry under it carries them: a covering snapshot, a blob
 \* of the commit holding a superset of its deltas, or an identical body with
 \* a lower blob ID" (v stands for the blob ID order).
@@ -322,7 +329,7 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 GA == {c \in Commits : created[c] # Inf}
 CurBody(c) == [c |-> c, ds |-> {d \in CD[c] : ~Purged(GA, d)}, v |-> 0]
 GLive(d) == DC(d) \in GA /\ ~Dead(GA, d) /\ ~Purged(GA, d)
-GHolds(b) == LET cov(o) == CoveredBy(GA, srv, o) IN HoldsIn(b, cov)
+GHolds(b) == LET cov(o) == CoveredBy(GA, srv, o) IN HoldsIn(b, GA, cov)
 Carried(S, A, d) == (\E b \in S : d \in b.ds) \/ CoveredBy(A, S, One(d))
 
 TypeOK == /\ now \in 0..MaxT
