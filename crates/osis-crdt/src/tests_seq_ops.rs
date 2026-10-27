@@ -1533,8 +1533,9 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
 #[test]
 fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     let mut r = Rng(43);
-    let (mut runs, mut moves, mut multi, mut loaded, mut total) = (0, 0, 0, 0, 0);
+    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits) = (0, 0, 0, 0, 0, 0);
     for round in 0..80 {
+        let mut stale = None;
         let text = round % 2 == 0;
         let ty = if text { Ty::Text } else { list_ty() };
         let view = TyView(ty.clone());
@@ -1571,7 +1572,19 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
                     },
                 }
             };
-            let ops: Vec<Op> = (0..1 + r.below(2)).map(|_| mk(&mut r)).collect();
+            let mut ops: Vec<Op> = (0..1 + r.below(2)).map(|_| mk(&mut r)).collect();
+            // an edit (what a text session writes): against the read, or a stale one
+            if r.chance(1, 3) {
+                let base = if r.chance(1, 4) { stale.clone() } else { st.read() };
+                if let Some(base) = base {
+                    let new = edited(&mut r, &base, &ty);
+                    ops.insert(0, Op::Edit { base, new });
+                    edits += 1;
+                }
+            }
+            if k == 0 {
+                stale = st.read();
+            }
             multi += usize::from(ops.len() > 1);
             let w = || Writer::new(ts((100 + k) << 16), node(9), 1 + 10 * k);
             let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
@@ -1592,15 +1605,46 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
             }
             assert!(got == want, "round {round} step {k}: {ops:?}\n got {got:?}\n want {want:?}");
             runs += 1;
-            loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
-            total += pg.whole.top().blocks.len();
+            // (an edit against a stale read, or after another op, loads whole)
+            if !ops.iter().any(|o| matches!(o, Op::Edit { .. })) {
+                loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
+                total += pg.whole.top().blocks.len();
+            }
             if let Some((d, _)) = want {
                 st.join(d);
             }
         }
     }
-    assert!(runs > 200 && moves > 50 && multi > 50, "{runs} runs, {moves} moves, {multi} two-op commits");
+    assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits");
     assert!(loaded * 3 < total * 2, "{loaded} of {total} blocks loaded");
+}
+
+/// `base` with one random change: a splice of a text, an item removed, replaced or inserted in
+/// a list.
+fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
+    match base {
+        Value::Str(x) => {
+            let mut c: Vec<char> = x.chars().collect();
+            let at = r.below(c.len() + 1);
+            let del = r.below((c.len() - at).min(4) + 1);
+            c.splice(at..at + del, "ed".chars().take(r.below(3)));
+            Value::Str(c.into_iter().collect())
+        }
+        Value::List(x) => {
+            let Ty::List(e) = ty else { return base.clone() };
+            let mut x = x.clone();
+            let at = r.below(x.len() + 1);
+            match r.below(3) {
+                0 if at < x.len() => {
+                    x.remove(at);
+                }
+                1 if at < x.len() => x[at] = value(&random_value(r, e, 1)),
+                _ => x.insert(at, value(&random_value(r, e, 1))),
+            }
+            Value::List(x)
+        }
+        _ => base.clone(),
+    }
 }
 
 /// §5.7 Ops, §6.1, §8 (`seq_place`): larger random histories than
@@ -1730,4 +1774,196 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
     }
     assert!(runs > 200 && low > 80 && piles > 40, "{runs} runs, {low} skewed, {piles} piles");
     assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
+}
+
+/// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): on a text of many blocks held in part, an
+/// edit against the current read (what a text session writes) loads only the blocks and records
+/// around its change and writes what it writes on the whole state; one against a stale read (a
+/// concurrent change elsewhere) or of the whole text matches whole, also equal.
+#[test]
+fn edit_on_partial_placement_loads_its_window_spec_5_7() {
+    let mut r = Rng(71);
+    let view = TyView(Ty::Text);
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    // not periodic: a window repeated elsewhere in base matches whole
+    let text: String = (0..3000).map(|_| (b'a' + r.below(26) as u8) as char).collect();
+    let mut st = create(&mut w, &view, &s(&text)).unwrap();
+    // scattered inserts, so records and blocks are many
+    for k in 0..60u64 {
+        let n = full_order(&st).iter().filter(|x| x.1).count();
+        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), node(2), 1 + 10 * k));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("xyz")] } }, &view).unwrap();
+        st.join(b.finish().unwrap().0);
+    }
+    let (mut few, mut stale_whole) = (0, 0);
+    let mut stale = st.read().unwrap();
+    for k in 0..40u64 {
+        let Fragment::Seq(sq) = &st else { panic!() };
+        let sq = sq.clone();
+        let cur = st.read().unwrap();
+        let base = match k % 4 {
+            3 => stale.clone(),
+            _ => cur.clone(),
+        };
+        let new = match k % 8 {
+            // every char changed: the window is the whole text
+            7 => s("whole"),
+            _ => edited(&mut r, &base, &Ty::Text),
+        };
+        let op = Op::Edit { base: base.clone(), new };
+        let w = || Writer::new(ts((200 + k) << 16), node(9), 1000 + 10 * k);
+        let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
+            let mut b = Batch::new(f, w());
+            b.apply(&PathOp { path: Vec::new(), op: op.clone() }, &view).ok()?;
+            b.finish()
+        };
+        let want = run(&st);
+        let mut pg = crate::tests_seq::Pager::new(&sq, 40);
+        let mut got = None;
+        for _ in 0..64 {
+            got = run(&pg.part());
+            if !pg.absorb() {
+                break;
+            }
+        }
+        assert!(got == want, "step {k}: {op:?}");
+        let (all, stubs) = (pg.whole.top().blocks.len(), pg.p.stubs().0.len());
+        if base == cur && k % 8 != 7 {
+            assert!(all > 20 && all - stubs <= 3 && pg.loaded.len() <= 10, "step {k}: {} of {all} blocks, {} pages", all - stubs, pg.loaded.len());
+            few += 1;
+        } else if base != cur {
+            stale_whole += usize::from(stubs == 0);
+        }
+        if let Some((d, _)) = want {
+            st.join(d);
+        }
+        if k % 4 == 1 {
+            stale = st.read().unwrap();
+        }
+    }
+    assert!(few >= 20 && stale_whole >= 5, "{few} edits at their window, {stale_whole} stale edits matched whole");
+}
+
+/// §5.7, §9 (notes/api.md `edit`): an edit resolved at its window writes what one matched against
+/// the whole read writes, on random texts (runs of one char, periodic, words, random) after
+/// concurrent changes (same-length replaces, shifts across the window, inserts) and random local
+/// edits; at its window it lands at base's own indices. They differ only where whole's LCS, in a
+/// periodic stretch changed on both sides, leaves the edit's base elements unmatched (its edit
+/// lost or moved; the window's is the app's).
+#[test]
+fn edit_window_matches_whole_spec_5_7() {
+    let mut r = Rng(97);
+    let view = text_view();
+    crate::seq_diff::WINDOWED.set(0);
+    let (mut same, mut windowed, mut read_diff, mut delta_diff, mut whole_worse) = (0, 0, 0, 0, 0);
+    let mut shown = Vec::new();
+    for round in 0..3000u64 {
+        let n = 1 + r.below(200);
+        let base: Vec<char> = match r.below(5) {
+            4 => {
+                let words = ["the ", "cat ", "sat ", "on ", "mat ", "\n", "    "];
+                let mut v = Vec::new();
+                while v.len() < n {
+                    v.extend(words[r.below(words.len())].chars());
+                }
+                v
+            }
+            0 => vec!['a'; n],
+            1 => {
+                let m: Vec<char> = (0..1 + r.below(4)).map(|_| (b'a' + r.below(3) as u8) as char).collect();
+                (0..n).map(|i| m[i % m.len()]).collect()
+            }
+            2 => (0..n).map(|i| if r.chance(1, 30) { 'z' } else { ['a', 'b'][i % 2] }).collect(),
+            _ => (0..n).map(|_| (b'a' + r.below(26) as u8) as char).collect(),
+        };
+        let bs: String = base.iter().collect();
+        let mut w = Writer::new(ts(1 << 16), node(1), 1);
+        let mut st = create(&mut w, &view, &s(&bs)).unwrap();
+        // concurrent changes, often keeping the length
+        let mut ctr = 1000;
+        for k in 0..1 + r.below(3) {
+            let len = read_str(&st).chars().count();
+            let ops = match r.below(3) {
+                // a shift: delete before, insert as many after (or the reverse)
+                0 => {
+                    let d = 1 + r.below(4.min(len.max(1)));
+                    let (i, j) = (r.below(len + 1), r.below(len + 1));
+                    let ins: String = (0..d).map(|_| ['a', 'b', 'z'][r.below(3)]).collect();
+                    let del = Op::Delete { at: i.min(len.saturating_sub(d)), len: d.min(len) };
+                    vec![del, Op::Insert { at: j.min(len - d.min(len)), items: vec![s(&ins)] }]
+                }
+                // a replace in place
+                1 if len > 0 => {
+                    let i = r.below(len);
+                    let d = 1 + r.below((len - i).min(4));
+                    let ins: String = (0..d).map(|_| ['a', 'b', 'q'][r.below(3)]).collect();
+                    vec![Op::Delete { at: i, len: d }, Op::Insert { at: i, items: vec![s(&ins)] }]
+                }
+                _ => vec![Op::Insert { at: r.below(len + 1), items: vec![s("ab")] }],
+            };
+            let mut b = Batch::new(&st, Writer::new(ts((10 + round * 10 + k as u64) << 16), node(2), ctr));
+            let mut ok = true;
+            for o in &ops {
+                ok &= b.apply(&op(o.clone()), &view).is_ok();
+            }
+            if ok && let Some((d, range)) = b.finish() {
+                ctr = range.hi;
+                st.join(d);
+            }
+        }
+        // the local edit against base
+        let mut c = base.clone();
+        let at = r.below(c.len() + 1);
+        let del = r.below((c.len() - at).min(5) + 1);
+        let ins: String = (0..r.below(4)).map(|_| ['a', 'b', 'X'][r.below(3)]).collect();
+        c.splice(at..at + del, ins.chars());
+        let o = Op::Edit { base: s(&bs), new: s(&c.iter().collect::<String>()) };
+        let run = |whole: bool| {
+            crate::seq_diff::WHOLE_ONLY.set(whole);
+            let mut b = Batch::new(&st, Writer::new(ts(1 << 40), node(9), 1 << 20));
+            b.apply(&op(o.clone()), &view).unwrap();
+            let got = b.finish().map(|x| x.0);
+            crate::seq_diff::WHOLE_ONLY.set(false);
+            got
+        };
+        let before = crate::seq_diff::WINDOWED.get();
+        let (win, whole) = (run(false), run(true));
+        let at_window = crate::seq_diff::WINDOWED.get() > before;
+        windowed += usize::from(read_str(&st).chars().count() == base.len());
+        let rd = |d: &Option<Fragment>| {
+            let mut x = st.clone();
+            if let Some(d) = d {
+                x.join(d.clone());
+            }
+            read_str(&x)
+        };
+        // at its window, the edit (base to new less their common prefix and suffix) lands at
+        // base's own indices in the current read
+        let mut want: Vec<char> = read_str(&st).chars().collect();
+        if at_window {
+            let pre = base.iter().zip(&c).take_while(|(x, y)| x == y).count();
+            let suf = base[pre..].iter().rev().zip(c[pre..].iter().rev()).take_while(|(x, y)| x == y).count();
+            want.splice(pre..base.len() - suf, c[pre..c.len() - suf].iter().copied());
+            assert_eq!(rd(&win), want.iter().collect::<String>(), "round {round}: at its window");
+        }
+        if win == whole {
+            same += 1;
+            continue;
+        }
+        if rd(&win) == rd(&whole) {
+            delta_diff += 1;
+        } else if at_window {
+            // whole's LCS left a base element of the change unmatched in a periodic stretch
+            // (Myers' alignment there, the text changed on both sides): its edit lost or moved
+            whole_worse += 1;
+        } else {
+            read_diff += 1;
+            if shown.len() < 8 {
+                shown.push(format!("base {bs:?}\ncur  {:?}\nnew  {:?}\nwin  {:?}\nwhole {:?}", read_str(&st), c.iter().collect::<String>(), rd(&win), rd(&whole)));
+            }
+        }
+    }
+    let at_window = crate::seq_diff::WINDOWED.get();
+    assert!(read_diff == 0 && delta_diff == 0, "{delta_diff} deltas differ (same read), {read_diff} reads differ\n{}", shown.join("\n\n"));
+    assert!(at_window > 100 && windowed > 1000 && same > 2900, "{at_window} at their window, {windowed} same length, {same} same, {whole_worse} lost whole");
 }

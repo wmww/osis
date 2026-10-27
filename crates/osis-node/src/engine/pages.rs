@@ -19,6 +19,10 @@ use std::ops::Range as Span;
 
 /// Encoded bytes per local page, about (a store unit is 8 KB; a larger page is split).
 const PAGE_BYTES: usize = 8 * 1024;
+/// Page target of a paged text or list: an op decodes and rewrites the pages it touches whole
+/// (one record per visible element), so they are kept small; above the store's inline limit (a
+/// quarter of its 8 KiB page), so a page write leaves its neighbours' leaf alone.
+const SEQ_PAGE_BYTES: usize = 3 * 1024;
 /// A collection with fewer elements is not paged.
 const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
@@ -575,7 +579,7 @@ fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Va
 }
 
 /// Loads what reading or writing at `path` (op path segments) needs: the pages of the map keys
-/// along it (through the key index), every page of a sequence it indexes into, and at its end
+/// along it (through the key index), the element a sequence index steps into (`walk`), and at its end
 /// everything paged below. `Ok(false)`: not addressable that way (load whole).
 pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, path: &[PathSeg]) -> Result<bool> {
     let t = table(txn, tid, ak)?;
@@ -593,8 +597,8 @@ pub fn ensure_path(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Page
 }
 
 /// The positions `path` (op path segments) reaches, as steps from the root, with the pages of
-/// the map keys along it loaded (through the key index) and every page of a sequence it indexes
-/// into.
+/// the map keys along it loaded (through the key index) and, of a sequence it indexes into, the
+/// element's block and page through the stored placement (attached; without one every page).
 fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageIndex, f: &mut Fragment, path: &[PathSeg]) -> Result<Vec<Vec<Step>>> {
     // positions reached so far, as steps from the root
     let mut at: Vec<Vec<Step>> = vec![Vec::new()];
@@ -613,6 +617,12 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
                         let ds = key_dots(txn, tid, ak, set, k)?;
                         for d in &ds {
                             ensure_dot(txn, t, set, f, d)?;
+                        }
+                    }
+                    // an element of a sequence: through its stored placement
+                    PathSeg::Index(i) if is_seq(set) && !set.whole => {
+                        if !step_index(txn, tid, ak, t, set, f, &p, *i)? {
+                            ensure_set(txn, tid, ak, t, set, f)?;
                         }
                     }
                     _ => ensure_set(txn, tid, ak, t, set, f)?,
@@ -680,6 +690,11 @@ const GROUP: usize = 32;
 const PREFETCH: usize = 8;
 /// Runs of an op on a state held in part before loading it whole.
 pub const OP_RUNS: usize = 8;
+
+/// The page target of `set`'s pages.
+fn page_bytes(set: &PageSet) -> usize {
+    if is_seq(set) { SEQ_PAGE_BYTES } else { PAGE_BYTES }
+}
 
 fn is_seq(set: &PageSet) -> bool {
     matches!(set.enc, Encoding::List | Encoding::Text)
@@ -1136,20 +1151,33 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     Ok(())
 }
 
-/// Prepares the ops `ops` (by index) on paged sequences to run on the pages loaded: loads the
-/// pages along their paths and attaches each sequence's stored placement; the caller runs them
-/// and loads what they missed (`absorb`) until nothing is. `false`: not that kind (another op,
-/// an index in the path, a sequence not paged, loaded whole or without a placement): load whole.
+/// Prepares the ops `ops` on paged sequences (by index, a text's edit, anything inside an
+/// element at an index) to run on the pages loaded: loads the pages along their paths and
+/// attaches each sequence's stored placement; the caller runs them and loads what they missed
+/// (`absorb`) until nothing is. `false`: not that kind (another op, a sequence not paged, loaded
+/// whole or without a placement): load whole.
 pub fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, ops: &[osis_crdt::PathOp]) -> Result<bool> {
     use osis_crdt::Op;
     let t = table(txn, tid, ak)?;
     for op in ops {
-        if !matches!(op.op, Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. }) || op.path.iter().any(|s| matches!(s, PathSeg::Index(_))) {
+        // ops by index; a text's edit (resolved around its change when the read there matches
+        // its base; a list's matches items as the state holds their large values, not partial);
+        // anything inside an element at an index (never paged apart from its sequence)
+        let k = op.path.iter().position(|s| matches!(s, PathSeg::Index(_)));
+        let by_index = k.is_some() || matches!(op.op, Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { new: Value::Str(_), .. });
+        if !by_index {
             return Ok(false);
         }
-        let at = walk(txn, tid, ak, t, idx, f, &op.path)?;
+        let at = walk(txn, tid, ak, t, idx, f, op.path.get(..k.unwrap_or(op.path.len())).unwrap_or_default())?;
         let [p] = at.as_slice() else { return Ok(false) };
         let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s) && !s.whole) else { return Ok(false) };
+        if let Some(PathSeg::Index(i)) = k.and_then(|k| op.path.get(k)) {
+            // the element loaded up front: a large value's lookup (`chunk_ops`) finds it held
+            if !step_index(txn, tid, ak, t, set, f, p, *i)? {
+                return Ok(false);
+            }
+            continue;
+        }
         let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
         // the skeleton holds no sequence without a reset or `W`: its first page restores it
         if f.at_steps(p).is_none() {
@@ -1203,7 +1231,20 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIn
     let [p] = at.as_slice() else { return Ok(Ranged::Unpaged) };
     let Some(set) = idx.sets.get_mut(p).filter(|s| is_seq(s)) else { return Ok(Ranged::Unpaged) };
     let damaged = || Ok(Ranged::Damaged(p.clone()));
-    let (Some(mut pl), Some(pt)) = (held(txn, tid, ak, set)?, txn.table(tid, ak, PLACE_TABLE)?) else { return damaged() };
+    let Some(pl) = held(txn, tid, ak, set)? else { return damaged() };
+    let total = pl.shown();
+    match load_range(txn, tid, ak, t, set, f, pl, r)? {
+        Some(dots) => Ok(Ranged::Read(p.clone(), dots, total)),
+        None => damaged(),
+    }
+}
+
+/// The visible elements `r` (by index, clamped) of the paged sequence `set` through its stored
+/// placement `pl`: loads the blocks holding them and the pages holding their records; `None`
+/// if a row is missing or damaged (then noted missing).
+#[allow(clippy::too_many_arguments)]
+fn load_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, mut pl: SeqPlace, r: Span<usize>) -> Result<Option<Vec<Dot>>> {
+    let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
     let total = pl.shown();
     // a reversed range is empty
     let lo = r.start.min(total);
@@ -1217,17 +1258,38 @@ pub fn seq_range(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIn
         }
         if !fill_place(txn, pt, set, &mut pl, &m.blocks, &m.chunks)? {
             set.place = Place::Missing;
-            return damaged();
+            return Ok(None);
         }
     }
     if dots.len() != hi - lo {
-        return damaged();
+        return Ok(None);
     }
-    set.place = Place::Held(pl.clone());
+    set.place = Place::Held(pl);
     for d in &dots {
         ensure_dot(txn, t, set, f, d)?;
     }
-    Ok(Ranged::Read(p.clone(), dots, total))
+    Ok(Some(dots))
+}
+
+/// For a step at index `i` into the paged sequence `set`: loads the block and page holding
+/// visible element `i` through the stored placement and attaches it, so what reads or writes
+/// inside the element resolves on the pages loaded. `false`: no placement (load the sequence
+/// whole).
+#[allow(clippy::too_many_arguments)]
+fn step_index(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut PageSet, f: &mut Fragment, p: &[Step], i: usize) -> Result<bool> {
+    let Some(pl) = held(txn, tid, ak, set)? else { return Ok(false) };
+    if load_range(txn, tid, ak, t, set, f, pl, i..i.saturating_add(1))?.is_none() {
+        return Ok(false);
+    }
+    if f.at_steps(p).is_none() {
+        ensure_first(txn, t, set, f)?;
+    }
+    let pl = match &set.place {
+        Place::Held(x) => x.clone(),
+        _ => return Ok(false),
+    };
+    attach(f, set, Some(pl));
+    Ok(true)
 }
 
 /// Lays the placement of the paged sequence at `p` out anew (its pages loaded whole).
@@ -1297,7 +1359,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
 fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, c: &Fragment, nested: &Paths) -> Result<()> {
     let n = c.elem_count().unwrap_or(0).max(1);
     let size = encode(&c.reduced(nested))?.len().max(1);
-    let per = (n * PAGE_BYTES / size).max(1);
+    let per = (n * page_bytes(set) / size).max(1);
     let dots = c.elem_dots(None, None);
     set.loaded.clear();
     let chunks: Vec<&[Dot]> = if dots.is_empty() { vec![&[]] } else { dots.chunks(per).collect() };
@@ -1397,7 +1459,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             continue;
         }
         let bytes = page_row(&r, &page(c, nested, &r)?)?;
-        if bytes.len() <= 2 * PAGE_BYTES {
+        if bytes.len() <= 2 * page_bytes(set) {
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
@@ -1409,7 +1471,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
-        let per = ds.len().div_ceil(bytes.len().div_ceil(PAGE_BYTES)).max(1);
+        let per = ds.len().div_ceil(bytes.len().div_ceil(page_bytes(set))).max(1);
         let pieces: Vec<&[Dot]> = ds.chunks(per).collect();
         let n = pieces.len();
         for (i, chunk) in pieces.into_iter().enumerate() {
@@ -1939,8 +2001,17 @@ mod tests {
     /// Items of the sequence: 4-byte chars (a text) or 30-byte strings (a list).
     fn seq_items(text: bool, from: u64, n: u64) -> Vec<Value> {
         (from..from + n)
-            .map(|i| if text { Value::Str(char::from_u32(0x1F600 + (i % 64) as u32).unwrap().to_string()) } else { Value::Str(format!("item-{i:08}-padding-padding")) })
+            // a text not periodic (an edit's window repeated elsewhere matches whole)
+            .map(|i| if text { Value::Str(char::from_u32(0x1F600 + (mix(i) % 64) as u32).unwrap().to_string()) } else { Value::Str(format!("item-{i:08}-padding-padding")) })
             .collect()
+    }
+
+    /// splitmix64's finalizer.
+    fn mix(i: u64) -> u64 {
+        let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     fn seq_value(text: bool, n: u64) -> Value {
@@ -2251,7 +2322,7 @@ mod tests {
     }
 
     // spec/crdt.md §5.7, §6, §8: ops by index into a paged text (inserts, deletes, moves, two in
-    // one commit) and received deltas from another writer (concurrent: made against an older
+    // one commit; edits against the read, as a text session writes) and received deltas from another writer (concurrent: made against an older
     // state), each in a new session, run on the pages loaded through the stored placement and
     // keeping it: after each, the stored placement (rows, depths, waiting anchors) is a whole
     // pass's, each loaded a few pages and blocks, and its blocks split as they grow.
@@ -2271,15 +2342,25 @@ mod tests {
         let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
         let mut orng = osis_crypto::SeededRng::from_u64(189);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
-        let (mut most, mut received, mut moves, mut blocks) = (0, 0, 0, 0);
+        let (mut most, mut received, mut moves, mut blocks, mut edits) = (0, 0, 0, 0, 0);
         let mut old = st.clone();
         for step in 0..160u64 {
             ts += 1 << 16;
             let wi = usize::from(r(3) == 0);
             let base = if wi == 1 { &old } else { &st };
             let len = base.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).unwrap().len() as u64;
-            let mut mk = || match r(6) {
-                0 | 1 => Op::Insert { at: r(len + 1) as usize, items: seq_items(true, step, 1 + r(3)) },
+            let read = base.at(&field()).and_then(|s| s.read());
+            let mut mk = |first: bool| match r(7) {
+                // what a text session writes: an edit against the read
+                6 if first => {
+                    let Some(Value::Str(x)) = read.clone() else { panic!() };
+                    let mut c: Vec<char> = x.chars().collect();
+                    let at = r(c.len() as u64 + 1) as usize;
+                    let del = (r(5) as usize).min(c.len() - at);
+                    c.splice(at..at + del, "ed".chars().take(r(3) as usize));
+                    Op::Edit { base: Value::Str(x), new: Value::Str(c.into_iter().collect()) }
+                }
+                0 | 1 | 6 => Op::Insert { at: r(len + 1) as usize, items: seq_items(true, step, 1 + r(3)) },
                 2 => Op::Insert { at: 0, items: seq_items(true, step, 1) },
                 3 => {
                     let l = 1 + r(6);
@@ -2290,10 +2371,11 @@ mod tests {
                     Op::Delete { at: r(len) as usize, len: 1 + r(most) as usize }
                 }
             };
-            let mut ops = vec![PathOp { path: field(), op: mk() }];
+            let mut ops = vec![PathOp { path: field(), op: mk(true) }];
             if step % 4 == 3 {
-                ops.push(PathOp { path: field(), op: mk() });
+                ops.push(PathOp { path: field(), op: mk(false) });
             }
+            edits += ops.iter().filter(|o| matches!(o.op, Op::Edit { .. })).count();
             moves += ops.iter().filter(|o| matches!(o.op, Op::Move { .. })).count();
             let lo = ctrs[wi];
             let w = || Writer::new(Ts::from_u64(ts).unwrap(), nodes[wi].clone(), lo);
@@ -2337,13 +2419,42 @@ mod tests {
                 old = st.clone();
             }
         }
-        assert!(received >= 30 && moves >= 20, "{received} received, {moves} moves");
+        assert!(received >= 30 && moves >= 20 && edits >= 15, "{received} received, {moves} moves, {edits} edits");
         assert!(most <= 8, "{most} pages loaded by one edit");
         // blocks split
         let (_, idx) = open(&unit, &SALT).unwrap();
         let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
         let all = stored_place(&mut txn, &tid, &ak, set).unwrap().top().blocks.len();
         assert!(all > 8 && blocks * 4 <= all, "{blocks} of {all} blocks loaded by one edit (no move)");
+        // an edit against a stale read (the text changed since) loads whole, then writes what it
+        // writes on the whole state
+        let Some(Value::Str(x)) = old.at(&field()).and_then(|s| s.read()) else { panic!() };
+        let stale = vec![PathOp { path: field(), op: Op::Edit { base: Value::Str(x.clone()), new: Value::Str(format!("{x}!")) } }];
+        ts += 1 << 16;
+        let w = || Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]);
+        let run = |f: &Fragment| {
+            let mut b = Batch::new(f, w());
+            stale.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
+        };
+        if Some(Value::Str(x.clone())) != st.at(&field()).and_then(|s| s.read()) {
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale).unwrap());
+            let mut gave_up = false;
+            for _ in 0..OP_RUNS {
+                run(&f);
+                match absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() {
+                    Some(true) => {}
+                    Some(false) => break,
+                    None => {
+                        gave_up = true;
+                        break;
+                    }
+                }
+            }
+            assert!(gave_up, "a stale edit is a look at every record");
+            load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+            assert!(run(&f) == run(&st), "stale edit on the whole state");
+        }
         // and the whole read is the state's
         let whole = {
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
@@ -2351,6 +2462,81 @@ mod tests {
             f
         };
         assert_eq!(whole.read(), st.read());
+    }
+
+    // spec/crdt.md §5.7 (list element edits, ops resolve by index), §6, §8: a path stepping into
+    // a paged list's element by index, to read it (`ensure_path`, as `get_at`) or to write inside
+    // it (`attach_ops`), each in a new session, loads the element's block and page through the
+    // stored placement, not the list: what it reads and writes equals the whole state's, and the
+    // placement is kept.
+    #[test]
+    fn seq_index_segment_on_pages_spec_crdt_5_7() {
+        let mut rng = osis_crypto::SeededRng::from_u64(193);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([9; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let node = Source::node(Tid::from_bytes([1; 15]));
+        let view = SeqView::Root(false);
+        let mut ts = 1u64 << 16;
+        let mut w = Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), 1);
+        let mut st = create(&mut w, &view, &seq_value(false, 4_000)).unwrap();
+        let mut ctr = w.range().hi;
+        let mut txn = store.transaction(&mut rng).unwrap();
+        let (unit, _) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
+        let mut orng = osis_crypto::SeededRng::from_u64(195);
+        let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
+        let (mut most, mut reads, mut writes) = (0, 0, 0);
+        for step in 0..40u64 {
+            ts += 1 << 16;
+            let len = st.at(&[PathSeg::Field(1)]).and_then(|s| s.visible_range(0..usize::MAX)).unwrap().len() as u64;
+            let path = vec![PathSeg::Field(1), PathSeg::Index(r(len + 2) as usize)];
+            // a read inside an element (one past the end reads nothing)
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            assert!(ensure_path(&mut txn, &tid, &ak, &mut idx, &mut f, &path).unwrap());
+            assert_eq!(f.at(&path).and_then(|x| x.read()), st.at(&path).and_then(|x| x.read()), "step {step}: read");
+            let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+            assert!(!set.whole, "step {step}");
+            most = most.max(set.loaded.len());
+            reads += 1;
+            // a write inside an element, or an insert or delete by index, in a new session
+            let op = match r(3) {
+                0 => Op::Insert { at: r(len + 1) as usize, items: seq_items(false, 10_000 + step, 1) },
+                1 => Op::Delete { at: r(len) as usize, len: 1 },
+                _ => Op::Set(Value::Str(format!("set-{step}"))),
+            };
+            let path = if matches!(op, Op::Set(_)) { vec![PathSeg::Field(1), PathSeg::Index(r(len) as usize)] } else { vec![PathSeg::Field(1)] };
+            writes += usize::from(matches!(op, Op::Set(_)));
+            let ops = vec![PathOp { path, op }];
+            let lo = ctr;
+            let w = || Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), lo);
+            let run = |f: &Fragment| {
+                let mut b = Batch::new(f, w());
+                ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
+            };
+            let Some((delta, range)) = run(&st) else { continue };
+            ctr = range.hi;
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops).unwrap(), "step {step}: through the placement");
+            let mut got = None;
+            for _ in 0..OP_RUNS {
+                got = run(&f);
+                if absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() != Some(true) {
+                    break;
+                }
+            }
+            assert!(got == Some((delta.clone(), range)), "step {step}: same delta as on the whole state");
+            let t = touch_of(&delta, Some(&idx)).unwrap();
+            assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+            f.join(delta.clone());
+            st.join(delta);
+            assert!(matches!(write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap(), Some(None)), "step {step}: written in place");
+            let set = idx.sets.values().find(|s| is_seq(s)).unwrap();
+            most = most.max(set.loaded.len());
+            let stored = stored_place(&mut txn, &tid, &ak, set).unwrap_or_else(|| panic!("step {step}: placement kept"));
+            assert!(stored.order() == place_whole_pass(&st).order(), "step {step}: stored placement differs from a whole pass");
+        }
+        let (_, idx) = open(&unit, &SALT).unwrap();
+        let pages = idx.sets.values().find(|s| is_seq(s)).map(|s| whole_pages(&mut txn, &tid, &ak, s)).unwrap();
+        assert!(reads == 40 && writes >= 8 && most * 4 <= pages, "{writes} writes, {most} of {pages} pages loaded");
     }
 
     // spec/crdt.md §6.1, §6.2, §8: a paged text loaded whole keeps its stored placement through a
