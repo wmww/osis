@@ -356,12 +356,13 @@ fn text_range_and_edit_cost() {
     let b = lp.peers[1].engine.tid();
     m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
-    let text: String = (0..n).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+    // not periodic: an edit whose window repeats elsewhere in its base matches the whole text
+    let mut rng = SeededRng::from_u64(5);
+    let text: String = (0..n).map(|_| char::from(b'a' + (osis_crypto::RngCore::next_u64(&mut rng) % 26) as u8)).collect();
     let mut m = Mutation::new();
     m.set(t, &TEXT, &Value::Str(text.clone())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
-    let mut rng = SeededRng::from_u64(5);
     let at = (osis_crypto::RngCore::next_u64(&mut rng) % (n as u64 - 100)) as usize;
     let measure = |name: &str, t0: Instant| {
         let c = osis_node::costs::take();
