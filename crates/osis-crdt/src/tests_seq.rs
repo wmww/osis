@@ -239,7 +239,12 @@ impl Pager {
         let elems = self.st.elems().iter().filter(|(k, _)| self.loaded.contains(&self.page_of(k))).map(|(k, v)| (k.clone(), v.clone())).collect();
         self.p.cover(self.loaded.iter().map(|i| (self.bounds[*i].clone(), self.bounds.get(i + 1).cloned().flatten())).collect());
         let mut f = Fragment::Seq(Seq::new(self.st.text, self.st.meta.clone(), elems));
-        f.set_seq_place(Some(self.p.clone()));
+        let mut p = self.p.clone();
+        if !p.is_partial() {
+            // loaded whole: a text's chars set (`fill_chars`), as a node does
+            f.fill_chars(&mut p);
+        }
+        f.set_seq_place(Some(p));
         f
     }
     /// Loads what the placement missed since the last call; whether it missed anything.
@@ -255,7 +260,16 @@ impl Pager {
             self.load(a, b);
         }
         if m.all {
+            // as a node does: load whole
             self.loaded.extend(0..self.bounds.len());
+            let (bs, cs) = self.p.stubs();
+            for b in bs {
+                assert!(self.p.fill(b, self.whole.rows(b).unwrap()));
+            }
+            for c in cs {
+                assert!(self.p.fill_chunk(c.as_ref(), self.whole.chunk(c.as_ref()).unwrap()));
+            }
+            assert!(self.p.complete());
         }
         m.any()
     }
