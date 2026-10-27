@@ -23,7 +23,7 @@ pub struct Verdicts {
     /// It stamps here (uploads what it judges must-hold).
     pub writer: bool,
     /// Bodies it judges must-hold: (commit, the delta parts no snapshot under the label covers).
-    /// A live entry of the commit holding those parts holds the body.
+    /// A live entry of the commit holding those parts and no dropped delta holds the body.
     pub must_hold: Vec<(CommitId, Vec<(usize, usize)>)>,
     /// Entries it knows under the label that it judges must-not-hold and may delete now with a
     /// delete item it can make: (blob, why).
@@ -656,11 +656,14 @@ impl SyncEngine {
                 left.held_back.insert(b.commit);
             }
             let Some(needed) = needed else { continue };
-            // another projection of the commit (a right holder dropped covered deltas) holds it
-            if needed != b.parts && self.carried_by(server, &l, &b.commit, &needed) {
+            let entry = self.entry_for(server, &l, b);
+            // another blob of the commit holding every needed delta holds it (a projection a
+            // right holder dropped covered deltas from, a superset), unless it is must-not-hold
+            // (`holds_nothing`, spec/sync.md §6)
+            let here = entry.is_some_and(|id| server.is_none_or(|s| self.state.is_present(s, &l, &id)));
+            if !here && self.carried_by(server, g, &l, &b.commit, &needed) {
                 continue;
             }
-            let entry = self.entry_for(server, &l, b);
             // another node's commit not at this server: its author (or a co-writer) first
             if !entry.is_some_and(|id| server.is_none_or(|s| self.state.is_present(s, &l, &id))) && !self.relay_due(&b.commit) {
                 left.commits.insert(b.commit);
@@ -723,13 +726,14 @@ impl SyncEngine {
         if why == Why::Expired {
             return Ok(Fate::Expired);
         }
-        let carried = match why {
-            Why::Duplicate | Why::StrictSubset => true,
-            _ => self.carried(server, l, e, &aspects, snaps)?,
+        let (carried, need) = match why {
+            _ if !live => (true, Vec::new()),
+            Why::Duplicate | Why::StrictSubset => (true, Vec::new()),
+            _ => self.carried(server, g, l, e, snaps)?,
         };
         if !may_delete(why, live, carried) {
             if carrier && let Kind::Commit { commit, .. } = &e.kind {
-                self.snapshot_first(&aspects, commit)?;
+                self.snapshot_first(&need, commit)?;
             }
             // judged again once a write on its aspects changes liveness (a carrier is a trigger)
             note.waits.extend(aspects);
@@ -1182,10 +1186,20 @@ impl SyncEngine {
 
     /// Whether an entry of commit `c` holding `parts` is present at `server` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
-    /// the parts holds nothing.
-    fn carried_by(&mut self, server: Option<&ServerKey>, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x))) && server.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
+    /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
+    fn carried_by(&mut self, server: Option<&ServerKey>, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(g, c, p)) && server.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
+    }
+
+    /// Whether a blob of commit `c` with delta set `parts` under a label of `g` is must-not-hold
+    /// whatever its siblings: it holds a delta this node dropped (purge, expiry, keep-at-most,
+    /// compaction) or one the label's actor may not read (outside the required set). It holds
+    /// no body and makes no other blob a strict subset (spec/sync.md §6).
+    fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let Some(m) = self.engine.core.commits.get(c) else { return false };
+        let x = self.engine.group_actor(g);
+        parts.iter().any(|p| m.dropped.contains(p) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
     }
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `server`, whoever
@@ -1616,21 +1630,9 @@ impl SyncEngine {
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        let dropped: Vec<(usize, usize)> = parts.iter().filter(|p| m.dropped.contains(p)).copied().collect();
-        if !dropped.is_empty() {
-            let mut live = false;
-            for (ai, _) in &dropped {
-                let Some(a) = h.aspects.get(*ai) else { continue };
-                let o = crate::engine::Owned::of(&h, commit, *ai);
-                if self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
-                    continue;
-                }
-                // a dropped body keeps its live writes in the state (spec/crdt.md §4.6)
-                if self.engine.body_live(commit, &a.tid, &a.ak).unwrap_or(true) {
-                    live = true;
-                    break;
-                }
-            }
+        if parts.iter().any(|p| m.dropped.contains(p)) {
+            // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
+            let live = parts.iter().any(|p| self.part_live(&h, commit, p));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
         if e.cert {
@@ -1658,7 +1660,8 @@ impl SyncEngine {
                 .entries_of(l, commit)
                 .filter(|(b, _)| b != id && (server.is_none() || self.state.present_anywhere(l, b)))
                 .filter_map(|(b, o)| match &o.kind {
-                    Kind::Commit { parts: p2, .. } if p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) => Some((b, p2.clone())),
+                    // a must-not-hold superset counts for nothing
+                    Kind::Commit { parts: p2, .. } if p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) && !self.holds_nothing(g, commit, p2) => Some((b, p2.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -1704,7 +1707,9 @@ impl SyncEngine {
                 }
             }
         }
-        Ok(Some((classify(&f), true, aspects)))
+        // a body outside the required set holds no write this label must keep
+        let hold = classify(&f);
+        Ok(Some((hold, hold != Hold::MustNot(Why::Outside), aspects)))
     }
 
     /// Unopened entries present at `server` under replaced label `l` that only content commits
@@ -1957,40 +1962,73 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Whether a later snapshot of each aspect is under the label at the server: the carrier of
-    /// a body's live writes (spec/sync.md §7).
-    fn carried(&mut self, server: Option<&ServerKey>, l: &LabelId, e: &Entry, aspects: &[(Tid, Ak)], snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
-        let Kind::Commit { commit, .. } = &e.kind else { return Ok(false) };
-        let dropped = self.engine.core.commits.get(commit).is_some_and(|m| !m.dropped.is_empty());
-        for (t, a) in aspects {
-            // the snapshot that covered the body when it was dropped, or one covered-equal to it
-            // whose frontier holds the body's counters (a co-writer's that went up in its place);
-            // a dropped body's content is gone, so `covered` checks only that frontier
-            let carrier = self.carrier_of(commit, t, a);
-            let candidates: Vec<CommitId> = match carrier {
-                None if dropped => Vec::new(),
-                _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
-            };
-            let mut ok = false;
-            for s in candidates {
-                if s == *commit || !self.state.entries_of(l, &s).any(|(b, _)| server.is_none_or(|sv| self.state.is_present(sv, l, &b))) {
-                    continue;
-                }
-                let covers = self.engine.covered(&s, commit, t, a)? == Some(true);
-                let stand_in = match carrier {
-                    Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true) && self.engine.covered(&k, &s, t, a)? == Some(true)),
-                    None => false,
-                };
-                if stand_in || (!dropped && covers) {
-                    ok = true;
-                    break;
-                }
+    /// Whether a delta of commit `c` has a live write in this node's state (spec/commits.md §5): a
+    /// dropped body keeps its live writes there (spec/crdt.md §4.6); a purged one holds none.
+    fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize)) -> bool {
+        let Some(a) = h.aspects.get(p.0) else { return false };
+        let o = crate::engine::Owned::of(h, c, p.0);
+        if self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
+            return false;
+        }
+        self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
+    }
+
+    /// Whether other entries under the label at the server carry every live write of
+    /// must-not-hold entry `e` the label's actor may read (spec/sync.md §7), and the aspects only
+    /// a snapshot this node writes can carry.
+    /// A kept delta's: a blob of the commit holding it that is not must-not-hold (the dropping
+    /// node's rewrite, `carried_by`) or a snapshot covering it; none is asked for while this node
+    /// has such a blob placed. A dropped delta's: the snapshot that covered it when it was dropped.
+    fn carried(&mut self, server: Option<&ServerKey>, g: &Tid, l: &LabelId, e: &Entry, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<(bool, Vec<(Tid, Ak)>)> {
+        let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
+        let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
+        let x = self.engine.group_actor(g);
+        let (mut all, mut need) = (true, Vec::new());
+        for p in parts {
+            let Some(a) = m.header.aspects.get(p.0) else { continue };
+            let (t, a) = (a.tid, a.ak.clone());
+            // a delta the label's actor may not read is carried under its readers' labels
+            if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, p) {
+                continue;
             }
-            if !ok {
-                return Ok(false);
+            let dropped = m.dropped.contains(p);
+            if !dropped && self.carried_by(server, g, l, commit, &[*p]) || self.snapshot_carries(server, l, commit, &t, &a, dropped, snaps)? {
+                continue;
+            }
+            all = false;
+            if dropped || !self.carried_by(None, g, l, commit, &[*p]) {
+                need.push((t, a));
             }
         }
-        Ok(true)
+        Ok((all, need))
+    }
+
+    /// Whether a later snapshot of `(t, a)` under the label at the server carries body `body`'s
+    /// writes there: one covering it, or for a `dropped` delta (its content is gone, so `covered`
+    /// checks only the frontier) the snapshot that covered it when it was dropped, or one
+    /// covered-equal to that whose frontier holds the body's counters (a co-writer's that went
+    /// up in its place).
+    #[allow(clippy::too_many_arguments)]
+    fn snapshot_carries(&mut self, server: Option<&ServerKey>, l: &LabelId, body: &CommitId, t: &Tid, a: &Ak, dropped: bool, snaps: &BTreeMap<(Tid, Ak), Vec<CommitId>>) -> Result<bool> {
+        let carrier = self.carrier_of(body, t, a);
+        let candidates: Vec<CommitId> = match carrier {
+            None if dropped => Vec::new(),
+            _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
+        };
+        for s in candidates {
+            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| server.is_none_or(|sv| self.state.is_present(sv, l, &b))) {
+                continue;
+            }
+            let covers = self.engine.covered(&s, body, t, a)? == Some(true);
+            let stand_in = match carrier {
+                Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true) && self.engine.covered(&k, &s, t, a)? == Some(true)),
+                None => false,
+            };
+            if stand_in || (!dropped && covers) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a

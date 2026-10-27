@@ -1,12 +1,12 @@
 # Sync convergence model: ambiguities and findings
-> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S16 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes. S17 (a must-not-hold blob holding a body) is open as issues/sync-label-lacks-superset.md.
+> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S18 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes.
 
 ## Resolved (model updated, rerun clean)
 - **S1. A purge compacted away never reached a late node.** commits §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `wall_ms(ts) + MEMBERSHIP_KEEP`, whatever its deltas' bounds. `purge_reach.cfg` now passes `PurgeReachesAll` (within MEMBERSHIP_KEEP; see S15).
 - **S2. Absolute keep-at-most stranded live writes.** commits §5: live writes stay in the node's state after the drop; a body with live writes is deleted at a label only while another entry carries them; snapshot deltas take the schema's default bounds, never a commit's. sync §7: a right holder that must delete such a body and finds no carrier uploads a covering snapshot first. `mostabs.cfg` passes `NoLiveLoss`, `LiveKept`, `Clean` (but see S11).
 - **S3. Must-hold and must-not-hold overlap.** sync §6: "A body meeting a must-not-hold condition is must-not-hold whatever else holds of it."
-- **S4. Strict subset against a superset that is itself must-not-hold.** Text unchanged (literal). The window in which a node that has not applied a purge re-uploads the purged body closes once it gets the purge commit, which commits §5 now keeps MEMBERSHIP_KEEP; `purge.cfg` passes `Clean` and `Quiesce`.
-- **S5. Which deletions wait.** sync §7: carriers are a covering snapshot, a blob of the commit holding a superset of the deltas, or an identical body.
+- **S4. Strict subset against a superset that is itself must-not-hold.** sync §6 (with S17): only a superset that is not itself must-not-hold makes a blob a strict subset. A node that has not applied a purge still sees the rewrite as a strict subset of its own body and deletes it; the purger uploads it again (fresh encryption) until that node gets the purge commit, which commits §5 keeps MEMBERSHIP_KEEP; `purge.cfg` passes `Clean` and `Quiesce`.
+- **S5. Which deletions wait.** sync §7: carriers are a covering snapshot, a blob of the commit holding a superset of the deltas, or an identical body (superseded by S18).
 - **S6. What a reader relays.** sync §6: "the stamped must-hold entries it holds that the label lacks".
 - **S7. "Dropping them once".** sync §6: once per body (commit and delta set).
 - **S8. Header-only rewrite.** commits §5: a node dropping a body for a purge keeps the commit as a blob without the purged deltas, header-only when none remain. Model: any node does so (was: writers only).
@@ -20,11 +20,11 @@
 
 - **S16. Which local drops need the snapshot first.** sync §7: "the snapshot-first order binds only drops that would leave a live write in no held blob (keep-at-most), not strict-subset or purge drops". The model already did exactly this (`NeedsSnapToDrop`).
 
+- **S17. A must-not-hold blob as the one that "holds" a body.** sync §6 read literally let a must-not-hold blob (a purged superset waiting for its carrier) hold a body, so the rewrite's upload waited on its deletion; node-sync did so only when snapshots covered part of the body. sync §6 now: the holding blob is one "that is not must-not-hold", and strict subsets count only supersets "not itself must-not-hold". Model: `BaseNot` (purged, expired, past keep-at-most) in `MustNot`'s strict-subset clause and in `HoldsIn` (a blob must-not-hold only as a strict subset has a holding superset, so the recursion reduces to `BaseNot`). Every sync instance passes.
+
+- **S18. A purged body's kept live write.** node-sync judged a dropped body's liveness by its dropped deltas only, so a blob holding a purged delta and a live one went at once, before the purger's rewrite was at the label; the model kept it until a covering snapshot (the rewrite, a subset, carried nothing). sync §7 now: every delta's live writes count, and each is carried by a snapshot covering it or another blob of the commit holding it that is not must-not-hold (not a higher-ID duplicate); a right holder holding such a blob (its rewrite) asks for no snapshot. Model: `Carrier` per live delta (`SnapAt` of `One(d)` or `InBlob`), `Delete` requires it, `SnapDue`'s first clause only when no blob the node holds or sees carries the write.
+
 ## Hardening edits followed (rerun clean)
 - commits §5: a node-form body is covered only when the snapshot's frontier reaches its counters (a snapshot body: the frontiers). `Write` of a snapshot requires its author to have applied every commit it covers; no scenario changed (their `Deps` already ensured it). Snapshot-covers-snapshot is not exercised (one snapshot per scenario).
 - sync §6: "the label lacks" a body unless a blob of its commit holds every delta of it no snapshot under the label covers. `Upload`, `Relay`, `Deposit` use it; `Converge` checks it rather than an identical body.
 - sync §6 clock samples by round trip, request timeouts, sync §9 signal replay window: outside the model (no clock skew, no connections, no signals).
-
-## S17. A must-not-hold blob as the one that "holds" a body (open: issues/sync-label-lacks-superset.md)
-- sync §6: a writer uploads a must-hold body "the label lacks (a blob of the commit holding every delta of the body that no snapshot under the label covers holds it)". Read literally, a blob that is itself must-not-hold (a purged superset waiting for its carrier, an expired or past-keep-at-most blob of the same commit) still holds the body, so the upload waits until that blob is deleted. Model: literal; every instance passes, since the waiting blob's deletion is fair and the upload follows it.
-- node-sync is literal only when snapshots cover part of the body; for a whole body it uploads beside a must-not-hold superset (a writer that has not applied the purge yet deletes that upload as a strict subset). The issue holds the options; the spec is unchanged until one is picked.

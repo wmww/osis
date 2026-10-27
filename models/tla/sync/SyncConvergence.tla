@@ -57,13 +57,17 @@ CoveredBy(A, S, b) == \/ b.ds = {}
                       \/ \E s \in S : s.c \in Snaps /\ s.c # b.c /\ s.c \in A
                                      /\ b.ds \subseteq Covers[s.c]
 \* sync §6 must-not-hold: purged, expired, past keep-at-most, or a strict
-\* subset of another held blob of the commit ("outside the required set" is
-\* not modeled: one label, everything in the closure).
-MustNot(A, H, b) ==
+\* subset of another held blob of the commit that is not itself must-not-hold
+\* ("outside the required set" is not modeled: one label, everything in the
+\* closure). The recursion reduces to BaseNot: a strict superset that is a
+\* strict subset of a held blob not BaseNot has that blob as a superset too.
+BaseNot(A, b) ==
   \/ \E d \in b.ds : Purged(A, d)
   \/ Expired(b)
   \/ now >= MostB(A, b)
-  \/ \E b2 \in H : b2.c = b.c /\ b.ds \subseteq b2.ds /\ b.ds # b2.ds
+MustNot(A, H, b) ==
+  \/ BaseNot(A, b)
+  \/ \E b2 \in H : b2.c = b.c /\ b.ds \subseteq b2.ds /\ b.ds # b2.ds /\ ~BaseNot(A, b2)
 \* sync §6 must-hold: before keep-at-least or established uncovered. "A body
 \* meeting a must-not-hold condition is must-not-hold whatever else holds".
 MustHold(A, H, S, b) == ~MustNot(A, H, b)
@@ -75,19 +79,24 @@ SameBody(x, b) == x.c = b.c /\ x.ds = b.ds
 \* sync §7: a covering snapshot under the label, as the node knows it.
 SnapAt(n, b) == CoveredBy(applied[n], srv \cap seen[n], b)
 One(d) == [c |-> DC(d), ds |-> {d}, v |-> 0]
-\* sync §6: the label holds a body when "a blob of the commit holding every
-\* delta of the body that no snapshot under the label covers" is there; else
-\* it lacks it. Snapshots as the node knows them (LHolds) or globally (GHolds).
-HoldsIn(b, cov(_)) == \E x \in srv : x.c = b.c /\ {d \in b.ds : ~cov(One(d))} \subseteq x.ds
-LHolds(n, b) == LET cov(o) == SnapAt(n, o) IN HoldsIn(b, cov)
-\* sync §7: "another entry under it carries them: a covering snapshot, a blob
-\* of the commit holding a superset of its deltas, or an identical body with
-\* a lower blob ID" (v stands for the blob ID order).
-Carrier(n, b) == \/ SnapAt(n, b)
-                 \/ \E x \in srv \cap seen[n] :
-                      /\ x.c = b.c
-                      /\ \/ b.ds \subseteq x.ds /\ b.ds # x.ds
-                         \/ x.ds = b.ds /\ x.v < b.v
+\* sync §6: the label holds a body when "a blob of the commit that is not
+\* must-not-hold and holds every delta of the body that no snapshot under the
+\* label covers" is there; else it lacks it. Snapshots and must-not-hold as
+\* the node knows them (LHolds) or globally (GHolds). A blob must-not-hold
+\* only as a strict subset has a holding superset, so BaseNot suffices.
+HoldsIn(b, A, cov(_)) == \E x \in srv : x.c = b.c /\ ~BaseNot(A, x)
+                                     /\ {d \in b.ds : ~cov(One(d))} \subseteq x.ds
+LHolds(n, b) == LET cov(o) == SnapAt(n, o) IN HoldsIn(b, applied[n], cov)
+\* sync §7: other entries carry each live write of b: "a snapshot under the
+\* label covering it, or another blob of the commit holding it that is not
+\* must-not-hold and not an identical body with a higher blob ID" (v stands
+\* for the blob ID order).
+\* InBlob over S: the label's entries as n knows them, or n's held blobs.
+LiveOf(A, b) == {d \in b.ds : ~Dead(A, d) /\ ~Purged(A, d)}
+InBlob(n, b, d, S) == \E x \in S : x.c = b.c /\ d \in x.ds /\ x # b /\ ~NMustNot(n, x)
+                                 /\ ~(x.ds = b.ds /\ x.v > b.v)
+Carrier(n, b) == \A d \in LiveOf(applied[n], b) :
+                   SnapAt(n, One(d)) \/ InBlob(n, b, d, srv \cap seen[n])
 \* commits §5: "A node that may write the aspect and holds no snapshot
 \* covering a body with live writes writes one before dropping the body"
 \* (read as: a drop past keep-at-most; AMBIGUITIES.md S16).
@@ -220,7 +229,7 @@ DupHigher(b) == \E x \in srv : SameBody(x, b) /\ x.v < b.v
 Delete(n, b) ==
   /\ online[n] /\ n \in Writers /\ b \in srv \cap seen[n] /\ b.c \in applied[n]
   /\ NMustNot(n, b) \/ DupHigherSeen(n, b)
-  /\ LiveIn(applied[n], b) => Carrier(n, b)
+  /\ Carrier(n, b)
   /\ Remove({b}, TRUE)
   /\ UNCHANGED <<state, now, created, applied, held, compacted, online, stamped, adv>>
 
@@ -261,7 +270,8 @@ AdvReplay(b) == /\ b \in stamped /\ b \notin srv /\ b \notin tomb /\ ~Expired(b)
 
 \* Snapshot writes are optional (unfair) except when due: sync §7 "a right
 \* holder that must delete a body with live writes and finds no such entry
-\* uploads a covering snapshot first when it may write the aspect"; commits §5
+\* uploads a covering snapshot first when it may write the aspect" (none while
+\* it holds a blob that will carry them, its rewrite); commits §5
 \* "A writer that, after applying [a purge], holds no covering snapshot of the
 \* aspect under a label it writes re-snapshots there"; a writer that must drop
 \* a body with live writes and holds no covering snapshot (commits §5 keep at
@@ -269,8 +279,9 @@ AdvReplay(b) == /\ b \in stamped /\ b \notin srv /\ b \notin tomb /\ ~Expired(b)
 SnapDue(n, s) ==
   /\ n \in Writers
   /\ \/ \E b \in srv \cap seen[n] :
-          /\ b.c \in applied[n] /\ NMustNot(n, b) /\ LiveIn(applied[n], b)
-          /\ ~Carrier(n, b) /\ b.ds \subseteq Covers[s]
+          /\ b.c \in applied[n] /\ NMustNot(n, b) /\ b.ds \subseteq Covers[s]
+          /\ \E d \in LiveOf(applied[n], b) :
+               ~SnapAt(n, One(d)) /\ ~InBlob(n, b, d, (srv \cap seen[n]) \cup held[n])
      \/ \E b \in held[n] : NeedsSnapToDrop(n, b) /\ b.ds \subseteq Covers[s]
      \/ \E b \in srv \cap seen[n] :
           /\ TimedDue(n, b) /\ LiveIn(applied[n], b) /\ ~SnapAt(n, b)
@@ -322,16 +333,16 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 GA == {c \in Commits : created[c] # Inf}
 CurBody(c) == [c |-> c, ds |-> {d \in CD[c] : ~Purged(GA, d)}, v |-> 0]
 GLive(d) == DC(d) \in GA /\ ~Dead(GA, d) /\ ~Purged(GA, d)
-GHolds(b) == LET cov(o) == CoveredBy(GA, srv, o) IN HoldsIn(b, cov)
+GHolds(b) == LET cov(o) == CoveredBy(GA, srv, o) IN HoldsIn(b, GA, cov)
 Carried(S, A, d) == (\E b \in S : d \in b.ds) \/ CoveredBy(A, S, One(d))
 
 TypeOK == /\ now \in 0..MaxT
           /\ srv \subseteq Blobs /\ tomb \subseteq Blobs /\ dep \subseteq srv
           /\ \A n \in Nodes : held[n] \subseteq Blobs /\ applied[n] \subseteq GA
 
-\* sync §7 "A body with live writes is deleted at a label only once a snapshot
-\* covering it is under that label": no honest step removes the last server
-\* copy of a live write that reached it (checked with AdvDrops = 0).
+\* sync §7 "A body with live writes ... is deleted at a label only while other
+\* entries under it carry each of them": no honest step removes the last
+\* server copy of a live write that reached it (checked with AdvDrops = 0).
 NoLiveLoss == \A d \in Deltas :
   (GLive(d) /\ \E b \in stamped \cup dep : d \in b.ds) => Carried(srv, GA, d)
 

@@ -66,14 +66,10 @@ pub fn classify(f: &Facts) -> Hold {
     if f.before_at_least || f.covered == Some(false) { Hold::Must } else { Hold::May }
 }
 
-/// Whether a must-not-hold body may go now (spec/sync.md §7): content that is dead (purged,
-/// expired) or outside the label goes at once; a body with live writes only while another entry
-/// under the label carries them.
+/// Whether a must-not-hold body may go now (spec/sync.md §7): an expired one at once; one with
+/// live writes only while other entries under the label carry them.
 pub fn may_delete(why: Why, live_writes: bool, carried: bool) -> bool {
-    match why {
-        Why::Expired | Why::Outside => true,
-        Why::Dropped | Why::StrictSubset | Why::Duplicate => !live_writes || carried,
-    }
+    why == Why::Expired || !live_writes || carried
 }
 
 #[cfg(test)]
@@ -121,6 +117,7 @@ mod tests {
         assert!(may_delete(Why::Dropped, true, true));
         assert!(!may_delete(Why::StrictSubset, true, false));
         assert!(may_delete(Why::Duplicate, true, true));
-        assert!(may_delete(Why::Outside, true, false));
+        assert!(!may_delete(Why::Outside, true, false));
+        assert!(may_delete(Why::Outside, false, false));
     }
 }

@@ -71,8 +71,10 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text;\n");
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text; aspect /s/tags: set<string>; aspect /s/kept: set<string> [by: writer, keep_at_least: 1d];\n");
 const TEXT: Aspect<Value> = Aspect::new("/s/text", &SCALE);
+const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SCALE);
+const KEPT: Aspect<Value> = Aspect::new("/s/kept", &SCALE);
 
 fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()
@@ -491,9 +493,8 @@ fn membership_change_and_open_cost() {
     let t5 = Instant::now();
     for i in 0..n {
         let role = if (i / 20) % 2 == 0 { Role::Read } else { Role::Write };
-        let mut m = Mutation::new();
-        m.op(things[i % 100], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(members[i % 20]))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None }.to_value()) }).unwrap();
-        e.commit(m).unwrap().unwrap();
+        // an edge change is remove + put (spec/permissions.md §2)
+        crate::common::set_edge(&mut e, things[i % 100], members[i % 20], Some(crate::common::edge(role)), None);
     }
     println!("{n} edge writes: {:?}", t5.elapsed());
     for (k, d, c) in osis_node::costs::take() {
@@ -526,12 +527,12 @@ fn demotion_heavy_open() {
     let docs: Vec<Tid> = (0..20).map(|_| lp.peers[0].engine.new_thing(&mut m, org)).collect();
     lp.peers[0].engine.commit(m).unwrap();
     let set = |e: &mut Engine, t: Tid, member: Tid, role: Option<Role>| -> Option<osis_core::CommitId> {
+        // an edge change is remove + put (spec/permissions.md §2)
         let mut m = Mutation::new();
-        let op = match role {
-            Some(r) => PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None }.to_value()) },
-            None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) },
-        };
-        m.op(t, &ct::MEMBERS, op).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+        if let Some(r) = role {
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        }
         e.commit(m).ok().flatten()
     };
     for a in &admins {
@@ -754,3 +755,66 @@ fn sync_membership_pass_cost() {
         d(s2.1, s3.1)
     );
 }
+
+// spec/crdt.md §4.8 (deaths whatever the arrival order), spec/requirements.md, Scale (no
+// operation O(history)): a set of N one-element commits, then 5 deltas by another writer older
+// than all of them. Each late delta applied and its deaths read alone, then 5 more in one batch
+// read once (`Engine::defer_deaths`): an unbounded set (no deaths kept) against a keep-at-least one
+// (deaths replayed once per aspect per batch). `OSIS_SCALE_N` sets N (default 3000).
+#[test]
+#[ignore = "tier 2"]
+fn late_delta_deaths_cost() {
+    let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
+    for (name, asp, key) in [("unbounded set", &TAGS, "/s/tags"), ("keep-at-least set", &KEPT, "/s/kept")] {
+        let mut lp = osis_node::local_peer::LocalPeer::new(2, 41, WallMs(1_700_000_000_000)).unwrap();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: String| {
+            let mut m = Mutation::new();
+            m.op(t, asp, PathOp { path: Vec::new(), op: Op::Add(Value::Str(v)) }).unwrap();
+            lp.peers[i].commit(m).unwrap().unwrap()
+        };
+        // the late writer's deltas: older than everything below
+        let mut late = Vec::new();
+        for i in 0..10 {
+            late.push(add(&mut lp, 1, format!("late{i}")));
+        }
+        lp.advance(1_000);
+        let t0 = Instant::now();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            ids.push(add(&mut lp, 0, format!("e{i}")));
+        }
+        let fill = t0.elapsed();
+        let pks = lp.packages(1).unwrap();
+        let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+        let k = ak(key);
+        let mut each = Vec::new();
+        for c in &late[..5] {
+            let t1 = Instant::now();
+            lp.deliver(0, &pk(c)).unwrap();
+            lp.peers[0].engine.deaths(&ids[0], &t, &k).unwrap();
+            each.push(t1.elapsed());
+        }
+        osis_node::costs::take();
+        let t2 = Instant::now();
+        lp.peers[0].engine.defer_deaths(true).unwrap();
+        for c in &late[5..] {
+            lp.deliver(0, &pk(c)).unwrap();
+        }
+        lp.peers[0].engine.defer_deaths(false).unwrap();
+        let batch = t2.elapsed();
+        let t3 = Instant::now();
+        add(&mut lp, 0, "z".into());
+        println!("{name} n={n}: fill {fill:?}; late deltas each {each:?}; 5 late deltas in one batch {batch:?}; one in-order local write {:?}", t3.elapsed());
+        for (k, d, c) in osis_node::costs::take() {
+            println!("  {k}: {d:?} ({c})");
+        }
+    }
+}
+

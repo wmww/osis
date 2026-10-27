@@ -218,6 +218,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     let mut changed: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut touched = Touched::default();
     let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut replays: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for (ai, _, d) in &parts {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -240,14 +241,15 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
-        let early = a.retention.at_most.rel.is_some().then(|| f.clone());
+        let replay = crate::retention::replays(tx.core, &id, &h, &a.tid, &a.ak);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
-        if let Some(f) = early {
-            crate::retention::note_earlier_deaths(tx, &id, &a.tid, &a.ak, &f)?;
+        if replay {
+            replays.insert((a.tid, a.ak.clone()));
+        } else {
+            crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
         }
     }
     {
@@ -255,6 +257,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
+    for (tid, ak) in &replays {
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
+    }
     {
         let _s = crate::costs::span("apply: retention");
         crate::retention::on_apply(tx, &id, &mut changed)?;
@@ -295,7 +300,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
 fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
     for (tid, ak) in unmerge {
         rebuild(tx, tid, ak)?;
-        crate::retention::recheck_at_most(tx, tid, ak)?;
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
         changed.insert((*tid, ak.clone()));
         touched.whole(tid, ak);
     }
@@ -358,6 +363,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let mut changed = BTreeSet::new();
     let mut touched = Touched::default();
     let mut unmerge: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut replays: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);
@@ -372,20 +378,24 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             continue;
         }
         touched.note(&a.tid, &a.ak, &f);
-        let early = a.retention.at_most.rel.is_some().then(|| f.clone());
+        let replay = crate::retention::replays(tx.core, id, &h, &a.tid, &a.ak);
         let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
         if ch.is_changed() {
             changed.insert((a.tid, a.ak.clone()));
         }
-        crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
-        if let Some(f) = early {
-            crate::retention::note_earlier_deaths(tx, id, &a.tid, &a.ak, &f)?;
+        if replay {
+            replays.insert((a.tid, a.ak.clone()));
+        } else {
+            crate::retention::note_deaths(tx, &a.tid, &a.ak, ch.deaths())?;
         }
     }
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_membership() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     unmerge_carried(tx, &unmerge, &mut changed, &mut touched)?;
+    for (tid, ak) in &replays {
+        crate::retention::mark_deaths_due(tx, tid, ak)?;
+    }
     if edges && let Some(all) = &all {
         tx.core.held.remove(id);
         validity::add_membership(tx, &h, id, all)?;

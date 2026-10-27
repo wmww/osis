@@ -70,6 +70,8 @@ pub struct Net {
     pub sent_bytes: usize,
     /// Every dial: (node, address).
     pub dialed: Vec<(usize, Address)>,
+    /// Nodes whose Upload requests to servers are lost on the way (never answered).
+    pub lose_uploads: BTreeSet<usize>,
     /// Time spent in each node's `handle` and in the hubs (scale tests).
     pub busy: BTreeMap<usize, std::time::Duration>,
     pub hub_busy: std::time::Duration,
@@ -81,7 +83,7 @@ pub fn server_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], servers: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), lose_uploads: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO }
     }
 
     pub fn now(&self) -> u64 {
@@ -250,14 +252,22 @@ impl Net {
                     self.plinks.remove(&(m, pc));
                     self.queue.push_back(Msg::Close(m, pc));
                 }
-                Action::Send { conn, bytes } => {
+                Action::Send { conn, mut bytes } => {
                     self.sent_bytes += bytes.len();
                     let mut d = osis_proto::FrameDecoder::new();
                     d.push(&bytes);
+                    let mut kept = Vec::new();
                     while let Ok(Some(body)) = d.next_frame() {
                         if let Ok(m) = osis_proto::Message::decode(&body) {
                             *self.sent_kinds.entry(m.kind()).or_default() += 1;
+                            if self.lose_uploads.contains(&n) && matches!(m, osis_proto::Message::Upload { .. }) {
+                                continue;
+                            }
                         }
+                        kept.extend(osis_proto::encode_frame(&body));
+                    }
+                    if self.lose_uploads.contains(&n) {
+                        bytes = kept;
                     }
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
                         self.queue.push_back(Msg::ToHub(s, hc as ConnId, bytes));

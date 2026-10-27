@@ -237,6 +237,15 @@ impl Transaction<'_> {
         Ok(d)
     }
 
+    /// Replaces the death record of `body` in this aspect (`None` removes it).
+    pub fn set_death(&mut self, tid: &Tid, ak: &Ak, body: &BlobId, d: Option<Deaths>) -> Result<(), Error> {
+        let key = [aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat();
+        match d {
+            Some(d) => self.cat_put(&key, W::new().u64(d.first.to_u64()).u64(d.last.to_u64()).take(), Shred::No),
+            None => self.cat_remove(&key, Shred::No).map(|_| ()),
+        }
+    }
+
     pub fn death(&mut self, tid: &Tid, ak: &Ak, body: &BlobId) -> Result<Option<Deaths>, Error> {
         let key = [aspect_key(kind::DEATH, tid, ak), body.0.to_vec()].concat();
         self.cat_get(&key)?.map(|b| decode_deaths(&b)).transpose()

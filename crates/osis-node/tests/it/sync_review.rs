@@ -98,6 +98,98 @@ fn purge_leaves_no_copy_spec_commits_5() {
     assert_eq!(net.engine(r).get(&t, &gone).unwrap(), None);
 }
 
+// spec/sync.md §6 (a must-not-hold blob holds nothing): writer a purges one delta of commit c
+// whose two-delta blob p is under the label; a's rewrite q goes up in that pass and is kept, also
+// once writer b (offline through the purge, p was its body) is back and applies the purge.
+#[test]
+fn purged_superset_holds_nothing_spec_sync_6() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    let gone = Ak::new(GONE.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let p = blobs_of(&mut net, a, &l, &c);
+    assert_eq!(p.len(), 1);
+    assert_eq!(blobs_of(&mut net, b, &l, &c), p, "b holds p");
+    net.set_online(b, false);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.feed(a, Event::Local);
+    net.settle(200_000);
+    let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+    assert_eq!(q.len(), 1, "a's rewrite placed");
+    let ids = net.server_ids(sv, &l);
+    assert!(ids.contains(&q[0]), "q uploaded at once");
+    net.run();
+    net.run();
+    net.set_online(b, true);
+    // past the redial pause
+    net.advance(6_000);
+    net.run();
+    diags(&mut net, &[a, b]);
+    let ids = net.server_ids(sv, &l);
+    assert!(!ids.contains(&p[0]), "p deleted once carried");
+    assert!(ids.contains(&q[0]), "q kept");
+    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")));
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
+}
+
+// spec/sync.md §7 (a body with live writes leaves only while a carrier stays): writer a purges
+// one delta of commit c whose two-delta blob p also holds a live write; a's rewrite q is lost on
+// the way, so p stays (and the live write with it) until q is at the server.
+#[test]
+fn purged_body_waits_for_its_rewrite_spec_sync_7() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    let gone = Ak::new(GONE.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let p = blobs_of(&mut net, a, &l, &c);
+    assert_eq!(p.len(), 1);
+    net.lose_uploads.insert(a);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &GONE).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.run();
+    let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+    assert_eq!(q.len(), 1, "a's rewrite placed");
+    let ids = net.server_ids(sv, &l);
+    assert!(!ids.contains(&q[0]), "q lost on the way");
+    assert!(ids.contains(&p[0]), "p waits for its carrier");
+    net.lose_uploads.clear();
+    // past the resend pause
+    net.advance(60_000);
+    net.run();
+    diags(&mut net, &[a, b]);
+    let ids = net.server_ids(sv, &l);
+    assert!(ids.contains(&q[0]), "q uploaded again");
+    assert!(!ids.contains(&p[0]), "p deleted once carried");
+    assert_eq!(net.engine(b).get(&t2, &gone).unwrap(), Some(s("kept")));
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
+}
+
 // spec/permissions.md §3 (complete pass): a membership commit pushed to a subscribed node ends
 // with a pass: `complete_pass` holds without another Sync.
 #[test]
