@@ -32,7 +32,12 @@ fn answers(held: &MemoryHeldSet, things: &[Tid], probes: &[Point], keep: &dyn Fn
         valid: probes
             .iter()
             .flat_map(|p| things.iter().flat_map(move |t| [Role::Write, Role::Admin].map(|r| (*t, r))).map(move |(t, r)| (*p, t, r)))
-            .map(|(p, t, r)| tl.delta_valid(p, &t, "/doc", Dots::Commit, r) == osis_perm::Validity::Valid)
+            .map(|(p, t, r)| {
+                let v = tl.delta_valid(p, &t, "/doc", Dots::Commit, r) == osis_perm::Validity::Valid;
+                // §5.2: `valid_from`'s bound only ever answers valid
+                assert!(v || !tl.valid_from(&p.node, &t, r).is_some_and(|b| b.is_none_or(|b| b <= p)), "valid_from at {p:?}");
+                v
+            })
             .collect(),
     }
 }
