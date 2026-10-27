@@ -2503,4 +2503,127 @@ mod tests {
             assert_eq!(read(&mut txn, &unit).as_deref(), Some(&want[100..200]), "damage {damage}");
         }
     }
+
+    // spec/crdt.md §6 (the placement is a function of state); notes/local-store.md (Units): a
+    // damaged stored block or dot-map chunk (garbage, truncated, another block's rows) never
+    // panics or misplaces: a cold op writes what it writes on the whole state, a received join
+    // keeps the state exact, and the next read by index reads the whole pass's order (laid out
+    // anew if needed); a state of the layout before (unit tag 6, its placement rows of that
+    // layout) is read whole and laid out anew.
+    #[test]
+    fn seq_placement_damaged_rows_spec_crdt_6() {
+        let mut rng = osis_crypto::SeededRng::from_u64(197);
+        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
+        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_core::Ak::new("/app/seq").unwrap());
+        let me = Source::node(Tid::from_bytes([1; 15]));
+        let view = SeqView::Root(true);
+        let field = || vec![PathSeg::Field(1)];
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), me.clone(), 1);
+        let mut st = create(&mut w, &view, &seq_value(true, 6_000)).unwrap();
+        let mut ctr = w.range().hi;
+        let mut txn = store.transaction(&mut rng).unwrap();
+        // every visible element by index through the stored placement, laid out anew if damaged
+        let read_all = |txn: &mut Transaction<'_>, unit: &[u8]| {
+            let (mut f, mut idx) = open(unit, &SALT).unwrap();
+            match seq_range(txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap() {
+                Ranged::Read(_, dots, _) => dots,
+                Ranged::Damaged(p) => {
+                    load_all(txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                    rebuild_placement(txn, &tid, &ak, &mut idx, &f, &p).unwrap();
+                    let (mut f, mut idx) = open(unit, &SALT).unwrap();
+                    let Ranged::Read(_, dots, _) = seq_range(txn, &tid, &ak, &mut idx, &mut f, &field(), 0..usize::MAX).unwrap() else { panic!("laid out anew") };
+                    dots
+                }
+                Ranged::Unpaged => panic!("paged"),
+            }
+        };
+        for damage in 0..5u64 {
+            let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), true, &SALT).unwrap();
+            let set = idx.unwrap().sets.into_values().find(is_seq).unwrap();
+            let pt = txn.table(&tid, &ak, PLACE_TABLE).unwrap().unwrap();
+            let top = stored_place(&mut txn, &tid, &ak, &set).unwrap().top();
+            // the block holding element 150, and another with other counts
+            let mut seen = 0;
+            let b = top.blocks.iter().find(|b| {
+                seen += b.shown;
+                seen > 150
+            });
+            let b = b.unwrap().clone();
+            let other = top.blocks.iter().find(|x| x.len != b.len || x.shown != b.shown || x.min != b.min).unwrap().id;
+            let key = place_key(&set, 1, b.id as u64);
+            let bytes = txn.table_get(pt, &key).unwrap().unwrap();
+            let mut unit = unit;
+            match damage {
+                0 => {
+                    txn.table_put(pt, &key, vec![0xff, 1], Shred::No).unwrap();
+                }
+                1 => {
+                    txn.table_put(pt, &key, bytes[..bytes.len() / 2].to_vec(), Shred::No).unwrap();
+                }
+                2 => {
+                    let o = txn.table_get(pt, &place_key(&set, 1, other as u64)).unwrap().unwrap();
+                    txn.table_put(pt, &key, o, Shred::No).unwrap();
+                }
+                3 => {
+                    let c = chunk_key(&set, None);
+                    let o = txn.table_get(pt, &c).unwrap().unwrap();
+                    txn.table_put(pt, &c, o[..o.len() / 2].to_vec(), Shred::No).unwrap();
+                }
+                5.. => unreachable!(),
+                4 => {
+                    // the layout before: tag 6, its top `[next row ID, waits, groups]`
+                    unit[1] = 6;
+                    txn.table_put(pt, &place_key(&set, 0, 0), osis_core::encode(&Value::List(vec![uint(5), Value::Bool(false), Value::List(Vec::new())])), Shred::No).unwrap();
+                    assert!(open(&unit, &SALT).is_err());
+                    let whole = legacy(&mut txn, &tid, &ak, &unit).unwrap().unwrap();
+                    assert_eq!(whole.read(), st.read());
+                    let (u, _) = write_full(&mut txn, &tid, &ak, Some(&whole), true, &SALT).unwrap();
+                    assert_eq!(read_all(&mut txn, &u), vis_whole(&st), "tag 6 laid out anew");
+                    continue;
+                }
+            }
+            // a cold insert at element 150, then a received delete there
+            let ops = [PathOp { path: field(), op: Op::Insert { at: 150, items: seq_items(true, damage, 2) } }];
+            let lo = ctr;
+            let wr = || Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), me.clone(), lo);
+            let run = |f: &Fragment| {
+                let mut b = Batch::new(f, wr());
+                ops.iter().try_for_each(|o| b.apply(o, &view).map(|_| ())).ok().and_then(|_| b.finish())
+            };
+            let want = run(&st).unwrap();
+            ctr = want.1.hi;
+            let (mut f, mut idx) = open(&unit, &SALT).unwrap();
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops).unwrap());
+            let mut got = run(&f);
+            for _ in 0..OP_RUNS {
+                match absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() {
+                    Some(false) => break,
+                    Some(true) => got = run(&f),
+                    None => {
+                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                        got = run(&f);
+                        break;
+                    }
+                }
+            }
+            assert!(got.as_ref() == Some(&want), "damage {damage}: same delta as on the whole state");
+            let mut deltas = vec![want.0];
+            let mut b = Batch::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), Source::node(Tid::from_bytes([2; 15])), 1 + 10 * damage));
+            b.apply(&PathOp { path: field(), op: Op::Delete { at: 140, len: 20 } }, &view).unwrap();
+            deltas.push(b.finish().unwrap().0);
+            for d in deltas {
+                let t = touch_of(&d, Some(&idx)).unwrap();
+                assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
+                f.join(d.clone());
+                st.join(d);
+                if write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::No).unwrap().is_none() {
+                    panic!("damage {damage}: written in place");
+                }
+            }
+            assert_eq!(read_all(&mut txn, &unit), vis_whole(&st), "damage {damage}");
+            let (mut g, mut i) = open(&unit, &SALT).unwrap();
+            load_all(&mut txn, &tid, &ak, &mut i, &mut g).unwrap();
+            assert_eq!(g.read(), st.read(), "damage {damage}");
+        }
+    }
 }

@@ -1633,7 +1633,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
             st = rebooted(&st);
         }
         let item = |r: &mut Rng| if text { s("xy") } else { value(&random_value(r, match &ty { Ty::List(e) => e, _ => unreachable!() }, 1)) };
-        let mut join_check = |st: &mut Fragment, d: Fragment, r: &mut Rng, joins: &mut usize, followed: &mut usize| {
+        let join_check = |st: &mut Fragment, d: Fragment, r: &mut Rng, joins: &mut usize, followed: &mut usize| {
             if let (Fragment::Seq(sq), Fragment::Seq(ds)) = (&*st, &d) {
                 *joins += 1;
                 *followed += usize::from(crate::tests_seq::partial_follow(sq, ds, 1 + r.below(6)).is_some());
