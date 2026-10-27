@@ -963,8 +963,6 @@ fn link_redeem_single_use_spec_perm_9() {
     let done = lp.peers[1].engine.redeem(&link, &ps1, true).unwrap();
     assert_eq!(done.commits.len(), 1);
     assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Deposit { under, .. } if *under == link.k)));
-    // L's own departure does not hold back the deposit (node-sync's cover check)
-    assert_eq!(done.departed, vec![link.k]);
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
     sync(&mut lp, 1, 0);
     for i in [0, 1] {

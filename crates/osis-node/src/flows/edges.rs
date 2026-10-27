@@ -171,9 +171,6 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
     let c = Engine::commit_tx(tx, m)?;
     done.add(c);
     if let Some(c) = c {
-        if leave {
-            done.departed.push(target);
-        }
         done.deliveries.extend(deliver_to(tx, member, c, &[target])?);
         if deposit {
             done.deliveries.push(Delivery::Deposit { commit: c, under: target });
