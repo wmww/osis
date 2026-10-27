@@ -1,4 +1,4 @@
-# Deaths replay costs the aspect's history per late delta
+# Deaths replay costs the aspect's history per batch with a late delta
 > Summary: On an aspect with a relative keep bound (every `/members`, any keep-at-least or keep-at-most content aspect), a batch holding a delta out of `(ts, ID)` order, a snapshot or a validity flip re-joins every held body and the whole state once (`retention::settle_due`; batched per node-sync step by `Engine::defer_deaths`): O(aspect history) per such batch, against spec/requirements.md Scale.
 > Tags: node, retention, performance
 

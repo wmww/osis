@@ -301,7 +301,6 @@ fn unmerge_carried(tx: &mut Tx<'_>, unmerge: &BTreeSet<(Tid, Ak)>, changed: &mut
     for (tid, ak) in unmerge {
         rebuild(tx, tid, ak)?;
         crate::retention::mark_deaths_due(tx, tid, ak)?;
-        crate::retention::recheck_at_most(tx, tid, ak)?;
         changed.insert((*tid, ak.clone()));
         touched.whole(tid, ak);
     }
