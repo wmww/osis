@@ -19,6 +19,10 @@ use std::ops::Range as Span;
 
 /// Encoded bytes per local page, about (a store unit is 8 KB; a larger page is split).
 const PAGE_BYTES: usize = 8 * 1024;
+/// Page target of a paged text or list: an op decodes and rewrites the pages it touches whole
+/// (one record per visible element), so they are kept small; above the store's inline limit (a
+/// quarter of its 8 KiB page), so a page write leaves its neighbours' leaf alone.
+const SEQ_PAGE_BYTES: usize = 3 * 1024;
 /// A collection with fewer elements is not paged.
 const MIN_PAGED: usize = 64;
 /// The aspect table holding its state pages.
@@ -687,6 +691,11 @@ const PREFETCH: usize = 8;
 /// Runs of an op on a state held in part before loading it whole.
 pub const OP_RUNS: usize = 8;
 
+/// The page target of `set`'s pages.
+fn page_bytes(set: &PageSet) -> usize {
+    if is_seq(set) { SEQ_PAGE_BYTES } else { PAGE_BYTES }
+}
+
 fn is_seq(set: &PageSet) -> bool {
     matches!(set.enc, Encoding::List | Encoding::Text)
 }
@@ -1350,7 +1359,7 @@ fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment,
 fn write_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet, c: &Fragment, nested: &Paths) -> Result<()> {
     let n = c.elem_count().unwrap_or(0).max(1);
     let size = encode(&c.reduced(nested))?.len().max(1);
-    let per = (n * PAGE_BYTES / size).max(1);
+    let per = (n * page_bytes(set) / size).max(1);
     let dots = c.elem_dots(None, None);
     set.loaded.clear();
     let chunks: Vec<&[Dot]> = if dots.is_empty() { vec![&[]] } else { dots.chunks(per).collect() };
@@ -1450,7 +1459,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             continue;
         }
         let bytes = page_row(&r, &page(c, nested, &r)?)?;
-        if bytes.len() <= 2 * PAGE_BYTES {
+        if bytes.len() <= 2 * page_bytes(set) {
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
@@ -1462,7 +1471,7 @@ fn rewrite_set(txn: &mut Transaction<'_>, t: Table, kt: Table, set: &mut PageSet
             txn.table_put(t, &key, bytes, shred)?;
             continue;
         }
-        let per = ds.len().div_ceil(bytes.len().div_ceil(PAGE_BYTES)).max(1);
+        let per = ds.len().div_ceil(bytes.len().div_ceil(page_bytes(set))).max(1);
         let pieces: Vec<&[Dot]> = ds.chunks(per).collect();
         let n = pieces.len();
         for (i, chunk) in pieces.into_iter().enumerate() {
