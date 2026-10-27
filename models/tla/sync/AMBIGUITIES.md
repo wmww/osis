@@ -27,4 +27,4 @@
 
 ## S17. A must-not-hold blob as the one that "holds" a body (open: issues/sync-label-lacks-superset.md)
 - sync §6: a writer uploads a must-hold body "the label lacks (a blob of the commit holding every delta of the body that no snapshot under the label covers holds it)". Read literally, a blob that is itself must-not-hold (a purged superset waiting for its carrier, an expired or past-keep-at-most blob of the same commit) still holds the body, so the upload waits until that blob is deleted. Model: literal; every instance passes, since the waiting blob's deletion is fair and the upload follows it.
-- node-sync is literal only when snapshots cover part of the body; for a whole body it uploads under a must-not-hold superset, which the strict-subset rule deletes again (churn until the superset goes). The issue holds the options; the spec is unchanged until one is picked.
+- node-sync is literal only when snapshots cover part of the body; for a whole body it uploads beside a must-not-hold superset (a writer that has not applied the purge yet deletes that upload as a strict subset). The issue holds the options; the spec is unchanged until one is picked.
