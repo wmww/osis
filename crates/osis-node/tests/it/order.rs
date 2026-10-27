@@ -16,7 +16,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
-use osis_schema::Codec;
+use osis_schema::{Bound, Codec, PurgeBy, Retention};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
@@ -69,7 +69,7 @@ enum Step {
     Advance { who: Option<usize>, ms: u64 },
 }
 
-const OPS: u8 = 16;
+const OPS: u8 = 18;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -82,8 +82,21 @@ fn aspect_of(op: u8) -> Ak {
         12 => "/t/brief",
         13 => "/t/count",
         14 => "/t/list",
-        _ => "/t/rec",
+        15 => "/t/rec",
+        // registers with a keep bound (deaths count only there)
+        16 => "/t/kept",
+        _ => "/t/short",
     })
+}
+
+/// The retention of `op`'s writes when not the default: keep at least or at most 30 min.
+fn keep_of(op: u8) -> Option<Retention> {
+    let d = Some(HOUR / 2);
+    match op % OPS {
+        16 => Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() }),
+        17 => Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: d } }),
+        _ => None,
+    }
 }
 
 /// The op of a `Write`: k and v from small domains, so writers collide.
@@ -109,7 +122,8 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         12 => PathOp { path: vec![], op: Op::Set(s(&val)) },
         13 => PathOp { path: vec![], op: Op::Inc(Value::Int(1 + v as i64)) },
         14 => PathOp { path: vec![], op: Op::Insert { at, items: vec![s(&val)] } },
-        _ => PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(s(&val)) },
+        15 => PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(s(&val)) },
+        _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
 }
@@ -207,6 +221,9 @@ fn play(seed: u64, steps: &[Step]) -> Played {
             Step::Write { by, t, op, k, v } => {
                 let (a, po) = content_op(op, k, v);
                 let mut m = Mutation::new();
+                if let Some(r) = keep_of(op) {
+                    let _ = m.retention(th(t), &a, r);
+                }
                 if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
                     marks[by].push(lp.peers[by].engine.now());
                 }
@@ -329,15 +346,12 @@ fn play(seed: u64, steps: &[Step]) -> Played {
 fn judged(p: &mut Peer, things: &[Tid]) -> Vec<(&'static str, String)> {
     let e = &mut p.engine;
     let mut index = e.index_digest();
-    // first and last deaths and liveness of the held bodies (spec/crdt.md §4.8): under keep at
-    // most (`retention::note_earlier_deaths`); of every body with `OSIS_ORDER_DEATHS` (not yet a
-    // function of the held set: issues/deaths-arrival-order.md)
-    let every = std::env::var("OSIS_ORDER_DEATHS").is_ok();
+    // first and last deaths and liveness of the held bodies (spec/crdt.md §4.8)
     let mut ids = e.commit_ids();
     ids.sort();
     for id in ids {
         let Some(h) = e.header(&id) else { continue };
-        for a in h.aspects.iter().filter(|a| every || a.retention.at_most.rel.is_some()) {
+        for a in &h.aspects {
             let _ = writeln!(index, "death {id:?} {:?} {} {:?} {:?}", a.tid, a.ak.as_str(), e.deaths(&id, &a.tid, &a.ak).ok(), e.body_live(&id, &a.tid, &a.ak).ok());
         }
     }
@@ -565,13 +579,12 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 }
 
 // spec/crdt.md §4.8 (a write dies at the earliest `ts` among the applied commits superseding
-// it, whatever the order): A's and B's writes both supersede G's first value; whichever
-// arrives first sets its death, the other then meets the winner, not G's value.
+// it, whatever the order): three writes of a kept register, X < Y < Z; delivered Z first, X met
+// only Z (was: X's death at Z's `ts` in that order, at Y's in the other).
 #[test]
-#[ignore = "issues/deaths-arrival-order.md"]
 fn deaths_alike_in_any_order_spec_crdt_4_8() {
     use Step::*;
-    let h = vec![Demote { by: 0, t: 1, member: 2, at: 2, to_read: false }, Write { by: 0, t: 3, op: 0, k: 2, v: 4 }, Write { by: 1, t: 7, op: 0, k: 1, v: 6 }];
+    let h: Vec<Step> = (0..3).flat_map(|by| [Write { by, t: 0, op: 16, k: 0, v: by as u8 }, Advance { who: None, ms: 1000 }]).collect();
     check_deaths(16, &h);
 }
 
@@ -594,6 +607,7 @@ fn check_deaths(seed: u64, steps: &[Step]) {
         }
         seen.push(out);
     }
+    assert!(seen[0].contains("Some(Some("), "no deaths recorded");
     assert_eq!(seen[0], seen[1]);
 }
 

@@ -65,6 +65,38 @@ fn first_death_order_independent_spec_crdt_4_8() {
     }
 }
 
+// spec/crdt.md §4.8, spec/commits.md §5: last deaths alike too (keep at least counts from the
+// last): X < Y < Z delivered Z first leaves X dead at Y's `ts`, not Z's.
+#[test]
+fn last_death_order_independent_spec_crdt_4_8() {
+    let mut lp = net(3, 55);
+    let t = new_thing(&mut lp, 0);
+    let mut ids = Vec::new();
+    for v in ["one", "two", "three"] {
+        ids.push(set(&mut lp, 0, t, &KEPT, v));
+        lp.advance(10);
+    }
+    let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
+    let k = ak("/t/kept");
+    let pks = packages(&mut lp, 0);
+    let pk = |c: &osis_core::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+    let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
+    for (to, order) in [(1, [2, 1, 0]), (2, [0, 2, 1])] {
+        for p in &rest {
+            lp.deliver(to, p).unwrap();
+        }
+        for i in order {
+            lp.deliver(to, &pk(&ids[i])).unwrap();
+        }
+    }
+    for to in 0..3 {
+        let e = &mut lp.peers[to].engine;
+        assert_eq!(e.deaths(&ids[0], &t, &k).unwrap(), Some((ts[1], ts[1])), "node {to}");
+        assert_eq!(e.deaths(&ids[1], &t, &k).unwrap(), Some((ts[2], ts[2])), "node {to}");
+        assert_eq!(e.deaths(&ids[2], &t, &k).unwrap(), None, "node {to}");
+    }
+}
+
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
 // transaction that applies the kill (live state unchanged);
 // a dropped body cannot be undone (§7).
@@ -170,7 +202,8 @@ fn purge_spec_commits_5() {
 }
 
 // spec/commits.md §2, §5; spec/crdt.md §8: a compaction snapshot of a node's whole state covers
-// every body it applied; a node holding only the snapshot reads the same.
+// every body it applied; a node holding only the snapshot reads the same (a kept set: deaths
+// are kept under a relative bound only).
 #[test]
 fn compaction_snapshot_spec_commits_5() {
     let mut lp = net(2, 55);
@@ -178,39 +211,39 @@ fn compaction_snapshot_spec_commits_5() {
     let mut bodies = Vec::new();
     for i in 0..4 {
         let mut m = Mutation::new();
-        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{i}"))) }).unwrap();
+        m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{i}"))) }).unwrap();
         bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
     }
     let mut m = Mutation::new();
-    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("t0")) }).unwrap();
+    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Remove(s("t0")) }).unwrap();
     bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/tags")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/keptset")).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&snap).unwrap();
     assert_eq!(h.kind, Kind::ContentSnapshot);
     assert_eq!((h.aspects[0].lo, h.aspects[0].hi), (0, 0));
     assert_eq!(h.aspects[0].retention.by, osis_schema::PurgeBy::Writer);
     for c in &bodies {
-        assert_eq!(lp.peers[0].engine.covered(&snap, c, &t, &ak("/t/tags")).unwrap(), Some(true));
+        assert_eq!(lp.peers[0].engine.covered(&snap, c, &t, &ak("/t/keptset")).unwrap(), Some(true));
     }
     // the receiver gets the creation and the snapshot only
     let me0 = lp.peers[0].engine.tid();
     for p in lp.packages(0).unwrap() {
         let h = lp.peers[0].engine.header(&p.id).unwrap();
-        let only_tags = h.aspects.iter().all(|a| a.ak.as_str() == "/t/tags");
+        let only_tags = h.aspects.iter().all(|a| a.ak.as_str() == "/t/keptset");
         if !only_tags || p.id == snap || h.author != me0 {
             lp.deliver(1, &p).unwrap();
         }
     }
-    let want = lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), want);
+    let want = lp.peers[0].engine.get(&t, &ak("/t/keptset")).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/keptset")).unwrap(), want);
     // its frontiers count as received
-    let r = lp.peers[1].engine.receipt(&t, &ak("/t/tags")).unwrap();
+    let r = lp.peers[1].engine.receipt(&t, &ak("/t/keptset")).unwrap();
     assert_eq!(r.contiguous(&me0, u64::MAX), 5);
     // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
     // it, the snapshot's included, also where its own body was never held
     lp.advance(10);
     let mut m = Mutation::new();
-    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("t1")) }).unwrap();
+    m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Remove(s("t1")) }).unwrap();
     let kill = lp.peers[0].commit(m).unwrap().unwrap();
     let ts = lp.peers[0].engine.header(&kill).unwrap().ts;
     for p in lp.packages(0).unwrap() {
@@ -219,9 +252,9 @@ fn compaction_snapshot_spec_commits_5() {
         }
     }
     for i in 0..2 {
-        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("/t/tags")).unwrap(), Some((ts, ts)), "node {i}");
+        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("/t/keptset")).unwrap(), Some((ts, ts)), "node {i}");
     }
-    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/tags")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/keptset")).unwrap(), Some((ts, ts)));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6: undo and redo; the derived stacks; an admin undoes

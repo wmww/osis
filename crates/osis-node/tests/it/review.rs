@@ -153,13 +153,13 @@ fn body_is_a_class_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &ak("/x/y"), &s("y")).unwrap();
+    m.set(t, &SHORT, &s("r")).unwrap();
+    m.set(t, &SHORT2, &s("y")).unwrap();
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    set(&mut lp, 0, t, &REG, "r2");
+    set(&mut lp, 0, t, &SHORT, "r2");
     let e = &mut lp.peers[0].engine;
-    assert!(e.deaths(&c2, &t, &ak("/x/y")).unwrap().is_some());
-    assert_eq!(e.deaths(&c2, &t, &ak("/x/y")).unwrap(), e.deaths(&c2, &t, &ak("/t/reg")).unwrap());
+    assert!(e.deaths(&c2, &t, &ak("/t/short2")).unwrap().is_some());
+    assert_eq!(e.deaths(&c2, &t, &ak("/t/short2")).unwrap(), e.deaths(&c2, &t, &ak("/t/short")).unwrap());
 }
 
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).

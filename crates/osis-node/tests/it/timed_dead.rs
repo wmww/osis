@@ -48,8 +48,8 @@ fn at_server(net: &mut Net, n: usize, sv: usize, l: &osis_core::LabelId, c: &osi
 // (must-hold): a body whose write died gets a timed delete; a validity flip (the replacing
 // writer revoked from before its write) revives the write; the server deletes the body at the
 // plain bound all the same, and a right holder online uploads it again at its next resync (a
-// fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; past the
-// extended bound the body goes behind a carrier snapshot. A member offline throughout reads v1
+// fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; the
+// revived write has no death, so the body then stays (no bound). A member offline throughout reads v1
 // when it comes back (`late_member_judges_backdated_revoke_alike_*`).
 #[test]
 fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
@@ -113,13 +113,13 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         net.set_online(a, true);
         net.run();
         assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "uploaded again on the next sync");
-        // past the extended bound: dropped behind a carrier
+        // revived, v1 has no death (spec/crdt.md §4.8: only applied valid writes supersede),
+        // so no keep-at-most bound: the body stays, as at a node that never saw v2 valid
+        assert_eq!(net.engine(a).deaths(&c1, &t, &gone).unwrap(), None);
         net.advance(osis_core::format::AT_MOST_GRACE_MS);
         net.advance(1_000);
-        assert!(at_server(&mut net, a, sv, &l, &c1).is_empty(), "gone at the extended bound");
-        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")), "v1 still read");
-        let snaps = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
-        assert!(snaps > 0, "a carrier snapshot holds v1");
+        assert_eq!(at_server(&mut net, a, sv, &l, &c1).len(), 1, "kept: v1 is current");
+        assert!(net.engine(a).holds_body(&c1, &t, &gone));
         net.set_online(late, true);
         net.run();
         let resync = net.sync(a).config().resync_ms;
