@@ -40,7 +40,6 @@ pub(crate) fn last_of(d: &Dot, e: &SeqElem, st: &Stamp) -> Stamp {
 }
 
 /// Whether an element may be part of a range record.
-#[cfg(test)]
 pub(crate) fn uniform(d: &Dot, e: &SeqElem) -> bool {
     matches!(e.content, SeqContent::None)
         && match &e.created {
@@ -85,6 +84,9 @@ impl Recs for Elems {
     }
     fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
         Some(self.range(a..=b).collect())
+    }
+    fn get(&self, d: &Dot) -> Option<&SeqElem> {
+        BTreeMap::get(self, d)
     }
 }
 
@@ -184,30 +186,38 @@ pub(crate) fn expand(m: Elems) -> Elems {
     out
 }
 
-/// Merges adjacent uniform records into maximal ranges (tests: deltas and states built per
-/// element, so joins and linearization meet range records).
-#[cfg(test)]
+/// Whether record `(d, e)` continues range record `(a, ea)`: the next dot, both uniform, the same
+/// deleted write, and both without creation or one creation chain.
+fn continues(a: &Dot, ea: &SeqElem, d: &Dot, e: &SeqElem) -> bool {
+    let at = |x: &Dot, k: u64| x.src == a.src && Some(x.ctr) == a.ctr.checked_add(k);
+    let chain = match (&ea.created, &e.created) {
+        (None, None) => true,
+        (Some((x, _)), Some((y, Anchor::Dot(p)))) => x.ts == y.ts && at(p, ea.span - 1),
+        _ => false,
+    };
+    uniform(a, ea) && uniform(d, e) && at(d, ea.span) && chain && ea.deleted == e.deleted
+}
+
+/// Merges adjacent uniform records into maximal ranges (a reset leaves the records it pruned bare;
+/// tests: deltas and states built per element, so joins and linearization meet range records).
 pub(crate) fn coalesce(m: Elems) -> Elems {
-    let mut out: Elems = BTreeMap::new();
-    let mut cur: Option<(Dot, SeqElem)> = None;
+    let mut out: Vec<(Dot, SeqElem)> = Vec::with_capacity(m.len());
     for (d, e) in m {
-        if let Some((a, ea)) = &mut cur {
-            let chain = match (&ea.created, &e.created) {
-                (None, None) => true,
-                (Some((x, _)), Some((y, Anchor::Dot(p)))) => x.ts == y.ts && *p == nth(a, ea.span - 1),
-                _ => false,
-            };
-            if d == nth(a, ea.span) && uniform(a, ea) && uniform(&d, &e) && ea.deleted == e.deleted && chain {
-                ea.span += e.span;
-                continue;
-            }
+        if let Some((a, ea)) = out.last_mut()
+            && continues(a, ea, &d, &e)
+        {
+            ea.span += e.span;
+            continue;
         }
-        if let Some((a, ea)) = cur.replace((d, e)) {
-            out.insert(a, ea);
-        }
+        out.push((d, e));
     }
-    if let Some((a, ea)) = cur {
-        out.insert(a, ea);
+    // in order: a bulk build
+    out.into_iter().collect()
+}
+
+/// `coalesce` in place, copying the records only when some merge.
+pub(crate) fn coalesce_in(m: &mut Elems) {
+    if m.iter().zip(m.iter().skip(1)).any(|((a, ea), (d, e))| continues(a, ea, d, e)) {
+        *m = coalesce(std::mem::take(m));
     }
-    out
 }

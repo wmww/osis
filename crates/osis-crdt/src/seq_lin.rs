@@ -41,6 +41,7 @@ use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, SeqContent, SeqElem, is_visible};
 use crate::seq_span::{Elems, Recs, nth, piece};
 use crate::stamp::{Dot, Stamp};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -759,6 +760,9 @@ fn inside(k: &Dot, r: &SeqElem, x: &Dot) -> Option<Dot> {
     (x.ctr - k.ctr + 1 < r.span).then(|| nth(x, 1))
 }
 
+/// A row's first element, whether it is visible and its visible char (`flip`).
+type Flag = (Dot, bool, Option<char>);
+
 /// Where a run goes: before position `.0`; `None` below a hidden node.
 type Slot = Option<usize>;
 
@@ -847,27 +851,34 @@ impl Lin {
     fn plan_pieces(&self, elems: &dyn Recs, dot: &Dot, de: &SeqElem, out: &mut Vec<(Dot, Plan)>) -> bool {
         let last = nth(dot, de.span - 1);
         let Some(rs) = elems.starting(dot, &last) else { return false };
-        let mut pieces = Vec::new();
-        if let Some((k, r)) = elems.find(dot)
-            && k != dot
-        {
-            out.push((dot.clone(), Plan::Cut));
+        // the state's record straddling its start, then those starting inside it: (record,
+        // offset of the piece in it, length)
+        let head = elems.find(dot).filter(|(k, _)| *k != dot).map(|(k, r)| {
             let off = dot.ctr - k.ctr;
-            pieces.push(piece(k, r, off, (r.span - off).min(de.span)));
+            ((k, r), off, (r.span - off).min(de.span))
+        });
+        if head.is_some() {
+            out.push((dot.clone(), Plan::Cut));
         }
         // a `Derived(S, c)` record between two `S` records is not part of it
-        pieces.extend(rs.into_iter().filter(|(k, _)| k.src == dot.src).map(|(k, r)| piece(k, r, 0, r.span.min(last.ctr - k.ctr + 1))));
+        let inner = rs.into_iter().filter(|(k, _)| k.src == dot.src).map(|(k, r)| ((k, r), 0, r.span.min(last.ctr - k.ctr + 1)));
+        // a delta piece with creation or position writes must not change the state piece's
+        // creation, nor add position writes to a range
+        let writes = de.created.is_some() || !de.pos.is_empty();
         let mut next = dot.ctr;
-        for (pd, pe) in pieces {
-            if pd.ctr != next {
+        for ((k, r), off, len) in head.into_iter().chain(inner) {
+            if k.ctr + off != next {
                 return false;
             }
-            next = pd.ctr.saturating_add(pe.span);
-            let (_, dp) = piece(dot, de, pd.ctr - dot.ctr, pe.span);
-            if dp.created.as_ref().is_some_and(|c| pe.created.as_ref() != Some(c)) || pe.span != 1 && !dp.pos.iter().all(|p| pe.pos.iter().any(|q| q.0 == p.0)) {
-                return false;
+            next = k.ctr.saturating_add(off).saturating_add(len);
+            let (pd, pe) = if off == 0 { (k.clone(), Cow::Borrowed(r)) } else { let (d, e) = piece(k, r, off, len); (d, Cow::Owned(e)) };
+            if writes {
+                let (_, dp) = piece(dot, de, pd.ctr - dot.ctr, len);
+                if dp.created.as_ref().is_some_and(|c| pe.created.as_ref() != Some(c)) || len != 1 && !dp.pos.iter().all(|p| pe.pos.iter().any(|q| q.0 == p.0)) {
+                    return false;
+                }
             }
-            out.push((pd, Plan::Held { span: pe.span, pos: pe.pos, created: pe.created.is_some() }));
+            out.push((pd, Plan::Held { span: len, pos: pe.pos.clone(), created: pe.created.is_some() }));
         }
         // the state's record holding the element after it is split there too
         let end = nth(dot, de.span);
@@ -932,7 +943,8 @@ impl Lin {
         let mut runs: Vec<(Option<Dot>, Stamp, Vec<Dot>)> = Vec::new();
         // the run holding each new element; `None`: hidden
         let mut new: HashMap<Dot, Option<usize>> = HashMap::new();
-        let mut flags: Vec<Dot> = Vec::new();
+        // single elements whose visibility may change, with it
+        let mut flags: Vec<Flag> = Vec::new();
         // elements whose chosen edge changed: (edge stamp, element, anchor)
         let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
         // elements a row must start at
@@ -993,7 +1005,8 @@ impl Lin {
                     }
                     // a range record has no content: never visible
                     if span == 1 {
-                        flags.push(dot);
+                        let (shown, ch) = shows(r, text);
+                        flags.push((dot, shown, ch));
                     }
                 }
             }
@@ -1039,25 +1052,35 @@ impl Lin {
                 return false;
             }
         }
-        for dot in flags {
-            let Some((b, o)) = self.loc(&dot) else { continue };
-            let (now, ch) = elems.get(&dot).map_or((false, None), |e| shows(e, text));
-            let Some(x) = self.p.blocks.get_mut(b).map(Arc::make_mut) else { return false };
-            let Some(row) = x.rows.get_mut(o) else { return false };
-            row.ch = ch;
-            if row.shown == now {
-                continue;
-            }
-            row.shown = now;
-            if now {
-                x.shown += 1;
-                self.p.shown += 1;
-            } else {
-                x.shown = x.shown.saturating_sub(1);
-                self.p.shown = self.p.shown.saturating_sub(1);
+        self.flip(flags);
+        true
+    }
+
+    /// Sets the visibility and char of the rows starting at `flags` (hidden ones skipped), one
+    /// walk of each block they touch.
+    fn flip(&mut self, flags: Vec<Flag>) {
+        let mut by: Vec<(usize, Flag)> = flags.into_iter().filter_map(|f| Some((self.at.get(&f.0)?, f))).collect();
+        by.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
+        for group in by.chunk_by(|a, b| a.0 == b.0) {
+            let Some(x) = group.first().and_then(|g| self.p.blocks.get_mut(g.0)).map(Arc::make_mut) else { continue };
+            for row in &mut x.rows {
+                let Ok(i) = group.binary_search_by(|g| g.1.0.cmp(&row.dot)) else { continue };
+                let Some((_, (_, now, ch))) = group.get(i) else { continue };
+                let now = *now;
+                row.ch = *ch;
+                if row.shown == now {
+                    continue;
+                }
+                row.shown = now;
+                if now {
+                    x.shown += 1;
+                    self.p.shown += 1;
+                } else {
+                    x.shown = x.shown.saturating_sub(1);
+                    self.p.shown = self.p.shown.saturating_sub(1);
+                }
             }
         }
-        true
     }
 
     /// The edge change of single element `dot` whose position writes went from `old` to `now`:
