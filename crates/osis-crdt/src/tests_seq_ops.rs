@@ -2063,3 +2063,97 @@ fn edit_window_matches_whole_spec_5_7() {
     assert!(read_diff == 0 && delta_diff == 0, "{delta_diff} deltas differ (same read), {read_diff} reads differ\n{}", shown.join("\n\n"));
     assert!(at_window > 100 && windowed > 1000 && same > 2900, "{at_window} at their window, {windowed} same length, {same} same, {whole_worse} lost whole");
 }
+
+
+/// A text over range records with concurrent chars anchored inside them: deleted stretches,
+/// snapshot, then those chars (uppercase) on top.
+fn ranged_text(r: &mut Rng) -> (Fragment, u64) {
+    let mut a = Replica::new(1);
+    for k in 0..8u64 {
+        let n = read_str(&a.state).chars().count();
+        a.commit(k + 1, &[op(Op::Insert { at: r.below(n + 1), items: vec![s(&"abcdefghij".repeat(4))] })], &text_view());
+    }
+    let mut c = Replica { state: a.state.clone(), src: node(2), lo: 1 };
+    let mut qs = Vec::new();
+    for (i, ch) in ["Q", "R", "S", "T"].into_iter().enumerate() {
+        let n = read_str(&c.state).chars().count();
+        qs.push(c.commit(20 + i as u64, &[op(Op::Insert { at: 20 + r.below(n - 40), items: vec![s(ch)] })], &text_view()).unwrap().0);
+    }
+    for k in 0..3u64 {
+        let n = read_str(&a.state).chars().count();
+        a.commit(30 + k, &[op(Op::Delete { at: r.below(n - 60), len: 20 + r.below(40) })], &text_view());
+    }
+    for q in qs {
+        a.state.join(q);
+    }
+    (rebooted(&a.state), a.lo)
+}
+
+proptest! {
+    /// §4.5, §5.7: a commit of 30 ops (inserts, typos deleted again, moves of fresh and older
+    /// text, ops at both ends, a reset now and then) on a text with range records and chars
+    /// anchored inside them, or on a `Slots` position, encodes and reads like the same ops on a
+    /// plain string and like the ops committed one by one; `Batch`'s kept view and the net
+    /// effect's omissions are checked after every op (debug assertions).
+    #[test]
+    fn long_text_batch_is_net_effect_spec_4_5(seed in any::<u64>()) {
+        let mut r = Rng(seed | 1);
+        let (state, lo) = if r.chance(1, 2) {
+            ranged_text(&mut r)
+        } else {
+            let mut a = Replica::new(1);
+            a.commit(1, &[op(Op::Set(s("the quick brown fox jumps over")))], &text_view());
+            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 30 << 16, 1);
+            let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
+            a.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
+            (a.state, a.lo)
+        };
+        let mut model: Vec<char> = read_str(&state).chars().collect();
+        let mut ops = Vec::new();
+        let mut recent: Vec<usize> = Vec::new();
+        for _ in 0..30 {
+            let n = model.len();
+            let near = |r: &mut Rng| {
+                let ps: Vec<usize> = model.iter().enumerate().filter(|(_, c)| c.is_ascii_uppercase()).map(|(i, _)| i).collect();
+                match recent.last() {
+                    Some(&p) if p < n && r.chance(1, 2) => p,
+                    _ if !ps.is_empty() && r.chance(1, 2) => ps[r.below(ps.len())],
+                    _ => r.below(n.max(1)),
+                }
+            };
+            let o = match r.below(12) {
+                0..=2 => {
+                    let at = (near(&mut r) + r.below(2)).min(n);
+                    recent.push(at);
+                    Op::Insert { at, items: vec![s(&(crdt_model::r#gen::random_text(&mut r, 2) + "z"))] }
+                }
+                3..=4 if n > 0 => {
+                    let at = near(&mut r);
+                    recent.pop();
+                    Op::Delete { at, len: (1 + r.below(4)).min(n - at) }
+                }
+                5..=8 if n > 1 => {
+                    let at = near(&mut r);
+                    let len = (1 + r.below(5)).min(n - at);
+                    Op::Move { at, len, to: r.below(n - len + 1) }
+                }
+                9 if r.chance(1, 4) => {
+                    recent.clear();
+                    Op::Set(s(&crdt_model::r#gen::random_text(&mut r, 6)))
+                }
+                10 if n > 0 => Op::Delete { at: 0, len: 1 },
+                _ => Op::Insert { at: if r.chance(1, 2) { 0 } else { n }, items: vec![s("e")] },
+            };
+            apply_text(&mut model, &o, &state);
+            ops.push(op(o));
+        }
+        let mut one = Replica { state: state.clone(), src: node(1), lo };
+        for (k, o) in ops.iter().enumerate() {
+            one.commit(51 + k as u64, std::slice::from_ref(o), &text_view());
+        }
+        let mut a = Replica { state, src: node(1), lo };
+        a.commit(50, &ops, &text_view());
+        prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
+        prop_assert_eq!(read_str(&a.state), read_str(&one.state));
+    }
+}
