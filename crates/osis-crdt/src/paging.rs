@@ -226,6 +226,8 @@ pub struct PagedTouch {
     /// Per paged collection, its root elements by dot (a sequence's as (first, last) pairs per
     /// delta record).
     pub elems: BTreeMap<Vec<Step>, Vec<Dot>>,
+    /// Per paged sequence, the delta's fragment there (what its placement follows).
+    pub seqs: BTreeMap<Vec<Step>, Fragment>,
 }
 
 impl Fragment {
@@ -237,6 +239,23 @@ impl Fragment {
             (Step::Case(id), Fragment::Enum(x)) => x.payloads.get(id),
             (Step::Entry(d), Fragment::Map(m)) => m.entries.get(d)?.frag.as_deref(),
             _ => None,
+        }
+    }
+
+    /// `step`, mutably.
+    pub fn step_mut(&mut self, s: &Step) -> Option<&mut Fragment> {
+        match (s, self) {
+            (Step::Field(id), Fragment::Struct(x)) => x.fields.get_mut(id),
+            (Step::Case(id), Fragment::Enum(x)) => x.payloads.get_mut(id),
+            (Step::Entry(d), Fragment::Map(m)) => m.entries.get_mut(d)?.frag.as_deref_mut(),
+            _ => None,
+        }
+    }
+
+    pub fn at_steps_mut(&mut self, path: &[Step]) -> Option<&mut Fragment> {
+        match path.split_first() {
+            None => Some(self),
+            Some((s, rest)) => self.step_mut(s)?.at_steps_mut(rest),
         }
     }
 
@@ -372,6 +391,9 @@ fn touched_walk(d: &Fragment, t: &Paths, path: &mut Vec<Step>, out: &mut PagedTo
                 touched_walk(f, sub, path, out)?;
                 path.pop();
             }
+        }
+        if matches!(d, Fragment::Seq(_)) {
+            out.seqs.insert(path.clone(), d.clone());
         }
         out.elems.entry(path.clone()).or_default().extend(dots);
         return Some(());

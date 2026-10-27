@@ -17,7 +17,15 @@
 //! moves nothing; only visibility changes. A write over part of a range record, or a new anchor
 //! inside one, cuts the row where a whole pass cuts the node (`cut_row`).
 //!
-//! Whole-pass fallbacks (the cache is dropped):
+//! A placement may be held in part (`Partial`, `seq_place::SeqPlace`: a node keeps the rows and
+//! the dot map in its store): blocks and dot-map chunks are stubs (counts, least depth, first
+//! dot) until loaded, and record lookups outside the pages loaded are misses. Whatever needs a
+//! stub's rows, a stub chunk's entries or a missing record notes a miss and fails (a follow
+//! returns `false`, so the sequence drops it; an op's result is void); neighbouring stubs are
+//! not merged (block bounds do not change the order). The caller loads what was missed and runs
+//! it again.
+//!
+//! Whole-pass fallbacks (the cache is dropped; one held in part is dropped instead):
 //! - a record that is neither new nor over held elements: a reset, a record partly new, a new
 //!   `Derived` record (it splits records of its base source), a new record of more than one
 //!   element or not a plain creation (one anchored at itself included), a new element anchored
@@ -39,12 +47,14 @@
 
 use crate::linearize::{Placed, place_idx};
 use crate::seq::{Anchor, SeqContent, SeqElem, is_visible};
+use crate::seq_place::{PlaceBlock, PlaceDiff, PlaceRow, PlaceTop};
 use crate::seq_span::{Elems, Recs, nth, piece};
 use crate::stamp::{Dot, Stamp};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Rows per block: about √n (at most this), growing with the placement; a block splits in two
 /// above twice that.
@@ -66,6 +76,114 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn probe() -> (usize, usize) {
     PROBE.with(|p| p.replace((0, 0)))
+}
+
+/// What a placement held in part is missing (a node keeps the rows and the dot map in its
+/// store and loads them as needed, notes/node.md Paged state): the blocks and dot-map chunks
+/// looked at whose rows are not loaded, and the record lookups outside the pages loaded
+/// (`cover`). Whatever misses fails (a follow returns `false`, an op's result is void); the
+/// caller loads what was missed and runs it again. Shared by the copies of one placement.
+#[derive(Debug, Default)]
+pub(crate) struct Partial(Mutex<Missed>);
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Missed {
+    pub blocks: BTreeSet<usize>,
+    /// Dot-map chunks by first dot (`None`: the first chunk).
+    pub chunks: BTreeSet<Option<Dot>>,
+    /// Record lookups outside the cover: the dot range looked at.
+    pub recs: Vec<(Dot, Dot)>,
+    /// Every record was looked at.
+    pub all: bool,
+    /// Misses so far.
+    pub count: usize,
+    /// Work units charged by follows.
+    pub work: usize,
+    /// Dot ranges whose records are loaded, sorted and merged (`None`: unbounded).
+    cover: Vec<(Option<Dot>, Option<Dot>)>,
+}
+
+impl Partial {
+    pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Missed) -> T) -> T {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        f(&mut g)
+    }
+    fn block(&self, b: usize) {
+        self.with(|m| {
+            m.count += 1;
+            m.blocks.insert(b);
+        })
+    }
+    fn chunk(&self, lo: Option<&Dot>) {
+        self.with(|m| {
+            m.count += 1;
+            m.chunks.insert(lo.cloned());
+        })
+    }
+    /// Notes a look at every record.
+    pub(crate) fn all(&self) {
+        self.with(|m| {
+            m.count += 1;
+            m.all = true;
+        })
+    }
+    /// Notes a whole pass over the records held: void; a look at every record unless blocks,
+    /// chunks or records were missed (loading those may let the next run follow instead).
+    pub(crate) fn whole_pass(&self) {
+        self.with(|m| {
+            m.count += 1;
+            if m.blocks.is_empty() && m.chunks.is_empty() && m.recs.is_empty() {
+                m.all = true;
+            }
+        })
+    }
+    pub(crate) fn count(&self) -> usize {
+        self.with(|m| m.count)
+    }
+    /// Whether the records of `a..=b` are loaded; else notes a miss.
+    pub(crate) fn covers(&self, a: &Dot, b: &Dot) -> bool {
+        self.with(|m| {
+            let i = m.cover.partition_point(|(lo, _)| lo.as_ref().is_none_or(|lo| lo <= a));
+            let ok = i.checked_sub(1).and_then(|i| m.cover.get(i)).is_some_and(|(_, hi)| hi.as_ref().is_none_or(|hi| b < hi));
+            if !ok {
+                m.count += 1;
+                m.recs.push((a.clone(), b.clone()));
+            }
+            ok
+        })
+    }
+    /// Sets the dot ranges whose records are loaded (`[lo, hi)`, `None` unbounded).
+    pub(crate) fn set_cover(&self, mut ranges: Vec<(Option<Dot>, Option<Dot>)>) {
+        ranges.sort_by(|a, b| match (&a.0, &b.0) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, _) => std::cmp::Ordering::Less,
+            (_, None) => std::cmp::Ordering::Greater,
+            (Some(x), Some(y)) => x.cmp(y),
+        });
+        let mut out: Vec<(Option<Dot>, Option<Dot>)> = Vec::with_capacity(ranges.len());
+        for (lo, hi) in ranges {
+            if let Some(l) = out.last_mut() {
+                // overlapping or touching the last range (sorted: only the first `lo` is `None`)
+                let touches = match (&l.1, &lo) {
+                    (Some(h), Some(lo)) => lo <= h,
+                    _ => true,
+                };
+                if touches {
+                    l.1 = match (l.1.take(), hi) {
+                        (Some(h), Some(x)) => Some(if x > h { x } else { h }),
+                        _ => None,
+                    };
+                    continue;
+                }
+            }
+            out.push((lo, hi));
+        }
+        self.with(|m| m.cover = out);
+    }
+    /// What was missed since the last call (cleared; the cover stays).
+    pub(crate) fn take(&self) -> Missed {
+        self.with(|m| Missed { blocks: std::mem::take(&mut m.blocks), chunks: std::mem::take(&mut m.chunks), recs: std::mem::take(&mut m.recs), all: std::mem::take(&mut m.all), count: m.count, work: std::mem::take(&mut m.work), cover: Vec::new() })
+    }
 }
 
 /// One placed node.
@@ -136,17 +254,26 @@ struct Block {
     shown: usize,
     /// Least row depth (unshifted).
     min: i64,
+    /// Rows held elsewhere (a node's store, `Partial`): how many; `rows` is empty until loaded.
+    stub: Option<usize>,
 }
 
 impl Block {
     fn new(rows: Vec<Row>) -> Block {
-        let mut b = Block { rows, shown: 0, min: 0 };
+        let mut b = Block { rows, shown: 0, min: 0, stub: None };
         b.recount();
         b
     }
     fn recount(&mut self) {
+        if self.stub.is_some() {
+            return;
+        }
         self.shown = self.rows.iter().filter(|r| r.shown).count();
         self.min = self.rows.iter().map(|r| r.depth).min().unwrap_or(i64::MAX);
+    }
+    /// Rows in the block, loaded or not.
+    fn n(&self) -> usize {
+        self.stub.unwrap_or(self.rows.len())
     }
 }
 
@@ -166,6 +293,8 @@ pub(crate) struct Placement {
     shown: usize,
     /// Rows per block (about √n, raised as rows are added).
     cap: usize,
+    /// Set when blocks may be stubs (held in a node's store).
+    part: Option<Arc<Partial>>,
 }
 
 impl PartialEq for Placement {
@@ -186,7 +315,7 @@ impl Placement {
         }
         let shown = blocks.iter().map(|b| b.shown).sum();
         let order = (0..blocks.len()).collect();
-        Placement { shift: vec![0; blocks.len()], blocks, free: Vec::new(), order, len, shown, cap }
+        Placement { shift: vec![0; blocks.len()], blocks, free: Vec::new(), order, len, shown, cap, part: None }
     }
 
     /// By dot, from a placement by index.
@@ -220,12 +349,39 @@ impl Placement {
         Placement::from_rows(rows)
     }
 
+    /// Block `b`'s rows; none (a miss noted) for a stub.
     fn block(&self, b: usize) -> &[Row] {
+        if !self.held(b) {
+            return &[];
+        }
         self.blocks.get(b).map_or(&[], |x| &x.rows)
+    }
+
+    /// Rows in block `b`, loaded or not.
+    fn n_of(&self, b: usize) -> usize {
+        self.blocks.get(b).map_or(0, |x| x.n())
+    }
+
+    /// Whether block `b`'s rows are loaded; else notes a miss.
+    fn held(&self, b: usize) -> bool {
+        match self.blocks.get(b) {
+            Some(x) if x.stub.is_some() => {
+                if let Some(p) = &self.part {
+                    p.block(b);
+                }
+                false
+            }
+            _ => true,
+        }
     }
 
     fn shift_of(&self, b: usize) -> i64 {
         self.shift.get(b).copied().unwrap_or(0)
+    }
+
+    /// Placed nodes.
+    pub(crate) fn len(&self) -> usize {
+        self.len
     }
 
     /// Visible nodes.
@@ -234,7 +390,6 @@ impl Placement {
     }
 
     /// Every node in order.
-    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Row> + '_ {
         self.order.iter().flat_map(|b| self.block(*b))
     }
@@ -247,7 +402,7 @@ impl Placement {
     /// Block (order position) and offset of position `i`.
     fn locate(&self, mut i: usize) -> Option<(usize, usize)> {
         for (k, b) in self.order.iter().enumerate() {
-            let n = self.block(*b).len();
+            let n = self.n_of(*b);
             if i < n {
                 return Some((k, i));
             }
@@ -264,7 +419,7 @@ impl Placement {
             return (*b, o);
         }
         if let Some(b) = self.order.last() {
-            return (*b, self.block(*b).len());
+            return (*b, self.n_of(*b));
         }
         let b = self.alloc(Block::new(Vec::new()), 0);
         self.order.push(b);
@@ -283,6 +438,9 @@ impl Placement {
         for b in &self.order {
             let x = self.blocks.get(*b)?;
             if k < x.shown {
+                if !self.held(*b) {
+                    return None;
+                }
                 return x.rows.iter().filter(|r| r.shown).nth(k);
             }
             k -= x.shown;
@@ -292,16 +450,22 @@ impl Placement {
 
     /// Visible nodes `r` (by visible index) in order: whole blocks before them skipped by count.
     pub(crate) fn vis_range(&self, r: Range<usize>) -> Vec<&Row> {
-        let (mut skip, mut out) = (r.start, Vec::with_capacity(r.len().min(self.shown)));
-        for x in self.order.iter().filter_map(|b| self.blocks.get(*b)) {
-            if out.len() >= r.len() {
+        let (mut skip, mut out, mut missing) = (r.start, Vec::with_capacity(r.len().min(self.shown)), 0);
+        for b in &self.order {
+            let Some(x) = self.blocks.get(*b) else { continue };
+            if out.len() + missing >= r.len() {
                 break;
             }
             if skip >= x.shown {
                 skip -= x.shown;
                 continue;
             }
-            out.extend(x.rows.iter().filter(|r| r.shown).skip(skip).take(r.len() - out.len()));
+            let want = (x.shown - skip).min(r.len() - out.len() - missing);
+            if self.held(*b) {
+                out.extend(x.rows.iter().filter(|r| r.shown).skip(skip).take(want));
+            } else {
+                missing += want;
+            }
             skip = 0;
         }
         out
@@ -314,14 +478,17 @@ impl Placement {
 
     /// Visible nodes in order.
     pub(crate) fn vis(&self) -> impl Iterator<Item = &Row> + '_ {
-        self.order.iter().filter_map(|b| self.blocks.get(*b)).filter(|x| x.shown > 0).flat_map(|x| x.rows.iter().filter(|r| r.shown))
+        self.order.iter().filter(|b| self.blocks.get(**b).is_some_and(|x| x.shown > 0) && self.held(**b)).filter_map(|b| self.blocks.get(*b)).flat_map(|x| x.rows.iter().filter(|r| r.shown))
     }
 
     /// Visible nodes before position `i`.
     pub(crate) fn rank(&self, i: usize) -> usize {
         let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
         let before: usize = self.order.get(..k).unwrap_or_default().iter().filter_map(|b| self.blocks.get(*b)).map(|x| x.shown).sum();
-        let here = self.order.get(k).map_or(0, |b| self.block(*b).iter().take(o).filter(|r| r.shown).count());
+        let here = match self.order.get(k) {
+            Some(b) if o > 0 => self.block(*b).iter().take(o).filter(|r| r.shown).count(),
+            _ => 0,
+        };
         before + here
     }
 
@@ -344,16 +511,20 @@ impl Placement {
     /// The last visible node before position `i`.
     pub(crate) fn shown_before(&self, i: usize) -> Option<&Row> {
         let (k, o) = self.locate(i).unwrap_or((self.order.len(), 0));
-        let here = self.order.get(k).map_or(&[][..], |b| self.block(*b).get(..o).unwrap_or_default());
+        let here = match self.order.get(k) {
+            Some(b) if o > 0 => self.block(*b).get(..o).unwrap_or_default(),
+            _ => &[],
+        };
         here.iter().rev().find(|r| r.shown).or_else(|| {
             let before = self.order.get(..k).unwrap_or_default();
-            before.iter().rev().filter_map(|b| self.blocks.get(*b)).find(|x| x.shown > 0).and_then(|x| x.rows.iter().rev().find(|r| r.shown))
+            let b = before.iter().rev().find(|b| self.blocks.get(**b).is_some_and(|x| x.shown > 0))?;
+            self.block(*b).iter().rev().find(|r| r.shown)
         })
     }
 
     /// Position of the first row of block `b`.
     fn base(&self, b: usize) -> usize {
-        self.order.iter().take_while(|x| **x != b).map(|x| self.block(*x).len()).sum()
+        self.order.iter().take_while(|x| **x != b).map(|x| self.n_of(*x)).sum()
     }
 
     /// The first position after `i` whose depth is at most `d` (with `d` the depth at `i`: the
@@ -371,7 +542,7 @@ impl Placement {
     /// `c`, moved off the end of its block.
     fn norm(&self, mut c: Cursor) -> Cursor {
         while let Some(b) = self.order.get(c.k)
-            && c.o >= self.block(*b).len()
+            && c.o >= self.n_of(*b)
         {
             c.k += 1;
             c.o = 0;
@@ -394,6 +565,10 @@ impl Placement {
             let (Some(x), s) = (self.blocks.get(*b), self.shift_of(*b)) else { continue };
             *work += 1;
             if j == c.k || x.min.saturating_add(s) <= d {
+                // a stub's rows are needed: give up (the miss is noted)
+                if !self.held(*b) {
+                    return Cursor { k: self.order.len(), o: 0, at: self.len };
+                }
                 let from = if j == c.k { c.o + 1 } else { 0 };
                 let found = x.rows.iter().skip(from).position(|r| r.depth + s <= d);
                 *work += found.map_or(x.rows.len().saturating_sub(from), |q| q + 1);
@@ -401,7 +576,7 @@ impl Placement {
                     return self.norm(Cursor { k: j, o: from + q, at: at + from + q });
                 }
             }
-            at += x.rows.len();
+            at += x.n();
         }
         Cursor { k: self.order.len(), o: 0, at: self.len }
     }
@@ -435,8 +610,11 @@ impl Placement {
             return k;
         }
         let Some(b) = self.order.get(k).copied() else { return self.order.len() };
+        if !self.held(b) {
+            return k;
+        }
         let Some(x) = self.blocks.get_mut(b).map(Arc::make_mut) else { return self.order.len() };
-        let tail = x.rows.split_off(o);
+        let tail = x.rows.split_off(o.min(x.rows.len()));
         x.recount();
         let id = self.alloc(Block::new(tail), self.shift_of(b));
         if let Some(m) = at {
@@ -451,7 +629,9 @@ impl Placement {
     /// Merges the block at order index `k + 1` into the one at `k` when both fit in one.
     fn merge(&mut self, k: usize, at: Option<&mut DotMap>) {
         let (Some(a), Some(b)) = (self.order.get(k).copied(), self.order.get(k + 1).copied()) else { return };
-        if self.block(a).len() + self.block(b).len() > self.cap {
+        // a stub stays as it is (block bounds do not change the order)
+        let stub = |x: usize| self.blocks.get(x).is_some_and(|x| x.stub.is_some());
+        if stub(a) || stub(b) || self.n_of(a) + self.n_of(b) > self.cap {
             return;
         }
         let d = self.shift_of(b) - self.shift_of(a);
@@ -510,13 +690,14 @@ impl Placement {
         for k in 0..self.order.len() {
             work += 1;
             let Some(b) = self.order.get(k).copied() else { break };
-            let n = self.block(b).len();
+            let n = self.n_of(b);
             let (lo, hi) = (x.start.max(at), x.end.min(at + n));
             if lo == at && hi == at + n {
                 if let Some(s) = self.shift.get_mut(b) {
                     *s += dd;
                 }
             } else if lo < hi
+                && self.held(b)
                 && let Some(blk) = self.blocks.get_mut(b).map(Arc::make_mut)
             {
                 for r in blk.rows.get_mut(lo - at..hi - at).unwrap_or_default() {
@@ -541,9 +722,13 @@ impl Placement {
         while out.len() < x.len() {
             let Some((k, o)) = self.locate(x.start) else { break };
             let Some(b) = self.order.get(k).copied() else { break };
+            if !self.held(b) {
+                break;
+            }
             let s = self.shift_of(b);
             let want = x.len() - out.len();
             let Some(blk) = self.blocks.get_mut(b).map(Arc::make_mut) else { break };
+            let o = o.min(blk.rows.len());
             let end = (o + want).min(blk.rows.len());
             let before = blk.shown;
             out.extend(blk.rows.drain(o..end).map(|r| Row { depth: r.depth + s, ..r }));
@@ -575,9 +760,9 @@ impl Placement {
         let ke = ke + (self.order.len() - n);
         let ids: Vec<usize> = self.order.drain(ki..ke).collect();
         for b in &ids {
-            let x = self.blocks.get(*b).map_or((0, 0), |x| (x.rows.len(), x.shown));
-            self.len -= x.0;
-            self.shown -= x.1;
+            let x = self.blocks.get(*b).map_or((0, 0), |x| (x.n(), x.shown));
+            self.len = self.len.saturating_sub(x.0);
+            self.shown = self.shown.saturating_sub(x.1);
         }
         if ki > 0 {
             self.merge(ki - 1, at);
@@ -593,7 +778,7 @@ impl Placement {
             if let Some(s) = self.shift.get_mut(*b) {
                 *s += dd;
             }
-            let x = self.blocks.get(*b).map_or((0, 0), |x| (x.rows.len(), x.shown));
+            let x = self.blocks.get(*b).map_or((0, 0), |x| (x.n(), x.shown));
             self.len += x.0;
             self.shown += x.1;
         }
@@ -611,6 +796,9 @@ impl Placement {
     /// `at` (dot to block) follows. Row depths are absolute.
     fn insert(&mut self, b: usize, o: usize, rows: Vec<Row>, at: Option<&mut DotMap>) {
         let n = rows.len();
+        if !self.held(b) {
+            return;
+        }
         let mut at = at;
         if let Some(m) = at.as_deref_mut() {
             for r in &rows {
@@ -661,11 +849,22 @@ struct Cursor {
 
 /// Row (first dot) to block, in dot order, so the row holding a dot is the one starting at or
 /// before it. Sorted chunks of about √n entries (at least 64), each shared until a copy changes
-/// it: a copy clones only the chunks it writes.
+/// it: a copy clones only the chunks it writes. A chunk's first dot (none for the first chunk)
+/// never changes: an entry goes to the last chunk starting at or before it.
 #[derive(Clone, Debug, Default)]
 struct DotMap {
-    chunks: Vec<Arc<Vec<(Dot, usize)>>>,
+    chunks: Vec<MapChunk>,
     len: usize,
+    /// Set when chunks may be stubs (held in a node's store).
+    part: Option<Arc<Partial>>,
+}
+
+#[derive(Clone, Debug)]
+struct MapChunk {
+    /// The first entry's dot when the chunk was made (`None`: the first chunk).
+    lo: Option<Dot>,
+    /// The entries; `None` for a stub (held elsewhere, `Partial`).
+    e: Option<Arc<Vec<(Dot, usize)>>>,
 }
 
 impl DotMap {
@@ -675,20 +874,32 @@ impl DotMap {
         let mut chunks = Vec::with_capacity(len / size + 1);
         let mut it = v.into_iter().peekable();
         while it.peek().is_some() {
-            chunks.push(Arc::new(it.by_ref().take(size).collect()));
+            let c: Vec<(Dot, usize)> = it.by_ref().take(size).collect();
+            let lo = if chunks.is_empty() { None } else { c.first().map(|x| x.0.clone()) };
+            chunks.push(MapChunk { lo, e: Some(Arc::new(c)) });
         }
-        DotMap { chunks, len }
+        DotMap { chunks, len, part: None }
     }
     fn size(len: usize) -> usize {
         len.isqrt().max(64)
     }
     /// The chunk holding `d` or where it would go.
     fn chunk(&self, d: &Dot) -> usize {
-        self.chunks.partition_point(|c| c.first().is_some_and(|x| x.0 <= *d)).saturating_sub(1)
+        self.chunks.partition_point(|c| c.lo.as_ref().is_none_or(|x| x <= d)).saturating_sub(1)
+    }
+    /// Chunk `k`'s entries; `None` (a miss noted) for a stub.
+    fn held(&self, k: usize) -> Option<&Arc<Vec<(Dot, usize)>>> {
+        let c = self.chunks.get(k)?;
+        if c.e.is_none()
+            && let Some(p) = &self.part
+        {
+            p.chunk(c.lo.as_ref());
+        }
+        c.e.as_ref()
     }
     /// The entry at or before `d`.
     fn at_or_before(&self, d: &Dot) -> Option<(&Dot, usize)> {
-        let c = self.chunks.get(self.chunk(d))?;
+        let c = self.held(self.chunk(d))?;
         let i = c.partition_point(|x| x.0 <= *d).checked_sub(1)?;
         c.get(i).map(|x| (&x.0, x.1))
     }
@@ -697,10 +908,13 @@ impl DotMap {
     }
     fn set(&mut self, d: Dot, b: usize) {
         if self.chunks.is_empty() {
-            self.chunks.push(Arc::default());
+            self.chunks.push(MapChunk { lo: None, e: Some(Arc::default()) });
         }
         let k = self.chunk(&d);
-        let Some(c) = self.chunks.get_mut(k).map(Arc::make_mut) else { return };
+        if self.held(k).is_none() {
+            return;
+        }
+        let Some(c) = self.chunks.get_mut(k).and_then(|c| c.e.as_mut()).map(Arc::make_mut) else { return };
         match c.binary_search_by(|x| x.0.cmp(&d)) {
             Ok(i) => {
                 if let Some(x) = c.get_mut(i) {
@@ -712,7 +926,8 @@ impl DotMap {
                 self.len += 1;
                 if c.len() > 2 * DotMap::size(self.len) {
                     let tail = c.split_off(c.len() / 2);
-                    self.chunks.insert(k + 1, Arc::new(tail));
+                    let lo = tail.first().map(|x| x.0.clone());
+                    self.chunks.insert(k + 1, MapChunk { lo, e: Some(Arc::new(tail)) });
                 }
             }
         }
@@ -732,6 +947,18 @@ pub(crate) struct Lin {
     cyc: HashSet<Dot>,
     /// The block of each row's first dot.
     at: DotMap,
+    /// Which whole pass or load this placement descends from (`Lin::build`, `Lin::from_top`):
+    /// copies and follows keep it.
+    origin: u64,
+    /// Set while blocks or chunks may be stubs; shared with `p` and `at`.
+    part: Option<Arc<Partial>>,
+}
+
+/// The next `Lin::origin`.
+static ORIGIN: AtomicU64 = AtomicU64::new(1);
+
+fn next_origin() -> u64 {
+    ORIGIN.fetch_add(1, Ordering::Relaxed)
 }
 
 impl PartialEq for Lin {
@@ -774,12 +1001,170 @@ impl Lin {
         let p = Placement::of(&placed, text);
         let cyc = placed.cyc.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect();
         let at = Lin::map_of(&placed, p.cap);
-        Lin { p, waiting: placed.waiting, cyc, at }
+        Lin { p, waiting: placed.waiting, cyc, at, origin: next_origin(), part: None }
     }
 
     /// Whether an anchor names no element (a write waits for its creation).
     pub(crate) fn waits(&self) -> bool {
         !self.waiting.is_empty()
+    }
+
+    // ---- the stored form (`SeqPlace`): blocks by arena id, dot-map chunks by first dot
+
+    /// Everything but the rows and the dot map's entries.
+    pub(crate) fn top(&self) -> PlaceTop {
+        let p = &self.p;
+        let mut waiting: Vec<Dot> = self.waiting.iter().cloned().collect();
+        waiting.sort();
+        let mut cyc: Vec<Dot> = self.cyc.iter().cloned().collect();
+        cyc.sort();
+        let blocks = p.order.iter().filter_map(|b| p.blocks.get(*b).map(|x| PlaceBlock { id: *b, len: x.n(), shown: x.shown, min: x.min, shift: p.shift_of(*b) })).collect();
+        let chunks = self.at.chunks.iter().skip(1).filter_map(|c| c.lo.clone()).collect();
+        PlaceTop { cap: p.cap, map_len: self.at.len, waiting, cyc, blocks, chunks }
+    }
+
+    /// Block `id`'s rows (depths unshifted); `None` for a stub or no such block.
+    pub(crate) fn rows_of(&self, id: usize) -> Option<Vec<PlaceRow>> {
+        let x = self.p.blocks.get(id).filter(|x| x.stub.is_none() && self.p.order.contains(&id))?;
+        Some(x.rows.iter().map(|r| PlaceRow { dot: r.dot.clone(), span: r.span, created: r.created, parent: r.parent.clone(), head: r.head, shown: r.shown, depth: r.depth }).collect())
+    }
+
+    /// The entries of the dot-map chunk starting at `lo` (`None`: the first); `None` for a stub.
+    pub(crate) fn chunk_of(&self, lo: Option<&Dot>) -> Option<Vec<(Dot, usize)>> {
+        let c = self.at.chunks.iter().find(|c| c.lo.as_ref() == lo)?;
+        Some(c.e.as_ref()?.to_vec())
+    }
+
+    /// A placement whose blocks and chunks are all stubs, from its top; `None` if inconsistent.
+    pub(crate) fn from_top(t: &PlaceTop) -> Option<Lin> {
+        let n = t.blocks.len();
+        // arena ids stay below the blocks a placement held at once
+        let arena = t.blocks.iter().map(|b| b.id).max().map_or(0, |m| m + 1);
+        if arena > 4 * n + 64 || t.blocks.iter().any(|b| b.shown > b.len) || t.chunks.windows(2).any(|w| matches!(w, [a, b] if a >= b)) || t.cap == 0 {
+            return None;
+        }
+        let part = Arc::new(Partial::default());
+        let mut blocks: Vec<Arc<Block>> = (0..arena).map(|_| Arc::new(Block::default())).collect();
+        let mut shift = vec![0i64; arena];
+        let mut used = vec![false; arena];
+        for b in &t.blocks {
+            if std::mem::replace(used.get_mut(b.id)?, true) {
+                return None;
+            }
+            *blocks.get_mut(b.id)? = Arc::new(Block { rows: Vec::new(), shown: b.shown, min: b.min, stub: Some(b.len) });
+            *shift.get_mut(b.id)? = b.shift;
+        }
+        let free = (0..arena).filter(|i| !used.get(*i).copied().unwrap_or(true)).collect();
+        let order: Vec<usize> = t.blocks.iter().map(|b| b.id).collect();
+        let len = t.blocks.iter().map(|b| b.len).fold(0usize, usize::saturating_add);
+        let shown = t.blocks.iter().map(|b| b.shown).sum();
+        let p = Placement { blocks, shift, free, order, len, shown, cap: t.cap.min(BLOCK), part: Some(part.clone()) };
+        let chunks = std::iter::once(None).chain(t.chunks.iter().cloned().map(Some)).map(|lo| MapChunk { lo, e: None }).collect();
+        let at = DotMap { chunks, len: t.map_len, part: Some(part.clone()) };
+        Some(Lin { p, waiting: t.waiting.iter().cloned().collect(), cyc: t.cyc.iter().cloned().collect(), at, origin: next_origin(), part: Some(part) })
+    }
+
+    /// Loads the rows of stub block `id`; `false` if they do not fit its counts.
+    pub(crate) fn fill(&mut self, id: usize, rows: Vec<PlaceRow>) -> bool {
+        let Some(x) = self.p.blocks.get(id).filter(|x| x.stub.is_some()) else { return false };
+        let rows: Vec<Row> = rows.into_iter().map(|r| Row { dot: r.dot, span: r.span.max(1), created: r.created, parent: r.parent, head: r.head, shown: r.shown, ch: None, depth: r.depth }).collect();
+        let b = Block::new(rows);
+        if Some(b.rows.len()) != x.stub || b.shown != x.shown || b.min != x.min {
+            return false;
+        }
+        if let Some(x) = self.p.blocks.get_mut(id) {
+            *x = Arc::new(b);
+        }
+        true
+    }
+
+    /// Loads the entries of the stub chunk starting at `lo`; `false` if they do not fit its
+    /// bounds or name no block.
+    pub(crate) fn fill_chunk(&mut self, lo: Option<&Dot>, e: Vec<(Dot, usize)>) -> bool {
+        let Some(k) = self.at.chunks.iter().position(|c| c.lo.as_ref() == lo && c.e.is_none()) else { return false };
+        let hi = self.at.chunks.get(k + 1).and_then(|c| c.lo.clone());
+        let fits = e.windows(2).all(|w| matches!(w, [a, b] if a.0 < b.0))
+            && e.first().is_none_or(|x| lo.is_none_or(|lo| *lo <= x.0))
+            && e.last().is_none_or(|x| hi.as_ref().is_none_or(|hi| x.0 < *hi))
+            && e.iter().all(|x| x.1 < self.p.blocks.len());
+        if !fits {
+            return false;
+        }
+        if let Some(c) = self.at.chunks.get_mut(k) {
+            c.e = Some(Arc::new(e));
+        }
+        true
+    }
+
+    /// The stub blocks (by id) and chunks (by first dot).
+    pub(crate) fn stubs(&self) -> (Vec<usize>, Vec<Option<Dot>>) {
+        let b = self.p.order.iter().copied().filter(|b| self.p.blocks.get(*b).is_some_and(|x| x.stub.is_some())).collect();
+        let c = self.at.chunks.iter().filter(|c| c.e.is_none()).map(|c| c.lo.clone()).collect();
+        (b, c)
+    }
+
+    /// Whether every block and chunk is loaded; then no longer partial.
+    pub(crate) fn complete(&mut self) -> bool {
+        let (b, c) = self.stubs();
+        if !b.is_empty() || !c.is_empty() {
+            return false;
+        }
+        self.part = None;
+        self.p.part = None;
+        self.at.part = None;
+        true
+    }
+
+    /// The handle a partial placement notes its misses in.
+    pub(crate) fn partial(&self) -> Option<&Arc<Partial>> {
+        self.part.as_ref()
+    }
+
+    /// Sets the visible chars of a text's loaded rows from its records (the stored form keeps
+    /// none).
+    pub(crate) fn fill_chars(&mut self, elems: &Elems) {
+        let want = |r: &Row| if r.shown { elems.get(&r.dot).and_then(|e| if let SeqContent::Char(c) = e.content { Some(c) } else { None }) } else { None };
+        for b in self.p.order.clone() {
+            if !self.p.blocks.get(b).is_some_and(|x| x.stub.is_none() && x.rows.iter().any(|r| r.ch != want(r))) {
+                continue;
+            }
+            if let Some(x) = self.p.blocks.get_mut(b).map(Arc::make_mut) {
+                for r in &mut x.rows {
+                    r.ch = want(r);
+                }
+            }
+        }
+    }
+
+    /// What changed from `old` (which this placement descends from: `None` if not): the loaded
+    /// blocks to write, the blocks gone, the loaded chunks to write and whether the chunk list
+    /// changed.
+    pub(crate) fn diff(&self, old: &Lin) -> Option<PlaceDiff> {
+        if self.origin != old.origin {
+            return None;
+        }
+        let (p, q) = (&self.p, &old.p);
+        let kept: HashSet<usize> = p.order.iter().copied().collect();
+        let had: HashSet<usize> = q.order.iter().copied().collect();
+        let blocks = p.order.iter().copied().filter(|b| p.blocks.get(*b).is_some_and(|x| x.stub.is_none()) && !(had.contains(b) && matches!((p.blocks.get(*b), q.blocks.get(*b)), (Some(x), Some(y)) if Arc::ptr_eq(x, y)))).collect();
+        let gone = q.order.iter().copied().filter(|b| !kept.contains(b)).collect();
+        let olds: HashMap<Option<&Dot>, &MapChunk> = old.at.chunks.iter().map(|c| (c.lo.as_ref(), c)).collect();
+        let chunks = self
+            .at
+            .chunks
+            .iter()
+            .filter(|c| c.e.as_ref().is_some_and(|e| !olds.get(&c.lo.as_ref()).and_then(|o| o.e.as_ref()).is_some_and(|o| Arc::ptr_eq(e, o))))
+            .map(|c| c.lo.clone())
+            .collect();
+        let dir = self.at.chunks.len() != old.at.chunks.len() || self.at.chunks.iter().zip(&old.at.chunks).any(|(a, b)| a.lo != b.lo);
+        Some(PlaceDiff { blocks, gone, chunks, dir })
+    }
+
+    /// Whether `o` is the same placement (rows, depths, waiting anchors and broken cycles;
+    /// chars aside), both loaded whole.
+    pub(crate) fn same(&self, o: &Lin) -> bool {
+        let key = |(r, d): (&Row, i64)| (r.dot.clone(), r.span, r.created, r.parent.clone(), r.head, r.shown, d);
+        self.p.len == o.p.len && self.p.shown == o.p.shown && self.p.iter_depth().map(key).eq(o.p.iter_depth().map(key)) && self.waiting == o.waiting && self.cyc == o.cyc
     }
 
     /// Rows, blocks and block size (tests).
@@ -822,7 +1207,8 @@ impl Lin {
     #[cfg(test)]
     pub(crate) fn map_unshared(&self, o: &Lin) -> (usize, usize) {
         let (a, b) = (&self.at, &o.at);
-        (a.chunks.iter().filter(|c| !b.chunks.iter().any(|x| Arc::ptr_eq(c, x))).count(), a.chunks.len())
+        let same = |c: &MapChunk, x: &MapChunk| matches!((&c.e, &x.e), (Some(c), Some(x)) if Arc::ptr_eq(c, x));
+        (a.chunks.iter().filter(|c| !b.chunks.iter().any(|x| same(c, x))).count(), a.chunks.len())
     }
 
     /// Position of the node starting at `d`.
@@ -928,12 +1314,17 @@ impl Lin {
     /// Follows a joined delta by its records' plans, in dot order; `false`: rebuild. New
     /// elements are spliced in as runs where they place, moved elements' subtrees are cut out
     /// and put in where they now place, flag and content writes flip visibility.
+    /// A placement held in part fails where it misses rows, chunks or records (`Partial`).
     pub(crate) fn follow(&mut self, elems: &dyn Recs, text: bool, plans: Vec<(Dot, Plan)>) -> bool {
         let mut work = 0;
+        let before = self.part.as_ref().map(|p| p.count());
         let ok = self.follow_in(elems, text, plans, &mut work);
+        if let Some(p) = &self.part {
+            p.with(|m| m.work += work);
+        }
         #[cfg(test)]
         PROBE.with(|p| p.set((p.get().0 + work, p.get().1)));
-        ok
+        ok && self.part.as_ref().map(|p| p.count()) == before
     }
 
     /// `follow`, charging the rows and blocks it looks at to `work`.
@@ -1062,6 +1453,9 @@ impl Lin {
         let mut by: Vec<(usize, Flag)> = flags.into_iter().filter_map(|f| Some((self.at.get(&f.0)?, f))).collect();
         by.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
         for group in by.chunk_by(|a, b| a.0 == b.0) {
+            if group.first().is_some_and(|g| !self.p.held(g.0)) {
+                continue;
+            }
             let Some(x) = group.first().and_then(|g| self.p.blocks.get_mut(g.0)).map(Arc::make_mut) else { continue };
             for row in &mut x.rows {
                 let Ok(i) = group.binary_search_by(|g| g.1.0.cmp(&row.dot)) else { continue };
