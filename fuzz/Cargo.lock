@@ -317,6 +317,7 @@ dependencies = [
  "ed25519",
  "serde",
  "sha2",
+ "signature",
  "subtle",
  "zeroize",
 ]
@@ -709,6 +710,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "chacha20poly1305",
+ "curve25519-dalek",
  "ed25519-dalek",
  "libcrux-ml-kem",
  "osis-core",
@@ -1010,6 +1012,7 @@ version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
+ "digest",
  "rand_core 0.6.4",
 ]
 
