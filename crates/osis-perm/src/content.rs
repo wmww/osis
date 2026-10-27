@@ -95,7 +95,7 @@ impl Timeline {
     fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let holds = |best: &BTreeMap<Tid, Role>| best.get(thing).copied() >= Some(required);
         let mut edges = EdgesAt::new(&self.walked.initial);
-        let (mut best, mut expires) = View::at(&self.owners, &edges, Some(Ts::default())).roles_expiring(x);
+        let (mut best, mut expires) = View::at(&self.input.owners, &edges, Some(Ts::default())).roles_expiring(x);
         if holds(&best) {
             return Some(None);
         }
@@ -108,7 +108,7 @@ impl Timeline {
             let old = edges.get(&c.member, &c.target).copied();
             edges.set(c.member, c.target, c.edge);
             pos = i + 1;
-            let view = View::at(&self.owners, &edges, Some(ts));
+            let view = View::at(&self.input.owners, &edges, Some(ts));
             let gives = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts))).map(|e| level.min(e.role));
             let (was, now, cur) = (gives(old), gives(c.edge), best.get(&c.target).copied());
             if expires.is_some_and(|u| ts.wall_ms() >= u) || (was.is_some() && was >= cur && now < was) {
@@ -130,7 +130,7 @@ impl Timeline {
     #[cfg(debug_assertions)]
     fn first_held_replayed(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let mut edges = self.walked.initial.clone();
-        let holds = |edges: &crate::graph::Edges, ts: Ts| View::new(&self.owners, edges, Some(ts)).roles_from(x).get(thing).copied() >= Some(required);
+        let holds = |edges: &crate::graph::Edges, ts: Ts| View::new(&self.input.owners, edges, Some(ts)).roles_from(x).get(thing).copied() >= Some(required);
         if holds(&edges, Ts::default()) {
             return Some(None);
         }

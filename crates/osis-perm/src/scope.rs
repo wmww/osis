@@ -32,12 +32,12 @@ impl Timeline {
         let mut out = DemotionScope::default();
         let now = self.edges_at(None);
         let was = now.get(member, target).map(|e| Edge { until: None, since: None, ..*e });
-        let before_v = View::at(&self.owners, &now, Some(ts)).patched(*member, *target, was);
-        let after_v = View::at(&self.owners, &now, Some(ts)).patched(*member, *target, new);
+        let before_v = View::at(&self.input.owners, &now, Some(ts)).patched(*member, *target, was);
+        let after_v = View::at(&self.input.owners, &now, Some(ts)).patched(*member, *target, new);
         let ns = before_v.reach_forward(target);
         for x in before_v.reach_backward(member) {
             // Only nodes write; an actor's nodes are reached through it.
-            if x == *author || self.owners.owner_actor(&x).is_some() {
+            if x == *author || self.input.owners.owner_actor(&x).is_some() {
                 continue;
             }
             let (b, a) = (before_v.roles_from(&x), after_v.roles_from(&x));
