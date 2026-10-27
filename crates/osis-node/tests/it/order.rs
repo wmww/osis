@@ -153,9 +153,9 @@ fn random_step(rng: &mut Rng) -> Step {
     match rng.below(40) {
         0..=10 => {
             let op = rng.below(OPS as u64) as u8;
-            // keep at most 0 only by the owner: a body dropped at a kill whose killer later goes
-            // invalid stays dropped (issues/at-most-drop-before-flip.md)
-            let by = if (18..=20).contains(&op) { 0 } else { by };
+            // keep at most only by the owner: a body dropped at a kill whose killer (or own
+            // write) later goes invalid stays dropped (issues/at-most-drop-before-flip.md)
+            let by = if (17..=20).contains(&op) { 0 } else { by };
             Step::Write { by, t, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }
         }
         11..=13 => Step::Edge { by: rng.pick(&[0, 0, 2]), t, member: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) },
