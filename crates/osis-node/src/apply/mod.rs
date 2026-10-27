@@ -14,7 +14,7 @@ mod tests_linked;
 mod tests_order;
 
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{apply_verified, index_commit, ingest_secrets_keys, invalid_of, rebuild};
+pub(crate) use atomic::{apply_verified, forget_snapshot, index_commit, ingest_secrets_keys, invalid_of, rebuild};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};

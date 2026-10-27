@@ -740,3 +740,22 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     check(1173, &h, 4, 2, 1).unwrap();
 }
 
+// spec/commits.md §5 (dropping a body destroys every local index entry derived from it),
+// spec/requirements.md Decentralization (a rebuild judges alike): seed 1291, a keep-at-most-0
+// write, its compaction snapshot, the write undone: both bodies drop dead, and the snapshot's
+// frontier stayed in `Core::snapshots` incrementally but not after a rebuild of the index.
+#[test]
+fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 2, op: 18, k: 2, v: 3 }, Compact { by: 0, t: 3, op: 18 }, Demote { by: 0, t: 3, member: 1, at: 3, to_read: false }, Undo { by: 0, back: 2 }];
+    check(1291, &h, 0, 8, 4).unwrap();
+    // the dropped snapshot keeps no frontier, so its liveness comes from its `ts`: the undo's
+    // reset is stamped after it (not live, as with its frontier)
+    let played = play(1291, &h);
+    let mut p = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>());
+    let snap = p.engine.commit_ids().into_iter().find(|id| p.engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)).unwrap();
+    let a = p.engine.header(&snap).unwrap().aspects[0].clone();
+    assert!(!p.engine.holds_body(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
+    assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
+}
+

@@ -196,6 +196,7 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     tx.core.commits.insert(*c, m);
+    crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
     deaths::drop_last(tx, &a.tid, &a.ak, c, ai)?;
     tx.txn.drop_body(&body, &[(a.tid, a.ak.clone())])?;
@@ -664,10 +665,6 @@ impl Engine {
     }
 }
 
-/// Whether a compaction snapshot carries a write still in this node's state (`body_live`): held,
-/// a write it carries (by dot) is there; dropped, a node-form write within its frontiers
-/// or a commit-form write is there (it carried every write live at its time up to them; unknown
-/// counts as live).
 /// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
 /// `tx`: a function of the commits applied (the join's), so alike at nodes that applied the
 /// same ones.
@@ -705,29 +702,28 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     Ok(false)
 }
 
+/// Whether a compaction snapshot carries a write still in this node's state (`body_live`): held,
+/// a write it carries (by dot) is there; dropped, a write stamped at or before the snapshot's
+/// `ts` is there (its frontiers went with the body, spec/commits.md §5, so the header's `ts`
+/// bounds what it carried: no carried write is stamped after it). Writes without a `ts`
+/// (tombstones, bare anchors) do not count for a dropped one: it dropped with none live, or
+/// after a carrier was written or covered it.
 fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, members: &[usize]) -> Result<bool> {
     for x in members {
         let Some(a) = h.aspects.get(*x) else { continue };
         let k = (a.tid, a.ak.clone());
         let parts = crate::apply::held_parts(tx, c, *x)?;
-        let frontiers = tx.core.snapshots.get(&k).and_then(|v| v.iter().find(|s| s.1 == *c)).map(|s| s.2.clone());
-        if parts.is_empty() && frontiers.is_none() {
-            return Ok(true);
-        }
         tx.load(&a.tid, &a.ak)?;
         let Some(Some(st)) = tx.core.states.get(&k) else { continue };
-        // by dot: tombstones and other writes without a `ts` count too
-        let live: BTreeSet<osis_crdt::Dot> = st.writes().into_iter().map(|(d, _)| d).collect();
+        let writes = st.writes();
         if parts.is_empty() {
-            let fr = frontiers.unwrap_or_default();
-            if live.iter().any(|d| match d.src.kind() {
-                osis_crdt::SourceKind::Node(n) => fr.0.get(n).is_some_and(|f| *f >= d.ctr),
-                _ => true,
-            }) {
+            if writes.iter().any(|(_, t)| t.is_some_and(|t| t <= h.ts)) {
                 return Ok(true);
             }
             continue;
         }
+        // by dot: tombstones and other writes without a `ts` count too
+        let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
         for p in parts {
             if frag(p).writes().into_iter().any(|(d, _)| live.contains(&d)) {
                 return Ok(true);
