@@ -447,6 +447,11 @@ fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base:
 
 /// Joins one record of a delta (`join_elems`).
 fn join_one(s: &mut Seq, dot: Dot, de: SeqElem, e: Option<&Stamp>, ch: &mut Changes) {
+    // a record meeting none of the state's (a page of the state's own, a new element): as is
+    if !crate::seq_span::overlaps(&s.elems, &dot, de.span.max(1)) {
+        join_record(s, dot, de, false, e, ch);
+        return;
+    }
     {
         let span = de.span.max(1);
         let last = nth(&dot, span - 1);

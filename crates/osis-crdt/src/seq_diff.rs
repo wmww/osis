@@ -10,13 +10,14 @@ use crate::stamp::Dot;
 use crate::view::View;
 use osis_core::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
 /// Edits beyond which Myers gives up and treats the rest as replaced (any script is valid, §9).
 const MAX_D: usize = 512;
 
-/// Matched index pairs of a longest common subsequence (Myers, after trimming the common prefix
-/// and suffix), ascending in both.
-pub(crate) fn lcs<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool) -> Vec<(usize, usize)> {
+/// The common prefix and suffix lengths of `a` and `b` (the suffix within what the prefix
+/// leaves).
+fn trim<A, B>(a: &[A], b: &[B], eq: &impl Fn(&A, &B) -> bool) -> (usize, usize) {
     let mut pre = 0;
     while let (Some(x), Some(y)) = (a.get(pre), b.get(pre)) {
         if !eq(x, y) {
@@ -32,11 +33,37 @@ pub(crate) fn lcs<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool) -> Vec<(u
         }
         suf += 1;
     }
+    (pre, suf)
+}
+
+/// Matched index pairs of a longest common subsequence (Myers, after trimming the common prefix
+/// and suffix), ascending in both.
+pub(crate) fn lcs<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool) -> Vec<(usize, usize)> {
+    let (pre, suf) = trim(a, b, &eq);
     let mut out: Vec<(usize, usize)> = (0..pre).map(|i| (i, i)).collect();
     let (am, bm) = (a.get(pre..a.len() - suf).unwrap_or_default(), b.get(pre..b.len() - suf).unwrap_or_default());
     out.extend(myers(am, bm, &eq).into_iter().map(|(i, j)| (i + pre, j + pre)));
     out.extend((0..suf).map(|k| (a.len() - suf + k, b.len() - suf + k)));
     out
+}
+
+/// The script `a → b` without its `Keep`s outside the changed middle (what `script` over `lcs`
+/// gives there: the common prefix and suffix are kept), and the middle's bounds in `a`.
+fn mid_script<A, B>(a: &[A], b: &[B], eq: impl Fn(&A, &B) -> bool, pair: bool) -> (Vec<Step>, Range<usize>) {
+    let (pre, suf) = trim(a, b, &eq);
+    let (am, bm) = (a.get(pre..a.len() - suf).unwrap_or_default(), b.get(pre..b.len() - suf).unwrap_or_default());
+    let keep = myers(am, bm, &eq);
+    let before = pre.checked_sub(1);
+    let steps = script(am.len(), bm.len(), &keep, pair)
+        .into_iter()
+        .map(|s| match s {
+            Step::Keep(i, j) => Step::Keep(i + pre, j + pre),
+            Step::Pair(i, j) => Step::Pair(i + pre, j + pre),
+            Step::Del(i) => Step::Del(i + pre),
+            Step::Ins(a, j) => Step::Ins(a.map(|a| a + pre).or(before), j + pre),
+        })
+        .collect();
+    (steps, pre..a.len() - suf)
 }
 
 /// Myers' greedy forward search with a trace; `[]` past `MAX_D`.
@@ -262,80 +289,206 @@ pub(crate) fn diff_values<V: View>(base: &Value, new: &Value, _view: &V, path: &
     Ok(vec![PathOp { path: path.to_vec(), op }])
 }
 
+/// Context the current read must match on each side of an edit's changed region for the edit
+/// to apply at base's own indices (`edit`).
+const CTX: usize = 32;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: `edit` always matches whole (the reference the window is compared with).
+    pub(crate) static WHOLE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: edits resolved at their window.
+    pub(crate) static WINDOWED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Where `edit` finds base's elements in the current read.
+struct Rebase {
+    /// Current elements: dot and list content.
+    cur: Vec<(Dot, Option<Fragment>)>,
+    /// Base index → index into `cur` (exact matches); `None`: base index less `lo` (the read
+    /// matched base around the change).
+    to_cur: Option<HashMap<usize, usize>>,
+    lo: usize,
+    /// List base elements changed concurrently, paired for nested edits only.
+    changed: HashMap<usize, usize>,
+}
+
+impl Rebase {
+    fn exact(&self, i: usize) -> Option<usize> {
+        match &self.to_cur {
+            None => i.checked_sub(self.lo).filter(|k| *k < self.cur.len()),
+            Some(m) => m.get(&i).copied(),
+        }
+    }
+    fn get(&self, i: usize) -> Option<&(Dot, Option<Fragment>)> {
+        self.cur.get(self.exact(i)?)
+    }
+    fn paired(&self, i: usize) -> Option<&(Dot, Option<Fragment>)> {
+        self.cur.get(self.exact(i).or_else(|| self.changed.get(&i).copied())?)
+    }
+    /// The anchor after base index `a` (`None`: HEAD): the nearest base element at or before it
+    /// that is still current.
+    fn anchor(&self, a: Option<usize>) -> Anchor {
+        let mut i = a;
+        while let Some(k) = i {
+            if let Some((d, _)) = self.get(k) {
+                return Anchor::Dot(d.clone());
+            }
+            i = k.checked_sub(1);
+        }
+        Anchor::Head
+    }
+}
+
+/// What `window` found.
+enum Window {
+    Here(Rebase),
+    Differs,
+    /// A row or record not loaded (the placement held in part noted it).
+    Missed,
+}
+
+/// The current elements around the changed region `mid` of `base` when the read has base's
+/// length and equals it over `mid` widened by `CTX` (`eq`: a base element and a current
+/// record), and that stretch of base occurs nowhere else in base: else a concurrent shift (a
+/// delete before it, an insert after it) could put other elements of the same content there,
+/// and matching whole aligns differently (periodic text, runs of one char).
+fn window<T: PartialEq>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid: &Range<usize>, eq: impl Fn(&T, &SeqElem) -> bool) -> Window {
+    if vis.len() != base.len() {
+        return Window::Differs;
+    }
+    let lo = mid.start.saturating_sub(CTX);
+    let hi = mid.end.saturating_add(CTX).min(base.len());
+    let at = base.get(lo..hi).unwrap_or_default();
+    if !at.is_empty() && base.windows(at.len()).enumerate().any(|(k, x)| k != lo && x == at) {
+        return Window::Differs;
+    }
+    #[cfg(test)]
+    if WHOLE_ONLY.get() {
+        return Window::Differs;
+    }
+    let rows = vis.0.p.vis_range(lo..hi);
+    let (mut missed, mut differs) = (rows.len() != hi - lo, false);
+    let mut cur = Vec::with_capacity(rows.len());
+    for (r, b) in rows.iter().zip(base.get(lo..hi).unwrap_or_default()) {
+        // every record looked up, so one run notes every miss
+        let Some(e) = s.rec(&r.dot) else {
+            missed = true;
+            continue;
+        };
+        differs |= !eq(b, e);
+        let f = match &e.content {
+            SeqContent::Frag(f) => Some((**f).clone()),
+            _ => None,
+        };
+        cur.push((r.dot.clone(), f));
+    }
+    match (missed, differs) {
+        (true, _) => Window::Missed,
+        (false, true) => Window::Differs,
+        (false, false) => {
+            #[cfg(test)]
+            WINDOWED.set(WINDOWED.get() + 1);
+            Window::Here(Rebase { cur, to_cur: None, lo, changed: HashMap::new() })
+        }
+    }
+}
+
 /// `edit(base, new)` against current state `s`: the script `base → new`, rebased onto the
-/// current read by matching `base` to it exactly (LCS). Deletes and insert anchors use exact
-/// matches only, so a base element changed or removed concurrently is never deleted and anchors
-/// nothing; a list element changed on both sides is edited in place when it is the one unmatched
-/// element of its gap on each side.
+/// current read. When the read has base's length and equals it over the changed region and
+/// `CTX` elements on each side, at base's own indices (all a sequence held in part needs: the
+/// elements there); else by matching `base` to the whole read exactly (LCS; held in part, a miss
+/// of every record). Deletes and insert anchors use exact matches only, so a base element changed
+/// or removed concurrently is never deleted and anchors nothing; a list element changed on both
+/// sides is edited in place when it is the one unmatched element of its gap on each side.
 pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Value, new: &Value) -> Result<Option<Seq>, Error> {
     let mut out = Seq::new(s.text(), Meta::default(), BTreeMap::new());
+    let vis = visible(s);
+    let part = vis.0.partial().cloned();
+    // the read did not match base near the change: void on a sequence held in part (a miss, or
+    // a look at every record), else matched whole (`Err`)
+    let settle = |found: Window| -> Result<Option<Rebase>, ()> {
+        match (found, &part) {
+            (Window::Here(r), _) => Ok(Some(r)),
+            (Window::Missed, Some(_)) => Ok(None),
+            (Window::Differs, Some(p)) => {
+                p.all();
+                Ok(None)
+            }
+            (_, None) => Err(()),
+        }
+    };
     if s.text() {
         let (b, n) = (chars(base)?, chars(new)?);
-        let (vis, cur) = text_view(s);
-        let to_cur: HashMap<usize, usize> = lcs(&b, &cur, |x, y| x == y).into_iter().collect();
-        let steps = script(b.len(), n.len(), &lcs(&b, &n, |x, y| x == y), false);
+        let (steps, mid) = mid_script(&b, &n, |x, y| x == y, false);
+        let rb = match settle(window(s, &vis, &b, &mid, |c, e| matches!(e.content, SeqContent::Char(x) if x == *c))) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(None),
+            Err(_) => {
+                let (dots, cur) = text_view(s);
+                let to_cur = lcs(&b, &cur, |x, y| x == y).into_iter().collect();
+                Rebase { cur: dots.into_iter().map(|d| (d, None)).collect(), to_cur: Some(to_cur), lo: 0, changed: HashMap::new() }
+            }
+        };
         for st in &steps {
             if let Step::Del(i) = st
-                && let Some(d) = to_cur.get(i).and_then(|c| vis.get(*c))
+                && let Some((d, _)) = rb.get(*i)
             {
                 flag(&mut out, d.clone(), w);
             }
         }
-        let anchor_of = |a: Option<usize>| matched_before(a, &to_cur).and_then(|c| vis.get(c)).cloned().map_or(Anchor::Head, Anchor::Dot);
-        insert_runs(w, &mut out, &steps, &anchor_of, &mut |_, j| Ok(n.get(j).map_or(SeqContent::None, |c| SeqContent::Char(*c))))?;
+        insert_runs(w, &mut out, &steps, &|a| rb.anchor(a), &mut |_, j| Ok(n.get(j).map_or(SeqContent::None, |c| SeqContent::Char(*c))))?;
     } else {
         let ev = view.element().ok_or(Error::Mismatch("list without element type"))?;
         let (b, n) = (items(base)?, items(new)?);
-        let cur = list_view(s, &ev);
-        // base to current by exact match; a base element changed concurrently is paired, for
-        // nested edits only, when it is the one unmatched element of its gap on both sides
-        let keep = lcs(b, &cur, |x, y| y.2.as_ref() == Some(x));
-        let to_cur: HashMap<usize, usize> = keep.iter().copied().collect();
-        let mut changed: HashMap<usize, usize> = HashMap::new();
-        let mut prev: Option<(usize, usize)> = None;
-        for &(ki, kc) in keep.iter().chain(std::iter::once(&(b.len(), cur.len()))) {
-            let (i0, c0) = prev.map_or((0, 0), |(i, c)| (i + 1, c + 1));
-            if ki == i0 + 1 && kc == c0 + 1 {
-                changed.insert(i0, c0);
+        let (steps, mid) = mid_script(b, n, |x, y| x == y, true);
+        let projected = |e: &SeqElem| match &e.content {
+            SeqContent::Frag(f) => f.read().and_then(|v| ev.project(&v).map(|c| c.into_owned())),
+            _ => None,
+        };
+        let rb = match settle(window(s, &vis, b, &mid, |x, e| projected(e).as_ref() == Some(x))) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(None),
+            Err(_) => {
+                let cur = list_view(s, &ev);
+                // base to current by exact match; a base element changed concurrently is paired,
+                // for nested edits only, when it is the one unmatched element of its gap on both
+                // sides
+                let keep = lcs(b, &cur, |x, y| y.2.as_ref() == Some(x));
+                let mut changed: HashMap<usize, usize> = HashMap::new();
+                let mut prev: Option<(usize, usize)> = None;
+                for &(ki, kc) in keep.iter().chain(std::iter::once(&(b.len(), cur.len()))) {
+                    let (i0, c0) = prev.map_or((0, 0), |(i, c)| (i + 1, c + 1));
+                    if ki == i0 + 1 && kc == c0 + 1 {
+                        changed.insert(i0, c0);
+                    }
+                    prev = Some((ki, kc));
+                }
+                Rebase { cur: cur.into_iter().map(|(d, f, _)| (d, f)).collect(), to_cur: Some(keep.into_iter().collect()), lo: 0, changed }
             }
-            prev = Some((ki, kc));
-        }
-        let steps = script(b.len(), n.len(), &lcs(b, n, |x, y| x == y), true);
+        };
         for st in &steps {
             match st {
                 Step::Pair(i, j) => {
-                    let at = to_cur.get(i).or_else(|| changed.get(i));
-                    let (Some((d, f, _)), Some(bv), Some(nv)) = (at.and_then(|c| cur.get(*c)), b.get(*i), n.get(*j)) else { continue };
+                    let (Some((d, f)), Some(bv), Some(nv)) = (rb.paired(*i), b.get(*i), n.get(*j)) else { continue };
                     if let Some(c) = nested_edit(w, f.as_ref(), &ev, bv, nv)? {
                         out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(c)), ..SeqElem::bare() });
                     }
                 }
                 Step::Del(i) => {
-                    if let Some((d, _, _)) = to_cur.get(i).and_then(|c| cur.get(*c)) {
+                    if let Some((d, _)) = rb.get(*i) {
                         flag(&mut out, d.clone(), w);
                     }
                 }
                 _ => {}
             }
         }
-        let anchor_of = |a: Option<usize>| matched_before(a, &to_cur).and_then(|c| cur.get(c)).map_or(Anchor::Head, |x| Anchor::Dot(x.0.clone()));
-        insert_runs(w, &mut out, &steps, &anchor_of, &mut |w, j| {
+        insert_runs(w, &mut out, &steps, &|a| rb.anchor(a), &mut |w, j| {
             let item = n.get(j).ok_or(Error::Mismatch("index"))?;
             Ok(SeqContent::Frag(Box::new(crate::ops::create(w, &ev, item)?)))
         })?;
     }
     Ok((!out.elems().is_empty()).then_some(out))
-}
-
-/// The current index of the nearest base element at or before `a` that is still current.
-fn matched_before(a: Option<usize>, to_cur: &HashMap<usize, usize>) -> Option<usize> {
-    let mut i = a?;
-    loop {
-        if let Some(c) = to_cur.get(&i) {
-            return Some(*c);
-        }
-        i = i.checked_sub(1)?;
-    }
 }
 
 /// `edit(base, new)` of one list element, resolved against its current content.
