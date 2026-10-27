@@ -562,3 +562,27 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!((e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap()), want);
 }
+
+// spec/crdt.md §4.8, spec/requirements.md Scale: a dropped snapshot's residue keeps only the
+// copies a replay cannot play at their own commit (held here): not the aspect's state.
+#[test]
+fn snapshot_residue_skips_held_copies_spec_crdt_4_8() {
+    let mut lp = net(1, 81);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("/t/keptset");
+    for i in 0..40 {
+        lp.advance(10);
+        set_op(&mut lp, 0, t, Op::Add(s(&format!("element {i}"))));
+    }
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    set_op(&mut lp, 0, t, Op::Add(s("last")));
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    e.drop_body(&s1, &t, &k).unwrap();
+    let n = e.residue_bytes(&t, &k).unwrap();
+    assert!(n < 100, "residue of {n} bytes");
+    e.replay_deaths(&t, &k).unwrap();
+}
