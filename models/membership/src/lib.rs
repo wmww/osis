@@ -13,12 +13,20 @@
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
 //! - `content`: §5.2 per-delta content validity.
+//! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
+//! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
+//! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
+//! agrees with the canonical one); `Display` on a history prints it as a trace. The joint
+//! walk's code follows §5.1 step by step (`order`, `authority`, `audit`, `pass`, `eval`).
+//! Searches print each counterexample shrunk. `digest` hashes every verdict over random
+//! histories: a refactor must keep it (values in notes/testing.md, Models).
 //! Binary: `cargo run --release --bin membership-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 
 pub mod content;
 pub mod edges;
 pub mod joint;
+pub mod shrink;
 pub mod single;
 pub mod snapshot;
 
@@ -75,6 +83,20 @@ pub fn late_writes(rng: &mut Rng, eligible: &[bool]) -> Vec<bool> {
     eligible.iter().map(|e| rng.below(4) == 0 && *e).collect()
 }
 
+/// The order in which node `n` received the writes (`recv[write][node]`): by receipt time,
+/// never-received (`shrink::LATE`) ones last, ties by index.
+pub fn delivery_order(recv: &[Vec<u32>], n: usize) -> Vec<usize> {
+    let mut o: Vec<usize> = (0..recv.len()).collect();
+    o.sort_by_key(|&j| recv[j].get(n).copied().unwrap_or(shrink::LATE));
+    o
+}
+
+/// Receipts of a write for a trace: `n0@3` (received at 3), `n1 -` (never); the author left out.
+pub fn fmt_recv(recv: &[u32], author: usize) -> String {
+    let v: Vec<String> = recv.iter().enumerate().filter(|&(n, _)| n != author).map(|(n, &r)| if r >= shrink::LATE { format!("n{n} -") } else { format!("n{n}@{r}") }).collect();
+    format!("recv {}", v.join(", "))
+}
+
 /// Seeded xorshift generator: every history is a seed.
 pub struct Rng(pub u64);
 impl Rng {
@@ -96,3 +118,33 @@ impl Rng {
     }
 }
 
+
+/// Digest of every walk verdict (edges, roles, applied and dropped sets, attributions, passes,
+/// epoch starts) over `samples` random histories of each model, and for snapshot histories
+/// their projections and compactions too. A refactor of the rule code must leave it unchanged
+/// (`membership-model -- N digest`).
+pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 4] {
+    use std::hash::{Hash, Hasher};
+    let mut hs: [std::collections::hash_map::DefaultHasher; 4] = Default::default();
+    let mut rng = Rng(seed);
+    for _ in 0..samples {
+        let h = joint::random_hist(&mut rng);
+        format!("{:?}", joint::walk(&h)).hash(&mut hs[0]);
+        let h = edges::random_hist(&mut rng);
+        format!("{:?}", edges::walk(&h)).hash(&mut hs[1]);
+        format!("{:?}", h.eval_mode(edges::Drops::Provenance)).hash(&mut hs[2]);
+        let h = snapshot::random_hist(&mut rng);
+        let o = h.eval(true);
+        format!("{o:?}").hash(&mut hs[3]);
+        for thing in [snapshot::Thing::P, snapshot::Thing::G] {
+            for s in h.snapshots(thing, &o, true) {
+                format!("{:?}", h.compacted(thing, s).0.eval(true)).hash(&mut hs[3]);
+            }
+        }
+        for z in 1..h.n() {
+            format!("{:?}", h.projected(z).0.eval(true)).hash(&mut hs[3]);
+        }
+    }
+    let [a, b, c, d] = hs;
+    [("joint", a.finish()), ("edges", b.finish()), ("edges-prov", c.finish()), ("snapshot", d.finish())]
+}

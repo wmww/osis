@@ -1,5 +1,5 @@
 # Sync convergence model: ambiguities and findings
-> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S16 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes. S17 is a minor reading of the hardening text.
+> Summary: Places where spec/sync.md §5–§7 and spec/commits.md §5 left a choice or failed a checked property. S1–S16 are resolved by spec edits or accepted limits (notes/sync.md) and the model follows the text; every instance passes. S17 (a must-not-hold blob holding a body) is open as issues/sync-label-lacks-superset.md.
 
 ## Resolved (model updated, rerun clean)
 - **S1. A purge compacted away never reached a late node.** commits §5: a commit carrying a purge request MUST NOT carry `expires` and its blobs are kept at least until `wall_ms(ts) + MEMBERSHIP_KEEP`, whatever its deltas' bounds. `purge_reach.cfg` now passes `PurgeReachesAll` (within MEMBERSHIP_KEEP; see S15).
@@ -25,5 +25,6 @@
 - sync §6: "the label lacks" a body unless a blob of its commit holds every delta of it no snapshot under the label covers. `Upload`, `Relay`, `Deposit` use it; `Converge` checks it rather than an identical body.
 - sync §6 clock samples by round trip, request timeouts, sync §9 signal replay window: outside the model (no clock skew, no connections, no signals).
 
-## S17. A must-not-hold blob as the one that "holds" a body (reading)
+## S17. A must-not-hold blob as the one that "holds" a body (open: issues/sync-label-lacks-superset.md)
 - sync §6: a writer uploads a must-hold body "the label lacks (a blob of the commit holding every delta of the body that no snapshot under the label covers holds it)". Read literally, a blob that is itself must-not-hold (a purged superset waiting for its carrier, an expired or past-keep-at-most blob of the same commit) still holds the body, so the upload waits until that blob is deleted. Model: literal; every instance passes, since the waiting blob's deletion is fair and the upload follows it.
+- node-sync is literal only when snapshots cover part of the body; for a whole body it uploads beside a must-not-hold superset (a writer that has not applied the purge yet deletes that upload as a strict subset). The issue holds the options; the spec is unchanged until one is picked.

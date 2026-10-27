@@ -1,5 +1,5 @@
 # Rotation model: ambiguities and findings
-> Summary: Places where spec/crypto.md §3–§5, spec/sync.md §2/§5 and spec/permissions.md §3–§4 left a choice or failed a checked property. R1–R9 and residue 1 are resolved by spec edits and the model follows the new text; residue 2 of issues/reseal-triggers.md (refused stranded heartbeat) still reproduces as the one expected failure (`MC_drop_refresh.cfg`). R10–R15 are minor readings of the later text.
+> Summary: Places where spec/crypto.md §3–§5, spec/sync.md §2/§5 and spec/permissions.md §3–§4 left a choice or failed a checked property. R1–R9 and residue 1 are resolved by spec edits and the model follows the new text; residue 2 of issues/reseal-triggers.md (refused stranded heartbeat) still reproduces as the one expected failure (`MC_drop_refresh.cfg`). R10–R15 are settled: R10, R13 by spec edits, R11 by an earlier one, R12 a modeling limit, R14, R15 decided by the text.
 
 ## Resolved (model updated, rerun)
 - **R1. Re-seal raced a removal.** permissions §3 and commits §2: the removal and the rotation it requires are one membership commit; boxing a secret is encrypting under it (crypto §4), so a re-sealer that knows a departure re-seals only at covering epochs. Model: `Remove` is a rotation carrying the removal (`rem`), `Recv` learns it, the remover uploads it before anything else.
@@ -16,20 +16,24 @@
 ## Residue 2: refused stranded heartbeat (TLC: `MC_drop_refresh.cfg`, CurrentOpens fails, expected)
 - issues/reseal-triggers.md. With the deposit seed refreshed at each rotation, a member past a dropped claim set that never read the newest `/keys` cannot deposit its stranded heartbeat, holds a box at every epoch (no missing-box trigger) and is never re-sealed. Trace (12 states): a1 and a2 rotate concurrently (e1, e2, one n) and upload; e2 is registered, then, once both are held, e1 (same n, lower nonce); the server drops the claim sets of the steps for 0 and e2; m1, still at epoch 0, is refused at e2's step and its heartbeat deposit too (it never read e1's `/keys`). Owner call (accept for the MVP is recommended).
 
-## R10. Re-registration: "holds the epochs a server's head registers" (reading)
+## R10. Re-registration: "holds the epochs a server's head registers" (resolved)
 - sync §5: an admin that "holds the epochs a server's head registers and ... an established epoch newer than the head's" re-registers. Holds = holds the secret, or has the head's epoch established? Model: holds the secret (`Top.ep ∈ sec[a]`); the newer epoch must be established and held. Either reading passes every instance.
+- Resolved: sync §5 now says "holds the epochs a server's head registers (the write and admin ones established)", as osis-node does (`step_due`, `head_keys`: stamps and steps sign under them, which is encrypting under; the read one only opens). The model is looser (one epoch for all roles, held from a valid box, not necessarily established); both pass.
 
-## R11. Which peers a complete pass covers (reading)
+## R11. Which peers a complete pass covers (resolved)
 - permissions §3 "every server and peer it syncs them with": the model counts peers it received rotation commits from and that are online now. A peer that went offline mid-pass is not waited for; the instances that use peers have no offline steps, so this is not exercised.
+- Resolved: permissions §3 already says "every peer it received the label from, can reach and that still reads it" (a peer it cannot reach is not waited for), as osis-node's `update_pass_peers` does. The model counts peers it received a rotation commit from, a subset.
 
-## R12. Snapshot-established epochs (not modeled)
-- crypto §4 lets a `/secrets` compaction snapshot establish an epoch; permissions §3 re-seals only at chain-established epochs and lets such a node rotate instead. The model has no `/secrets` snapshot, so every established epoch is chain-established and the accepted post-compaction residue (notes/sync.md Limits) is out of reach. An instance with a snapshot step is optional future work.
+## R12. Snapshot-established epochs (not modeled; modeling limit)
+- crypto §4 lets a `/secrets` compaction snapshot establish an epoch; permissions §3 re-seals only at chain-established epochs and lets such a node rotate instead. The model has no `/secrets` snapshot, so every established epoch is chain-established and the accepted post-compaction residue (notes/sync.md Limits) is out of reach. An instance with a snapshot step is optional future work. Not an ambiguity: the text decides it.
 
-## R13. Rotation by inbox: "holds no box at a current read epoch before it" (reading)
+## R13. Rotation by inbox: "holds no box at a current read epoch before it" (resolved)
 - permissions §3: a rotation is also delivered by inbox to a member it boxes that "holds no box at a current read epoch before it". Current as whom, and boxes as known to whom? Model: the epochs the rotation supersedes (the rotator's current ones) and the boxes the rotator knows (applied rotations, read grant and re-seal commits). A box the rotator has not seen yet only adds an inbox copy.
+- Resolved: permissions §3 now adds "as the rotator's applied state stands", as osis-node's `rotation::unreached` does (its `/secrets` boxes, epochs current at it). Model unchanged.
 
-## R14. Wrap of a re-seal placed under the label (reading)
+## R14. Wrap of a re-seal placed under the label (not an ambiguity)
 - permissions §3 places a re-seal "under the actor's labels like any membership commit", so it is wrapped under the re-sealer's newest current epoch (crypto §5), which is encrypting under that epoch too: the re-sealer must cover every known departure there as well, not only at the epochs it re-seals. Model: `Reseal` and `RotateForced` include `EncEp(a)`. The re-sealed member usually cannot open the label copy (the trigger is that it lacks an epoch); its path stays the inbox.
+- Not an ambiguity: crypto §4 counts a label wrap as encrypting under and permissions §3 places the re-seal under the labels, so the text decides it. osis-node holds back every placement while read is uncovered (sync pass `read_ok`).
 
-## R15. Heartbeat of a node holding only reading-only secrets (reading)
-- crypto §4 (secrets from a pending or invalid commit are never encrypted under) against crypto §5 / permissions §4 (the stranded heartbeat "is wrapped under the newest established read secret the node holds"). A grantee whose grant box has not arrived but that holds a planted secret of an established epoch: "holds" must exclude the planted one, so it places no heartbeat until a valid box arrives. Model: `Heartbeat` needs an established secret from a valid box. Negative control (README): with `Enc(x) == sec[x] \cup fsec[x]` TLC finds this 4-state trace (grant, plant, heartbeat under the planted secret), so the crypto §4 sentence is what closes it. The text could say "holds from an applied valid box" in crypto §5.
+## R15. Heartbeat of a node holding only reading-only secrets (not an ambiguity)
+- crypto §4 (secrets from a pending or invalid commit are never encrypted under) against crypto §5 / permissions §4 (the stranded heartbeat "is wrapped under the newest established read secret the node holds"). A grantee whose grant box has not arrived but that holds a planted secret of an established epoch: "holds" must exclude the planted one, so it places no heartbeat until a valid box arrives. Model: `Heartbeat` needs an established secret from a valid box. Negative control (README): with `Enc(x) == sec[x] \cup fsec[x]` TLC finds this 4-state trace (grant, plant, heartbeat under the planted secret), so the crypto §4 sentence is what closes it. Not an ambiguity: that crypto §4 sentence ("never encrypted under until an applied valid box carries it") decides it. osis-keys `RoleEpochs::held` yields checked secrets only, so `stranded_secret` never picks a candidate.

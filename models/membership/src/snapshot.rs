@@ -500,6 +500,8 @@ pub struct Stats {
     record_mismatch: u64,
     resnapshots: u64,
     disowned: u64,
+    disagree: u64,
+    ex_disagree: Option<SHist>,
     ex_disowned: Option<SHist>,
     ex_compaction: Option<SHist>,
     ex_projection: Option<SHist>,
@@ -528,6 +530,7 @@ impl Stats {
         self.record_mismatch += o.record_mismatch;
         self.resnapshots += o.resnapshots;
         self.disowned += o.disowned;
+        self.disagree += o.disagree;
         fn pick(a: &mut Option<SHist>, b: Option<SHist>) {
             if let Some(b) = b {
                 if a.as_ref().map_or(true, |a| b.writes.len() < a.writes.len()) {
@@ -542,12 +545,13 @@ impl Stats {
         pick(&mut self.ex_late, o.ex_late);
         pick(&mut self.ex_record, o.ex_record);
         pick(&mut self.ex_disowned, o.ex_disowned);
+        pick(&mut self.ex_disagree, o.ex_disagree);
     }
 
     pub fn print(&self) {
         println!(
-            "snapshot: {} histories | G starts at a snapshot {} | compactions at applied snapshots {} mismatches {} | compactions at since-unapplied snapshots {} diverging {} | order-dependent {} | drops with nobody offline {} | max passes {}",
-            self.histories, self.with_snapshot_start, self.compactions, self.compaction_mismatch, self.unapplied_points, self.unapplied_diverge, self.order_dep, self.honest_mismatch, self.max_passes
+            "snapshot: {} histories | G starts at a snapshot {} | compactions at applied snapshots {} mismatches {} | compactions at since-unapplied snapshots {} diverging {} | order-dependent {} | nodes disagreeing after every delivery {} | drops with nobody offline {} | max passes {}",
+            self.histories, self.with_snapshot_start, self.compactions, self.compaction_mismatch, self.unapplied_points, self.unapplied_diverge, self.order_dep, self.disagree, self.honest_mismatch, self.max_passes
         );
         println!(
             "  projections (plain and compacted) {} mismatches {} | owner-chain records {} valid {} | late records valid {} | record validity differing (order, compaction, projection) {} | fresh key-actor snapshots of P with roster and ledger {} changing records or G writes {}",
@@ -561,30 +565,158 @@ impl Stats {
             ("late record valid", &self.ex_late),
             ("record validity differing", &self.ex_record),
             ("re-snapshot not neutral", &self.ex_disowned),
+            ("disagreement after every delivery", &self.ex_disagree),
         ] {
             if let Some(h) = ex {
+                // Shrunk while it still fails the same check.
+                let mut h = if flags(h, label) { crate::shrink::shrink(h.clone(), |c| flags(c, label)) } else { h.clone() };
+                if label == "drop with nobody offline" {
+                    h = honest(&h).unwrap_or(h);
+                }
                 println!("  smallest {label} example:");
-                print_hist(h);
+                print_hist(&h);
             }
         }
     }
 }
 
+/// A trace: genesis rosters, then each write in walk order with its receipts, then the result.
+impl std::fmt::Display for SHist {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        writeln!(f, "    genesis P {:?} G {:?}", self.gp, self.gg)?;
+        for i in self.order() {
+            let w = &self.writes[i];
+            let recv = crate::fmt_recv(&self.recv[i], w.author);
+            match &w.snap {
+                _ if w.rec => writeln!(f, "    w{i}: {} records #{} on {:?} at t={} id {} | {recv}", w.author, w.target, w.thing, w.t, w.id)?,
+                Some(r) => writeln!(f, "    w{i}: {} snapshots {:?} := {:?} ledger {:?} at t={} id {} | {recv}", w.author, w.thing, r, w.ledger, w.t, w.id)?,
+                None => writeln!(f, "    w{i}: {} sets {:?}[{}] := {:?} at t={} id {} | {recv}", w.author, w.thing, w.target, w.role, w.t, w.id)?,
+            }
+        }
+        let o = self.eval(true);
+        write!(
+            f,
+            "    -> P roles {:?} start {:?} | G roles {:?} start {:?} applied {:#b} dropped {:#b} ({} passes) | valid records {:?}",
+            o.p.roles, o.p.start, o.g.roles, o.g.start, o.g.applied, o.g.dropped, o.g.passes, self.successors(&o)
+        )
+    }
+}
+
 pub fn print_hist(h: &SHist) {
-    println!("    genesis P {:?} G {:?}", h.gp, h.gg);
-    for i in h.order() {
-        let w = &h.writes[i];
-        match &w.snap {
-            _ if w.rec => println!("    w{i}: {} records #{} on {:?} at t={} | recv {:?}", w.author, w.target, w.thing, w.t, h.recv[i]),
-            Some(r) => println!("    w{i}: {} snapshots {:?} := {:?} ledger {:?} at t={} | recv {:?}", w.author, w.thing, r, w.ledger, w.t, h.recv[i]),
-            None => println!("    w{i}: {} sets {:?}[{}] := {:?} at t={} | recv {:?}", w.author, w.thing, w.target, w.role, w.t, h.recv[i]),
+    println!("{h}");
+}
+
+/// The result as a function of the write set: roles, epoch starts, applied writes and valid
+/// records (by `SWrite::id`).
+fn result(h: &SHist, o: &Out) -> (Vec<Role>, Vec<Role>, Vec<Option<usize>>, Vec<usize>, Vec<usize>) {
+    let ids = |m: u64| -> Vec<usize> {
+        let mut v: Vec<usize> = (0..h.writes.len()).filter(|&j| m >> j & 1 == 1).map(|j| h.writes[j].id).collect();
+        v.sort();
+        v
+    };
+    let starts = vec![o.p.start.map(|s| h.writes[s].id), o.g.start.map(|s| h.writes[s].id)];
+    let valid = h.successors(o).iter().fold(0u64, |m, &j| m | 1 << j);
+    (o.p.roles.clone(), o.g.roles.clone(), starts, ids(o.p.applied | o.g.applied), ids(valid))
+}
+
+/// Quiescence: after every delivery, every node agrees (each node's evaluation over the
+/// writes in the order it received them gives the canonical result). Returns the first node
+/// that disagrees.
+pub fn quiescent(h: &SHist) -> Result<(), usize> {
+    let res = result(h, &walk(h));
+    for n in 0..h.n() {
+        let ph = h.permute(&crate::delivery_order(&h.recv, n));
+        if result(&ph, &walk(&ph)) != res {
+            return Err(n);
         }
     }
-    let o = h.eval(true);
-    println!(
-        "    -> P roles {:?} start {:?} | G roles {:?} start {:?} applied {:#b} dropped {:#b} ({} passes) | valid records {:?}",
-        o.p.roles, o.p.start, o.g.roles, o.g.start, o.g.applied, o.g.dropped, o.g.passes, h.successors(&o)
-    );
+    Ok(())
+}
+
+/// The timeline of both things (§5.1, §6) with audits on.
+pub fn walk(h: &SHist) -> Out {
+    h.eval(true)
+}
+
+/// Whether `check` counts `h` under the example `label` (for shrinking it).
+fn flags(h: &SHist, label: &str) -> bool {
+    let mut st = Stats::default();
+    check(h, &mut st, &mut crate::Rng(0x5eed));
+    match label {
+        "compaction mismatch" => st.compaction_mismatch > 0,
+        "order dependence" | "disagreement after every delivery" => st.disagree > 0,
+        "drop with nobody offline" => honest(h).map_or(false, |h| honest_drops(&h)),
+        "projection mismatch" => st.projection_mismatch > 0,
+        "late record valid" => st.late_record_valid > 0,
+        "record validity differing" => st.record_mismatch > 0,
+        "re-snapshot not neutral" => st.disowned > 0,
+        _ => false,
+    }
+}
+
+impl crate::shrink::Shrink for SHist {
+    fn smaller(&self) -> Vec<SHist> {
+        use crate::shrink::{compact_times, without, LATE};
+        let mut out = Vec::new();
+        let n = self.n();
+        let lower = |r: Role| -> Vec<Role> { [Role::None, Role::Write].into_iter().filter(|&x| x < r).collect() };
+        for i in 0..self.writes.len() {
+            out.push(SHist { writes: without(&self.writes, i), recv: without(&self.recv, i), ..self.clone() });
+        }
+        for x in 1..n {
+            for r in lower(self.gp[x]) {
+                let mut h = self.clone();
+                h.gp[x] = r;
+                out.push(h);
+            }
+            for r in lower(self.gg[x]) {
+                let mut h = self.clone();
+                h.gg[x] = r;
+                out.push(h);
+            }
+        }
+        for i in 0..self.writes.len() {
+            let w = &self.writes[i];
+            for r in lower(w.role) {
+                let mut h = self.clone();
+                h.writes[i].role = r;
+                out.push(h);
+            }
+            for x in 1..w.snap.as_ref().map_or(0, Vec::len) {
+                for r in lower(w.snap.as_ref().unwrap()[x]) {
+                    let mut h = self.clone();
+                    h.writes[i].snap.as_mut().unwrap()[x] = r;
+                    out.push(h);
+                }
+            }
+            for k in 0..w.ledger.len() {
+                let mut h = self.clone();
+                h.writes[i].ledger.remove(k);
+                out.push(h);
+            }
+            for m in (0..n).filter(|&m| m != w.author && self.recv[i][m] < LATE) {
+                let mut h = self.clone();
+                h.recv[i][m] = LATE;
+                out.push(h);
+            }
+        }
+        let keys = |h: &SHist| -> Vec<u32> { h.writes.iter().flat_map(|w| w.ledger.iter().flat_map(|e| e.since.into_iter().chain(e.until).map(|k| k.0))).collect() };
+        let times: Vec<u32> = self.writes.iter().map(|w| w.t).chain(self.recv.iter().flatten().copied()).chain(keys(self)).collect();
+        if let Some(map) = compact_times(&times) {
+            let mut h = self.clone();
+            h.recv.iter_mut().flatten().for_each(|v| *v = map(*v));
+            for w in &mut h.writes {
+                w.t = map(w.t);
+                for e in &mut w.ledger {
+                    for k in e.since.iter_mut().chain(e.until.iter_mut()) {
+                        k.0 = map(k.0);
+                    }
+                }
+            }
+            out.push(h);
+        }
+        out
+    }
 }
 
 /// Validity of the records by `author` (any if None) in `c`, holding `keep` of `h`'s
@@ -686,6 +818,10 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
         st.ex_order.get_or_insert_with(|| h.clone());
     }
     records_ok &= records_agree(h, &o, &ph, &perm, None);
+    if quiescent(h).is_err() {
+        st.disagree += 1;
+        st.ex_disagree.get_or_insert_with(|| h.clone());
+    }
     if !projection_ok {
         st.projection_mismatch += 1;
         st.ex_projection.get_or_insert_with(|| h.clone());
@@ -694,19 +830,30 @@ fn check(h: &SHist, st: &mut Stats, rng: &mut crate::Rng) {
         st.record_mismatch += 1;
         st.ex_record.get_or_insert_with(|| h.clone());
     }
+    if let Some(honest) = honest(h) {
+        if honest_drops(&honest) {
+            st.honest_mismatch += 1;
+            st.ex_honest.get_or_insert(honest);
+        }
+    }
+}
+
+/// `h` with nobody offline (None when two writes share a time).
+fn honest(h: &SHist) -> Option<SHist> {
     let distinct = h.writes.iter().map(|w| w.t).collect::<HashSet<_>>().len() == h.writes.len();
-    if distinct {
+    distinct.then(|| {
         let mut honest = h.clone();
         for (i, r) in honest.recv.iter_mut().enumerate() {
             r.fill(h.writes[i].t);
         }
-        let a = honest.eval(true);
-        let b = honest.eval(false);
-        if a.p.roles != b.p.roles || a.g.roles != b.g.roles || a.p.dropped != 0 || a.g.dropped != 0 {
-            st.honest_mismatch += 1;
-            st.ex_honest.get_or_insert_with(|| honest.clone());
-        }
-    }
+        honest
+    })
+}
+
+/// With nobody offline nothing is dropped, and the result equals the one without audits.
+fn honest_drops(h: &SHist) -> bool {
+    let (a, b) = (h.eval(true), h.eval(false));
+    a.p.roles != b.p.roles || a.g.roles != b.g.roles || a.p.dropped != 0 || a.g.dropped != 0
 }
 
 pub fn random_hist(rng: &mut crate::Rng) -> SHist {

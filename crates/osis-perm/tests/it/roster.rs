@@ -125,7 +125,7 @@ fn run_joint(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for x in 0..actors.len() {
             if let Some(d) = neutral(&w, actors[x], top[x], &actors, &ps) {
-                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h}");
             }
         }
     }
@@ -183,7 +183,7 @@ fn run_edges(samples: u64, seed: u64) {
         }
         let ps = probes(&mut w, &nodes, &mut rng);
         if let Some(d) = neutral(&w, t, nodes[0], &[t], &ps) {
-            panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
+            panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
     }
     eprintln!("{samples} histories; sticky-residue snapshots that repaired drops so far (all runs): {}", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
@@ -249,7 +249,7 @@ fn run_snapshot(samples: u64, seed: u64) {
         let ps = probes(&mut w, &nodes, &mut rng);
         for thing in [p, g] {
             if let Some(d) = neutral(&w, thing, k, &[p, g], &ps) {
-                panic!("seed {seed:#x} sample {s}: {d}\n{h:?}");
+                panic!("seed {seed:#x} sample {s}: {d}\n{h}");
             }
         }
     }
