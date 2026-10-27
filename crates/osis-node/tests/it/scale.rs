@@ -826,7 +826,7 @@ fn late_delta_deaths_cost() {
 // fell, the add supersedes nothing), O(state), no body read. `OSIS_SCALE_N` sets N (default 10^4).
 #[test]
 #[ignore = "tier 2"]
-fn validity_flip_cost() {
+fn validity_flip_cost_spec_permissions_5_2() {
     let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|s| s.parse().ok()).unwrap_or(10_000);
     let mut lp = osis_node::local_peer::LocalPeer::new(3, 43, WallMs(1_700_000_000_000)).unwrap();
     let me = lp.peers[0].engine.tid();
