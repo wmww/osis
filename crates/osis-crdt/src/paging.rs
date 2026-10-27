@@ -69,6 +69,15 @@ impl Fragment {
         }
     }
 
+    /// The root elements' records: first dot and how many consecutive dots each holds (a
+    /// sequence's range records hold several, any other element one), ascending.
+    pub fn elem_spans(&self) -> Vec<(Dot, u64)> {
+        match self {
+            Fragment::Seq(s) => s.elems().iter().map(|(d, e)| (d.clone(), e.span)).collect(),
+            _ => self.elem_dots(None, None).into_iter().map(|d| (d, 1)).collect(),
+        }
+    }
+
     /// The greatest `ts` of any stamp inside (resets, `W` and value-less writes included).
     pub fn max_ts(&self) -> Option<osis_core::Ts> {
         self.all_max().map(|s| s.ts)
