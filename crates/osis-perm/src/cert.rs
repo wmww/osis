@@ -68,12 +68,12 @@ impl Timeline {
             // A static check, so a demotion dropped in a later round counts too: a write below
             // the join of every earlier held value on its edge (snapshot rosters included).
             let mut values: BTreeMap<(Tid, Tid), Vec<EdgeValue>> = BTreeMap::new();
-            for cm in self.commits.values() {
+            for cm in self.input.commits.values() {
                 for o in &cm.ops {
                     values.entry((o.member, o.target)).or_default().push((cm.point(), o.edge, Some(cm.id)));
                 }
             }
-            for s in self.snaps.values() {
+            for s in self.input.snaps.values() {
                 for (m, e) in &s.roster {
                     values.entry((*m, s.thing)).or_default().push((s.point(), Some(*e), None));
                 }
@@ -90,7 +90,7 @@ impl Timeline {
                     }
                 }
             }
-            for cm in self.commits.values() {
+            for cm in self.input.commits.values() {
                 for o in &cm.ops {
                     let w = EdgeWrite { commit: cm.clone(), audit: audits.contains(&cm.id) };
                     x.by_edge.entry(o.member).or_default().entry(o.target).or_default().push(w);
@@ -100,7 +100,7 @@ impl Timeline {
             for ws in x.by_edge.values_mut().flat_map(|m| m.values_mut()) {
                 ws.sort_by_key(|w| w.commit.point());
             }
-            for s in self.snaps.values() {
+            for s in self.input.snaps.values() {
                 x.by_thing.entry(s.thing).or_default().push(s.id);
                 x.entered.insert(s.thing);
             }
@@ -111,7 +111,7 @@ impl Timeline {
     /// Things on any path from `node` to `thing` just before `at`, given the edge state there
     /// and a cache of `roles_from` at that point.
     fn chain_things(&self, node: &Tid, thing: &Tid, at: Point, edges: &EdgesAt<'_>, reach: &mut Reach) -> BTreeSet<Tid> {
-        let view = View::at(&self.owners, edges, Some(at.ts));
+        let view = View::at(&self.input.owners, edges, Some(at.ts));
         let from = reach.0.entry(*node).or_insert_with(|| view.roles_from(node));
         let to = reach.1.entry(*thing).or_insert_with(|| view.reach_backward(thing));
         let mut c: BTreeSet<Tid> = from.keys().filter(|t| to.contains(t)).copied().collect();
@@ -131,20 +131,20 @@ impl Timeline {
     pub fn write_certificates(&self, id: &WriteId) -> Option<Certificates> {
         let (seeds, own) = match id {
             WriteId::Op(c, k) => {
-                let cm = self.commits.get(c)?;
+                let cm = self.input.commits.get(c)?;
                 let op = cm.ops.get(usize::try_from(*k).ok()?)?;
                 let p = cm.point();
                 (vec![(cm.author, op.target, p), (cm.author, op.member, p), (op.member, op.target, p)], cm.id)
             }
             WriteId::Snapshot(c) => {
-                let s = self.snaps.get(c)?;
+                let s = self.input.snaps.get(c)?;
                 (vec![(s.author, s.thing, s.point())], s.id)
             }
         };
         let mut out = self.closure(seeds);
-        if self.commits.contains_key(&own) {
+        if self.input.commits.contains_key(&own) {
             out.commits.insert(own);
-        } else if let Some(s) = self.snaps.get(&own) {
+        } else if let Some(s) = self.input.snaps.get(&own) {
             out.snapshots.entry(own).or_default().extend(s.roster.keys().chain(s.ledger.iter().map(|t| &t.member)).copied());
         }
         Some(out)
@@ -193,10 +193,10 @@ impl Timeline {
                 }
                 // /created of each thing on the chain and of its owners up to the key actor.
                 out.created.insert(*c);
-                let (up, top) = self.owners.chain(c);
+                let (up, top) = self.input.owners.chain(c);
                 out.created.extend(up);
                 out.created.extend(top);
-                if self.owners.owner(c).is_some() {
+                if self.input.owners.owner(c).is_some() {
                     out.keys.insert(*c);
                 }
             }
@@ -206,7 +206,7 @@ impl Timeline {
             let on_chain = chain.iter().filter_map(|m| index.by_edge.get(m).map(|x| (*m, x)));
             for (m, tg, ws) in on_chain.flat_map(|(m, x)| x.iter().filter(|(tg, _)| chain.contains(tg)).map(move |(tg, ws)| (m, *tg, ws))) {
                 // n reaches a key actor other than itself only through an edge on it
-                let reaches = |m: &Tid| *m == n || !self.owners.is_key(m) || index.entered.contains(m);
+                let reaches = |m: &Tid| *m == n || !self.input.owners.is_key(m) || index.entered.contains(m);
                 for w in ws.get(ws.partition_point(|w| w.commit.point() <= p)..).unwrap_or_default() {
                     if w.audit && w.commit.ops.iter().any(|o| reaches(&o.member)) {
                         later.insert((w.commit.point(), n, t));
@@ -223,7 +223,7 @@ impl Timeline {
                     }
                 }
             }
-            for s in chain.iter().filter_map(|t| index.by_thing.get(t)).flatten().filter_map(|id| self.snaps.get(id)) {
+            for s in chain.iter().filter_map(|t| index.by_thing.get(t)).flatten().filter_map(|id| self.input.snaps.get(id)) {
                 let members: BTreeSet<Tid> = s.roster.keys().chain(s.ledger.iter().map(|x| &x.member)).filter(|m| chain.contains(m)).copied().collect();
                 let entry = out.snapshots.entry(s.id).or_default();
                 let fresh = entry.is_empty();
@@ -251,12 +251,12 @@ impl Timeline {
             }
         }
         for id in &certs.commits {
-            if let Some(c) = self.commits.get(id) {
+            if let Some(c) = self.input.commits.get(id) {
                 h.add_commit((**c).clone());
             }
         }
         for (id, members) in &certs.snapshots {
-            if let Some(s) = self.snaps.get(id) {
+            if let Some(s) = self.input.snaps.get(id) {
                 h.add_snapshot(project(s, members));
             }
         }

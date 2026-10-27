@@ -73,10 +73,27 @@ fn bench_10k_edges() {
         // a write arriving late, ordered in the middle of the history
         let mut w3 = w2;
         w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
-        let held3 = w3.held();
+        let mut held3 = w3.held();
         let tl3 = Instant::now();
         inc.update(&held3);
         let late = tl3.elapsed();
+        // what a node does per write: 100 writes after every held one, each its own update
+        // around the thing it touched (`update_touched`), then taken out again
+        let touched = std::collections::BTreeSet::from([doc]);
+        let mut appended = 0;
+        let ta = Instant::now();
+        for i in 0..100u8 {
+            let id = osis_core::CommitId([i; 32]);
+            let op = osis_perm::EdgeOp { target: doc, member: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }), dots: osis_perm::Dots::Commit };
+            held3.add_commit(osis_perm::MembershipCommit { id, ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
+            inc.update_touched(&held3, &touched);
+            appended += inc.appended();
+        }
+        let appends = ta.elapsed() / 100;
+        for i in 0..100u8 {
+            held3.remove(&osis_core::CommitId([i; 32]));
+        }
+        inc.update_touched(&held3, &touched);
         let t3 = Instant::now();
         let r = tl.role(&nodes[200], &doc, At::END);
         let query = t3.elapsed();
@@ -173,7 +190,7 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?}, one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} members' deltas cold {rejudge_members:?} ({valid_members} valid), chain certificates at the end {cert:?} ({} commits, {} snapshots), at the middle {cert_mid:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
