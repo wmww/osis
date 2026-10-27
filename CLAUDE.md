@@ -14,6 +14,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 
 ## Workflow
 - You own the code.
+- Coordinators spawn worker and reviewer agents as `model: "opus"`, always.
 - Code should be built in simple, safe Rust wherever that's the right tool for the job.
 - Refactor freely as needed. don't trust that existing code/comments/notes are necessarily correct, or existing design decisions are optimal.
 - Unless otherwise asked, commit, pull --rebase and push when you've completed your task.
