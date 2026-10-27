@@ -393,7 +393,7 @@ impl Fragment {
                 let bm = std::mem::take(&mut b.meta);
                 let (e, raised) = join_meta(&mut a.meta, bm, e_parent, ch);
                 if raised {
-                    seq::prune_elems(&mut a, e.as_ref(), ch);
+                    seq::prune_reset(&mut a, e.as_ref(), ch);
                 }
                 seq::join_elems(&mut a, b, e.as_ref(), ch);
                 Fragment::Seq(a)
