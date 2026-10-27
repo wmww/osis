@@ -1,6 +1,6 @@
 //! Cost of a 10^4-edge-write history (issues/perm-eval-cost.md): from scratch and incremental. Tier 2:
 //! `cargo test --release --workspace --test it bench::bench_ -- --ignored --nocapture`. Run it alone:
-//! `bench_10k_edges` peaks at about 16 GB (each held set of the org at 10^4 is about 3 GB).
+//! `bench_10k_edges` peaks at about 13 GB (each held set of the org at 10^4 is about 3 GB).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -69,14 +69,16 @@ fn bench_10k_edges() {
         let t2 = Instant::now();
         let evaluated = inc.update(&held2);
         let again = t2.elapsed();
-        drop(held2);
-        // a write arriving late, ordered in the middle of the history
+        // a write arriving late, ordered in the middle of the history (`held2` lives on: the
+        // timelines hold its records, as a node's do its held set's; else the update would
+        // time freeing them)
         let mut w3 = w2;
         w3.set(nodes[2], doc, nodes[201], edge(Read), n as u64 / 2, &[]);
         let mut held3 = w3.held();
         let tl3 = Instant::now();
-        inc.update(&held3);
+        inc.update_touched(&held3, &std::collections::BTreeSet::from([doc]));
         let late = tl3.elapsed();
+        drop(held2);
         let ts3 = Instant::now();
         let passes3 = Timeline::evaluate(&held3).passes();
         let scratch3 = ts3.elapsed();
