@@ -120,6 +120,15 @@ pub struct EOut {
     pub cycled: bool,
 }
 
+/// One walk (§5.1 steps 2-4).
+struct EPass {
+    edges: Vec<Option<Edge>>,
+    dropped: u64,
+    attr: Vec<Attr>,
+    demoting: u64,
+    grew: bool,
+}
+
 /// What happens to drops.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Drops {
@@ -223,6 +232,74 @@ impl EHist {
         b
     }
 
+    /// §5.1 step 4 for op `op` (op `k` of commit `i`, just applied, lowering x's class from
+    /// `held[x]` to `now`): x's earlier applied ops attributed to a class it fell through
+    /// (`now`, `before`] and not covered by the demoter's frontier (its receipts before its
+    /// time; its own commit counts) whose drop has no cause yet.
+    fn audit(&self, i: usize, x: usize, now: u8, before: u8, base: &[usize], applied: u64, attr: &[Attr], cause: &[Option<usize>]) -> Vec<usize> {
+        let w = &self.writes[i];
+        let nops = base[self.writes.len()];
+        (0..nops)
+            .filter(|&j| {
+                let jc = self.commit_of(base, j);
+                let c = attr_class(attr[j]);
+                applied >> j & 1 == 1 && self.writes[jc].author == x && now < c && c <= before && !(self.recv[jc][w.author] < w.t || jc == i) && cause[j].is_none()
+            })
+            .collect()
+    }
+
+    /// §5.1 steps 2-4: one walk skipping the ops with a cause, stopping after the first
+    /// commit that adds to D. `cycled`: the drop set repeated (Provenance), audit nothing.
+    fn pass(&self, order: &[usize], base: &[usize], cause: &mut [Option<usize>], mode: Drops, cycled: bool) -> EPass {
+        let nops = base[self.writes.len()];
+        let dropped = (0..nops).filter(|&j| cause[j].is_some()).fold(0u64, |m, j| m | 1 << j);
+        let mut edges = self.genesis.clone();
+        // held[x]: the highest class x held since its last audit ("the edge as restored").
+        let mut held: Vec<u8> = edges.iter().map(|&e| class(auth(e, 0))).collect();
+        let mut applied = 0u64;
+        let mut attr = vec![Attr::Skipped; nops];
+        // Commits that demoted someone (and so audited) in this walk.
+        let mut demoting = 0u64;
+        for &i in order {
+            let w = &self.writes[i];
+            let ats = self.judge(w, &edges);
+            let mut grew = false;
+            for (k, (&(x, new), &at)) in w.ops.iter().zip(&ats).enumerate() {
+                let op = base[i] + k;
+                if at == Attr::Skipped || dropped >> op & 1 == 1 {
+                    continue;
+                }
+                applied |= 1 << op;
+                attr[op] = at;
+                edges[x] = new;
+                let now = class(auth(new, w.t));
+                // Self-removal and invite grants audit nothing; `held` keeps the highest
+                // class since the last audit, so the next explicit demotion audits as if
+                // the member still held it.
+                if x == w.author || matches!(at, Attr::Invite(_)) || now >= held[x] {
+                    held[x] = held[x].max(now);
+                    continue;
+                }
+                let before = held[x];
+                held[x] = now;
+                if mode == Drops::Off || cycled {
+                    continue;
+                }
+                demoting |= 1 << i;
+                for j in self.audit(i, x, now, before, base, applied, &attr, cause) {
+                    cause[j] = Some(i);
+                    grew = true;
+                }
+            }
+            if grew {
+                return EPass { edges, dropped, attr, demoting, grew: true };
+            }
+        }
+        EPass { edges, dropped, attr, demoting, grew: false }
+    }
+
+    /// The timeline: walks until one adds nothing to D (step 5). Sticky: drops last for the
+    /// evaluation; Provenance: a drop whose cause no longer demotes is undone.
     pub fn eval_mode(&self, mode: Drops) -> EOut {
         let order = self.order();
         let base = self.bases();
@@ -231,77 +308,26 @@ impl EHist {
         let mut cause: Vec<Option<usize>> = vec![None; nops];
         let mut seen = HashSet::new();
         let mut passes = 0;
-        'walk: loop {
+        loop {
             passes += 1;
             let cycled = !seen.insert(cause.clone());
-            let dropped = (0..nops).filter(|&j| cause[j].is_some()).fold(0u64, |m, j| m | 1 << j);
-            let mut edges = self.genesis.clone();
-            let mut held: Vec<u8> = edges.iter().map(|&e| class(auth(e, 0))).collect();
-            let mut applied = 0u64;
-            let mut attr = vec![Attr::Skipped; nops];
-            // Commits that demoted someone (and so audited) in this walk.
-            let mut demoting = 0u64;
-            for &i in &order {
-                let w = &self.writes[i];
-                let a = w.author;
-                let ats = self.judge(w, &edges);
-                let mut grew = false;
-                for (k, (&(x, new), &at)) in w.ops.iter().zip(&ats).enumerate() {
-                    let op = base[i] + k;
-                    if at == Attr::Skipped || dropped >> op & 1 == 1 {
-                        continue;
-                    }
-                    applied |= 1 << op;
-                    attr[op] = at;
-                    edges[x] = new;
-                    let now = class(auth(new, w.t));
-                    // Self-removal and invite grants audit nothing; `held` keeps the highest
-                    // class since the last audit, so the next explicit demotion audits as if
-                    // the member still held it.
-                    if x == a || matches!(at, Attr::Invite(_)) || now >= held[x] {
-                        held[x] = held[x].max(now);
-                        continue;
-                    }
-                    let before = held[x];
-                    held[x] = now;
-                    if mode == Drops::Off || cycled {
-                        continue;
-                    }
-                    demoting |= 1 << i;
-                    // Audit x's ops attributed to a class it fell through: (now, before].
-                    for j in 0..nops {
-                        if applied >> j & 1 == 0 || self.writes[self.commit_of(&base, j)].author != x {
-                            continue;
-                        }
-                        let c = attr_class(attr[j]);
-                        if !(now < c && c <= before) {
-                            continue;
-                        }
-                        let jc = self.commit_of(&base, j);
-                        let covered = self.recv[jc][a] < w.t || jc == i;
-                        if !covered && cause[j].is_none() {
-                            cause[j] = Some(i);
-                            grew = true;
-                        }
-                    }
-                }
-                if grew {
-                    continue 'walk;
-                }
+            let p = self.pass(&order, &base, &mut cause, mode, cycled);
+            if p.grew {
+                continue;
             }
             if mode == Drops::Provenance && !cycled {
                 let mut undone = false;
                 for c in cause.iter_mut() {
-                    if c.map_or(false, |r| demoting >> r & 1 == 0) {
+                    if c.map_or(false, |r| p.demoting >> r & 1 == 0) {
                         *c = None;
                         undone = true;
                     }
                 }
                 if undone {
-                    continue 'walk;
+                    continue;
                 }
             }
-            return EOut { edges, dropped, attr, base, passes, cycled };
+            return EOut { edges: p.edges, dropped: p.dropped, attr: p.attr, base, passes, cycled };
         }
     }
 
@@ -422,7 +448,9 @@ pub struct Stats {
     residue_checks: u64,
     residue_gain: u64,
     residue_loss: u64,
+    disagree: u64,
     ex_cycle: Option<EHist>,
+    ex_disagree: Option<EHist>,
     ex_order: Option<EHist>,
     ex_honest: Option<EHist>,
     ex_projection: Option<EHist>,
@@ -444,6 +472,7 @@ impl Stats {
         self.residue_checks += o.residue_checks;
         self.residue_gain += o.residue_gain;
         self.residue_loss += o.residue_loss;
+        self.disagree += o.disagree;
         fn pick(a: &mut Option<EHist>, b: Option<EHist>) {
             if let Some(b) = b {
                 if a.as_ref().map_or(true, |a| b.writes.len() < a.writes.len()) {
@@ -452,6 +481,7 @@ impl Stats {
             }
         }
         pick(&mut self.ex_cycle, o.ex_cycle);
+        pick(&mut self.ex_disagree, o.ex_disagree);
         pick(&mut self.ex_order, o.ex_order);
         pick(&mut self.ex_honest, o.ex_honest);
         pick(&mut self.ex_projection, o.ex_projection);
@@ -462,9 +492,9 @@ impl Stats {
 
     pub fn print(&self, name: &str, mode: Drops) {
         println!(
-            "{name}: {} histories | max passes {} | cycles {} | order-dependent {} | drops with nobody offline {} | projections {} mismatches {} | joiner writes lowering someone {} | removed-actor residue checks {} gains {} losses {}",
+            "{name}: {} histories | max passes {} | cycles {} | order-dependent {} | drops with nobody offline {} | projections {} mismatches {} | joiner writes lowering someone {} | removed-actor residue checks {} gains {} losses {} | nodes disagreeing after every delivery {}",
             self.histories, self.max_passes, self.cycles, self.order_dep, self.honest_mismatch, self.projections, self.projection_mismatch,
-            self.joiner_lowers, self.residue_checks, self.residue_gain, self.residue_loss
+            self.joiner_lowers, self.residue_checks, self.residue_gain, self.residue_loss, self.disagree
         );
         for (label, ex) in [
             ("cycle", &self.ex_cycle),
@@ -474,10 +504,17 @@ impl Stats {
             ("joiner lowering someone", &self.ex_joiner),
             ("residue gain", &self.ex_gain),
             ("residue loss", &self.ex_loss),
+            ("disagreement after every delivery", &self.ex_disagree),
         ] {
             if let Some(h) = ex {
+                // Shrunk while it still fails the same check.
+                let fails = example_check(label, mode);
+                let mut h = if fails(h) { crate::shrink::shrink(h.clone(), fails) } else { h.clone() };
+                if label == "drop with nobody offline" {
+                    h = honest(&h).unwrap_or(h);
+                }
                 println!("  smallest {label} example:");
-                print_hist(h, mode);
+                print_hist(&h, mode);
             }
         }
     }
@@ -493,15 +530,92 @@ fn fmt_edge(e: Option<Edge>) -> String {
     }
 }
 
-pub fn print_hist(h: &EHist, mode: Drops) {
-    println!("    genesis {}", h.genesis.iter().map(|&e| fmt_edge(e)).collect::<Vec<_>>().join(" "));
+/// A trace of `h` under `mode`: genesis edges, then each commit in walk order with its ops'
+/// attributions and receipts, then the result.
+pub fn trace(h: &EHist, mode: Drops) -> String {
+    let mut s = format!("    genesis {}\n", h.genesis.iter().map(|&e| fmt_edge(e)).collect::<Vec<_>>().join(" "));
     let o = h.eval_mode(mode);
     for i in h.order() {
         let w = &h.writes[i];
         let ops: Vec<String> = w.ops.iter().enumerate().map(|(k, &(x, e))| format!("{x} := {} {:?}", fmt_edge(e), o.attr[o.base[i] + k])).collect();
-        println!("    w{i}: {} sets {} at t={} id {} | recv {:?}", w.author, ops.join(", "), w.t, w.id, h.recv[i]);
+        s += &format!("    w{i}: {} sets {} at t={} id {} | {}\n", w.author, ops.join(", "), w.t, w.id, crate::fmt_recv(&h.recv[i], w.author));
     }
-    println!("    -> {:?} dropped commits {:#b} ({} passes, cycled {})", o.all(), o.dropped_commits(), o.passes, o.cycled);
+    s + &format!("    -> {:?} dropped commits {:#b} ({} passes, cycled {})", o.all(), o.dropped_commits(), o.passes, o.cycled)
+}
+
+pub fn print_hist(h: &EHist, mode: Drops) {
+    println!("{}", trace(h, mode));
+}
+
+/// The trace under the specified (sticky) rule.
+impl std::fmt::Display for EHist {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&trace(self, Drops::Sticky))
+    }
+}
+
+/// The result as a function of the write set: authorities and dropped commits' IDs.
+fn result(h: &EHist, o: &EOut) -> (Vec<(Role, Role)>, Vec<u32>) {
+    let dc = o.dropped_commits();
+    let mut ids: Vec<u32> = (0..h.writes.len()).filter(|&i| dc >> i & 1 == 1).map(|i| h.writes[i].id).collect();
+    ids.sort();
+    (o.all(), ids)
+}
+
+/// Quiescence: after every delivery, every node agrees (each node's walk over the commits in
+/// the order it received them gives the canonical result). Returns the first node that
+/// disagrees.
+pub fn quiescent(h: &EHist, mode: Drops) -> Result<(), usize> {
+    let res = result(h, &h.eval_mode(mode));
+    for n in 0..h.n() {
+        let ph = h.permute(&crate::delivery_order(&h.recv, n));
+        if result(&ph, &ph.eval_mode(mode)) != res {
+            return Err(n);
+        }
+    }
+    Ok(())
+}
+
+/// `h` with nobody offline (None when two commits share a time).
+fn honest(h: &EHist) -> Option<EHist> {
+    let distinct = h.writes.iter().map(|w| w.t).collect::<HashSet<_>>().len() == h.writes.len();
+    distinct.then(|| {
+        let mut honest = h.clone();
+        for (i, r) in honest.recv.iter_mut().enumerate() {
+            r.fill(h.writes[i].t);
+        }
+        honest
+    })
+}
+
+fn honest_drops(h: &EHist, mode: Drops) -> bool {
+    let a = h.eval_mode(mode);
+    a.dropped != 0 || a.all() != h.eval(false).all()
+}
+
+/// Actors whose projected authority (`EHist::projected`) differs from the full node's.
+fn projection_mismatches(h: &EHist, mode: Drops, all: &[(Role, Role)]) -> u64 {
+    (1..h.n()).filter(|&z| h.projected(z).eval_mode(mode).auth(z) != all[z]).count() as u64
+}
+
+/// Writes by actors that never hold admin (joiners, link holders, invitees) only add: without
+/// them nobody else ends with more. None when there are no such writes.
+fn joiner_lowers(h: &EHist, mode: Drops, all: &[(Role, Role)]) -> Option<bool> {
+    let na = h.never_admin();
+    (0..h.writes.len()).any(|j| na[h.writes[j].author]).then(|| {
+        let keep: Vec<usize> = (0..h.writes.len()).filter(|&j| !na[h.writes[j].author]).collect();
+        let o0 = h.keep(&keep, h.genesis.clone()).eval_mode(mode);
+        (1..h.n()).any(|y| !na[y] && !covers(all[y], o0.auth(y)))
+    })
+}
+
+/// A removed actor's residue (`EHist::residue`): (someone gains, someone loses), None when
+/// there is no removed actor.
+fn residue_diff(h: &EHist, mode: Drops, all: &[(Role, Role)]) -> Option<(bool, bool)> {
+    h.residue().map(|r| {
+        let or = r.eval_mode(mode);
+        ((1..h.n()).any(|y| !covers(or.auth(y), all[y])), (1..h.n()).any(|y| !covers(all[y], or.auth(y))))
+    })
 }
 
 fn check(h: &EHist, st: &mut Stats, rng: &mut Rng, mode: Drops) {
@@ -518,47 +632,139 @@ fn check(h: &EHist, st: &mut Stats, rng: &mut Rng, mode: Drops) {
         st.order_dep += 1;
         st.ex_order.get_or_insert_with(|| h.clone());
     }
-    let distinct = h.writes.iter().map(|w| w.t).collect::<HashSet<_>>().len() == h.writes.len();
-    if distinct {
-        let mut honest = h.clone();
-        for (i, r) in honest.recv.iter_mut().enumerate() {
-            r.fill(h.writes[i].t);
-        }
-        let a = honest.eval_mode(mode);
-        if a.dropped != 0 || a.all() != honest.eval(false).all() {
+    if quiescent(h, mode).is_err() {
+        st.disagree += 1;
+        st.ex_disagree.get_or_insert_with(|| h.clone());
+    }
+    if let Some(honest) = honest(h) {
+        if honest_drops(&honest, mode) {
             st.honest_mismatch += 1;
-            st.ex_honest.get_or_insert_with(|| honest.clone());
+            st.ex_honest.get_or_insert(honest);
         }
     }
-    for z in 1..h.n() {
-        st.projections += 1;
-        if h.projected(z).eval_mode(mode).auth(z) != all[z] {
-            st.projection_mismatch += 1;
-            st.ex_projection.get_or_insert_with(|| h.clone());
-        }
+    st.projections += h.n() as u64 - 1;
+    let bad = projection_mismatches(h, mode, &all);
+    if bad > 0 {
+        st.projection_mismatch += bad;
+        st.ex_projection.get_or_insert_with(|| h.clone());
     }
-    // Writes by actors that never hold admin (joiners, link holders, invitees) only add:
-    // without them nobody else ends with more.
-    let na = h.never_admin();
-    if (0..h.writes.len()).any(|j| na[h.writes[j].author]) {
-        let keep: Vec<usize> = (0..h.writes.len()).filter(|&j| !na[h.writes[j].author]).collect();
-        let o0 = h.keep(&keep, h.genesis.clone()).eval_mode(mode);
-        if (1..h.n()).any(|y| !na[y] && !covers(all[y], o0.auth(y))) {
-            st.joiner_lowers += 1;
-            st.ex_joiner.get_or_insert_with(|| h.clone());
-        }
+    if joiner_lowers(h, mode, &all) == Some(true) {
+        st.joiner_lowers += 1;
+        st.ex_joiner.get_or_insert_with(|| h.clone());
     }
-    if let Some(r) = h.residue() {
+    if let Some((gain, loss)) = residue_diff(h, mode, &all) {
         st.residue_checks += 1;
-        let or = r.eval_mode(mode);
-        if (1..h.n()).any(|y| !covers(or.auth(y), all[y])) {
+        if gain {
             st.residue_gain += 1;
             st.ex_gain.get_or_insert_with(|| h.clone());
         }
-        if (1..h.n()).any(|y| !covers(all[y], or.auth(y))) {
+        if loss {
             st.residue_loss += 1;
             st.ex_loss.get_or_insert_with(|| h.clone());
         }
+    }
+}
+
+/// Each example's check, for shrinking it.
+fn example_check(label: &str, mode: Drops) -> impl Fn(&EHist) -> bool {
+    let label = label.to_string();
+    move |h: &EHist| {
+        let o = h.eval_mode(mode);
+        let all = o.all();
+        match label.as_str() {
+            "cycle" => o.cycled,
+            "order dependence" | "disagreement after every delivery" => quiescent(h, mode).is_err(),
+            "drop with nobody offline" => honest(h).map_or(false, |h| honest_drops(&h, mode)),
+            "projection mismatch" => projection_mismatches(h, mode, &all) > 0,
+            "joiner lowering someone" => joiner_lowers(h, mode, &all) == Some(true),
+            "residue gain" => residue_diff(h, mode, &all).map_or(false, |r| r.0),
+            "residue loss" => residue_diff(h, mode, &all).map_or(false, |r| r.1),
+            _ => false,
+        }
+    }
+}
+
+impl crate::shrink::Shrink for EHist {
+    fn smaller(&self) -> Vec<EHist> {
+        use crate::shrink::{compact_ids, compact_times, without, LATE};
+        let mut out = Vec::new();
+        let n = self.n();
+        for i in 0..self.writes.len() {
+            out.push(EHist { writes: without(&self.writes, i), recv: without(&self.recv, i), ..self.clone() });
+            for k in (0..self.writes[i].ops.len()).filter(|_| self.writes[i].ops.len() > 1) {
+                let mut h = self.clone();
+                h.writes[i].ops.remove(k);
+                out.push(h);
+            }
+        }
+        // An unused node other than the owner.
+        for k in (1..n).filter(|_| n > 2) {
+            if self.genesis[k].is_none() && self.writes.iter().all(|w| w.author != k && w.ops.iter().all(|&(x, _)| x != k)) {
+                let mut h = self.clone();
+                h.genesis.remove(k);
+                for r in &mut h.recv {
+                    r.remove(k);
+                }
+                for w in &mut h.writes {
+                    w.author -= usize::from(w.author > k);
+                    w.ops.iter_mut().for_each(|(x, _)| *x -= usize::from(*x > k));
+                }
+                out.push(h);
+            }
+        }
+        // Simpler edges: absent, no `until`, no invite, lower role.
+        let simpler = |e: Edge| -> Vec<Option<Edge>> {
+            let mut v = vec![None];
+            if e.until != NEVER {
+                v.push(Some(Edge { until: NEVER, ..e }));
+            }
+            if e.invite > Role::None {
+                v.push(Some(Edge { invite: Role::None, ..e }));
+            }
+            if e.role > Role::Read {
+                let role = if e.role == Role::Admin { Role::Write } else { Role::Read };
+                v.push(Some(Edge { role, invite: e.invite.min(role), ..e }));
+            }
+            v
+        };
+        for x in 1..n {
+            for e in self.genesis[x].map_or(vec![], simpler) {
+                let mut h = self.clone();
+                h.genesis[x] = e;
+                out.push(h);
+            }
+        }
+        for i in 0..self.writes.len() {
+            for k in 0..self.writes[i].ops.len() {
+                for e in self.writes[i].ops[k].1.map_or(vec![], simpler) {
+                    let mut h = self.clone();
+                    h.writes[i].ops[k].1 = e;
+                    out.push(h);
+                }
+            }
+            for m in (0..n).filter(|&m| m != self.writes[i].author && self.recv[i][m] < LATE) {
+                let mut h = self.clone();
+                h.recv[i][m] = LATE;
+                out.push(h);
+            }
+        }
+        let untils = |h: &EHist| -> Vec<u32> { h.genesis.iter().chain(h.writes.iter().flat_map(|w| w.ops.iter().map(|o| &o.1))).filter_map(|e| e.map(|e| e.until)).collect() };
+        let times: Vec<u32> = self.writes.iter().map(|w| w.t).chain(self.recv.iter().flatten().copied()).chain(untils(self)).collect();
+        if let Some(map) = compact_times(&times) {
+            let mut h = self.clone();
+            h.writes.iter_mut().for_each(|w| w.t = map(w.t));
+            h.recv.iter_mut().flatten().for_each(|v| *v = map(*v));
+            for e in h.genesis.iter_mut().chain(h.writes.iter_mut().flat_map(|w| w.ops.iter_mut().map(|o| &mut o.1))).flatten() {
+                e.until = map(e.until);
+            }
+            out.push(h);
+        }
+        if let Some(ids) = compact_ids(&self.writes.iter().map(|w| w.id).collect::<Vec<_>>()) {
+            let mut h = self.clone();
+            h.writes.iter_mut().zip(ids).for_each(|(w, id)| w.id = id);
+            out.push(h);
+        }
+        out
     }
 }
 

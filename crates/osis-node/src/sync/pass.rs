@@ -23,7 +23,7 @@ pub struct Verdicts {
     /// It stamps here (uploads what it judges must-hold).
     pub writer: bool,
     /// Bodies it judges must-hold: (commit, the delta parts no snapshot under the label covers).
-    /// A live entry of the commit holding those parts holds the body.
+    /// A live entry of the commit holding those parts and no dropped delta holds the body.
     pub must_hold: Vec<(CommitId, Vec<(usize, usize)>)>,
     /// Entries it knows under the label that it judges must-not-hold and may delete now with a
     /// delete item it can make: (blob, why).
@@ -656,11 +656,14 @@ impl SyncEngine {
                 left.held_back.insert(b.commit);
             }
             let Some(needed) = needed else { continue };
-            // another projection of the commit (a right holder dropped covered deltas) holds it
-            if needed != b.parts && self.carried_by(server, &l, &b.commit, &needed) {
+            let entry = self.entry_for(server, &l, b);
+            // another blob of the commit holding every needed delta holds it (a projection a
+            // right holder dropped covered deltas from, a superset), unless it is must-not-hold
+            // (`holds_nothing`, spec/sync.md §6)
+            let here = entry.is_some_and(|id| server.is_none_or(|s| self.state.is_present(s, &l, &id)));
+            if !here && self.carried_by(server, g, &l, &b.commit, &needed) {
                 continue;
             }
-            let entry = self.entry_for(server, &l, b);
             // another node's commit not at this server: its author (or a co-writer) first
             if !entry.is_some_and(|id| server.is_none_or(|s| self.state.is_present(s, &l, &id))) && !self.relay_due(&b.commit) {
                 left.commits.insert(b.commit);
@@ -1182,10 +1185,20 @@ impl SyncEngine {
 
     /// Whether an entry of commit `c` holding `parts` is present at `server` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
-    /// the parts holds nothing.
-    fn carried_by(&mut self, server: Option<&ServerKey>, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x))) && server.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
+    /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
+    fn carried_by(&mut self, server: Option<&ServerKey>, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(g, c, p)) && server.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
+    }
+
+    /// Whether a blob of commit `c` with delta set `parts` under a label of `g` is must-not-hold
+    /// whatever its siblings: it holds a delta this node dropped (purge, expiry, keep-at-most,
+    /// compaction) or one the label's actor may not read (outside the required set). It holds
+    /// no body and makes no other blob a strict subset (spec/sync.md §6).
+    fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let Some(m) = self.engine.core.commits.get(c) else { return false };
+        let x = self.engine.group_actor(g);
+        parts.iter().any(|p| m.dropped.contains(p) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
     }
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `server`, whoever
@@ -1658,7 +1671,8 @@ impl SyncEngine {
                 .entries_of(l, commit)
                 .filter(|(b, _)| b != id && (server.is_none() || self.state.present_anywhere(l, b)))
                 .filter_map(|(b, o)| match &o.kind {
-                    Kind::Commit { parts: p2, .. } if p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) => Some((b, p2.clone())),
+                    // a must-not-hold superset counts for nothing
+                    Kind::Commit { parts: p2, .. } if p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) && !self.holds_nothing(g, commit, p2) => Some((b, p2.clone())),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
