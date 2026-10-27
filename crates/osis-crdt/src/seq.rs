@@ -9,7 +9,7 @@
 
 use crate::changes::Changes;
 use crate::fragment::{Encoding, Fragment, Meta, Register};
-use crate::seq_lin::{Lin, Plan};
+use crate::seq_lin::{Lin, Partial, Plan};
 use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
 use osis_core::Value;
@@ -59,11 +59,15 @@ pub struct Seq {
     /// use, kept up by joins that add elements, move them or change flags and content, dropped
     /// by any other change of `elems`. Not part of equality.
     lin: OnceLock<Arc<Lin>>,
+    /// Set while the records are held in part (a placement held in part attached, kept when the
+    /// placement is dropped): record lookups outside the pages loaded, and a whole pass over the
+    /// records, are misses (`seq_lin::Partial`). Not part of equality.
+    part: Option<Arc<Partial>>,
 }
 
 impl Clone for Seq {
     fn clone(&self) -> Seq {
-        Seq { text: self.text, meta: self.meta.clone(), elems: self.elems.clone(), lin: self.lin.clone() }
+        Seq { text: self.text, meta: self.meta.clone(), elems: self.elems.clone(), lin: self.lin.clone(), part: self.part.clone() }
     }
 }
 
@@ -85,7 +89,7 @@ impl Seq {
         Seq::new(text, Meta::default(), BTreeMap::new())
     }
     pub(crate) fn new(text: bool, meta: Meta, elems: Elems) -> Seq {
-        Seq { text, meta, elems, lin: OnceLock::new() }
+        Seq { text, meta, elems, lin: OnceLock::new(), part: None }
     }
     pub fn encoding(&self) -> Encoding {
         if self.text { Encoding::Text } else { Encoding::List }
@@ -122,11 +126,36 @@ impl Seq {
         if let Some(l) = self.lin.get() {
             return l.clone();
         }
+        // over records held in part a whole pass is wrong: a miss (of every record unless what
+        // else was missed may let the next run follow instead)
+        if let Some(p) = &self.part {
+            p.whole_pass();
+        }
         let l = Arc::new(Lin::build(&self.elems, self.text));
         if self.elems.len() >= LIN_MIN {
             let _ = self.lin.set(l.clone());
         }
         l
+    }
+    /// The placement cached, if any.
+    pub(crate) fn lin_cached(&self) -> Option<Arc<Lin>> {
+        self.lin.get().cloned()
+    }
+    /// Caches `l` as the placement (`None`: drops it).
+    pub(crate) fn set_lin(&mut self, l: Option<Arc<Lin>>) {
+        self.lin = OnceLock::new();
+        self.part = l.as_ref().and_then(|l| l.partial().cloned());
+        if let Some(l) = l {
+            let _ = self.lin.set(l);
+        }
+    }
+    /// The handle a placement held in part notes its misses in.
+    fn part(&self) -> Option<Arc<Partial>> {
+        self.part.clone()
+    }
+    /// Whether the record lookup of `d` is outside the pages loaded (a miss noted).
+    fn uncovered(&self, d: &Dot) -> bool {
+        self.part.as_ref().is_some_and(|p| !p.covers(d, d))
     }
     /// Whether a cached placement is held and equals a whole pass (tests).
     #[cfg(test)]
@@ -309,18 +338,86 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     content_rule(se, text);
 }
 
+/// The records of a sequence whose placement is held in part: a lookup outside the pages
+/// loaded is a miss (`seq_lin::Partial`).
+struct Covered<'a> {
+    elems: &'a Elems,
+    part: Option<&'a Partial>,
+}
+
+impl Recs for Covered<'_> {
+    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
+        if self.part.is_some_and(|p| !p.covers(d, d)) {
+            return None;
+        }
+        crate::seq_span::find(self.elems, d)
+    }
+    fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
+        if self.part.is_some_and(|p| !p.covers(a, b)) {
+            return None;
+        }
+        Some(self.elems.range(a..=b).collect())
+    }
+    fn get(&self, d: &Dot) -> Option<&SeqElem> {
+        if self.part.is_some_and(|p| !p.covers(d, d)) {
+            return None;
+        }
+        self.elems.get(d)
+    }
+}
+
+/// A dry run's records (`dry_follow`): `top`, holding every record a delta's records touch,
+/// over the state's.
+struct Over<'a> {
+    top: &'a Elems,
+    base: Covered<'a>,
+}
+
+impl Recs for Over<'_> {
+    fn find(&self, d: &Dot) -> Option<(&Dot, &SeqElem)> {
+        crate::seq_span::find(self.top, d).or_else(|| self.base.find(d))
+    }
+    fn starting(&self, a: &Dot, b: &Dot) -> Option<Vec<(&Dot, &SeqElem)>> {
+        self.top.starting(a, b)
+    }
+}
+
 /// Joins `d`'s element records into `s` and prunes what lands against `e`. A record is cut
 /// where the state's records start (ranges of the state are first split at its bounds), so each
 /// piece meets one state record of its own span, or none.
 pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes) {
+    join_elems_in(s, d, e, ch, None)
+}
+
+/// Follows a copy of `lin` through joining `d` into `s`, which stays as it is (the records `d`
+/// touches are copied): whether it followed. A placement held in part notes its misses.
+pub(crate) fn dry_follow(s: &Seq, d: &Seq, lin: Arc<Lin>) -> bool {
+    if d.text != s.text || d.meta.reset.is_some() {
+        return false;
+    }
+    let mut t = Seq::new(s.text, s.meta.clone(), s.footprint(d).elems);
+    t.set_lin(Some(lin));
+    join_elems_in(&mut t, d.clone(), s.meta.reset.as_ref(), &mut Changes::new(), Some(&s.elems));
+    t.lin.get().is_some()
+}
+
+/// `join_elems`; with `base`, `s` is a dry run's copy of the records the delta touches over the
+/// state's `base` (`dry_follow`).
+fn join_elems_in(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Changes, base: Option<&Elems>) {
+    let part = s.part();
+    let part = part.as_deref();
     // how the cached placement follows each record, decided before that record joins
     let mut plans = s.lin.get().map(|_| Vec::with_capacity(d.elems.len()));
     for (dot, de) in d.elems {
         let n = plans.as_ref().map_or(0, Vec::len);
-        if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get())
-            && !l.plan(&s.elems, &dot, &de, ps)
-        {
-            plans = None;
+        if let (Some(ps), Some(l)) = (plans.as_mut(), s.lin.get()) {
+            let ok = match base {
+                Some(b) => l.plan(&Over { top: &s.elems, base: Covered { elems: b, part } }, &dot, &de, ps),
+                None => l.plan(&Covered { elems: &s.elems, part }, &dot, &de, ps),
+            };
+            if !ok {
+                plans = None;
+            }
         }
         let was = ch.take_changed();
         join_one(s, dot, de, e, ch);
@@ -337,7 +434,10 @@ pub(crate) fn join_elems(s: &mut Seq, d: Seq, e: Option<&Stamp>, ch: &mut Change
         }
     }
     let ok = match (plans, s.lin.get_mut()) {
-        (Some(ps), Some(l)) => Arc::make_mut(l).follow(&s.elems, s.text, ps),
+        (Some(ps), Some(l)) => match base {
+            Some(b) => Arc::make_mut(l).follow(&Over { top: &s.elems, base: Covered { elems: b, part } }, s.text, ps),
+            None => Arc::make_mut(l).follow(&Covered { elems: &s.elems, part }, s.text, ps),
+        },
         _ => false,
     };
     if !ok {
@@ -461,15 +561,26 @@ pub(crate) fn inner_max(s: &Seq, valued: bool) -> Option<Stamp> {
     m
 }
 
-/// `inner_max(s, true).is_some()`, stopping at the first presence-counting write.
+/// `inner_max(s, true).is_some()`, stopping at the first presence-counting write. Records held
+/// in part (a placement held in part attached) are written if a visible element is placed (it
+/// has a creation or content that reads); else, if none loaded is, the lookup misses them all.
 pub(crate) fn has_written(s: &Seq) -> bool {
-    s.elems.iter().any(|(d, e)| {
+    let any = s.elems.iter().any(|(d, e)| {
         let creation = e.creation_counts();
         (creation && e.created.is_some())
             || e.pos.iter().any(|p| creation || p.0.dot != *d)
             || e.deleted.is_some()
             || matches!(&e.content, SeqContent::Frag(f) if f.present() || f.reset().is_some())
-    })
+    });
+    if any {
+        return true;
+    }
+    let Some(p) = &s.part else { return false };
+    if s.lin.get().is_some_and(|l| l.p.shown() > 0) {
+        return true;
+    }
+    p.all();
+    false
 }
 
 /// Whether any record exists (emptiness, §4.2).
@@ -502,10 +613,13 @@ impl SeqRead for Seq {
         self.lin()
     }
     fn rec(&self, d: &Dot) -> Option<&SeqElem> {
+        if self.uncovered(d) {
+            return None;
+        }
         self.elems.get(d)
     }
     fn holds(&self, d: &Dot) -> bool {
-        crate::seq_span::find(&self.elems, d).is_some()
+        !self.uncovered(d) && crate::seq_span::find(&self.elems, d).is_some()
     }
 }
 
@@ -522,7 +636,7 @@ pub(crate) struct Layered<'s> {
 
 /// The records of a `Layered`: the batch's over the state's.
 struct Union<'a> {
-    base: &'a Elems,
+    base: Covered<'a>,
     top: &'a Elems,
 }
 
@@ -555,7 +669,7 @@ impl<'s> Layered<'s> {
             match self.top.get(&dot) {
                 Some(r) if r.span != de.span => return false,
                 Some(_) => {}
-                None => match self.base.elems.find(&dot) {
+                None => match (Covered { elems: &self.base.elems, part: self.base.part().as_deref() }).find(&dot) {
                     Some((k, r)) if *k == dot && r.span == de.span => {
                         self.top.insert(dot.clone(), r.clone());
                     }
@@ -564,7 +678,8 @@ impl<'s> Layered<'s> {
                     None => {}
                 },
             }
-            if !self.lin.plan(&Union { base: &self.base.elems, top: &self.top }, &dot, &de, &mut plans) {
+            let part = self.base.part();
+            if !self.lin.plan(&Union { base: Covered { elems: &self.base.elems, part: part.as_deref() }, top: &self.top }, &dot, &de, &mut plans) {
                 return false;
             }
             let mut t = Seq::new(self.base.text, Meta::default(), std::mem::take(&mut self.top));
@@ -574,7 +689,8 @@ impl<'s> Layered<'s> {
                 return false;
             }
         }
-        Arc::make_mut(&mut self.lin).follow(&Union { base: &self.base.elems, top: &self.top }, self.base.text, plans)
+        let part = self.base.part();
+        Arc::make_mut(&mut self.lin).follow(&Union { base: Covered { elems: &self.base.elems, part: part.as_deref() }, top: &self.top }, self.base.text, plans)
     }
 
     /// Present (§4.3) as the joined state would be.
@@ -588,8 +704,9 @@ impl<'s> Layered<'s> {
         let mut elems = self.base.elems.clone();
         elems.extend(self.top.iter().map(|(k, v)| (k.clone(), v.clone())));
         let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone() }, elems);
+        // (a placement held in part is over records held in part)
         #[cfg(test)]
-        assert!(*self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");
+        assert!(self.lin.partial().is_some() || *self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");
         s
     }
 }
@@ -602,10 +719,10 @@ impl SeqRead for Layered<'_> {
         self.lin.clone()
     }
     fn rec(&self, d: &Dot) -> Option<&SeqElem> {
-        self.top.get(d).or_else(|| self.base.elems.get(d))
+        self.top.get(d).or_else(|| self.base.rec(d))
     }
     fn holds(&self, d: &Dot) -> bool {
-        crate::seq_span::find(&self.top, d).is_some() || crate::seq_span::find(&self.base.elems, d).is_some()
+        crate::seq_span::find(&self.top, d).is_some() || self.base.holds(d)
     }
 }
 

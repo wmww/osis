@@ -199,6 +199,133 @@ pub(crate) struct Follows {
     pub missed: usize,
     pub derived: usize,
     pub missed_derived: usize,
+    /// Joins a whole placement followed, and of those a placement held in part followed too.
+    pub whole: usize,
+    pub partial: usize,
+    /// Blocks the partial follows loaded, of all their placements' blocks.
+    pub loaded: usize,
+    pub blocks: usize,
+}
+
+/// A sequence held in part as a node holds a paged one: its records in pages of `per` records
+/// (by key) loaded on a miss, its placement (`SeqPlace`) from the stored form of a whole one with
+/// blocks and dot-map chunks loaded on a miss.
+pub(crate) struct Pager {
+    st: Seq,
+    pub whole: crate::seq_place::SeqPlace,
+    bounds: Vec<Option<Dot>>,
+    pub loaded: std::collections::BTreeSet<usize>,
+    pub p: crate::seq_place::SeqPlace,
+}
+
+impl Pager {
+    pub(crate) fn new(st: &Seq, per: usize) -> Pager {
+        let whole = Fragment::Seq(st.clone()).seq_place().unwrap();
+        let keys: Vec<&Dot> = st.elems().keys().collect();
+        let bounds = std::iter::once(None).chain(keys.chunks(per.max(1)).skip(1).map(|c| Some(c[0].clone()))).collect();
+        let p = crate::seq_place::SeqPlace::from_top(&whole.top()).unwrap();
+        Pager { st: st.clone(), whole, bounds, loaded: Default::default(), p }
+    }
+    fn page_of(&self, x: &Dot) -> usize {
+        self.bounds.partition_point(|b| b.as_ref().is_none_or(|b| b <= x)) - 1
+    }
+    /// Loads the pages holding `a..=b`.
+    pub(crate) fn load(&mut self, a: &Dot, b: &Dot) {
+        let r = self.page_of(a)..=self.page_of(b);
+        self.loaded.extend(r);
+    }
+    /// The records loaded, with the placement attached (its cover set).
+    pub(crate) fn part(&self) -> Fragment {
+        let elems = self.st.elems().iter().filter(|(k, _)| self.loaded.contains(&self.page_of(k))).map(|(k, v)| (k.clone(), v.clone())).collect();
+        self.p.cover(self.loaded.iter().map(|i| (self.bounds[*i].clone(), self.bounds.get(i + 1).cloned().flatten())).collect());
+        let mut f = Fragment::Seq(Seq::new(self.st.text, self.st.meta.clone(), elems));
+        let mut p = self.p.clone();
+        if !p.is_partial() {
+            // loaded whole: a text's chars set (`fill_chars`), as a node does
+            f.fill_chars(&mut p);
+        }
+        f.set_seq_place(Some(p));
+        f
+    }
+    /// Loads what the placement missed since the last call; whether it missed anything.
+    pub(crate) fn absorb(&mut self) -> bool {
+        let m = self.p.misses();
+        for b in &m.blocks {
+            assert!(self.p.fill(*b, self.whole.rows(*b).unwrap()), "block {b} fits its counts");
+        }
+        for c in &m.chunks {
+            assert!(self.p.fill_chunk(c.as_ref(), self.whole.chunk(c.as_ref()).unwrap()), "chunk fits");
+        }
+        for (a, b) in &m.recs {
+            self.load(a, b);
+        }
+        if m.all {
+            // as a node does: load whole
+            self.loaded.extend(0..self.bounds.len());
+            let (bs, cs) = self.p.stubs();
+            for b in bs {
+                assert!(self.p.fill(b, self.whole.rows(b).unwrap()));
+            }
+            for c in cs {
+                assert!(self.p.fill_chunk(c.as_ref(), self.whole.chunk(c.as_ref()).unwrap()));
+            }
+            assert!(self.p.complete());
+        }
+        m.any()
+    }
+}
+
+/// A placement held in part (`SeqPlace`) followed through joining `d` into the records of
+/// `st` held in part (pages of `per` records), loading what it misses (`dry_follow`, then the
+/// join itself): where it follows it is a whole pass of the joined state, the join loads
+/// nothing more, and what it changed can be written back. Whether it followed, with the blocks
+/// it loaded and all blocks.
+pub(crate) fn partial_follow(st: &Seq, d: &Seq, per: usize) -> Option<(usize, usize)> {
+    use crate::seq_place::SeqPlace;
+    let mut pg = Pager::new(st, per);
+    for (k, e) in d.elems() {
+        pg.load(k, &nth(k, e.span - 1));
+    }
+    for _ in 0..64 {
+        pg.part().dry_follow(&Fragment::Seq(d.clone()), &pg.p);
+        if !pg.absorb() {
+            break;
+        }
+    }
+    let mut part = pg.part();
+    let old = pg.p.clone();
+    part.join(Fragment::Seq(d.clone()));
+    let after = part.seq_place_cached()?;
+    let whole = &pg.whole;
+    let counts = (whole.top().blocks.len() - old.stubs().0.len(), whole.top().blocks.len());
+    assert!(!old.misses().any(), "the join missed nothing the dry run loaded");
+    let mut want = st.clone();
+    join_seq(&mut want, d.clone());
+    let want = Fragment::Seq(want).seq_place().unwrap();
+    // loaded whole from the stored form: blocks and chunks as written back
+    let diff = after.diff(&old).expect("descends from what was stored");
+    let mut back = SeqPlace::from_top(&after.top()).unwrap();
+    let (bs, cs) = back.stubs();
+    for b in bs {
+        let rows = after.rows(b).or_else(|| (!diff.blocks.contains(&b)).then(|| whole.rows(b)).flatten()).unwrap();
+        assert!(back.fill(b, rows));
+    }
+    for c in cs {
+        let e = after.chunk(c.as_ref()).or_else(|| (!diff.chunks.contains(&c)).then(|| whole.chunk(c.as_ref())).flatten()).unwrap();
+        assert!(back.fill_chunk(c.as_ref(), e));
+    }
+    assert!(back.complete());
+    assert!(back.same(&want), "a placement held in part, followed and stored, is a whole pass's");
+    Some(counts)
+}
+
+/// `s` ⊔ `d` (a fragment join of two sequences).
+fn join_seq(s: &mut Seq, d: Seq) {
+    let mut f = Fragment::Seq(std::mem::replace(s, Seq::empty(d.text)));
+    f.join(Fragment::Seq(d));
+    if let Fragment::Seq(x) = f {
+        *s = x;
+    }
 }
 
 /// Text built by a random history (`upgraded`: then a string register write over it, embedded as
@@ -269,10 +396,21 @@ pub(crate) fn snapshot_then_edit(seed: u64, upgraded: bool, n: usize) -> Follows
             }
         }
         let cached = before.as_ref().is_some_and(|x| x.lin_check().is_some());
+        // a placement held in part, with the records held in part
+        let partial = match (&before, &d) {
+            (Some(st), Fragment::Seq(ds)) if cached => partial_follow(st, ds, 1 + f.joins % 8),
+            _ => None,
+        };
         let _ = crate::seq_lin::probe();
         ours.join(d);
         // followed: no whole pass in the join, and still cached
         let after = crate::seq_lin::probe().1 == 0 && matches!(&*ours, Fragment::Seq(x) if x.lin_check().is_some());
+        f.whole += usize::from(cached && after);
+        f.partial += usize::from(cached && after && partial.is_some());
+        if let Some((l, b)) = partial {
+            f.loaded += l;
+            f.blocks += b;
+        }
         crate::testutil::check_lin(ours);
         assert_eq!(ours.read(), mread(m));
         f.joins += 1;
@@ -338,6 +476,26 @@ fn range_splits_follow_cache_spec_6() {
     }
     assert!(t.split >= 50 && t.missed * 50 <= t.split, "{t:?}");
     assert!(t.kept * 10 >= t.joins * 9, "{t:?}");
+}
+
+/// §6, §8 (`seq_place`): a placement held in part (a node's stored one: blocks and dot-map
+/// chunks loaded on a miss) over records held in part (pages loaded on a miss) follows the
+/// joins a whole one follows, and what it writes back reads as a whole pass (fixed seeds).
+#[test]
+fn partial_placement_follows_like_whole_spec_6() {
+    let mut t = Follows::default();
+    for seed in 0..24 {
+        for upgraded in [false, true] {
+            let x = snapshot_then_edit(seed, upgraded, 30);
+            t.whole += x.whole;
+            t.partial += x.partial;
+            t.loaded += x.loaded;
+            t.blocks += x.blocks;
+        }
+    }
+    assert!(t.whole >= 1000 && t.partial * 100 >= t.whole * 98, "{t:?}");
+    // the blocks the joins look at, not every block
+    assert!(t.loaded * 2 < t.blocks, "{t:?}");
 }
 
 /// §6.1, §7 (`seq_lin`): writes on embedded characters (`Derived` dots) of an upgraded text, and
