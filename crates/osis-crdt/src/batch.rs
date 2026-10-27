@@ -46,8 +46,8 @@ struct Seen<'s> {
     frag: Over<'s>,
 }
 
-/// A view of a sequence position: the state's sequence under the batch's records, or (where
-/// those do not line up, or a reset of the batch lies above) a copy of both joined.
+/// A view of a sequence position: the state's sequence under the batch's records, or (where a
+/// reset of the batch lies above, or the placement cannot follow) a copy of both joined.
 enum Over<'s> {
     Layer(Layered<'s>),
     Copy(Fragment),
@@ -133,26 +133,41 @@ impl<'s> Batch<'s> {
             self.acc = Some(d);
             return Ok(());
         };
-        // the kept view goes on only if state ⊔ acc ⊔ d = state ⊔ next there (associativity)
+        // the kept view goes on only if state ⊔ acc ⊔ d = state ⊔ next there (associativity):
+        // checked at `d`'s elements only (`seq::Foot`), else on copies
         let mut follow = None;
         if let (Some((at, index)), Some(frag)) = (point, kept) {
             let (a_at, e) = at_point(Some(&a), &at, index, true);
             let (d_at, _) = at_point(Some(&d), &at, index, false);
-            follow = Some((at, index, frag, e, a_at.cloned(), d_at.cloned()));
+            let foot = match (&frag, a_at, d_at) {
+                (_, Some(Fragment::Seq(x)), Some(Fragment::Seq(y))) => seq::Foot::new(x, y, &self.w, e.as_ref()),
+                _ => None,
+            };
+            let a_at = if foot.is_some() { None } else { a_at.cloned() };
+            follow = Some((at, index, frag, e, foot, a_at, d_at.cloned()));
         }
         let next = overlay(a, d, &self.w);
-        if let Some((at, index, frag, e, a_at, d_at)) = follow {
+        if let Some((at, index, frag, e, foot, a_at, d_at)) = follow {
             let (n_at, ne) = at_point(Some(&next), &at, index, true);
+            let same = ne == e
+                && match (&foot, n_at) {
+                    (Some(f), Some(Fragment::Seq(n))) => f.matches(n),
+                    (Some(_), _) => false,
+                    (None, _) => {
+                        let mut ch = crate::changes::Changes::new();
+                        let mut j = a_at.unwrap_or_default();
+                        j.prune(e.as_ref(), &mut ch);
+                        if let Some(d_at) = &d_at {
+                            j.join_into(d_at.clone(), e.as_ref(), &mut ch);
+                        }
+                        let mut n = n_at.cloned().unwrap_or_default();
+                        n.prune(e.as_ref(), &mut ch);
+                        j == n
+                    }
+                };
             let mut ch = crate::changes::Changes::new();
-            let mut j = a_at.unwrap_or_default();
-            j.prune(e.as_ref(), &mut ch);
-            if let Some(d_at) = &d_at {
-                j.join_into(d_at.clone(), e.as_ref(), &mut ch);
-            }
-            let mut n = n_at.cloned().unwrap_or_default();
-            n.prune(e.as_ref(), &mut ch);
             let frag = match (frag, d_at) {
-                _ if ne != e || j != n => None,
+                _ if !same => None,
                 (f, None) => Some(f),
                 (Over::Copy(mut f), Some(d_at)) => {
                     f.join_into(d_at, e.as_ref(), &mut ch);
