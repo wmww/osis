@@ -646,12 +646,13 @@ fn history(seed: u64, len: usize) -> Vec<Step> {
     (0..len).map(|_| random_step(&mut rng)).collect()
 }
 
-/// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_SEEDS=n` and `OSIS_ORDER_LEN=n` set how
-/// many seeds and steps.
+/// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
+/// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps.
 fn run(seeds: std::ops::Range<u64>, len: usize, all_up_to: usize, random: usize, subsets: usize) {
     let env = |k: &str| std::env::var(k).ok().and_then(|x| x.parse::<u64>().ok());
     let only = env("OSIS_ORDER_SEED");
-    let seeds = seeds.start..env("OSIS_ORDER_SEEDS").map_or(seeds.end, |n| seeds.start + n);
+    let start = env("OSIS_ORDER_START").unwrap_or(seeds.start);
+    let seeds = start..env("OSIS_ORDER_SEEDS").map_or(start + (seeds.end - seeds.start), |n| start + n);
     let len = env("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
     let mut fails = Vec::new();
     let seeds: Vec<u64> = match only {
