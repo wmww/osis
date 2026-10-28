@@ -1,7 +1,7 @@
 //! Opening `/secrets` (spec/crypto.md §4): a member's boxes with any key it holds, then older
-//! epochs through history boxes; `SecretStore` persists what a node holds.
+//! epochs through history boxes.
 
-use crate::aspects::{from_schema, history_key, observe_secrets};
+use crate::aspects::{from_schema, observe_secrets};
 use crate::epoch::{ActorEpochs, Unchecked};
 use crate::Error;
 use osis_base::{Role, Tid};
@@ -185,35 +185,4 @@ pub fn ingest_with(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, opener: &
     let mut errs: Vec<Error> = failed.into_iter().map(|(_, e)| e).collect();
     errs.extend(open_histories(actor, secrets, alts, epochs).into_iter().map(|(_, e)| e));
     Ok(errs)
-}
-
-/// Whether `epochs` holds the history box key for (role, epoch) in `secrets`.
-pub fn has_history(secrets: &Secrets, role: Role, epoch: &Epoch) -> bool {
-    secrets.history.contains_key(&history_key(role, epoch))
-}
-
-/// Persistence of held epochs and secrets per actor (the store implements it), establishment
-/// included (`EpochInfo::{established, applied, snapshot}`): never re-inferred on load.
-pub trait SecretStore {
-    fn load(&self, actor: &Tid) -> Option<ActorEpochs>;
-    fn save(&mut self, actor: &Tid, epochs: &ActorEpochs);
-    fn remove(&mut self, actor: &Tid);
-}
-
-/// In-memory `SecretStore` for tests.
-#[derive(Default, Debug)]
-pub struct MemorySecretStore {
-    map: BTreeMap<Tid, ActorEpochs>,
-}
-
-impl SecretStore for MemorySecretStore {
-    fn load(&self, actor: &Tid) -> Option<ActorEpochs> {
-        self.map.get(actor).cloned()
-    }
-    fn save(&mut self, actor: &Tid, epochs: &ActorEpochs) {
-        self.map.insert(*actor, epochs.clone());
-    }
-    fn remove(&mut self, actor: &Tid) {
-        self.map.remove(actor);
-    }
 }
