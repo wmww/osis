@@ -50,6 +50,8 @@ libc = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# cargo-fuzz builds with `--cfg fuzzing` (core/test/fuzz)
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 # No panics on data (notes/architecture.md §3). Tests are exempt via clippy.toml.
 [workspace.lints.clippy]

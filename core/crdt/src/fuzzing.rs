@@ -1,5 +1,6 @@
 //! Fixed inputs of the `seq_follow` fuzz target (core/test/fuzz/fuzz_targets/seq_follow.rs), shared with
-//! its seeds (osis-vectors `corpus.rs`). Not part of the API.
+//! its seeds (osis-vectors `corpus.rs`), and under `--cfg fuzzing` the `seq_ops` target's script
+//! replay. Not part of the API.
 
 use crate::{Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
 use osis_base::{Tid, Ts, Value};
@@ -75,3 +76,7 @@ pub fn seq_follow_state() -> Fragment {
     let snap = Snapshot { absorbed: Default::default(), authors: Default::default(), nonce: [0; 16], fragment: st.clone(), frontiers: Default::default() };
     encode_snapshot(&snap, &cx, None).and_then(|b| decode_snapshot(&b, &cx, &mut Interner::new(), None)).map_or(st, |s| s.fragment)
 }
+
+/// The `seq_ops` target's script and replay (src/fuzz_seq.rs); built only for fuzzing.
+#[cfg(fuzzing)]
+pub use crate::fuzz_seq::{LocalOp, Script, Stats, Step, replay};

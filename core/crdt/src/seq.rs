@@ -158,7 +158,7 @@ impl Seq {
         self.part.as_ref().is_some_and(|p| !p.covers(d, d))
     }
     /// Whether a cached placement is held and equals a whole pass (tests).
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub(crate) fn lin_check(&self) -> Option<bool> {
         self.lin.get().map(|l| **l == Lin::build(&self.elems, self.text) && l.map_ok())
     }
@@ -730,7 +730,7 @@ impl<'s> Layered<'s> {
         elems.extend(self.top.iter().map(|(k, v)| (k.clone(), v.clone())));
         let s = Seq::new(self.base.text, Meta { reset: self.base.meta.reset.clone(), w: self.w.clone() }, elems);
         // (a placement held in part is over records held in part)
-        #[cfg(test)]
+        #[cfg(any(test, fuzzing))]
         assert!(self.lin.partial().is_some() || *self.lin == Lin::build(&s.elems, s.text), "layered placement differs from a whole pass");
         s
     }

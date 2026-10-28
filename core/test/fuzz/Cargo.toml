@@ -13,7 +13,7 @@ cargo-fuzz = true
 members = ["."]
 
 [dependencies]
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
 osis-base = { path = "../../base" }
 osis-schema = { path = "../../schema" }
 osis-commit = { path = "../../commit" }
@@ -133,6 +133,13 @@ bench = false
 [[bin]]
 name = "box"
 path = "fuzz_targets/box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seq_ops"
+path = "fuzz_targets/seq_ops.rs"
 test = false
 doc = false
 bench = false

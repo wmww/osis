@@ -1,0 +1,7 @@
+# A text held in part reads its chars as missing, silently
+> Summary: On a sequence whose placement is held in part (`SeqPlace` attached), a text `read` and the text diff behind `Op::Set` take chars from the placement rows, which keep none until loaded whole, and note no miss; so `Op::Set` there writes nothing or the wrong script, and a read returns "" or a partial string.
+> Tags: crdt
+
+Found by the `seq_ops` fuzz harness (`fuzz_seq::replay`, ops on a `Pager` part). Shrunk: a text "a" (one record, loaded), placement held in part; `Batch` with `Op::Set(Str(""))` writes nothing (whole: deletes the char), because `ops::diff`'s early `read() == v` reads "" from the rows (`seq::read`: `r.ch` only; `seq_diff::text_view`: `r.ch.unwrap_or_default()`). With an insert before it in the same commit the layered copy also loses the record lookups' misses (the joined copy keeps no `Seq::part`), so it reads "" with nothing to load and the Set inserts beside the old text.
+
+No node path hits it today: a node loads a sequence whole for `Op::Set` (notes/node.md Paged state, "anything else loads every page"), and reads by index use `get_range`. It matters if any caller reads a paged text with `Fragment::read` or runs a diff on it. Fix shape: a text read/`text_view` on a placement held in part takes a row's char from its record (`SeqRead::rec`, which notes a miss outside the cover) and a whole read of a partial text notes `all`; check that every copy made under a batch keeps `part`. The harness then can run `Op::Set` on the part too (`fuzz_seq.rs`, the `per > 0` check).

@@ -172,7 +172,7 @@ fn same_snapshot(bytes: &[u8]) -> Result<(), String> {
 
 /// A random history's deltas and snapshots, each mutated `per` times; the first disagreement.
 fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     let commits = history_with(&mut r, types, (1..=3).map(MSource::node).collect(), 3);
     let mut state = None;
     for c in &commits {

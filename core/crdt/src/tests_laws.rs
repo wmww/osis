@@ -2,7 +2,7 @@
 
 use crate::fragment::Fragment;
 use crate::testutil::{mapply, ostate, sink_no_seq};
-use crdt_model::r#gen::{Rng, random_op};
+use crdt_model::r#gen::random_op;
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
 use proptest::prelude::*;
@@ -15,7 +15,7 @@ fn join(a: &Fragment, b: &Fragment) -> Fragment {
 
 /// Three states, writer `i` using `types[i % len]` at the root.
 fn states(seed: u64, types: &[Ty]) -> Vec<Fragment> {
-    let mut r = Rng(seed | 1);
+    let mut r = crate::testutil::rng(seed | 1);
     (0..3u8)
         .map(|i| {
             let ty = &types[usize::from(i) % types.len()];
@@ -58,7 +58,7 @@ proptest! {
     fn join_laws_across_encodings_spec_7(seed in any::<u64>()) {
         let set = Ty::Set(Box::new(Ty::Register));
         let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
-        let mut r = Rng(seed);
+        let mut r = crate::testutil::rng(seed);
         let all = [Ty::Register, Ty::Counter, Ty::Max, Ty::Min, set, map, sink_no_seq()];
         let pick: Vec<Ty> = (0..3).map(|_| all[r.below(all.len())].clone()).collect();
         laws(&states(seed, &pick));
