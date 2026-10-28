@@ -326,7 +326,8 @@ impl Osis {
     }
 
     /// Closes this handle; the database closes with the last one (every commit is already
-    /// durable). Returns once it is closed, so the store can be opened again at once; while
+    /// durable). Returns once it is closed, so the store can be opened again at once (with
+    /// `Runtime::Tokio`, also once its sync task ended, so the app may shut that runtime down); while
     /// other handles keep it open, it returns after `CLOSE_WAIT`. From a callback (the
     /// dispatcher thread, which holds the database while it runs) it fails `Invalid` at once:
     /// drop the handle instead.
@@ -335,10 +336,15 @@ impl Osis {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
         }
         let rx = lock(&self.inner.closing).take();
+        let ended = self.inner.net.ended();
         drop(self);
         // the dispatcher or the sync driver may hold the database for a moment
-        if let Some(rx) = rx {
-            let _ = rx.recv_timeout(CLOSE_WAIT);
+        if let Some(rx) = rx
+            && rx.recv_timeout(CLOSE_WAIT) == Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+            && let Some(e) = ended
+        {
+            // on the app's runtime: the driver ended, so the app may shut its runtime down
+            crate::net::wait_ended(e, CLOSE_WAIT);
         }
         Ok(())
     }

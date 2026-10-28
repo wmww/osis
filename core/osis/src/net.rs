@@ -76,48 +76,67 @@ impl std::fmt::Debug for Transport {
 pub(crate) enum Net {
     Off,
     Manual(Mutex<Vec<Action>>),
-    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, own: Mutex<Option<OwnRt>> },
+    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, stop: Mutex<Option<Stop>> },
 }
 
-/// osis's own runtime (`Runtime::Own`), shut down only after the driver task ended: an engine
-/// call runs in `block_in_place`, off the workers, so a shutdown does not wait for it, and the
-/// task polled on after it returns would find the runtime's timers gone (tokio panics).
-pub(crate) struct OwnRt {
-    rt: tokio::runtime::Runtime,
+/// Ends the driver's runtime use after the driver task ended. An engine call runs in
+/// `block_in_place`, off the workers, so a runtime shutdown does not wait for it, and the task
+/// polled on after it returns would find the runtime's timers gone (tokio panics). osis's own
+/// runtime (`Runtime::Own`) is shut down by a thread that waits for the task's end; `close` on
+/// the app's runtime waits for it (`Net::ended`), so the app may shut its runtime down next.
+pub(crate) struct Stop {
+    own: Option<tokio::runtime::Runtime>,
     /// Disconnects when the driver task ends (or was never spawned).
-    ended: std::sync::mpsc::Receiver<()>,
+    ended: Option<std::sync::mpsc::Receiver<()>>,
     /// The driver task holds this until it ends.
     task: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl Drop for Net {
     fn drop(&mut self) {
-        if let Net::Driver { ctl, own, .. } = self {
-            // the driver ends now, not when its last timer fires
-            let _ = ctl.send(Control::Shutdown);
-            if let Some(OwnRt { rt, ended, task }) = lock(own).take() {
-                drop(task);
-                // this drop may run inside the driver's engine call: wait on another thread
-                let job = Arc::new(Mutex::new(Some((rt, ended))));
-                let j = job.clone();
-                let spawned = std::thread::Builder::new().name("osis-sync-stop".into()).spawn(move || {
-                    if let Some((rt, ended)) = lock(&j).take() {
-                        let _ = ended.recv();
-                        rt.shutdown_timeout(STOP_WAIT);
-                    }
-                });
-                if spawned.is_err()
-                    && let Some((rt, _)) = lock(&job).take()
-                {
-                    rt.shutdown_background();
+        let Net::Driver { ctl, stop, .. } = self else { return };
+        // the driver ends now, not when its last timer fires
+        let _ = ctl.send(Control::Shutdown);
+        let Some(Stop { own: Some(rt), ended, .. }) = lock(stop).take() else { return };
+        // this drop may run inside the driver's engine call: wait on another thread
+        let job = Arc::new(Mutex::new(Some((rt, ended))));
+        let j = job.clone();
+        let spawned = std::thread::Builder::new().name("osis-sync-stop".into()).spawn(move || {
+            if let Some((rt, ended)) = lock(&j).take() {
+                // bounded: a driver awaiting the network is not in an engine call (the database
+                // is gone) and may be dropped
+                if let Some(e) = ended {
+                    let _ = e.recv_timeout(STOP_WAIT);
                 }
+                rt.shutdown_timeout(STOP_WAIT);
             }
+        });
+        if spawned.is_err()
+            && let Some((rt, _)) = lock(&job).take()
+        {
+            rt.shutdown_background();
         }
     }
 }
 
-/// How long the stopping thread lets the workers of osis's own runtime finish their task polls.
+/// How long the stopping thread waits for the driver task to end, then for the workers and
+/// blocking tasks of osis's own runtime.
 const STOP_WAIT: Duration = Duration::from_secs(5);
+
+/// Waits (at most `d`) until the driver task ended. On a multi-thread runtime this blocks in
+/// place so the driver can run; on a current-thread one it does not wait (the driver cannot run
+/// meanwhile, and runs no engine call in `block_in_place` there).
+pub(crate) fn wait_ended(ended: std::sync::mpsc::Receiver<()>, d: Duration) {
+    match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(|| {
+            let _ = ended.recv_timeout(d);
+        }),
+        Ok(_) => {}
+        Err(_) => {
+            let _ = ended.recv_timeout(d);
+        }
+    }
+}
 
 impl Net {
     pub fn new(rt: &Runtime) -> Result<(Net, Option<mpsc::UnboundedReceiver<Control>>)> {
@@ -127,12 +146,18 @@ impl Net {
             Runtime::Tokio(h) => (h.clone(), None),
             Runtime::Own => {
                 let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("osis-sync").enable_all().build().map_err(|e| Error::Network(e.to_string()))?;
-                let (task, ended) = std::sync::mpsc::channel();
-                (rt.handle().clone(), Some(OwnRt { rt, ended, task: Some(task) }))
+                (rt.handle().clone(), Some(rt))
             }
         };
+        let (task, ended) = std::sync::mpsc::channel();
         let (ctl, rx) = mpsc::unbounded_channel();
-        Ok((Net::Driver { ctl, handle, own: Mutex::new(own) }, Some(rx)))
+        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Some(ended), task: Some(task) })) }, Some(rx)))
+    }
+
+    /// On the app's runtime: what disconnects once the driver task ended (`close` waits on it).
+    pub fn ended(&self) -> Option<std::sync::mpsc::Receiver<()>> {
+        let Net::Driver { stop, .. } = self else { return None };
+        lock(stop).as_mut().filter(|s| s.own.is_none()).and_then(|s| s.ended.take())
     }
 
     /// Whether anything carries actions.
@@ -166,7 +191,7 @@ impl Net {
     /// (registered at `relays`) and publishes `/reach`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, ctl, own } = self else { return Ok(()) };
+        let Net::Driver { handle, ctl, stop } = self else { return Ok(()) };
         let host = OsisHost(db);
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         let mut multi = osis_transport::Multi::default();
@@ -188,7 +213,7 @@ impl Net {
                 (None, false)
             }
         };
-        let alive = lock(own).as_mut().and_then(|o| o.task.take());
+        let alive = lock(stop).as_mut().and_then(|s| s.task.take());
         handle.spawn(async move {
             let _alive = alive;
             driver::run_host(host, multi, Vec::new(), clock, rx, log).await;

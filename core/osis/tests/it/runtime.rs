@@ -432,15 +432,7 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
 // runtime (tokio panics "... it is being shutdown" on an `osis-sync` thread). spec: none (an API property)
 #[test]
 fn close_while_driver_runs_no_timer_panic() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static PANICS: AtomicUsize = AtomicUsize::new(0);
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |i| {
-        if i.to_string().contains("being shutdown") {
-            PANICS.fetch_add(1, Ordering::SeqCst);
-        }
-        prev(i);
-    }));
+    count_shutdown_panics();
     let net = osis_transport::Net::new(9);
     std::thread::scope(|sc| {
         for t in 0..8u64 {
@@ -459,5 +451,90 @@ fn close_while_driver_runs_no_timer_panic() {
         }
     });
     std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(PANICS.load(Ordering::SeqCst), 0);
+    assert_eq!(shutdown_panics("osis-sync"), 0);
+}
+
+/// Names of the threads that panicked on a timer of a shut-down tokio runtime.
+static SHUTDOWN_PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Installs (once) a panic hook recording `SHUTDOWN_PANICS`.
+fn count_shutdown_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |i| {
+            if i.to_string().contains("being shutdown") {
+                let name = std::thread::current().name().unwrap_or("").to_string();
+                SHUTDOWN_PANICS.lock().unwrap_or_else(|p| p.into_inner()).push(name);
+            }
+            prev(i);
+        }));
+    });
+}
+
+/// How many threads named `prefix...` panicked on a timer of a shut-down runtime.
+fn shutdown_panics(prefix: &str) -> usize {
+    SHUTDOWN_PANICS.lock().unwrap_or_else(|p| p.into_inner()).iter().filter(|n| n.starts_with(prefix)).count()
+}
+
+// notes/api.md Handle and sync: `close` returns once the store is closed, also with
+// `Runtime::Own` (whose runtime stops in the background): the store opens again at once and
+// holds every write. spec: none (an API property)
+#[test]
+fn own_runtime_reopen_right_after_close() {
+    let dir = std::env::temp_dir().join(format!("osis-reopen-{}-{}", std::process::id(), rand_suffix()));
+    let net = osis_transport::Net::new(10);
+    let at = |i: u64| {
+        let mut c = Config::at(StoreAt::Dir(dir.clone()));
+        c.seed = Some(i);
+        c.runtime = Runtime::Own;
+        c.transport = Some(Transport::InProcess(net.endpoint(&format!("r{i}"))));
+        c
+    };
+    let (db, _) = Osis::create(at(0)).unwrap();
+    let t = db.write_with(|w| w.create(db.me(), Place::Unsynced)).unwrap();
+    db.close().unwrap();
+    for i in 1..12u64 {
+        let db = Osis::open(at(i)).unwrap();
+        assert_eq!(db.get(t, ak("/n/v")).unwrap(), (i > 1).then(|| Value::Int(i as i64 - 1)));
+        db.write_with(|w| w.at(t, ak("/n/v")).set(&Value::Int(i as i64))).unwrap();
+        db.close().unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn rand_suffix() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u8(0);
+    h.finish()
+}
+
+// notes/api.md Handle and sync: closing a database on the app's runtime (`Runtime::Tokio`)
+// and then shutting that runtime down must not let the driver poll a timer of the shut-down
+// runtime. spec: none (an API property)
+#[test]
+fn tokio_runtime_close_then_shutdown_no_timer_panic() {
+    count_shutdown_panics();
+    let net = osis_transport::Net::new(11);
+    std::thread::scope(|sc| {
+        for t in 0..8u64 {
+            let net = net.clone();
+            sc.spawn(move || {
+                for i in 0..40 {
+                    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("tk-close").enable_all().build().unwrap();
+                    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
+                    c.seed = Some(t * 1000 + i);
+                    c.runtime = Runtime::Tokio(rt.handle().clone());
+                    c.transport = Some(Transport::InProcess(net.endpoint(&format!("k{t}-{i}"))));
+                    let (db, _) = Osis::create(c).unwrap();
+                    let _ = common::block_on(db.wait_synced(osis::SyncScope::All, Duration::from_secs(1)));
+                    db.close().unwrap();
+                    drop(rt);
+                }
+            });
+        }
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(shutdown_panics("tk-close"), 0);
 }
