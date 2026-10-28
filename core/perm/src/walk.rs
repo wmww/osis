@@ -354,6 +354,29 @@ const FORWARD_MAX: usize = 4;
 /// most 1/`SHADOW_SHARE` of the later items (512 or more) need it; else the walk goes on from it.
 const SHADOW_SHARE: usize = 8;
 
+#[cfg(debug_assertions)]
+thread_local! {
+    static SHADOW_GUARD: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Debug builds, this thread: `Some(true)` declines every placement that would walk later
+/// items in a shadow, `Some(false)` never declines one for its cost, `None` the `SHADOW_SHARE`
+/// rule (a test walks both paths over the same inputs).
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub fn force_shadow_guard(on: Option<bool>) {
+    SHADOW_GUARD.with(|g| g.set(on));
+}
+
+/// Whether the cost guard declines a shadow placement re-judging `n` of `rest` later items.
+fn too_costly(n: usize, rest: usize) -> bool {
+    #[cfg(debug_assertions)]
+    if let Some(on) = SHADOW_GUARD.with(|g| g.get()) {
+        return on;
+    }
+    rest >= 512 && n * SHADOW_SHARE > rest
+}
+
 /// One change to the edge state in the final walk, for time queries.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Change {
@@ -552,8 +575,7 @@ impl Walked {
         }
         // (a cost choice: the items re-judged are the costly ones to walk, mostly audits of
         // many nodes; past an eighth of a long rest, walking on from `c` is cheaper)
-        let rest = items.list.len().saturating_sub(i);
-        if rest >= 512 && (dep.len() + audited.len()) * SHADOW_SHARE > rest {
+        if too_costly(dep.len() + audited.len(), items.list.len().saturating_sub(i)) {
             return Placement::Declined;
         }
         self.place_shadowed(input, items, dropped, epoch, c, i, &keys, before, &moved, &dep, &audited, &a, &f)

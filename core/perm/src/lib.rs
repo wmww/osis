@@ -31,3 +31,6 @@ pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
 pub use types::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, WriteId, MEMBERS};
 pub use walk::{Applied, Attr, Demotion, Fall};
+#[cfg(debug_assertions)]
+#[doc(hidden)]
+pub use walk::force_shadow_guard;
