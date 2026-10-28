@@ -906,13 +906,11 @@ fn set_claim(core: &mut Core, k: (Tid, CommitId), v: (Tid, osis_base::Ts), held:
     let src = osis_crdt::Source::commit(k.1);
     let ks: Vec<(Tid, Ak)> = core.ix.carried.range((k.0, Ak::MIN)..).take_while(|(x, _)| x.0 == k.0).map(|(x, _)| x.clone()).collect();
     for ak in ks {
+        // only groups of this source recorded under another claim move (checked before cloning)
+        if !core.ix.carried.get(&ak).is_some_and(|gs| gs.iter().any(|g| g.src == src && (g.node, g.ts) != v)) {
+            continue;
+        }
         let Some(mut gs) = core.ix.carried.get(&ak).cloned() else { continue };
-        if !gs.iter().any(|g| g.src == src) {
-            continue;
-        }
-        if gs.iter().all(|g| g.src != src || (g.node, g.ts) == v) {
-            continue;
-        }
         for g in gs.iter_mut().filter(|g| g.src == src) {
             (g.node, g.ts) = v;
         }
