@@ -371,10 +371,10 @@ impl Engine {
     /// Whether every delta of `blob` hashes to its entry in the commit's header (the applied,
     /// resolved one when held; spec/commits.md §4): a blob of a held commit is otherwise never
     /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
-    /// secret) or the resolved header is unknown.
+    /// secret) or the resolved header is unknown (or fails to decode).
     pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
         let h = match self.core.commits.get(&blob.id()) {
-            Some(m) => m.header.arc(),
+            Some(m) => m.header.decoded()?,
             None if blob.header.is_resolved() => Arc::new(blob.header.clone()),
             None => return None,
         };
@@ -616,9 +616,9 @@ impl Engine {
         v.into_iter().map(|x| x.1).collect()
     }
 
-    /// The header of an applied commit.
+    /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
-        self.core.commits.get(id).map(|m| m.header.arc())
+        self.core.commits.get(id).and_then(|m| m.header.decoded())
     }
 
     /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
@@ -1075,5 +1075,29 @@ mod tests {
                 assert_eq!(p0.engine.commit_ids().len(), before);
             }
         }
+    }
+
+    // a header held as bytes that fail to decode (hash or format: `LazyHeader`) reads as none
+    // outside a transaction, and every later transaction fails as corrupt, never a default
+    #[test]
+    fn failed_lazy_header_is_corrupt() {
+        let mut lp = LocalPeer::new(1, 902, WallMs(1_700_000_000_000)).unwrap();
+        let p0 = &mut lp.peers[0];
+        let me = p0.engine.tid();
+        let mut m = Mutation::new();
+        let t = p0.engine.new_thing(&mut m, me);
+        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        let id = p0.commit(m).unwrap().unwrap();
+        let blob = p0.engine.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
+        let c = &mut p0.engine.core;
+        let mut meta = c.commits.get(&id).unwrap().clone();
+        meta.header = crate::engine::LazyHeader::stored(id, vec![0x80].into(), meta.view.clone(), c.header_fault.clone());
+        c.commits.insert(id, meta);
+        assert!(p0.engine.header(&id).is_none());
+        assert_eq!(p0.engine.parts_genuine(&blob), None);
+        let mut m = Mutation::new();
+        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(2)).unwrap();
+        assert!(matches!(p0.engine.commit(m), Err(crate::Error::Corrupt(_))));
+        assert!(matches!(p0.engine.commit(Mutation::new()), Err(crate::Error::Corrupt(_))));
     }
 }

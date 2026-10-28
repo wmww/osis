@@ -116,14 +116,16 @@ impl View {
 /// A commit's header, decoded from its stored bytes on first use. The bytes hash to the commit
 /// ID and were verified on arrival by a build with these rules (the index tag), so decoding
 /// does not fail; if it does (a bug, damaged memory) the header reads as its view with every
-/// other field empty and the running transaction fails (`Error::Corrupt`).
+/// other field empty, the running transaction fails (`Error::Corrupt`) and readers outside one
+/// (`Engine::header`) see none (`decoded`).
 #[derive(Clone)]
 pub struct LazyHeader(Lazy);
 
 #[derive(Clone)]
 enum Lazy {
     Ready(Arc<Header>),
-    Stored(std::sync::OnceLock<Arc<Header>>, Arc<StoredHeader>),
+    /// Decoded: `Ok`, else `Err` with the fallback header.
+    Stored(std::sync::OnceLock<std::result::Result<Arc<Header>, Arc<Header>>>, Arc<StoredHeader>),
 }
 
 struct StoredHeader {
@@ -148,6 +150,14 @@ impl LazyHeader {
         self.get().clone()
     }
 
+    /// The header, unless its decode failed (then `arc` and `Deref` give the fallback).
+    pub fn decoded(&self) -> Option<Arc<Header>> {
+        match &self.0 {
+            Lazy::Ready(h) => Some(h.clone()),
+            Lazy::Stored(got, s) => got.get_or_init(|| s.decode()).as_ref().ok().cloned(),
+        }
+    }
+
     /// Whether the header has been decoded (tests).
     pub fn is_decoded(&self) -> bool {
         match &self.0 {
@@ -159,13 +169,21 @@ impl LazyHeader {
     fn get(&self) -> &Arc<Header> {
         match &self.0 {
             Lazy::Ready(h) => h,
-            Lazy::Stored(got, s) => got.get_or_init(|| match decode_stored_header(&s.id, &s.bytes) {
-                Some(h) => Arc::new(h),
-                None => {
-                    s.fault.store(true, std::sync::atomic::Ordering::Relaxed);
-                    Arc::new(fallback_header(&s.view))
-                }
-            }),
+            Lazy::Stored(got, s) => match got.get_or_init(|| s.decode()) {
+                Ok(h) | Err(h) => h,
+            },
+        }
+    }
+}
+
+impl StoredHeader {
+    fn decode(&self) -> std::result::Result<Arc<Header>, Arc<Header>> {
+        match decode_stored_header(&self.id, &self.bytes) {
+            Some(h) => Ok(Arc::new(h)),
+            None => {
+                self.fault.store(true, std::sync::atomic::Ordering::Relaxed);
+                Err(Arc::new(fallback_header(&self.view)))
+            }
         }
     }
 }
@@ -212,7 +230,8 @@ impl std::fmt::Debug for LazyHeader {
         match &self.0 {
             Lazy::Ready(h) => h.fmt(f),
             Lazy::Stored(got, _) => match got.get() {
-                Some(h) => h.fmt(f),
+                Some(Ok(h)) => h.fmt(f),
+                Some(Err(_)) => f.write_str("LazyHeader(failed to decode)"),
                 None => f.write_str("LazyHeader(not decoded)"),
             },
         }
