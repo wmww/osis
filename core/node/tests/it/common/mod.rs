@@ -182,3 +182,63 @@ pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
     }
     found
 }
+
+/// A thread per core, or the number in env `var`.
+pub fn threads(var: &str) -> usize {
+    std::env::var(var).ok().and_then(|x| x.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
+/// `f` over `items` on up to `threads` threads, results in order.
+pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let threads = threads.clamp(1, items.len().max(1));
+    let next = AtomicUsize::new(0);
+    let (f, next) = (&f, &next);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(move || {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&x) = items.get(i) else { break };
+                        mine.push((i, f(x)));
+                    }
+                    mine
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    out.sort_by_key(|x| x.0);
+    out.into_iter().map(|x| x.1).collect()
+}
+
+/// `f`, a panic as an error.
+pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {
+        let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+        Err(format!("panicked: {msg}"))
+    })
+}
+
+/// `f(seed)` for every seed on `threads(threads_var)` threads, a panic as its seed's failure.
+/// Prints each failing seed with `replay(seed)` as it fails, then a summary line, then panics
+/// listing every failure in seed order; else the results in seed order.
+pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], threads_var: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    let t0 = std::time::Instant::now();
+    let results = par_map(seeds, threads(threads_var), |seed| {
+        caught(|| Ok(f(seed))).map_err(|e| {
+            let msg = format!("seed {seed} (replay: {}): {e}", replay(seed));
+            eprintln!("{msg}\n");
+            msg
+        })
+    });
+    let fails: Vec<&String> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    eprintln!("{name}: {} seeds from {}, {} failing, {:.1} s", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
+    if !fails.is_empty() {
+        let list: Vec<&str> = fails.iter().map(|m| m.as_str()).collect();
+        panic!("{name}: {} of {} seeds failed:\n{}", fails.len(), seeds.len(), list.join("\n\n"));
+    }
+    results.into_iter().flatten().collect()
+}

@@ -591,14 +591,6 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     caught(|| check_orders(seed, steps, cfg))
 }
 
-/// `f`, a panic as an error.
-fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {
-        let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-        Err(format!("panicked: {msg}"))
-    })
-}
-
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<usize, String> {
     let played = play(seed, steps);
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
@@ -771,37 +763,6 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps[..lo].to_vec()
 }
 
-/// A thread per core (`OSIS_ORDER_THREADS` overrides).
-fn threads() -> usize {
-    std::env::var("OSIS_ORDER_THREADS").ok().and_then(|x| x.parse().ok()).unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
-}
-
-/// `f` over `items` on up to `threads` threads, results in order.
-fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let threads = threads.clamp(1, items.len().max(1));
-    let next = AtomicUsize::new(0);
-    let (f, next) = (&f, &next);
-    let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..threads)
-            .map(|_| {
-                s.spawn(move || {
-                    let mut mine = Vec::new();
-                    loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(&x) = items.get(i) else { break };
-                        mine.push((i, f(x)));
-                    }
-                    mine
-                })
-            })
-            .collect();
-        hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    });
-    out.sort_by_key(|x| x.0);
-    out.into_iter().map(|x| x.1).collect()
-}
-
 /// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core), shrinks
 /// every failing one and reports them all, each with the command that replays it.
 /// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
@@ -820,8 +781,8 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     let settings: Vec<String> = std::env::vars().filter(|(k, _)| k.starts_with("OSIS_ORDER_")).map(|(k, v)| format!("{k}={v}")).collect();
     let t0 = std::time::Instant::now();
     // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
-    let outer = threads().min(seeds.len()).max(1);
-    let cfg = Cfg { threads: if cfg.par_orders { threads().div_ceil(outer) } else { 1 }, ..cfg };
+    let outer = threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1);
+    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, ..cfg };
     let results = par_map(&seeds, outer, |seed| {
         let steps = generate(seed, len, cfg);
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
@@ -932,7 +893,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((1173, h, SMALL));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
-    let results = par_map(&idx, threads(), |i| {
+    let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
         let (seed, h, cfg) = &cases[i as usize];
         check(*seed, h, *cfg)
     });
