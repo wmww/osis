@@ -275,10 +275,8 @@ impl SyncEngine {
             if self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) {
                 return Ok(Some(cur));
             }
-            match self.engine.core.created(&cur) {
-                Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = *owner,
-                _ => return Ok(None),
-            }
+            let Some(owner) = self.engine.owner(&cur) else { return Ok(None) };
+            cur = owner;
         }
         Ok(None)
     }

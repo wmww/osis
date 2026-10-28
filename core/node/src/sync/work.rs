@@ -365,17 +365,15 @@ impl SyncEngine {
             return;
         }
         let published = self.engine.published_under(g);
-        let core = &self.engine.core;
+        let engine = &self.engine;
         let under = |t: &Tid| {
-            let mut cur = *t;
+            let mut cur = Some(*t);
             for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-                if actors.contains(&cur) {
+                let Some(c) = cur else { break };
+                if actors.contains(&c) {
                     return true;
                 }
-                match core.created(&cur) {
-                    Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = *owner,
-                    _ => break,
-                }
+                cur = engine.owner(&c);
             }
             false
         };
