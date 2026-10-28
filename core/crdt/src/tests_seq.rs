@@ -543,7 +543,7 @@ fn slots_join_follows_cache_spec_7() {
         followed
     };
     let (mut joins, mut kept) = (0, 0);
-    for seed in 0..6 {
+    for seed in 0..12 {
         let mut r = crate::testutil::rng(seed | 1);
         let (mut m, mut ours) = (None, Fragment::default());
         let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
@@ -562,7 +562,7 @@ fn slots_join_follows_cache_spec_7() {
             }
         }
     }
-    assert!(joins >= 15 && kept * 10 >= joins * 9, "{kept} of {joins} followed");
+    assert!(joins >= 30 && kept * 10 >= joins * 9, "{kept} of {joins} followed");
 }
 
 // ---- §3.3 rule 7 for runs (writer of node 1, range [3, 6), ts 5·2^16)
