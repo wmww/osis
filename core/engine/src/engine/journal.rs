@@ -4,6 +4,7 @@
 //! journaling methods change the contents.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Debug;
 use std::ops::Deref;
 
 /// What a journaled collection does at the end of a transaction.
@@ -12,6 +13,9 @@ pub(crate) trait Journaled {
     fn commit(&mut self);
     /// Undoes every journaled change, newest first.
     fn rollback(&mut self);
+    /// The contents, without journal or counters (tests: a rollback restores them).
+    #[cfg(test)]
+    fn contents(&self) -> String;
 }
 
 /// A map journaling each key's previous value.
@@ -97,7 +101,11 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
     }
 }
 
-impl<K: Ord + Clone, V: Clone> Journaled for JMap<K, V> {
+impl<K: Ord + Clone + Debug, V: Clone + Debug> Journaled for JMap<K, V> {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?}", self.map)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }
@@ -166,7 +174,11 @@ impl<T: Ord + Clone> JSet<T> {
     }
 }
 
-impl<T: Ord + Clone> Journaled for JSet<T> {
+impl<T: Ord + Clone + Debug> Journaled for JSet<T> {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?}", self.set)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }
@@ -237,7 +249,11 @@ impl<K: Ord + Clone, T: Ord + Clone> JSetMap<K, T> {
     }
 }
 
-impl<K: Ord + Clone, T: Ord + Clone> Journaled for JSetMap<K, T> {
+impl<K: Ord + Clone + Debug, T: Ord + Clone + Debug> Journaled for JSetMap<K, T> {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?}", self.map)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }
@@ -293,7 +309,11 @@ impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> JNested<K, K2, V> {
     }
 }
 
-impl<K: Ord + Clone, K2: Ord + Clone, V: Clone> Journaled for JNested<K, K2, V> {
+impl<K: Ord + Clone + Debug, K2: Ord + Clone + Debug, V: Clone + Debug> Journaled for JNested<K, K2, V> {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?}", self.map)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }

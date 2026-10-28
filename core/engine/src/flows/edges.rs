@@ -183,7 +183,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, member
 
 /// The dots of `member`'s `/members` entries on `target` this node has seen, live or dead.
 fn entry_dots(tx: &Tx<'_>, target: &Tid, member: &Tid) -> Vec<osis_crdt::Dot> {
-    tx.core.member_keys.iter().filter(|((t, _), m)| t == target && *m == member).map(|((_, d), _)| d.clone()).collect()
+    tx.core.ix.member_keys.iter().filter(|((t, _), m)| t == target && *m == member).map(|((_, d), _)| d.clone()).collect()
 }
 
 /// A removal or demotion (or a self-removal) of `d.member` on `target` by `who`: an explicit
@@ -396,7 +396,7 @@ impl Engine {
     /// label (a grant this device accepts).
     pub fn accept_inbox(&mut self, blob: &[u8]) -> Result<(Vec<InboxThing>, Done)> {
         let mut candidates: Vec<(Tid, osis_crypto::KemSecret)> = Vec::new();
-        for (a, e) in self.core.secrets.iter() {
+        for (a, e) in self.core.ix.secrets.iter() {
             for (_, s) in e.role(Role::Read).held_newest_first() {
                 candidates.push((*a, osis_crypto::role_kem(s)));
             }
@@ -414,7 +414,7 @@ impl Engine {
         self.ingest(&bytes, Vec::new())?;
         self.note_delete_hints(id, &p.things)?;
         let mut done = Done::default();
-        if self.core.commits.contains_key(&id) {
+        if self.core.ix.commits.contains_key(&id) {
             done.deliveries.push(Delivery::Certificate { commits: vec![id], under: a });
         }
         Ok((p.things, done))

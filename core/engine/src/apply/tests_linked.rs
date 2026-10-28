@@ -181,7 +181,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
     let check = |lp: &mut LocalPeer, c: CommitId, cap: usize| {
         lp.peers[0].engine.core.frontiers.clear();
         lp.peers[0].engine.run(|tx| {
-            let h = (*tx.core.commits.get(&c).unwrap().header).clone();
+            let h = (*tx.core.ix.commits.get(&c).unwrap().header).clone();
             let parts = super::edge_parts(tx, &c)?;
             super::validity::linked_frontiers_capped(tx, &h, &parts, cap).map(|l| l.frontiers.len())
         })
@@ -207,7 +207,7 @@ fn member_named_twice_spec_perm_6() {
     edge(&mut lp, t, x, Some(Role::Read), None);
     let c = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
     let r = lp.peers[0].engine.run(|tx| {
-        let h = (*tx.core.commits.get(&c).unwrap().header).clone();
+        let h = (*tx.core.ix.commits.get(&c).unwrap().header).clone();
         let mut parts = super::held_parts_at(tx, &c, &|_| true)?;
         super::validity::check_roster_parts(&h, &parts)?;
         let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "/members" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_members("/members", &d.fragment) == vec![x])).cloned().unwrap();

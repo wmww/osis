@@ -794,11 +794,11 @@ impl SyncEngine {
         // roles change only where authority flows from a changed roster or owner link
         // (`Held::reach`: owned things, things named on as a member, transitively)
         if !roots.is_empty() {
-            self.touched.moved.extend(self.engine.core.held.reach(&roots));
+            self.touched.moved.extend(self.engine.core.ix.held.reach(&roots));
         }
         // actors that got or lost secrets of their own: the reader actors under them moved
-        if *self.engine.core.own_keys != self.own_keys {
-            let now: BTreeSet<Tid> = (*self.engine.core.own_keys).clone();
+        if *self.engine.core.ix.own_keys != self.own_keys {
+            let now: BTreeSet<Tid> = (*self.engine.core.ix.own_keys).clone();
             self.touched.actors.extend(now.symmetric_difference(&self.own_keys).copied());
             self.own_keys = now;
             changed = true;

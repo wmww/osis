@@ -153,7 +153,7 @@ impl SyncEngine {
 
     /// Whether commit `c` is this node's own (made here, a held key actor's included).
     pub(crate) fn own(&self, c: &CommitId) -> bool {
-        self.engine.core.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local || m.header.author == self.engine.tid())
+        self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local || m.header.author == self.engine.tid())
     }
 
     /// Whether `g`'s closure holds a thing commit `c` touches (its labels are `c`'s own).

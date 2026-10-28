@@ -241,7 +241,7 @@ impl SyncEngine {
         }
         self.stats.closures += 1;
         for t in closure.iter() {
-            if !self.engine.core.syncing.contains(t) {
+            if !self.engine.core.ix.syncing.contains(t) {
                 self.engine.set_syncing(*t, true)?;
             }
         }
@@ -498,7 +498,7 @@ impl SyncEngine {
                 commits.extend(std::mem::take(&mut w.held_back));
             }
             for (t, a) in &moved {
-                commits.extend(self.engine.core.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
+                commits.extend(self.engine.core.ix.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1));
             }
         }
         if full {
@@ -813,7 +813,7 @@ impl SyncEngine {
         let mut dropped = BTreeSet::new();
         for ((t, a), ss) in &snaps {
             for s in ss {
-                if !self.engine.core.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
+                if !self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
                     continue;
                 }
                 let only: Option<Vec<CommitId>> = match &*scope {
@@ -1253,7 +1253,7 @@ impl SyncEngine {
     /// arrived here (else a wake is set for then).
     fn relay_due(&mut self, c: &CommitId) -> bool {
         let me = self.engine.tid();
-        let Some(m) = self.engine.core.commits.get(c) else { return true };
+        let Some(m) = self.engine.core.ix.commits.get(c) else { return true };
         if m.origin == crate::events::Origin::Local || m.header.author == me || self.first.contains(c) {
             return true;
         }
@@ -1325,7 +1325,7 @@ impl SyncEngine {
         for (ai, _) in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
             let k = (a.tid, a.ak.clone());
-            let on: Vec<CommitId> = self.engine.core.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.header(s).is_some_and(|x| is_snapshot(x.kind)) && self.state.entries_of(l, s).next().is_some()).collect();
+            let on: Vec<CommitId> = self.engine.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.header(s).is_some_and(|x| is_snapshot(x.kind)) && self.state.entries_of(l, s).next().is_some()).collect();
             snaps.insert(k, on);
         }
         self.parts_covered(&snaps, c, h, parts, &mut Note::default())
@@ -1371,7 +1371,7 @@ impl SyncEngine {
     /// compaction) or one the label's actor may not read (outside the required set). It holds
     /// no body and makes no other blob a strict subset (spec/sync.md §6).
     fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let Some(m) = self.engine.core.commits.get(c) else { return false };
+        let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
         let x = self.engine.group_actor(g);
         parts.iter().any(|p| m.dropped.contains(p) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
     }
@@ -1494,10 +1494,10 @@ impl SyncEngine {
         }
         let opened: Vec<(BlobId, CommitId)> = self.state.label_entries(&l).filter_map(|(b, e)| if let Kind::Inbox(Some(c)) = e.kind { Some((b, c)) } else { None }).collect();
         for (b, c) in opened {
-            if self.state.certs.contains(&(l, c)) || self.engine.core.pending.contains_key(&c) {
+            if self.state.certs.contains(&(l, c)) || self.engine.core.ix.pending.contains_key(&c) {
                 continue;
             }
-            let Some(m) = self.engine.core.commits.get(&c).cloned() else { continue };
+            let Some(m) = self.engine.core.ix.commits.get(&c).cloned() else { continue };
             let Some((ais, things)) = self.inbox_parts(&l, &b)? else { continue };
             // a valid commit only, and labels only of things it touches (the payload's list is
             // the sender's word: it could name any thing this device holds)
@@ -1572,7 +1572,7 @@ impl SyncEngine {
             // another label first do not all copy it; a wake brings the pass back then
             let me = self.engine.tid();
             let now = self.now();
-            let due = self.engine.core.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
+            let due = self.engine.core.ix.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
                 && let Some(h) = self.engine.header(&c)
                 && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
@@ -1683,7 +1683,7 @@ impl SyncEngine {
         let me = self.engine.tid();
         let now = self.now();
         if !stranded
-            && let Some(c) = self.engine.core.by_aspect.get(&(me, Ak::new("/seen").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
+            && let Some(c) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("/seen").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
             && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
             && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
@@ -1736,7 +1736,7 @@ impl SyncEngine {
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
         let core = &self.engine.core;
-        let ids: Vec<CommitId> = core.by_thing.get(&a).into_iter().flatten().filter(|c| core.commits.get(c).is_some_and(|m| m.view.kind.is_membership())).copied().collect();
+        let ids: Vec<CommitId> = core.ix.by_thing.get(&a).into_iter().flatten().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_membership())).copied().collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {
@@ -1796,7 +1796,7 @@ impl SyncEngine {
         let (g, l, server, snaps, settled) = (&at.g, &at.l, at.server.as_ref(), at.snaps, at.settled);
         let now = self.now();
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok(None) };
-        let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok(None) };
+        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(None) };
         let h = m.header.clone();
         // a blob expires whole with its class (spec/sync.md §3)
         if let Some(t) = parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).and_then(|a| a.expires) {
@@ -1901,7 +1901,7 @@ impl SyncEngine {
         unknown
             .into_iter()
             .filter(|b| {
-                let listers = core.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.commits.get(c));
+                let listers = core.ix.by_chunk.get(b).into_iter().flatten().filter_map(|c| core.ix.commits.get(c));
                 let mut any = false;
                 for m in listers {
                     if m.view.aspects.iter().any(|a| kept_when_replaced(a.ak.as_str())) {
@@ -2128,7 +2128,7 @@ impl SyncEngine {
     fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize)) -> bool {
         let Some(a) = h.aspects.get(p.0) else { return false };
         let o = crate::engine::Owned::of(h, c, p.0);
-        if self.engine.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
+        if self.engine.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
             return false;
         }
         self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
@@ -2143,7 +2143,7 @@ impl SyncEngine {
     fn carried(&mut self, at: &At, e: &Entry) -> Result<(bool, Vec<(Tid, Ak)>)> {
         let (g, l, server) = (&at.g, &at.l, at.server.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new())) };
-        let Some(m) = self.engine.core.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
+        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new())) };
         let x = self.engine.group_actor(g);
         let (mut all, mut need) = (true, Vec::new());
         for p in parts {
@@ -2242,11 +2242,11 @@ impl SyncEngine {
             return Ok((out, BTreeSet::new()));
         }
         for b in cands {
-            let listers: Vec<CommitId> = self.engine.core.by_chunk.get(b).into_iter().flatten().copied().collect();
+            let listers: Vec<CommitId> = self.engine.core.ix.by_chunk.get(b).into_iter().flatten().copied().collect();
             let mut first = None;
             let mut live = false;
             for id in listers {
-                let Some(m) = self.engine.core.commits.get(&id) else { continue };
+                let Some(m) = self.engine.core.ix.commits.get(&id) else { continue };
                 let h = &m.header;
                 for ch in h.chunks.iter().filter(|ch| ch.blob == *b) {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();

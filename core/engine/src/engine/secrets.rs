@@ -19,7 +19,7 @@ const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 impl Core {
     pub fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
-        self.held.created(tid)
+        self.ix.held.created(tid)
     }
 
     pub(crate) fn dedup(&self, tid: &Tid) -> Option<Secret32> {
@@ -32,14 +32,14 @@ impl Core {
         let mut chain = Vec::new();
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.secrets.get(&cur).cloned());
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.ix.secrets.get(&cur).cloned());
             if let Some(mut e) = held {
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
                 }
                 return Some(e);
             }
-            if self.own_keys.contains(&cur) {
+            if self.ix.own_keys.contains(&cur) {
                 return None;
             }
             match self.created(&cur)? {
@@ -65,10 +65,10 @@ impl Core {
             if let Some(k) = self.key_actors.get(&cur) {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
-            if let Some(e) = self.secrets.get(&cur) {
+            if let Some(e) = self.ix.secrets.get(&cur) {
                 return Some(DeleteBase::Actor(cur, Some(e.clone())));
             }
-            if self.own_keys.contains(&cur) {
+            if self.ix.own_keys.contains(&cur) {
                 return Some(DeleteBase::Actor(cur, None));
             }
             match self.created(&cur)? {
@@ -91,7 +91,7 @@ impl Core {
                 out.push(DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""))));
                 break;
             }
-            if let Some(e) = self.secrets.get(&cur) {
+            if let Some(e) = self.ix.secrets.get(&cur) {
                 out.push(DeleteSource::Epochs(e.clone()));
             }
             match self.created(&cur) {
@@ -129,16 +129,16 @@ impl Core {
     /// `alts`: the live entries of history keys holding several (each tried). `published`: the
     /// actor's `/keys`, against which unchecked candidates are checked.
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts, published: Option<&Keys>) -> bool {
-        let before = self.secrets.get(actor).cloned();
+        let before = self.ix.secrets.get(actor).cloned();
         // a bounded number of actors held through reading-only secrets alone
         let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && ROLES.iter().any(|r| !e.role(*r).held_newest_first().is_empty());
-        if unchecked.is_some() && before.as_ref().is_none_or(|e| ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty())) && self.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
+        if unchecked.is_some() && before.as_ref().is_none_or(|e| ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty())) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
             return false;
         }
         let mut epochs = before.clone().unwrap_or_default();
         let seed = self.id.seed().clone();
         let me = self.id.tid();
-        let mut openers: Vec<(Tid, ActorEpochs)> = self.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
+        let mut openers: Vec<(Tid, ActorEpochs)> = self.ix.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
         openers.sort_by_key(|x| x.0);
         let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
@@ -153,7 +153,7 @@ impl Core {
         self.adopt_derived(actor, &mut epochs);
         let held_any = ROLES.iter().any(|r| !epochs.role(*r).held_newest_first().is_empty());
         if held_any && Some(&epochs) != before.as_ref() {
-            self.secrets.insert(*actor, epochs);
+            self.ix.secrets.insert(*actor, epochs);
             self.membership_changed();
             return true;
         }
@@ -200,7 +200,7 @@ impl Core {
         let mut learned = false;
         loop {
             learned |= self.ingest_secrets(actor, &s, None, &alts, None);
-            let Some(e) = self.secrets.get(actor) else { break };
+            let Some(e) = self.ix.secrets.get(actor) else { break };
             let candidates: Vec<Value> = ROLES
                 .iter()
                 .flat_map(|r| e.role(*r).epochs().filter(|(ep, _)| !e.role(*r).reading_secrets(ep).is_empty()).map(|(ep, _)| osis_schema::Codec::to_value(&osis_keys::aspects::history_key(*r, ep))).collect::<Vec<_>>())
@@ -242,13 +242,13 @@ impl Core {
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             // its published delete keys replace any inbox hint
-            self.delete_hints.remove(actor);
-            if self.own_keys.insert(*actor) {
+            self.ix.delete_hints.remove(actor);
+            if self.ix.own_keys.insert(*actor) {
                 // reader actors of things below it change
                 self.bodies.clear();
             }
             self.membership_changed();
-            if let Some(e) = self.secrets.get_mut(actor) {
+            if let Some(e) = self.ix.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);
             }
         }
@@ -322,7 +322,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
             Some(SigningKey::Ed25519(k)) => VerifyingKey::from_slice(&k).ok(),
             _ => None,
         };
-        let hinted = || match tx.core.delete_hints.get(&b) {
+        let hinted = || match tx.core.ix.delete_hints.get(&b) {
             Some(Value::List(x)) => x.get(usize::from(r != Role::Admin)).and_then(|v| if let Value::Bytes(k) = v { VerifyingKey::from_slice(k).ok() } else { None }),
             _ => None,
         };
@@ -379,10 +379,10 @@ impl Core {
     /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
     /// only while no hint and no `/keys` with keysets is held for it (the first stays).
     pub(crate) fn promote_hints(&mut self) {
-        let applied: Vec<CommitId> = self.hint_candidates.keys().filter(|c| self.commits.contains_key(c)).copied().collect();
+        let applied: Vec<CommitId> = self.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
         for c in applied {
             let Some(hints) = self.hint_candidates.remove(&c) else { continue };
-            let Some(m) = self.commits.get(&c) else { continue };
+            let Some(m) = self.ix.commits.get(&c) else { continue };
             let h = m.header.clone();
             let ok: Vec<(Tid, Value)> = hints
                 .into_iter()
@@ -393,8 +393,8 @@ impl Core {
                 .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
                 .collect();
             for (t, v) in ok {
-                if !self.delete_hints.contains_key(&t) && !self.own_keys.contains(&t) {
-                    self.delete_hints.insert(t, v);
+                if !self.ix.delete_hints.contains_key(&t) && !self.ix.own_keys.contains(&t) {
+                    self.ix.delete_hints.insert(t, v);
                 }
             }
         }

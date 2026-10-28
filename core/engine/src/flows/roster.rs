@@ -29,7 +29,7 @@ impl Engine {
     pub fn roster_snapshot_due(&self, thing: &Tid, signer: Option<&Tid>) -> bool {
         let who = signer.copied().unwrap_or(self.tid());
         let Ok(members) = ak("/members") else { return false };
-        let n = self.core.by_aspect.get(&(*thing, members)).map_or(0, |s| s.len());
+        let n = self.core.ix.by_aspect.get(&(*thing, members)).map_or(0, |s| s.len());
         let ts = super::now_ts(&self.core);
         n > ROSTER_SNAPSHOT_AFTER && self.core.timelines.get(thing).is_some_and(|tl| tl.may_roster_snapshot(&who, thing, ts))
     }

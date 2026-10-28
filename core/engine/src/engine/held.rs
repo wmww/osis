@@ -106,12 +106,15 @@ impl Held {
             && let Some(s) = self.owned.get_mut(owner)
         {
             s.remove(&t);
+            if s.is_empty() {
+                self.owned.remove(owner);
+            }
         }
         self.touched.insert(t);
         self.generation += 1;
         // `reaches` climbs from a member to its owners: a record of a member or of an owner
         // of held things may complete a path
-        if old.is_some() || self.members.contains_key(&t) || self.owned.get(&t).is_some_and(|o| !o.is_empty()) {
+        if old.is_some() || self.members.contains_key(&t) || self.owned.contains_key(&t) {
             self.edges += 1;
         }
         old
@@ -245,6 +248,10 @@ impl Held {
 }
 
 impl Journaled for Held {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.snapshots, self.created, self.members, self.named, self.owned, self.ids)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }

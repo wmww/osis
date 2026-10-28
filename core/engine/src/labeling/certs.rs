@@ -28,10 +28,10 @@ impl Engine {
     /// `latest_on`, written by `author` when given.
     pub fn latest_by(&self, tid: &Tid, ak: &str, author: Option<&Tid>) -> Option<CommitId> {
         let k = Ak::new(ak).ok()?;
-        let held = self.core.by_aspect.get(&(*tid, k))?;
+        let held = self.core.ix.by_aspect.get(&(*tid, k))?;
         held.iter().rev().map(|(_, c)| *c).find(|c| {
-            let Some(m) = self.core.commits.get(c) else { return false };
-            !self.core.pending.contains_key(c)
+            let Some(m) = self.core.ix.commits.get(c) else { return false };
+            !self.core.ix.pending.contains_key(c)
                 && author.is_none_or(|a| m.header.author == *a)
                 && m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid.get(i).copied().unwrap_or(false))
         })
@@ -128,10 +128,10 @@ impl Engine {
     /// point, minus `parts` themselves. `None` when `c` is not applied here: a node that cannot
     /// verify it cannot tell.
     pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
-        if self.core.pending.contains_key(c) {
+        if self.core.ix.pending.contains_key(c) {
             return None;
         }
-        let h = self.core.commits.get(c)?.header.clone();
+        let h = self.core.ix.commits.get(c)?.header.clone();
         let at = Point { ts: h.ts, node: h.author, commit: *c };
         let things: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
         let mut found = Vec::new();
@@ -255,8 +255,8 @@ impl Engine {
     /// edge ops applied (an aspect is valid while any op on it is: the loser of a single-use
     /// redemption race keeps its valid removal of L beside its void grant).
     pub fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let Some(m) = self.core.commits.get(c) else { return false };
-        if self.core.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
+        let Some(m) = self.core.ix.commits.get(c) else { return false };
+        if self.core.ix.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
             return false;
         }
         if !m.header.kind.is_membership() {
@@ -330,7 +330,7 @@ impl Engine {
             return Ok(Vec::new());
         }
         let membership = cut.header.kind.is_membership();
-        let resolved = match self.core.commits.get(&id) {
+        let resolved = match self.core.ix.commits.get(&id) {
             Some(m) if !cut.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(cut.header.clone()),
         };

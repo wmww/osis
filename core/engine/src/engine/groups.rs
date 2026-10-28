@@ -160,6 +160,10 @@ impl Groups {
 }
 
 impl super::journal::Journaled for Groups {
+    #[cfg(test)]
+    fn contents(&self) -> String {
+        format!("{:?} {:?} {:?} {:?}", self.defs, self.parents, self.of, self.closures)
+    }
     fn commit(&mut self) {
         self.log.clear();
     }

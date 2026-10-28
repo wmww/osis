@@ -73,7 +73,7 @@ fn undo_delta<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buf: &
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6).
 pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<CommitId> {
-    let m = tx.core.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
+    let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
         return Err(Error::Misuse("only content commits are undone here"));
@@ -98,10 +98,10 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
             Some(_) => Some(Fragment::default()),
             // not a recent local commit: the join of the held bodies ordered before it
             None => {
-                let before: Vec<CommitId> = tx.core.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| **x < (h.ts, target)).map(|x| x.1).collect();
+                let before: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().filter(|x| **x < (h.ts, target)).map(|x| x.1).collect();
                 let mut f: Option<Fragment> = None;
                 for c in before {
-                    let Some(ci) = tx.core.commits.get(&c).and_then(|m| m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak)) else { continue };
+                    let Some(ci) = tx.core.ix.commits.get(&c).and_then(|m| m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak)) else { continue };
                     for d in crate::apply::held_parts(tx, &c, ci)? {
                         let d = d.into_fragment();
                         match &mut f {
@@ -138,7 +138,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
         let judge: OnceCell<(BTreeMap<CommitId, Vec<CommitId>>, bool)> = OnceCell::new();
         let restored = |s: &Stamp| {
             let (undoers, clear) = judge.get_or_init(|| chain_judge(core, &a.tid, &a.ak, (h.ts, target)));
-            *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, undoers))
+            *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.ix.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, undoers))
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let out = match &view {
@@ -163,14 +163,14 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid) -> Result<C
 /// From the commits holding writes of `(tid, ak)`: who undoes whom, and whether every change
 /// (a commit that is not an undo) ordered after `after` is out of effect (spec/crdt.md §4.6).
 fn chain_judge(core: &crate::engine::Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> (BTreeMap<CommitId, Vec<CommitId>>, bool) {
-    let held: Vec<(Ts, CommitId)> = core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
+    let held: Vec<(Ts, CommitId)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
     let mut undoers: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
     for (_, id) in &held {
-        if let Some(t) = core.commits.get(id).and_then(|m| m.header.undoes) {
+        if let Some(t) = core.ix.commits.get(id).and_then(|m| m.header.undoes) {
             undoers.entry(t).or_default().push(*id);
         }
     }
-    let clear = held.iter().filter(|x| **x > after).all(|(_, id)| core.commits.get(id).is_some_and(|m| m.header.undoes.is_some()) || !in_effect(id, &undoers));
+    let clear = held.iter().filter(|x| **x > after).all(|(_, id)| core.ix.commits.get(id).is_some_and(|m| m.header.undoes.is_some()) || !in_effect(id, &undoers));
     (undoers, clear)
 }
 
@@ -210,12 +210,12 @@ impl Engine {
     pub fn changes(&self, scope: &[(Tid, Ak)]) -> Vec<(CommitId, Tid, Tid, Ts, Option<CommitId>)> {
         let mut ids: BTreeSet<(Ts, CommitId)> = BTreeSet::new();
         for k in scope {
-            ids.extend(self.core.by_aspect.get(k).into_iter().flatten().copied());
+            ids.extend(self.core.ix.by_aspect.get(k).into_iter().flatten().copied());
         }
         ids.into_iter()
             .rev()
             .filter_map(|(_, c)| {
-                let m = self.core.commits.get(&c)?;
+                let m = self.core.ix.commits.get(&c)?;
                 (m.header.kind == Kind::Content).then(|| (c, m.header.author, m.header.actor, m.header.ts, m.header.undoes))
             })
             .collect()
@@ -226,7 +226,7 @@ impl Engine {
     pub fn undo_stack(&self, actor: &Tid, scope: &[(Tid, Ak)]) -> (Vec<CommitId>, Vec<CommitId>) {
         let all = self.changes(scope);
         // on demand, O(commits): decodes every header the first time
-        let undone: BTreeSet<CommitId> = self.core.commits.values().filter_map(|m| m.header.undoes).collect();
+        let undone: BTreeSet<CommitId> = self.core.ix.commits.values().filter_map(|m| m.header.undoes).collect();
         let mine = all.iter().filter(|c| c.2 == *actor && !undone.contains(&c.0));
         let undo = mine.clone().filter(|c| c.4.is_none()).map(|c| c.0).collect();
         let redo = mine.filter(|c| c.4.is_some()).map(|c| c.0).collect();

@@ -73,7 +73,7 @@ impl Wait {
             On::Record { .. } => 0,
         };
         let bytes = 160 + 48 * things.len() + header;
-        Wait { key: (!h.kind.is_membership(), h.ts), things, reason, on, generation: core.held.generation(), edges: core.held.edges(), now, bytes }
+        Wait { key: (!h.kind.is_membership(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, bytes }
     }
 }
 
@@ -247,13 +247,13 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
 /// The pending commits that may not wait as when last examined, in `CommitId` order; the rest
 /// are left out of `reexamine`. Woken waits stay woken until examined.
 pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
-    let records = core.held.take_records();
-    let (generation, edges) = (core.held.generation(), core.held.edges());
+    let records = core.ix.held.take_records();
+    let (generation, edges) = (core.ix.held.generation(), core.ix.held.edges());
     let all = now < core.waits.max_now || core.waits.seen.as_ref().is_none_or(|s| s.edges != edges || now < s.now);
     let held_changed = core.waits.seen.as_ref().is_none_or(|s| s.generation != generation);
     core.waits.seen = Some(Seen { generation, edges, now });
     if all {
-        return core.pending.keys().filter(|id| !unchanged(core, id, now)).copied().collect();
+        return core.ix.pending.keys().filter(|id| !unchanged(core, id, now)).copied().collect();
     }
     let w = &mut core.waits;
     let mut wake: Vec<CommitId> = records.iter().flat_map(|t| w.by_record.get(t).into_iter().flatten()).copied().collect();
@@ -263,18 +263,18 @@ pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
     wake.extend(w.expiring.iter().take_while(|(e, _)| *e <= now).map(|x| x.1));
     w.woken.extend(wake);
     let out: BTreeSet<CommitId> = w.cold.iter().chain(&w.woken).copied().collect();
-    out.into_iter().filter(|id| core.pending.contains_key(id) && !unchanged(core, id, now)).collect()
+    out.into_iter().filter(|id| core.ix.pending.contains_key(id) && !unchanged(core, id, now)).collect()
 }
 
 /// Whether pending commit `id` certainly still waits as when last examined (memory only).
 pub(crate) fn unchanged(core: &Core, id: &CommitId, now: u64) -> bool {
     let Some(w) = core.waits.by_id.get(id) else { return false };
-    if core.pending.get(id) != Some(&w.reason) || core.waits.woken.contains(id) || now < w.now || core.held.edges() != w.edges {
+    if core.ix.pending.get(id) != Some(&w.reason) || core.waits.woken.contains(id) || now < w.now || core.ix.held.edges() != w.edges {
         return false;
     }
     match &w.on {
         On::Record { tid, had } => core.created(tid).is_some() == *had,
-        On::Deltas { expiry, .. } => core.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
+        On::Deltas { expiry, .. } => core.ix.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
     }
 }
 
@@ -285,7 +285,7 @@ pub(crate) fn still_waits(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     let Some(w) = tx.core.waits.by_id.get(id) else { return Ok(false) };
     let On::Deltas { header, missing, .. } = &w.on else { return Ok(false) };
     let now = tx.now().0;
-    if tx.core.pending.get(id) != Some(&w.reason) || now < w.now || tx.core.held.edges() != w.edges {
+    if tx.core.ix.pending.get(id) != Some(&w.reason) || now < w.now || tx.core.ix.held.edges() != w.edges {
         return Ok(false);
     }
     let (h, missing) = (header.clone(), missing.clone());

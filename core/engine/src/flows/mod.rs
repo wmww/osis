@@ -205,7 +205,7 @@ impl Core {
     /// The actor whose role secrets a label of `group` derives from: the group if it has
     /// secrets of its own, else its owner (spec/sync.md §3).
     pub(crate) fn has_own_secrets(&self, tid: &Tid) -> bool {
-        self.own_keys.contains(tid)
+        self.ix.own_keys.contains(tid)
     }
 }
 
@@ -222,7 +222,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, member: Tid, role: Role) -> Result<Reci
         // a key-actor KEM key on an actor's `/keys` is never sealed to (only key actors have one)
         (false, Some(k)) => {
             let mk = MemberKeys::from_keys(&Keys { key: None, ..k })?;
-            match tx.core.secrets.get(&member) {
+            match tx.core.ix.secrets.get(&member) {
                 Some(e) => mk.with_own(e),
                 None => mk,
             }
@@ -263,7 +263,7 @@ pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, V
     if let Some(l) = own_label(tx, tid)? {
         return Ok(Some(l));
     }
-    let groups: Vec<Tid> = tx.core.groups.of.get(tid).into_iter().flatten().copied().collect();
+    let groups: Vec<Tid> = tx.core.ix.groups.of.get(tid).into_iter().flatten().copied().collect();
     for g in groups {
         if let Some(l) = own_label(tx, &g)? {
             return Ok(Some(l));
@@ -286,7 +286,7 @@ pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, V
 
 /// Whether key actor `t` is a node (it has a `/node` card), not a recovery or link key.
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(*t == tx.core.id.tid() || tx.core.by_aspect.contains_key(&(*t, ak("/node")?)))
+    Ok(*t == tx.core.id.tid() || tx.core.ix.by_aspect.contains_key(&(*t, ak("/node")?)))
 }
 
 /// The deposit seed in `/keys` of `actor`.
@@ -306,7 +306,7 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.membership_changed();
-    if let Some(e) = tx.core.secrets.get(actor) {
+    if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
     }
@@ -326,7 +326,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
         }
         // the boxes keyed to `m`, per actor: from the index of keyed `/secrets` entries
         let mut per: std::collections::BTreeMap<Tid, Vec<osis_base::Value>> = std::collections::BTreeMap::new();
-        for (a, k) in tx.core.boxes_to.get(&m).into_iter().flatten() {
+        for (a, k) in tx.core.ix.boxes_to.get(&m).into_iter().flatten() {
             if *a != m {
                 per.entry(*a).or_default().push(k.clone());
             }
@@ -344,7 +344,7 @@ pub(crate) fn reopen_dependents(tx: &mut Tx<'_>, learned: Tid) -> Result<()> {
 /// Re-opens every held `/secrets` (after a key actor was taken up).
 fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
     let secrets_ak = ak("/secrets")?;
-    let actors: BTreeSet<Tid> = tx.core.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
+    let actors: BTreeSet<Tid> = tx.core.ix.by_aspect.keys().filter(|(_, a)| *a == secrets_ak).map(|(t, _)| *t).collect();
     for _ in 0..8 {
         let mut any = false;
         for a in &actors {

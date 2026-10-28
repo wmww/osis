@@ -39,18 +39,18 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
     if let Some(m) = map(field(delta, 0)) {
         for (d, _, k, f) in m.entries() {
             let Some(k) = k else { continue };
-            if !core.box_keys.contains_key(&(*actor, d.clone())) {
-                core.box_keys.insert((*actor, d.clone()), k.clone());
+            if !core.ix.box_keys.contains_key(&(*actor, d.clone())) {
+                core.ix.box_keys.insert((*actor, d.clone()), k.clone());
             }
             if f.is_none() {
                 continue;
             }
             let Some(bk) = typed(k, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
-            core.boxes_to.insert(bk.member, (*actor, k.clone()));
+            core.ix.boxes_to.insert(bk.member, (*actor, k.clone()));
             if let Ok(e) = osis_keys::aspects::from_schema(&bk.epoch) {
                 note_intro(core, h, actor, bk.role, e);
             }
-            core.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
+            core.ix.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
         }
     }
 }
@@ -74,14 +74,14 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
         return Ok(());
     }
     tx.core.touch();
-    tx.core.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
-    tx.core.box_written.retain(|(a, _), _| !actors.contains(a));
+    tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
+    tx.core.ix.box_written.retain(|(a, _), _| !actors.contains(a));
     for a in actors {
         for ak in ["/secrets", "/keys"] {
             let ak = osis_base::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
-            let ids: Vec<CommitId> = tx.core.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
             for id in ids {
-                let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
+                let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
                 if m.header.kind != Kind::Membership {
                     continue;
                 }
@@ -107,7 +107,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
 
 fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
     let v = (h.ts, h.author, h.actor, h.id());
-    core.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
+    core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 
 /// The `/secrets` write a delta makes: keyed entries put, resets of entries whose key is known
@@ -123,7 +123,7 @@ pub(crate) fn secrets_write(core: &Core, actor: &Tid, delta: &Fragment) -> (Secr
                         w.boxes.insert(k, b);
                     }
                 }
-                (None, None) => match core.box_keys.get(&(*actor, d.clone())).and_then(|k| typed(k, "box_key")).and_then(|k| BoxKey::from_value(&k).ok()) {
+                (None, None) => match core.ix.box_keys.get(&(*actor, d.clone())).and_then(|k| typed(k, "box_key")).and_then(|k| BoxKey::from_value(&k).ok()) {
                     Some(k) => {
                         w.removed.insert(k);
                     }
@@ -213,7 +213,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
 
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.membership_changed();
-    if let Some(e) = tx.core.secrets.get(actor) {
+    if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
     }
@@ -227,19 +227,19 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
     for p in pending {
         let u = Unresolved { keys: p.keys, before: p.before };
         put_unresolved(tx, &p.id, p.ai, &u)?;
-        tx.core.secrets_unresolved.insert((p.id, p.ai), u);
+        tx.core.ix.secrets_unresolved.insert((p.id, p.ai), u);
         actors.insert(p.actor);
     }
     // apply every waiting write of these actors whose removed keys are now known
-    let waiting: Vec<(CommitId, usize, Unresolved)> = tx.core.secrets_unresolved.iter().map(|(k, v)| (k.0, k.1, v.clone())).collect();
+    let waiting: Vec<(CommitId, usize, Unresolved)> = tx.core.ix.secrets_unresolved.iter().map(|(k, v)| (k.0, k.1, v.clone())).collect();
     let mut progress = true;
     while progress {
         progress = false;
         for (c, ai, u) in &waiting {
-            if !tx.core.secrets_unresolved.contains_key(&(*c, *ai)) {
+            if !tx.core.ix.secrets_unresolved.contains_key(&(*c, *ai)) {
                 continue;
             }
-            let Some(actor) = tx.core.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.tid) else { continue };
+            let Some(actor) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.tid) else { continue };
             if !actors.contains(&actor) {
                 continue;
             }
@@ -255,10 +255,10 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             if !complete {
                 continue;
             }
-            tx.core.secrets_unresolved.remove(&(*c, *ai));
+            tx.core.ix.secrets_unresolved.remove(&(*c, *ai));
             remove_unresolved(tx, c, *ai)?;
             progress = true;
-            let e = tx.core.secrets.entry_or_default(actor);
+            let e = tx.core.ix.secrets.entry_or_default(actor);
             if w.applied(e, (&u.keys, &u.before)).unwrap_or(false) {
                 save(tx, &actor)?;
             }
@@ -272,7 +272,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             }
             let Decoded::Snapshot(s) = d else { continue };
             let Some(sv) = s.fragment.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { continue };
-            let e = tx.core.secrets.entry_or_default(a.tid);
+            let e = tx.core.ix.secrets.entry_or_default(a.tid);
             if osis_keys::snapshot_keyed(&sv, e).unwrap_or(false) {
                 save(tx, &a.tid)?;
             }
@@ -283,7 +283,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
 
 /// A held commit's `/secrets` delta became invalid: its rotations are no longer applied.
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     if a.ak.as_str() != "/secrets" {
         return Ok(());
@@ -311,7 +311,7 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         }
     }
     tx.core.touch();
-    if let Some(e) = tx.core.secrets.get_mut(&a.tid) {
+    if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         for (r, ep) in eps {
             e.role_mut(r).unset_applied(&ep);
         }
@@ -331,7 +331,7 @@ pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
 /// the current `/keys` as the keysets before it (an approximation: a keyset it replaced is no
 /// longer known).
 pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let Some(a) = h.aspects.get(ai).cloned() else { return Ok(()) };
     let mut secrets = SecretsWrite::default();
     for d in super::held_parts(tx, c, ai)? {
@@ -350,7 +350,7 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let keys_ak = osis_base::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
     let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
     tx.core.touch();
-    let e = tx.core.secrets.entry_or_default(a.tid);
+    let e = tx.core.ix.secrets.entry_or_default(a.tid);
     if secrets.applied(e, (&keys, &before)).unwrap_or(false) {
         save(tx, &a.tid)?;
     }
@@ -406,7 +406,7 @@ pub(crate) fn load_unresolved(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for (c, ai, u) in out {
-        tx.core.secrets_unresolved.insert((c, ai), u);
+        tx.core.ix.secrets_unresolved.insert((c, ai), u);
     }
     Ok(())
 }
@@ -440,10 +440,10 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
 /// now, or stripped as invalid) or was dropped (spec/crypto.md §4). An actor they were the only
 /// secrets of is left to the lost-access trigger, which drops them with what they read.
 pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
-    let actors: Vec<Tid> = tx.core.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
+    let actors: Vec<Tid> = tx.core.ix.secrets.iter().filter(|(_, e)| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.reading.iter().any(|(_, u)| u.commit == *id)))).map(|(t, _)| *t).collect();
     let mut lost = Vec::new();
     for a in actors {
-        let Some(mut e) = tx.core.secrets.get(&a).cloned() else { continue };
+        let Some(mut e) = tx.core.ix.secrets.get(&a).cloned() else { continue };
         e.drop_reading_from(id);
         // an actor left with no secret is the lost-access trigger's: it forgets what they read
         if ROLES.iter().all(|r| e.role(*r).held_newest_first().is_empty()) {
@@ -451,7 +451,7 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             continue;
         }
         tx.core.touch();
-        tx.core.secrets.insert(a, e);
+        tx.core.ix.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
     }
     crate::rotation::mark_lost_due(tx, lost)
@@ -510,7 +510,7 @@ impl crate::engine::Engine {
         let g = *g;
         self.run(|tx| {
             tx.core.touch();
-            let ep = tx.core.secrets.entry_or_default(g);
+            let ep = tx.core.ix.secrets.entry_or_default(g);
             ep.role_mut(Role::Read).observe(e);
             ep.role_mut(Role::Read).set_secret(e, secret);
             crate::flows::save_epochs(tx, &g)
@@ -652,13 +652,13 @@ mod tests {
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
         for n in 0..MAX_READING_ACTORS {
             let n = u8::try_from(n).unwrap();
-            lp.peers[1].engine.core.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
+            lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
         }
         // pending (the thing's `/created` is not held): its boxes are read only under the cap
         lp.deliver(1, &p1).unwrap();
         lp.deliver(2, &p2).unwrap();
         assert!(!lp.peers[2].engine.pending().is_empty());
-        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.secrets.get(&t).is_some_and(|e| !e.read.held_newest_first().is_empty());
+        let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| !e.read.held_newest_first().is_empty());
         assert!(held(&lp, 2), "under the cap: read");
         assert!(!held(&lp, 1), "at the cap: not read");
     }
@@ -742,7 +742,7 @@ mod tests {
     }
 
     fn candidates(lp: &LocalPeer, t: &Tid) -> usize {
-        lp.peers[1].engine.core.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
+        lp.peers[1].engine.core.ix.secrets.get(t).map_or(0, |e| osis_keys::ROLES.iter().map(|r| e.role(*r).held_newest_first().len()).sum())
     }
 
     // spec/crypto.md §4 (secrets from pending commits kept as reading candidates): a flood of
@@ -773,7 +773,7 @@ mod tests {
         assert!(matches!(lp.deliver(1, &p).unwrap(), crate::Ingested::Pending(..)), "the grant waits for the granter's chain");
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
         lp.sync(0, 1).unwrap();
-        assert!(!lp.peers[1].engine.core.pending.contains_key(&g), "the grant applied");
+        assert!(!lp.peers[1].engine.core.ix.pending.contains_key(&g), "the grant applied");
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
     }
 
@@ -784,10 +784,10 @@ mod tests {
     fn applied_commit_hands_reading_only_actor_to_lost_trigger_spec_crypto_4() {
         let mut lp = LocalPeer::new(1, 908, WallMs(1_700_000_000_000)).unwrap();
         let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
-        lp.peers[0].engine.core.secrets.insert(x, reading_only(9, c));
+        lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
-        assert!(lp.peers[0].engine.core.lost_due.contains(&x));
+        assert!(lp.peers[0].engine.core.ix.lost_due.contains(&x));
         lp.peers[0].engine.drop_lost_due().unwrap();
-        assert!(lp.peers[0].engine.core.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
+        assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| e.read.held_newest_first().is_empty()));
     }
 }

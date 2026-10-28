@@ -82,7 +82,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
         indexed.push((r.tid()?, r.ak()?));
         Ok(())
     })?;
-    let known: Vec<(Tid, Ak)> = tx.core.by_aspect.keys().cloned().chain(indexed).collect();
+    let known: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().chain(indexed).collect();
     for (t, ak) in known {
         if *memo.entry(t).or_insert_with(|| forgets(tx.core, &lost, &t)) {
             out.things.insert(t);
@@ -95,9 +95,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
     let mut parts: BTreeMap<CommitId, BTreeSet<usize>> = BTreeMap::new();
     let mut chunks: BTreeSet<BlobId> = BTreeSet::new();
     // rare (lost access): decodes every header
-    let ids: Vec<CommitId> = tx.core.commits.keys().copied().collect();
+    let ids: Vec<CommitId> = tx.core.ix.commits.keys().copied().collect();
     for id in ids {
-        let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
+        let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
         let ais = lost_aspects(tx.core, &lost, &m.header, &mut memo);
         if ais.is_empty() {
             continue;
@@ -188,7 +188,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid]) -> Result<Forgotten> {
     };
     // a blob a kept commit lists stays
     let core = &*tx.core;
-    let still = |b: &BlobId| core.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| !out.commits.contains(c)));
+    let still = |b: &BlobId| core.ix.by_chunk.get(b).is_some_and(|cs| cs.iter().any(|c| !out.commits.contains(c)));
     let gone: Vec<BlobId> = gone.into_iter().filter(|b| !still(b)).collect();
     for b in &gone {
         tx.txn.delete_blob(b);
