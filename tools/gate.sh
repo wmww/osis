@@ -37,13 +37,14 @@ unification_check() {
   [ "$bad" -eq 0 ]
 }
 step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(date +%s) - s )); }
+# instant checks first, so a missing citation fails before minutes of tests
+step python3 tools/policy.py
+step python3 tools/spec_map.py --uncited
+step python3 tools/spec_map.py --gaps
 step cargo test --workspace --locked
 step unification_check
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo clippy-net --locked -- -D warnings
-step python3 tools/policy.py
-step python3 tools/spec_map.py --uncited
-step python3 tools/spec_map.py --gaps
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
