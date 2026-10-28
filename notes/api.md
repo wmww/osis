@@ -27,7 +27,7 @@
 - `trait AspectKey { type T; fn ak(&self) -> &Ak; fn schema(&self) -> Option<(SchemaId, u32)>; fn decode(&Value) -> Result<T, PathError>; fn encode(&T) -> Value; fn defaults(&self) -> AspectDefaults }` (retention, expiry). Defined in osis-schema, re-exported.
 - Untyped: `Ak` is an `AspectKey` with `T = Value` and no schema (writes go out untyped: no schema index, core default retention). Typed: constants generated from a `.osis` file (`notes::BODY: Aspect<Markdown>`, `notes::TASKS: Aspect<Vec<Task>>`) carrying AK, (schema ID, revision), defaults and codec. A read through a typed key cannot be mistyped; a write through one is validated against the writer's schema (every declared field required, spec/versioning.md §5) and carries its schema index.
 - `Signal<T>` keys likewise for declared signal kinds. Core aspects as typed constants in `osis::core` (`GROUP`, `MEMBERS`, `CREATED`, `MOVED`, `WAS`, ...).
-- Typed reads map `string`/`markdown`/`text` to `String`, `blob` to `Vec<u8>`, `tid` to `Tid`, `timestamp`/`duration` to osis time types; records to generated structs and enums with `TryFrom<Value>`/`Into<Value>`.
+- Typed reads map `string`/`markdown`/`text` to `String`, `blob` to `Vec<u8>`, `tid` to `Tid`, `timestamp`/`duration` to osis time types; records to generated structs and enums with `TryFrom<&Value>`/`From<&T> for Value`.
 
 ## Reads
 - `db.get(tid, key) -> Result<Option<T>>`; `db.at(tid, key) -> AspectRef<T>` with `.get()`, `.path(p).get::<U>()` / `.get_value()` (per-path typed or untyped read, so one bad element of a large collection is skippable), `.len()` (canonical size), `.stream() -> impl Read + Seek` (large string or blob), `.watch()`, `.on_change(f)`.

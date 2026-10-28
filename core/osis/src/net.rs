@@ -81,15 +81,13 @@ pub(crate) enum Net {
 
 impl Drop for Net {
     fn drop(&mut self) {
-        if let Net::Driver { ctl, .. } = self {
+        if let Net::Driver { ctl, own, .. } = self {
             // the driver ends now, not when its last timer fires
             let _ = ctl.send(Control::Shutdown);
-        }
-        if let Net::Driver { own, .. } = self
-            && let Some(rt) = lock(own).take()
-        {
-            // may run on one of its own workers: never block here
-            rt.shutdown_background();
+            if let Some(rt) = lock(own).take() {
+                // may run on one of its own workers: never block here
+                rt.shutdown_background();
+            }
         }
     }
 }
