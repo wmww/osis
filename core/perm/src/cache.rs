@@ -163,6 +163,13 @@ impl W {
         }
         self.dots(&a.dots);
     }
+    fn edge_map(&mut self, m: &BTreeMap<Tid, Edge>) {
+        self.len(m.len());
+        for (n, e) in m {
+            self.tid(n);
+            self.edge(e);
+        }
+    }
     fn pair(&mut self, (a, b): &(Tid, Tid)) {
         self.tid(a);
         self.tid(b);
@@ -379,11 +386,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     w.len(r.prior_node.len());
     for (k, m) in &r.prior_node {
         w.pair(k);
-        w.len(m.len());
-        for (n, e) in m {
-            w.tid(n);
-            w.edge(e);
-        }
+        w.edge_map(m);
     }
     w.len(r.by_author_target.len());
     for (k, v) in &r.by_author_target {
@@ -430,13 +433,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             Undo::PriorNode(k, m) => {
                 w.u8(4);
                 w.pair(k);
-                w.opt(m.as_ref(), |w, m| {
-                    w.len(m.len());
-                    for (n, e) in m {
-                        w.tid(n);
-                        w.edge(e);
-                    }
-                });
+                w.opt(m.as_ref(), W::edge_map);
             }
             Undo::Applied(id, a) => {
                 w.u8(5);
