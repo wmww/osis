@@ -10,3 +10,8 @@ clippy-net = "clippy --workspace --all-targets --features osis/lan,osis-node/qui
 # Test tier 1 defaults (notes/architecture.md §4). An explicit environment value wins.
 [env]
 PROPTEST_CASES = "32"
+
+# Debug sections compressed at link time: line tables keep file:line in backtraces at about 40% of
+# the uncompressed binary size (notes/build.md). zstd is not read by the backtrace symbolizer; zlib is.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--compress-debug-sections=zlib"]
