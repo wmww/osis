@@ -95,6 +95,9 @@ pub(crate) struct Missed {
     pub recs: Vec<(Dot, Dot)>,
     /// Every record was looked at.
     pub all: bool,
+    /// `all` came from a whole pass (a follow or placement failing for a reason other than a
+    /// miss), not a look at every record.
+    pub whole: bool,
     /// Misses so far.
     pub count: usize,
     /// Work units charged by follows.
@@ -134,6 +137,7 @@ impl Partial {
             m.count += 1;
             if m.blocks.is_empty() && m.chunks.is_empty() && m.recs.is_empty() {
                 m.all = true;
+                m.whole = true;
             }
         })
     }
@@ -182,7 +186,7 @@ impl Partial {
     }
     /// What was missed since the last call (cleared; the cover stays).
     pub(crate) fn take(&self) -> Missed {
-        self.with(|m| Missed { blocks: std::mem::take(&mut m.blocks), chunks: std::mem::take(&mut m.chunks), recs: std::mem::take(&mut m.recs), all: std::mem::take(&mut m.all), count: m.count, work: std::mem::take(&mut m.work), cover: Vec::new() })
+        self.with(|m| Missed { blocks: std::mem::take(&mut m.blocks), chunks: std::mem::take(&mut m.chunks), recs: std::mem::take(&mut m.recs), all: std::mem::take(&mut m.all), whole: std::mem::take(&mut m.whole), count: m.count, work: std::mem::take(&mut m.work), cover: Vec::new() })
     }
 }
 
@@ -952,6 +956,10 @@ pub(crate) struct Lin {
     origin: u64,
     /// Set while blocks or chunks may be stubs; shared with `p` and `at`.
     part: Option<Arc<Partial>>,
+    /// At or above every position write's stamp (`None`: unknown): a run or move stamped above
+    /// it and above the rest of its delta places right after its anchor without looking at the
+    /// anchor's children's records (`slot`; a node's own commits, §2.2, §8).
+    newest: Option<Stamp>,
 }
 
 /// The next `Lin::origin`.
@@ -1001,7 +1009,8 @@ impl Lin {
         let p = Placement::of(&placed, text);
         let cyc = placed.cyc.iter().filter_map(|i| placed.nodes.get(*i)).map(|n| n.dot.clone().into_owned()).collect();
         let at = Lin::map_of(&placed, p.cap);
-        Lin { p, waiting: placed.waiting, cyc, at, origin: next_origin(), part: None }
+        let newest = elems.values().flat_map(|e| e.pos.iter().map(|x| &x.0)).max().cloned();
+        Lin { p, waiting: placed.waiting, cyc, at, origin: next_origin(), part: None, newest }
     }
 
     /// Whether an anchor names no element (a write waits for its creation).
@@ -1020,7 +1029,7 @@ impl Lin {
         cyc.sort();
         let blocks = p.order.iter().filter_map(|b| p.blocks.get(*b).map(|x| PlaceBlock { id: *b, len: x.n(), shown: x.shown, min: x.min, shift: p.shift_of(*b) })).collect();
         let chunks = self.at.chunks.iter().skip(1).filter_map(|c| c.lo.clone()).collect();
-        PlaceTop { cap: p.cap, map_len: self.at.len, waiting, cyc, blocks, chunks }
+        PlaceTop { cap: p.cap, map_len: self.at.len, waiting, cyc, blocks, chunks, newest: self.newest.clone() }
     }
 
     /// Block `id`'s rows (depths unshifted); `None` for a stub or no such block.
@@ -1061,7 +1070,7 @@ impl Lin {
         let p = Placement { blocks, shift, free, order, len, shown, cap: t.cap.min(BLOCK), part: Some(part.clone()) };
         let chunks = std::iter::once(None).chain(t.chunks.iter().cloned().map(Some)).map(|lo| MapChunk { lo, e: None }).collect();
         let at = DotMap { chunks, len: t.map_len, part: Some(part.clone()) };
-        Some(Lin { p, waiting: t.waiting.iter().cloned().collect(), cyc: t.cyc.iter().cloned().collect(), at, origin: next_origin(), part: Some(part) })
+        Some(Lin { p, waiting: t.waiting.iter().cloned().collect(), cyc: t.cyc.iter().cloned().collect(), at, origin: next_origin(), part: Some(part), newest: t.newest.clone() })
     }
 
     /// Loads the rows of stub block `id`; `false` if they do not fit its counts.
@@ -1289,11 +1298,16 @@ impl Lin {
                 }
                 let (known, cut) = match &anchor {
                     Anchor::Head => (true, None),
-                    Anchor::Dot(x) => match elems.find(x) {
-                        Some((k, r)) => (true, inside(k, r, x)),
-                        // a virtual anchor on `END` (§6.1): it would split nodes of its source
-                        None if x.src.is_derived() => return None,
-                        None => (false, None),
+                    // a placed anchor needs no record lookup (held in part: no page of its
+                    // records); one not placed (an element of this delta, or none yet) does
+                    Anchor::Dot(x) => match self.placed(x)? {
+                        Some(cut) => (true, cut),
+                        None => match elems.find(x) {
+                            Some((k, r)) => (true, inside(k, r, x)),
+                            // a virtual anchor on `END` (§6.1): it would split nodes of its source
+                            None if x.src.is_derived() => return None,
+                            None => (false, None),
+                        },
                     },
                 };
                 Some(Plan::New { stamp, anchor, known, cut })
@@ -1340,6 +1354,15 @@ impl Lin {
         let mut moves: Vec<(Stamp, Dot, Anchor)> = Vec::new();
         // elements a row must start at
         let mut cuts: Vec<Dot> = Vec::new();
+        // the newest position write before this delta (`newest` takes the delta's too)
+        let before = self.newest.clone();
+        if before.is_some() {
+            for (dot, plan) in &plans {
+                if let (Plan::New { .. } | Plan::Held { .. }, Some(r)) = (plan, elems.get(dot)) {
+                    self.newest = r.pos.iter().map(|x| &x.0).chain(self.newest.as_ref()).max().cloned();
+                }
+            }
+        }
         for (dot, plan) in plans {
             if let Plan::Cut = plan {
                 cuts.push(dot);
@@ -1407,6 +1430,9 @@ impl Lin {
         if runs.len() + moves.len() + cuts.len() > self.p.len.isqrt().max(64) {
             return false;
         }
+        // the newest edge placed here, when above every one before: that run or move goes first
+        // among its anchor's children without looking at theirs (the rest of a run is its chain)
+        let fresh = runs.iter().map(|r| &r.1).chain(moves.iter().map(|m| &m.0)).max().filter(|f| before.as_ref().is_some_and(|b| *f > b)).cloned();
         let each = self.p.order.len() + self.p.cap;
         for x in cuts {
             *work += each;
@@ -1416,7 +1442,7 @@ impl Lin {
         }
         for (key, stamp, run) in runs {
             *work += each;
-            let Some(slot) = self.slot(elems, &key, &stamp, usize::MAX..usize::MAX, work) else { return false };
+            let Some(slot) = self.slot(elems, &key, &stamp, fresh.as_ref(), usize::MAX..usize::MAX, work) else { return false };
             // below a hidden node: hidden too
             let Some(q) = slot else { continue };
             let Some(d0) = self.depth_below(&key) else { return false };
@@ -1439,7 +1465,7 @@ impl Lin {
         moves.sort();
         for (stamp, dot, anchor) in moves {
             *work += each;
-            if !self.place_moved(elems, &dot, stamp, anchor, work) {
+            if !self.place_moved(elems, &dot, stamp, anchor, fresh.as_ref(), work) {
                 return false;
             }
         }
@@ -1502,6 +1528,18 @@ impl Lin {
         Some((old.first().map(|p| &p.0) != Some(&stamp)).then(|| (stamp, dot.clone(), anchor)))
     }
 
+    /// Whether element `x` is placed: `Some(Some(cut))`, with the element after it when both
+    /// are in its row (where the row splits once something anchors at `x`), `Some(None)` if
+    /// not placed; `None` if a row or chunk looked at is not loaded (a miss noted).
+    fn placed(&self, x: &Dot) -> Option<Option<Option<Dot>>> {
+        let before = self.part.as_ref().map(|p| p.count());
+        let Some((b, o)) = self.holder(x) else {
+            return (self.part.as_ref().map(|p| p.count()) == before).then_some(None);
+        };
+        let r = self.p.block(b).get(o)?;
+        Some(Some((x.ctr - r.dot.ctr + 1 < r.span).then(|| nth(x, 1))))
+    }
+
     /// Block and offset of the row holding element `x`.
     fn holder(&self, x: &Dot) -> Option<(usize, usize)> {
         let (k, b) = self.at.at_or_before(x)?;
@@ -1556,7 +1594,7 @@ impl Lin {
 
     /// Moves the subtree of `dot` below `anchor` with edge stamp `stamp`; `false`: rebuild (the
     /// element or the anchor is not placed, or the anchor is in the subtree: a cycle).
-    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor, work: &mut usize) -> bool {
+    fn place_moved(&mut self, elems: &dyn Recs, dot: &Dot, stamp: Stamp, anchor: Anchor, fresh: Option<&Stamp>, work: &mut usize) -> bool {
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(d) = self.p.block(b).get(o).map(|r| r.depth + self.p.shift_of(b)) else { return false };
         let i = self.p.base(b) + o;
@@ -1571,7 +1609,7 @@ impl Lin {
                 Some(x)
             }
         };
-        let (Some(Some(q)), Some(nd)) = (self.slot(elems, &key, &stamp, i..e, work), self.depth_below(&key)) else { return false };
+        let (Some(Some(q)), Some(nd)) = (self.slot(elems, &key, &stamp, fresh, i..e, work), self.depth_below(&key)) else { return false };
         self.p.relocate(i..e, q, nd - d, Some(&mut self.at));
         let Some((b, o)) = self.loc(dot) else { return false };
         let Some(row) = self.p.blocks.get_mut(b).map(Arc::make_mut).and_then(|x| x.rows.get_mut(o)) else { return false };
@@ -1583,8 +1621,10 @@ impl Lin {
     /// Where a node whose edge (stamp `stamp`) names `key` (`None`: HEAD) goes: after the anchor
     /// and its children with greater edge stamps, with their subtrees (§6.1 sibling order), and
     /// at HEAD before the `END` nodes, as if the rows `skip` (the node's own subtree) were out;
-    /// `None`: rebuild.
-    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, skip: Range<usize>, work: &mut usize) -> Option<Slot> {
+    /// `None`: rebuild. `stamp` equal to `fresh` (above every other edge) goes before the
+    /// anchor's first child.
+    fn slot(&self, elems: &dyn Recs, key: &Option<Dot>, stamp: &Stamp, fresh: Option<&Stamp>, skip: Range<usize>, work: &mut usize) -> Option<Slot> {
+        let first = fresh == Some(stamp);
         let (mut c, d, want) = match key {
             None => (self.p.norm(Cursor { k: 0, o: 0, at: 0 }), -1, Anchor::Head),
             Some(x) => {
@@ -1604,7 +1644,7 @@ impl Lin {
             }
             let Some((r, rd)) = self.p.row_c(c) else { return Some(Some(c.at)) };
             // past the anchor's subtree, or (at HEAD) at the `END` nodes
-            if rd <= d || key.is_none() && !r.head || child_stamp(elems, r, &want)? < *stamp {
+            if rd <= d || key.is_none() && !r.head || first || child_stamp(elems, r, &want)? < *stamp {
                 return Some(Some(c.at));
             }
             // a record lookup per sibling: about as dear as a few rows of a whole pass

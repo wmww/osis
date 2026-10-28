@@ -664,7 +664,8 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
 // A paged sequence keeps its placement (`osis_crdt::SeqPlace`: every node in order, hidden ones
 // included, with its depth, parent and edge, in blocks with their visible counts and least
 // depths, and a dot → block map in chunks by dot) in the aspect's placement table:
-// - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], groups]`;
+// - top (`set ‖ 0`): `[cap, map entries, [waiting dot*], [broken-cycle dot*], groups, newest]`,
+//   newest `[ts, dot]` a stamp at or above every position write's, or `[]` (absent in older tops);
 // - group (`set ‖ 0 ‖ u32 index`): `[[block ID, rows, shown, least depth, shift]*]`, the blocks
 //   in order, `GROUP` per row;
 // - block (`set ‖ 1 ‖ u64 ID`): `[[source*], [row*]]`, a row `[source, ctr, span or n, flags,
@@ -892,7 +893,8 @@ fn parse_chunk(b: &[u8]) -> Option<Vec<(Dot, usize)>> {
 
 fn top_row(t: &PlaceTop, groups: usize) -> Vec<u8> {
     let dots = |x: &[Dot]| Value::List(x.iter().map(dot_value).collect());
-    osis_core::encode(&Value::List(vec![uint(t.cap as u64), uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), uint(groups as u64)]))
+    let newest = t.newest.as_ref().map_or(Value::List(Vec::new()), |s| Value::List(vec![uint(s.ts.to_u64()), dot_value(&s.dot)]));
+    osis_core::encode(&Value::List(vec![uint(t.cap as u64), uint(t.map_len as u64), dots(&t.waiting), dots(&t.cyc), uint(groups as u64), newest]))
 }
 
 fn group_rows(t: &PlaceTop) -> Vec<Vec<u8>> {
@@ -907,7 +909,20 @@ fn chunks_row(t: &PlaceTop) -> Vec<u8> {
 
 /// The top and chunk list of a stored placement (`None`: damaged).
 fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> {
-    let [cap, map_len, Value::List(waiting), Value::List(cyc), ng] = <[Value; 5]>::try_from(decode_row(top)?).ok()? else { return None };
+    let mut row = decode_row(top)?;
+    // the newest position write's stamp (none in tops written before it)
+    let newest = match row.len() {
+        6 => match row.pop()? {
+            Value::List(x) if x.is_empty() => None,
+            Value::List(x) => match x.as_slice() {
+                [Value::Int(ts), d] => Some(osis_crdt::Stamp { ts: osis_core::Ts::from_u64(u64::try_from(*ts).ok()?)?, dot: dot_of(d).ok()? }),
+                _ => return None,
+            },
+            _ => return None,
+        },
+        _ => None,
+    };
+    let [cap, map_len, Value::List(waiting), Value::List(cyc), ng] = <[Value; 5]>::try_from(row).ok()? else { return None };
     let n = |v: &Value| int(v).and_then(|x| usize::try_from(x).ok());
     let dots = |x: &[Value]| x.iter().map(|d| dot_of(d).ok()).collect::<Option<Vec<_>>>();
     if n(&ng)? != groups.len() {
@@ -929,7 +944,7 @@ fn parse_top(top: &[u8], groups: &[Vec<u8>], chunks: &[u8]) -> Option<PlaceTop> 
         .collect::<Option<Vec<_>>>()?;
     let (srcs, items) = parse_srcs(chunks)?;
     let chunks = items.iter().map(|d| dot_at(&srcs, d)).collect::<Option<Vec<_>>>()?;
-    Some(PlaceTop { cap: n(&cap)?, map_len: n(&map_len)?, waiting: dots(&waiting)?, cyc: dots(&cyc)?, blocks, chunks })
+    Some(PlaceTop { cap: n(&cap)?, map_len: n(&map_len)?, waiting: dots(&waiting)?, cyc: dots(&cyc)?, blocks, chunks, newest })
 }
 
 fn put_place(txn: &mut Transaction<'_>, pt: Table, key: Vec<u8>, block: bool, row: Vec<u8>) -> Result<()> {
@@ -1151,20 +1166,21 @@ fn place_whole(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &mut PageSet,
     Ok(())
 }
 
-/// Prepares the ops `ops` on paged sequences (by index, a text's edit, anything inside an
-/// element at an index) to run on the pages loaded: loads the pages along their paths and
-/// attaches each sequence's stored placement; the caller runs them and loads what they missed
-/// (`absorb`) until nothing is. `false`: not that kind (another op, a sequence not paged, loaded
-/// whole or without a placement): load whole.
-pub fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, ops: &[osis_crdt::PathOp]) -> Result<bool> {
+/// Prepares the ops `ops` on paged sequences (by index, an edit, anything inside an element at
+/// an index) to run on the pages loaded: loads the pages along their paths and attaches each
+/// sequence's stored placement; the caller runs them and loads what they missed (`absorb`)
+/// until nothing is. A list edit whose items have large parts (`edits`, by op) first loads the
+/// elements at its window, whose links it takes (`large::window_links`). `false`: not that kind
+/// (another op, a sequence not paged, loaded whole or without a placement, a list edit taking
+/// links from the whole list): load whole.
+pub(crate) fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment, ops: &[osis_crdt::PathOp], edits: &[Option<super::large::ListEdit>]) -> Result<bool> {
     use osis_crdt::Op;
     let t = table(txn, tid, ak)?;
-    for op in ops {
-        // ops by index; a text's edit (resolved around its change when the read there matches
-        // its base; a list's matches items as the state holds their large values, not partial);
-        // anything inside an element at an index (never paged apart from its sequence)
+    for (n, op) in ops.iter().enumerate() {
+        // ops by index; an edit (resolved around its change when the read there matches its
+        // base); anything inside an element at an index (never paged apart from its sequence)
         let k = op.path.iter().position(|s| matches!(s, PathSeg::Index(_)));
-        let by_index = k.is_some() || matches!(op.op, Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { new: Value::Str(_), .. });
+        let by_index = k.is_some() || matches!(op.op, Op::Insert { .. } | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::Edit { .. });
         if !by_index {
             return Ok(false);
         }
@@ -1182,6 +1198,27 @@ pub fn attach_ops(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
         // the skeleton holds no sequence without a reset or `W`: its first page restores it
         if f.at_steps(p).is_none() {
             ensure_first(txn, t, set, f)?;
+        }
+        match (&op.op, edits.get(n).and_then(Option::as_ref)) {
+            (Op::Edit { new: Value::Str(_), .. }, _) => {}
+            (Op::Edit { new: Value::List(_), .. }, e) if e.is_none_or(|e| !e.large) => {}
+            (Op::Edit { new: Value::List(_), .. }, Some(e)) => {
+                // the elements at its window, whose links it takes; else the whole list's
+                let Some(w) = e.win else { return Ok(false) };
+                if pl.shown() != e.base_len() || load_range(txn, tid, ak, t, set, f, pl, w.lo..w.hi)?.is_none() {
+                    return Ok(false);
+                }
+                let Place::Held(pl) = &set.place else { return Ok(false) };
+                let pl = pl.clone();
+                attach(f, set, Some(pl.clone()));
+                let lends = f.at(&op.path).is_some_and(|l| super::large::window_links(&l, e).is_some());
+                if !lends || pl.misses().any() {
+                    return Ok(false);
+                }
+                continue;
+            }
+            (Op::Edit { .. }, _) => return Ok(false),
+            _ => {}
         }
         attach(f, set, Some(pl));
     }
@@ -1201,6 +1238,11 @@ pub fn absorb(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex
             continue;
         }
         any = true;
+        if m.all {
+            // counted: how often an op on the pages loaded gives up and loads whole
+            let _s = crate::costs::span(if m.whole { "paged op whole: whole pass" } else { "paged op whole: every record" });
+            return Ok(None);
+        }
         let Some(pt) = txn.table(tid, ak, PLACE_TABLE)? else { return Ok(None) };
         if !absorb_into(txn, t, pt, set, f, &mut p, &m)? {
             return Ok(None);
@@ -2187,7 +2229,7 @@ mod tests {
                 // the pages loaded through the stored placement, it writes what it writes on the
                 // whole state
                 if wi == 0
-                    && attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&op)).unwrap()
+                    && attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, std::slice::from_ref(&op), &[]).unwrap()
                 {
                     let got = run_cold(&mut txn, &tid, &ak, &mut idx, &mut f, &op, &view, || Writer::new(Ts::from_u64(ts).unwrap(), nodes[0].clone(), ctrs[0]));
                     assert!(got == Some((delta.clone(), range)), "step {step}: {:?} on the pages loaded\n got {got:?}\n want {:?}", op.op, (&delta, range));
@@ -2387,7 +2429,7 @@ mod tests {
             ctrs[wi] = range.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
             if wi == 0 {
-                assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops).unwrap(), "step {step}: through the placement");
+                assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
                 let mut got = None;
                 for _ in 0..OP_RUNS {
                     got = run(&f);
@@ -2438,7 +2480,7 @@ mod tests {
         };
         if Some(Value::Str(x.clone())) != st.at(&field()).and_then(|s| s.read()) {
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale).unwrap());
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &stale, &[]).unwrap());
             let mut gave_up = false;
             for _ in 0..OP_RUNS {
                 run(&f);
@@ -2515,7 +2557,7 @@ mod tests {
             let Some((delta, range)) = run(&st) else { continue };
             ctr = range.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops).unwrap(), "step {step}: through the placement");
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap(), "step {step}: through the placement");
             let mut got = None;
             for _ in 0..OP_RUNS {
                 got = run(&f);
@@ -2779,7 +2821,7 @@ mod tests {
             let want = run(&st).unwrap();
             ctr = want.1.hi;
             let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops).unwrap());
+            assert!(attach_ops(&mut txn, &tid, &ak, &mut idx, &mut f, &ops, &[]).unwrap());
             let mut got = run(&f);
             for _ in 0..OP_RUNS {
                 match absorb(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap() {

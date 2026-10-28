@@ -340,6 +340,38 @@ impl Rebase {
     }
 }
 
+/// Base's changed middle `mid` widened by `CTX` each side, unless that stretch of base occurs
+/// elsewhere in base.
+fn widen<T: PartialEq>(base: &[T], mid: &Range<usize>) -> Option<Range<usize>> {
+    let lo = mid.start.saturating_sub(CTX);
+    let hi = mid.end.saturating_add(CTX).min(base.len());
+    let at = base.get(lo..hi).unwrap_or_default();
+    if !at.is_empty() && base.windows(at.len()).enumerate().any(|(k, x)| k != lo && x == at) {
+        return None;
+    }
+    Some(lo..hi)
+}
+
+/// Where `edit` of `base` into `new` resolves at base's own indices when the read has base's
+/// length and matches base there (`EditWindow`); `None` when that stretch of base occurs
+/// elsewhere in base (then it matches the whole read). A node holding a list in part reads the
+/// list there and nowhere else for it.
+pub fn edit_window<T: PartialEq>(base: &[T], new: &[T]) -> Option<EditWindow> {
+    let (pre, suf) = trim(base, new, &|x: &T, y: &T| x == y);
+    let r = widen(base, &(pre..base.len() - suf))?;
+    Some(EditWindow { pre, suf, lo: r.start, hi: r.end })
+}
+
+/// An edit's window (`edit_window`): the common prefix and suffix of base and new, and the
+/// stretch `lo..hi` of base (its changed middle and `CTX` elements each side) it is resolved at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditWindow {
+    pub pre: usize,
+    pub suf: usize,
+    pub lo: usize,
+    pub hi: usize,
+}
+
 /// What `window` found.
 enum Window {
     Here(Rebase),
@@ -357,12 +389,7 @@ fn window<T: PartialEq>(s: &dyn SeqRead, vis: &crate::seq::Vis, base: &[T], mid:
     if vis.len() != base.len() {
         return Window::Differs;
     }
-    let lo = mid.start.saturating_sub(CTX);
-    let hi = mid.end.saturating_add(CTX).min(base.len());
-    let at = base.get(lo..hi).unwrap_or_default();
-    if !at.is_empty() && base.windows(at.len()).enumerate().any(|(k, x)| k != lo && x == at) {
-        return Window::Differs;
-    }
+    let Some(Range { start: lo, end: hi }) = widen(base, mid) else { return Window::Differs };
     #[cfg(test)]
     if WHOLE_ONLY.get() {
         return Window::Differs;

@@ -43,7 +43,9 @@ pub struct PlaceBlock {
 
 /// Everything of a placement but its rows and dot-map entries: the block size, the dot map's
 /// entry count, the anchors naming no element, the nodes on broken cycles (§6.2), the blocks in
-/// order and the first dots of the dot map's chunks after the first.
+/// order, the first dots of the dot map's chunks after the first, and a stamp at or above every
+/// position write's (`None`: unknown; a write stamped above it skips its anchor's children's
+/// records).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaceTop {
     pub cap: usize,
@@ -52,6 +54,7 @@ pub struct PlaceTop {
     pub cyc: Vec<Dot>,
     pub blocks: Vec<PlaceBlock>,
     pub chunks: Vec<Dot>,
+    pub newest: Option<crate::stamp::Stamp>,
 }
 
 /// What a placement changed against the one it descends from (`SeqPlace::diff`): the loaded
@@ -73,8 +76,12 @@ pub struct PlaceMisses {
     pub blocks: Vec<usize>,
     pub chunks: Vec<Option<Dot>>,
     pub recs: Vec<(Dot, Dot)>,
-    /// Every record (presence of a sequence whose loaded records show no write).
+    /// Every record (presence of a sequence whose loaded records show no write, an edit whose
+    /// read differs from its base near the change, a whole pass).
     pub all: bool,
+    /// `all` from a whole pass over the records held (`Partial::whole_pass`: a layered follow or
+    /// a placement failing for a reason other than a miss), not a look at every record.
+    pub whole: bool,
     pub work: usize,
 }
 
@@ -135,7 +142,7 @@ impl SeqPlace {
     pub fn misses(&self) -> PlaceMisses {
         let Some(p) = self.0.partial() else { return PlaceMisses::default() };
         let m = p.take();
-        PlaceMisses { blocks: m.blocks.into_iter().collect(), chunks: m.chunks.into_iter().collect(), recs: m.recs, all: m.all, work: m.work }
+        PlaceMisses { blocks: m.blocks.into_iter().collect(), chunks: m.chunks.into_iter().collect(), recs: m.recs, all: m.all, whole: m.whole, work: m.work }
     }
     /// What changed against `old`; `None` if it does not descend from `old` (a whole pass or
     /// load since).

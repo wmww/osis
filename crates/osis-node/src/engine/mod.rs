@@ -616,12 +616,12 @@ impl Tx<'_> {
 
     /// Prepares ops by index into paged sequences to run on the pages loaded, through their
     /// stored placements (`pages::attach_ops`); `false`: load whole instead.
-    pub fn attach_ops(&mut self, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp]) -> Result<bool> {
+    pub(crate) fn attach_ops(&mut self, tid: &Tid, ak: &Ak, ops: &[osis_crdt::PathOp], edits: &[Option<large::ListEdit>]) -> Result<bool> {
         self.load_lazy(tid, ak)?;
         if !self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| !i.whole()) {
             return Ok(false);
         }
-        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops))? == Some(true))
+        Ok(self.with_pages(tid, ak, |txn, idx, f| pages::attach_ops(txn, tid, ak, idx, f, ops, edits))? == Some(true))
     }
 
     /// Loads what ops run on the pages loaded missed (`pages::absorb`): `Some(true)` run them

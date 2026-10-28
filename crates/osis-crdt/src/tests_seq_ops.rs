@@ -1629,7 +1629,7 @@ fn resolved_ops_on_embedded_text_and_skew_spec_6_1() {
 #[test]
 fn index_ops_on_partial_placement_match_whole_spec_5_7() {
     let mut r = Rng(43);
-    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits) = (0, 0, 0, 0, 0, 0);
+    let (mut runs, mut moves, mut multi, mut loaded, mut total, mut edits, mut wholes) = (0, 0, 0, 0, 0, 0, 0);
     for round in 0..80 {
         let mut stale = None;
         let text = round % 2 == 0;
@@ -1701,6 +1701,7 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
             }
             assert!(got == want, "round {round} step {k}: {ops:?}\n got {got:?}\n want {want:?}");
             runs += 1;
+            wholes += pg.whole_passes;
             // (an edit against a stale read, or after another op, loads whole)
             if !ops.iter().any(|o| matches!(o, Op::Edit { .. })) {
                 loaded += pg.whole.top().blocks.len() - pg.p.stubs().0.len();
@@ -1712,6 +1713,8 @@ fn index_ops_on_partial_placement_match_whole_spec_5_7() {
         }
     }
     assert!(runs > 200 && moves > 50 && multi > 50 && edits > 50, "{runs} runs, {moves} moves, {multi} two-op commits, {edits} edits");
+    // ops whose layered follow or placement fails other than by a miss: rare
+    assert!(wholes * 40 <= runs, "{wholes} of {runs} runs by a whole pass");
     assert!(loaded * 3 < total * 2, "{loaded} of {total} blocks loaded");
 }
 
@@ -1752,7 +1755,7 @@ fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
 #[test]
 fn partial_placement_skew_piles_and_joins_spec_6_1() {
     let mut r = Rng(977);
-    let (mut runs, mut low, mut piles, mut joins, mut followed) = (0, 0, 0, 0, 0);
+    let (mut runs, mut low, mut piles, mut joins, mut followed, mut wholes) = (0, 0, 0, 0, 0, 0);
     for round in 0..48 {
         let text = round % 2 == 0;
         let ty = if text { Ty::Text } else { list_ty() };
@@ -1842,6 +1845,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
             }
             assert!(got == want, "round {round} step {k} ts {t}: {ops:?}\n got {got:?}\n want {want:?}");
             runs += 1;
+            wholes += pg.whole_passes;
             if let Some((d, _)) = want {
                 join_check(&mut st, d, &mut r, &mut joins, &mut followed);
             }
@@ -1869,6 +1873,7 @@ fn partial_placement_skew_piles_and_joins_spec_6_1() {
         }
     }
     assert!(runs > 200 && low > 80 && piles > 40, "{runs} runs, {low} skewed, {piles} piles");
+    assert!(wholes * 40 <= runs, "{wholes} of {runs} runs by a whole pass");
     assert!(followed * 10 > joins * 7, "{followed} of {joins} joins followed in part");
 }
 
@@ -1938,6 +1943,113 @@ fn edit_on_partial_placement_loads_its_window_spec_5_7() {
         }
     }
     assert!(few >= 20 && stale_whole >= 5, "{few} edits at their window, {stale_whole} stale edits matched whole");
+}
+
+/// §6.1 (siblings by edge stamp, newest first), §8 (`seq_place`): a placement keeps a stamp at
+/// or above every position write's, so a join of an insert stamped above it (a node's own
+/// commit) places the run right after its anchor without looking at the anchor's children's
+/// records: on a text held in part whose chars have children from another writer, such joins
+/// follow as a whole pass would and load fewer pages than without the bound, never more.
+#[test]
+fn newest_stamp_skips_children_records_spec_6_1() {
+    let mut r = Rng(29);
+    let view = text_view();
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    let text: String = (0..800).map(|_| (b'a' + r.below(26) as u8) as char).collect();
+    let mut st = create(&mut w, &view, &s(&text)).unwrap();
+    // another writer's chars under many of them
+    for k in 0..150u64 {
+        let n = full_order(&st).iter().filter(|x| x.1).count();
+        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), node(2), 1 + 10 * k));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("y")] } }, &view).unwrap();
+        st.join(b.finish().unwrap().0);
+    }
+    let (mut with, mut without, mut fewer) = (0, 0, 0);
+    for k in 0..40u64 {
+        let Fragment::Seq(sq) = &st else { panic!() };
+        let n = full_order(&st).iter().filter(|x| x.1).count();
+        let mut b = Batch::new(&st, Writer::new(ts((1000 + k) << 16), node(9), 1 + 10 * k));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![s("z")] } }, &view).unwrap();
+        let (d, _) = b.finish().unwrap();
+        let Fragment::Seq(ds) = &d else { panic!() };
+        let (Some((_, a)), Some((_, b))) = (crate::tests_seq::partial_follow_in(sq, ds, 8, true), crate::tests_seq::partial_follow_in(sq, ds, 8, false)) else { panic!("step {k}: not followed") };
+        assert!(a <= b, "step {k}: {a} pages with the bound, {b} without");
+        (with, without, fewer) = (with + a, without + b, fewer + usize::from(a < b));
+        st.join(d);
+    }
+    assert!(fewer >= 10 && with < without, "{with} pages with the bound, {without} without, fewer in {fewer} joins");
+}
+
+/// §5.7 Ops, §8 (`seq_place`, notes/api.md `edit`): the list form of
+/// `edit_on_partial_placement_loads_its_window_spec_5_7`: on a list of many blocks held in part,
+/// an edit against the current read loads only the blocks and records around its change
+/// (`edit_window`'s stretch, where a node reads the links it lends) and writes what it writes on
+/// the whole list, never by a whole pass; one against a stale read, or whose stretch repeats in
+/// base, matches whole, also equal.
+#[test]
+fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
+    let mut r = Rng(83);
+    let ty = list_ty();
+    let view = TyView(ty.clone());
+    let Ty::List(e) = &ty else { unreachable!() };
+    let mut w = Writer::new(ts(1 << 16), node(1), 1);
+    let items: Vec<Value> = (0..1500).map(|_| value(&random_value(&mut r, e, 1))).collect();
+    let mut st = create(&mut w, &view, &Value::List(items)).unwrap();
+    for k in 0..40u64 {
+        let n = full_order(&st).iter().filter(|x| x.1).count();
+        let mut b = Batch::new(&st, Writer::new(ts((10 + k) << 16), node(2), 1 + 10 * k));
+        b.apply(&PathOp { path: Vec::new(), op: Op::Insert { at: r.below(n + 1), items: vec![value(&random_value(&mut r, e, 1))] } }, &view).unwrap();
+        st.join(b.finish().unwrap().0);
+    }
+    let (mut few, mut repeats, mut stale_whole) = (0, 0, 0);
+    let mut stale = st.read().unwrap();
+    for k in 0..40u64 {
+        let Fragment::Seq(sq) = &st else { panic!() };
+        let sq = sq.clone();
+        let cur = st.read().unwrap();
+        let base = if k % 4 == 3 { stale.clone() } else { cur.clone() };
+        let new = edited(&mut r, &base, &ty);
+        let (Value::List(b), Value::List(nl)) = (&base, &new) else { panic!() };
+        let win = crate::seq_diff::edit_window(b, nl);
+        let op = Op::Edit { base: base.clone(), new: new.clone() };
+        let w = || Writer::new(ts((200 + k) << 16), node(9), 1000 + 10 * k);
+        let run = |f: &Fragment| -> Option<(Fragment, CounterRange)> {
+            let mut b = Batch::new(f, w());
+            b.apply(&PathOp { path: Vec::new(), op: op.clone() }, &view).ok()?;
+            b.finish()
+        };
+        let want = run(&st);
+        let mut pg = crate::tests_seq::Pager::new(&sq, 40);
+        let mut got = None;
+        for _ in 0..64 {
+            got = run(&pg.part());
+            if !pg.absorb() {
+                break;
+            }
+        }
+        assert!(got == want, "step {k}: {op:?}");
+        assert_eq!(pg.whole_passes, 0, "step {k}: a whole pass");
+        let (all, stubs) = (pg.whole.top().blocks.len(), pg.p.stubs().0.len());
+        match win {
+            Some(w) if base == cur => {
+                assert!(w.lo <= w.pre.saturating_sub(32) && w.hi >= b.len() - w.suf && w.hi - w.lo <= 66, "step {k}: {w:?}");
+                assert!(all > 10 && all - stubs <= 3 && pg.loaded.len() <= 10, "step {k}: {} of {all} blocks, {} pages", all - stubs, pg.loaded.len());
+                few += 1;
+            }
+            None if base == cur => {
+                repeats += 1;
+                assert_eq!(stubs, 0, "step {k}: a repeated stretch matches whole");
+            }
+            _ => stale_whole += usize::from(stubs == 0),
+        }
+        if let Some((d, _)) = want {
+            st.join(d);
+        }
+        if k % 4 == 1 {
+            stale = st.read().unwrap();
+        }
+    }
+    assert!(few >= 20 && stale_whole >= 5, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
 }
 
 /// §5.7, §9 (notes/api.md `edit`): an edit resolved at its window writes what one matched against

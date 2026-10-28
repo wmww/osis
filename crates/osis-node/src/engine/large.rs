@@ -139,17 +139,104 @@ fn held_links(state: Option<&Fragment>, path: &[PathSeg]) -> HashMap<[u8; 32], L
     out.into_iter().map(|l| (l.hash, l)).collect()
 }
 
-/// Chunks the large positions of an op's value (untyped writes are classified as `any`);
-/// large values `state` holds at the positions a `set`/`replace` overwrites are reused. A list
-/// `edit` chunks `new`'s items as an insert's, except that an item the list holds already (by
-/// content hash) keeps its link, and `base`'s items become links by content hash (`hash`: the
-/// value's place without writing blobs) so they match the list's read.
-pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state: Option<&Fragment>, put: &mut Put<'_>, hash: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<()> {
-    let core = osis_schema::core_schema();
+/// The schema, type and whether it is a text, of what `path` of aspect `ak` holds (untyped:
+/// `any`).
+fn op_type<'s>(schema: Option<&'s Schema>, ak: &str, path: &[PathSeg]) -> (&'s Schema, Type, bool) {
     let (s, root): (&Schema, Type) = match schema.and_then(|s| s.aspects.get(ak).map(|a| (s, a.ty.clone()))) {
         Some(x) => x,
-        None => (core, Type::Any),
+        None => (osis_schema::core_schema(), Type::Any),
     };
+    let ty = if path.is_empty() { root } else { type_at(s, &root, &schema_path(path)).map(|x| x.0).unwrap_or(Type::Any) };
+    let text = matches!(s.expand(&ty).as_deref(), Ok(Type::Text));
+    (s, ty, text)
+}
+
+/// A list `edit` before its items are chunked (`list_edits`): base's items with their large
+/// parts as links by content hash (no blob written), whether chunking changes base or new, and
+/// where the edit resolves at base's own indices by those forms (`osis_crdt::edit_window`).
+/// The links the list lends the edit are those its read holds there (`window_links`), so a node
+/// holding the list in part resolves it from the pages there; else every link the list holds.
+#[derive(Clone, Debug)]
+pub(crate) struct ListEdit {
+    base: Vec<Value>,
+    pub(crate) large: bool,
+    pub(crate) win: Option<osis_crdt::EditWindow>,
+}
+
+impl ListEdit {
+    /// Base's length.
+    pub(crate) fn base_len(&self) -> usize {
+        self.base.len()
+    }
+}
+
+/// The `ListEdit` of each op that is a list `edit` (others `None`), large parts hashed under
+/// `dedup`.
+pub(crate) fn list_edits(ops: &[PathOp], schema: Option<&Schema>, ak: &str, dedup: &Secret32) -> Result<Vec<Option<ListEdit>>> {
+    let mut hash = |v: &Value, _: Option<&Link>| -> Result<Value> { Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?) };
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let Op::Edit { base, new: new @ Value::List(_) } = &op.op else {
+            out.push(None);
+            continue;
+        };
+        let (s, ty, text) = op_type(schema, ak, &op.path);
+        if text {
+            out.push(None);
+            continue;
+        }
+        let (mut b, mut n) = (base.clone(), new.clone());
+        chunk_value(&mut b, s, &ty, None, &mut hash)?;
+        chunk_value(&mut n, s, &ty, None, &mut hash)?;
+        let large = b != *base || n != *new;
+        let (Value::List(b), Value::List(n)) = (b, n) else {
+            out.push(None);
+            continue;
+        };
+        let win = osis_crdt::edit_window(&b, &n);
+        out.push(Some(ListEdit { base: b, large, win }));
+    }
+    Ok(out)
+}
+
+/// `v` with every link reduced to its content hash.
+fn hash_only(v: &Value) -> Value {
+    match v {
+        Value::Link(l) => Value::Link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }),
+        Value::List(x) => Value::List(x.iter().map(hash_only).collect()),
+        Value::Set(x) => Value::Set(x.iter().map(hash_only).collect()),
+        Value::Map(x) => Value::Map(x.iter().map(|(k, v)| (hash_only(k), hash_only(v))).collect()),
+        Value::Enum(c, Some(p)) => Value::Enum(*c, Some(Box::new(hash_only(p)))),
+        v => v.clone(),
+    }
+}
+
+/// The links list `list` lends edit `e` by content hash: those of its elements at the edit's
+/// window when it has base's length and reads there as base does by content hash; `None` else
+/// (then every link it holds), or where something there is not loaded.
+pub(crate) fn window_links(list: &Fragment, e: &ListEdit) -> Option<HashMap<[u8; 32], Link>> {
+    let w = e.win?;
+    if list.visible_len()? != e.base.len() {
+        return None;
+    }
+    let dots = list.visible_range(w.lo..w.hi)?;
+    let Value::List(vals) = list.read_elems(&dots)? else { return None };
+    let base = e.base.get(w.lo..w.hi)?;
+    if vals.len() != base.len() || vals.iter().zip(base).any(|(v, b)| hash_only(v) != hash_only(b)) {
+        return None;
+    }
+    let mut out = Vec::new();
+    vals.iter().for_each(|v| links_in(v, &mut out));
+    Some(out.into_iter().map(|l| (l.hash, l)).collect())
+}
+
+/// Chunks the large positions of an op's value (untyped writes are classified as `any`);
+/// large values `state` holds at the positions a `set`/`replace` overwrites are reused. A list
+/// `edit` (`edit`: its `ListEdit`) chunks `new`'s items as an insert's, except that an item the
+/// list lends it (by content hash, `window_links`) keeps its link, and `base`'s items become
+/// links by content hash (`hash`: the value's place without writing blobs) so they match the
+/// list's read; at its window, base's and new's common items outside it take base's form.
+pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state: Option<&Fragment>, edit: Option<&ListEdit>, put: &mut Put<'_>, hash: &mut dyn FnMut(&Value) -> Result<Value>) -> Result<()> {
     let PathOp { path, op } = op;
     // large map keys on the path: the link the state holds for the key, else a new tree
     for i in 0..path.len() {
@@ -173,8 +260,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
             None => put(k, None)?,
         };
     }
-    let ty = if path.is_empty() { root } else { type_at(s, &root, &schema_path(path)).map(|x| x.0).unwrap_or(Type::Any) };
-    let text = matches!(s.expand(&ty).as_deref(), Ok(Type::Text));
+    let (s, ty, text) = op_type(schema, ak, path);
     match op {
         Op::Set(v) | Op::Replace(v) | Op::Put(v) => chunk_value(v, s, &ty, state.map(|f| (&path[..], f)), put),
         // a set element or map key is chunked whole (spec/data-model.md §6); removal matches
@@ -190,11 +276,37 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
         Op::Add(v) => chunk_value(v, s, &ty, None, put),
         // a list's (a text's edit holds strings)
         Op::Edit { base, new } if !text && matches!(new, Value::List(_)) => {
-            let held = held_links(state, path);
+            if edit.is_some_and(|e| !e.large) {
+                return Ok(());
+            }
+            let at_win = edit.and_then(|e| Some((e.win?, window_links(&state?.at(path)?, e)?)));
+            let held = match &at_win {
+                Some((_, h)) => h.clone(),
+                None => held_links(state, path),
+            };
             chunk_value(base, s, &ty, None, &mut |v, _| match hash(v)? {
                 Value::Link(l) => Ok(Value::Link(held.get(&l.hash).copied().unwrap_or(l))),
                 small => Ok(small),
             })?;
+            // the common items outside the window as base's (what the list there lends, or the
+            // content hash: never written, only matched)
+            if let (Some((w, _)), Value::List(b), Value::List(n)) = (&at_win, &*base, &mut *new) {
+                let (bl, nl) = (b.len(), n.len());
+                for (j, x) in n.iter_mut().enumerate() {
+                    let i = if j < w.pre {
+                        j
+                    } else if j + w.suf >= nl {
+                        j + bl - nl
+                    } else {
+                        continue;
+                    };
+                    if !(w.lo..w.hi).contains(&i)
+                        && let Some(v) = b.get(i)
+                    {
+                        *x = v.clone();
+                    }
+                }
+            }
             // an item twice in `new` gets one tree; hashing first costs one more pass over the
             // items not held, and spares writing the (usually many) unchanged ones
             let mut made: HashMap<[u8; 32], Value> = HashMap::new();
@@ -246,7 +358,8 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
 /// rule says otherwise; one this node no longer holds is written afresh). Returns the blobs
 /// written: the delta's chunk list; reused blobs are not in it. `fresh`: blobs
 /// never reused.
-pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<BlobId>> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp], edits: &[Option<ListEdit>], schema: Option<&Schema>, framing: &Framing, fresh: &BTreeSet<BlobId>) -> Result<Vec<BlobId>> {
     // what the ops address is loaded (`commit_in`)
     tx.load_lazy(tid, ak)?;
     let state = tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref);
@@ -276,8 +389,8 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
         Ok(osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?)
     };
     let mut hash = |v: &Value| -> Result<Value> { Ok(osis_label::chunk_value(&mut HashSink::new(framing.dedup.clone()), LargeParams::FORMAT, v)?) };
-    for op in ops.iter_mut() {
-        chunk_op(op, schema, ak.as_str(), state, &mut put, &mut hash)?;
+    for (i, op) in ops.iter_mut().enumerate() {
+        chunk_op(op, schema, ak.as_str(), state, edits.get(i).and_then(Option::as_ref), &mut put, &mut hash)?;
     }
     Ok(blobs.written)
 }
