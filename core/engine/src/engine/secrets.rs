@@ -1,6 +1,6 @@
 //! Secrets the engine holds (spec/crypto.md §3–§4): the node's own role secrets, derived secrets
-//! of plain things, epochs of actors with secrets of their own opened from `/secrets` (the
-//! `SecretStore`, kept in the store per actor), dedup secrets from creation records, delete keys
+//! of plain things, epochs of actors with secrets of their own opened from `/secrets` (kept
+//! in the store per actor), dedup secrets from creation records, delete keys
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;

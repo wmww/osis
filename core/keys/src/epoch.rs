@@ -320,7 +320,7 @@ impl RoleEpochs {
     /// The newest established epoch whose secret is held, current or not (a stranded node's
     /// heartbeat, spec/permissions.md §4).
     pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
-        let e = newest_of(self.held().map(|(e, _)| e).filter(|e| self.is_established(e)).collect::<Vec<_>>().iter())?;
+        let e = newest_of(&self.held_established().map(|(e, _)| e).collect::<Vec<_>>())?;
         self.secret(&e).map(|s| (e, s))
     }
 
@@ -340,16 +340,9 @@ impl RoleEpochs {
     /// Reading-only candidates included, each (one epoch may appear several times).
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
         let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().flat_map(|(e, i)| i.readable().into_iter().map(|s| (*e, s))).collect();
-        v.sort_by(|a, b| if is_newer(&a.0, &b.0) { std::cmp::Ordering::Less } else if a.0 == b.0 { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater });
+        // newest first: greater n, then lower nonce (`is_newer`)
+        v.sort_by_key(|(e, _)| (std::cmp::Reverse(e.n()), *e.nonce()));
         v
-    }
-
-    /// Forgets every secret (spec/permissions.md §3: a node that lost read access drops them).
-    pub fn drop_secrets(&mut self) {
-        for i in self.map.values_mut() {
-            i.secret = None;
-            i.reading.clear();
-        }
     }
 }
 
@@ -413,12 +406,6 @@ impl ActorEpochs {
             changed |= self.role_mut(r).establish();
         }
         changed
-    }
-
-    pub fn drop_secrets(&mut self) {
-        for r in ROLES {
-            self.role_mut(r).drop_secrets();
-        }
     }
 
     /// `RoleEpochs::drop_reading_from` for every role.
