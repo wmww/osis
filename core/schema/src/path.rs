@@ -141,21 +141,26 @@ impl PathError {
     }
 }
 
+impl fmt::Display for PathErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PathErrorKind::Mismatch { expected } => write!(f, "expected {expected}"),
+            PathErrorKind::UnknownCase(c) => write!(f, "unknown enum case {c}"),
+            PathErrorKind::UnknownTag(t) => write!(f, "unknown tag {t}"),
+            PathErrorKind::MissingField(id) => write!(f, "missing field {id}"),
+            PathErrorKind::MissingPayload(c) => write!(f, "case {c} lacks its payload"),
+            PathErrorKind::UnexpectedPayload(c) => write!(f, "case {c} has no payload type"),
+            PathErrorKind::UndeclaredField(id) => write!(f, "field {id} is not declared"),
+            PathErrorKind::NotFound => write!(f, "not found"),
+            PathErrorKind::TooDeep => write!(f, "value too deep"),
+            PathErrorKind::Schema(m) => f.write_str(m),
+        }
+    }
+}
+
 impl fmt::Display for PathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let p = &self.path;
-        match &self.kind {
-            PathErrorKind::Mismatch { expected } => write!(f, "at {p}: expected {expected}"),
-            PathErrorKind::UnknownCase(c) => write!(f, "at {p}: unknown enum case {c}"),
-            PathErrorKind::UnknownTag(t) => write!(f, "at {p}: unknown tag {t}"),
-            PathErrorKind::MissingField(id) => write!(f, "at {p}: missing field {id}"),
-            PathErrorKind::MissingPayload(c) => write!(f, "at {p}: case {c} lacks its payload"),
-            PathErrorKind::UnexpectedPayload(c) => write!(f, "at {p}: case {c} has no payload type"),
-            PathErrorKind::UndeclaredField(id) => write!(f, "at {p}: field {id} is not declared"),
-            PathErrorKind::NotFound => write!(f, "at {p}: not found"),
-            PathErrorKind::TooDeep => write!(f, "at {p}: value too deep"),
-            PathErrorKind::Schema(m) => write!(f, "at {p}: {m}"),
-        }
+        write!(f, "at {}: {}", self.path, self.kind)
     }
 }
 
