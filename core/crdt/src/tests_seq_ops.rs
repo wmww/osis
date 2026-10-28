@@ -1776,6 +1776,84 @@ fn set_on_partial_text_matches_whole_spec_5_7() {
     }
 }
 
+/// §5.7 Read, §9: after a move or delete in the same commit, a `Set` on a sequence held in part
+/// (a list or a text, records in pages of one) writes what it writes on the whole, for every
+/// value one item away from the read after the first op (fuzz-style, exhaustive on short ones).
+#[test]
+fn set_after_op_on_partial_matches_whole_spec_5_7() {
+    let mut r = crate::testutil::rng(7);
+    let mut runs = 0;
+    for text in [false, true] {
+        let ty = if text { Ty::Text } else { list_ty() };
+        let view = TyView(ty.clone());
+        for n in 2..6usize {
+            let items: Vec<Value> = match &ty {
+                Ty::List(e) => (0..n).map(|_| value(&random_value(&mut r, e, 1))).collect(),
+                _ => (0..n).map(|i| s(&((b'a' + i as u8) as char).to_string())).collect(),
+            };
+            let v0 = if text { Value::Str(items.iter().map(|v| if let Value::Str(x) = v { x.clone() } else { unreachable!() }).collect()) } else { Value::List(items.clone()) };
+            let mut st = Fragment::default();
+            st.join(create(&mut Writer::new(ts(1 << 16), node(1), 1), &view, &v0).unwrap());
+            let Fragment::Seq(sq) = &st else { panic!() };
+            let top = |op| PathOp { path: Vec::new(), op };
+            let mut firsts = vec![top(Op::Delete { at: 0, len: 1 }), top(Op::Delete { at: n - 1, len: 1 })];
+            for at in 0..n {
+                for to in 0..n {
+                    firsts.push(top(Op::Move { at, len: 1, to }));
+                }
+                if !text {
+                    // a write inside an element
+                    firsts.push(PathOp { path: vec![PathSeg::Index(at), PathSeg::Field(1)], op: Op::Set(Value::Int(77)) });
+                }
+            }
+            for first in firsts {
+                let mut mid = st.clone();
+                let mut b = Batch::new(&mid, Writer::new(ts(2 << 16), node(2), 1));
+                b.apply(&first, &view).unwrap();
+                if let Some((d, _)) = b.finish() {
+                    mid.join(d);
+                }
+                let read = mid.read().unwrap();
+                let mut targets = vec![read.clone()];
+                let k = match &read {
+                    Value::List(l) => l.len(),
+                    Value::Str(x) => x.chars().count(),
+                    _ => unreachable!(),
+                };
+                for i in 0..k {
+                    targets.push(match &read {
+                        Value::List(l) => Value::List(l.iter().enumerate().filter(|x| x.0 != i).map(|x| x.1.clone()).collect()),
+                        Value::Str(x) => Value::Str(x.chars().enumerate().filter(|c| c.0 != i).map(|c| c.1).collect()),
+                        _ => unreachable!(),
+                    });
+                }
+                for v in targets {
+                    let ops = [first.clone(), top(Op::Set(v))];
+                    let run = |f: &Fragment| {
+                        let mut b = Batch::new(f, Writer::new(ts(2 << 16), node(2), 1));
+                        for o in &ops {
+                            b.apply(o, &view).ok()?;
+                        }
+                        b.finish()
+                    };
+                    let want = run(&st);
+                    let mut pg = crate::tests_seq::Pager::new(sq, 1);
+                    let mut got = None;
+                    for _ in 0..64 {
+                        got = run(&pg.part());
+                        if !pg.absorb() {
+                            break;
+                        }
+                    }
+                    assert!(got == want, "{ops:?}\n got {got:?}\n want {want:?}");
+                    runs += 1;
+                }
+            }
+        }
+    }
+    assert!(runs > 300, "{runs}");
+}
+
 /// `base` with one random change: a splice of a text, an item removed, replaced or inserted in
 /// a list.
 fn edited(r: &mut Rng, base: &Value, ty: &Ty) -> Value {
@@ -2070,8 +2148,8 @@ fn newest_move_onto_new_element_spec_6_1() {
 /// `edit_on_partial_placement_loads_its_window_spec_5_7`: on a list of many blocks held in part,
 /// an edit against the current read loads only the blocks and records around its change
 /// (`edit_window`'s stretch, where a node reads the links it lends) and writes what it writes on
-/// the whole list, never by a whole pass; one against a stale read, or whose stretch repeats in
-/// base, matches whole, also equal.
+/// the whole list, never by a whole pass; one against a stale read of another length, or whose
+/// stretch repeats in base, matches whole, also equal.
 #[test]
 fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
     let mut r = crate::testutil::rng(83);
@@ -2126,7 +2204,13 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
                 repeats += 1;
                 assert_eq!(stubs, 0, "step {k}: a repeated stretch matches whole");
             }
-            _ => stale_whole += usize::from(stubs == 0),
+            // a stale base of another length than the read cannot take the window; one of the
+            // same length may (base's own indices, the window equal in the read)
+            _ if matches!(&cur, Value::List(c) if c.len() != b.len()) => {
+                assert_eq!(stubs, 0, "step {k}: a stale edit of another length matches whole");
+                stale_whole += 1;
+            }
+            _ => {}
         }
         if let Some((d, _)) = want {
             st.join(d);
@@ -2135,7 +2219,7 @@ fn list_edit_on_partial_placement_loads_its_window_spec_5_7() {
             stale = st.read().unwrap();
         }
     }
-    assert!(few >= 20 && stale_whole >= 3, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
+    assert!(few >= 20 && stale_whole >= 2, "{few} edits at their window, {repeats} repeated, {stale_whole} stale edits matched whole");
 }
 
 /// §5.7, §9 (notes/api.md `edit`): an edit resolved at its window writes what one matched against
