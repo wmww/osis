@@ -347,7 +347,7 @@ impl Replicator {
                 (!refused.is_empty()).then(|| format!("label {label:?}: {} entries refused, codes {refused:?}", refused.len()))
             }
             ClientEvent::Head { label, .. } => Some(format!("label {label:?}: the peer holds another head")),
-            ClientEvent::Refused { label, kind, code } => Some(format!("label {label:?}: request kind {kind} refused, code {}", code.0)),
+            ClientEvent::Refused { label, kind, code } => Some(format!("label {label:?}: {kind:?} refused, code {}", code.0)),
             ClientEvent::PeerError(err) => Some(format!("protocol error: {err}")),
             _ => None,
         }

@@ -17,7 +17,7 @@ pub mod rbsr;
 pub mod server;
 pub mod store;
 
-pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey};
+pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey, Request};
 pub use error::Error;
 pub use server::{ServerConfig, ServerConnection, ServerInput, ServerOutput};
 pub use store::{Budget, EntryMeta, LabelStore, LogRecord, MemoryLabelStore, Put, StoreError};

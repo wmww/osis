@@ -395,7 +395,7 @@ fn stale_sync_key_gets_one_signed_step() {
     step.verify_child(&l.steps[0]).unwrap();
     // not opened: reads refused
     let ev = net.run(0, sync(l.id, None, vec![], vec![]));
-    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: 15, code: Code::NOT_OPENED, .. }]), "{ev:?}");
+    assert!(matches!(&ev[..], [ClientEvent::Refused { kind: osis_proto::Request::Sync, code: Code::NOT_OPENED, .. }]), "{ev:?}");
     let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(99))) });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
     // a step on another branch is answered with the head
