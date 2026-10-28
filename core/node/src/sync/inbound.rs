@@ -80,15 +80,19 @@ impl SyncEngine {
         // under the head's write key, or before a head is known any step's this node knows (a
         // server cannot make one; a superseded step's key may be a removed writer's)
         let mut unvouched = Vec::new();
-        let head_write = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
-        let mut writers: Vec<osis_crypto::VerifyingKey> = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).map(|x| x.writers.iter().copied().chain(x.head.as_ref().map(|h| h.keys.write)).collect()).unwrap_or_default();
-        if server.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. }))
-            && let Some(g) = self.group_of(&l)
-            && let Some(gl) = self.group_label(&g, &l)
-        {
-            for (st, _) in gl.steps.values() {
-                if !writers.contains(&st.keys.write) {
-                    writers.push(st.keys.write);
+        // the head's write key now (a Head event in the batch moves it)
+        let head_write = |s: &Self| conn.and_then(|c| s.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
+        let first_write = head_write(self);
+        let mut writers: Vec<VerifyingKey> = Vec::new();
+        if first_write.is_none() && server.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
+            writers = conn.and_then(|c| self.lc(c, &l)).map(|x| x.writers.clone()).unwrap_or_default();
+            if let Some(g) = self.group_of(&l)
+                && let Some(gl) = self.group_label(&g, &l)
+            {
+                for (st, _) in gl.steps.values() {
+                    if !writers.contains(&st.keys.write) {
+                        writers.push(st.keys.write);
+                    }
                 }
             }
         }
@@ -97,21 +101,21 @@ impl SyncEngine {
         for ev in events {
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
-                    let vouched = stamp.is_some_and(|st| match &head_write {
-                        Some(w) => osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok(),
-                        None => writers.iter().any(|w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok()),
-                    });
+                    let signed_by = |w: &VerifyingKey| stamp.is_some_and(|st| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok());
+                    let cur = head_write(self);
+                    let by_head = cur.as_ref().is_some_and(signed_by);
+                    let vouched = match &first_write {
+                        Some(w) if cur.as_ref() == Some(w) => by_head,
+                        Some(w) => signed_by(w),
+                        None => writers.iter().any(signed_by),
+                    };
                     if let Some(s) = server {
                         self.state.set_present(s, l, blob_id, true);
                         self.state.set_deposited(s, l, blob_id, stamp.is_none());
                     }
-                    // a stamp counts only if it verifies under the head's write key (it is relayed)
-                    let head = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).and_then(|x| x.head.clone());
-                    let stamp = stamp.filter(|st| match &head {
-                        Some(h) => osis_label::verify_stamp(&h.keys.write, &l, &blob_id, &wrap, st).is_ok(),
-                        // a bundle's stamps were checked against its path by the importer
-                        None => conn.is_none(),
-                    });
+                    // a stamp counts only if it verifies under the head's write key (it is relayed);
+                    // a bundle's stamps were checked against its path by the importer
+                    let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
                     match self.state.entries.get(&(l, blob_id)).cloned() {
                         None => {
                             if server.is_some() && stamp.is_none() && !vouched {
@@ -153,17 +157,10 @@ impl SyncEngine {
                     touched.push(blob_id);
                 }
                 LogEvent::Deleted(b) => {
-                    if let Some(s) = server {
-                        self.state.set_present(s, l, b, false);
-                    }
-                    if !self.state.present_anywhere(&l, &b) {
-                        // gone from every server of the label: a chunk an own commit may link
-                        if !self.state.blobs.contains_key(&b) {
-                            lost.insert(b);
-                        }
-                        self.state.remove_entry(l, b);
-                        self.forget_blob(&b)?;
-                        self.forget_chunk(&b)?;
+                    // gone from every server of the label: a chunk an own commit may link
+                    let chunk = !self.state.blobs.contains_key(&b);
+                    if self.absent_at(server, l, b)? && chunk {
+                        lost.insert(b);
                     }
                 }
                 LogEvent::Pending { .. } => {}
@@ -391,31 +388,29 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        for (actor, keys) in self.inbox_of(&l) {
-            for s in keys {
-                let kem = role_kem(&s);
-                if let Ok((_, payload)) = osis_label::open_inbox_blob(&bytes, &actor, &kem) {
-                    let pt = osis_base::encode(&payload.commit);
-                    if let Ok(c) = osis_commit::CommitBlob::decode(&pt) {
-                        self.engine.note_delete_hints(c.id(), &payload.things)?;
-                    }
-                    for t in &payload.things {
-                        if self.engine.labels_of(&t.tid).iter().all(|x| x.id != t.label) {
-                            // a sender's word: servers only, never a node to dial (`peer://`)
-                            self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned().collect(), via: None });
-                        }
-                    }
-                    let c = osis_commit::CommitBlob::decode(&pt).ok();
-                    e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
-                    self.state.set_entry(l, b, e);
-                    if let Some(c) = c {
-                        commits.push((pt, c));
-                    }
-                    return Ok(());
-                }
+        let Some(payload) = self.open_inbox(&l, &bytes) else { return Ok(()) };
+        let pt = osis_base::encode(&payload.commit);
+        let c = osis_commit::CommitBlob::decode(&pt).ok();
+        if let Some(c) = &c {
+            self.engine.note_delete_hints(c.id(), &payload.things)?;
+        }
+        for t in &payload.things {
+            if self.engine.labels_of(&t.tid).iter().all(|x| x.id != t.label) {
+                // a sender's word: servers only, never a node to dial (`peer://`)
+                self.state.add_hint(t.label, Hint { thing: t.tid, servers: t.servers.iter().filter(|a| !super::peers::is_peer(a)).cloned().collect(), via: None });
             }
         }
+        e.kind = Kind::Inbox(c.as_ref().map(|c| c.id()));
+        self.state.set_entry(l, b, e);
+        if let Some(c) = c {
+            commits.push((pt, c));
+        }
         Ok(())
+    }
+
+    /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is.
+    fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<osis_label::InboxPayload> {
+        self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)).ok()).map(|(_, p)| p)
     }
 
     /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it names
@@ -423,8 +418,7 @@ impl SyncEngine {
     /// held.
     pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
         let Some(bytes) = self.engine.blob(b)? else { return Ok(None) };
-        let opened = self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
-        let Some((_, payload)) = opened else { return Ok(None) };
+        let Some(payload) = self.open_inbox(l, &bytes) else { return Ok(None) };
         let Ok(c) = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)) else { return Ok(None) };
         Ok(Some((c.parts.iter().map(|p| p.ai).collect(), payload.things.iter().map(|t| t.tid).collect())))
     }
@@ -441,8 +435,7 @@ impl SyncEngine {
         let mut gone = Vec::new();
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
-            let opened = self.inbox_of(&l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(&bytes, &a, &role_kem(&s)).ok());
-            let Some((_, payload)) = opened else { continue };
+            let Some(payload) = self.open_inbox(&l, &bytes) else { continue };
             let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
             if names {
                 gone.push(b);
@@ -521,6 +514,22 @@ impl SyncEngine {
             self.command(conn, Command::Fetch { label: l, ids: missing }, out)?;
         }
         Ok(())
+    }
+
+    /// Entry `b` under `l` is no longer at `server`: once no server holds it, the entry goes
+    /// (tombstoned) with the blob's record and bytes where nothing else needs them. Whether it
+    /// went.
+    pub(crate) fn absent_at(&mut self, server: Option<ServerKey>, l: LabelId, b: BlobId) -> Result<bool> {
+        if let Some(s) = server {
+            self.state.set_present(s, l, b, false);
+        }
+        if self.state.present_anywhere(&l, &b) {
+            return Ok(false);
+        }
+        self.state.remove_entry(l, b);
+        self.forget_blob(&b)?;
+        self.forget_chunk(&b)?;
+        Ok(true)
     }
 
     /// Drops a commit blob no label entry names any more whose deltas are not all held (its
@@ -718,12 +727,7 @@ impl SyncEngine {
                     if self.state.timed.contains(&(server, l, b)) {
                         continue;
                     }
-                    self.state.set_present(server, l, b, false);
-                    if !self.state.present_anywhere(&l, &b) {
-                        self.state.remove_entry(l, b);
-                        self.forget_blob(&b)?;
-                        self.forget_chunk(&b)?;
-                    }
+                    self.absent_at(Some(server), l, b)?;
                 }
                 Code::NOT_HEAD => stale = true,
                 c => self.diag(format!("delete refused: code {}", c.0)),

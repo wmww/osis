@@ -1951,11 +1951,7 @@ impl SyncEngine {
                 Fate::Keep | Fate::Wait => {}
                 Fate::Expired => {
                     // the server drops it unattended (spec/sync.md §5)
-                    self.state.set_present(server, l, id, false);
-                    if !self.state.present_anywhere(&l, &id) {
-                        self.state.remove_entry(l, id);
-                        self.forget_blob(&id)?;
-                    }
+                    self.absent_at(Some(server), l, id)?;
                 }
                 Fate::Delete(_, item) => {
                     left.commits.insert(commit);
