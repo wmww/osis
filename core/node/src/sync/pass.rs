@@ -1617,7 +1617,8 @@ impl SyncEngine {
     /// The parts of commit `c` entries under `l` hold, as (this node's certificate copies, all
     /// that count): another node's copy or body counts once genuine and present at every server
     /// this node syncs the label with, and, carrying a rotation of the label's actor, only if it
-    /// opens under the newest read secret (spec/permissions.md §4).
+    /// opens under the newest read secret (spec/permissions.md §4). Not `held_at` (whether this
+    /// node's own commit is placed).
     fn held_parts(&mut self, g: &Tid, l: LabelId, c: &CommitId) -> Result<(Parts, Parts)> {
         let servers: Vec<ServerKey> = self.conns.values().filter(|x| x.labels.contains_key(&l)).map(|x| x.server).collect();
         self.held_parts_at(g, l, c, &servers)

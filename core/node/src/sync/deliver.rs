@@ -244,7 +244,10 @@ impl SyncEngine {
     }
 
     /// Whether entries of `c` under `l` (present at a server when `present`) hold `parts`
-    /// (any part when `None`).
+    /// (any part when `None`). For `placed` of this node's own commit: any entry counts, at any
+    /// one server. Not `held_parts` (pass.rs), which asks whether another node's entries spare
+    /// this node a certificate copy, and so counts them only genuine, at every server and, with
+    /// a rotation, readable under the newest secret.
     fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[(usize, usize)]>, present: bool) -> bool {
         let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (id, e) in self.state.entries_of(l, c) {
