@@ -269,16 +269,12 @@ impl Osis {
         Ok((db, card))
     }
 
-    /// Opens an existing database. A store whose person actor is owned by the device (made
-    /// before membership flows) is refused: it cannot be shared or recovered.
+    /// Opens an existing database.
     pub fn open(cfg: Config) -> Result<Osis> {
         let (b, r) = parts(&cfg)?;
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, engine_cfg(), clock.clone(), rng(&cfg, 0))?;
         let me = tid_record(&mut e, PERSON)?;
-        if e.get_typed(&me, &ct::KEYS)?.is_none() {
-            return Err(Error::Invalid("this store's person actor is owned by the device (made before membership flows): it cannot be shared or recovered; create a new store".into()));
-        }
         let servers = load_servers(&mut e)?.unwrap_or_else(|| cfg.servers.clone());
         let sync = sync_over(e, &clock, &cfg, &servers)?;
         let db = Osis::start(sync, clock, &cfg, me)?;
@@ -287,8 +283,8 @@ impl Osis {
     }
 
     pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
-        // a store made before its files were created owner-only: tightened where possible
-        // (best effort), else reported
+        // store files open to group or others: tightened where possible (best effort), else
+        // reported
         if let StoreAt::Dir(p) = &cfg.store {
             for f in [p.clone(), p.join("db.redb"), p.join("root")] {
                 if let Some(why) = osis_store::restrict_to_owner(&f) {

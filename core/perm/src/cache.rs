@@ -21,7 +21,7 @@ use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-const FORMAT: &[u8] = b"osis-perm walk cache 3";
+const FORMAT: &[u8] = b"osis-perm walk cache";
 
 /// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
 /// held `/created` records (by tid; a record's tid fixes its content).
