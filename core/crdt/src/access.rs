@@ -30,18 +30,23 @@ impl Fragment {
     /// a map key reads as (its live entries joined, §5.6), a list element by index. Only that
     /// position is copied; a key costs O(log n).
     pub fn at(&self, path: &[crate::ops::PathSeg]) -> Option<Fragment> {
+        self.walk(path, false)
+    }
+
+    /// `at`, with `any_case` also through a case that is not current (undo's `before`).
+    pub(crate) fn walk(&self, path: &[crate::ops::PathSeg], any_case: bool) -> Option<Fragment> {
         use crate::ops::PathSeg;
         let Some((seg, rest)) = path.split_first() else { return Some(self.clone()) };
         let MemberRef::Frag(f) = self.chosen_member() else { return None };
         match (seg, f) {
-            (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.at(rest),
-            (PathSeg::Case(id), Fragment::Enum(e)) if e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.at(rest),
+            (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.walk(rest, any_case),
+            (PathSeg::Case(id), Fragment::Enum(e)) if any_case || e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.walk(rest, any_case),
             (PathSeg::Key(k), Fragment::Map(m)) => match m.live_dots(k).as_slice() {
                 // one live entry: read in place
-                [d] => m.entries.get(*d)?.frag.as_deref()?.at(rest),
-                ds => crate::ops::key_state(m, ds)?.at(rest),
+                [d] => m.entries.get(*d)?.frag.as_deref()?.walk(rest, any_case),
+                ds => crate::ops::key_state(m, ds)?.walk(rest, any_case),
             },
-            (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.at(rest),
+            (PathSeg::Index(i), Fragment::Seq(s)) => crate::seq::element_at(s, *i)?.1?.walk(rest, any_case),
             _ => None,
         }
     }
