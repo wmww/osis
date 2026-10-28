@@ -76,7 +76,7 @@ fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
         let t = w.thing(owners[rng.below(owners.len())]);
         out.push((t, rng.below(steps + 1)));
     }
-    let named: Vec<Tid> = w.created.iter().filter(|(t, r)| matches!(r, osis_core::CreationRecord::Thing { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
+    let named: Vec<Tid> = w.created.iter().filter(|(t, r)| matches!(r, osis_base::CreationRecord::Thing { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
     for _ in 0..rng.below(3) {
         if !named.is_empty() {
             out.push((named[rng.below(named.len())], rng.below(steps + 1)));
@@ -1181,7 +1181,7 @@ fn record_replaced_under_its_id_spec_permissions_6() {
 /// equals an evaluation from scratch.
 #[test]
 fn late_writes_read_later_placed_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(12);
     let (k, a, b) = (n[0], n[1], n[2]);
@@ -1237,7 +1237,7 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
 /// it is its role on its owner), not evaluated anew; equal to an evaluation from scratch.
 #[test]
 fn created_late_after_writes_naming_it_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(6);
     let (k, a) = (n[0], n[1]);
@@ -1278,7 +1278,7 @@ fn created_late_after_writes_naming_it_spec_permissions_5_1() {
 /// from scratch.
 #[test]
 fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
-    use osis_core::Role::{Admin, Read, Write};
+    use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(5);
     let (k, a) = (n[0], n[1]);
