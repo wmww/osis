@@ -38,7 +38,7 @@ impl Multi {
     }
 }
 
-/// Defines an enum over the per-transport types and forwards a body to whichever is inside.
+/// Defines an enum over the per-transport types, with `From` each of them.
 macro_rules! either {
     ($name:ident, $mem:ty, $quic:ty, $iroh:ty) => {
         pub enum $name {
@@ -47,16 +47,36 @@ macro_rules! either {
             #[cfg(feature = "iroh")]
             Iroh($iroh),
         }
+        impl From<$mem> for $name {
+            fn from(x: $mem) -> Self {
+                Self::Mem(x)
+            }
+        }
+        impl From<$quic> for $name {
+            fn from(x: $quic) -> Self {
+                Self::Quic(x)
+            }
+        }
+        #[cfg(feature = "iroh")]
+        impl From<$iroh> for $name {
+            fn from(x: $iroh) -> Self {
+                Self::Iroh(x)
+            }
+        }
     };
 }
 
+/// Forwards a body to whichever transport's value is inside (`Self`, or the enum named).
 macro_rules! each {
     ($v:expr, $x:ident => $body:expr) => {
+        each!(Self; $v, $x => $body)
+    };
+    ($e:ident; $v:expr, $x:ident => $body:expr) => {
         match $v {
-            Self::Mem($x) => $body,
-            Self::Quic($x) => $body,
+            $e::Mem($x) => $body,
+            $e::Quic($x) => $body,
             #[cfg(feature = "iroh")]
-            Self::Iroh($x) => $body,
+            $e::Iroh($x) => $body,
         }
     };
 }
@@ -72,52 +92,23 @@ impl Clone for MultiConn {
     }
 }
 
-impl From<MemConn> for MultiConn {
-    fn from(c: MemConn) -> Self {
-        MultiConn::Mem(c)
-    }
-}
-impl From<QuicConn> for MultiConn {
-    fn from(c: QuicConn) -> Self {
-        MultiConn::Quic(c)
-    }
-}
-#[cfg(feature = "iroh")]
-impl From<IrohConn> for MultiConn {
-    fn from(c: IrohConn) -> Self {
-        MultiConn::Iroh(c)
-    }
-}
-
 impl Transport for Multi {
     type Conn = MultiConn;
     type Listener = MultiListener;
 
     async fn dial(&self, addr: &Address) -> Result<MultiConn, Error> {
-        Ok(match self.pick(&addr.url)? {
-            Pick::Mem(t) => MultiConn::Mem(t.dial(addr).await?),
-            Pick::Quic(t) => MultiConn::Quic(t.dial(addr).await?),
-            #[cfg(feature = "iroh")]
-            Pick::Iroh(t) => MultiConn::Iroh(t.dial(addr).await?),
-        })
+        let p = self.pick(&addr.url)?;
+        each!(Pick; p, t => t.dial(addr).await.map(Into::into))
     }
 
     async fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> Result<MultiConn, Error> {
-        Ok(match self.pick(&addr.url)? {
-            Pick::Mem(t) => MultiConn::Mem(t.dial_as(addr, secret).await?),
-            Pick::Quic(t) => MultiConn::Quic(t.dial_as(addr, secret).await?),
-            #[cfg(feature = "iroh")]
-            Pick::Iroh(t) => MultiConn::Iroh(t.dial_as(addr, secret).await?),
-        })
+        let p = self.pick(&addr.url)?;
+        each!(Pick; p, t => t.dial_as(addr, secret).await.map(Into::into))
     }
 
     async fn listen(&self, cfg: ListenConfig) -> Result<MultiListener, Error> {
-        Ok(match self.pick(&cfg.url)? {
-            Pick::Mem(t) => MultiListener::Mem(t.listen(cfg).await?),
-            Pick::Quic(t) => MultiListener::Quic(t.listen(cfg).await?),
-            #[cfg(feature = "iroh")]
-            Pick::Iroh(t) => MultiListener::Iroh(t.listen(cfg).await?),
-        })
+        let p = self.pick(&cfg.url)?;
+        each!(Pick; p, t => t.listen(cfg).await.map(Into::into))
     }
 }
 
@@ -146,21 +137,11 @@ impl Connection for MultiConn {
     }
 
     async fn open_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
-        Ok(match self {
-            Self::Mem(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Mem(s), MultiRecv::Mem(r)))?,
-            Self::Quic(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Quic(s), MultiRecv::Quic(r)))?,
-            #[cfg(feature = "iroh")]
-            Self::Iroh(c) => c.open_stream().await.map(|(s, r)| (MultiSend::Iroh(s), MultiRecv::Iroh(r)))?,
-        })
+        each!(self, c => c.open_stream().await.map(|(s, r)| (s.into(), r.into())))
     }
 
     async fn accept_stream(&self) -> Result<(MultiSend, MultiRecv), Error> {
-        Ok(match self {
-            Self::Mem(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Mem(s), MultiRecv::Mem(r)))?,
-            Self::Quic(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Quic(s), MultiRecv::Quic(r)))?,
-            #[cfg(feature = "iroh")]
-            Self::Iroh(c) => c.accept_stream().await.map(|(s, r)| (MultiSend::Iroh(s), MultiRecv::Iroh(r)))?,
-        })
+        each!(self, c => c.accept_stream().await.map(|(s, r)| (s.into(), r.into())))
     }
 
     fn close(&self) {
