@@ -178,7 +178,7 @@ impl SyncEngine {
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
-        let Some(mut w) = self.work_mut(conn, l).map(|x| std::mem::replace(x, Work::idle(false))) else { return Ok(()) };
+        let Some(mut w) = self.work_mut(conn, l).map(|x| std::mem::take(x)) else { return Ok(()) };
         let r = f(self, &ctx, &mut w);
         if r.is_err() {
             w.full = true;
@@ -194,7 +194,7 @@ impl SyncEngine {
     pub(super) fn work_mut(&mut self, conn: Option<ConnId>, l: LabelId) -> Option<&mut Work> {
         match conn {
             Some(c) => self.lc_mut(c, &l).map(|x| &mut x.work),
-            None => Some(self.local_work.entry(l).or_default()),
+            None => Some(self.local_work.entry(l).or_insert_with(Work::fresh)),
         }
     }
 
@@ -962,7 +962,7 @@ impl SyncEngine {
         let (g, keys) = (lc.group, lc.keys.clone());
         let mut v = Verdicts { writer: keys.is_writer(), ..Verdicts::default() };
         let bodies = self.bodies_under(&g, l)?;
-        let mut w = Work::idle(true);
+        let mut w = Work::fresh();
         self.rebuild(&g, l, &mut w);
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = w.snaps.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
         let fetching = w.unopened.iter().any(|b| self.fetching.contains_key(b));
