@@ -560,9 +560,6 @@ pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, V
     Some(out)
 }
 
-/// The source given a reading-only secret persisted before sources were kept.
-const OLD_SOURCE: Unchecked = Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([0; 32]) };
-
 pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     let bad = || Error::Corrupt("epochs");
     let lim = osis_base::Limits { max_depth: 16, max_bytes: b.len() };
@@ -572,14 +569,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            // older layouts: 7 fields, or an 8th `Bool` marking `sec` reading-only
-            let empty = Vec::new();
-            let (fields, reading, old_ro) = match f.as_slice() {
-                [rest @ .., Value::List(r)] if rest.len() == 7 => (rest, r, false),
-                [rest @ .., Value::Bool(ro)] if rest.len() == 7 => (rest, &empty, *ro),
-                rest => (rest, &empty, false),
-            };
-            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec)] = fields else { return Err(bad()) };
+            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             info.suite = u64::try_from(*suite).map_err(|_| bad())?;
@@ -598,12 +588,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
                 _ => Err(bad()),
             };
             if let [s] = sec.as_slice() {
-                if old_ro {
-                    // source unknown in that layout: kept until a checked secret replaces it
-                    info.reading.push((secret(s)?, OLD_SOURCE));
-                } else {
-                    info.secret = Some(secret(s)?);
-                }
+                info.secret = Some(secret(s)?);
             }
             for c in reading {
                 let Value::List(c) = c else { return Err(bad()) };
@@ -655,22 +640,6 @@ mod tests {
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());
         assert_eq!(b.read.newest_held().map(|x| x.0), Some(e1));
-    }
-
-    // spec/crypto.md §4: a store written before candidates kept their source (an 8th `Bool`
-    // field marking the secret reading-only) still loads it as reading-only.
-    #[test]
-    fn old_reading_only_layout_decodes() {
-        let e = Epoch::new(2, [2; 16]).unwrap();
-        let item = |ro: bool| Value::List(vec![e.to_wire(), Value::Int(1), Value::List(vec![]), Value::Bool(false), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Bytes(vec![7; 32])]), Value::Bool(ro)]);
-        for ro in [true, false] {
-            let b = osis_base::encode(&Value::List(vec![Value::List(vec![item(ro)]), Value::List(vec![]), Value::List(vec![])]));
-            let a = decode_epochs(&b).unwrap();
-            assert_eq!(a.read.is_reading_only(&e), ro);
-            assert_eq!(a.read.reading_secrets(&e), vec![&Secret32::from_bytes([7; 32])]);
-            assert_eq!(a.read.secret(&e).is_some(), !ro);
-            assert_eq!(decode_epochs(&encode_epochs(&a)).unwrap(), a);
-        }
     }
 
     // spec/crypto.md §4: every live entry of a history key with several (puts by different
