@@ -829,3 +829,44 @@ fn late_delta_dies_at_dropped_snapshot_copy(residue: bool) {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(deaths(e), got, "residue {residue}");
 }
+
+fn kept_text(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, op: Op) -> osis_base::CommitId {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut m = Mutation::new();
+    m.retention(t, &TEXT, Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }).unwrap();
+    m.op(t, &TEXT, PathOp { path: Vec::new(), op }).unwrap();
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/crdt.md §4.8: on a kept text a lagging writer's delete, older than a compaction snapshot,
+// arrives late; the window skips the snapshot (every write it carries is played at its own
+// commit), whose element creations stay in it as anchors, and dates as a whole replay.
+#[test]
+fn late_text_delete_before_snapshot_windowed_spec_crdt_4_8() {
+    let mut lp = net(2, 86);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    let k = ak("/t/text");
+    lp.advance(10);
+    let i1 = kept_text(&mut lp, 0, t, Op::Insert { at: 0, items: vec![s("ab")] });
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let d = kept_text(&mut lp, 1, t, Op::Delete { at: 0, len: 1 });
+    lp.advance(10);
+    kept_text(&mut lp, 0, t, Op::Insert { at: 0, items: vec![s("c")] });
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.advance(10);
+    kept_text(&mut lp, 0, t, Op::Insert { at: 0, items: vec![s("d")] });
+    osis_node::costs::take();
+    sync(&mut lp, 1, 0);
+    let e = &mut lp.peers[0].engine;
+    let td = e.header(&d).unwrap().ts;
+    let got = e.deaths(&i1, &t, &k).unwrap();
+    assert_eq!(got, Some((td, td)));
+    let costs: Vec<&str> = osis_node::costs::take().into_iter().map(|x| x.0).collect();
+    assert!(costs.contains(&"deaths: window skips copies") && !costs.contains(&"deaths: whole replay"), "{costs:?}");
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(e.deaths(&i1, &t, &k).unwrap(), got);
+}
