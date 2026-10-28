@@ -188,8 +188,8 @@ impl Timeline {
         let added = input.commits.iter().filter(|(k, _)| !self.input.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
         let (below, from) = self.joined(&input, added)?;
         let cut = match from {
-            Some(f) => self.walked.rest.marks.get(self.items.list_before(f)).map_or(self.walked.rest.log.len(), |m| m.0),
-            None => self.walked.rest.log.len(),
+            Some(f) => self.walked.marks.get(self.items.list_before(f)).map_or(self.walked.log.len(), |m| m.0),
+            None => self.walked.log.len(),
         };
         let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.owners.owner_actor(t).map(|o| (*t, o))).collect();
         let joins = !below.is_empty() || input.nodes != self.input.nodes;
@@ -300,7 +300,7 @@ impl Timeline {
             fresh.retain(|t| !self.input.nodes.contains(t));
             self.input.append(std::slice::from_ref(c));
             let n0 = self.walked.history.len();
-            let h = self.walked.rest.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
+            let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let before = self.edges_before(h);
             let pl = self.walked.insert(&self.input, &self.items, &self.dropped, &self.epoch_starts, c, before, &first, &fresh);
             match pl {
@@ -357,7 +357,7 @@ impl Timeline {
         let Some(links) = links else { return Err(Box::new(self)) };
         let new: BTreeSet<Tid> = links.iter().map(|l| l.0).collect();
         debug_assert!(!self.items.initial_names(&new) && self.items.first_naming(&new, None).is_none(), "a leaf an item names");
-        let cut = self.walked.rest.log.len();
+        let cut = self.walked.log.len();
         if self.walked.alias_leaves(&links, &self.input.nodes, cut).is_none() {
             return Err(Box::new(self));
         }
