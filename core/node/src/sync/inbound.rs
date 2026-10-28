@@ -148,7 +148,7 @@ impl SyncEngine {
                     }
                     match blob {
                         Some(b) => {
-                            self.fetching.remove(&blob_id);
+                            self.fetched(&blob_id);
                             blobs.push((blob_id, b));
                         }
                         None if !self.engine.has_blob(&blob_id) => fetch.push(blob_id),
@@ -202,7 +202,11 @@ impl SyncEngine {
         if let Some(c) = conn {
             let g = self.group_of(&l);
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).filter(|b| self.fetching.insert(*b, c).is_none()).collect();
+            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some()) && !self.fetching(b)).collect();
+            let want: Vec<BlobId> = match self.conns.get_mut(&c) {
+                Some(x) => want.into_iter().filter(|b| x.fetching.insert(*b)).collect(),
+                None => Vec::new(),
+            };
             if !want.is_empty() {
                 self.command(c, Command::Fetch { label: l, ids: want }, out)?;
             }
@@ -256,7 +260,7 @@ impl SyncEngine {
                 self.state.set_present(server, l, *b, false);
                 if !self.state.present_anywhere(&l, b) {
                     self.state.drop_entry(l, *b);
-                    self.fetching.remove(b);
+                    self.fetched(b);
                 }
                 held -= 1;
                 over += 1;
@@ -503,12 +507,11 @@ impl SyncEngine {
     /// Fetches `ids` under `l` on `conn`, but those asked for already and those its server did
     /// not deliver.
     pub(crate) fn fetch_on(&mut self, conn: ConnId, l: LabelId, ids: impl IntoIterator<Item = BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.missing.contains(&(conn, *b)) && !self.fetching.contains_key(b)).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
+        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !c.missing.contains(b) && c.fetching.insert(*b)).collect();
         if ids.is_empty() {
             return Ok(());
-        }
-        for b in &ids {
-            self.fetching.insert(*b, conn);
         }
         self.command(conn, Command::Fetch { label: l, ids }, out)
     }
@@ -621,7 +624,7 @@ impl SyncEngine {
     /// when the tree is whole. Call again after they arrive: fetched nodes list more chunks.
     pub fn fetch_tree(&mut self, tid: &Tid, link: &osis_base::Link) -> Result<Vec<super::Action>> {
         let ids = self.engine.tree_missing(tid, link)?;
-        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching.contains_key(b)).collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b)).collect();
         Ok(self.fetch(&ids))
     }
 
@@ -668,7 +671,9 @@ impl SyncEngine {
         let mut stale = false;
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
-            self.sent.remove(&(conn, l, b));
+            if let Some(c) = self.conns.get_mut(&conn) {
+                c.sent.remove(&(l, b));
+            }
             match code {
                 Code::OK => {
                     let new = !self.state.is_present(&server, &l, &b);
@@ -713,8 +718,10 @@ impl SyncEngine {
         let mut stale = false;
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the server took it (spec/commits.md §5)
-            let timed = self.timed_sent.remove(&(conn, l, b));
-            self.deleting.remove(&(conn, l, b));
+            let timed = self.conns.get_mut(&conn).is_some_and(|c| {
+                c.deleting.remove(&(l, b));
+                c.timed_sent.remove(&(l, b))
+            });
             match code {
                 Code::OK => {
                     if timed {
@@ -754,8 +761,9 @@ impl SyncEngine {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn budget(&mut self, conn: ConnId, l: LabelId, b: BlobId, code: Code, entries_left: u64, head: Option<Step>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(server) = self.conns.get(&conn).map(|c| c.server) else { return Ok(()) };
-        self.sent.remove(&(conn, l, b));
+        let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
+        let server = c.server;
+        c.sent.remove(&(l, b));
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.budget = Some(entries_left);
         }

@@ -71,14 +71,14 @@ impl SyncEngine {
                 self.unsubscribe.insert((*id, *l));
             }
             c.labels.retain(|l, _| !gone(l));
+            c.sent.retain(|(l, _), _| !gone(l));
+            c.deleting.retain(|(l, _), _| !gone(l));
+            c.timed_sent.retain(|(l, _)| !gone(l));
+            c.reopens.retain(|l, _| !gone(l));
         }
         self.label_actors.retain(|l, _| !gone(l));
         self.passes.retain(|(_, l), _| !gone(l));
-        self.sent.retain(|(_, l, _), _| !gone(l));
-        self.deleting.retain(|(_, l, _), _| !gone(l));
-        self.timed_sent.retain(|(_, l, _)| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
-        self.reopens.retain(|(_, l), _| !gone(l));
         self.served_cache = None;
         self.forget_inbox()
     }
