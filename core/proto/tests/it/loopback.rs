@@ -3,115 +3,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{BlobId, LabelId, Value, WallMs, cbor, hash::hash};
-use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
-use osis_label::step::EntryTo;
-use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
-use osis_proto::msg::{ClaimSet, DeleteItem, PublishAuth, PublishKey, Step, Wrap};
+use osis_crypto::{Secret32, SigningSecret};
+use osis_label::{Prefix, sign_deposit};
+use osis_proto::msg::{DeleteItem, PublishAuth, PublishKey, Wrap};
 use osis_proto::*;
+use osis_proto::examples::{Label, bid, blob, blob_sized, blob_with, salt};
 use std::collections::VecDeque;
 
 fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
-}
-
-/// One label's signing keys at one step.
-#[derive(Clone)]
-struct Keys {
-    sync: SigningSecret,
-    write: SigningSecret,
-    delete: SigningSecret,
-    deposit: SigningSecret,
-}
-
-/// A label with its path, claim sets and keys; group secrets from a byte each.
-struct Label {
-    id: LabelId,
-    keys: Vec<Keys>,
-    steps: Vec<Step>,
-    sets: Vec<ClaimSet>,
-    reader: X25519Secret,
-    key_actor: SigningSecret,
-}
-
-const DEPOSIT_SEED: u8 = 0x30;
-const ADMIN: u8 = 3;
-
-impl Label {
-    fn new() -> Label {
-        let id = genesis_label(&s32(ADMIN), 0);
-        let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), key_actor: SigningSecret::from_seed(&s32(0x32)) };
-        l.step_with(1, None);
-        l
-    }
-
-    /// A step with read secret `b`, write `b + 1`, the fixed admin secret (a child of the head
-    /// signed by `parent`, else the genesis step).
-    fn step_with(&mut self, b: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
-        let (read, write, adm) = (s32(b), s32(b + 1), s32(ADMIN));
-        let pk = StepKeys::derive(&read, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
-        let keys = Keys {
-            sync: label_role_key(LabelRole::Sync, &read, 0),
-            write: label_role_key(LabelRole::Write, &write, 0),
-            delete: label_role_key(LabelRole::Delete, &adm, 0),
-            deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
-        };
-        let s = s32(0x33);
-        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: self.key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: Epoch::new(0, [0; 16]).unwrap() } }];
-        let mut rng = SeededRng::from_seed([b; 32]);
-        let read_epoch = (Epoch::new(1, [b; 16]).unwrap(), &read);
-        let (step, set) = match (&parent, self.steps.last()) {
-            (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, &mut rng).unwrap(),
-            _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, &mut rng).unwrap(),
-        };
-        self.steps.push(step.clone());
-        self.sets.push(set.clone());
-        self.keys.push(keys);
-        (step, set)
-    }
-
-    /// A child step under new read and write secrets (`b`, `b + 1`).
-    fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
-        let parent = self.head_keys().delete.clone();
-        self.step_with(b, Some(parent))
-    }
-
-    fn head_keys(&self) -> &Keys {
-        self.keys.last().unwrap()
-    }
-
-    fn entry(&self, blob: Vec<u8>) -> Entry {
-        self.entry_by(blob, &self.head_keys().write.clone())
-    }
-
-    fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Entry {
-        let wrap: Wrap = [(blob.len() % 251) as u8; 49];
-        let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap);
-        Entry { blob, wrap, stamp }
-    }
-}
-
-fn salt(n: u64) -> [u8; 16] {
-    hash(&n.to_be_bytes())[..16].try_into().unwrap()
-}
-
-/// A blob with a version 1 prefix (salt from `n`, expiry, commitments), then `size` body bytes.
-fn blob_sized(n: u64, expiry: u64, commitments: Vec<[u8; 33]>, size: usize) -> Vec<u8> {
-    let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), commitments).unwrap().to_bytes();
-    let h = hash(&n.to_le_bytes());
-    b.extend((0..size).map(|i| h[i % 32]));
-    b
-}
-
-fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 33]>) -> Vec<u8> {
-    blob_sized(n, expiry, commitments, 20 + (n % 32) as usize)
-}
-
-fn blob(n: u64) -> Vec<u8> {
-    blob_with(n, 0, vec![])
-}
-
-fn bid(n: u64) -> BlobId {
-    osis_label::blob_id(&blob(n))
 }
 
 const T0: u64 = 1_700_000_000_000;
@@ -285,7 +185,7 @@ fn handshake_and_clock_offset() {
 #[test]
 fn register_open_sync_download() {
     let mut net = Net::new(2, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     net.open(1, &l);
@@ -316,7 +216,7 @@ fn register_open_sync_download() {
 #[test]
 fn replay_on_a_truncated_log_ends_with_a_cursor() {
     let mut net = Net::new(2, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     net.open(1, &l);
@@ -343,7 +243,7 @@ fn replay_on_a_truncated_log_ends_with_a_cursor() {
 #[test]
 fn lost_cursor_falls_back_to_reconciliation() {
     let mut net = Net::new(2, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     net.open(1, &l);
@@ -369,7 +269,7 @@ fn lost_cursor_falls_back_to_reconciliation() {
 #[test]
 fn oversized_gained_list_reconciles() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     let gained: Vec<BlobId> = (0..4097u64).map(|n| BlobId(hash(&n.to_le_bytes()))).collect();
@@ -383,7 +283,7 @@ fn oversized_gained_list_reconciles() {
 #[test]
 fn stale_sync_key_gets_one_signed_step() {
     let mut net = Net::new(1, 0);
-    let mut l = Label::new();
+    let mut l = Label::new(3);
     net.setup(&l);
     let old = l.head_keys().clone();
     let (child, cs) = l.rotate(20);
@@ -399,7 +299,7 @@ fn stale_sync_key_gets_one_signed_step() {
     let ev = net.run(0, Command::Open { label: l.id, key: OpenKey::Sync(SigningSecret::from_seed(&s32(99))) });
     assert!(matches!(&ev[..], [ClientEvent::Refused { code: Code::REFUSED, .. }]));
     // a step on another branch is answered with the head
-    let mut fork = Label::new();
+    let mut fork = Label::new(3);
     let (other, _) = fork.rotate(40);
     let ev = net.run(0, Command::Register { label: l.id, step: other, claim_set: None });
     assert!(matches!(&ev[..], [ClientEvent::Head { head, .. }] if *head == child));
@@ -417,7 +317,7 @@ fn stale_sync_key_gets_one_signed_step() {
 #[test]
 fn member_open_spec_sync_5() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     let d = SigningSecret::from_seed(&s32(97));
     let member = Command::Open { label: l.id, key: OpenKey::Member(d.clone()) };
@@ -441,7 +341,7 @@ fn member_open_spec_sync_5() {
 #[test]
 fn member_proof_bound_to_session_spec_sync_5() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     let d = SigningSecret::from_seed(&s32(97));
     net.store.member_labels.insert((d.verifying_key().to_bytes(), l.id));
@@ -459,7 +359,7 @@ fn member_proof_bound_to_session_spec_sync_5() {
 #[test]
 fn claim_and_static_opens() {
     let mut net = Net::new(1, 0);
-    let mut l = Label::new();
+    let mut l = Label::new(3);
     net.setup(&l);
     let claim = |l: &Label, i: usize| Command::Open { label: l.id, key: OpenKey::Claim { step: l.steps[i].id(), key: l.steps[i].claim_key(&l.reader).unwrap() } };
     let ev = net.run(0, claim(&l, 0));
@@ -487,7 +387,7 @@ fn claim_and_static_opens() {
 #[test]
 fn upload_rules() {
     let mut net = Net::new(1, 0);
-    let mut l = Label::new();
+    let mut l = Label::new(3);
     net.setup(&l);
     let old = l.head_keys().clone();
     let mut bad = l.entry(blob(2));
@@ -522,7 +422,7 @@ fn upload_rules() {
 #[test]
 fn oversized_upload_refused_spec_sync_5() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     let seq = net.store.log_head(&l.id).unwrap().1;
     let big = l.entry(blob_sized(1, 0, vec![], osis_base::format::MAX_BLOB));
@@ -543,7 +443,7 @@ fn oversized_upload_refused_spec_sync_5() {
 #[test]
 fn deposit_budget() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     let max = 64 + 4 * l.sets[0].claims.len() as u64;
     let deposit = |l: &Label, n: u64, k: &SigningSecret| {
@@ -576,7 +476,7 @@ fn deposit_budget() {
 #[test]
 fn deletes() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     let dk = |t: &Secret32| osis_crypto::DeleteSecret::derive(t);
@@ -605,7 +505,7 @@ fn deletes() {
 #[test]
 fn subscribe_push_and_signals() {
     let mut net = Net::new(2, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     net.open(1, &l);
@@ -639,7 +539,7 @@ fn subscribe_push_and_signals() {
 #[test]
 fn fetch() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
     let ids = vec![bid(1), bid(2)];
@@ -678,7 +578,7 @@ fn bad_frames() {
 #[test]
 fn client_stops_on_a_stuck_sync() {
     let mut net = Net::new(1, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     let cursor = Cursor { log_id: [1; 16], seq: 5 };
     let out = net.clients[0].handle(T0, ClientInput::Command(sync(l.id, Some(cursor), vec![], vec![])));
     let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
@@ -695,7 +595,7 @@ fn client_stops_on_a_stuck_sync() {
 fn round_trips_are_constant_in_the_common_case() {
     for n in [10u64, 400] {
         let mut net = Net::new(2, 0);
-        let l = Label::new();
+        let l = Label::new(3);
         net.setup(&l);
         net.open(0, &l);
         net.open(1, &l);
@@ -715,7 +615,7 @@ fn round_trips_are_constant_in_the_common_case() {
 fn loopback_converges_at_size() {
     let n = 20_000u64;
     let mut net = Net::new(2, 0);
-    let l = Label::new();
+    let l = Label::new(3);
     net.setup(&l);
     net.open(0, &l);
     net.open(1, &l);
