@@ -234,7 +234,7 @@ impl SyncEngine {
             return r.clone();
         }
         let me = self.engine.tid();
-        let mut nodes: Vec<Tid> = self.engine.core.by_aspect.keys().filter(|(t, ak)| ak.as_str() == "/reach" && *t != me).map(|(t, _)| *t).collect();
+        let mut nodes: Vec<Tid> = self.engine.core.ix.by_aspect.keys().filter(|(t, ak)| ak.as_str() == "/reach" && *t != me).map(|(t, _)| *t).collect();
         nodes.dedup();
         let own = self.own_reach().map(|r| r.dialable);
         let mut m = BTreeMap::new();

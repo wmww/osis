@@ -360,7 +360,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     // commitments are checked under it (spec/sync.md §1); of several listing it, the greatest ID
     // (`by_chunk`: one header decoded)
     let core = &*tx.core;
-    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> { core.by_chunk.get(b)?.iter().next_back().and_then(|c| core.commits.get(c)).map(|m| m.header.blind) };
+    let mut blind_of = |b: &BlobId| -> Option<[u8; 16]> { core.ix.by_chunk.get(b)?.iter().next_back().and_then(|c| core.ix.commits.get(c)).map(|m| m.header.blind) };
     let mut blobs = TxBlobs::new(&mut tx.txn);
     let rng = &mut *tx.rng;
     let max = usize::try_from(MAX_REUSE).unwrap_or(usize::MAX);
@@ -563,7 +563,7 @@ impl Engine {
         let me = self.tid();
         // reuse links within one position of one aspect: the aspects of the commits listing it
         let core = &self.core;
-        let cands: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|b| core.by_chunk.get(b).into_iter().flatten()).filter_map(|c| core.commits.get(c)).flat_map(|m| m.view.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+        let cands: BTreeSet<(Tid, Ak)> = held.iter().flat_map(|b| core.ix.by_chunk.get(b).into_iter().flatten()).filter_map(|c| core.ix.commits.get(c)).flat_map(|m| m.view.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
         let now = self.now().0;
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);
@@ -592,14 +592,14 @@ impl Engine {
     /// commit whose delta links a `held` blob (the value rewritten), if a commit of `me` links one
     /// too; `None` when there is nothing to do here.
     fn relink_field(&mut self, tid: &Tid, ak: &Ak, held: &BTreeSet<BlobId>, me: Tid, now: u64) -> Result<Option<super::write::AspectMut>> {
-        let commits: Vec<CommitId> = self.core.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.commits.get(c).is_some_and(|m| m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
+        let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
         let (k, held2) = ((*tid, ak.clone()), held.clone());
         // (newest linking commit and its aspect index, whether an own commit links one)
         let found = self.run(|tx| {
             let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
             let mut newest = None;
             for c in commits {
-                let Some((ai, mine)) = tx.core.commits.get(&c).and_then(|m| Some((m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)?, m.header.author == me))) else { continue };
+                let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)?, m.header.author == me))) else { continue };
                 if newest.is_some() && !mine {
                     continue;
                 }
@@ -620,14 +620,14 @@ impl Engine {
             Ok((newest, false))
         })?;
         let (Some((c, ai)), true) = found else { return Ok(None) };
-        let Some(a) = self.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { return Ok(None) };
+        let Some(a) = self.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { return Ok(None) };
         if a.expires.is_some_and(|t| t <= now) {
             return Ok(None);
         }
         // the schema it was written with: an unregistered typed one cannot be written back
         let schema: Option<Arc<Schema>> = match a.schema {
             None => None,
-            Some(i) => match self.core.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
+            Some(i) => match self.core.ix.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
                 Some(s) => Some(s.clone()),
                 None => return Ok(None),
             },

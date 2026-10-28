@@ -139,7 +139,7 @@ impl SyncEngine {
         let now = self.engine.now();
         let held: Vec<CommitId> = match only {
             Some(o) => o.to_vec(),
-            None => self.engine.core.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default(),
+            None => self.engine.core.ix.by_aspect.get(&(*t, ak.clone())).map(|x| x.iter().map(|(_, c)| *c).collect()).unwrap_or_default(),
         };
         let mut dropped = Vec::new();
         for c in held {
@@ -227,7 +227,7 @@ impl SyncEngine {
             self.deferred.push((*g, *c, aspects.clone()));
             return Ok(());
         }
-        let own = self.engine.core.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
+        let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
         let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
         for (l, servers) in labels {
             if self.state.certs.contains(&(l, *c)) {
@@ -401,7 +401,7 @@ impl SyncEngine {
     fn acted(&self, member: &Tid, since: Ts) -> bool {
         let tl = self.engine.core.timelines.get(member);
         // the views: O(commits) without decoding headers
-        self.engine.core.commits.values().any(|m| {
+        self.engine.core.ix.commits.values().any(|m| {
             let h = &m.view;
             h.ts > since && (h.author == *member || h.actor == *member || tl.is_some_and(|tl| tl.role(&h.author, member, At::now(h.ts)).is_some()))
         })

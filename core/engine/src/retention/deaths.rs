@@ -52,7 +52,7 @@ fn put_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, old: Option<Ts>, 
     if old == new {
         return Ok(());
     }
-    let Some(ts) = tx.core.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
+    let Some(ts) = tx.core.ix.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
     let t = tx.txn.index(LAST_DEATHS)?;
     if let Some(l) = old {
         tx.txn.table_remove(t, &last_key(tid, ak, l, ts, c), Shred::No)?;
@@ -66,7 +66,7 @@ fn put_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, old: Option<Ts>, 
 /// Before part `ai` of `c` on `(tid, ak)` drops with its death record: removes its row,
 /// shredded as the record is.
 pub(crate) fn drop_last(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
-    let (Some(l), Some(ts)) = (death_of(tx, tid, ak, c, ai)?.map(|d| d.last), tx.core.commits.get(c).map(|m| m.header.ts)) else { return Ok(()) };
+    let (Some(l), Some(ts)) = (death_of(tx, tid, ak, c, ai)?.map(|d| d.last), tx.core.ix.commits.get(c).map(|m| m.header.ts)) else { return Ok(()) };
     let t = tx.txn.index(LAST_DEATHS)?;
     tx.txn.table_remove(t, &last_key(tid, ak, l, ts, c), Shred::Yes)?;
     Ok(())
@@ -96,7 +96,7 @@ pub(super) fn rows_from(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, from: Ts) -> Result
 
 /// The rows of `(tid, ak)` from its held bounded bodies' death records.
 fn fresh_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<(Ts, Ts, CommitId)>> {
-    let held: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
+    let held: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
     let mut out = Vec::new();
     for (ts, c) in held {
         let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
@@ -129,7 +129,7 @@ fn rebuild_rows(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// Writes every aspect's rows from the death records (`engine::index::write_all`, after the
 /// index tables were dropped). Cost: one record per held bounded body.
 pub(crate) fn write_last_deaths_all(tx: &mut Tx<'_>) -> Result<()> {
-    let aspects: Vec<(Tid, Ak)> = tx.core.by_aspect.keys().cloned().collect();
+    let aspects: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().collect();
     for (tid, ak) in aspects {
         rebuild_rows(tx, &tid, &ak)?;
     }
@@ -151,7 +151,7 @@ impl crate::Engine {
     #[doc(hidden)]
     pub fn last_deaths_stale(&mut self) -> Result<Vec<(Tid, Ak)>> {
         self.run(|tx| {
-            let aspects: Vec<(Tid, Ak)> = tx.core.by_aspect.keys().cloned().collect();
+            let aspects: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().collect();
             let mut out = Vec::new();
             for (tid, ak) in aspects {
                 if rows_from(tx, &tid, &ak, Ts::default())? != Some(fresh_rows(tx, &tid, &ak)?) {
@@ -190,38 +190,38 @@ const HI: CommitId = CommitId([0xff; 32]);
 
 /// The aspect index of `(tid, ak)` in `c` if that part is held and has a relative bound.
 fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
-    held_part(core, c, tid, ak).filter(|ai| core.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).is_some_and(bounded))
+    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).is_some_and(bounded))
 }
 
 /// Whether `c` carries copies of others' writes (a snapshot or import).
 fn copies(core: &Core, c: &CommitId) -> bool {
-    core.commits.get(c).is_none_or(|m| !m.header.kind.has_own_writes())
+    core.ix.commits.get(c).is_none_or(|m| !m.header.kind.has_own_writes())
 }
 
 /// The first held body of `(tid, ak)` with a relative bound by `(ts, ID)`, cached
 /// (`Core::first_bounded`, kept by `index_commit` and `keep_residue`).
 pub(crate) fn first_bounded(core: &mut Core, tid: &Tid, ak: &Ak) -> Option<(Ts, CommitId)> {
     let k = (*tid, ak.clone());
-    if let Some(f) = core.first_bounded.get(&k) {
+    if let Some(f) = core.ix.first_bounded.get(&k) {
         return *f;
     }
-    let f = core.by_aspect.get(&k).into_iter().flatten().find(|(_, c)| bounded_part(core, c, tid, ak).is_some()).copied();
-    core.first_bounded.insert(k, f);
+    let f = core.ix.by_aspect.get(&k).into_iter().flatten().find(|(_, c)| bounded_part(core, c, tid, ak).is_some()).copied();
+    core.ix.first_bounded.insert(k, f);
     f
 }
 
 /// The first held bounded body of `(tid, ak)` after `after`.
 fn next_bounded(core: &Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> Option<(Ts, CommitId)> {
     use std::ops::Bound::{Excluded, Unbounded};
-    core.by_aspect.get(&(*tid, ak.clone()))?.range((Excluded(after), Unbounded)).find(|(_, c)| bounded_part(core, c, tid, ak).is_some()).copied()
+    core.ix.by_aspect.get(&(*tid, ak.clone()))?.range((Excluded(after), Unbounded)).find(|(_, c)| bounded_part(core, c, tid, ak).is_some()).copied()
 }
 
 /// A commit just indexed (`apply::index_commit`): the first held bounded body of its aspects.
 pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in h.aspects.iter().filter(|a| a.bounded) {
         let k = (a.tid, a.ak.clone());
-        if core.first_bounded.get(&k).is_some_and(|f| f.is_none_or(|f| (h.ts, *id) < f)) {
-            core.first_bounded.insert(k, Some((h.ts, *id)));
+        if core.ix.first_bounded.get(&k).is_some_and(|f| f.is_none_or(|f| (h.ts, *id) < f)) {
+            core.ix.first_bounded.insert(k, Some((h.ts, *id)));
         }
     }
 }
@@ -234,7 +234,7 @@ pub(crate) fn note_indexed(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
 /// is neither held nor a residue. Cost: O(one body) (a snapshot's: plus the aspect's residue
 /// keys), plus once per dropped commit the step past it.
 pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[Fragment]) -> Result<()> {
-    let Some(m) = tx.core.commits.get(c) else { return Ok(()) };
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (tid, ak, ts) = (a.tid, a.ak.clone(), m.header.ts);
     let me = (ts, *c);
@@ -261,11 +261,11 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
         }
     }
     if first == Some(me) {
-        let gone: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flat_map(|s| s.range(me..)).take_while(|x| next.is_none_or(|n| x.0 < n.0)).copied().collect();
+        let gone: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flat_map(|s| s.range(me..)).take_while(|x| next.is_none_or(|n| x.0 < n.0)).copied().collect();
         for (t, x) in gone {
             tx.txn.remove_local(&records::dropped_key(&tid, &ak, t, &x), Shred::Yes)?;
         }
-        tx.core.first_bounded.insert((tid, ak), next);
+        tx.core.ix.first_bounded.insert((tid, ak), next);
     }
     Ok(())
 }
@@ -281,7 +281,7 @@ pub(crate) fn drop_residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for k in keys {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
-    tx.core.first_bounded.remove(&(*tid, ak.clone()));
+    tx.core.ix.first_bounded.remove(&(*tid, ak.clone()));
     clear_rows(tx, tid, ak, Shred::Yes)
 }
 
@@ -321,7 +321,7 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
         out.push((c, ai));
     }
     if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
-        for (ts, s, fr) in core.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+        for (ts, s, fr) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
             if *ts < at
                 && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
                 && let Some(ai) = bounded_part(core, s, tid, ak)
@@ -340,7 +340,7 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
     let mut bodies = BTreeSet::new();
     for d in deaths {
         for (c, ai) in carriers(tx.core, tid, ak, &d.stamp.dot, d.at) {
-            let Some(h) = tx.core.commits.get(&c).map(|m| m.header.clone()) else { continue };
+            let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
             let (body, _) = body_class(tx.core, &h, &c, ai);
             let old = tx.txn.death(tid, ak, &body)?;
             let n = osis_store::Deaths { first: old.map_or(d.at, |o| o.first.min(d.at)), last: old.map_or(d.at, |o| o.last.max(d.at)) };
@@ -365,7 +365,7 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
 /// other held commit of the aspect and carrying no copies of others' writes; and only bodies with a
 /// relative bound keep deaths.
 pub(crate) fn replays(core: &mut Core, c: &CommitId, h: &Header, tid: &Tid, ak: &Ak) -> bool {
-    let Some(held) = core.by_aspect.get(&(*tid, ak.clone())) else { return false };
+    let Some(held) = core.ix.by_aspect.get(&(*tid, ak.clone())) else { return false };
     // a stamp orders a `ts` tie by dot, not commit ID: ties replay
     let late = !h.kind.has_own_writes() || held.iter().rev().find(|x| x.1 != *c).is_some_and(|x| x.0 >= h.ts);
     late && first_bounded(core, tid, ak).is_some()
@@ -378,10 +378,10 @@ pub(crate) fn replays(core: &mut Core, c: &CommitId, h: &Header, tid: &Tid, ak: 
 /// remove a superseder), so its keep-at-most bounds wait (`check_at_most`).
 pub(crate) fn mark(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, item: Due) -> Result<()> {
     let k = (*tid, ak.clone());
-    if !tx.core.deaths_due.contains_key(&k) {
+    if !tx.core.ix.deaths_due.contains_key(&k) {
         tx.txn.put_local(&records::aspect_key(records::DEATHS_DUE, tid, ak), &[], Shred::No)?;
     }
-    tx.core.deaths_due.insert(k, item);
+    tx.core.ix.deaths_due.insert(k, item);
     Ok(())
 }
 
@@ -419,11 +419,11 @@ pub(crate) fn mark_late(tx: &mut Tx<'_>, c: &CommitId, h: &Header, tid: &Tid, ak
 /// `Engine::settle_deaths` in `tx`.
 pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
     // one aspect at a time: settling one may add rechecks to another still marked
-    while let Some((k, items)) = tx.core.deaths_due.iter().next().map(|(k, s)| (k.clone(), s.iter().cloned().collect::<Vec<_>>())) {
+    while let Some((k, items)) = tx.core.ix.deaths_due.iter().next().map(|(k, s)| (k.clone(), s.iter().cloned().collect::<Vec<_>>())) {
         let (tid, ak) = k.clone();
         // unmarked first: `check_at_most` skips marked aspects
         for i in &items {
-            tx.core.deaths_due.remove(&k, i);
+            tx.core.ix.deaths_due.remove(&k, i);
         }
         tx.txn.remove_local(&records::aspect_key(records::DEATHS_DUE, &tid, &ak), Shred::No)?;
         let judged = if items.contains(&Due::Full) {
@@ -443,7 +443,7 @@ pub(crate) fn settle_due(tx: &mut Tx<'_>) -> Result<()> {
         });
         let bodies: BTreeSet<(CommitId, usize)> = judged.into_iter().chain(recheck).collect();
         for (c, ai) in bodies {
-            if tx.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_some_and(|a| a.retention.at_most.rel.is_some()) {
+            if tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_some_and(|a| a.retention.at_most.rel.is_some()) {
                 check_at_most(tx, &c, ai)?;
             }
         }
@@ -459,7 +459,7 @@ pub(crate) fn load_deaths_due(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     for k in v {
-        tx.core.deaths_due.insert(k, Due::Full);
+        tx.core.ix.deaths_due.insert(k, Due::Full);
     }
     Ok(())
 }
@@ -501,7 +501,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
 /// residues and the state. Cost: the aspect's held bodies, residues and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let got = replayed(tx, tid, ak)?;
-    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in &held {
         let Some(ai) = bounded_part(tx.core, c, tid, ak) else { continue };
         set_deaths(tx, tid, ak, c, ai, got.get(&(*c, ai)).copied())?;
@@ -511,7 +511,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// `replay_all`'s deaths per held bounded body.
 fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, usize), (Ts, Ts)>> {
-    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let invalid = crate::apply::invalid_of(tx.core, tid, ak);
     let res = residues(tx, tid, ak)?;
     let mut st = Fragment::default();
@@ -554,7 +554,7 @@ fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, u
 }
 
 fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: Option<(Ts, Ts)>) -> Result<()> {
-    let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let (body, _) = body_class(tx.core, &h, c, ai);
     let d = d.map(|(first, last)| osis_store::Deaths { first, last });
     let old = tx.txn.death(tid, ak, &body)?;
@@ -570,7 +570,7 @@ fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: O
 }
 
 fn death_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<Option<osis_store::Deaths>> {
-    let Some(h) = tx.core.commits.get(c).map(|m| m.header.clone()) else { return Ok(None) };
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(None) };
     let (body, _) = body_class(tx.core, &h, c, ai);
     Ok(tx.txn.death(tid, ak, &body)?)
 }
@@ -603,7 +603,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut u = t_max;
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
     // bodies at or before a late delta with a death after the first one
-    let before: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
+    let before: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range(..=(t_max, HI))).take(LASTS_MIN).copied().collect();
     let dying: Vec<(Ts, Ts, CommitId)> = if before.len() < LASTS_MIN {
         // few bodies before: their records, without loading the index
         let mut v = Vec::new();
@@ -628,7 +628,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let named: BTreeSet<CommitId> = items.iter().filter_map(|i| if let Due::Killed(c) | Due::Late(_, c) = i { Some(*c) } else { None }).collect();
     for c in named {
         let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
-        let Some(ts) = tx.core.commits.get(&c).map(|m| m.header.ts) else { continue };
+        let Some(ts) = tx.core.ix.commits.get(&c).map(|m| m.header.ts) else { continue };
         if let Some(d) = death_of(tx, tid, ak, &c, ai)? {
             u = u.max(d.last);
         }
@@ -648,7 +648,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     if judge.keys().any(|(_, c)| copies(tx.core, c)) {
         return Ok(None);
     }
-    let after: Vec<(Ts, CommitId)> = tx.core.copies.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..)).copied().collect();
+    let after: Vec<(Ts, CommitId)> = tx.core.ix.copies.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..)).copied().collect();
     for (_, s) in &after {
         if let Some(ai) = bounded_part(tx.core, s, tid, ak)
             && death_of(tx, tid, ak, s, ai)?.is_some_and(|d| d.last > t_min)
@@ -658,7 +658,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     }
     // the bodies through `u`, then the snapshots and imports after it: a copy's own commit may
     // be one never held, with a stamp in the window
-    let mut fold: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(u, HI))).copied().collect();
+    let mut fold: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(u, HI))).copied().collect();
     fold.extend(after.iter().filter(|x| x.0 > u));
     let snaps: Vec<(Ts, CommitId)> = fold.iter().filter(|x| copies(tx.core, &x.1)).copied().collect();
     let play = playing_copies(tx, tid, ak, t_start, &snaps)?;
@@ -703,7 +703,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
                 });
                 for x in own.into_inner() {
                     if let std::collections::hash_map::Entry::Vacant(e) = plays.entry(x) {
-                        let p = held_part(tx.core, &x, tid, ak).is_some() || tx.core.commits.get(&x).map(|m| m.header.ts).map(|t| tx.txn.get_local(&records::dropped_key(tid, ak, t, &x))).transpose()?.flatten().is_some();
+                        let p = held_part(tx.core, &x, tid, ak).is_some() || tx.core.ix.commits.get(&x).map(|m| m.header.ts).map(|t| tx.txn.get_local(&records::dropped_key(tid, ak, t, &x))).transpose()?.flatten().is_some();
                         e.insert(p);
                     }
                 }
@@ -741,7 +741,7 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     {
         // every held bounded body as a replay of every body dates it
         let want = replayed(tx, tid, ak)?;
-        let held: Vec<CommitId> = tx.core.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
+        let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).collect();
         for c in held {
             let Some(ai) = bounded_part(tx.core, &c, tid, ak) else { continue };
             let have = death_of(tx, tid, ak, &c, ai)?.map(|d| (d.first, d.last));
@@ -759,7 +759,7 @@ fn plays_own(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<bool> 
     if held_part(tx.core, c, tid, ak).is_some() {
         return Ok(true);
     }
-    let Some(ts) = tx.core.commits.get(c).map(|m| m.header.ts) else { return Ok(false) };
+    let Some(ts) = tx.core.ix.commits.get(c).map(|m| m.header.ts) else { return Ok(false) };
     Ok(tx.txn.get_local(&records::dropped_key(tid, ak, ts, c))?.is_some())
 }
 
@@ -781,12 +781,12 @@ fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts
     // a dropped snapshot has no carried groups left (`forget_snapshot`): its residue, or the
     // state where it has none, may hold copies of writes never held here
     let mut out: BTreeSet<CommitId> =
-        snaps.iter().filter(|x| held_part(tx.core, &x.1, tid, ak).is_none() || tx.core.commits.get(&x.1).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind))).map(|x| x.1).collect();
+        snaps.iter().filter(|x| held_part(tx.core, &x.1, tid, ak).is_none() || tx.core.ix.commits.get(&x.1).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind))).map(|x| x.1).collect();
     let Some(last) = snaps.iter().map(|x| x.0).max() else { return Ok(out) };
     // commit-form sources
-    let srcs: Vec<CommitId> = tx.core.authors.range((*tid, LO)..=(*tid, HI)).filter(|(_, v)| v.1 >= t_start).map(|(k, _)| k.1).collect();
+    let srcs: Vec<CommitId> = tx.core.ix.authors.range((*tid, LO)..=(*tid, HI)).filter(|(_, v)| v.1 >= t_start).map(|(k, _)| k.1).collect();
     for x in srcs {
-        let own = match tx.core.commits.get(&x) {
+        let own = match tx.core.ix.commits.get(&x) {
             None => false,
             Some(m) if m.header.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) => plays_own(tx, tid, ak, &x)?,
             // the thing's own commit on other aspects: none of its writes is on this one
@@ -799,15 +799,15 @@ fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts
     }
     // the first node-form commit from `t_start` dropped without a residue
     let k = (*tid, ak.clone());
-    let range: Vec<(Ts, CommitId)> = tx.core.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(last, HI))).copied().collect();
+    let range: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_start, LO)..=(last, HI))).copied().collect();
     let mut bare = None;
     for (ts, c) in range {
-        if tx.core.commits.get(&c).is_some_and(|m| m.header.kind.has_own_writes()) && !plays_own(tx, tid, ak, &c)? {
+        if tx.core.ix.commits.get(&c).is_some_and(|m| m.header.kind.has_own_writes()) && !plays_own(tx, tid, ak, &c)? {
             bare = Some(ts);
             break;
         }
     }
-    let carried = tx.core.carried.get(&k);
+    let carried = tx.core.ix.carried.get(&k);
     for (ts, s) in snaps {
         if bare.is_some_and(|b| b <= *ts) || carried.is_some_and(|v| v.iter().any(|g| g.snap == *s && g.ts >= t_start)) {
             out.insert(*s);
@@ -845,10 +845,10 @@ fn plays_nothing(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, t_start: Ts,
 /// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
 /// again: their deaths or live writes may have changed (spec/commits.md §5).
 fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    let held: Vec<CommitId> = tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for c in held {
         let Some(ai) = held_part(tx.core, &c, tid, ak) else { continue };
-        if tx.core.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_none_or(|a| a.retention.at_most.rel.is_none()) {
+        if tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai)).is_none_or(|a| a.retention.at_most.rel.is_none()) {
             continue;
         }
         check_at_most(tx, &c, ai)?;

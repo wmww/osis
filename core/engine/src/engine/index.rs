@@ -418,7 +418,7 @@ pub(crate) fn remove_edges(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 
 /// Every membership commit's `EDGES` row, from its record (after a rebuild).
 fn write_edges_all(tx: &mut Tx<'_>) -> Result<()> {
-    let ids: Vec<CommitId> = tx.core.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, _)| *id).collect();
+    let ids: Vec<CommitId> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, _)| *id).collect();
     for id in ids {
         let parts = crate::apply::edge_parts(tx, &id)?;
         put_edges(tx, &id, &parts, Shred::No)?;
@@ -468,13 +468,13 @@ fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     out.push(1);
     out.extend_from_slice(&(m.valid.len() as u32).to_be_bytes());
     for (ai, v) in m.valid.iter().enumerate() {
-        let role = match core.rotation_role.get(&(*id, ai)) {
+        let role = match core.ix.rotation_role.get(&(*id, ai)) {
             None => 0,
             Some(Role::Read) => 1,
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        out.push(u8::from(*v) | (role << 1) | (u8::from(core.grant_overreach.contains(&(*id, ai))) << 3));
+        out.push(u8::from(*v) | (role << 1) | (u8::from(core.ix.grant_overreach.contains(&(*id, ai))) << 3));
     }
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8).u8(match v.form {
@@ -569,31 +569,31 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let txn = &mut tx.txn;
     // a commit's parts row carries their validity, rotation roles and grant overreach
     let ids: Vec<CommitId> = if all {
-        c.commits.keys().copied().collect()
+        c.ix.commits.keys().copied().collect()
     } else {
-        let mut s: BTreeSet<CommitId> = c.commits.logged().into_iter().collect();
-        s.extend(c.rotation_role.logged().into_iter().map(|k| k.0));
-        s.extend(c.grant_overreach.logged().into_iter().map(|k| k.0));
+        let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
+        s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
+        s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
         let t = txn.index(METAS)?;
         for id in &ids {
-            match c.commits.get(id) {
+            match c.ix.commits.get(id) {
                 Some(m) => txn.table_put(t, &id.0, meta_row(c, id, m), Shred::No)?,
                 None => txn.table_remove(t, &id.0, Shred::No)?,
             };
         }
     }
-    put_map(txn, BOX_KEYS, &c.box_keys, all)?;
-    put_setmap(txn, BOXES_TO, &c.boxes_to, all)?;
-    put_map(txn, EPOCH_INTRO, &c.epoch_intro, all)?;
-    put_map(txn, BOX_WRITTEN, &c.box_written, all)?;
-    put_set(txn, OWN_KEYS, &c.own_keys, all)?;
-    put_map(txn, DELETE_HINTS, &c.delete_hints, all)?;
-    put_map(txn, SNAPSHOTS, &c.snapshots, all)?;
-    put_map(txn, CARRIED, &c.carried, all)?;
-    put_map(txn, AUTHORS, &c.authors, all)?;
+    put_map(txn, BOX_KEYS, &c.ix.box_keys, all)?;
+    put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
+    put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
+    put_map(txn, BOX_WRITTEN, &c.ix.box_written, all)?;
+    put_set(txn, OWN_KEYS, &c.ix.own_keys, all)?;
+    put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
+    put_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
+    put_map(txn, CARRIED, &c.ix.carried, all)?;
+    put_map(txn, AUTHORS, &c.ix.authors, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -616,13 +616,13 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
 /// `Core::update_timelines` at open: components restored from their saved walks where those
 /// match (else evaluated); a unit that does not read is evaluated anew, never an error.
 pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
-    let touched = tx.core.held.take_touched();
+    let touched = tx.core.ix.held.take_touched();
     let t = tx.txn.index(WALKS)?;
     let txn = &mut tx.txn;
     let core = &mut *tx.core;
-    let changed = core.timelines.update_touched_cached(&core.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
+    let changed = core.timelines.update_touched_cached(&core.ix.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
     core.stale_things.extend(changed.evaluated);
-    let below = core.held.reach(&changed.extended);
+    let below = core.ix.held.reach(&changed.extended);
     core.stale_things.extend(below);
     core.membership_changed();
     Ok(())
@@ -726,10 +726,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         for (ai, p) in parts.iter().enumerate() {
             valid.push(p & 1 != 0);
             if let Some(r) = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((p >> 1) & 3).wrapping_sub(1)) {
-                tx.core.rotation_role.insert((id, ai), *r);
+                tx.core.ix.rotation_role.insert((id, ai), *r);
             }
             if p & 8 != 0 {
-                tx.core.grant_overreach.insert((id, ai));
+                tx.core.ix.grant_overreach.insert((id, ai));
             }
         }
         let view = Arc::new(view);
@@ -751,36 +751,36 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped });
+        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped });
         tx.core.index_validity(&id);
     }
     drop(_ms);
     for (k, v) in scan::<(Tid, Dot)>(tx, BOX_KEYS)? {
-        tx.core.box_keys.insert(k, dec(&v)?);
+        tx.core.ix.box_keys.insert(k, dec(&v)?);
     }
     for ((m, x), _) in scan::<(Tid, (Tid, Value))>(tx, BOXES_TO)? {
-        tx.core.boxes_to.insert(m, x);
+        tx.core.ix.boxes_to.insert(m, x);
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, EPOCH_INTRO)? {
-        tx.core.epoch_intro.insert(k, dec(&v)?);
+        tx.core.ix.epoch_intro.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, BoxKey)>(tx, BOX_WRITTEN)? {
-        tx.core.box_written.insert(k, dec(&v)?);
+        tx.core.ix.box_written.insert(k, dec(&v)?);
     }
     for (k, _) in scan::<Tid>(tx, OWN_KEYS)? {
-        tx.core.own_keys.insert(k);
+        tx.core.ix.own_keys.insert(k);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
-        tx.core.delete_hints.insert(k, dec(&v)?);
+        tx.core.ix.delete_hints.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
-        tx.core.snapshots.insert(k, dec(&v)?);
+        tx.core.ix.snapshots.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
-        tx.core.carried.insert(k, dec(&v)?);
+        tx.core.ix.carried.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
-        tx.core.authors.insert(k, dec(&v)?);
+        tx.core.ix.authors.insert(k, dec(&v)?);
     }
     Ok(())
 }
@@ -793,24 +793,24 @@ impl super::Engine {
         use std::fmt::Write;
         let c = &self.core;
         let mut out = String::new();
-        for (id, m) in c.commits.iter() {
+        for (id, m) in c.ix.commits.iter() {
             let _ = writeln!(out, "commit {id:?} {:?} {:?} {:?} {:?} {:?}", m.valid, m.dropped, m.received, m.origin, m.view);
         }
-        let held = osis_perm::HeldSet::things(&c.held);
+        let held = osis_perm::HeldSet::things(&c.ix.held);
         for t in held {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
-            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&c.held, &t).iter().map(|x| x.id).collect();
-            let mut ss: Vec<CommitId> = osis_perm::HeldSet::roster_snapshots(&c.held, &t).iter().map(|x| x.id).collect();
+            let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&c.ix.held, &t).iter().map(|x| x.id).collect();
+            let mut ss: Vec<CommitId> = osis_perm::HeldSet::roster_snapshots(&c.ix.held, &t).iter().map(|x| x.id).collect();
             cs.sort();
             ss.sort();
-            let _ = writeln!(out, "held {t:?} {cs:?} {ss:?} {:?}", c.held.created(&t).is_some());
+            let _ = writeln!(out, "held {t:?} {cs:?} {ss:?} {:?}", c.ix.held.created(&t).is_some());
         }
-        let _ = writeln!(out, "by_thing {:?}\nby_chunk {:?}", *c.by_thing, *c.by_chunk);
-        let _ = writeln!(out, "by_aspect {:?}\ninvalid {:?}\nranges {:?}", *c.by_aspect, *c.invalid, *c.ranges);
-        let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.rotation_role, *c.grant_overreach, *c.box_keys, *c.boxes_to);
-        let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.epoch_intro, *c.box_written, *c.own_keys);
-        let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.member_keys, *c.unresolved, *c.was, *c.moved, c.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}", *c.secrets, *c.void, *c.valueless, *c.snapshots, *c.carried, *c.authors);
+        let _ = writeln!(out, "by_thing {:?}\nby_chunk {:?}", *c.ix.by_thing, *c.ix.by_chunk);
+        let _ = writeln!(out, "by_aspect {:?}\ninvalid {:?}\nranges {:?}", *c.ix.by_aspect, *c.ix.invalid, *c.ix.ranges);
+        let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.ix.rotation_role, *c.ix.grant_overreach, *c.ix.box_keys, *c.ix.boxes_to);
+        let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.ix.epoch_intro, *c.ix.box_written, *c.ix.own_keys);
+        let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.ix.member_keys, *c.ix.unresolved, *c.ix.was, *c.ix.moved, c.ix.groups.of);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.authors);
         out
     }
 
@@ -821,12 +821,12 @@ impl super::Engine {
             // another build's rules judged differently: every part valid, nothing carried, and
             // the states joined so
             return self.run(|tx| {
-                let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.invalid.keys().cloned().chain(tx.core.carried.keys().cloned()).collect();
+                let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.ix.invalid.keys().cloned().chain(tx.core.ix.carried.keys().cloned()).collect();
                 for (tid, ak) in aspects {
-                    let held: Vec<CommitId> = tx.core.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+                    let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
                     let mut st = osis_crdt::Fragment::default();
                     for c in held {
-                        let Some(ai) = tx.core.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)) else { continue };
+                        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)) else { continue };
                         for d in crate::apply::held_parts(tx, &c, ai)? {
                             st.join(d.into_fragment());
                         }
@@ -834,7 +834,7 @@ impl super::Engine {
                     tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;
                 }
                 let t = tx.txn.index(METAS)?;
-                let rows: Vec<(CommitId, Vec<u8>)> = tx.core.commits.iter().map(|(id, m)| {
+                let rows: Vec<(CommitId, Vec<u8>)> = tx.core.ix.commits.iter().map(|(id, m)| {
                     let mut row = meta_row(tx.core, id, m);
                     // every part valid, nothing else needed
                     row.iter_mut().skip(5).take(m.valid.len()).for_each(|p| *p = 1);
@@ -844,7 +844,7 @@ impl super::Engine {
                     tx.txn.table_put(t, &id.0, row, Shred::No)?;
                 }
                 let t = tx.txn.index(CARRIED)?;
-                let keys: Vec<(Tid, osis_base::Ak)> = tx.core.carried.keys().cloned().collect();
+                let keys: Vec<(Tid, osis_base::Ak)> = tx.core.ix.carried.keys().cloned().collect();
                 for k in keys {
                     tx.txn.table_remove(t, &enc(&k), Shred::No)?;
                 }
@@ -852,7 +852,7 @@ impl super::Engine {
             });
         }
         self.run(|tx| {
-            let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };
+            let Some(id) = tx.core.ix.commits.keys().next().copied() else { return Ok(()) };
             let t = tx.txn.index(METAS)?;
             tx.txn.table_put(t, &id.0, vec![1; 300], Shred::No)?;
             Ok(())
@@ -865,7 +865,7 @@ impl super::Engine {
     #[doc(hidden)]
     pub fn perm_digest(&self, from_scratch: bool) -> String {
         use std::fmt::Write;
-        let held = &self.core.held;
+        let held = &self.core.ix.held;
         let full = from_scratch.then(|| osis_perm::Timeline::evaluate(held));
         let get = |t: &Tid| full.as_ref().or_else(|| self.core.timelines.get(t));
         let mut out = String::new();
@@ -955,7 +955,7 @@ impl super::Engine {
     /// decodes none; those with one are resolved from blobs at open).
     #[doc(hidden)]
     pub fn headers_decoded(&self) -> usize {
-        self.core.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count()
+        self.core.ix.commits.values().filter(|m| !m.view.linked && m.header.is_decoded()).count()
     }
 
     /// Whether the persisted index is tagged as this build's (tests).

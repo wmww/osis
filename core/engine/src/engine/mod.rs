@@ -291,76 +291,35 @@ impl Owned {
     }
 }
 
-/// Applies `$m` to every journaled index of a `Core`.
-macro_rules! journaled {
-    ($c:expr, $m:ident) => {{
-        let c = &mut *$c;
-        c.held.$m();
-        c.commits.$m();
-        c.invalid.$m();
-        c.by_aspect.$m();
-        c.copies.$m();
-        c.snapshots.$m();
-        c.carried.$m();
-        c.by_thing.$m();
-        c.by_chunk.$m();
-        c.ranges.$m();
-        c.pending.$m();
-        c.syncing.$m();
-        c.void.$m();
-        c.valueless.$m();
-        c.secrets.$m();
-        c.own_keys.$m();
-        c.labeled.$m();
-        c.delete_hints.$m();
-        c.was.$m();
-        c.was_of.$m();
-        c.moved.$m();
-        c.groups.$m();
-        c.member_keys.$m();
-        c.unresolved.$m();
-        c.rotation_role.$m();
-        c.grant_overreach.$m();
-        c.box_keys.$m();
-        c.boxes_to.$m();
-        c.epoch_intro.$m();
-        c.box_written.$m();
-        c.authors.$m();
-        c.lost_due.$m();
-        c.deaths_due.$m();
-        c.first_bounded.$m();
-        c.departures.$m();
-        c.secrets_unresolved.$m();
-    }};
+/// Declares `Indexes` and its `Journaled` impl from one field list, so no journaled index can
+/// be left out of commit or rollback.
+macro_rules! indexes {
+    ($($(#[$a:meta])* pub $f:ident: $t:ty,)*) => {
+        /// `Core`'s journaled indexes (`journal`).
+        #[doc(hidden)]
+        #[derive(Default)]
+        pub struct Indexes {
+            $($(#[$a])* pub $f: $t,)*
+        }
+
+        impl Journaled for Indexes {
+            fn commit(&mut self) {
+                $(self.$f.commit();)*
+            }
+            fn rollback(&mut self) {
+                $(self.$f.rollback();)*
+            }
+            #[cfg(test)]
+            fn contents(&self) -> String {
+                [$(format!("{} {}", stringify!($f), self.$f.contents()),)*].join("\n")
+            }
+        }
+    };
 }
 
-/// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
-pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
-
-/// A decoded commit record: received, origin, dropped parts, blob.
-pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
-
-/// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
-/// journaled (`journal`): a failed transaction undoes its own changes to them.
-#[doc(hidden)]
-pub struct Core {
-    pub id: Identity,
-    pub hlc: Hlc,
-    pub states: HashMap<(Tid, Ak), Option<Fragment>>,
-    /// Page indexes of the cached states kept paged in the store.
-    pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
+indexes! {
     /// Perm inputs: applied membership commits, roster snapshots, `/created` records.
     pub held: held::Held,
-    pub timelines: Timelines,
-    /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
-    /// tests lower it).
-    pub walk_cache_min: usize,
-    /// Saved walks the running transaction writes, for `Timelines::saved` once it is durable.
-    pub walks_done: Option<osis_perm::SaveDone>,
-    /// The running transaction called `touch` (`rollback` drops the caches).
-    pub dirty: bool,
-    /// The paged maps' key index hash key, derived from the node's seed.
-    pub key_salt: [u8; 32],
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
@@ -382,18 +341,8 @@ pub struct Core {
     /// Node-form ranges per (tid, ak, node): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, Tid), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
-    /// Pending commits waiting for a record or for deltas, with what their examination read
-    /// (`apply::waits`): `reexamine` leaves out those whose inputs did not change. A cache:
-    /// dropped by a rollback that changed anything.
-    pub(crate) waits: crate::apply::Waits,
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
-    /// What validity may have changed for since the last `rejudge_all`: things whose timeline
-    /// changed, commits whose other inputs changed (void, required roles, overreach), or
-    /// everything (a rebuild at open).
-    pub stale_things: BTreeSet<Tid>,
-    pub stale_commits: BTreeSet<CommitId>,
-    pub stale_all: bool,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,
     /// Actors with secrets of their own whose epochs this node holds.
@@ -406,8 +355,6 @@ pub struct Core {
     /// listed until their `/keys` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
     pub delete_hints: JMap<Tid, osis_base::Value>,
-    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
-    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// `/was` index: t -> things whose `/was` reads t.
     pub was: JSetMap<Tid, Tid>,
     /// The `/was` each thing reads.
@@ -419,6 +366,11 @@ pub struct Core {
     pub member_keys: JMap<(Tid, Dot), Tid>,
     /// Membership commits whose removed keys are not known yet.
     pub unresolved: JSet<CommitId>,
+    /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
+    pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
+    /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
+    /// grant may carry only those, spec/permissions.md §2).
+    pub grant_overreach: JSet<(CommitId, usize)>,
     /// Box keys of keyed `/secrets` entries: (actor, entry dot) -> key.
     pub box_keys: JMap<(Tid, Dot), osis_base::Value>,
     /// Keyed boxes per member: member -> (actor, box key), from `/secrets` entries seen.
@@ -426,29 +378,72 @@ pub struct Core {
     /// The earliest noted commit boxing an epoch or writing its keyset: (actor, role, epoch) ->
     /// (`ts`, author node, actor acted for). What introduced the epoch (`rotation`).
     pub epoch_intro: EpochIntro,
+    /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
+    pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Commit-form sources whose writes snapshots may carry, per thing: (thing, commit ID) ->
     /// (the node its writes are judged as, at which `ts`): a commit-form commit's author and
     /// `ts`, an import origin's importer and import `ts`, else a held snapshot's `Authors`
     /// (spec/crdt.md §8).
     pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
-    /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
-    pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
+    /// The lost-access trigger's work list (`rotation::LOST_DUE`).
+    pub lost_due: JSet<Tid>,
+    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`) and what it must judge.
+    pub deaths_due: JSetMap<(Tid, Ak), crate::retention::Due>,
+    /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
+    /// where known (`retention::first_bounded`).
+    pub first_bounded: JMap<(Tid, Ak), Option<(Ts, CommitId)>>,
+    /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
+    /// write's future `ts`); cleared by `membership_changed`.
+    pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
+    /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
+    pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
+}
+
+/// A held compaction snapshot of an aspect: `ts`, ID, frontiers.
+pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers);
+
+/// A decoded commit record: received, origin, dropped parts, blob.
+pub(crate) type CommitRecord = (WallMs, Origin, BTreeSet<(usize, usize)>, CommitBlob);
+
+/// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
+/// journaled (`journal`): a failed transaction undoes its own changes to them.
+#[doc(hidden)]
+pub struct Core {
+    /// The journaled indexes: a failed transaction undoes its own changes to them.
+    pub ix: Indexes,
+    pub id: Identity,
+    pub hlc: Hlc,
+    pub states: HashMap<(Tid, Ak), Option<Fragment>>,
+    /// Page indexes of the cached states kept paged in the store.
+    pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
+    pub timelines: Timelines,
+    /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
+    /// tests lower it).
+    pub walk_cache_min: usize,
+    /// Saved walks the running transaction writes, for `Timelines::saved` once it is durable.
+    pub walks_done: Option<osis_perm::SaveDone>,
+    /// The running transaction called `touch` (`rollback` drops the caches).
+    pub dirty: bool,
+    /// The paged maps' key index hash key, derived from the node's seed.
+    pub key_salt: [u8; 32],
+    /// Pending commits waiting for a record or for deltas, with what their examination read
+    /// (`apply::waits`): `reexamine` leaves out those whose inputs did not change. A cache:
+    /// dropped by a rollback that changed anything.
+    pub(crate) waits: crate::apply::Waits,
+    /// What validity may have changed for since the last `rejudge_all`: things whose timeline
+    /// changed, commits whose other inputs changed (void, required roles, overreach), or
+    /// everything (a rebuild at open).
+    pub stale_things: BTreeSet<Tid>,
+    pub stale_commits: BTreeSet<CommitId>,
+    pub stale_all: bool,
+    /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
+    pub hint_candidates: BTreeMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
     /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
     /// here (`validity::add_membership`): no roster snapshot of them is written.
     pub frontier_unknown: BTreeSet<Tid>,
-    /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `membership_changed`.
-    pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
-    /// `/secrets` writes of applied commits waiting for the keys of the boxes they remove.
-    pub secrets_unresolved: JMap<(CommitId, usize), crate::apply::keys::Unresolved>,
-    /// Roles `/secrets` and `/keys` deltas need (by commit and aspect index).
-    pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
-    /// `/secrets` parts of membership commits that write beyond their grantees' boxes (an invite
-    /// grant may carry only those, spec/permissions.md §2).
-    pub grant_overreach: JSet<(CommitId, usize)>,
     /// Schemas of local writes (typed views for undo).
     pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
     pub events: Events,
@@ -467,13 +462,6 @@ pub struct Core {
     /// its card, a link key; membership flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
     pub key_actors: BTreeMap<Tid, Arc<Identity>>,
-    /// The lost-access trigger's work list (`rotation::LOST_DUE`).
-    pub lost_due: JSet<Tid>,
-    /// Aspects whose deaths wait for a replay (`records::DEATHS_DUE`) and what it must judge.
-    pub deaths_due: JSetMap<(Tid, Ak), crate::retention::Due>,
-    /// The first held body with a relative keep bound per aspect, by `(ts, ID)` (`None`: none),
-    /// where known (`retention::first_bounded`).
-    pub first_bounded: JMap<(Tid, Ak), Option<(Ts, CommitId)>>,
     /// Replays wait for `Engine::settle_deaths` instead of ending each transaction (node-sync,
     /// within a step).
     pub defer_deaths: bool,
@@ -542,14 +530,14 @@ impl Core {
     /// The held aspects of `t` and their commits (a range of `by_aspect`).
     pub fn aspects_of(&self, t: &Tid) -> impl Iterator<Item = (&(Tid, Ak), &std::collections::BTreeSet<(Ts, CommitId)>)> {
         let t = *t;
-        self.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
+        self.ix.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
     }
 
     /// Drops what is derived from rosters, `/secrets` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn membership_changed(&mut self) {
-        if !self.departures.is_empty() {
-            self.departures.retain(|_, _| false);
+        if !self.ix.departures.is_empty() {
+            self.ix.departures.retain(|_, _| false);
         }
     }
 
@@ -557,12 +545,12 @@ impl Core {
     /// changed timelines wait for `rejudge_all`.
     pub fn update_timelines(&mut self) {
         let _s = crate::costs::span("timelines");
-        let touched = self.held.take_touched();
+        let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
-            let changed = self.timelines.update_touched(&self.held, &touched);
+            let changed = self.timelines.update_touched(&self.ix.held, &touched);
             self.stale_things.extend(changed.evaluated);
             // a walk that only went on changed authority only below what it touched
-            let below = self.held.reach(&changed.extended);
+            let below = self.ix.held.reach(&changed.extended);
             self.stale_things.extend(below);
         }
         self.membership_changed();
@@ -584,7 +572,7 @@ impl Core {
     /// Forgets the cached liveness of every body with a delta on `(tid, ak)` (its state
     /// changed): a body's liveness spans every aspect of its class, whichever one was asked.
     pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
-        let commits = &self.commits;
+        let commits = &self.ix.commits;
         self.live_bodies.retain(|(c, t, a), _| {
             if t == tid && a == ak {
                 return false;
@@ -625,7 +613,7 @@ impl Core {
 
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
-        journaled!(self, commit);
+        self.ix.commit();
         self.written.clear();
         self.dirty = false;
     }
@@ -647,11 +635,11 @@ impl Core {
                 self.pages.remove(&k);
             }
         }
-        journaled!(self, rollback);
+        self.ix.rollback();
         // the timelines follow the restored held set; validity flags are restored with `commits`
-        let touched = self.held.take_touched();
+        let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
-            self.timelines.update_touched(&self.held, &touched);
+            self.timelines.update_touched(&self.ix.held, &touched);
         }
         self.stale_things.clear();
         self.stale_commits.clear();
@@ -664,7 +652,6 @@ impl Core {
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
             pages: HashMap::new(),
-            held: held::Held::default(),
             timelines: Timelines::new(),
             walk_cache_min: index::WALK_CACHE_MIN,
             walks_done: None,
@@ -673,42 +660,11 @@ impl Core {
             stale_all: true,
             dirty: false,
             key_salt,
-            commits: JMap::default(),
-            invalid: JSetMap::default(),
-            by_aspect: JSetMap::default(),
-            copies: JSetMap::default(),
-            snapshots: JMap::default(),
-            carried: JMap::default(),
-            by_thing: JSetMap::default(),
-            by_chunk: JSetMap::default(),
-            ranges: JNested::default(),
-            pending: JMap::default(),
+            ix: Indexes::default(),
             waits: crate::apply::Waits::default(),
-            syncing: JSet::default(),
-            void: JSet::default(),
-            valueless: JMap::default(),
-            secrets: JMap::default(),
-            own_keys: JSet::default(),
-            labeled: JSet::default(),
-            delete_hints: JMap::default(),
             hint_candidates: BTreeMap::new(),
-            was: JSetMap::default(),
-            was_of: JMap::default(),
-            moved: JMap::default(),
-            groups: groups::Groups::default(),
-            member_keys: JMap::default(),
-            unresolved: JSet::default(),
-            rotation_role: JMap::default(),
-            grant_overreach: JSet::default(),
-            box_keys: JMap::default(),
-            boxes_to: JSetMap::default(),
-            epoch_intro: JMap::default(),
-            box_written: JMap::default(),
-            authors: JMap::default(),
-            departures: JMap::default(),
             frontiers: BTreeMap::new(),
             frontier_unknown: BTreeSet::new(),
-            secrets_unresolved: JMap::default(),
             schemas: BTreeMap::new(),
             events: Events::default(),
             written: Vec::new(),
@@ -717,9 +673,6 @@ impl Core {
             #[cfg(test)]
             check_ingest: false,
             key_actors: BTreeMap::new(),
-            lost_due: JSet::default(),
-            deaths_due: JSetMap::default(),
-            first_bounded: JMap::default(),
             defer_deaths: false,
             changed: None,
             sync_records: None,
@@ -738,13 +691,13 @@ impl Core {
 
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
     pub fn index_validity(&mut self, id: &CommitId) {
-        let Some(m) = self.commits.get(id) else { return };
+        let Some(m) = self.ix.commits.get(id) else { return };
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             if m.valid.get(ai).copied().unwrap_or(false) {
-                self.invalid.remove(&k, id);
+                self.ix.invalid.remove(&k, id);
             } else {
-                self.invalid.insert(k, *id);
+                self.ix.invalid.insert(k, *id);
             }
         }
     }
@@ -755,7 +708,7 @@ impl Core {
         match d.src.kind() {
             SourceKind::Commit(c) => Some(*c),
             SourceKind::Node(n) => {
-                let m = self.ranges.get(&(*tid, ak.clone(), *n))?;
+                let m = self.ix.ranges.get(&(*tid, ak.clone(), *n))?;
                 let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
                 (d.ctr < *hi).then_some(*c)
             }
@@ -1304,7 +1257,7 @@ impl Engine {
                 if r.is_ok() && tx.core.header_fault.load(std::sync::atomic::Ordering::Relaxed) {
                     r = Err(Error::Corrupt("commit record header"));
                 }
-                if r.is_ok() && !tx.core.defer_deaths && !tx.core.deaths_due.is_empty() {
+                if r.is_ok() && !tx.core.defer_deaths && !tx.core.ix.deaths_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
                 }
                 // every validity change was judged before the index is persisted
@@ -1395,5 +1348,95 @@ impl Engine {
             let _ = self.run(|_| Ok(()));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::journal::Journaled;
+    use crate::local_peer::{LocalPeer, Peer};
+    use crate::Mutation;
+    use osis_base::{Ak, Role, Tid, Value, WallMs};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    use osis_schema::core_types as ct;
+    use osis_schema::Codec;
+
+    fn digest(p: &Peer) -> String {
+        // headers decoded alike (decoding is a cache, not undone)
+        p.engine.core.ix.commits.values().for_each(|m| drop(m.header.decoded()));
+        format!("{}\n{}", p.engine.core.ix.contents(), p.engine.perm_digest(false))
+    }
+
+    /// Runs `f` with the store's next write failing and checks that every journaled index is as
+    /// it was (counting the failures in `failed`), then reopens the store (a failed write
+    /// leaves it broken) and runs `f` again.
+    fn failing<T>(p: &mut Peer, failed: &mut usize, mut f: impl FnMut(&mut super::Engine) -> crate::Result<T>) -> T {
+        let before = digest(p);
+        p.backend.faults().at(0, osis_store::Fault::Fail);
+        let r = f(&mut p.engine);
+        p.backend.faults().revive();
+        match r {
+            Ok(v) => v,
+            Err(_) => {
+                *failed += 1;
+                assert_eq!(digest(p), before, "a failed transaction changed the indexes");
+                p.restart(*failed as u64).unwrap();
+                f(&mut p.engine).unwrap()
+            }
+        }
+    }
+
+    fn member(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
+        let (path, op) = match role {
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None }.to_value())),
+            None => (Vec::new(), Op::Remove(Value::Tid(m))),
+        };
+        let mut mu = Mutation::new();
+        mu.op(t, &ct::MEMBERS, PathOp { path, op }).unwrap();
+        mu
+    }
+
+    fn write(m: &mut Mutation, t: Tid, v: &str) {
+        m.set(t, &Ak::new("/t/reg").unwrap(), &Value::Str(v.into())).unwrap();
+    }
+
+    // spec/commits.md §4 (one storage transaction per commit): a transaction whose store commit
+    // fails leaves every journaled index (`Indexes`) and the timelines as they were, for local
+    // commits and for received ones, applied or pending.
+    #[test]
+    fn failed_transaction_restores_indexes_spec_commits_4() {
+        let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut failed = 0;
+        let new_thing = |e: &mut super::Engine, owner: Tid| {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, owner);
+            write(&mut m, t, "new");
+            e.commit(m).map(|_| t)
+        };
+        let g = failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, a));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, Some(Role::Write))));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, c, Some(Role::Admin))));
+        lp.sync(0, 1).unwrap();
+        lp.advance(1_000);
+        failing(&mut lp.peers[1], &mut failed, |e| {
+            let mut m = Mutation::new();
+            write(&mut m, g, "b");
+            e.commit(m)
+        });
+        lp.sync(1, 0).unwrap();
+        lp.advance(1_000);
+        failing(&mut lp.peers[0], &mut failed, |e| new_thing(e, g));
+        failing(&mut lp.peers[0], &mut failed, |e| e.commit(member(g, b, None)));
+        // received in reverse: most wait for what they depend on, then apply together
+        let mut pks = lp.packages(0).unwrap();
+        pks.reverse();
+        for pk in &pks {
+            failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));
+        }
+        assert!(failed >= 6 + pks.len() / 2, "{failed} of {} failed", 6 + pks.len());
+        assert_eq!(lp.peers[2].engine.core.ix.commits.len(), lp.peers[0].engine.core.ix.commits.len());
+        assert!(lp.peers[2].engine.core.ix.pending.is_empty());
     }
 }

@@ -74,7 +74,7 @@ impl Engine {
         // the home label
         let mut all: Vec<CommitId> = self.certificates(&p).into_keys().collect();
         let label = osis_base::Ak::new("/label").map_err(|_| Error::Misuse("ak"))?;
-        all.extend(self.core.by_aspect.get(&(p, label)).into_iter().flatten().map(|(_, c)| *c));
+        all.extend(self.core.ix.by_aspect.get(&(p, label)).into_iter().flatten().map(|(_, c)| *c));
         all.sort_by_key(|c| self.header(c).map(|h| h.ts));
         for d in &done.deliveries {
             if let Delivery::Direct { to, commits } = d

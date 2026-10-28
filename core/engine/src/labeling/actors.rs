@@ -50,7 +50,7 @@ impl Core {
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
         let mut cur = *t;
         for _ in 0..MAX_CHAIN {
-            if self.own_keys.contains(&cur) || cur == self.id.tid() {
+            if self.ix.own_keys.contains(&cur) || cur == self.id.tid() {
                 return Some(cur);
             }
             match self.created(&cur)? {
@@ -95,12 +95,12 @@ impl Engine {
     /// The things of a group's closure: the group and every thing whose `/groups` holds it.
     /// The same `Arc` while it does not change (`Groups::closures`).
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
-        self.core.groups.closure(g)
+        self.core.ix.groups.closure(g)
     }
 
     /// Things with a `/label` held.
     pub fn labeled_groups(&self) -> Vec<Tid> {
-        self.core.labeled.iter().copied().collect()
+        self.core.ix.labeled.iter().copied().collect()
     }
 
     /// The labels `/label` of `g` records, replaced ones included; records that do not parse

@@ -136,9 +136,9 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
     for (d, k, _) in es {
         if let Some(m) = k
             && own.is_some_and(|o| o.owns(d.owner()))
-            && core.member_keys.get(&(*target, d.clone())).is_none()
+            && core.ix.member_keys.get(&(*target, d.clone())).is_none()
         {
-            core.member_keys.insert((*target, d.clone()), *m);
+            core.ix.member_keys.insert((*target, d.clone()), *m);
             new = true;
         }
     }
@@ -164,7 +164,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
             }
             // a nested write into another's entry is no edge write (bad input on receipt)
             (_, Some(_)) => {}
-            (_, None) => match core.member_keys.get(&(*target, d.clone())) {
+            (_, None) => match core.ix.member_keys.get(&(*target, d.clone())) {
                 Some(m) if !set.contains(m) => {
                     per.insert(*m, None);
                 }
@@ -348,7 +348,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
                 out.frontiers.insert(hash, f);
             }
             None => {
-                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.commits.get(&c)).is_some_and(|m| m.view.ts > h.ts);
+                let later = tx.core.timelines.get(&tid).and_then(|tl| tl.epoch_start(&tid)).and_then(|c| tx.core.ix.commits.get(&c)).is_some_and(|m| m.view.ts > h.ts);
                 if later {
                     out.superseded.insert(tid);
                 } else {
@@ -371,7 +371,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
 pub(crate) fn add_membership(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: &CommitId, parts: &EdgeParts) -> Result<()> {
     tx.core.stale_commits.insert(*id);
     let links = v.kind == Kind::RosterSnapshot && parts.tenures().any(|(_, ts)| ts.iter().any(|t| matches!(t.frontier, Some(osis_schema::Chunked::Link(_)))));
-    let found = if links && h.is_none() { tx.core.commits.get(id).map(|m| m.header.arc()) } else { None };
+    let found = if links && h.is_none() { tx.core.ix.commits.get(id).map(|m| m.header.arc()) } else { None };
     let linked = match h.or(found.as_deref()) {
         Some(h) if links => linked_frontiers(tx, h, parts),
         _ => Ok(Linked::default()),
@@ -409,19 +409,19 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                 known &= k;
             }
             if known {
-                core.unresolved.remove(id);
+                core.ix.unresolved.remove(id);
             } else {
-                core.unresolved.insert(*id);
+                core.ix.unresolved.insert(*id);
             }
-            match core.held.edge_commit(id) {
+            match core.ix.held.edge_commit(id) {
                 Some(c) if c.ops == ops => return,
                 None if ops.is_empty() => return,
                 _ => {}
             }
             if ops.is_empty() {
-                core.held.remove(id);
+                core.ix.held.remove(id);
             } else {
-                core.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
+                core.ix.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
             }
         }
         Kind::RosterSnapshot => {
@@ -454,7 +454,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                 if linked.waiting.contains(&thing) || linked.superseded.contains(&thing) {
                     continue;
                 }
-                core.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
+                core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
             }
         }
         _ => {}
@@ -467,7 +467,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
 /// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the members named on
 /// it, so the search stays within what has authority over the chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
-    let held = &core.held;
+    let held = &core.ix.held;
     let mut stack: Vec<Tid> = chain.to_vec();
     let mut seen: BTreeSet<Tid> = chain.iter().copied().collect();
     while let Some(t) = stack.pop() {
@@ -537,7 +537,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         if let Some(a) = h.aspects.get(*ai)
             && let Some(r) = rotation_required(a.ak.as_str(), d.fragment())
         {
-            core.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
+            core.ix.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
     if h.kind != Kind::Membership {
@@ -559,9 +559,9 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() == "/secrets" {
             if crate::engine::Owned::of(h, id, *ai).is_some_and(|own| grantee_boxes_only(&a.tid, d.fragment(), &granted, &own)) {
-                core.grant_overreach.remove(&(*id, *ai));
+                core.ix.grant_overreach.remove(&(*id, *ai));
             } else {
-                core.grant_overreach.insert((*id, *ai));
+                core.ix.grant_overreach.insert((*id, *ai));
             }
         }
     }
@@ -569,7 +569,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     // part (dropped by expiry or purge) judges the others as one that held it does
     for (ai, a) in h.aspects.iter().enumerate() {
         if a.ak.as_str() == "/secrets" && a.hashes.len() != 1 {
-            core.grant_overreach.insert((*id, ai));
+            core.ix.grant_overreach.insert((*id, ai));
         }
     }
 }
@@ -610,14 +610,14 @@ fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), 
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.
 pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
-    let ids: Vec<CommitId> = tx.core.unresolved.iter().copied().collect();
+    let ids: Vec<CommitId> = tx.core.ix.unresolved.iter().copied().collect();
     let mut any = false;
     for id in ids {
-        let Some(v) = tx.core.commits.get(&id).map(|m| m.view.clone()) else { continue };
+        let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = super::edge_parts(tx, &id)?;
-        let before = tx.core.held.edge_commit(&id).map(|c| c.ops.clone());
+        let before = tx.core.ix.held.edge_commit(&id).map(|c| c.ops.clone());
         add_membership(tx, &v, None, &id, &parts)?;
-        any |= tx.core.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
+        any |= tx.core.ix.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
     }
     Ok(any)
 }
@@ -672,7 +672,7 @@ impl<'a> Judge<'a> {
 
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
-        if core.void.contains(id) {
+        if core.ix.void.contains(id) {
             return false;
         }
         let Some(a) = h.aspects.get(ai) else { return false };
@@ -694,7 +694,7 @@ impl<'a> Judge<'a> {
         }
         let Some(tl) = tl else { return false };
         // the author's deltas from its standing tenure on are valid, found once per author
-        if !core.rotation_role.contains_key(&(*id, ai)) && ak != "/secrets" {
+        if !core.ix.rotation_role.contains_key(&(*id, ai)) && ak != "/secrets" {
             let required = required_role(ak);
             let from = *self.from.entry((h.author, required)).or_insert_with(|| tl.valid_from(&h.author, &a.tid, required));
             let point = Point { ts: h.ts, node: h.author, commit: *id };
@@ -715,12 +715,12 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
     if ak == "/secrets"
         && let Some(c) = tl.membership_commit(id)
         && c.ops.iter().enumerate().any(|(i, o)| o.target == a.tid && tl.is_applied(&WriteId::Op(*id, i as u32)))
-        && !core.grant_overreach.contains(&(*id, ai))
+        && !core.ix.grant_overreach.contains(&(*id, ai))
     {
         return true;
     }
     let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h, ai) };
-    let required = core.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
+    let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
 
@@ -750,7 +750,7 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
         let node = match d.src.kind() {
             // a dot a held commit owns is that commit's write, judged with it
             osis_crdt::SourceKind::Node(n) if core.commit_of(tid, ak, &d).is_none() => *n,
-            osis_crdt::SourceKind::Commit(c) if !owns_source(core, tid, ak, c) => match core.authors.get(&(*tid, *c)) {
+            osis_crdt::SourceKind::Commit(c) if !owns_source(core, tid, ak, c) => match core.ix.authors.get(&(*tid, *c)) {
                 Some((n, _)) => *n,
                 None => continue,
             },
@@ -768,13 +768,13 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> Vec<(
 /// nothing there.
 fn owns_source(core: &Core, tid: &Tid, ak: &Ak, c: &CommitId) -> bool {
     let own = |m: &Meta| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
-    if core.commits.get(c).is_some_and(own) {
+    if core.ix.commits.get(c).is_some_and(own) {
         return true;
     }
-    let Some((_, ts)) = core.authors.get(&(*tid, *c)) else { return false };
+    let Some((_, ts)) = core.ix.authors.get(&(*tid, *c)) else { return false };
     let (lo, hi) = ((*ts, CommitId([0; 32])), (*ts, CommitId([0xff; 32])));
-    core.copies.get(&(*tid, ak.clone())).is_some_and(|s| {
-        s.range(lo..=hi).any(|(_, i)| core.commits.get(i).is_some_and(|m| m.view.kind == Kind::Import && m.header.origins.iter().any(|o| o.commit == *c)))
+    core.ix.copies.get(&(*tid, ak.clone())).is_some_and(|s| {
+        s.range(lo..=hi).any(|(_, i)| core.ix.commits.get(i).is_some_and(|m| m.view.kind == Kind::Import && m.header.origins.iter().any(|o| o.commit == *c)))
     })
 }
 
@@ -828,12 +828,12 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
         }
     }
     for (k, v) in held {
-        if core.authors.get(&k) != Some(&v) {
-            core.authors.insert(k, v);
+        if core.ix.authors.get(&k) != Some(&v) {
+            core.ix.authors.insert(k, v);
             // groups recorded under another claim follow the held commit
-            let ks: Vec<(Tid, Ak)> = core.carried.keys().filter(|x| x.0 == k.0).cloned().collect();
+            let ks: Vec<(Tid, Ak)> = core.ix.carried.keys().filter(|x| x.0 == k.0).cloned().collect();
             for ak in ks {
-                let Some(mut gs) = core.carried.get(&ak).cloned() else { continue };
+                let Some(mut gs) = core.ix.carried.get(&ak).cloned() else { continue };
                 let src = osis_crdt::Source::commit(k.1);
                 if !gs.iter().any(|g| g.src == src) {
                     continue;
@@ -842,7 +842,7 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
                     (g.node, g.ts) = v;
                     g.invalid = carried_invalid(core, &ak.0, &ak.1, g);
                 }
-                core.carried.insert(ak, gs);
+                core.ix.carried.insert(ak, gs);
             }
         }
     }
@@ -861,21 +861,21 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
     for (ai, _, d) in parts {
         let (osis_commit::Decoded::Snapshot(s), Some(a)) = (d, h.aspects.get(*ai)) else { continue };
         for (c, v) in &s.authors {
-            match core.authors.get(&(a.tid, *c)) {
+            match core.ix.authors.get(&(a.tid, *c)) {
                 Some(x) if x != v => return Err(crate::error::Error::BadInput("snapshot author differs from the held one")),
                 Some(_) => {}
                 None => {
-                    core.authors.insert((a.tid, *c), *v);
+                    core.ix.authors.insert((a.tid, *c), *v);
                 }
             }
         }
         for (d, ts) in s.fragment.writes() {
             match d.src.kind() {
                 osis_crdt::SourceKind::Commit(c) => {
-                    if !core.authors.contains_key(&(a.tid, *c)) {
+                    if !core.ix.authors.contains_key(&(a.tid, *c)) {
                         return Err(crate::error::Error::BadInput("snapshot without the author of a commit-form write"));
                     }
-                    if let (Some(ts), Some(m)) = (ts, core.commits.get(c))
+                    if let (Some(ts), Some(m)) = (ts, core.ix.commits.get(c))
                         && m.header.form == Form::Commit
                         && m.header.ts != ts
                     {
@@ -885,7 +885,7 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
                 osis_crdt::SourceKind::Node(_) => {
                     if let Some(ts) = ts
                         && let Some(k) = core.commit_of(&a.tid, &a.ak, &d)
-                        && core.commits.get(&k).is_some_and(|m| m.header.ts != ts)
+                        && core.ix.commits.get(&k).is_some_and(|m| m.header.ts != ts)
                     {
                         return Err(crate::error::Error::BadInput("snapshot ts differs from the held commit's"));
                     }
@@ -902,7 +902,7 @@ pub(crate) fn note_authors(core: &mut Core, id: &CommitId, h: &Header, parts: &[
 /// changed.
 pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, f: &Fragment) -> bool {
     let k = (*tid, ak.clone());
-    let before = core.carried.get(&k).cloned().unwrap_or_default();
+    let before = core.ix.carried.get(&k).cloned().unwrap_or_default();
     let mut cur: Vec<Carried> = before.iter().filter(|c| c.snap != *snap).cloned().collect();
     for (src, node, ts, ctrs) in carried_of(core, tid, ak, f) {
         let mut c = Carried { snap: *snap, src, node, ts, ctrs: ctrs.into_iter().collect(), invalid: Vec::new() };
@@ -915,9 +915,9 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
         return false;
     }
     if cur.is_empty() {
-        core.carried.remove(&k);
+        core.ix.carried.remove(&k);
     } else {
-        core.carried.insert(k, cur);
+        core.ix.carried.insert(k, cur);
     }
     true
 }
@@ -927,7 +927,7 @@ pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId,
 /// creation repeats its key), so the aspect is rebuilt (un-merge is a function of the held set,
 /// spec/crdt.md §4.6).
 pub(crate) fn carries_invalid(core: &Core, tid: &Tid, ak: &Ak, snap: &CommitId) -> bool {
-    core.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
+    core.ix.carried.get(&(*tid, ak.clone())).is_some_and(|v| v.iter().any(|c| c.snap == *snap && !c.invalid.is_empty()))
 }
 
 /// Drops the carried writes a commit now held owns on its aspects (judged with it, as
@@ -945,10 +945,10 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
     for a in &h.aspects {
         let k = (a.tid, a.ak.clone());
         let owns = |c: &Carried, x: u64| srcs.contains(&c.src) || (node_src.as_ref() == Some(&c.src) && a.lo <= x && x < a.hi);
-        if !core.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(c, *x)))) {
+        if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(c, *x)))) {
             continue;
         }
-        let mut v = core.carried.get(&k).cloned().unwrap_or_default();
+        let mut v = core.ix.carried.get(&k).cloned().unwrap_or_default();
         for c in v.iter_mut() {
             let gone: Vec<u64> = c.ctrs.iter().copied().filter(|x| owns(c, *x)).collect();
             c.ctrs.retain(|x| !gone.contains(x));
@@ -956,9 +956,9 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header) {
         }
         v.retain(|c| !c.ctrs.is_empty());
         if v.is_empty() {
-            core.carried.remove(&k);
+            core.ix.carried.remove(&k);
         } else {
-            core.carried.insert(k, v);
+            core.ix.carried.insert(k, v);
         }
     }
 }
@@ -1015,29 +1015,29 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
         };
         if all {
             // after a rebuild only (its headers are decoded)
-            for (id, m) in core.commits.iter() {
+            for (id, m) in core.ix.commits.iter() {
                 one(id, m, true);
             }
         } else {
             // things in order: a commit is met first under the first re-judged thing it writes
             let mut met: BTreeSet<CommitId> = BTreeSet::new();
             for t in &things {
-                for id in core.by_thing.get(t).into_iter().flatten() {
-                    let Some(m) = core.commits.get(id) else { continue };
+                for id in core.ix.by_thing.get(t).into_iter().flatten() {
+                    let Some(m) = core.ix.commits.get(id) else { continue };
                     if !explicit.contains(id) && met.insert(*id) {
                         one(id, m, false);
                     }
                 }
             }
             for id in &explicit {
-                if let Some(m) = core.commits.get(id) {
+                if let Some(m) = core.ix.commits.get(id) {
                     one(id, m, true);
                 }
             }
         }
     }
     for (id, now) in news {
-        let Some(m) = tx.core.commits.get_mut(&id) else { continue };
+        let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
         for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
             if a != b
@@ -1064,10 +1064,10 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     drop(judge);
     // writes carried by snapshots without their commit, on the same things
     let mut carried_fell: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    let aspects: Vec<(Tid, Ak)> = tx.core.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
+    let aspects: Vec<(Tid, Ak)> = tx.core.ix.carried.keys().filter(|(t, _)| all || things.contains(t)).cloned().collect();
     let mut snaps: BTreeSet<CommitId> = BTreeSet::new();
     for k in aspects {
-        let Some(mut v) = tx.core.carried.get(&k).cloned() else { continue };
+        let Some(mut v) = tx.core.ix.carried.get(&k).cloned() else { continue };
         let mut any = false;
         for c in v.iter_mut() {
             let now = carried_invalid(tx.core, &k.0, &k.1, c);
@@ -1084,7 +1084,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
             }
         }
         if any {
-            tx.core.carried.insert(k.clone(), v);
+            tx.core.ix.carried.insert(k.clone(), v);
             flipped.insert(k);
         }
         for c in std::mem::take(&mut snaps) {
@@ -1093,7 +1093,7 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
-    for (id, m) in tx.core.commits.iter() {
+    for (id, m) in tx.core.ix.commits.iter() {
         let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
         debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
     }
@@ -1131,7 +1131,7 @@ fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fr
     let mut out = Fragment::default();
     let mut ch = osis_crdt::Changes::new();
     for (id, ai) in parts {
-        let n = tx.core.commits.get(id).filter(|m| m.dropped.iter().all(|(a, _)| a != ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
+        let n = tx.core.ix.commits.get(id).filter(|m| m.dropped.iter().all(|(a, _)| a != ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
         let bodies = super::held_parts(tx, id, *ai)?;
         if bodies.is_empty() || n != Some(bodies.len()) {
             return Ok(None);
@@ -1175,7 +1175,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             match k {
                 Some(Value::Tid(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
                 _ => {
-                    if let Some(m) = core.member_keys.get(&(a.tid, dot)) {
+                    if let Some(m) = core.ix.member_keys.get(&(a.tid, dot)) {
                         changed.push((a.tid, *m, None));
                     }
                 }
@@ -1228,7 +1228,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         };
         // a self-removal carries no rotation: the next node that may rotate does it
         // (spec/permissions.md §3)
-        if demotes && !self_removal(core, &h.author, target, m, h.ts) && core.own_keys.contains(target) {
+        if demotes && !self_removal(core, &h.author, target, m, h.ts) && core.ix.own_keys.contains(target) {
             let has = |ak: &str| h.aspects.iter().any(|a| a.tid == *target && a.ak.as_str() == ak);
             if !has("/secrets") || !has("/keys") {
                 return Err(Error::BadInput("a removal without the rotation it requires"));
@@ -1265,7 +1265,7 @@ mod tests {
         let h = lp.peers[0].engine.header(&grant).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
         // an admin's grant writes remove + put (no exemption needed): valid as the admin's
-        assert!(lp.peers[0].engine.core.commits.get(&grant).unwrap().valid[ai], "an honest grant");
+        assert!(lp.peers[0].engine.core.ix.commits.get(&grant).unwrap().valid[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let (bk, bx) = s.boxes.iter().find(|(k, _)| k.member == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
@@ -1277,7 +1277,7 @@ mod tests {
         let id = lp.peers[0].commit(m).unwrap().unwrap();
         let h = lp.peers[0].engine.header(&id).unwrap();
         let ai = h.aspects.iter().position(|a| a.ak.as_str() == "/secrets").unwrap();
-        assert!(lp.peers[0].engine.core.grant_overreach.contains(&(id, ai)));
+        assert!(lp.peers[0].engine.core.ix.grant_overreach.contains(&(id, ai)));
     }
     // spec/permissions.md §2 (an edge change is remove + put): a received `/members` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
@@ -1335,11 +1335,11 @@ mod tests {
         let si = blob.header.aspects.iter().position(|x| x.ak.as_str() == "/secrets").unwrap();
         let first = osis_commit::rewrite(&blob, |ai, _| ai == si);
         lp.peers[3].engine.ingest(&first.encode(), pk.blobs.clone()).unwrap();
-        assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.pending.contains_key(&id), "applied without its /secrets part");
+        assert!(lp.peers[3].engine.header(&id).is_some() && !lp.peers[3].engine.core.ix.pending.contains_key(&id), "applied without its /secrets part");
         lp.deliver(3, &pk).unwrap();
-        let m = lp.peers[3].engine.core.commits.get(&id).unwrap();
+        let m = lp.peers[3].engine.core.ix.commits.get(&id).unwrap();
         assert!(!m.valid[si], "the late overreaching part is invalid");
-        assert!(lp.peers[3].engine.core.grant_overreach.contains(&(id, si)));
+        assert!(lp.peers[3].engine.core.ix.grant_overreach.contains(&(id, si)));
     }
     // spec/permissions.md §2: an invite grant's `/secrets` delta carries only puts of its
     // grantees' boxes. One that also resets a box entry (here one the receiver has not seen yet)
@@ -1491,10 +1491,10 @@ mod tests {
         let core = &mut lp.peers[0].engine.core;
         let fake = osis_base::CommitId([0xfe; 32]);
         super::note_required(core, &h, &fake, &[]);
-        assert!(!core.grant_overreach.contains(&(fake, ai)));
+        assert!(!core.ix.grant_overreach.contains(&(fake, ai)));
         h.aspects[ai].hashes.push([0; 32]);
         super::note_required(core, &h, &fake, &[]);
-        assert!(core.grant_overreach.contains(&(fake, ai)), "two deltas: no exemption whatever is held");
+        assert!(core.ix.grant_overreach.contains(&(fake, ai)), "two deltas: no exemption whatever is held");
     }
 }
 

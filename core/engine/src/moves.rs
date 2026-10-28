@@ -83,7 +83,7 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
 /// snapshot carrying it beyond its frontier: that commit's part is held, valid and not dropped.
 fn from_own(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     let Some(k) = core.commit_of(tid, ak, d) else { return false };
-    let Some(m) = core.commits.get(&k) else { return false };
+    let Some(m) = core.ix.commits.get(&k) else { return false };
     m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false) && !m.dropped.contains(&(ai, 0)))
 }
 
@@ -96,9 +96,9 @@ fn schema_of(h: &Header, ai: usize) -> Option<(SchemaId, u64)> {
 /// expiry, purged ones, and those invalid here.
 fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     let mut out = crate::apply::invalid_of(tx.core, tid, ak);
-    out.extend(tx.core.valueless.get(&(*tid, ak.clone())).into_iter().flatten().cloned());
-    for (_, c) in tx.core.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
-        let Some(m) = tx.core.commits.get(c) else { continue };
+    out.extend(tx.core.ix.valueless.get(&(*tid, ak.clone())).into_iter().flatten().cloned());
+    for (_, c) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
+        let Some(m) = tx.core.ix.commits.get(c) else { continue };
         let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         if m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some())
             && let Some(o) = Owned::of(&m.header, c, ai)
@@ -112,7 +112,7 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
 /// One import commit of origin `c` into `m`, its deltas on `aspects` (`None` when nothing of it
 /// is importable).
 fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Option<CommitId>> {
-    let Some(meta) = tx.core.commits.get(c).cloned() else { return Ok(None) };
+    let Some(meta) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let h = meta.header.clone();
     let snapshot = h.kind == Kind::ContentSnapshot;
     if h.kind != Kind::Content && !snapshot {
@@ -144,7 +144,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         }
         if let Some(o) = Owned::of(&h, c, ai)
             && !snapshot
-            && tx.core.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o))
+            && tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o))
         {
             continue;
         }
@@ -202,14 +202,14 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
 /// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped.
 fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
     let mut out = BTreeMap::new();
-    let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();
+    let aspects: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.ix.snapshots.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().map(|s| (s.0, s.1)).collect())).collect();
     for (ak, mut snaps) in aspects {
         if is_membership_class(ak.as_str()) {
             continue;
         }
         snaps.sort();
         for (ts, id) in snaps.into_iter().rev() {
-            let Some(m) = tx.core.commits.get(&id).cloned() else { continue };
+            let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
             let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *t && a.ak == ak) else { continue };
             if m.header.kind != Kind::ContentSnapshot || m.dropped.contains(&(ai, 0)) || !m.valid.get(ai).copied().unwrap_or(false) {
                 continue;
@@ -232,7 +232,7 @@ impl Engine {
         if !self.knows(&t) {
             return Err(Error::UnknownThing(t));
         }
-        if self.core.was.get(&t).is_some_and(|s| !s.is_empty()) {
+        if self.core.ix.was.get(&t).is_some_and(|s| !s.is_empty()) {
             return Err(Error::Misuse("a held thing already continues it"));
         }
         let mut m = Mutation::new();
@@ -244,7 +244,7 @@ impl Engine {
             let carriers = carriers(tx, &t)?;
             let mut live = BTreeMap::new();
             let mut shown = BTreeMap::new();
-            let mut origins: Vec<(Ts, CommitId)> = tx.core.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
+            let mut origins: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.iter().filter(|((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied()).collect();
             origins.sort();
             origins.dedup();
             let mut out = Vec::new();

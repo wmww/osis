@@ -52,7 +52,7 @@ fn write(p: &mut Peer, t: Tid, v: &str) -> CommitId {
 type Seen = (Vec<Option<Vec<bool>>>, usize, Vec<Option<Value>>);
 
 fn seen(p: &mut Peer, ids: &[CommitId], things: &[Tid]) -> Seen {
-    let v = ids.iter().map(|id| p.engine.core.commits.get(id).map(|m| m.valid.clone())).collect();
+    let v = ids.iter().map(|id| p.engine.core.ix.commits.get(id).map(|m| m.valid.clone())).collect();
     let r = things.iter().map(|t| p.engine.get(t, &reg()).unwrap()).collect();
     (v, p.engine.pending().len(), r)
 }

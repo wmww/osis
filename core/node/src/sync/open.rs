@@ -91,7 +91,7 @@ impl SyncEngine {
         if only.is_none_or(|o| o.contains(&self.engine.tid())) {
             v.push(self.engine.identity().keys().kem.x25519().clone());
         }
-        for (_, e) in self.engine.core.secrets.iter().filter(|(t, _)| only.is_none_or(|o| o.contains(t))) {
+        for (_, e) in self.engine.core.ix.secrets.iter().filter(|(t, _)| only.is_none_or(|o| o.contains(t))) {
             for (_, s) in e.read.held_newest_first() {
                 v.push(role_kem(s).x25519().clone());
             }

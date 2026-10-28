@@ -107,7 +107,7 @@ fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl It
         // expired, purged or dropped deltas count as held (dropped: an applied snapshot's
         // frontier already holds its counters, spec/crdt.md §8)
         if let Some(a) = h.aspects.get(ai)
-            && tx.core.syncing.contains(&a.tid)
+            && tx.core.ix.syncing.contains(&a.tid)
             && !a.expires.is_some_and(|t| t <= tx.now().0)
             && !crate::retention::known_purged(tx, h, id, ai)?
             && !(h.form == osis_commit::Form::Node && h.kind.has_own_writes() && receipt::get(tx, &a.tid, &a.ak)?.holds(&h.author, a.lo, a.hi))
@@ -157,7 +157,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // delta of nor syncs (another's private thing in a mixed commit) is not applied here
     let held_ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !held_ais.contains(&ai) && !tx.core.syncing.contains(&a.tid) {
+        if !held_ais.contains(&ai) && !tx.core.ix.syncing.contains(&a.tid) {
             continue;
         }
         if record(&a.tid).is_none() {
@@ -244,10 +244,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
 /// Applies or stores one decoded commit blob.
 fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let id = blob.id();
-    if tx.core.commits.contains_key(&id) {
+    if tx.core.ix.commits.contains_key(&id) {
         return late_parts(tx, &id, blob);
     }
-    if tx.core.pending.contains_key(&id)
+    if tx.core.ix.pending.contains_key(&id)
         && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(&id)?
         && let Ok(old) = CommitBlob::decode(&old)
     {
@@ -259,7 +259,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
             tx.core.touch();
-            let was_pending = tx.core.pending.remove(&id).is_some();
+            let was_pending = tx.core.ix.pending.remove(&id).is_some();
             tx.core.waits.unpended(&id);
             if was_pending {
                 tx.txn.remove_pending(&id, Shred::Yes)?;
@@ -273,7 +273,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
         Exam::Pending(r) => {
             tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
-            tx.core.pending.insert(id, r.clone());
+            tx.core.ix.pending.insert(id, r.clone());
             tx.core.waits.pended(&id);
             keys::read_pending_boxes(tx, &blob, &id)?;
             let now = tx.now().0;
@@ -283,7 +283,7 @@ fn ingest_blob(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<
         Exam::Parked => {
             tx.core.touch();
             tx.txn.put_pending(&id, PendingKind::Parked, &blob.encode())?;
-            tx.core.pending.insert(id, Reason::Parked);
+            tx.core.ix.pending.insert(id, Reason::Parked);
             tx.core.waits.pended(&id);
             Ok(Ingested::Parked(id))
         }
@@ -304,10 +304,10 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 /// pages) are kept pending under the commit's ID and joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
-    let meta = tx.core.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
     skip.extend(meta.dropped.iter().copied());
-    if tx.core.pending.contains_key(id)
+    if tx.core.ix.pending.contains_key(id)
         && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
         && let Ok(old) = CommitBlob::decode(&old)
     {
@@ -316,7 +316,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
         tx.core.waits.unpended(id);
-        if tx.core.pending.remove(id).is_some() {
+        if tx.core.ix.pending.remove(id).is_some() {
             tx.core.touch();
             tx.txn.remove_pending(id, Shred::Yes)?;
         }
@@ -328,7 +328,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
             tx.core.waits.unpended(id);
-            if tx.core.pending.remove(id).is_some() {
+            if tx.core.ix.pending.remove(id).is_some() {
                 tx.core.touch();
                 tx.txn.remove_pending(id, Shred::Yes)?;
             }
@@ -338,7 +338,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         Exam::Pending(r) => {
             tx.core.touch();
             tx.txn.put_pending(id, PendingKind::Pending, &blob.encode())?;
-            tx.core.pending.insert(*id, r.clone());
+            tx.core.ix.pending.insert(*id, r.clone());
             tx.core.waits.pended(id);
             Ok(Ingested::Pending(*id, r))
         }
@@ -358,7 +358,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
             }
             apply_verified(tx, &b, parts, Origin::Local, received)?;
             // never emit a delta others would un-merge
-            if !tx.core.skip_writer_rules && tx.core.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
+            if !tx.core.skip_writer_rules && tx.core.ix.commits.get(&id).is_some_and(|m| m.valid.iter().any(|v| !v)) {
                 return Err(Error::Permission { tid: b.header.aspects.first().map_or(b.header.author, |a| a.tid) });
             }
             Ok(())
@@ -373,7 +373,7 @@ impl Engine {
     /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
     /// secret) or the resolved header is unknown (or fails to decode).
     pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
-        let h = match self.core.commits.get(&blob.id()) {
+        let h = match self.core.ix.commits.get(&blob.id()) {
             Some(m) => m.header.decoded()?,
             None if blob.header.is_resolved() => Arc::new(blob.header.clone()),
             None => return None,
@@ -411,7 +411,7 @@ impl Engine {
                     let id = raw_id(bytes)?;
                     tx.core.touch();
                     tx.txn.put_pending(&id, PendingKind::Parked, bytes)?;
-                    tx.core.pending.insert(id, Reason::Parked);
+                    tx.core.ix.pending.insert(id, Reason::Parked);
                     tx.core.waits.pended(&id);
                     Ok(Ingested::Parked(id))
                 }
@@ -457,7 +457,7 @@ impl Engine {
                         continue;
                     }
                     let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
-                        tx.core.pending.remove(&id);
+                        tx.core.ix.pending.remove(&id);
                         tx.core.waits.unpended(&id);
                         continue;
                     };
@@ -478,7 +478,7 @@ impl Engine {
                         Turn::Waiting(_) if waits::still_waits(tx, &id)? => continue,
                         Turn::Waiting(_) => {
                             let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
-                                tx.core.pending.remove(&id);
+                                tx.core.ix.pending.remove(&id);
                                 tx.core.waits.unpended(&id);
                                 continue;
                             };
@@ -494,7 +494,7 @@ impl Engine {
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
-                            tx.core.pending.remove(&id);
+                            tx.core.ix.pending.remove(&id);
                             tx.core.waits.unpended(&id);
                             keys::forget_unchecked(tx, &id)?;
                             // secrets read from its boxes go unless something else reads them
@@ -517,7 +517,7 @@ impl Engine {
     /// rolled back) gives the reason `Core::waits` kept it waiting for.
     #[cfg(debug_assertions)]
     fn check_unchanged(&mut self, candidates: &[CommitId]) {
-        let ids: Vec<CommitId> = self.core.pending.keys().filter(|id| !candidates.contains(id)).copied().collect();
+        let ids: Vec<CommitId> = self.core.ix.pending.keys().filter(|id| !candidates.contains(id)).copied().collect();
         if ids.is_empty() {
             return;
         }
@@ -525,7 +525,7 @@ impl Engine {
             for id in &ids {
                 let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
                 let Ok(mut b) = CommitBlob::decode(&bytes) else { continue };
-                let want = tx.core.pending.get(id).cloned();
+                let want = tx.core.ix.pending.get(id).cloned();
                 match examine(tx, &mut b, id, &BTreeSet::new()) {
                     Ok(Exam::Pending(r)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
                     Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
@@ -544,16 +544,16 @@ impl Engine {
         self.run(|tx| {
             tx.core.touch();
             // what pending commits wait for depends on what this node syncs
-            if tx.core.syncing.contains(&tid) != on {
+            if tx.core.ix.syncing.contains(&tid) != on {
                 tx.core.waits.wake_thing(&tid);
             }
             let k = [records::SYNCING, tid.as_bytes()].concat();
             if on {
                 tx.txn.put_local(&k, &[], Shred::No)?;
-                tx.core.syncing.insert(tid);
+                tx.core.ix.syncing.insert(tid);
             } else {
                 tx.txn.remove_local(&k, Shred::No)?;
-                tx.core.syncing.remove(&tid);
+                tx.core.ix.syncing.remove(&tid);
             }
             Ok(())
         })?;
@@ -562,7 +562,7 @@ impl Engine {
 
     /// Pending and parked commits with their reasons (parked ones as `Unexamined`).
     pub fn pending(&self) -> Vec<(CommitId, Reason)> {
-        self.core.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
+        self.core.ix.pending.iter().map(|(k, v)| (*k, v.clone())).collect()
     }
 
     /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
@@ -574,7 +574,7 @@ impl Engine {
         let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::MEMBERS)?.unwrap_or_default().into_keys().collect();
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.member));
         for c in inbox {
-            if !self.core.pending.contains_key(c) {
+            if !self.core.ix.pending.contains_key(c) {
                 continue;
             }
             if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
@@ -587,7 +587,7 @@ impl Engine {
             }
         }
         let me = self.core.id.tid();
-        out.retain(|t| *t == me || self.core.secrets.contains_key(t));
+        out.retain(|t| *t == me || self.core.ix.secrets.contains_key(t));
         Ok(out)
     }
 
@@ -611,14 +611,14 @@ impl Engine {
 
     /// IDs of applied commits, in (`ts`, ID) order.
     pub fn commit_ids(&self) -> Vec<CommitId> {
-        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect();
+        let mut v: Vec<(osis_base::Ts, CommitId)> = self.core.ix.commits.iter().map(|(id, m)| (m.view.ts, *id)).collect();
         v.sort();
         v.into_iter().map(|x| x.1).collect()
     }
 
     /// The header of an applied commit (none if its stored bytes fail to decode: `LazyHeader`).
     pub fn header(&self, id: &CommitId) -> Option<Arc<Header>> {
-        self.core.commits.get(id).and_then(|m| m.header.decoded())
+        self.core.ix.commits.get(id).and_then(|m| m.header.decoded())
     }
 
     /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
@@ -627,8 +627,8 @@ impl Engine {
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
         let ak = osis_base::Ak::new("/created").ok()?;
-        self.core.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
-            let m = self.core.commits.get(id)?;
+        self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
+            let m = self.core.ix.commits.get(id)?;
             let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
             (!is_kind_snapshot(m.header.kind) && m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
@@ -665,20 +665,20 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     for r in created {
-        tx.core.held.create(r);
+        tx.core.ix.held.create(r);
     }
     let mut syncing = Vec::new();
     tx.scan(records::SYNCING, |k, _| {
         syncing.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("syncing"))?));
         Ok(())
     })?;
-    tx.core.syncing.extend(syncing);
+    tx.core.ix.syncing.extend(syncing);
     let mut void = Vec::new();
     tx.scan(records::VOID, |k, _| {
         void.push(CommitId(k.try_into().map_err(|_| Error::Corrupt("void"))?));
         Ok(())
     })?;
-    tx.core.void.extend(void);
+    tx.core.ix.void.extend(void);
     let mut vl = Vec::new();
     tx.scan(records::VALUELESS, |k, v| {
         vl.push((k.to_vec(), v));
@@ -687,7 +687,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (k, v) in vl {
         let mut r = records::Rd::new(&k);
         let (tid, ak) = (r.tid()?, r.ak()?);
-        tx.core.valueless.insert((tid, ak), crate::retention::decode_owned(&v)?);
+        tx.core.ix.valueless.insert((tid, ak), crate::retention::decode_owned(&v)?);
     }
     let mut secrets = Vec::new();
     tx.scan(b"k/", |k, v| {
@@ -695,7 +695,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         secrets.push((t, crate::engine::secrets::decode_epochs(&v)?));
         Ok(())
     })?;
-    tx.core.secrets.extend(secrets);
+    tx.core.ix.secrets.extend(secrets);
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {
@@ -707,11 +707,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // perm's inputs: the edge writes of the membership commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
-        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, m)| (m.view.ts, *id)).collect();
+        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
             // the view, not the header (decoded only for a roster snapshot's linked frontiers)
-            let Some(v) = tx.core.commits.get(&id).map(|m| m.view.clone()) else { continue };
+            let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
             // every row is what its record reads now (rewritten with it: late parts, drops)
             #[cfg(debug_assertions)]
@@ -740,7 +740,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let m = Meta::new(h.clone(), received, origin, valid, dropped);
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_authors(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit authors"))?;
-            tx.core.commits.insert(id, m);
+            tx.core.ix.commits.insert(id, m);
             if is_kind_snapshot(blob.header.kind) {
                 snaps.push(blob.clone());
             }
@@ -779,7 +779,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                         }
                     }
                 }
-                let v = tx.core.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
+                let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
                 validity::add_membership(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
             }
         }
@@ -810,7 +810,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     for (id, k) in pend {
-        tx.core.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
+        tx.core.ix.pending.insert(id, if k == PendingKind::Parked { Reason::Parked } else { Reason::Unexamined });
     }
     // derived indexes from states (secrets, own keys: persisted, read again on a rebuild)
     let mut aspects = Vec::new();
@@ -824,13 +824,13 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // definitions first, derived once below
             "/group" => {
                 let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
-                tx.core.groups.set_def(tid, atomic::group_def(v));
+                tx.core.ix.groups.set_def(tid, atomic::group_def(v));
             }
             "/secrets" | "/keys" if fast => {}
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }
     }
-    tx.core.groups.rebuild();
+    tx.core.ix.groups.rebuild();
     if fast {
         // every delta's validity is persisted: nothing to re-judge
         tx.core.stale_things.clear();
@@ -846,7 +846,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     // aspects whose judgments changed with the rules (or that hold anything invalid when the
     // old judgments are unknown)
     let mut stale: BTreeSet<(Tid, osis_base::Ak)> = BTreeSet::new();
-    for (id, m) in tx.core.commits.iter() {
+    for (id, m) in tx.core.ix.commits.iter() {
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let now = m.valid.get(ai).copied().unwrap_or(false);
             let was = old.as_ref().map(|o| o.0.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
@@ -856,12 +856,12 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
     }
     let invalid_of = |v: Option<&Vec<validity::Carried>>| -> BTreeSet<(osis_crdt::Source, u64)> { v.into_iter().flatten().flat_map(|c| c.invalid.iter().map(|x| (c.src.clone(), *x))).collect() };
-    let mut keys: BTreeSet<(Tid, osis_base::Ak)> = tx.core.carried.keys().cloned().collect();
+    let mut keys: BTreeSet<(Tid, osis_base::Ak)> = tx.core.ix.carried.keys().cloned().collect();
     if let Some(o) = &old {
         keys.extend(o.1.keys().cloned());
     }
     for k in keys {
-        let now = invalid_of(tx.core.carried.get(&k));
+        let now = invalid_of(tx.core.ix.carried.get(&k));
         let differs = match &old {
             Some(o) => invalid_of(o.1.get(&k)) != now,
             None => !now.is_empty(),
@@ -892,7 +892,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
 /// What perm's adaptation reads of a held membership commit: its held `/members` and `/tenures`
 /// parts.
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
-    let Some(h) = tx.core.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
+    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
     let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
     edge_parts_of(tx, id, &h, blob)
 }
@@ -915,7 +915,7 @@ pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Ve
 /// Decoded parts of a held commit on the aspects `keep` selects, with their indexes.
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, usize, Decoded)>> {
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
-    if let Some(m) = tx.core.commits.get(id) {
+    if let Some(m) = tx.core.ix.commits.get(id) {
         blob.header = (*m.header).clone();
     }
     blob.parts.retain(|p| keep(p.ai));
@@ -1017,7 +1017,7 @@ mod tests {
         let pk = p1.engine.package(&id).unwrap().unwrap();
         assert_eq!(lp.deliver(0, &pk).unwrap(), Ingested::Applied(id));
         let p0 = &mut lp.peers[0];
-        assert!(p0.engine.core.commits.get(&id).unwrap().valid.iter().all(|v| *v));
+        assert!(p0.engine.core.ix.commits.get(&id).unwrap().valid.iter().all(|v| *v));
         assert!(p0.engine.pending().is_empty());
         for (i, t) in [a, b, c].into_iter().enumerate() {
             assert!(p0.engine.creation(&t).is_some());
@@ -1092,9 +1092,9 @@ mod tests {
         let id = p0.commit(m).unwrap().unwrap();
         let blob = p0.engine.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
         let c = &mut p0.engine.core;
-        let mut meta = c.commits.get(&id).unwrap().clone();
+        let mut meta = c.ix.commits.get(&id).unwrap().clone();
         meta.header = crate::engine::LazyHeader::stored(id, vec![0x80].into(), meta.view.clone(), c.header_fault.clone());
-        c.commits.insert(id, meta);
+        c.ix.commits.insert(id, meta);
         assert!(p0.engine.header(&id).is_none());
         assert_eq!(p0.engine.parts_genuine(&blob), None);
         let mut m = Mutation::new();

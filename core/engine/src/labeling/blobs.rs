@@ -116,7 +116,7 @@ impl Engine {
         let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         let membership = blob.header.kind.is_membership();
         // linked header lists: classed by the applied (resolved) header
-        let resolved = match self.core.commits.get(&id) {
+        let resolved = match self.core.ix.commits.get(&id) {
             Some(m) if !blob.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(blob.header.clone()),
         };
@@ -159,15 +159,15 @@ impl Engine {
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
         let core = &self.core;
-        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.by_thing.get(t).into_iter().flatten().copied()).collect();
+        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
         for t in ctx.published.iter() {
             for ak in ["/label", "/created"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
-                ids.extend(core.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
+                ids.extend(core.ix.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
             }
         }
         #[cfg(debug_assertions)]
-        debug_assert_eq!(ids, core.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
+        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
         let mut out = Vec::new();
         for id in ids {
             out.extend(self.commit_bodies_under(&ctx, &id)?);
@@ -185,7 +185,7 @@ impl Engine {
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
         let id = *id;
         // the view: the header is decoded only to project bodies the cache misses
-        let Some(h) = self.core.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
+        let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
         if !ctx.touches(&h) {
             return Ok(Vec::new());
         }
@@ -221,17 +221,17 @@ impl Engine {
     /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
         let core = &mut self.core;
-        let at = (core.held.generation(), core.own_keys.changes(), core.labeled.changes());
+        let at = (core.ix.held.generation(), core.ix.own_keys.changes(), core.ix.labeled.changes());
         if core.published.as_ref().is_none_or(|(k, _)| *k != at) {
-            let map = published_by_actor(core, &core.labeled);
+            let map = published_by_actor(core, &core.ix.labeled);
             core.published = Some((at, map.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
         }
         let out = core.published.as_ref().and_then(|(_, m)| m.get(g).cloned()).unwrap_or_default();
         // the cache and the `/label` index against a scan of every held aspect
         #[cfg(debug_assertions)]
         {
-            let scan: std::collections::BTreeSet<Tid> = core.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "/label").map(|(t, _)| *t).collect();
-            assert!(scan == *core.labeled, "labeled index {:?} vs held {scan:?}", *core.labeled);
+            let scan: std::collections::BTreeSet<Tid> = core.ix.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "/label").map(|(t, _)| *t).collect();
+            assert!(scan == *core.ix.labeled, "labeled index {:?} vs held {scan:?}", *core.ix.labeled);
             assert_eq!(published_by_actor(core, &scan).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
         }
         out
@@ -408,7 +408,7 @@ fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BT
         for _ in 0..64 {
             let Some(osis_base::CreationRecord::Thing { owner, .. }) = core.created(&cur) else { break };
             cur = *owner;
-            if labeled.contains(&cur) && core.own_keys.contains(&cur) {
+            if labeled.contains(&cur) && core.ix.own_keys.contains(&cur) {
                 if cur != *h {
                     map.entry(cur).or_default().insert(*h);
                 }

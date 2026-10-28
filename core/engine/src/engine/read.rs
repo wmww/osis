@@ -17,10 +17,10 @@ struct Moves<'c>(&'c Core);
 
 impl MoveIndex for Moves<'_> {
     fn continued_by(&self, t: &Tid) -> Vec<Tid> {
-        self.0.was.get(t).map(|s| s.iter().copied().collect()).unwrap_or_default()
+        self.0.ix.was.get(t).map(|s| s.iter().copied().collect()).unwrap_or_default()
     }
     fn moved(&self, t: &Tid) -> Option<Tid> {
-        self.0.moved.get(t).copied()
+        self.0.ix.moved.get(t).copied()
     }
 }
 
@@ -54,7 +54,7 @@ fn edge_value(e: &Edge) -> Value {
 
 impl Core {
     pub(crate) fn resolve(&self, r: &Tid, t: &Tid) -> Tid {
-        if self.was.is_empty() && self.moved.is_empty() {
+        if self.ix.was.is_empty() && self.ix.moved.is_empty() {
             return *t;
         }
         match self.timelines.get(r) {
@@ -62,7 +62,7 @@ impl Core {
             None => {
                 let mut cur = *t;
                 for _ in 0..osis_perm::RESOLUTION_HOPS {
-                    match self.moved.get(&cur) {
+                    match self.ix.moved.get(&cur) {
                         Some(x) => cur = *x,
                         None => break,
                     }
@@ -99,7 +99,7 @@ impl Engine {
         let v = match ak.as_str() {
             "/tid" => Some(Value::Tid(tid)),
             "/aspects" => Some(Value::Set(self.aspects(&tid)?.into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "/groups" => Some(Value::Set(self.core.groups.of.get(&tid).into_iter().flatten().map(|g| Value::Tid(*g)).collect())),
+            "/groups" => Some(Value::Set(self.core.ix.groups.of.get(&tid).into_iter().flatten().map(|g| Value::Tid(*g)).collect())),
             "/members" => {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
@@ -194,7 +194,7 @@ impl Engine {
 
     /// Groups containing the thing, transitively (`/groups`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
-        self.core.groups.of.get(tid).cloned().unwrap_or_default()
+        self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
     }
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).
@@ -222,7 +222,7 @@ impl Engine {
     /// The epochs this node holds for actor `tid` (its own, opened ones with their
     /// establishment, or derived from the owner's).
     pub fn epochs(&self, tid: &Tid) -> Option<osis_keys::ActorEpochs> {
-        self.core.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
+        self.core.ix.secrets.get(tid).cloned().or_else(|| self.core.epochs(tid))
     }
 
     /// Whether `/created` of `tid` is held.

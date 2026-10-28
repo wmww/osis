@@ -312,7 +312,7 @@ impl SyncEngine {
 
     /// Actors whose inbox is `l`, with their held read KEM secrets.
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
-        let actors: Vec<Tid> = self.engine.core.secrets.keys().copied().collect();
+        let actors: Vec<Tid> = self.engine.core.ix.secrets.keys().copied().collect();
         let mut out = Vec::new();
         for a in actors {
             let inbox = self.engine.get_typed(&a, &ct::KEYS).ok().flatten().and_then(|k| k.inbox);
@@ -349,7 +349,7 @@ impl SyncEngine {
     }
 
     fn secrets_count(&self) -> usize {
-        self.engine.core.secrets.values().map(|e| e.read.held_newest_first().len() + e.write.held_newest_first().len() + e.admin.held_newest_first().len()).sum()
+        self.engine.core.ix.secrets.values().map(|e| e.read.held_newest_first().len() + e.write.held_newest_first().len() + e.admin.held_newest_first().len()).sum()
     }
 
     fn open_one(&mut self, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {
@@ -535,9 +535,9 @@ impl SyncEngine {
     /// key and ciphertext: a dropped body's copies go, spec/commits.md §5).
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
-        let dropped = self.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
         let unused = !self.state.named(b);
-        if dropped || unused && (r.cert || !self.engine.core.commits.contains_key(&r.commit)) {
+        if dropped || unused && (r.cert || !self.engine.core.ix.commits.contains_key(&r.commit)) {
             // its entries stay (deletes at servers need no copy) with their wraps shredded
             let ls: Vec<LabelId> = self.state.labels_of(b);
             for l in ls {
@@ -567,7 +567,7 @@ impl SyncEngine {
     /// most, compaction): key and ciphertext (spec/commits.md §5). Only those of `commits`
     /// when given (the commits a change may have dropped deltas of).
     pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
-        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
+        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains(p)));
         let fresh = std::mem::take(&mut self.state.new_blobs);
         let commits: Option<BTreeSet<osis_base::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
         let commits = commits.as_ref();
@@ -580,8 +580,8 @@ impl SyncEngine {
         }
         // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
         let listed: BTreeSet<BlobId> = match commits {
-            None => self.engine.core.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
-            Some(cs) => cs.iter().filter_map(|c| self.engine.core.commits.get(c)).filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            None => self.engine.core.ix.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
         };
         let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && !self.state.named(b) && self.engine.has_blob(b)).collect();
         if held.is_empty() {

@@ -312,7 +312,7 @@ fn snapshot_authors(core: &Core, tid: &Tid, f: &osis_crdt::Fragment) -> Result<B
     let mut out = BTreeMap::new();
     for (d, _) in f.writes() {
         if let osis_crdt::SourceKind::Commit(c) = d.src.kind() {
-            let v = core.authors.get(&(*tid, *c)).copied().ok_or(Error::Misuse("a snapshot of a commit-form write whose author is unknown"))?;
+            let v = core.ix.authors.get(&(*tid, *c)).copied().ok_or(Error::Misuse("a snapshot of a commit-form write whose author is unknown"))?;
             out.insert(*c, v);
         }
     }
