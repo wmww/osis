@@ -788,7 +788,10 @@ pub(crate) fn carried_invalid(core: &Core, tid: &Tid, ak: &Ak, c: &Carried) -> V
     let Some(tl) = core.timelines.get(tid).filter(|_| !too_deep(core, tid)) else { return c.ctrs.clone() };
     let required = required_role(ak.as_str());
     if let osis_crdt::SourceKind::Commit(id) = c.src.kind() {
-        let point = Point { ts: c.ts, node: c.node, commit: *id };
+        // judged as the commit the claim names: a held import by its own ID (a demotion's
+        // frontier lists it), else C's
+        let claim = core.ix.imports.get(&(*tid, *id)).and_then(|s| s.first()).filter(|x| (x.2, x.0) == (c.node, c.ts)).map_or(*id, |x| x.1);
+        let point = Point { ts: c.ts, node: c.node, commit: claim };
         return if tl.delta_valid(point, tid, ak.as_str(), Dots::Commit, required) == Validity::Valid { Vec::new() } else { c.ctrs.clone() };
     }
     // no commit ID is known: the point sorts before the author's commits at that `ts`

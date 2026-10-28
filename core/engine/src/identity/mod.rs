@@ -53,9 +53,10 @@ pub fn key_actor_record(keys: &KeyActorKeys, seed: &Secret32) -> CreationRecord 
     CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: keys.signing.verifying_key().to_bytes().to_vec(), nonce: creation_nonce(seed) }
 }
 
-/// A fresh record for a thing owned by `owner` (32 random nonce bytes).
-pub fn thing_record(owner: Tid, rng: &mut dyn CryptoRngCore) -> CreationRecord {
+/// A fresh record for a thing owned by `owner` (32 random nonce bytes); a copy names the node
+/// that creates it and imports into it (`creator`, spec/permissions.md §7).
+pub fn thing_record(owner: Tid, creator: Option<Tid>, rng: &mut dyn CryptoRngCore) -> CreationRecord {
     let mut nonce = [0u8; 32];
     rng.fill_bytes(&mut nonce);
-    CreationRecord::Thing { owner, nonce }
+    CreationRecord::Thing { owner, nonce, creator }
 }

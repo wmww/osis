@@ -50,7 +50,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), servers: vec![], replaced: false },
     )]);
     vec![
-        ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32] })),
+        ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
         ("created key actor", "/created", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
         ("members", "/members", MEMBERS.encode(&members)),
         ("keys", "/keys", KEYS.encode(&keys)),

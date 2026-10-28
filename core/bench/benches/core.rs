@@ -32,6 +32,6 @@ fn main() {
     osis_base::hash::Hasher::new().update(b"osis bench chunker").finalize_xof(&mut data);
     bench("core/chunk_4MiB", Some(data.len()), || chunk_lengths(&data, ChunkParams::FORMAT));
 
-    let rec = CreationRecord::Thing { owner: Tid::from_bytes([1; 15]), nonce: [2; 32] };
+    let rec = CreationRecord::Thing { owner: Tid::from_bytes([1; 15]), nonce: [2; 32], creator: None };
     bench("core/tid_of_record", None, || rec.tid());
 }

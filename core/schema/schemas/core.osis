@@ -5,8 +5,8 @@ revision 2;
 type signing_key = enum { 1 ed25519(blob) };          // 32 bytes
 type kem_key = enum { 1 x25519_mlkem768(blob) };      // pk_x || pk_m, 1216 bytes
 type sealed = enum { 1 x25519_mlkem768(blob) };       // ct_x || ct_m || AEAD
-/// Exactly one of fields 0 and 1 (spec/wire.md §3); typed through `CreationRecord`.
-type creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob };
+/// Exactly one of fields 0 and 1, field 3 only with 0 (spec/wire.md §3); typed through `CreationRecord`.
+type creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 creator: tid };
 
 type role = enum { 0 read, 1 write, 2 admin };
 type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 16 bytes

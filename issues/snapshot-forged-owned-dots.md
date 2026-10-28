@@ -1,0 +1,5 @@
+# A snapshot can carry forged writes under dots a held commit owns
+> Summary: suspected, unverified: a carried write whose dot a held commit owns (a `Commit(C)` source with a held owner, a node dot inside a held node-form range) is never judged on its own, so a snapshot by any node that can encrypt for the thing (a reader) may add writes under such dots (`(Commit(C), k)` past what C or its import holds, or a different value under an existing dot) that receivers accept as the owner's.
+> Tags: security, node, validity
+
+Found while fixing the invalid-import issue. `validity::carried_of` skips dots `owns_source` or `Core::commit_of` attribute to a held commit; `Judge::part` takes every snapshot part as valid (spec/permissions.md §5.2: a snapshot vouches for nothing, but owned dots are trusted by source or range, not by what the owner holds). Needs a test first: a reader writes a compaction snapshot of a copy's aspect with an extra `(Commit(C), n+1)` element while the creator's valid import of C is held. A fix likely needs per-owner held-dot sets (an import's `Commit(C)` counters, a commit-form commit's) checked for carried owned dots, surviving body drops.
