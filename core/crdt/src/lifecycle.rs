@@ -1,9 +1,10 @@
-//! Expiry (value-less writes, spec/crdt.md §4.7) and un-merge by author (§4.6).
+//! Expiry (value-less writes, spec/crdt.md §4.7) and un-merge (§4.6): removing writes by owner
+//! dot, and whether that may be done in place.
 
 use crate::changes::Changes;
 use crate::fragment::{Bag, Elem, Fragment, Map, Set, Slots};
 use crate::seq;
-use crate::stamp::{Dot, Source, Stamp};
+use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 
 impl Fragment {
@@ -60,12 +61,6 @@ impl Fragment {
             }
             Fragment::Seq(s) => seq::strip_values(s, expired),
         }
-    }
-
-    /// Removes every write whose dot's author matches `author` (`Derived` dots count for the
-    /// author of the underlying dot), in place. Un-merge applies it to each held body (§4.6).
-    pub fn remove_author(&mut self, author: &dyn Fn(&Source) -> bool) {
-        self.remove_dots(&|d| author(&d.src));
     }
 
     /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
@@ -159,29 +154,6 @@ impl Fragment {
         }
     }
 
-    /// Whether removing `author`'s writes in place could expose a write it superseded: it holds
-    /// a register, case, reset or `W` (a position winner needs the retained bodies, §4.6).
-    pub fn author_supersedes(&self, author: &dyn Fn(&Source) -> bool) -> bool {
-        let a = |s: &Stamp| author(s.dot.src.author());
-        let sub = |f: &Fragment| f.author_supersedes(author);
-        // `W` is max-joined like a register: the author's may have topped another's
-        if self.meta().is_some_and(|m| m.reset.as_ref().is_some_and(a) || m.w.as_ref().is_some_and(a)) || self.reset().as_ref().is_some_and(a) {
-            return true;
-        }
-        match self {
-            Fragment::Register(r) => r.write.as_ref().is_some_and(|w| a(&w.stamp)),
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.write.as_ref().is_some_and(|w| a(&w.stamp))) || s.members.values().any(sub),
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|e| e.reset.as_ref().is_some_and(a)),
-            Fragment::Struct(s) => s.fields.values().any(sub),
-            Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| a(&c.stamp)) || e.payloads.values().any(sub),
-            Fragment::Map(m) => m.entries.values().any(|e| e.reset.as_ref().is_some_and(a) || e.frag.as_deref().is_some_and(sub)),
-            // positions and flags: conservatively, any sequence write by the author
-            Fragment::Seq(_) => true,
-        }
-    }
-}
-
-impl Fragment {
     /// Whether `remove_dots(pred)` in place could differ from removing them from every held
     /// body before the join (§4.6): one of their writes in this state may have superseded
     /// another's (a register, case, reset, `W`, flag or non-creation position write of theirs).
@@ -241,29 +213,4 @@ fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> boo
         }
         el.reset.is_some() || el.frag.is_some()
     });
-}
-
-/// Un-merge (§4.6): the join of every held body and value-less residue for the aspect (the
-/// node's current state among them, as a snapshot it holds), each without `author`'s writes.
-/// A function of the held set, never of arrival order.
-pub fn unmerge(held: impl IntoIterator<Item = Fragment>, author: &dyn Fn(&Source) -> bool) -> Fragment {
-    let mut out = Fragment::default();
-    let mut ch = Changes::new();
-    for mut b in held {
-        b.remove_author(author);
-        out.join_into(b, None, &mut ch);
-    }
-    out
-}
-
-/// The in-place fast path of un-merge: removes `author`'s writes from `state` directly when that
-/// equals the join of held bodies (the author superseded nothing, §4.6). `false` if the caller
-/// must use `unmerge` with the retained bodies.
-pub fn unmerge_in_place(state: &mut Fragment, author: &dyn Fn(&Source) -> bool) -> bool {
-    if state.author_supersedes(author) {
-        return false;
-    }
-    state.remove_author(author);
-    state.prune(None, &mut Changes::new());
-    true
 }
