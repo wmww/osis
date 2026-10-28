@@ -244,26 +244,24 @@ impl Input {
 
     /// What reaches any of `seeds` (included) at any time: owner links and `ever` edges.
     fn ever_back(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
-        let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
-        let mut stack: Vec<Tid> = seen.iter().copied().collect();
-        while let Some(e) = stack.pop() {
-            let up = self.owners.owner_actor(&e).into_iter().chain(self.ever.members.get(&e).into_iter().flatten().copied());
-            for y in up.collect::<Vec<_>>() {
-                if seen.insert(y) {
-                    stack.push(y);
-                }
-            }
-        }
-        seen
+        self.ever_reach(seeds, false)
     }
 
     /// What any of `seeds` (included) reaches at any time.
     fn ever_forward(&self, seeds: impl IntoIterator<Item = Tid>) -> BTreeSet<Tid> {
+        self.ever_reach(seeds, true)
+    }
+
+    fn ever_reach(&self, seeds: impl IntoIterator<Item = Tid>, forward: bool) -> BTreeSet<Tid> {
         let mut seen: BTreeSet<Tid> = seeds.into_iter().collect();
         let mut stack: Vec<Tid> = seen.iter().copied().collect();
         while let Some(e) = stack.pop() {
-            let down = self.owners.owned(&e).iter().chain(self.ever.targets.get(&e).into_iter().flatten()).copied();
-            for y in down.collect::<Vec<_>>() {
+            let next: Vec<Tid> = if forward {
+                self.owners.owned(&e).iter().chain(self.ever.targets.get(&e).into_iter().flatten()).copied().collect()
+            } else {
+                self.owners.owner_actor(&e).into_iter().chain(self.ever.members.get(&e).into_iter().flatten().copied()).collect()
+            };
+            for y in next {
                 if seen.insert(y) {
                     stack.push(y);
                 }
@@ -467,13 +465,22 @@ fn split_log(log: &[Undo]) -> (Vec<Undo>, Records) {
     (rest, records)
 }
 
-/// The write IDs an item applies or not: its commit's ops, or a snapshot.
-fn item_writes(item: &Item) -> Vec<WriteId> {
-    match item {
+/// An applied write or applied snapshot (`candidates`) by its ID.
+fn applied_of<'a>(applied: &'a BTreeMap<WriteId, Applied>, candidates: &'a BTreeMap<CommitId, Applied>, w: &WriteId) -> Option<&'a Applied> {
+    match w {
+        WriteId::Snapshot(s) => candidates.get(s),
+        WriteId::Op(..) => applied.get(w),
+    }
+}
+
+/// How each write of an item (its commit's ops, or a snapshot) applied (`Effects::applied`).
+fn item_applied(item: &Item, applied: &BTreeMap<WriteId, Applied>, candidates: &BTreeMap<CommitId, Applied>) -> Vec<Option<Applied>> {
+    let ids = match item {
         Item::Commit(d) => (0..d.ops.len()).filter_map(|k| u32::try_from(k).ok()).map(|k| WriteId::Op(d.id, k)).collect(),
         Item::Snap(s) => vec![WriteId::Snapshot(s.id)],
         Item::Virtual(_) => Vec::new(),
-    }
+    };
+    ids.iter().map(|w| applied_of(applied, candidates, w).copied()).collect()
 }
 
 impl Walked {
@@ -592,8 +599,7 @@ impl Walked {
             let id = WriteId::Op(c.id, k);
             let new = o.edge.map(|e| Edge { since: None, ..e });
             // as `Pass::record`, at its place in walk order
-            let pos = self.rest.by_author_target.get(&(c.author, o.target)).map_or(0, |v| v.partition_point(|w| self.write_point(w).is_none_or(|q| q <= p)));
-            self.rest.by_author_target.entry((c.author, o.target)).or_default().insert(pos, id);
+            self.list_write((c.author, o.target), id, p);
             log.push(Undo::ByAuthorTarget((c.author, o.target)));
             let was = self.applied.insert(id, Applied { author: c.author, target: o.target, point: p, attr, dots: o.dots });
             log.push(Undo::Applied(id, was));
@@ -622,10 +628,7 @@ impl Walked {
             log.push(Undo::Prior(key, all));
             let mine = self.rest.prior_node.remove(&key);
             log.push(Undo::PriorNode(key, mine.clone()));
-            let base = match (all, old) {
-                (Some(a), Some(o)) => Some(join(Some(a), o)),
-                (a, o) => a.or(o),
-            };
+            let base = restore_base(all, old);
             hist.push(Change { point: p, member: o.member, target: o.target, edge: new, explicit: Some(c.frontier.clone()), audited: None });
             if let (true, Some(b)) = (own, base) {
                 let r = join(mine.as_ref().and_then(|m| m.get(&c.author)).copied(), b);
@@ -796,8 +799,7 @@ impl Walked {
         }
         for (k, ids) in own.by_author_target {
             for id in ids.into_iter().filter(|w| w.commit() == c.id) {
-                let pos = self.rest.by_author_target.get(&k).map_or(0, |v| v.partition_point(|w| self.write_point(w).is_none_or(|q| q <= p)));
-                self.rest.by_author_target.entry(k).or_default().insert(pos, id);
+                self.list_write(k, id, p);
             }
         }
         // its demotions and falls before those of the items at its point after it (ledger
@@ -902,29 +904,26 @@ impl Walked {
                 falls.insert(*k, v);
             }
         }
-        let applied = item_writes(item).iter().map(|w| match w {
-            WriteId::Snapshot(s) => self.rest.candidates.get(s).copied(),
-            WriteId::Op(..) => self.applied.get(w).copied(),
-        }).collect();
+        let applied = item_applied(item, &self.applied, &self.rest.candidates);
         let (log, records) = split_log(log);
         Effects { history: self.history.get(h..h1).unwrap_or_default().to_vec(), log, records, applied, demotions, falls }
     }
 
     /// The point of an applied write or applied snapshot.
     fn write_point(&self, w: &WriteId) -> Option<Point> {
-        match w {
-            WriteId::Snapshot(s) => self.rest.candidates.get(s).map(|a| a.point),
-            WriteId::Op(..) => self.applied.get(w).map(|a| a.point),
-        }
+        applied_of(&self.applied, &self.rest.candidates, w).map(|a| a.point)
+    }
+
+    /// Lists `id` (at `p`) among the writes by author on target `k`, in walk order.
+    fn list_write(&mut self, k: (Tid, Tid), id: WriteId, p: Point) {
+        let pos = self.rest.by_author_target.get(&k).map_or(0, |v| v.partition_point(|w| self.write_point(w).is_none_or(|q| q <= p)));
+        self.rest.by_author_target.entry(k).or_default().insert(pos, id);
     }
 
     /// The edge `key` as an explicit write on it now restores (§5.1 step 4), as `Pass::change`.
     fn restored(&self, key: (Tid, Tid)) -> Option<Edge> {
         let old = self.edges.get(&key.0, &key.1).copied().filter(|_| !self.rest.dead.contains(&key));
-        let base = match (self.rest.prior.get(&key).copied(), old) {
-            (Some(a), Some(o)) => Some(join(Some(a), o)),
-            (a, o) => a.or(o),
-        };
+        let base = restore_base(self.rest.prior.get(&key).copied(), old);
         self.rest.prior_node.get(&key).into_iter().flatten().fold(base, |r, (_, e)| Some(join(r, *e)))
     }
 
@@ -1261,6 +1260,15 @@ pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
     }
 }
 
+/// What an explicit write on an edge restores before the per-node standings (§5.1 step 4):
+/// its value before the write (`old`, unless written expired) joined with `prior`.
+fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
+    match (prior, old) {
+        (Some(a), Some(o)) => Some(join(Some(a), o)),
+        (a, o) => a.or(o),
+    }
+}
+
 /// Does restoring `r` give more than `new` at `ts` (role, invite or life)? If not, an explicit
 /// write of `new` demotes nobody.
 pub(crate) fn exceeds(r: Option<Edge>, new: Option<Edge>, ts: Ts) -> bool {
@@ -1478,25 +1486,13 @@ impl<'a> Pass<'a> {
     fn effects(&mut self, items: &Items, j: usize) -> Option<Effects> {
         let m = self.marks.len();
         let (l, h) = (self.log.len(), self.history.len());
-        self.marks.push((l, h));
         // (the roles cached before it hold again once it is undone)
         let roles = self.roles.clone();
         let item = &items.list.get(j)?.4;
-        let grew = match item {
-            Item::Commit(d) => self.commit(d),
-            Item::Snap(s) => {
-                self.snapshot(s);
-                false
-            }
-            Item::Virtual(v) => self.virtual_write(v),
-        };
-        if grew || !self.fresh.is_empty() {
+        if self.step(item) || !self.fresh.is_empty() {
             return None;
         }
-        let applied = item_writes(item).iter().map(|w| match w {
-            WriteId::Snapshot(s) => self.candidates.get(s).copied(),
-            WriteId::Op(..) => self.applied.get(w).copied(),
-        }).collect();
+        let applied = item_applied(item, &self.applied, &self.candidates);
         let (log, records) = split_log(self.log.get(l..).unwrap_or_default());
         let e = Effects {
             history: self.history.get(h..).unwrap_or_default().to_vec(),
@@ -1688,10 +1684,7 @@ impl<'a> Pass<'a> {
         };
         let all = self.set_prior(key, None);
         let mine: BTreeMap<Tid, Edge> = self.take_prior_node(key);
-        let base = match (all, old) {
-            (Some(a), Some(o)) => Some(join(Some(a), o)),
-            (a, o) => a.or(o),
-        };
+        let base = restore_base(all, old);
         let restored = mine.values().fold(base, |r, e| Some(join(r, *e)));
         let lowered = exceeds(restored, edge, point.ts);
         let audited = restored.filter(|_| lowered).map(|r| r.role);
@@ -1708,10 +1701,15 @@ impl<'a> Pass<'a> {
     }
 
     fn record(&mut self, id: WriteId, a: Applied) {
-        self.by_author_target.entry((a.author, a.target)).or_default().push(id);
-        self.log.push(Undo::ByAuthorTarget((a.author, a.target)));
+        self.list_write(id, &a);
         let was = self.applied.insert(id, a);
         self.log.push(Undo::Applied(id, was));
+    }
+
+    /// Lists `id` among its author's writes on its target (audits read them).
+    fn list_write(&mut self, id: WriteId, a: &Applied) {
+        self.by_author_target.entry((a.author, a.target)).or_default().push(id);
+        self.log.push(Undo::ByAuthorTarget((a.author, a.target)));
     }
 
     /// An explicit write changed edge `(member, target)`: every node X reaching the member
@@ -1861,10 +1859,7 @@ impl<'a> Pass<'a> {
         }
         let outer = self.outer;
         for id in ids {
-            let a = match id {
-                WriteId::Snapshot(s) => self.candidates.get(&s).or_else(|| outer.and_then(|o| o.rest.candidates.get(&s))),
-                WriteId::Op(..) => self.applied.get(&id).or_else(|| outer.and_then(|o| o.applied.get(&id))),
-            };
+            let a = applied_of(&self.applied, &self.candidates, &id).or_else(|| outer.and_then(|o| applied_of(&o.applied, &o.rest.candidates, &id)));
             let Some(a) = a else { continue };
             let Attr::By(c) = a.attr else { continue };
             if !(now < c && c <= held) {
@@ -1934,8 +1929,7 @@ impl<'a> Pass<'a> {
                 if start {
                     self.record(id, a);
                 } else {
-                    self.by_author_target.entry((a.author, a.target)).or_default().push(id);
-                    self.log.push(Undo::ByAuthorTarget((a.author, a.target)));
+                    self.list_write(id, &a);
                 }
                 let was = self.candidates.insert(s.id, a);
                 self.log.push(Undo::Candidate(s.id, was));
@@ -2122,6 +2116,21 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
     Items { initial, list }
 }
 
+impl Pass<'_> {
+    /// Walks one item after a mark: whether D grew.
+    fn step(&mut self, item: &Item) -> bool {
+        self.marks.push((self.log.len(), self.history.len()));
+        match item {
+            Item::Commit(c) => self.commit(c),
+            Item::Snap(s) => {
+                self.snapshot(s);
+                false
+            }
+            Item::Virtual(v) => self.virtual_write(v),
+        }
+    }
+}
+
 enum Step {
     Done,
     /// D grew: walk again from this item (the first one D now skips more of).
@@ -2135,16 +2144,7 @@ impl Pass<'_> {
         self.rollback(from);
         self.fresh.clear();
         for (_, _, _, _, item) in items.list.iter().skip(from) {
-            self.marks.push((self.log.len(), self.history.len()));
-            let restart = match item {
-                Item::Commit(c) => self.commit(c),
-                Item::Snap(s) => {
-                    self.snapshot(s);
-                    false
-                }
-                Item::Virtual(v) => self.virtual_write(v),
-            };
-            if restart {
+            if self.step(item) {
                 let first = self.fresh.iter().filter_map(|w| items.index(self.input, &w.commit())).min();
                 return Step::Restart(first.unwrap_or(0));
             }
