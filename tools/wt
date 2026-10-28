@@ -62,6 +62,8 @@ def claim(branch, base="main"):
         exists = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
                                 cwd=path, capture_output=True).returncode == 0
         git("checkout", "-q", *([branch] if exists else ["-b", branch, base]), cwd=path)
+        if git("branch", "--show-current", cwd=path) != branch:
+            sys.exit(f"wt: {path} is not on {branch} after checkout; another agent may be using it")
         tgt = path / "target"
         if tgt.is_dir():
             gb = sum(f.stat().st_size for f in tgt.rglob("*") if f.is_file()) / 2**30
