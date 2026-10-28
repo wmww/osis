@@ -1,4 +1,4 @@
-//! File backend over redb (feature `file-backend`; choice recorded in notes/local-store.md).
+//! File backend over redb (choice recorded in notes/local-store.md).
 
 use crate::backend::{Backend, BackendError, KeyValue, Op, WriteBatch, blob_slice};
 use osis_base::BlobId;

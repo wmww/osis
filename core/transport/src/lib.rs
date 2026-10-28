@@ -6,10 +6,8 @@
 #![forbid(unsafe_code)]
 
 mod error;
-#[cfg(feature = "link")]
 pub mod link;
 pub mod mem;
-#[cfg(feature = "quic")]
 pub mod quic;
 pub mod sched;
 mod util;
@@ -21,9 +19,7 @@ pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
 pub use sched::{Sched, Spawner};
 pub use manage::{close_gracefully, connect, Backoff};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
-#[cfg(feature = "link")]
 pub use link::{Link, LinkRx, LinkTx};
-#[cfg(feature = "quic")]
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 // codec always; the socket with feature `lan`
 pub mod lan;

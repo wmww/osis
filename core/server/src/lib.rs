@@ -1,9 +1,9 @@
 //! osis-server: the blind node used as a server (spec/sync.md §4-§9): `BackendStore` (osis-proto's
 //! `LabelStore` over an osis-store `Backend`, with the server policy), `Hub` (sans-I/O: server
 //! engines per connection, cross-connection notices, sweeps, push replication to peer servers),
-//! the async `driver` over any osis-transport `Transport` (feature `driver`, default; QUIC: feature
-//! `quic`), and the binary's `config`
-//! (binary and `serve::run`, which `osis serve` calls: feature `bin`).
+//! the async `driver` over any osis-transport `Transport` (feature `driver`, default)
+//! and the binary's `config`
+//! (binary and `serve::run`, which `osis serve` calls).
 //! Layer 6 (notes/architecture.md). Notes: notes/sync.md (Implementation (osis-server)).
 #![forbid(unsafe_code)]
 
@@ -12,7 +12,7 @@ pub mod config;
 pub mod driver;
 pub mod hub;
 pub mod replicate;
-#[cfg(feature = "bin")]
+#[cfg(feature = "driver")]
 pub mod serve;
 pub mod store;
 

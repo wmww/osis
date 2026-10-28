@@ -106,7 +106,6 @@ async fn driver_in_process_spec_sync_10() {
 
 // spec/sync.md §10: the same over QUIC on localhost (tier 2: touches the network).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(feature = "quic")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_quic_localhost_spec_sync_10() {

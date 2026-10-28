@@ -16,11 +16,7 @@ workspace = true
 [dependencies]
 osis-base.workspace = true
 osis-crypto.workspace = true
-redb = { workspace = true, optional = true }
-
-[features]
-# The redb file backend and the file root (notes/architecture.md §4: off by default).
-file-backend = ["dep:redb"]
+redb.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

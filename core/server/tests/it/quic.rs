@@ -35,7 +35,7 @@ async fn quic_clients_and_replication() {
 }
 
 // spec/sync.md §10: the binary listens on QUIC, prints its address (URL and static key), serves a client, creates its key file 0600
-#[cfg(feature = "bin")]
+#[cfg(feature = "driver")]
 #[test]
 #[ignore]
 fn binary_serves_quic() {

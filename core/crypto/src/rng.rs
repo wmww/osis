@@ -1,5 +1,5 @@
 //! Deterministic CSPRNG for tests, vectors and the simulator: the BLAKE3 XOF keyed by a seed.
-//! Libraries never own randomness (notes/architecture.md §2); drivers pass `OsRng` (feature `os-rng`).
+//! Libraries never own randomness (notes/architecture.md §2); drivers pass `OsRng`.
 
 use rand_core::{CryptoRng, RngCore};
 

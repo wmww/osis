@@ -93,7 +93,6 @@ fn memory_faults() {
     assert_eq!(reopened.get(b"d").unwrap(), None);
 }
 
-#[cfg(feature = "file-backend")]
 mod file {
     use super::*;
     use osis_store::RedbBackend;

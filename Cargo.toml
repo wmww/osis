@@ -29,20 +29,24 @@ osis = { path = "core/osis" }
 osis-sim = { path = "core/test/sim" }
 crdt-model = { path = "core/test/crdt-model" }
 membership-model = { path = "core/test/membership-model" }
-blake3 = { version = "1.8", default-features = false, features = ["std"] }
+blake3 = { version = "1.8", default-features = false, features = ["std", "zeroize"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
-ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize", "fast"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["std", "zeroize", "fast", "hazmat", "digest"] }
 curve25519-dalek = { version = "4.1", default-features = false, features = ["zeroize", "precomputed-tables"] }
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
 libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem768"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-zeroize = { version = "1.8", default-features = false, features = ["std"] }
-rand_core = { version = "0.6", default-features = false }
+zeroize = { version = "1.8", features = ["std", "zeroize_derive"] }
+rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 subtle = { version = "2.6", default-features = false }
 redb = { version = "2.6", default-features = false }
-tokio = { version = "1.53", default-features = false }
+tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "signal"] }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "env"] }
 anyhow = "1.0"
+# Feature pins only (notes/build.md, Feature unification): default features, as quinn-proto and
+# libcrux-platform enable them.
+rand = "0.10"
+libc = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

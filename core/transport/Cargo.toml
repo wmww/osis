@@ -18,10 +18,10 @@ osis-base.workspace = true
 zeroize.workspace = true
 # InProcess keys are Ed25519 like every transport's (a dialable key verifies LAN announcements).
 ed25519-dalek.workspace = true
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
-ring = { version = "0.17", optional = true }
-tokio = { workspace = true, features = ["rt", "net", "sync", "time"], optional = true }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ring = "0.17"
+tokio.workspace = true
 iroh = { version = "1.3", default-features = false, features = ["tls-ring"], optional = true }
 # iroh's own network monitor (already in its tree): network changes and interfaces for the LAN loop.
 netwatch = { version = "0.19", optional = true }
@@ -31,16 +31,11 @@ socket2 = { version = "0.6", optional = true }
 iroh-relay = { version = "1.3", default-features = false, features = ["server", "tls-ring"], optional = true }
 
 [features]
-quic = ["dep:quinn", "dep:rustls", "dep:ring", "dep:tokio"]
-# Sessions as channel pairs with tokio pump tasks, for node and server drivers.
-link = ["dep:tokio"]
 # P2P by dialable key (notes/networking.md): iroh endpoints, relays, hole punching.
-iroh = ["dep:iroh", "dep:tokio", "dep:netwatch"]
+iroh = ["dep:iroh", "dep:netwatch"]
 # LAN announcements over UDP, IPv4 and IPv6 (spec/sync.md §10); netwatch lists the interfaces
 # IPv6 announcements go out on; with `iroh`, network changes from netwatch.
-lan = ["dep:tokio", "dep:socket2", "dep:netwatch"]
+lan = ["dep:socket2", "dep:netwatch"]
 # `iroh::TestRelay`: a self-hosted iroh-relay on localhost for tier-2 tests.
 relay = ["iroh", "dep:iroh-relay"]
 
-[dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "time"] }

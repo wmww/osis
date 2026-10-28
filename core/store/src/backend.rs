@@ -98,7 +98,6 @@ pub trait Backend: Send {
 }
 
 /// Options creating a file readable by its owner only (a store file, the root).
-#[cfg(feature = "file-backend")]
 pub(crate) fn owner_only() -> std::fs::OpenOptions {
     let mut o = std::fs::OpenOptions::new();
     #[cfg(unix)]
@@ -110,7 +109,6 @@ pub(crate) fn owner_only() -> std::fs::OpenOptions {
 /// only when group or other bits are set (a store made before files were created owner-only).
 /// Never follows a symlink; the system lets only the file's owner (or a privileged user) change
 /// its mode. Returns why it could not, for a diagnostic; never fails the open. No-op off unix.
-#[cfg(feature = "file-backend")]
 pub fn restrict_to_owner(path: &std::path::Path) -> Option<String> {
     #[cfg(unix)]
     {
