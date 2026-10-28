@@ -578,18 +578,23 @@ fn reached(e: &Engine) -> [usize; 4] {
 // roster snapshots, a move (imports) and late, out-of-order deliveries: at random points a node
 // opened from its persisted index, and then rebuilt from its commit records, equals the running
 // node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds: OSIS_WALKS_START,
-// OSIS_WALKS_SEEDS.
+// OSIS_WALKS_SEEDS, a thread per core (OSIS_WALKS_THREADS); every failing seed is reported.
 #[test]
 fn open_equals_rebuild_random_histories() {
-    let env = |k: &str, d: u64| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
-    let (start, seeds) = (env("OSIS_WALKS_START", 0), env("OSIS_WALKS_SEEDS", 4));
+    let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
+    let (start, n) = (env("OSIS_WALKS_START"), env("OSIS_WALKS_SEEDS"));
+    let seeds: Vec<u64> = (start.unwrap_or(0)..start.unwrap_or(0) + n.unwrap_or(4)).collect();
+    let name = "walks::open_equals_rebuild_random_histories";
+    let replay = |s: u64| format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
     let mut most = [0usize; 4];
-    for seed in start..start + seeds {
-        let _ = random_history(seed, &mut most, 1, false);
+    for (r, _) in run_seeds(name, &seeds, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false)) {
+        for k in 0..4 {
+            most[k] = most[k].max(r[k]);
+        }
     }
     // the default seeds reach drops, invalid parts, roster snapshots and chunks (other ranges,
     // a one-seed repro say, pass or fail on their own)
-    if std::env::var_os("OSIS_WALKS_START").is_none() && std::env::var_os("OSIS_WALKS_SEEDS").is_none() {
+    if start.is_none() && n.is_none() {
         assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
     }
 }
@@ -599,7 +604,7 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 fn open_equals_rebuild_random_histories_carried_imports() {
     for seed in [261, 377] {
-        let _ = random_history(seed, &mut [0; 4], 1, false);
+        let _ = random_history(seed, 1, false);
     }
 }
 
@@ -607,30 +612,38 @@ fn open_equals_rebuild_random_histories_carried_imports() {
 // 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
 // without the weighting). With hostile second imports into a copy (spec/permissions.md §7):
 // seeds DOUBLES (both failed while the last import to arrive named the author), and every
-// seed of OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS.
+// seed of OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS (OSIS_WALKS_MOVES_DOUBLES=0: without
+// them, as the first three), a thread per core (OSIS_WALKS_THREADS).
 #[test]
 fn open_equals_rebuild_random_histories_moves() {
+    const PLAIN: [u64; 3] = [6013, 6106, 6305];
     const DOUBLES: [u64; 2] = [6012, 6036];
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
-    let seeds: Vec<(u64, bool)> = match (env("OSIS_WALKS_MOVES_START"), env("OSIS_WALKS_MOVES_SEEDS")) {
-        (Some(a), n) => (a..a + n.unwrap_or(1)).map(|s| (s, true)).collect(),
-        _ => [6013, 6106, 6305].map(|s| (s, false)).into_iter().chain(DOUBLES.map(|s| (s, true))).collect(),
+    let start = env("OSIS_WALKS_MOVES_START");
+    let seeds: Vec<(u64, bool)> = match start {
+        Some(a) => (a..a + env("OSIS_WALKS_MOVES_SEEDS").unwrap_or(1)).map(|s| (s, env("OSIS_WALKS_MOVES_DOUBLES") != Some(0))).collect(),
+        None => PLAIN.map(|s| (s, false)).into_iter().chain(DOUBLES.map(|s| (s, true))).collect(),
     };
+    let doubles: std::collections::BTreeMap<u64, bool> = seeds.iter().copied().collect();
+    let name = "walks::open_equals_rebuild_random_histories_moves";
+    let replay = |s: u64| format!("OSIS_WALKS_MOVES_START={s} OSIS_WALKS_MOVES_DOUBLES={} cargo test --workspace --test it {name} -- --exact", u8::from(doubles[&s]));
+    let keys: Vec<u64> = doubles.keys().copied().collect();
     let mut doubled = 0;
-    for (seed, doubles) in seeds {
-        let n = random_history(seed, &mut [0; 4], 3, doubles);
+    for (seed, (_, n)) in keys.iter().zip(run_seeds(name, &keys, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 3, doubles[&seed]))) {
         if n > 0 {
             eprintln!("seed {seed}: {n} double imports");
         }
         doubled += n;
     }
-    assert!(doubled > 0 || env("OSIS_WALKS_MOVES_START").is_some(), "no double import");
+    assert!(doubled > 0 || start.is_some(), "no double import");
 }
 
 /// One random history of `open_equals_rebuild_random_histories` with up to `max_moves` moves (more
 /// than one: moves from step 10, moved things snapshotted more), and with `doubles` sometimes a
-/// second import of a moved thing into its copy; raises `most` to what it reached.
-fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize, doubles: bool) -> usize {
+/// second import of a moved thing into its copy; returns what it reached on any node (most of
+/// each `reached` count) and how many double imports it made.
+fn random_history(seed: u64, max_moves: usize, doubles: bool) -> ([usize; 4], usize) {
+    let mut most = [0usize; 4];
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
     lp.sync_all().unwrap();
@@ -743,7 +756,7 @@ fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize, doubles: b
         }
         open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
     }
-    double_imports
+    (most, double_imports)
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2, §7: a snapshot of a moved
