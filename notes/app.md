@@ -1,5 +1,5 @@
 # The first-party app
-> Summary: Design direction for the first-party osis app over osis-std (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
+> Summary: Design direction for the first-party osis app over osis and schema/ (decided with the owner, pre-prototype): data-oriented UX (things with facet views, lenses, tags as filters), the look (color from the user's tags, flatish), state kept in osis including view state, the layer split (osis state, toolkit-free actions crate, Masonry driver and widgets), the toolkit decision (Masonry without Xilem) with the alternatives weighed, the platform work accepted, and the prototype order.
 
 ## Direction (owner)
 - Fresh and timeless, not a bundle of generic apps over osis types. Bright colors, flatish but not distinctly flat, its own look rather than the native aesthetic.

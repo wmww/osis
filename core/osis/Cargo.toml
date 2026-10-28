@@ -35,6 +35,10 @@ osis-crypto = { workspace = true, features = ["os-rng"] }
 osis-transport = { workspace = true, features = ["link"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time"] }
 
+[build-dependencies]
+osis-schema.workspace = true
+
 [dev-dependencies]
 osis-server.workspace = true
+osis-sim.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time"] }

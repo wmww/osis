@@ -3,12 +3,12 @@
 //! it field by field; a contact without a profile is just my data. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::common;
+use crate::scenario as common;
 use common::*;
 use osis::core::NAME;
 use osis::{Osis, Place, Result, Tid};
 use osis_sim::world::World;
-use osis_std::contact::*;
+use crate::schemas::contact::*;
 use std::collections::BTreeMap;
 
 fn labeled(label: &str, pref: bool) -> Labeled {

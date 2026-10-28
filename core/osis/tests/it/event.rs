@@ -3,12 +3,12 @@
 //! any other. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::common;
+use crate::scenario as common;
 use common::*;
 use osis::core::{BODY, NAME};
 use osis::{EdgeOpts, Error, Osis, Place, Result, Role, Tid};
 use osis_sim::world::World;
-use osis_std::event::*;
+use crate::schemas::event::*;
 use std::collections::BTreeSet;
 
 const MIN: i64 = 60_000;

@@ -28,6 +28,7 @@ step cargo clippy-net --locked -- -D warnings
 step python3 tools/policy.py
 step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
+step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
   step cargo run --locked --bin sim-sweep -- --seeds "$seeds" --budget-secs 900

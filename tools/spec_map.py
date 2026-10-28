@@ -25,7 +25,7 @@ import glob, os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "notes/testing-map.md")
-SOURCES = ["core", "cli", "crates"]
+SOURCES = ["core", "cli"]
 MODELS = ("core/test/crdt-model/", "core/test/membership-model/")
 # An anchor is a parenthesis right after the section holding no citation of its own; matched by
 # lookahead so citations inside other parentheses are still found.
