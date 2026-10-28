@@ -225,19 +225,6 @@ fn parse_page_row(b: &[u8]) -> Result<(Range, Fragment)> {
     Ok(((opt_dot_of(lo)?, opt_dot_of(hi)?), decode(p)?))
 }
 
-/// What an index row finds a key or value by: equal values (links by content hash alone,
-/// spec/data-model.md §6) give equal results.
-fn ident(v: &Value) -> Value {
-    match v {
-        Value::Link(l) => Value::Bytes(l.hash.to_vec()),
-        Value::List(x) => Value::List(x.iter().map(ident).collect()),
-        Value::Set(x) => Value::Set(x.iter().map(ident).collect()),
-        Value::Map(x) => Value::Map(x.iter().map(|(k, v)| (ident(k), ident(v))).collect()),
-        Value::Enum(c, p) => Value::Enum(*c, p.as_deref().map(|p| Box::new(ident(p)))),
-        v => v.clone(),
-    }
-}
-
 /// What the index of a paged collection finds element `d` by: a map entry's key, the value of
 /// a set element (and of any `Derived` element sorting right after it: a superset). Empty for
 /// a keyless or value-less element and other encodings.
@@ -255,10 +242,13 @@ fn indexed(c: &Fragment, enc: Encoding, d: &Dot) -> Vec<Value> {
     }
 }
 
-/// An index row of a paged map or set: set ID, the hash of the key or value, the element's dot.
+/// An index row of a paged map or set: set ID, the hash of the key or value (a link as its
+/// content hash's bytes: equal values give equal rows, spec/data-model.md §6), the element's
+/// dot.
 fn key_row(set: &PageSet, k: &Value, d: Option<&Dot>) -> Vec<u8> {
     let mut out = set.id.to_be_bytes().to_vec();
-    out.extend_from_slice(&osis_base::hash::keyed_hash(&set.salt, &osis_base::encode(&ident(k))));
+    let ident = super::large::map_links(k, &|l| Value::Bytes(l.hash.to_vec()));
+    out.extend_from_slice(&osis_base::hash::keyed_hash(&set.salt, &osis_base::encode(&ident)));
     if let Some(d) = d {
         out.extend_from_slice(&osis_base::encode(&dot_value(d)));
     }
