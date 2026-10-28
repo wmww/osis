@@ -776,3 +776,56 @@ fn late_deltas_before_two_snapshots_alike_spec_crdt_4_8() {
     assert_eq!(deaths(&mut lp.peers[0].engine), want, "a whole replay");
     assert!(lp.peers[0].engine.last_deaths_stale().unwrap().is_empty());
 }
+
+// spec/crdt.md §4.8, §8: a dropped snapshot carries a write X never held here, in its residue
+// (an older kept body held when it dropped) or only in the state (none held: no residue); a late
+// delta older than X dies at it, in a window as in a replay of every body (was: the window
+// skipped the snapshot, whose carried groups go with its body).
+#[test]
+fn late_delta_dies_at_dropped_snapshot_copy_spec_crdt_4_8() {
+    for residue in [true, false] {
+        late_delta_dies_at_dropped_snapshot_copy(residue);
+    }
+}
+
+fn late_delta_dies_at_dropped_snapshot_copy(residue: bool) {
+    let mut lp = net(4, 85);
+    let t = new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    let k = ak("/t/kept");
+    lp.advance(10);
+    let a = set(&mut lp, 0, t, &KEPT, "a");
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let l = set(&mut lp, 1, t, &KEPT, "late");
+    lp.advance(10);
+    let x = set(&mut lp, 2, t, &KEPT, "x");
+    lp.advance(10);
+    let s1 = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    let mut all = packages(&mut lp, 0);
+    all.extend(packages(&mut lp, 1));
+    all.extend(packages(&mut lp, 2));
+    let mut seen = std::collections::BTreeSet::new();
+    all.retain(|p| seen.insert(p.id) && p.id != x && (residue || p.id != a));
+    let (late, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|p| p.id == l);
+    for p in &rest {
+        lp.deliver(3, p).unwrap();
+    }
+    let e = &mut lp.peers[3].engine;
+    assert!(e.header(&x).is_none() && e.holds_body(&s1, &t, &k));
+    e.drop_body(&s1, &t, &k).unwrap();
+    assert_eq!(e.residue_bytes(&t, &k).unwrap() > 0, residue);
+    lp.deliver(3, &late[0]).unwrap();
+    let (tl, tx) = (lp.peers[1].engine.header(&l).unwrap().ts, lp.peers[2].engine.header(&x).unwrap().ts);
+    let e = &mut lp.peers[3].engine;
+    let deaths = |e: &mut osis_node::Engine| (if residue { e.deaths(&a, &t, &k).unwrap() } else { None }, e.deaths(&l, &t, &k).unwrap());
+    let got = deaths(e);
+    assert_eq!(got, (residue.then_some((tl, tl)), Some((tx, tx))), "residue {residue}");
+    e.replay_deaths(&t, &k).unwrap();
+    assert_eq!(deaths(e), got, "residue {residue}");
+}

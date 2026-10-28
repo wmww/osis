@@ -774,8 +774,9 @@ fn plays_own(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<bool> 
 }
 
 /// The snapshots and imports among `snaps` of `(tid, ak)` whose copies a window starting at
-/// `t_start` must play: imports, and the snapshots that may carry a copy stamped at or after
-/// `t_start` whose own commit does not play it (neither held nor a residue). The window
+/// `t_start` must play: imports, dropped snapshots (a residue, or none: the state), and the
+/// held snapshots that may carry a copy stamped at or after `t_start` whose own commit does
+/// not play it (neither held nor a residue). The window
 /// removes the copies their own commit plays, and a copy stamped before `t_start` supersedes no
 /// write of a body sorting at or after it, the only writes the window dates (a write dies only
 /// at a greater stamp, spec/crdt.md §4.8), so playing such a snapshot dates none of them. Such
@@ -787,7 +788,10 @@ fn plays_own(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId) -> Result<bool> 
 /// the aspect from `t_start` to the last of `snaps` (in memory; a residue read per dropped one,
 /// up to the first without one), the thing's commit-form sources and the carried groups.
 fn playing_copies(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, t_start: Ts, snaps: &[(Ts, CommitId)]) -> Result<BTreeSet<CommitId>> {
-    let mut out: BTreeSet<CommitId> = snaps.iter().filter(|x| tx.core.commits.get(&x.1).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind))).map(|x| x.1).collect();
+    // a dropped snapshot has no carried groups left (`forget_snapshot`): its residue, or the
+    // state where it has none, may hold copies of writes never held here
+    let mut out: BTreeSet<CommitId> =
+        snaps.iter().filter(|x| held_part(tx.core, &x.1, tid, ak).is_none() || tx.core.commits.get(&x.1).is_none_or(|m| !crate::apply::is_kind_snapshot(m.header.kind))).map(|x| x.1).collect();
     let Some(last) = snaps.iter().map(|x| x.0).max() else { return Ok(out) };
     // commit-form sources
     let srcs: Vec<CommitId> = tx.core.authors.range((*tid, LO)..=(*tid, HI)).filter(|(_, v)| v.1 >= t_start).map(|(k, _)| k.1).collect();
