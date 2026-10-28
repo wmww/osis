@@ -164,8 +164,9 @@ impl SeqPlace {
     pub fn visible(&self, r: std::ops::Range<usize>) -> Vec<Dot> {
         self.0.p.vis_range(r).into_iter().map(|x| x.dot.clone()).collect()
     }
-    /// The same placement (chars aside), both loaded whole (tests, checks).
-    pub fn same(&self, o: &SeqPlace) -> bool {
+    /// The same placement (chars aside), both loaded whole (tests).
+    #[cfg(any(test, fuzzing))]
+    pub(crate) fn same(&self, o: &SeqPlace) -> bool {
         self.0.same(&o.0)
     }
     /// Every element in order, hidden ones included, with its visibility (tests, checks).

@@ -155,7 +155,7 @@ impl Interner {
         Interner::default()
     }
     /// The shared copy of `s`.
-    pub fn intern(&mut self, s: &Source) -> Source {
+    pub(crate) fn intern(&mut self, s: &Source) -> Source {
         self.0.entry(s.kind().clone()).or_insert_with(|| s.clone()).clone()
     }
     pub fn node(&mut self, tid: Tid) -> Source {
