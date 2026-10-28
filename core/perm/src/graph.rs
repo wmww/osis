@@ -751,27 +751,6 @@ impl<'a> View<'a> {
         seen
     }
 
-    /// Entities from which admin flows to `start` (included): owner links and admin edges
-    /// alive at `ts`.
-    pub fn admin_reaching(&self, start: &Tid) -> BTreeSet<Tid> {
-        let mut seen = BTreeSet::from([*start]);
-        let mut stack = vec![*start];
-        while let Some(e) = stack.pop() {
-            let mut up: Vec<Tid> = self.owners.owner_actor(&e).into_iter().collect();
-            self.each_member(&e, |m, ed| {
-                if ed.role == Role::Admin && ed.alive_at(self.ts) {
-                    up.push(*m);
-                }
-            });
-            for y in up {
-                if seen.insert(y) {
-                    stack.push(y);
-                }
-            }
-        }
-        seen
-    }
-
     /// Entities that reach `start` (included) by owner links and edges of any role and `until`.
     pub fn reach_backward(&self, start: &Tid) -> BTreeSet<Tid> {
         let mut seen = BTreeSet::from([*start]);

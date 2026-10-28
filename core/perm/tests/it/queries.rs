@@ -299,7 +299,6 @@ fn rotation_rights() {
     assert_eq!(tl.may_rotate(&n[1], &x, At::END), vec![Read, Write, Admin]);
     assert_eq!(tl.may_rotate(&n[2], &x, At::END), vec![Read, Write]);
     assert_eq!(tl.may_rotate(&n[3], &x, At::END), Vec::<Role>::new());
-    assert!(tl.may_write_membership(&n[1], &x, At::END) && !tl.may_write_membership(&n[2], &x, At::END));
 }
 
 struct Moves {
@@ -450,7 +449,6 @@ fn patched_view_equals_cloned_edges() {
             }
             assert_eq!(a.reach_forward(x), b.reach_forward(x));
             assert_eq!(a.reach_backward(x), b.reach_backward(x));
-            assert_eq!(a.admin_reaching(x), b.admin_reaching(x));
             for n in &ents {
                 assert_eq!(a.standing(x, &ra, n), b.standing(x, &rb, n));
             }

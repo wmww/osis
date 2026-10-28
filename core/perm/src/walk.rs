@@ -697,7 +697,7 @@ impl Walked {
                 let (lj, hj) = self.rest.marks.get(j).copied().unwrap_or(end);
                 let lj1 = self.rest.marks.get(j + 1).map_or(end.0, |m| m.0);
                 for ch in self.history.get(at..hj).unwrap_or_default() {
-                    sh.set_plain(ch.member, ch.target, ch.edge, ch.point.ts);
+                    sh.set_tracked(ch.member, ch.target, ch.edge, ch.point.ts);
                 }
                 at = hj;
                 // an item that may read it only by auditing a node of A on a thing of F: it
@@ -719,11 +719,11 @@ impl Walked {
                     let mut far = !reached(&sh);
                     if far && !keys.is_empty() {
                         for (k, e) in &olds {
-                            sh.set_plain(k.0, k.1, *e, ts);
+                            sh.set_tracked(k.0, k.1, *e, ts);
                         }
                         far = !reached(&sh);
                         for (k, e) in &own.edges {
-                            sh.set_plain(k.0, k.1, *e, ts);
+                            sh.set_tracked(k.0, k.1, *e, ts);
                         }
                     }
                     if far {
@@ -1447,12 +1447,6 @@ impl<'a> Pass<'a> {
     fn shadow(input: &'a Input, epoch: BTreeMap<Tid, CommitId>, dropped: BTreeMap<WriteId, Point>, edges: Edges, outer: &'a Walked) -> Pass<'a> {
         let w = Walked { initial: Edges::default(), history: Vec::new(), edges, applied: BTreeMap::new(), demotions: BTreeMap::new(), falls: BTreeMap::new(), rest: Rest::default() };
         Pass { outer: Some(outer), ..Pass::resume(input, epoch, dropped, w) }
-    }
-
-    /// Sets an edge at `ts` with no record but its undo entry (a shadow following the walk's
-    /// history, before any item it walks).
-    fn set_plain(&mut self, m: Tid, t: Tid, e: Option<Edge>, ts: Ts) {
-        self.set_tracked(m, t, e, ts);
     }
 
     /// The state of the edges an item writes before it, from its undo entries (the first one of

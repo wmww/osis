@@ -1,10 +1,12 @@
 //! Incremental evaluation (notes/permissions.md Implementation): the timeline split into connected components of
 //! things (edges join member, target and author; ownership joins a thing and its owner; a
-//! roster snapshot joins its thing, author and every node it names), each evaluated from
-//! scratch and cached by its exact inputs. A held-set change re-evaluates only the components
-//! whose inputs changed. Components are independent: no write in one can change authority in
-//! another, so the result equals one evaluation of the whole held set.
+//! roster snapshot joins its thing, author and every node it names), each cached by its exact
+//! inputs. A held-set change touches only the components whose inputs changed: continued in
+//! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
+//! saved walk, or evaluated. Components are independent: no write in one can change authority
+//! in another, so the result equals one evaluation of the whole held set.
 
+use crate::cache::{self, Inputs};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{MembershipCommit, RosterSnapshot};
@@ -65,8 +67,6 @@ impl HeldSet for Part<'_> {
         if self.things.contains(thing) { self.held.created(thing) } else { None }
     }
 }
-
-use crate::cache::{self, Inputs};
 
 /// Which things' timelines an update changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
