@@ -12,8 +12,13 @@ default 3). The watchdog (notes/coordination.md) reads this first.
 """
 import datetime as dt, glob, json, os, re, sys
 
-args = [a for a in sys.argv[1:] if not a.startswith("--")]
-opts = dict(a[2:].split("=", 1) if "=" in a else (a[2:], True) for a in sys.argv[1:] if a.startswith("--"))
+args, opts, it = [], {}, iter(sys.argv[1:])
+for a in it:
+    if a.startswith("--"):
+        k, _, v = a[2:].partition("=")
+        opts[k] = v if v else next(it, "")
+    else:
+        args.append(a)
 long_n = int(opts.get("long", 3))
 tasks = args[0] if args else max(glob.glob(f"/tmp/claude-{os.getuid()}/*/*/tasks"), key=os.path.getmtime)
 since = None
