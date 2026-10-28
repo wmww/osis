@@ -24,8 +24,14 @@ impl UndoBuffer for Fragment {
         let MemberRef::Frag(f) = self.chosen_member() else { return None };
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.before(rest),
+            // unlike `Fragment::at`, a case not current here: the undone op found it current, and
+            // a buffer joined from held bodies may show a concurrent case write it never saw
             (PathSeg::Case(id), Fragment::Enum(e)) => e.payloads.get(id)?.before(rest),
-            (PathSeg::Key(k), Fragment::Map(m)) => m.entries.get(*m.live_dots(k).first()?)?.frag.as_deref()?.before(rest),
+            // the join of the key's live entries (§4.6); `undo` itself restarts below each entry
+            (PathSeg::Key(k), Fragment::Map(m)) => match m.live_dots(k).as_slice() {
+                [d] => m.entries.get(*d)?.frag.as_deref()?.before(rest),
+                ds => key_state(m, ds)?.before(rest),
+            },
             (PathSeg::Index(i), Fragment::Seq(s)) => seq::element_at(s, *i)?.1?.before(rest),
             _ => None,
         }
