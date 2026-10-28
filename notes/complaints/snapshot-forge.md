@@ -5,3 +5,4 @@
 - Foreground test commands that compile past 180 s get moved to the background mid-pipe; a `| head` on such a command then reports the pipe, not the test. Write to a log and grep it.
 - Review: the branch deleted `core/crdt/proptest-regressions/tests_life.txt` (a committed regression seed file, probably swept up with test output); main had meanwhile added a seed to it, so the rebase conflicted. Kept main's file.
 - Review: the default oracle ranges passed; the honest-flow bug (stripping entry keys) came from a fresh `order::arrival_order_alike_large` range (93000), as notes/coordination.md predicts.
+- Gate: the new spec-map check (`--gaps`) failed on the branch's new spec/commits.md §5 MUST: a new MUST sentence needs a RULES entry in tools/spec_map.py and a test citing its anchor. Not mentioned in the worker brief.

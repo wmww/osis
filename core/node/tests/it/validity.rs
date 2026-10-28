@@ -1335,7 +1335,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
 }
 
 
-// spec/commits.md §5 (covered), spec/permissions.md §5.2: a snapshot copying a held write with
+// spec/commits.md §5 (covering copies), spec/permissions.md §5.2: a snapshot copying a held write with
 // another value does not cover that write's body (joining it into the snapshot changes no bytes:
 // the copies of one dot tie), so the body is not dropped for it; the honest snapshot covers both
 // the body and the forged snapshot, whose copy C's held delta gives.
@@ -1438,7 +1438,7 @@ fn snapshot_forging_dropped_import_dot_shows_spec_perm_5_2() {
     assert_eq!(lp.peers[2].engine.get(&copy, &tags).unwrap(), before, "{got:?}");
 }
 
-// spec/commits.md §5 (covered): an honest snapshot covers a commit writing inside an entry an
+// spec/commits.md §5 (covering copies): an honest snapshot covers a commit writing inside an entry an
 // earlier commit created (the body repeats the entry's record without its creation, which the
 // snapshot holds: that record is no write of the body's), and a body this node holds no delta of.
 #[test]
