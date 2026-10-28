@@ -949,10 +949,7 @@ impl SyncEngine {
                     }
                     break;
                 }
-                cur = match self.engine.core.created(&t) {
-                    Some(osis_base::CreationRecord::Thing { owner, .. }) => Some(*owner),
-                    _ => None,
-                };
+                cur = self.engine.owner(&t);
             }
         }
         Ok(())

@@ -321,7 +321,7 @@ impl SyncEngine {
             if inbox.is_some() {
                 break;
             }
-            let Some(osis_base::CreationRecord::Thing { owner: up, .. }) = self.engine.core.created(&cur).cloned() else { break };
+            let Some(up) = self.engine.owner(&cur) else { break };
             cur = up;
             inbox = self.engine.get_typed(&cur, &ct::KEYS)?.and_then(|k| k.inbox);
             owner = cur;
