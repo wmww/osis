@@ -216,6 +216,9 @@ pub(crate) struct Pager {
     bounds: Vec<Option<Dot>>,
     pub loaded: std::collections::BTreeSet<usize>,
     pub p: crate::seq_place::SeqPlace,
+    /// Whole passes over the records held (`PlaceMisses::whole`): loaded whole for a reason
+    /// other than a miss.
+    pub whole_passes: usize,
 }
 
 impl Pager {
@@ -224,7 +227,7 @@ impl Pager {
         let keys: Vec<&Dot> = st.elems().keys().collect();
         let bounds = std::iter::once(None).chain(keys.chunks(per.max(1)).skip(1).map(|c| Some(c[0].clone()))).collect();
         let p = crate::seq_place::SeqPlace::from_top(&whole.top()).unwrap();
-        Pager { st: st.clone(), whole, bounds, loaded: Default::default(), p }
+        Pager { st: st.clone(), whole, bounds, loaded: Default::default(), p, whole_passes: 0 }
     }
     fn page_of(&self, x: &Dot) -> usize {
         self.bounds.partition_point(|b| b.as_ref().is_none_or(|b| b <= x)) - 1
@@ -259,6 +262,7 @@ impl Pager {
         for (a, b) in &m.recs {
             self.load(a, b);
         }
+        self.whole_passes += usize::from(m.whole);
         if m.all {
             // as a node does: load whole
             self.loaded.extend(0..self.bounds.len());
@@ -281,8 +285,17 @@ impl Pager {
 /// nothing more, and what it changed can be written back. Whether it followed, with the blocks
 /// it loaded and all blocks.
 pub(crate) fn partial_follow(st: &Seq, d: &Seq, per: usize) -> Option<(usize, usize)> {
+    partial_follow_in(st, d, per, true).map(|x| x.0)
+}
+
+/// `partial_follow`, also giving the pages it loaded; without `newest` the stored placement has
+/// no newest-stamp bound (a top written before it).
+pub(crate) fn partial_follow_in(st: &Seq, d: &Seq, per: usize, newest: bool) -> Option<((usize, usize), usize)> {
     use crate::seq_place::SeqPlace;
     let mut pg = Pager::new(st, per);
+    if !newest {
+        pg.p = SeqPlace::from_top(&crate::seq_place::PlaceTop { newest: None, ..pg.whole.top() }).unwrap();
+    }
     for (k, e) in d.elems() {
         pg.load(k, &nth(k, e.span - 1));
     }
@@ -316,7 +329,7 @@ pub(crate) fn partial_follow(st: &Seq, d: &Seq, per: usize) -> Option<(usize, us
     }
     assert!(back.complete());
     assert!(back.same(&want), "a placement held in part, followed and stored, is a whole pass's");
-    Some(counts)
+    Some((counts, pg.loaded.len()))
 }
 
 /// `s` ⊔ `d` (a fragment join of two sequences).

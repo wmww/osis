@@ -92,6 +92,14 @@ impl Fragment {
         }
     }
 
+    /// A sequence's visible length (its placement's); `None` for other encodings.
+    pub fn visible_len(&self) -> Option<usize> {
+        match self.chosen_member() {
+            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.shown()),
+            _ => None,
+        }
+    }
+
     /// What a sequence's elements `dots` read, in that order (§5.7 Read): a text's chars as one
     /// string, a list's element values. `None` if one is not a visible element here.
     pub fn read_elems(&self, dots: &[Dot]) -> Option<Value> {

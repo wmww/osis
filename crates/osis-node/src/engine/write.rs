@@ -479,7 +479,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             None => crate::engine::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
         // ops by index into paged sequences: on the pages loaded, through their stored placements
-        let partial = paths.is_none() && tx.attach_ops(&tid, &ak, &am.ops)?;
+        // a list edit's items by content hash and its window (what the pages it needs follow from)
+        let edits = match &framing {
+            Some(f) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
+            None => Vec::new(),
+        };
+        let partial = paths.is_none() && tx.attach_ops(&tid, &ak, &am.ops, &edits)?;
         match paths {
             _ if partial => {}
             Some(paths) => tx.ensure_paths(&tid, &ak, &paths)?,
@@ -488,7 +493,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
         if let Some(framing) = &framing {
-            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, am.schema.as_deref(), framing, &m.fresh)?;
+            chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "/tenures" {
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
@@ -513,7 +518,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 match tx.absorb(&tid, &ak)? {
                     Some(false) => break,
                     Some(true) if runs < crate::engine::pages::OP_RUNS => {}
-                    _ => {
+                    x => {
+                        if x.is_some() {
+                            let _s = crate::costs::span("paged op whole: runs");
+                        }
                         tx.load(&tid, &ak)?;
                         let state = tx.core.states.get(&(tid, ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
                         out = run(state, &am.ops);

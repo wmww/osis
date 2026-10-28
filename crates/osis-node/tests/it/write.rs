@@ -397,6 +397,98 @@ fn large_list_edit_chunked_spec_dm_6() {
     assert!((300_000..380_000).contains(&wrote), "duplicate items wrote {wrote} B");
 }
 
+// spec/crdt.md §5.7 (`edit` resolved at base's indices around its change), §8; spec/data-model.md
+// §6 (large items as links): list edits of a paged list with large items (above
+// CHUNK_THRESHOLD), each in a new session, write on the pages loaded what they write with the
+// list loaded whole: two peers from one seed, one cold and one reading the list whole before
+// each edit, make the same commits. Edits against the current read load a few pages and never
+// load whole; against a stale read they load whole and still agree.
+#[test]
+fn paged_list_edits_match_whole_spec_crdt_5_7() {
+    for (seed, with_large) in [(31, true), (32, false)] {
+        list_edits_match_whole(seed, with_large);
+    }
+}
+
+fn list_edits_match_whole(seed: u64, with_large: bool) {
+    let small = |id: usize| Value::Str(format!("item {id} of the list"));
+    let big = |id: usize| if with_large { Value::Str(format!("L{id}:{}", "x".repeat(osis_core::format::CHUNK_THRESHOLD + 10))) } else { Value::Str(format!("item {id} (not large)")) };
+    let (key, a) = (&common::LIST, ak("/t/list"));
+    let (mut cold, mut whole) = (peer(seed), peer(seed));
+    let me = cold.engine.tid();
+    let mut model: Vec<Value> = (0..3000).map(small).collect();
+    for (k, i) in [40, 700, 1500, 2100, 2990].into_iter().enumerate() {
+        model[i] = big(k);
+    }
+    let mut t = None;
+    for p in [&mut cold, &mut whole] {
+        let mut m = Mutation::new();
+        t = Some(p.engine.new_thing(&mut m, me));
+        m.set(t.unwrap(), key, &Value::List(model.clone())).unwrap();
+        p.commit(m).unwrap().unwrap();
+    }
+    let t = t.unwrap();
+    let mut x = 0x5851_f42d_4c95_7f2du64 ^ seed;
+    let mut r = |n: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % n.max(1) as u64) as usize
+    };
+    let (mut fresh_id, mut stale) = (10_000, model.clone());
+    let (mut at_window, mut stale_edits) = (0, 0);
+    for step in 0..24u64 {
+        let old = step % 6 == 5;
+        let base = if old { stale.clone() } else { model.clone() };
+        let mut new = base.clone();
+        let at = r(new.len());
+        fresh_id += 1;
+        let kind = r(6);
+        match kind {
+            0 => new.insert(at, small(fresh_id)),
+            1 => new.insert(at, big(fresh_id)),
+            2 => {
+                new.remove(at);
+            }
+            3 => new[at] = if r(2) == 0 { big(fresh_id) } else { small(fresh_id) },
+            // a copy of a large item held elsewhere in the list
+            4 => new.insert(at, big(r(5))),
+            _ => new.truncate(at.max(2900)),
+        }
+        let mut ids = Vec::new();
+        for (i, p) in [&mut cold, &mut whole].into_iter().enumerate() {
+            p.restart(1000 + step).unwrap();
+            if i == 1 {
+                assert!(p.engine.get(&t, &a).unwrap().is_some());
+            }
+            osis_node::costs::take();
+            let mut m = Mutation::new();
+            m.op(t, key, PathOp { path: vec![], op: Op::Edit { base: Value::List(base.clone()), new: Value::List(new.clone()) } }).unwrap();
+            ids.push(p.commit(m).unwrap());
+            let c = osis_node::costs::take();
+            let count = |k: &str| c.iter().filter(|x| x.0.starts_with(k)).map(|x| x.2).sum::<u64>();
+            if i == 0 && !old {
+                let pages = count("state page load");
+                assert!(pages <= 6 && count("paged op whole") == 0, "step {step} (kind {kind}): {pages} pages loaded, {c:?}");
+                at_window += 1;
+            }
+            stale_edits += usize::from(i == 0 && old);
+        }
+        assert_eq!(ids[0], ids[1], "step {step} (kind {kind}, stale {old}): cold and whole commits differ");
+        let got = cold.engine.get_full(&t, &a).unwrap();
+        assert_eq!(got, whole.engine.get_full(&t, &a).unwrap(), "step {step}");
+        let Some(Value::List(got)) = got else { panic!() };
+        if !old {
+            assert!(got == new, "step {step} (kind {kind}): the edit as written");
+        }
+        model = got;
+        if step % 6 == 2 {
+            stale = model.clone();
+        }
+    }
+    assert!(at_window >= 20 && stale_edits >= 4, "{at_window} at their window, {stale_edits} stale");
+}
+
 // spec/commits.md §1 (the chunk list holds the blobs the deltas introduce): an edit replacing a
 // large item the list no longer holds (deleted concurrently) changes nothing there; the tree
 // written for the replacement is neither listed nor kept.
@@ -485,7 +577,7 @@ const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/w/text", 
 
 // spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6
 // (undo), §8: local inserts and deletes by index into a paged text, each in a new session, load a
-// few pages (resolved through the stored placement); undos of them, also in new sessions,
+// few pages (resolved through the stored placement; an insert only its record's); undos of them, also in new sessions,
 // restore the text; reads by index and whole reads agree with a plain-string model throughout,
 // and edits by index go on after the undos.
 #[test]
@@ -516,7 +608,8 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
     for step in 0..12 {
         restart(&mut p);
         let before = model.clone();
-        let op = if step % 3 == 2 {
+        let insert = step % 3 != 2;
+        let op = if !insert {
             let at = r(model.len() - 10);
             let len = 1 + r(8);
             model.drain(at..at + len);
@@ -529,8 +622,11 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
         let mut m = Mutation::new();
         m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
         done.push((p.engine.commit(m).unwrap().unwrap(), before));
-        let pages = osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
-        assert!(pages <= 4, "step {step}: {pages} pages loaded");
+        let c = osis_node::costs::take();
+        let pages = c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        // an insert: only the page its record goes to (its anchor from the placement, placed first
+        // among the anchor's children by the newest stamp)
+        assert!(pages <= if insert { 1 } else { 4 } && !c.iter().any(|c| c.0.starts_with("paged op whole")), "step {step}: {pages} pages loaded, {c:?}");
         restart(&mut p);
         let lo = r(model.len() - 50);
         assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "step {step}");
@@ -553,8 +649,9 @@ fn paged_text_edits_by_index_and_undo_spec_crdt_6_1() {
         let mut m = Mutation::new();
         m.op(t, &TEXT_AK, PathOp { path: vec![], op: Op::Insert { at, items: vec![Value::Str("c".into())] } }).unwrap();
         p.engine.commit(m).unwrap().unwrap();
-        let pages = osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
-        assert!(pages <= 4, "after undo, step {step}: {pages} pages loaded");
+        let c = osis_node::costs::take();
+        let pages = c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+        assert!(pages <= 4 && !c.iter().any(|c| c.0.starts_with("paged op whole")), "after undo, step {step}: {pages} pages loaded, {c:?}");
     }
     restart(&mut p);
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str(model.iter().collect())));
@@ -588,7 +685,11 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
         p.restart(session.get()).unwrap();
         osis_node::costs::take();
     };
-    let pages = || osis_node::costs::take().iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2);
+    // pages loaded, and whether an op on the pages loaded gave up and loaded whole
+    let pages = || {
+        let c = osis_node::costs::take();
+        (c.iter().find(|c| c.0 == "state page load").map_or(0, |c| c.2), c.iter().any(|c| c.0.starts_with("paged op whole")))
+    };
     let mut edits = |p: &mut Peer, model: &mut Vec<char>, what: &str| {
         for step in 0..8 {
             restart(p);
@@ -606,8 +707,8 @@ fn paged_text_reset_then_edits_by_index_spec_crdt_5_7() {
             m.op(t, &TEXT_AK, PathOp { path: vec![], op }).unwrap();
             p.engine.commit(m).unwrap().unwrap();
             // the first edit after the reset finds no placement (laid out by the read after it)
-            let n = pages();
-            assert!(step == 0 || n <= 4, "{what} step {step}: {n} pages loaded");
+            let (n, gave_up) = pages();
+            assert!(step == 0 || n <= 4 && !gave_up, "{what} step {step}: {n} pages loaded");
             restart(p);
             let lo = r(model.len() - 50);
             assert_eq!(p.engine.get_range(&t, &a, &[], lo..lo + 50).unwrap(), Some(Value::Str(model[lo..lo + 50].iter().collect())), "{what} step {step}");
