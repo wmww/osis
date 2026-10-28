@@ -397,3 +397,29 @@ fn unknown_rejects_known_tags() {
     }
     assert!(Unknown::new(TAG_STRUCT_RESERVED, c).is_some());
 }
+
+// RFC 8949 §4.2.1: `head` is the shortest head at every length boundary, `head_len` its length.
+#[test]
+fn head_boundaries() {
+    use osis_base::cbor::{head, head_len};
+    let mut args = vec![0u64, u64::MAX, u64::MAX - 1];
+    for b in [24u64, 0x100, 0x1_0000, 0x1_0000_0000] {
+        args.extend([b - 1, b, b + 1]);
+    }
+    for major in 0..=7u8 {
+        for &a in &args {
+            let m = major << 5;
+            let want: Vec<u8> = match a {
+                0..24 => vec![m | a as u8],
+                24..0x100 => vec![m | 24, a as u8],
+                0x100..0x1_0000 => [&[m | 25][..], &(a as u16).to_be_bytes()].concat(),
+                0x1_0000..0x1_0000_0000 => [&[m | 26][..], &(a as u32).to_be_bytes()].concat(),
+                _ => [&[m | 27][..], &a.to_be_bytes()].concat(),
+            };
+            let mut got = Vec::new();
+            head(&mut got, major, a);
+            assert_eq!(got, want, "major {major} arg {a}");
+            assert_eq!(head_len(a), want.len(), "arg {a}");
+        }
+    }
+}

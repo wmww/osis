@@ -304,6 +304,61 @@ mod tests {
         assert!(osis_crypto::verify_delete(&key, &[4; 32], &d.sign(&salt, &[1; 16], &[4; 32])).is_err());
     }
 
+    // spec/wire.md §5, spec/crypto.md §7: a prefix is the commitments of the distinct keys sorted,
+    // whatever their order or repeats; two keys at one level, a level outside 1..=3, an expiry
+    // of 0 or a key off the curve fail; `agrees` holds exactly for the prefix's own inputs.
+    #[test]
+    fn for_delete_keys_differential() {
+        use osis_commit::DeleteKey;
+        use osis_crypto::RngCore;
+        let reference = |salt: [u8; 16], hb: &[u8; 16], expiry: Option<WallMs>, keys: &[DeleteKey]| -> Option<Prefix> {
+            let mut cs = Vec::new();
+            for k in keys {
+                cs.push(commitment(k.level, &VerifyingKey::from_bytes(&k.key).ok()?, &salt, hb).ok()?);
+            }
+            cs.sort_unstable();
+            cs.dedup();
+            if cs.windows(2).any(|w| w[0][0] == w[1][0]) || expiry == Some(WallMs(0)) {
+                return None;
+            }
+            Some(Prefix { salt, expiry, commitments: cs })
+        };
+        let pool: Vec<VerifyingKey> = (1..=3u8).map(|i| osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([i; 32])).verifying_key()).collect();
+        let off_curve = (0..=255u8).map(|b| [b; 32]).find(|b| VerifyingKey::from_bytes(b).is_err()).unwrap();
+        let mut rng = osis_crypto::SeededRng::from_u64(77);
+        for _ in 0..2000 {
+            let r = |rng: &mut osis_crypto::SeededRng, n: u32| (rng.next_u32() % n) as u8;
+            let n = r(&mut rng, 6);
+            let keys: Vec<DeleteKey> = (0..n)
+                .map(|_| {
+                    let level = r(&mut rng, 5);
+                    match r(&mut rng, 20) {
+                        0 => DeleteKey { level, key: off_curve },
+                        i => DeleteKey::new(level, &pool[usize::from(i) % 3]),
+                    }
+                })
+                .collect();
+            let expiry = match r(&mut rng, 4) {
+                0 => None,
+                1 => Some(WallMs(0)),
+                _ => Some(WallMs(u64::from(rng.next_u32()))),
+            };
+            let (salt, hb) = ([r(&mut rng, 3); 16], [r(&mut rng, 3); 16]);
+            let got = Prefix::for_delete_keys(salt, &hb, expiry, &keys).ok();
+            assert_eq!(got, reference(salt, &hb, expiry, &keys), "{keys:?} {expiry:?}");
+            let Some(p) = got else { continue };
+            assert_eq!(Prefix::parse(&p.to_bytes()).unwrap(), p);
+            let mut rev = keys.clone();
+            rev.reverse();
+            assert!(p.agrees(expiry, &hb, &rev));
+            assert!(!p.agrees(expiry, &[hb[0] ^ 1; 16], &keys) || keys.is_empty());
+            assert!(!p.agrees(expiry.map(|t| WallMs(t.0 + 1)).or(Some(WallMs(1))), &hb, &keys));
+            let mut more = keys.clone();
+            more.push(DeleteKey::new(r(&mut rng, 3) + 1, &pool[0]));
+            assert_eq!(p.agrees(expiry, &hb, &more), reference(salt, &hb, expiry, &more).as_ref() == Some(&p));
+        }
+    }
+
     // spec/crypto.md §5: a reader tries its read secrets newest first; a filler opens under none.
     #[test]
     fn wraps() {
