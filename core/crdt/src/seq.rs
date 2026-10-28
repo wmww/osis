@@ -884,7 +884,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
 
 /// `Fragment::strip_copies` past `remove_dots`: the creations (anchor and char) of elements a
 /// matching dot created go too, their records staying as anchors.
-pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
+pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: bool) {
     for (d, el) in s.elems_mut().iter_mut() {
         if pred(d.owner()) {
             el.created = None;
@@ -894,7 +894,7 @@ pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
             }
         }
         if let SeqContent::Frag(f) = &mut el.content {
-            f.drop_creations(pred);
+            f.drop_creations(pred, keys);
         }
     }
 }

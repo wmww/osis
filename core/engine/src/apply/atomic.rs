@@ -772,7 +772,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, forged: Option<&BTreeSet<osis_cr
         }
     }
     if let (Some(c), Some(forged)) = (current.as_mut(), forged) {
-        c.strip_copies(&|d| forged.contains(d) && copy(d));
+        c.strip_forged(&|d| forged.contains(d) && copy(d));
     }
     let bad = |d: &osis_crdt::Dot| invalid.iter().any(|o| o.owns(d));
     let mut st = Fragment::default();

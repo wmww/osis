@@ -3,3 +3,5 @@
 - The debug in-place-vs-`rebuilt` assertion in `unmerge_fell` runs a whole rebuild per un-merge: a debug `eprintln` per write inside `rebuilt` turned a 6 s test into 4 min. Print only the aspect/records of interest.
 - `rebuilt` runs inside `apply_verified` before the commit's record is stored (an invalid delta arriving): `held_parts` of that commit is empty there though its meta says held. Anything keyed on "held per meta" in a rebuild must use what the rebuild actually loaded.
 - Foreground test commands that compile past 180 s get moved to the background mid-pipe; a `| head` on such a command then reports the pipe, not the test. Write to a log and grep it.
+- Review: the branch deleted `core/crdt/proptest-regressions/tests_life.txt` (a committed regression seed file, probably swept up with test output); main had meanwhile added a seed to it, so the rebase conflicted. Kept main's file.
+- Review: the default oracle ranges passed; the honest-flow bug (stripping entry keys) came from a fresh `order::arrival_order_alike_large` range (93000), as notes/coordination.md predicts.

@@ -631,7 +631,10 @@ impl Engine {
             }
             let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
             let [snap] = snap.as_slice() else { return Ok(None) };
-            let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
+            // a body this node holds no delta of joins nothing: covered
+            if held.is_empty() {
+                return Ok(Some(true));
+            }
             let Some(m) = tx.core.ix.commits.get(&c).cloned() else { return Ok(None) };
             let is_snapshot = m.header.kind.is_compaction();
             let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
@@ -651,14 +654,18 @@ impl Engine {
                 return Ok(Some(false));
             }
             // the snapshot's copies of the body's writes are the body's (a copy at another
-            // value, `ts` or position, or under a dot the body owns but lacks, joins as unchanged)
-            let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = body.iter().flat_map(|b| b.writes()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect();
-            if !is_snapshot {
-                ranges.extend(crate::apply::validity::owned_ranges(&m.header, &c, cai));
-            }
+            // value, `ts` or position, or under a dot the body owns but lacks, joins as
+            // unchanged): under its own dots, or a snapshot body's carried writes (records
+            // without a `ts`, such as the entry another's write is nested in, are no writes)
+            let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
+                body.iter().flat_map(|b| b.writes()).filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
+            } else {
+                crate::apply::validity::owned_ranges(&m.header, &c, cai)
+            };
             ranges.sort();
             ranges.dedup();
             let body: Vec<&Fragment> = body.iter().collect();
+            let Some(ix) = crate::apply::validity::copy_index(tx, &s, &tid, &ak, Some(snap))? else { return Ok(None) };
             Ok(Some(ix.outside(&ranges, &body).is_empty()))
         })
     }
