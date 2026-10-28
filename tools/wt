@@ -40,6 +40,37 @@ def clean(path):
     return not git("status", "--porcelain", cwd=path)
 
 
+
+def disk_gb(root):
+    """Size like `du`: each inode once (cargo hardlinks deps/ into the profile dir); files vanishing
+    mid-walk (a build in another tree) are skipped."""
+    seen, total = set(), 0
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            try:
+                st = os.lstat(os.path.join(dirpath, f))
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) not in seen:
+                seen.add((st.st_dev, st.st_ino))
+                total += st.st_blocks * 512
+    return total / 2**30
+
+
+def prune_incremental(tgt):
+    """rustc keeps each unit's previous incremental session until the unit next compiles; on a free
+    worktree drop every session but the newest per unit (no cold build). Returns GB freed."""
+    freed = 0.0
+    for inc in tgt.glob("*/incremental"):
+        for unit in inc.iterdir():
+            sessions = sorted((d for d in unit.glob("s-*") if d.is_dir()), key=lambda d: d.stat().st_mtime)
+            for d in sessions[:-1]:
+                freed += disk_gb(d)
+                shutil.rmtree(d, ignore_errors=True)
+                lock = d.parent / ("-".join(d.name.split("-")[:3]) + ".lock")
+                lock.unlink(missing_ok=True)
+    return freed
+
 def claim(branch, base="main"):
     claims.mkdir(exist_ok=True)
     n = 1
@@ -66,14 +97,15 @@ def claim(branch, base="main"):
             sys.exit(f"wt: {path} is not on {branch} after checkout; another agent may be using it")
         tgt = path / "target"
         if tgt.is_dir():
-            gb = sum(f.stat().st_size for f in tgt.rglob("*") if f.is_file()) / 2**30
-            if gb > 12:
+            freed = prune_incremental(tgt)
+            gb = disk_gb(tgt)
+            if freed > 0.5:
+                print(f"wt: pruned {freed:.1f} GB of old incremental sessions from {tgt}", file=sys.stderr)
+            if gb > 16:
                 shutil.rmtree(tgt, ignore_errors=True)
-                print(f"wt: {tgt} was {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations after a "
-                      f"profile, layout, feature or toolchain change; deleted, the first build is cold (notes/build.md)", file=sys.stderr)
-            elif gb > 8:
-                print(f"wt: {tgt} is {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations; it is deleted "
-                      f"automatically above 12 GB, or `rm -rf target` now if you have a few minutes", file=sys.stderr)
+                print(f"wt: {tgt} was {gb:.0f} GB after pruning (steady is about 8-9 GB): stacked artifact generations "
+                      f"after a profile, layout, feature or toolchain change; deleted, the first build is cold (notes/build.md)",
+                      file=sys.stderr)
     except SystemExit:
         (claims / f"wt{n}").unlink()
         raise
