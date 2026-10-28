@@ -212,7 +212,7 @@ impl SyncEngine {
     }
 
     fn placed_now(&mut self, c: &CommitId) -> Result<bool> {
-        let queued: Vec<LabelId> = self.state.outbox.iter().filter(|((_, b), _)| self.state.blobs.get(b).is_some_and(|r| r.commit == *c)).map(|(_, o)| o.label).collect();
+        let queued: Vec<LabelId> = self.state.outbox.iter().filter(|((_, _, b), _)| self.state.blobs.get(b).is_some_and(|r| r.commit == *c)).map(|(_, o)| o.label).collect();
         for l in queued {
             if !self.held_at(&l, c, None, true) {
                 return Ok(false);

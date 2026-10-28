@@ -1,3 +1,4 @@
 # sync-simplify
 - `tools/wt claim` warned the worktree target was 9 GB (stacked generations) but kept it; builds stayed warm, so harmless.
 - notes/sync.md's implementation section is one 50 KB block of bullets with very long lines: reading it whole costs a lot of context; most of it is history of fixes, not how the code is laid out.
+- Reviewer: the brief asked for an unfiltered `cargo test-net -- --ignored`; that is every tier-2 test of the workspace in dev, timing budgets included (`budget_big_text_spec_6` alone ran for minutes), so it was stopped after 12 min; notes/build.md already warns. Briefs should name the filtered form.

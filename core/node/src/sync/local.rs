@@ -435,7 +435,7 @@ impl SyncEngine {
         let id = osis_label::blob_id(&blob);
         for server in servers {
             self.state.add_out(super::state::OutRec { label, server: server.clone(), blob: blob.clone(), wrap, sig });
-            self.outbox.entry((server.key, id)).or_default();
+            self.outbox.entry((server.key, label, id)).or_default();
         }
     }
 
@@ -448,7 +448,7 @@ impl SyncEngine {
         }
         let ready: Vec<(ConnId, [u8; 32])> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.server)).collect();
         let now = self.raw_now();
-        let due: Vec<((ServerKey, BlobId), ConnId)> = self
+        let due: Vec<((ServerKey, LabelId, BlobId), ConnId)> = self
             .outbox
             .iter()
             .filter(|(_, o)| o.sent.is_none() && o.after <= now)

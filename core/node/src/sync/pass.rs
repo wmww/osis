@@ -322,7 +322,7 @@ impl SyncEngine {
             } else if let Some(d) = &keys.deposit
                 && self.mine(&e)
                 // a queued deposit goes from the outbox
-                && !self.state.outbox.contains_key(&(server, o.id))
+                && !self.state.outbox.contains_key(&(server, l, o.id))
             {
                 if e.cert || !matches!(e.kind, Kind::Commit { .. }) {
                     let sig = osis_label::sign_deposit(d, &l, &o.id, &e.wrap);
