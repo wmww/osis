@@ -350,6 +350,10 @@ impl Input {
 /// the values are equal).
 const FORWARD_MAX: usize = 4;
 
+/// A late write is placed by re-judging later items (`Walked::place_shadowed`) only when at
+/// most 1/`SHADOW_SHARE` of the later items (512 or more) need it; else the walk goes on from it.
+const SHADOW_SHARE: usize = 8;
+
 /// One change to the edge state in the final walk, for time queries.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Change {
@@ -545,6 +549,12 @@ impl Walked {
         let audits = placed.iter().any(|(_, o, attr)| matches!(attr, Attr::By(Class::Chain | Class::Edge)) && exceeds(self.restored((o.member, o.target)), o.edge.map(|e| Edge { since: None, ..e }), p.ts));
         if !audits && dep.is_empty() && audited.is_empty() {
             return self.place_plain(input, c, i, placed, before);
+        }
+        // (a cost choice: the items re-judged are the costly ones to walk, mostly audits of
+        // many nodes; past an eighth of a long rest, walking on from `c` is cheaper)
+        let rest = items.list.len().saturating_sub(i);
+        if rest >= 512 && (dep.len() + audited.len()) * SHADOW_SHARE > rest {
+            return Placement::Declined;
         }
         self.place_shadowed(input, items, dropped, epoch, c, i, &keys, before, &moved, &dep, &audited, &a, &f)
     }
