@@ -256,3 +256,4 @@ In flight at wind-down: `scale-setup` (committed as 5c29966 on its branch, rebas
 
 ## Production round 13
 Overnight solo session, two agents at a time; owner asked for issues that need no owner input plus periodic review/refactor/simplification passes over the fast-built code.
+1. scale-setup (last round's branch): review found the batched setup's "overwrite kills a body" step killed nothing at 10^4 (10 keys per body); it now overwrites a whole body; `OSIS_SCALE_PER` keys per commit (1 = unbatched; pass counts identical, per-commit cost flat); dev edge writes 10^2 (debug checks ~0.27 s per write); a release-only perm warning fixed (the gate builds dev only). Gated (83 s).
