@@ -69,7 +69,7 @@ impl Engine {
         let _ = writeln!(out, "rotation_role {:?}\ngrant_overreach {:?}\nbox_keys {:?}\nboxes_to {:?}", *c.ix.rotation_role, *c.ix.grant_overreach, *c.ix.box_keys, *c.ix.boxes_to);
         let _ = writeln!(out, "epoch_intro {:?}\nbox_written {:?}\nown_keys {:?}", *c.ix.epoch_intro, *c.ix.box_written, *c.ix.own_keys);
         let _ = writeln!(out, "member_keys {:?}\nunresolved {:?}\nwas {:?}\nmoved {:?}\ngroups {:?}", *c.ix.member_keys, *c.ix.unresolved, *c.ix.was, *c.ix.moved, c.ix.groups.of);
-        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.authors);
+        let _ = writeln!(out, "secrets {:?}\nvoid {:?}\nvalueless {:?}\nsnapshots {:?}\ncarried {:?}\nauthors {:?}\nimports {:?}", *c.ix.secrets, *c.ix.void, *c.ix.valueless, *c.ix.snapshots, *c.ix.carried, *c.ix.authors, *c.ix.imports);
         out
     }
 

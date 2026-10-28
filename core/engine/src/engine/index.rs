@@ -46,6 +46,7 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
 const AUTHORS: &[u8] = b"node/authors";
+const IMPORTS: &[u8] = b"node/imports";
 /// Per membership commit, what perm's adaptation reads of its held `/members` and `/tenures`
 /// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
@@ -594,6 +595,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_map(txn, CARRIED, &c.ix.carried, all)?;
     put_map(txn, AUTHORS, &c.ix.authors, all)?;
+    put_setmap(txn, IMPORTS, &c.ix.imports, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -781,6 +783,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, CommitId)>(tx, AUTHORS)? {
         tx.core.ix.authors.insert(k, dec(&v)?);
+    }
+    for ((k, x), _) in scan::<((Tid, CommitId), (osis_base::Ts, CommitId, Tid))>(tx, IMPORTS)? {
+        tx.core.ix.imports.insert(k, x);
     }
     Ok(())
 }

@@ -329,6 +329,9 @@ indexes! {
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// The commits of `by_aspect` carrying copies of others' writes (snapshots, imports).
     pub copies: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Held imports per thing and origin: (thing, origin) -> (`ts`, import, importer). The
+    /// least is the origin's import there (`Core::authors`, spec/permissions.md §7).
+    pub imports: JSetMap<(Tid, CommitId), (Ts, CommitId, Tid)>,
     /// Compaction snapshots held per aspect, with their frontiers: the bodies carrying a write
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
@@ -383,8 +386,8 @@ indexes! {
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Commit-form sources whose writes snapshots may carry, per thing: (thing, commit ID) ->
     /// (the node its writes are judged as, at which `ts`): a commit-form commit's author and
-    /// `ts`, an import origin's importer and import `ts`, else a held snapshot's `Authors`
-    /// (spec/crdt.md §8).
+    /// `ts`, else the least held import's (`imports`) importer and `ts`, else a held
+    /// snapshot's `Authors` (spec/crdt.md §8, spec/permissions.md §7).
     pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,
