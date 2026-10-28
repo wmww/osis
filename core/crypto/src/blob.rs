@@ -44,10 +44,15 @@ pub fn blob_id(blob: &[u8]) -> BlobId {
     BlobId(*blake3::hash(blob).as_bytes())
 }
 
+/// Bytes of the blob `encrypt_blob` makes from a prefix and plaintext of these lengths.
+pub fn blob_len(prefix: usize, plaintext: usize) -> usize {
+    prefix.saturating_add(padme(plaintext.saturating_add(1))).saturating_add(TAG_LEN)
+}
+
 /// Encrypts `plaintext` under a fresh random key: `prefix || AEAD(key, nonce 0, AD prefix,
 /// pad(plaintext))`. Returns the blob key and the blob; `TooLarge` above `MAX_BLOB`.
 pub fn encrypt_blob(prefix: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<(Secret32, Vec<u8>), Error> {
-    let total = prefix.len().saturating_add(padme(plaintext.len().saturating_add(1))).saturating_add(TAG_LEN);
+    let total = blob_len(prefix.len(), plaintext.len());
     if total > MAX_BLOB {
         return Err(Error::TooLarge);
     }

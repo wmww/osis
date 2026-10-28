@@ -5,6 +5,7 @@
 use crate::Error;
 use crate::tree::{LinkSource, TreeReader, TreeSink, TreeWriter, write_tree};
 use osis_base::format::{CHUNK_THRESHOLD, MAX_VALUE_DEPTH};
+use osis_base::cbor::{MAJOR_BYTES, MAJOR_TEXT, head_len};
 use osis_base::{ChunkParams, Limits, Link, Value, decode, encode};
 use osis_crypto::Secret32;
 
@@ -20,21 +21,6 @@ impl LargeParams {
     pub const FORMAT: LargeParams = LargeParams { chunk: ChunkParams::FORMAT, threshold: CHUNK_THRESHOLD };
 }
 
-const MAJOR_BYTES: u8 = 2;
-const MAJOR_TEXT: u8 = 3;
-
-/// Canonical (shortest) CBOR head of a byte or text string of `len` bytes.
-fn string_head(major: u8, len: u64) -> Vec<u8> {
-    let m = major << 5;
-    // Each arm's cast is lossless for its range.
-    match len {
-        0..24 => vec![m | len as u8],
-        24..0x100 => vec![m | 24, len as u8],
-        0x100..0x1_0000 => [&[m | 25][..], &(len as u16).to_be_bytes()].concat(),
-        0x1_0000..0x1_0000_0000 => [&[m | 26][..], &(len as u32).to_be_bytes()].concat(),
-        _ => [&[m | 27][..], &len.to_be_bytes()].concat(),
-    }
-}
 
 /// Parses a canonical byte or text string head: `(major, len, head bytes)`, or `None` when `b`
 /// is too short to tell.
@@ -54,7 +40,7 @@ fn parse_string_head(b: &[u8]) -> Result<Option<(u8, u64, usize)>, Error> {
     };
     let Some(arg) = b.get(1..1 + n) else { return Ok(None) };
     let len = arg.iter().fold(0u64, |a, &x| (a << 8) | u64::from(x));
-    if string_head(major, len).len() != 1 + n {
+    if head_len(len) != 1 + n {
         return Err(Error::Malformed("string head not shortest"));
     }
     Ok(Some((major, len, 1 + n)))
@@ -118,17 +104,13 @@ impl ValueWriter {
     }
 
     fn new(params: LargeParams, major: u8, len: u64) -> ValueWriter {
-        let head = string_head(major, len);
+        let mut head = Vec::new();
+        osis_base::cbor::head(&mut head, major, len);
         let total = u64::try_from(head.len()).unwrap_or(u64::MAX).saturating_add(len);
         let large = total > u64::try_from(params.threshold).unwrap_or(u64::MAX);
         let tree = large.then(|| TreeWriter::new(params.chunk));
         let inline = (!large).then(Vec::new);
         ValueWriter { head: if large { head } else { Vec::new() }, text: (major == MAJOR_TEXT).then(Utf8::default), left: len, inline, tree }
-    }
-
-    /// Whether the value goes by link.
-    pub fn is_large(&self) -> bool {
-        self.tree.is_some()
     }
 
     pub fn write(&mut self, sink: &mut dyn TreeSink, data: &[u8]) -> Result<(), Error> {

@@ -2,14 +2,10 @@
 //! the prefix-versus-header agreement check (spec/commits.md §4) and label wraps (spec/crypto.md §5).
 
 use crate::Error;
-use osis_base::format::{BLOB_FRAMING_VERSION, MAX_BLOB};
+use osis_base::format::{BLOB_FRAMING_VERSION, COMMITMENT_LEN, MAX_BLOB, PREFIX_FIXED_LEN};
 use osis_base::{BlobId, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32, VerifyingKey, commitment, decrypt_blob, encrypt_blob};
 
-/// Bytes of a prefix before its commitments.
-pub const PREFIX_FIXED_LEN: usize = 26;
-/// Bytes of one commitment: level, then the 32-byte blinded delete key.
-pub const COMMITMENT_LEN: usize = 33;
 /// At most one commitment per level.
 const MAX_LEVELS: usize = 3;
 
