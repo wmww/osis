@@ -3,7 +3,7 @@
 //! length is a type mismatch); unknown agility cases are `UnknownCase` (parked).
 
 use crate::codec::{Chunked, Codec, rt};
-use crate::codec_struct;
+use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
@@ -125,29 +125,11 @@ codec_struct! {
     pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8> }
 }
 
-/// `box = enum { 0 sealed(..), 1 symmetric(..) }` (spec/crypto.md §4).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SecretBox {
-    Sealed(SealedBox),
-    Symmetric(SymmetricBox),
+codec_enum! {
+    /// `box = enum { 0 sealed(..), 1 symmetric(..) }` (spec/crypto.md §4).
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum SecretBox { 0 Sealed(b: SealedBox), 1 Symmetric(b: SymmetricBox) }
 }
-
-impl Codec for SecretBox {
-    fn to_value(&self) -> Value {
-        match self {
-            SecretBox::Sealed(b) => rt::enum_value(0, Some(b.to_value())),
-            SecretBox::Symmetric(b) => rt::enum_value(1, Some(b.to_value())),
-        }
-    }
-    fn from_value(v: &Value) -> Result<SecretBox, PathError> {
-        match v {
-            Value::Enum(0, p) => rt::payload(0, p).map(SecretBox::Sealed),
-            Value::Enum(1, p) => rt::payload(1, p).map(SecretBox::Symmetric),
-            _ => Err(rt::unknown_case(v)),
-        }
-    }
-}
-
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct HistoryKey { 0 role: Role, 1 epoch: Epoch }
