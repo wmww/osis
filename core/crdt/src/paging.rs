@@ -17,7 +17,9 @@ fn range<'a, T>(m: &'a BTreeMap<Dot, T>, lo: Option<&Dot>, hi: Option<&Dot>) -> 
     m.range::<Dot, _>((lo, hi))
 }
 
-fn sub<T: Clone>(m: &BTreeMap<Dot, T>, lo: Option<&Dot>, hi: Option<&Dot>) -> BTreeMap<Dot, T> {
+/// The entries of `m` in `[lo, hi)`; none for `None`.
+fn sub<T: Clone>(m: &BTreeMap<Dot, T>, r: Option<(Option<&Dot>, Option<&Dot>)>) -> BTreeMap<Dot, T> {
+    let Some((lo, hi)) = r else { return BTreeMap::new() };
     range(m, lo, hi).map(|(d, x)| (d.clone(), x.clone())).collect()
 }
 
@@ -46,27 +48,19 @@ impl Fragment {
     /// The same collection holding only its root elements in `[lo, hi)`, with the own reset and
     /// `W` iff `meta`; `None` for other encodings.
     pub fn elem_range(&self, lo: Option<&Dot>, hi: Option<&Dot>, meta: bool) -> Option<Fragment> {
-        let m = |x: &Meta| if meta { x.clone() } else { Meta::default() };
-        Some(match self {
-            Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), sub(&x.entries, lo, hi))),
-            Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: sub(&x.elems, lo, hi) }),
-            Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: sub(&x.elems, lo, hi) }),
-            Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), lo, hi))),
-            _ => return None,
-        })
+        self.elem_part(Some((lo, hi)), meta)
     }
 
-    /// A sequence's placement (§6) as blocks of its placed nodes in order (built on first use,
-    /// then cached), and whether an anchor names no element (a write waits for its creation);
-    /// `None` for other encodings.
-    pub fn placement(&self) -> Option<(Vec<crate::seq_lin::PlacedBlock>, bool)> {
-        match self.chosen_member() {
-            MemberRef::Frag(Fragment::Seq(s)) => {
-                let l = s.lin();
-                Some((l.p.blocks(), l.waits()))
-            }
-            _ => None,
-        }
+    /// `elem_range`; `None` bounds: no elements.
+    fn elem_part(&self, r: Option<(Option<&Dot>, Option<&Dot>)>, meta: bool) -> Option<Fragment> {
+        let m = |x: &Meta| if meta { x.clone() } else { Meta::default() };
+        Some(match self {
+            Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), sub(&x.entries, r))),
+            Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: sub(&x.elems, r) }),
+            Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: sub(&x.elems, r) }),
+            Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), sub(x.elems(), r))),
+            _ => return None,
+        })
     }
 
     /// The root elements' records: first dot and how many consecutive dots each holds (a
@@ -136,55 +130,6 @@ impl Fragment {
             Fragment::Map(m) => (w, m.entries.keys().cloned().collect()),
             Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => (w, elems.keys().cloned().collect()),
             Fragment::Seq(s) => (w, s.elems().iter().flat_map(|(d, e)| [d.clone(), crate::seq_span::nth(d, e.span - 1)]).collect()),
-            _ => return None,
-        })
-    }
-
-    /// A struct delta without a reset: whether it writes the own `W`, and its fields. `None`
-    /// for anything else.
-    pub fn touched_fields(&self) -> Option<(bool, Vec<(u64, &Fragment)>)> {
-        match self {
-            Fragment::Struct(s) if s.meta.reset.is_none() => Some((s.meta.w.is_some(), s.fields.iter().map(|(k, f)| (*k, f)).collect())),
-            _ => None,
-        }
-    }
-
-    /// Fields of a struct (none for other encodings).
-    pub fn fields(&self) -> Vec<(u64, &Fragment)> {
-        match self {
-            Fragment::Struct(s) => s.fields.iter().map(|(k, f)| (*k, f)).collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// A struct holding only `fields`, no reset or `W`.
-    pub fn struct_of(fields: Vec<(u64, Fragment)>) -> Fragment {
-        Fragment::Struct(Struct { meta: Meta::default(), fields: fields.into_iter().collect() })
-    }
-
-    /// A struct with its reset and `W` and every field, the fields in `bare` reduced to their
-    /// collection's reset and `W` (dropped when that is nothing). `None` for other encodings.
-    pub fn struct_skeleton(&self, bare: &dyn Fn(u64) -> bool) -> Option<Fragment> {
-        let Fragment::Struct(s) = self else { return None };
-        let fields = s
-            .fields
-            .iter()
-            .filter_map(|(k, f)| match bare(*k) {
-                true => f.elem_range_empty().filter(|x| !x.is_empty()).map(|x| (*k, x)),
-                false => Some((*k, f.clone())),
-            })
-            .collect();
-        Some(Fragment::Struct(Struct { meta: s.meta.clone(), fields }))
-    }
-
-    /// The collection with its reset and `W` and no elements.
-    fn elem_range_empty(&self) -> Option<Fragment> {
-        let m = |x: &Meta| x.clone();
-        Some(match self {
-            Fragment::Map(x) => Fragment::Map(Map::new(m(&x.meta), BTreeMap::new())),
-            Fragment::Set(x) => Fragment::Set(Set { meta: m(&x.meta), elems: BTreeMap::new() }),
-            Fragment::Bag(x) => Fragment::Bag(Bag { kind: x.kind, meta: m(&x.meta), elems: BTreeMap::new() }),
-            Fragment::Seq(x) => Fragment::Seq(Seq::new(x.text, m(&x.meta), BTreeMap::new())),
             _ => return None,
         })
     }
@@ -308,7 +253,7 @@ impl Fragment {
     /// reset and `W`: O(what is kept), never descending into a reduced collection.
     pub fn reduced(&self, paths: &Paths) -> Fragment {
         if paths.here {
-            return self.elem_range_empty().unwrap_or_default();
+            return self.elem_part(None, true).unwrap_or_default();
         }
         if paths.next.is_empty() {
             return self.clone();
