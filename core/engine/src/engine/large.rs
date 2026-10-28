@@ -194,12 +194,17 @@ pub(crate) fn list_edits(ops: &[PathOp], schema: Option<&Schema>, ak: &str, dedu
 
 /// `v` with every link reduced to its content hash.
 fn hash_only(v: &Value) -> Value {
+    map_links(v, &|l| Value::Link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }))
+}
+
+/// `v` with every link replaced by `f`'s value for it.
+pub(crate) fn map_links(v: &Value, f: &dyn Fn(&Link) -> Value) -> Value {
     match v {
-        Value::Link(l) => Value::Link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }),
-        Value::List(x) => Value::List(x.iter().map(hash_only).collect()),
-        Value::Set(x) => Value::Set(x.iter().map(hash_only).collect()),
-        Value::Map(x) => Value::Map(x.iter().map(|(k, v)| (hash_only(k), hash_only(v))).collect()),
-        Value::Enum(c, Some(p)) => Value::Enum(*c, Some(Box::new(hash_only(p)))),
+        Value::Link(l) => f(l),
+        Value::List(x) => Value::List(x.iter().map(|v| map_links(v, f)).collect()),
+        Value::Set(x) => Value::Set(x.iter().map(|v| map_links(v, f)).collect()),
+        Value::Map(x) => Value::Map(x.iter().map(|(k, v)| (map_links(k, f), map_links(v, f))).collect()),
+        Value::Enum(c, Some(p)) => Value::Enum(*c, Some(Box::new(map_links(p, f)))),
         v => v.clone(),
     }
 }
