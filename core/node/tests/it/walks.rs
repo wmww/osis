@@ -709,3 +709,48 @@ fn carried_imports_alike_in_both_orders() {
         open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
     }
 }
+
+// spec/permissions.md §5.2, §7: a snapshot of a moved thing carries an import's writes (source
+// `Commit(o)`); a node holding o (on the old thing) but not the import judges them as the
+// import's author, so an import invalid on the copy (its author revoked before it) shows them
+// nowhere. The old rule took o held as their own commit held, and showed them.
+#[test]
+fn carried_imports_judged_without_the_import_spec_perm_5_2() {
+    let mut lp = LocalPeer::new(4, 0xca23, T0).unwrap();
+    lp.sync_all().unwrap();
+    let a = lp.peers[0].engine.tid();
+    // P owned by peer 2, peer 0 admin on it; t is peer 0's with one tag (o)
+    let p = new_thing(&mut lp, 2);
+    set_edge(&mut lp.peers[2].engine, p, a, Some(edge(Role::Admin)), None);
+    let t = new_thing(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let o = add_tag(&mut lp, 0, t, "a");
+    lp.sync_all().unwrap();
+    // peer 2 revokes peer 0 on P; peer 0, unaware, moves t into P after it
+    set_edge(&mut lp.peers[2].engine, p, a, None, None);
+    lp.peers[0].clock.advance(1_000);
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, p).unwrap();
+    assert!(!imports.is_empty());
+    // peer 0 snapshots the copy's tags: the snapshot carries the import's writes
+    assert!(lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().is_some());
+    let shown = lp.peers[0].engine.get(&copy, &ak("/t/tags")).unwrap();
+    assert!(format!("{shown:?}").contains("\"a\""), "peer 0 shows its import: {shown:?}");
+    sync(&mut lp, 0, 2);
+    // peer 2, holding everything: the import is invalid, so nothing
+    let tags = ak("/t/tags");
+    let none = lp.peers[2].engine.get(&copy, &tags).unwrap();
+    assert!(!format!("{none:?}").contains("\"a\""), "the invalid import's writes are not shown: {none:?}");
+    let full = states(&mut lp.peers[2].engine, &[t, copy, p]);
+    // peer 3 gets everything but the imports (it holds o)
+    let pk = lp.packages(2).unwrap();
+    for x in pk.iter().filter(|x| !imports.contains(&x.id)) {
+        lp.deliver(3, x).unwrap();
+    }
+    assert!(lp.peers[3].engine.header(&o).is_some() && imports.iter().all(|i| lp.peers[3].engine.header(i).is_none()));
+    assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), none, "carried writes of an import not held are judged as its author's");
+    open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "without the imports");
+    for x in pk.iter().filter(|x| imports.contains(&x.id)) {
+        lp.deliver(3, x).unwrap();
+    }
+    assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), full, "then alike with them");
+}
