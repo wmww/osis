@@ -174,6 +174,14 @@ impl<'p> Enc<'p> {
         }
     }
 
+    /// The page sink, reborrowed.
+    pub(crate) fn sink(&mut self) -> Option<&mut dyn PageSink> {
+        match &mut self.pages {
+            Some(p) => Some(&mut **p),
+            None => None,
+        }
+    }
+
     /// Counts `n` elements of a run without `Content`: more than `MAX_DELTA_BARE` in a writer's
     /// or an import delta is refused (§3.3 rule 7).
     pub(crate) fn note_bare(&mut self, n: u64) -> Result<(), Error> {
