@@ -363,7 +363,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
 /// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A roster
 /// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
-/// `roster_snapshot` refuses it (`Core::frontier_unknown`).
+/// `roster_snapshot` refuses it (`Indexes::frontier_unknown`).
 ///
 /// Reads the commit's `View` (`v`); its header (`h`, else decoded from `Core::commits`) only
 /// for a roster snapshot whose tenures link their frontiers (the chunk list), so an open adapts
@@ -384,7 +384,7 @@ pub(crate) fn add_membership(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: 
     if !linked.waiting.is_empty() {
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
-        tx.core.frontier_unknown.extend(linked.waiting.iter().copied());
+        tx.core.ix.frontier_unknown.extend(linked.waiting.iter().copied());
     }
     add_membership_in(tx.core, v, id, parts, &linked);
     Ok(())
