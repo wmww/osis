@@ -284,7 +284,7 @@ pub struct CommitSecrets<'c> {
     /// The actor the commit acts for.
     pub actor: Tid,
     /// Creation records of things the commit creates.
-    pub created: &'c [CreationRecord],
+    pub created: &'c crate::engine::write::Creates,
     /// Delete keys published in `/keys` of delete bases whose secret of that role is not held
     /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
@@ -292,10 +292,10 @@ pub struct CommitSecrets<'c> {
 
 /// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
 /// so it uses its owner's.
-fn base_of(core: &Core, created: &[CreationRecord], tid: &Tid) -> Option<DeleteBase> {
+fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> Option<DeleteBase> {
     let mut cur = *tid;
     for _ in 0..=created.len() {
-        match created.iter().find(|r| r.tid() == cur) {
+        match created.get(&cur) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { public_key, .. }) => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
             None => return core.delete_base(&cur),
@@ -307,7 +307,7 @@ fn base_of(core: &Core, created: &[CreationRecord], tid: &Tid) -> Option<DeleteB
 /// The admin and write delete keys published in `/keys` (spec/crypto.md §3, §7) of the delete
 /// bases of `tids` whose secret of that role this node does not hold: a writer that is no admin
 /// lists the admin one.
-pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &[CreationRecord], tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
+pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::engine::write::Creates, tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
     let mut need = std::collections::BTreeSet::new();
     for t in tids {
         for r in [Role::Admin, Role::Write] {
@@ -346,7 +346,7 @@ pub(crate) fn own_delete_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid) -> Result
     if b != *t {
         return Ok(None);
     }
-    let published = published_keys(tx, &[], [*t])?;
+    let published = published_keys(tx, &Default::default(), [*t])?;
     let key = |r: Role| e.as_ref().and_then(|e| e.role(r).newest_held().map(|(_, s)| DeleteSecret::derive(s).verifying_key())).or_else(|| published.get(&(b, r)).copied());
     Ok(key(Role::Admin).zip(key(Role::Write)))
 }
@@ -409,7 +409,7 @@ impl Core {
 
 impl osis_commit::Secrets for CommitSecrets<'_> {
     fn dedup(&self, tid: &Tid) -> Option<Secret32> {
-        self.core.dedup(tid).or_else(|| self.created.iter().find(|r| r.tid() == *tid).map(|r| dedup_secret(r.nonce())))
+        self.core.dedup(tid).or_else(|| self.created.get(tid).map(|r| dedup_secret(r.nonce())))
     }
     fn admin_key(&self, tid: &Tid) -> Option<VerifyingKey> {
         self.key(tid, Role::Admin)

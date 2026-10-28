@@ -208,30 +208,41 @@ impl Timelines {
     /// The common case of `update_touched` in O(what changed): every touched thing is in a
     /// component, with its `/created` and snapshots as before, and only gained membership
     /// commits that join nothing (author, members and targets in its component); each such
-    /// component goes on by `Timeline::append`. `None`: the case does not apply, nothing done.
+    /// component goes on by `Timeline::append`. Or it is a new leaf (only its `/created` names
+    /// it) of a component that gained no commits: `Timeline::add_leaves`. `None`: the case does
+    /// not apply, nothing done.
     /// Else what changed, the things of the components continued, and whether all of them
     /// were (else the general path must run: the ones continued are then cache hits).
     fn append(&mut self, held: &dyn HeldSet, touched: &BTreeSet<Tid>) -> Option<(Changed, BTreeSet<Tid>, bool)> {
-        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>);
+        // (new commits, commits per touched thing, new nodes joining, new leaves)
+        type Work = (BTreeMap<CommitId, Arc<MembershipCommit>>, BTreeMap<Tid, BTreeSet<CommitId>>, BTreeMap<Tid, Option<CreationRecord>>, Vec<(Tid, CreationRecord)>);
         let mut work: BTreeMap<u64, Work> = BTreeMap::new();
-        // A node new to every walk (nothing held of its own but its key actor's `/created`, in
-        // no component or alone in one) joins the one component whose new commits name it.
+        // Nothing held of `x` but its `/created`, in no component or alone in one (`known`:
+        // with that record already).
+        let unseen = |x: &Tid, known: bool| {
+            held.edge_commits(x).is_empty()
+                && held.roster_snapshots(x).is_empty()
+                && self.of.get(x).is_none_or(|j| self.comps.get(j).is_some_and(|c| c.inputs.0.len() == 1 && c.inputs.1.is_empty() && c.inputs.2.len() == usize::from(known)))
+        };
+        // A node new to every walk (nothing held of its own but its key actor's `/created`)
+        // joins the one component whose new commits name it.
         let lone = |x: &Tid| -> Option<Option<CreationRecord>> {
-            if !held.edge_commits(x).is_empty() || !held.roster_snapshots(x).is_empty() {
-                return None;
-            }
             let rec = held.created(x);
             if rec.as_ref().is_some_and(|r| !matches!(r, CreationRecord::KeyActor { .. }) || r.tid() != *x) {
                 return None;
             }
-            match self.of.get(x) {
-                None => Some(rec),
-                Some(j) => self.comps.get(j).is_some_and(|c| c.inputs.0.len() == 1 && c.inputs.1.is_empty() && c.inputs.2.len() == usize::from(rec.is_some())).then_some(rec),
-            }
+            unseen(x, rec.is_some()).then_some(rec)
         };
+        // A thing whose `/created` is all that names it joins its owner's component.
+        let leaf = |x: &Tid| held.created(x).filter(|r| matches!(r, CreationRecord::Thing { .. }) && unseen(x, false) && r.tid() == *x);
         let mut joining: BTreeMap<Tid, u64> = BTreeMap::new();
         let mut unplaced = Vec::new();
+        let mut leaves = Vec::new();
         for t in touched {
+            if let Some(rec) = leaf(t) {
+                leaves.push((*t, rec));
+                continue;
+            }
             let Some(&i) = self.of.get(t) else {
                 lone(t)?;
                 unplaced.push(*t);
@@ -288,11 +299,57 @@ impl Timelines {
         if unplaced.iter().any(|t| !joining.contains_key(t)) {
             return None;
         }
+        // each leaf in its owner's component, through owners that are new leaves too
+        let new_leaves: BTreeSet<Tid> = leaves.iter().map(|l| l.0).collect();
+        let mut at: BTreeMap<Tid, u64> = BTreeMap::new();
+        while !leaves.is_empty() {
+            let n = leaves.len();
+            for (x, rec) in std::mem::take(&mut leaves) {
+                let CreationRecord::Thing { owner, .. } = rec else { return None };
+                let i = match at.get(&owner) {
+                    Some(&i) => i,
+                    None if new_leaves.contains(&owner) => {
+                        leaves.push((x, rec));
+                        continue;
+                    }
+                    // (an owner joining now moves components)
+                    None if joining.contains_key(&owner) => return None,
+                    None => *self.of.get(&owner)?,
+                };
+                let w = work.entry(i).or_default();
+                // (one below the root would move it: saved walks are under the root)
+                if !w.0.is_empty() || !self.comps.get(&i)?.inputs.0.first().is_some_and(|r| *r < x) {
+                    return None;
+                }
+                at.insert(x, i);
+                w.3.push((x, rec));
+            }
+            if leaves.len() == n {
+                return None;
+            }
+        }
         self.appended = 0;
         self.placed = 0;
         let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
-        for (i, (new, per, join)) in work {
+        for (i, (new, per, join, leaves)) in work {
             let Some(mut c) = self.comps.remove(&i) else { continue };
+            if !leaves.is_empty() {
+                match c.tl.add_leaves(&leaves) {
+                    Ok(tl) => c.tl = tl,
+                    Err(tl) => {
+                        c.tl = *tl;
+                        self.comps.insert(i, c);
+                        return Some((changed, things, false));
+                    }
+                }
+                self.appended += 1;
+                for (x, _) in leaves {
+                    self.adopt(&mut c, i, x, true);
+                    changed.extended.insert(x);
+                }
+                things.extend(c.inputs.0.iter().copied());
+                self.unsaved.insert(i);
+            }
             if !new.is_empty() {
                 let list: Vec<Arc<MembershipCommit>> = new.values().cloned().collect();
                 let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
@@ -308,15 +365,7 @@ impl Timelines {
                 self.placed += c.tl.placed;
                 c.inputs.1.extend(new.keys().copied());
                 for (x, rec) in join {
-                    if let Some(j) = self.of.insert(x, i) {
-                        // its lone component
-                        self.comps.remove(&j);
-                        self.unsaved.remove(&j);
-                    }
-                    c.inputs.0.insert(x);
-                    if rec.is_some() {
-                        c.inputs.2.insert(x);
-                    }
+                    self.adopt(&mut c, i, x, rec.is_some());
                 }
                 changed.extended.extend(per.iter().filter(|(_, ids)| ids.iter().any(|x| new.contains_key(x))).map(|(t, _)| *t));
                 things.extend(c.inputs.0.iter().copied());
@@ -333,6 +382,19 @@ impl Timelines {
             self.comps.insert(i, c);
         }
         Some((changed, things, true))
+    }
+
+    /// Puts `x` (in no component or alone in one) in component `c` (`i`, taken out of `comps`).
+    fn adopt(&mut self, c: &mut Comp, i: u64, x: Tid, created: bool) {
+        if let Some(j) = self.of.insert(x, i) {
+            // its lone component
+            self.comps.remove(&j);
+            self.unsaved.remove(&j);
+        }
+        c.inputs.0.insert(x);
+        if created {
+            c.inputs.2.insert(x);
+        }
     }
 
     /// Re-partitions `region` (a union of whole components, old and new) and evaluates its

@@ -1019,9 +1019,9 @@ fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[Str
 // live, waiting for its timed delete) one more key, then one overwriting the first body's keys
 // (kills that body); (2) under an expiry, an older commit expiring
 // alone; (3) N things in the group, one write (the closure taken once per pass;
-// `OSIS_SCALE_CLOSURE` things, default N; created 500 per commit: a commit creating k things
-// costs O(k^2), and each re-evaluates the group's component, O(things): issues/
-// thing-creation-cost.md). The passes' (passes, full, bodies, entries) at both nodes.
+// `OSIS_SCALE_CLOSURE` things, default N; created `OSIS_SCALE_BATCH` per commit, default 500;
+// the setup's time and spans printed: creation is O(things created) at both nodes). The passes'
+// (passes, full, bodies, entries) at both nodes.
 #[test]
 #[ignore = "tier 2"]
 fn sync_aspect_pass_cost() {
@@ -1073,21 +1073,27 @@ fn sync_aspect_pass_cost() {
     println!("expiring map of {n} keys in {bodies} live commits: an older one expiring {exp:?} (in a 30 min tick), writer {:?} reader {:?}", d(s4.0, s5.0), d(s4.1, s5.1));
     // a big closure
     let k: usize = size("OSIS_SCALE_CLOSURE", n, n);
+    // things per commit (`OSIS_SCALE_BATCH`): one commit of 10^4 costs O(k) at both ends
+    let batch: usize = size("OSIS_SCALE_BATCH", 500, 500).max(1);
+    osis_node::costs::take();
     let t5 = Instant::now();
     let e = net.engine(a);
     let mut items = e.get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
-    for i in (0..k).step_by(500) {
+    for i in (0..k).step_by(batch) {
         let mut m = Mutation::new();
-        for _ in i..k.min(i + 500) {
+        for _ in i..k.min(i + batch) {
             let x = e.new_thing(&mut m, g);
             items.items.insert(x);
         }
         m.set(g, &ct::GROUP, &items).unwrap();
         e.commit(m).unwrap();
     }
+    let commits = t5.elapsed();
     net.run();
     net.advance(61_000);
     let setup = t5.elapsed();
+    let spans: Vec<String> = osis_node::costs::take().into_iter().map(|(s, d, c)| format!("{s} {d:.2?}/{c}")).collect();
+    println!("closure setup, {batch} things per commit: commits at the writer {commits:?}, spans {}", spans.join(", "));
     let s6 = stats(&mut net);
     let t4 = Instant::now();
     net.write(a, t, "one more");

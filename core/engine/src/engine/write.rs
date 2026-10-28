@@ -29,10 +29,13 @@ pub(crate) struct AspectMut {
     pub expires: Option<u64>,
 }
 
+/// Creation records of a commit by tid (each `tid` is a hash: computed once).
+pub(crate) type Creates = BTreeMap<Tid, CreationRecord>;
+
 /// A batch of writes that becomes one commit.
 #[derive(Clone, Debug)]
 pub struct Mutation {
-    pub(crate) creates: Vec<CreationRecord>,
+    pub(crate) creates: Creates,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
     pub(crate) form: Form,
@@ -64,7 +67,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Vec::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -90,7 +93,7 @@ impl Mutation {
     /// Records a new thing; its `/created` goes into this commit.
     pub fn create(&mut self, record: CreationRecord) -> Tid {
         let t = record.tid();
-        self.creates.push(record);
+        self.creates.insert(t, record);
         t
     }
 
@@ -187,13 +190,13 @@ pub fn role_of(core: &Core, node: &Tid, tid: &Tid, ts: Ts) -> Option<Role> {
 
 /// May `node` (this node or a key actor it signs as) write `ak` of `tid` at `ts`? Things
 /// created by the commit take their owner's, through owners the commit creates too.
-pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord], tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
+pub(crate) fn check_authority(core: &Core, node: Tid, creates: &Creates, tid: &Tid, ak: &str, ts: Ts) -> Result<()> {
     let need = required_role(ak);
     let mut cur = *tid;
     let mut role = None;
     // each step leaves a record behind, so the walk ends within `creates.len()` steps
     for _ in 0..=creates.len() {
-        role = match creates.iter().find(|r| r.tid() == cur) {
+        role = match creates.get(&cur) {
             Some(CreationRecord::KeyActor { .. }) => (cur == node).then_some(Role::Admin),
             Some(CreationRecord::Thing { owner, .. }) if *owner == node => Some(Role::Admin),
             Some(CreationRecord::Thing { owner, .. }) => {
@@ -209,10 +212,10 @@ pub(crate) fn check_authority(core: &Core, node: Tid, creates: &[CreationRecord]
 
 /// Whether `tid`'s owner chain, through the commit's own creation records, reaches a key actor
 /// within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write deeper is invalid).
-fn within_depth(core: &Core, creates: &[CreationRecord], tid: &Tid) -> bool {
+fn within_depth(core: &Core, creates: &Creates, tid: &Tid) -> bool {
     let mut cur = *tid;
     for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        match creates.iter().find(|r| r.tid() == cur).or_else(|| core.created(&cur)) {
+        match creates.get(&cur).or_else(|| core.created(&cur)) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { .. }) => return true,
             None => return false,
@@ -255,7 +258,7 @@ pub(crate) struct CommitPlan {
     pub ts: Ts,
     pub actor: Tid,
     pub form: Form,
-    pub creates: Vec<CreationRecord>,
+    pub creates: Creates,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     pub frontier: Option<Value>,
@@ -420,8 +423,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         return Err(Error::Misuse("an undo mutation carries no other ops"));
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
-    for rec in &m.creates {
-        let t = rec.tid();
+    for (&t, rec) in &m.creates {
         if tx.core.created(&t).is_some() {
             return Err(Error::Misuse("thing already exists"));
         }
@@ -461,7 +463,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     let mut deltas = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;
     for ((tid, ak), mut am) in std::mem::take(&mut m.aspects) {
-        let created_here = plan.creates.iter().any(|r| r.tid() == tid);
+        let created_here = plan.creates.contains_key(&tid);
         if !created_here && tx.core.created(&tid).is_none() {
             return Err(Error::UnknownThing(tid));
         }

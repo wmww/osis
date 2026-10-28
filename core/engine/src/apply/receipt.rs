@@ -168,12 +168,12 @@ impl Engine {
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
         for (node, things) in &scope.membership {
-            for ((t, ak), _) in self.core.by_aspect.iter().filter(|((t, ak), _)| things.contains(t) && is_membership_class(ak.as_str())) {
+            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| is_membership_class(ak.as_str())) {
                 aspects.push((*node, *t, ak.clone()));
             }
         }
         for (node, things) in &scope.content {
-            for ((t, ak), _) in self.core.by_aspect.iter().filter(|((t, _), _)| things.contains(t)) {
+            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)) {
                 aspects.push((*node, *t, ak.clone()));
             }
         }

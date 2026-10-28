@@ -1025,14 +1025,12 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
                 one(id, m, true);
             }
         } else {
+            // things in order: a commit is met first under the first re-judged thing it writes
+            let mut met: BTreeSet<CommitId> = BTreeSet::new();
             for t in &things {
                 for id in core.by_thing.get(t).into_iter().flatten() {
                     let Some(m) = core.commits.get(id) else { continue };
-                    let first = match m.header.aspects.as_slice() {
-                        [a] => Some(&a.tid),
-                        xs => xs.iter().map(|a| &a.tid).filter(|x| things.contains(x)).min(),
-                    };
-                    if first == Some(t) && !explicit.contains(id) {
+                    if !explicit.contains(id) && met.insert(*id) {
                         one(id, m, false);
                     }
                 }

@@ -10,7 +10,7 @@ use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 fn fragment(d: Decoded) -> (Fragment, Option<osis_crdt::Frontiers>) {
@@ -177,7 +177,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
             tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
             // the reader actor of the thing's deltas is known now
-            let touching: Vec<CommitId> = tx.core.by_aspect.iter().filter(|((t, _), _)| *t == a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
+            let touching: Vec<CommitId> = tx.core.aspects_of(&a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
             for c in touching {
                 tx.core.bodies.remove(&c);
                 tx.core.mark_changed(c);
@@ -239,14 +239,17 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     }
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
-        for (ai, a) in h.aspects.iter().enumerate() {
-            let mut mine = parts.iter().filter(|(x, _, _)| *x == ai).map(|(_, _, d)| match d {
+        let mut by_aspect: BTreeMap<usize, Vec<&Fragment>> = BTreeMap::new();
+        for (ai, _, d) in &parts {
+            by_aspect.entry(*ai).or_default().push(match d {
                 Decoded::Delta(x) => &x.fragment,
                 Decoded::Snapshot(x) => &x.fragment,
             });
+        }
+        for (ai, a) in h.aspects.iter().enumerate() {
             // one delta: keep only what undoing it reads
-            let delta = match (mine.next(), mine.next()) {
-                (Some(d), None) => Some(d),
+            let delta = match by_aspect.get(&ai).map(Vec::as_slice) {
+                Some([d]) => Some(*d),
                 _ => None,
             };
             crate::undo::remember(tx, &id, &a.tid, &a.ak, delta)?;

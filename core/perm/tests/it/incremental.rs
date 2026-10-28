@@ -280,9 +280,9 @@ fn created_late_every_order() {
     }
 }
 
-/// §5.1: a new thing's `/created` alone (nothing names it yet) and a write after every held one
-/// continue the component's timeline; each reports what changed (the leaf; the write's target),
-/// and the result equals an evaluation from scratch.
+/// §5.1: a new thing's `/created` alone (nothing names it yet: `Timeline::add_leaves`, no held-set
+/// gathering) and a write after every held one continue the component's timeline; each reports what
+/// changed (the leaf; the write's target), and the result equals an evaluation from scratch.
 #[test]
 fn leaves_and_appends_extend() {
     let mut w = World::new();
@@ -300,6 +300,8 @@ fn leaves_and_appends_extend() {
     let c = inc.update_touched(&held, &BTreeSet::from([leaf]));
     assert!(c.evaluated.is_empty(), "{c:?}");
     assert_eq!(c.extended, BTreeSet::from([leaf]));
+    // O(1) in the component: no re-partition, no held-set gathering
+    assert_eq!(inc.appended(), 1);
     assert!(check(&held, &inc, &n).is_none());
     let prev = w.held();
     w.set(k, g, leaf, edge(osis_base::Role::Read), 20, &[]);
