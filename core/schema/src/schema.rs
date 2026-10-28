@@ -146,7 +146,7 @@ impl Schema {
         self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
     }
 
-    /// One expansion step of a named type; `Ok(None)` for a structure.
+    /// One expansion step of a named type (standard or declared).
     fn instantiate(&self, n: &str, args: &[Type]) -> Result<Type, String> {
         let arity = |k: usize| if args.len() == k { Ok(()) } else { Err(format!("{n} takes {k} type argument(s)")) };
         match n {

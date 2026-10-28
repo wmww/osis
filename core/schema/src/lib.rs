@@ -21,7 +21,6 @@ mod parse;
 mod path;
 mod schema;
 mod statics;
-pub mod transition;
 mod typed;
 mod types;
 mod view;
