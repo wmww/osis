@@ -2,12 +2,10 @@
 //! `MemoryBackend`) wired by in-memory byte queues; a label with rotations; blobs.
 #![allow(dead_code)]
 
-use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs, hash::hash};
-use osis_crypto::{Epoch, LabelRole, SeededRng, Secret32, SigningSecret, X25519Secret, label_role_key};
-use osis_label::step::EntryTo;
-use osis_label::{Parent, Prefix, Reader, StepKeys, genesis_label, register, sign_deposit, sign_stamp};
-use osis_proto::msg::{ClaimSet, Step, Wrap};
+use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs};
+use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
+pub use osis_proto::examples::{Label, bid, blob, blob_with, salt};
 use osis_server::{BackendStore, ConnId, Hub, HubOutput, Policy};
 use osis_store::MemoryBackend;
 use std::collections::VecDeque;
@@ -20,109 +18,6 @@ pub const T0: u64 = 1_700_000_000_000;
 
 pub fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
-}
-
-#[derive(Clone)]
-pub struct Keys {
-    pub sync: SigningSecret,
-    pub write: SigningSecret,
-    pub delete: SigningSecret,
-    pub deposit: SigningSecret,
-}
-
-/// A label with its path, claim sets and keys; group secrets from a byte each.
-pub struct Label {
-    pub id: LabelId,
-    pub keys: Vec<Keys>,
-    pub steps: Vec<Step>,
-    pub sets: Vec<ClaimSet>,
-    pub reader: X25519Secret,
-    pub admin: u8,
-}
-
-const DEPOSIT_SEED: u8 = 0x30;
-
-impl Label {
-    pub fn new(admin: u8) -> Label {
-        let id = genesis_label(&s32(admin), 0);
-        let mut l = Label { id, keys: vec![], steps: vec![], sets: vec![], reader: X25519Secret::from_secret(&s32(0x31)), admin };
-        l.step_with(1, None);
-        l
-    }
-
-    fn step_with(&mut self, b: u8, parent: Option<SigningSecret>) -> (Step, ClaimSet) {
-        let (read, write, adm) = (s32(b), s32(b + 1), s32(self.admin));
-        let pk = StepKeys::derive(&read, &write, &adm, 0, &s32(DEPOSIT_SEED), &self.id);
-        let keys = Keys {
-            sync: label_role_key(LabelRole::Sync, &read, 0),
-            write: label_role_key(LabelRole::Write, &write, 0),
-            delete: label_role_key(LabelRole::Delete, &adm, 0),
-            deposit: osis_crypto::deposit_key(&s32(DEPOSIT_SEED), &self.id),
-        };
-        let key_actor = SigningSecret::from_seed(&s32(0x32));
-        let s = s32(0x33);
-        let readers = [Reader::Dh(self.reader.public()), Reader::Static { signing: key_actor.verifying_key(), entry: EntryTo::Symmetric { s: &s, epoch_s: Epoch::new(0, [0; 16]).unwrap() } }];
-        let mut rng = SeededRng::from_seed([b; 32]);
-        let read_epoch = (Epoch::new(1, [b; 16]).unwrap(), &read);
-        let (step, set) = match (&parent, self.steps.last()) {
-            (Some(d), Some(prev)) => register(Parent::Child { step: prev, delete: d }, pk, &readers, read_epoch, &mut rng).unwrap(),
-            _ => register(Parent::Genesis(&keys.delete), pk, &readers, read_epoch, &mut rng).unwrap(),
-        };
-        self.steps.push(step.clone());
-        self.sets.push(set.clone());
-        self.keys.push(keys);
-        (step, set)
-    }
-
-    /// A child step under new read and write secrets (`b`, `b + 1`).
-    pub fn rotate(&mut self, b: u8) -> (Step, ClaimSet) {
-        let parent = self.head_keys().delete.clone();
-        self.step_with(b, Some(parent))
-    }
-
-    pub fn head_keys(&self) -> &Keys {
-        self.keys.last().unwrap()
-    }
-
-    pub fn entry(&self, blob: Vec<u8>) -> Entry {
-        self.entry_by(blob, &self.head_keys().write.clone())
-    }
-
-    pub fn entry_by(&self, blob: Vec<u8>, write: &SigningSecret) -> Entry {
-        let wrap: Wrap = [(blob.len() % 251) as u8; 49];
-        let stamp = sign_stamp(write, &self.id, &osis_label::blob_id(&blob), &wrap);
-        Entry { blob, wrap, stamp }
-    }
-
-    pub fn deposit(&self, blob: Vec<u8>, key: &SigningSecret) -> Command {
-        let wrap: Wrap = [7; 49];
-        let sig = sign_deposit(key, &self.id, &osis_label::blob_id(&blob), &wrap);
-        Command::Deposit { label: self.id, blob, wrap, sig }
-    }
-
-    pub fn register_cmd(&self, i: usize) -> Command {
-        Command::Register { label: self.id, step: self.steps[i].clone(), claim_set: Some(self.sets[i].clone()) }
-    }
-}
-
-pub fn salt(n: u64) -> [u8; 16] {
-    hash(&n.to_be_bytes())[..16].try_into().unwrap()
-}
-
-/// A blob with a version 1 prefix (salt from `n`, expiry, commitments), then body bytes.
-pub fn blob_with(n: u64, expiry: u64, commitments: Vec<[u8; 33]>) -> Vec<u8> {
-    let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), commitments).unwrap().to_bytes();
-    let h = hash(&n.to_le_bytes());
-    b.extend((0..20 + (n % 32) as usize).map(|i| h[i % 32]));
-    b
-}
-
-pub fn blob(n: u64) -> Vec<u8> {
-    blob_with(n, 0, vec![])
-}
-
-pub fn bid(n: u64) -> BlobId {
-    osis_label::blob_id(&blob(n))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
