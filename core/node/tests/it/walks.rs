@@ -561,7 +561,7 @@ fn open_equals_rebuild_random_histories() {
     let (start, seeds) = (env("OSIS_WALKS_START", 0), env("OSIS_WALKS_SEEDS", 4));
     let mut most = [0usize; 4];
     for seed in start..start + seeds {
-        random_history(seed, &mut most);
+        random_history(seed, &mut most, 1);
     }
     // the histories reach drops, invalid parts, roster snapshots and chunks
     assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
@@ -572,12 +572,28 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 fn open_equals_rebuild_random_histories_carried_imports() {
     for seed in [261, 377] {
-        random_history(seed, &mut [0; 4]);
+        random_history(seed, &mut [0; 4], 1);
     }
 }
 
-/// One random history of `open_equals_rebuild_random_histories`; raises `most` to what it reached.
-fn random_history(seed: u64, most: &mut [usize; 4]) {
+// as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
+// 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
+// without the weighting). OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS run others.
+#[test]
+fn open_equals_rebuild_random_histories_moves() {
+    let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
+    let seeds: Vec<u64> = match (env("OSIS_WALKS_MOVES_START"), env("OSIS_WALKS_MOVES_SEEDS")) {
+        (Some(a), n) => (a..a + n.unwrap_or(1)).collect(),
+        _ => vec![6013, 6106, 6305],
+    };
+    for seed in seeds {
+        random_history(seed, &mut [0; 4], 3);
+    }
+}
+
+/// One random history of `open_equals_rebuild_random_histories` with up to `max_moves` moves (more
+/// than one: moves from step 10, moved things snapshotted more); raises `most` to what it reached.
+fn random_history(seed: u64, most: &mut [usize; 4], max_moves: usize) {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
     lp.sync_all().unwrap();
@@ -588,7 +604,7 @@ fn random_history(seed: u64, most: &mut [usize; 4]) {
         set_edge(&mut lp.peers[0].engine, t, ids[2], Some(edge(Role::Admin)), None);
     }
     lp.sync_all().unwrap();
-    let mut moved = false;
+    let mut moves = 0;
     for step in 0..60 {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
@@ -634,11 +650,16 @@ fn random_history(seed: u64, most: &mut [usize; 4]) {
             8 => {
                 let _ = lp.peers[i].engine.roster_snapshot(&t, None);
             }
-            9 if !moved && step > 20 => {
+            x @ (9 | 14) if moves < max_moves && if max_moves > 1 { step > 10 } else { x == 9 && step > 20 } => {
                 if let Ok((copy, _)) = lp.peers[0].engine.move_thing(&t, ids[0]) {
                     things.push(copy);
-                    moved = true;
+                    moves += 1;
                 }
+            }
+            15 if max_moves > 1 && moves > 0 => {
+                let c = *things.last().unwrap();
+                let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
+                let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
             }
             10 => lp.advance(1 + rng.below(1_200_000)),
             11..=13 => {
