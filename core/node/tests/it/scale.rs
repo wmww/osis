@@ -487,7 +487,7 @@ fn text_range_and_edit_cost() {
 
 // spec/permissions.md §5.1; spec/requirements.md, Scale (no operation O(history)): a membership change while the node
 // holds 10^4 content commits on other things of its own tree, and opening that store; then 10^4
-// edge writes (`OSIS_SCALE_EDGES`, `OSIS_SCALE_DEMOTE`; 10^3 in a dev build, `size`).
+// edge writes (`OSIS_SCALE_EDGES`, `OSIS_SCALE_DEMOTE`; 10^2 and 10^3 in a dev build, `size`).
 // spec: none (spec/requirements.md has no numbered sections)
 #[test]
 #[ignore = "tier 2"]
@@ -535,7 +535,8 @@ fn membership_change_and_open_cost() {
     println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
     assert_eq!(e.roster(&things[0]).len(), 1);
     // 10^4 edge writes in the tree's one membership component: 20 members' roles toggled
-    let n: usize = size("OSIS_SCALE_EDGES", 10_000, 1_000);
+    // a dev build: about 0.27 s per edge write with 10^4 commits held (debug-only checks)
+    let n: usize = size("OSIS_SCALE_EDGES", 10_000, 100);
     let members: Vec<Tid> = (0..20u8).map(|i| Tid::from_bytes([100 + i; 15])).collect();
     osis_node::costs::take();
     let t5 = Instant::now();
@@ -1012,10 +1013,11 @@ fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[Str
 
 // spec/sync.md §6, §7; spec/commits.md §5; spec/requirements.md, Scale: a change to one body of
 // a big aspect judges O(change), not the aspect. N keys on one thing (`OSIS_SCALE_N`, default
-// 10^3) in at most 10^3 commits (one key each up to N = 10^3, then N/10^3 per commit: a commit
-// costs its joins at both nodes, about 14 ms per one-key commit at 10^4) at one server, a writer and a
-// reader: (1) under keep at most (every body live, waiting for its timed delete) one more key,
-// then one overwriting a key (kills one body); (2) under an expiry, an older commit expiring
+// 10^3) in at most 10^3 commits (`OSIS_SCALE_PER` keys each, default N/10^3 rounded up: a commit
+// costs its joins at both nodes, about 14 ms per one-key commit at 10^4, so 10^4 bodies takes
+// `OSIS_SCALE_PER=1`) at one server, a writer and a reader: (1) under keep at most (every body
+// live, waiting for its timed delete) one more key, then one overwriting the first body's keys
+// (kills that body); (2) under an expiry, an older commit expiring
 // alone; (3) N things in the group, one write (the closure taken once per pass;
 // `OSIS_SCALE_CLOSURE` things, default N; created 500 per commit: a commit creating k things
 // costs O(k^2), and each re-evaluates the group's component, O(things): issues/
@@ -1037,7 +1039,7 @@ fn sync_aspect_pass_cost() {
     net.run();
     net.advance(1_800_000);
     let t0 = Instant::now();
-    let per = n.div_ceil(1_000);
+    let per = size("OSIS_SCALE_PER", n.div_ceil(1_000), n.div_ceil(1_000)).max(1);
     let keys: Vec<String> = (0..n).map(|i| format!("k{i}")).collect();
     for ks in keys.chunks(per) {
         put_keys(&mut net, a, t, &net::SHORTMAP, ks, "v");
@@ -1057,11 +1059,11 @@ fn sync_aspect_pass_cost() {
     net.advance(1_000);
     let s2 = stats(&mut net);
     let t2 = Instant::now();
-    put_key(&mut net, a, t, &net::SHORTMAP, "k0", "w");
+    put_keys(&mut net, a, t, &net::SHORTMAP, &keys[..per.min(n)], "w");
     net.run();
     let kill = t2.elapsed();
     let s3 = stats(&mut net);
-    println!("keep-at-most map of {n} keys in {bodies} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting one {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
+    println!("keep-at-most map of {n} keys in {bodies} live bodies (fill {fill:?}): one more key {one:?}, writer {:?} reader {:?}; overwriting a body {kill:?}, writer {:?} reader {:?}", d(s0.0, s1.0), d(s0.1, s1.1), d(s2.0, s3.0), d(s2.1, s3.1));
     // the expiring map: its first commit expires alone, the N stay
     let s4 = stats(&mut net);
     let t3 = Instant::now();

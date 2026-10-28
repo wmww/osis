@@ -6,3 +6,5 @@
 - CLAUDE.md still says `tools/slot` and "never `-p`", while notes/build.md and the brief say `tools/wt` and allow `-p`.
 - `cargo test` output piped through `grep -v` is block-buffered: a background log shows nothing until the test ends. Use `grep --line-buffered` in run scripts.
 - "Blocking waiting for file lock on package cache" several times: other agents' cargo invocations share `~/.cargo`; harmless, a few seconds.
+- Review: the release build warned `unused variable: joins` (perm `timeline.rs`, used only under `debug_assertions`); the gate builds dev only, so release-only warnings go unnoticed.
+- Review: a dev run with `grep` filtering on the test name hid that `demotion_heavy_open` is a helper called by `membership_change_and_open_cost`, not a test (`--exact` matched nothing, "0 passed" looked like a pass).
