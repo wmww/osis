@@ -1,10 +1,10 @@
-//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one server
-//! judges again. A verdict on a commit's bodies and entries changes only through a trigger:
+//! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one server,
+//! or a local pass of a label served with no server (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
 //! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
 //! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
 //! newer card write of its aspects changed under the label, its thing entered or left the
-//! closure, a time bound passed (keep at least, expiry), the state of an aspect its verdict
+//! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
 //! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`membership_moved`), or it was
 //! judged while unsettled and that ended. Anything else (open, a change of the label actor's
 //! roster or own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
