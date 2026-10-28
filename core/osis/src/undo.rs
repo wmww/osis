@@ -52,7 +52,8 @@ pub enum EntryState {
     Dropped(DropReason),
 }
 
-/// One change in scope, anyone's.
+/// One change in scope, anyone's: a commit held here, attributed by its own signed header.
+/// Changes known only from a compaction snapshot have no entry (notes/api.md Attribution).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryEntry {
     pub commit: CommitId,

@@ -124,7 +124,13 @@ A thing never changes tid or owner; moving it makes a copy with a new tid (`/was
 - Every call that takes a tid resolves moves internally by the §7 rule; watches registered under an old tid keep firing. Roster reads resolve `/members` keys too.
 - Values returned have known old tids replaced by the resolved one (typed tids and `osis://` links in markdown), so tids read from osis compare equal. Resolution is a read-time view: stored bytes are untouched, and `set`/`edit` diff against the resolved view, so writing a value back never rewrites references. An app pins a reference by writing it explicitly.
 - `same_thing(a, b)` only for identity of a tid the app kept (memory, config, URL) against one read later; `Tid` equality is plain bits.
-- Attribution shown for imported writes is the origin commit's author and `ts`.
+- Attribution of imported writes: see Attribution.
+
+## Attribution (owner decision)
+The API reports only verifiable authorship: who wrote something and when comes from the signed header of a commit held here, never from a claim another commit makes (a snapshot's `Authors`, an import's origins table: internal, for merge identity and revocation). No API type carries an "unverified" flag; what cannot be verified is not reported.
+- History lists the content commits held here, each with its own header's author and `ts`; changes known only from a compaction snapshot have no entry. A watch's `Source` names the commit applied: a snapshot or import arriving is reported as itself (its author, ID and `ts`).
+- Imported writes after a move: the origin commit's author and `ts` only where that commit is held here, else the import's (importer, `ts`). (No per-write attribution call exists yet; any future one follows this rule: a value known only from a snapshot reports the snapshot or nothing.)
+- Provable authorship of every change (audit trails): give the aspect keep at least forever (`Retention.at_least`, `abs` forever); its bodies are then never compacted away, so each change keeps its signed original.
 
 ## Demotion and the pre-sync (decided)
 A demotion's frontier is the demoting node's own receipts (notes/permissions.md, Revocation), so osis syncs every group below before stamping it (spec/permissions.md §5.3); in the common case there is no tradeoff. The sync fails when a group is unreachable, the node is stranded on it, the tree is too big for the device, or the app will not wait (a hostile member or lost device: reverting their unseen work is then wanted). The app chooses by `Demotion.sync`; a UI may route the choice to a user, osis never requires a human. Partial sync is partial protection (the frontier is per aspect). Organizations demote from a node that tracks the tree (an admin node holding the company actor's secrets). Rejected: a "cut access only" removal (`until` = now by an admin) leaves a permanent backdating window until a real demotion follows; third-party receipts fail the fixpoint model.

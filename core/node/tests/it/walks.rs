@@ -638,13 +638,14 @@ fn open_equals_rebuild_random_histories_forged() {
 // as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
 // 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
 // without the weighting). With hostile second imports into a copy (spec/permissions.md §7):
-// seeds DOUBLES (both failed while the last import to arrive named the author), and every
+// seeds DOUBLES (6012 and 6036 failed while the last import to arrive named the author; 51999
+// while an invalid snapshot still counted as a carrier of deaths), and every
 // seed of OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS (OSIS_WALKS_MOVES_DOUBLES=0: without
 // them, as the first three), a thread per core (OSIS_WALKS_THREADS).
 #[test]
 fn open_equals_rebuild_random_histories_moves() {
     const PLAIN: [u64; 3] = [6013, 6106, 6305];
-    const DOUBLES: [u64; 2] = [6012, 6036];
+    const DOUBLES: [u64; 3] = [6012, 6036, 51999];
     let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
     let start = env("OSIS_WALKS_MOVES_START");
     let seeds: Vec<(u64, bool)> = match start {

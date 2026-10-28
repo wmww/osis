@@ -340,7 +340,7 @@ indexes! {
     /// besides its own (deaths, spec/commits.md §5).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Writes held snapshots carry whose own commit is not held, per aspect, judged as their
-    /// authors' (spec/permissions.md §5.2: a snapshot vouches for nothing).
+    /// claimed authors' and by the snapshot's validity (spec/permissions.md §5.2).
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
@@ -390,8 +390,9 @@ indexes! {
     pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// Commit-form sources whose writes snapshots may carry, per thing: (thing, commit ID) ->
     /// (the node its writes are judged as, at which `ts`): a commit-form commit's author and
-    /// `ts`, else the least held import's (`imports`) importer and `ts`, else a held
-    /// snapshot's `Authors` (spec/crdt.md §8, spec/permissions.md §7).
+    /// `ts`, else the least held import's (`imports`) importer and `ts`, else the least held
+    /// snapshot `Authors` entry (deaths windows and `validity::claim_for` only: carried writes
+    /// are judged by their own snapshot's entry, spec/crdt.md §8, spec/permissions.md §7).
     pub authors: JMap<(Tid, CommitId), (Tid, Ts)>,
     /// The lost-access trigger's work list (`rotation::LOST_DUE`).
     pub lost_due: JSet<Tid>,

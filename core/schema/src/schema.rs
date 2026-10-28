@@ -114,6 +114,9 @@ impl Bound {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
+    /// Before this bound a body leaves only by purge request, never by compaction. Who wrote a
+    /// change and when is reported only while its signed original is held (notes/api.md
+    /// Attribution): `abs` forever keeps every change's authorship provable.
     pub at_least: Bound,
     pub at_most: Bound,
 }

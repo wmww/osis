@@ -410,8 +410,10 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
     }
     if let osis_crdt::SourceKind::Node(n) = dot.owner().src.kind() {
         for (ts, s, fr) in core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+            // an invalid snapshot carries nothing (spec/permissions.md §5.2)
             if *ts < at
                 && fr.0.get(n).is_some_and(|f| *f >= dot.owner().ctr)
+                && !crate::apply::validity::invalid_snapshot(core, s, tid, ak)
                 && let Some(ai) = bounded_part(core, s, tid, ak)
             {
                 out.push((*s, ai));
@@ -638,6 +640,9 @@ fn replayed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<BTreeMap<(CommitId, u
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
     for c in &held {
+        if crate::apply::validity::invalid_snapshot(tx.core, c, tid, ak) {
+            continue;
+        }
         let parts: Vec<Fragment> = match held_part(tx.core, c, tid, ak) {
             Some(ai) => {
                 let _s = crate::costs::span("deaths: read bodies");
@@ -818,6 +823,9 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     let mut plays: HashMap<CommitId, bool> = HashMap::new();
     let mut gone = false;
     for (ts, c) in &fold {
+        if crate::apply::validity::invalid_snapshot(tx.core, c, tid, ak) {
+            continue;
+        }
         let cp = copies(tx.core, c);
         if cp && !play.contains(c) {
             drop(crate::costs::span("deaths: window skips copies"));
