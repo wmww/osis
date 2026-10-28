@@ -340,13 +340,20 @@ pub(crate) fn keep_residue(tx: &mut Tx<'_>, c: &CommitId, ai: usize, bodies: &[F
 /// covering it: one whose frontier lacks `me`'s writes (a node-form commit; any other kind, or an
 /// import, counts as not covered).
 fn uncovered_copies_after(core: &Core, tid: &Tid, ak: &Ak, me: (Ts, CommitId), ai: usize) -> bool {
-    let k = (*tid, ak.clone());
     let Some(m) = core.ix.commits.get(&me.1) else { return false };
     let hi = m.header.aspects.get(ai).map(|a| a.hi);
     let node = m.header.form == osis_commit::Form::Node && m.header.kind.has_own_writes();
-    core.ix.copies.get(&k).into_iter().flat_map(|x| x.range(me..)).filter(|x| x.1 != me.1 && bounded_part(core, &x.1, tid, ak).is_some()).any(|(_, s)| {
+    let author = m.header.author;
+    copies_lacking(core, tid, ak, me, &|fr| node && fr.0.get(&author).is_some_and(|f| hi.is_some_and(|hi| f.saturating_add(1) >= hi)))
+}
+
+/// Whether a held bounded snapshot or import of `(tid, ak)` other than `from`'s commit sorts at
+/// or after `from` without being `covered` (by its frontier; an import never is).
+fn copies_lacking(core: &Core, tid: &Tid, ak: &Ak, from: (Ts, CommitId), covered: &dyn Fn(&osis_crdt::Frontiers) -> bool) -> bool {
+    let k = (*tid, ak.clone());
+    core.ix.copies.get(&k).into_iter().flat_map(|x| x.range(from..)).filter(|x| x.1 != from.1 && bounded_part(core, &x.1, tid, ak).is_some()).any(|(_, s)| {
         let fr = core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *s)).map(|x| &x.2);
-        !(node && fr.is_some_and(|fr| fr.0.get(&m.header.author).is_some_and(|f| hi.is_some_and(|hi| f.saturating_add(1) >= hi))))
+        !fr.is_some_and(covered)
     })
 }
 
@@ -419,12 +426,21 @@ fn carriers(core: &Core, tid: &Tid, ak: &Ak, dot: &osis_crdt::Dot, at: Ts) -> Ve
 /// drops bodies past keep at most (spec/commits.md §5).
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
     // a write a replay plays only with the state (its own commit dropped without a residue, or
-    // never held) may have dated a held body that arrived after the drop; once dead in the state
-    // a replay dates that body at a later superseder: replay
-    if !deaths.is_empty()
-        && let Some(b) = first_bare(tx, tid, ak)?
-    {
-        for d in deaths.iter().filter(|d| d.stamp.ts >= b) {
+    // never held) may have dated a held body that arrived after the drop (stamped at or after
+    // `first_bare`), or a copy it superseded in a held bounded snapshot or import after it that
+    // did not see it (strays seed 67421); once dead in the state a replay dates those at a later
+    // superseder: replay
+    if !deaths.is_empty() && first_bounded(tx.core, tid, ak).is_some() {
+        let b = first_bare(tx, tid, ak)?;
+        let unseen = |core: &Core, s: &osis_crdt::Stamp| {
+            let d = s.dot.owner();
+            let seen = |fr: &osis_crdt::Frontiers| matches!(d.src.kind(), osis_crdt::SourceKind::Node(n) if fr.0.get(n).is_some_and(|f| *f >= d.ctr));
+            copies_lacking(core, tid, ak, (s.ts, LO), &seen)
+        };
+        for d in deaths {
+            if !(b.is_some_and(|b| d.stamp.ts >= b) || unseen(tx.core, &d.stamp)) {
+                continue;
+            }
             let own = match tx.core.commit_of(tid, ak, &d.stamp.dot) {
                 Some(x) => plays_own(tx, tid, ak, &x)?,
                 None => false,
