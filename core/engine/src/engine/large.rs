@@ -87,19 +87,7 @@ fn segs(l: &Large) -> Option<Vec<PathSeg>> {
 
 /// The root link the state holds at `prefix` + `l`'s path now.
 fn base_at(state: &Fragment, prefix: &[PathSeg], l: &Large) -> Option<Link> {
-    if l.map_key {
-        return None;
-    }
-    let mut path = prefix.to_vec();
-    for s in &l.path.0 {
-        path.push(match s {
-            Step::Field(i) => PathSeg::Field(*i),
-            Step::Key(k) => PathSeg::Key(k.clone()),
-            Step::Case(c) => PathSeg::Case(*c),
-            Step::Index(i) => PathSeg::Index(*i),
-            Step::Elem(_) => return None,
-        });
-    }
+    let path = [prefix.to_vec(), segs(l)?].concat();
     match state.at(&path).filter(Fragment::present)?.read()? {
         Value::Link(k) => Some(k),
         _ => None,
@@ -170,10 +158,15 @@ impl ListEdit {
     }
 }
 
+/// `v` chunked without writing blobs: a large value as the link (content hash) a write gives it.
+fn hashed(v: &Value, dedup: &Secret32) -> Result<Value> {
+    Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?)
+}
+
 /// The `ListEdit` of each op that is a list `edit` (others `None`), large parts hashed under
 /// `dedup`.
 pub(crate) fn list_edits(ops: &[PathOp], schema: Option<&Schema>, ak: &str, dedup: &Secret32) -> Result<Vec<Option<ListEdit>>> {
-    let mut hash = |v: &Value, _: Option<&Link>| -> Result<Value> { Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?) };
+    let mut hash = |v: &Value, _: Option<&Link>| hashed(v, dedup);
     let mut out = Vec::with_capacity(ops.len());
     for op in ops {
         let Op::Edit { base, new: new @ Value::List(_) } = &op.op else {
@@ -350,7 +343,7 @@ pub(crate) fn lookup_form(v: &Value, dedup: &Secret32) -> Result<Value> {
     if !atomic_large(v) {
         return Ok(v.clone());
     }
-    Ok(osis_label::chunk_value(&mut HashSink::new(dedup.clone()), LargeParams::FORMAT, v)?)
+    hashed(v, dedup)
 }
 
 /// Chunks the large positions of `ops` on `(tid, ak)` under `framing`, reusing the tree each
@@ -386,7 +379,7 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
         };
         Ok(osis_label::chunk_value(&mut bw, LargeParams::FORMAT, v)?)
     };
-    let mut hash = |v: &Value| -> Result<Value> { Ok(osis_label::chunk_value(&mut HashSink::new(framing.dedup.clone()), LargeParams::FORMAT, v)?) };
+    let mut hash = |v: &Value| hashed(v, &framing.dedup);
     for (i, op) in ops.iter_mut().enumerate() {
         chunk_op(op, schema, ak.as_str(), state, edits.get(i).and_then(Option::as_ref), &mut put, &mut hash)?;
     }
@@ -425,11 +418,17 @@ pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Fra
 /// node and page blobs.
 pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
     let mut out = LiveTrees::default();
-    let Ok(v) = osis_base::decode(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) else { return Ok(out.blobs) };
-    let mut roots = Vec::new();
-    links_in(&v, &mut roots);
-    tree_blobs(tx, dedup, &roots, &mut out)?;
+    tree_blobs(tx, dedup, &delta_roots(delta), &mut out)?;
     Ok(out.blobs)
+}
+
+/// The root links in a delta's canonical bytes (none if they do not decode).
+fn delta_roots(delta: &[u8]) -> Vec<Link> {
+    let mut roots = Vec::new();
+    if let Ok(v) = osis_base::decode(delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: delta.len() }) {
+        links_in(&v, &mut roots);
+    }
+    roots
 }
 
 /// Every link inside `v` (the root links of its large values).
@@ -676,10 +675,7 @@ impl Engine {
             let mut out = LiveTrees::default();
             for p in &cb.parts {
                 let Some(dedup) = h.aspects.get(p.ai).and_then(|a| tx.core.dedup(&a.tid)) else { continue };
-                let Ok(v) = osis_base::decode(&p.delta, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: p.delta.len() }) else { continue };
-                let mut roots = Vec::new();
-                links_in(&v, &mut roots);
-                tree_blobs(tx, &dedup, &roots, &mut out)?;
+                tree_blobs(tx, &dedup, &delta_roots(&p.delta), &mut out)?;
             }
             Ok(out)
         })
