@@ -605,11 +605,7 @@ impl Engine {
                 }
                 let mut roots = Vec::new();
                 for d in crate::apply::held_parts(tx, &c, ai)? {
-                    let f = match &d {
-                        osis_commit::Decoded::Delta(x) => &x.fragment,
-                        osis_commit::Decoded::Snapshot(x) => &x.fragment,
-                    };
-                    if let Some(v) = f.read() {
+                    if let Some(v) = d.fragment().read() {
                         links_in(&v, &mut roots);
                     }
                 }

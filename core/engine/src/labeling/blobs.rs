@@ -288,10 +288,7 @@ impl Engine {
         let Some(epochs) = self.epochs(&a) else { return Ok(None) };
         let mut best: Option<Epoch> = None;
         for d in parts {
-            let f = match d {
-                osis_commit::Decoded::Delta(x) => x.fragment,
-                osis_commit::Decoded::Snapshot(x) => x.fragment,
-            };
+            let f = d.into_fragment();
             let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { continue };
             let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { continue };
             let Some(info) = epochs.read.get(&e) else { continue };

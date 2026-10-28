@@ -14,6 +14,23 @@ pub enum Decoded {
     Snapshot(Snapshot),
 }
 
+impl Decoded {
+    /// The delta's or snapshot's fragment.
+    pub fn fragment(&self) -> &osis_crdt::Fragment {
+        match self {
+            Decoded::Delta(x) => &x.fragment,
+            Decoded::Snapshot(x) => &x.fragment,
+        }
+    }
+
+    pub fn into_fragment(self) -> osis_crdt::Fragment {
+        match self {
+            Decoded::Delta(x) => x.fragment,
+            Decoded::Snapshot(x) => x.fragment,
+        }
+    }
+}
+
 /// The header facts a delta of aspect `ai` is read against.
 pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) -> Result<DeltaCtx, Error> {
     let a = h.aspects.get(ai).ok_or(Error::Malformed("aspect index out of range"))?;

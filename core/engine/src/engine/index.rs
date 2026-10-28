@@ -828,10 +828,7 @@ impl super::Engine {
                     for c in held {
                         let Some(ai) = tx.core.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)) else { continue };
                         for d in crate::apply::held_parts(tx, &c, ai)? {
-                            st.join(match d {
-                                osis_commit::Decoded::Delta(x) => x.fragment,
-                                osis_commit::Decoded::Snapshot(x) => x.fragment,
-                            });
+                            st.join(d.into_fragment());
                         }
                     }
                     tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;

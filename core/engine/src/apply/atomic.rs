@@ -166,13 +166,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) 
         if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.created(&a.tid).is_some() {
             continue;
         }
-        let rec = match d {
-            Decoded::Delta(x) => x.fragment.read(),
-            Decoded::Snapshot(x) => x.fragment.read(),
-        }
-        .as_ref()
-        .and_then(CreationRecord::from_value)
-        .ok_or(Error::BadInput("/created"))?;
+        let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("/created"))?;
         if rec.tid() == a.tid {
             tx.txn.put_local(&[records::CREATED, a.tid.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.held.create(rec);
@@ -241,10 +235,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Vec<(usi
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         let mut by_aspect: BTreeMap<usize, Vec<&Fragment>> = BTreeMap::new();
         for (ai, _, d) in &parts {
-            by_aspect.entry(*ai).or_default().push(match d {
-                Decoded::Delta(x) => &x.fragment,
-                Decoded::Snapshot(x) => &x.fragment,
-            });
+            by_aspect.entry(*ai).or_default().push(d.fragment());
         }
         for (ai, a) in h.aspects.iter().enumerate() {
             // one delta: keep only what undoing it reads
