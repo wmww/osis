@@ -168,11 +168,11 @@ impl Seq {
 // ---- state hooks (§4, §5.7)
 
 impl SeqElem {
-    /// An empty record (a delta's element edit or flag write fills it).
     /// A text element's char, if it holds one.
     pub(crate) fn char(&self) -> Option<char> {
         if let SeqContent::Char(c) = self.content { Some(c) } else { None }
     }
+    /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
         SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, span: 1 }
     }
