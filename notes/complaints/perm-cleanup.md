@@ -1,0 +1,2 @@
+# perm-cleanup
+- Old/new perm `bench::` alternated 3 rounds while another agent ran a 14-core test (load 12-25): new looked 2-3x slower on every line, even code it does not touch. Not real: user-space instruction counts of the same runs (a 30-line `perf_event_open` wrapper; `perf` and valgrind are not installed) differed by under 0.001%. A committed `tools/icount` would make load-proof A/B checks routine.
