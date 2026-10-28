@@ -933,7 +933,7 @@ impl Tx<'_> {
             unit.undo.clear();
         }
         self.txn.put_aspect(tid, ak, &unit, shred)?;
-        let ik = records::aspect_key(b"a/", tid, ak);
+        let ik = records::aspect_key(records::ASPECTS, tid, ak);
         if f.is_some() {
             self.txn.put_local(&ik, &[], Shred::No)?;
         } else {

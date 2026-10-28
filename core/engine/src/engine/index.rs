@@ -12,6 +12,7 @@
 //! re-judge).
 
 use super::journal::{JMap, JSet, JSetMap};
+use super::records::uint;
 use super::{Core, Meta, Tx, records, scan_table};
 use osis_store::Transaction;
 use crate::error::{Error, Result};
@@ -59,10 +60,6 @@ pub(crate) const WALK_CACHE_MIN: usize = 64;
 trait Rec: Sized {
     fn to(&self) -> Value;
     fn from(v: &Value) -> Option<Self>;
-}
-
-fn uint(n: u64) -> Value {
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
 impl Rec for CommitId {
@@ -372,51 +369,37 @@ fn dec<T: Rec>(b: &[u8]) -> Result<T> {
     T::from(&v).ok_or(Error::Corrupt("index record"))
 }
 
-fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, keys: &[K]) -> Result<()> {
+/// Writes the rows of `keys` (`value`: a key's row value, `None` to remove it) to index `name`.
+fn put_rows<K: Rec>(txn: &mut Transaction<'_>, name: &[u8], keys: Vec<K>, value: impl Fn(&K) -> Option<Vec<u8>>) -> Result<()> {
     if keys.is_empty() {
         return Ok(());
     }
     let t = txn.index(name)?;
-    for k in keys {
-        let key = enc(k);
-        match m.get(k) {
-            Some(v) => txn.table_put(t, &key, enc(v), Shred::No).map(|_| ())?,
-            None => txn.table_remove(t, &key, Shred::No).map(|_| ())?,
-        }
+    for k in &keys {
+        match value(k) {
+            Some(v) => txn.table_put(t, &enc(k), v, Shred::No)?,
+            None => txn.table_remove(t, &enc(k), Shred::No)?,
+        };
     }
     Ok(())
 }
 
-fn put_set<T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSet<T>, items: &[T]) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let tb = txn.index(name)?;
-    for t in items {
-        let key = enc(t);
-        if s.contains(t) {
-            txn.table_put(tb, &key, Vec::new(), Shred::No)?;
-        } else {
-            txn.table_remove(tb, &key, Shred::No)?;
-        }
-    }
-    Ok(())
+/// Writes what the running transaction changed of `m` (`all`: every entry) to index `name`.
+fn put_map<K: Rec + Ord + Clone, V: Rec + Clone>(txn: &mut Transaction<'_>, name: &[u8], m: &JMap<K, V>, all: bool) -> Result<()> {
+    let keys = if all { m.keys().cloned().collect() } else { m.logged() };
+    put_rows(txn, name, keys, |k| m.get(k).map(enc))
 }
 
-fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, items: &[(K, T)]) -> Result<()> {
-    if items.is_empty() {
-        return Ok(());
-    }
-    let tb = txn.index(name)?;
-    for (k, t) in items {
-        let key = enc(&(k.clone(), t.clone()));
-        if s.get(k).is_some_and(|x| x.contains(t)) {
-            txn.table_put(tb, &key, Vec::new(), Shred::No)?;
-        } else {
-            txn.table_remove(tb, &key, Shred::No)?;
-        }
-    }
-    Ok(())
+/// `put_map` of a set: a row per item.
+fn put_set<T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSet<T>, all: bool) -> Result<()> {
+    let items = if all { s.iter().cloned().collect() } else { s.logged() };
+    put_rows(txn, name, items, |t| s.contains(t).then(Vec::new))
+}
+
+/// `put_map` of a map of sets: a row per (key, item).
+fn put_setmap<K: Rec + Ord + Clone, T: Rec + Ord + Clone>(txn: &mut Transaction<'_>, name: &[u8], s: &JSetMap<K, T>, all: bool) -> Result<()> {
+    let items = if all { s.iter().flat_map(|(k, x)| x.iter().map(|t| (k.clone(), t.clone()))).collect() } else { s.logged() };
+    put_rows(txn, name, items, |(k, t)| s.get(k).is_some_and(|x| x.contains(t)).then(Vec::new))
 }
 
 /// Writes a membership commit's `EDGES` row (with its record).
@@ -524,7 +507,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         return Err(Error::Corrupt("meta row version"));
     }
     let n = r.u32()? as usize;
-    let parts = r.take_raw(n)?;
+    let parts = r.take(n)?;
     let ts = Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("meta row ts"))?;
     let kind = osis_commit::Kind::from_id(<u64 as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("meta row kind"))?;
     let form = match r.u8()? {
@@ -602,24 +585,15 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
             };
         }
     }
-    let k = if all { c.box_keys.keys().cloned().collect() } else { c.box_keys.logged() };
-    put_map(txn, BOX_KEYS, &c.box_keys, &k)?;
-    let k = if all { c.boxes_to.iter().flat_map(|(m, s)| s.iter().map(|x| (*m, x.clone()))).collect() } else { c.boxes_to.logged() };
-    put_setmap(txn, BOXES_TO, &c.boxes_to, &k)?;
-    let k = if all { c.epoch_intro.keys().cloned().collect() } else { c.epoch_intro.logged() };
-    put_map(txn, EPOCH_INTRO, &c.epoch_intro, &k)?;
-    let k = if all { c.box_written.keys().cloned().collect() } else { c.box_written.logged() };
-    put_map(txn, BOX_WRITTEN, &c.box_written, &k)?;
-    let k = if all { c.own_keys.iter().cloned().collect() } else { c.own_keys.logged() };
-    put_set(txn, OWN_KEYS, &c.own_keys, &k)?;
-    let k = if all { c.delete_hints.keys().cloned().collect() } else { c.delete_hints.logged() };
-    put_map(txn, DELETE_HINTS, &c.delete_hints, &k)?;
-    let k = if all { c.snapshots.keys().cloned().collect() } else { c.snapshots.logged() };
-    put_map(txn, SNAPSHOTS, &c.snapshots, &k)?;
-    let k = if all { c.carried.keys().cloned().collect() } else { c.carried.logged() };
-    put_map(txn, CARRIED, &c.carried, &k)?;
-    let k = if all { c.authors.keys().cloned().collect() } else { c.authors.logged() };
-    put_map(txn, AUTHORS, &c.authors, &k)?;
+    put_map(txn, BOX_KEYS, &c.box_keys, all)?;
+    put_setmap(txn, BOXES_TO, &c.boxes_to, all)?;
+    put_map(txn, EPOCH_INTRO, &c.epoch_intro, all)?;
+    put_map(txn, BOX_WRITTEN, &c.box_written, all)?;
+    put_set(txn, OWN_KEYS, &c.own_keys, all)?;
+    put_map(txn, DELETE_HINTS, &c.delete_hints, all)?;
+    put_map(txn, SNAPSHOTS, &c.snapshots, all)?;
+    put_map(txn, CARRIED, &c.carried, all)?;
+    put_map(txn, AUTHORS, &c.authors, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -811,9 +785,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-
-
-
 impl super::Engine {
     /// A dump of the indexes open rebuilds (tests: a load from the persisted index equals a
     /// rebuild from the commit records).
@@ -884,14 +855,10 @@ impl super::Engine {
             });
         }
         self.run(|tx| {
-            if garble {
-                let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };
-                let t = tx.txn.index(METAS)?;
-                tx.txn.table_put(t, &id.0, vec![1; 300], Shred::No)?;
-                Ok(())
-            } else {
-                tx.txn.put_local(VERSION_KEY, b"another build", Shred::No).map_err(Error::from)
-            }
+            let Some(id) = tx.core.commits.keys().next().copied() else { return Ok(()) };
+            let t = tx.txn.index(METAS)?;
+            tx.txn.table_put(t, &id.0, vec![1; 300], Shred::No)?;
+            Ok(())
         })
     }
 

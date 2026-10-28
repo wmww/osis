@@ -4,6 +4,7 @@
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
 use super::Core;
+use super::records::uint;
 use osis_base::CommitId;
 use crate::error::{Error, Result};
 use osis_base::{CreationRecord, Role, Tid, Value};
@@ -454,10 +455,6 @@ impl CommitSecrets<'_> {
 }
 
 // ---- local encoding of held epochs (the store's actor secrets unit)
-
-fn uint(n: u64) -> Value {
-    Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
-}
 
 fn provenance_code(p: Provenance) -> u64 {
     match p {
