@@ -68,7 +68,9 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert!(db.get(n, notes::TASKS).unwrap().unwrap()[0].done);
     // mistyped data: untyped write of an int under a string AK
     db.write_with(|w| w.at(n, ak("/note/title")).set(&Value::Int(3))).unwrap();
-    assert!(matches!(db.get(n, notes::TITLE), Err(Error::Type { .. })));
+    let e = db.get(n, notes::TITLE).unwrap_err();
+    assert!(matches!(e, Error::Type { .. }));
+    assert_eq!(e.to_string(), "type error at (root): expected string", "the path once");
     assert_eq!(db.get(n, ak("/note/title")).unwrap(), Some(Value::Int(3)));
     // a typed write is validated against the writer's schema
     let mut w = db.write();

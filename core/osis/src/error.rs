@@ -53,7 +53,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<PathError> for Error {
     fn from(e: PathError) -> Error {
-        Error::Type { path: e.path.clone(), reason: e.to_string() }
+        Error::Type { reason: e.kind.to_string(), path: e.path }
     }
 }
 
