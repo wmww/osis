@@ -844,6 +844,26 @@ fn deaths_alike_in_any_order_spec_crdt_4_8() {
     check_deaths(16, &h);
 }
 
+// spec/crdt.md §4.8, order seed 7855 (exhaustive, shrunk): W1 and W2 put one `/t/gonemap` key, U
+// undoes W1 (removes the entry), W3 puts it again, S compacts. Delivered W1, W2, S, U, W3: S's
+// copy of U's removal kills W1's entry creation at U's `ts`, but a replay skipped that death as a
+// snapshot's copy re-dying (W1's value, dead at W2, shares its stamp), so W1 kept (W2, W2) where
+// a replay holding U dates (W2, U), and U's window did not judge W1 (debug check).
+#[test]
+fn copy_kills_write_sharing_a_dead_stamp_spec_crdt_4_8() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 1, op: 19, k: 1, v: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 0 }, Undo { by: 0, back: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 19 }];
+    let played = play(7855, &h);
+    let b = played.base;
+    let mut seen = Vec::new();
+    for rel in [[0, 1, 2, 3, 4], [0, 1, 4, 2, 3]] {
+        let mut p = deliver(&played, &(0..b).chain(rel.iter().map(|i| b + i)).collect::<Vec<_>>());
+        assert_eq!(replay_differs(&mut p), None, "order {rel:?}");
+        seen.push(deaths_text(&mut p.engine));
+    }
+    assert!(seen[0].contains("Some(Some(") && seen[0] == seen[1], "{seen:#?}");
+}
+
 /// `check` comparing every body's deaths.
 fn check_deaths(seed: u64, steps: &[Step]) {
     let played = play(seed, steps);
@@ -922,4 +942,5 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
     assert!(!p.engine.holds_body(&snap, &a.tid, &a.ak), "the snapshot dropped dead");
     assert!(!p.engine.body_live(&snap, &a.tid, &a.ak).unwrap(), "the undo reset it");
 }
+
 

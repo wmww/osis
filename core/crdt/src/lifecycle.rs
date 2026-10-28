@@ -163,6 +163,34 @@ impl Fragment {
         self.dots_in(pred, true)
     }
 
+    /// Whether the fragment holds a write stamped exactly `s`: a register, case, reset or `W`
+    /// write, a map entry's creation, a sequence element's creation (in a range record too),
+    /// position or flag write. Unlike `holds_dots`, a record keyed by `s`'s dot whose creation
+    /// is gone (a removed entry kept for its reset) does not count, nor another write sharing
+    /// the dot.
+    pub fn holds_stamp(&self, s: &Stamp) -> bool {
+        let eq = |x: &Stamp| x == s;
+        let opt = |x: &Option<Stamp>| x.as_ref().is_some_and(eq);
+        let sub = |f: &Fragment| f.holds_stamp(s);
+        if self.meta().is_some_and(|m| opt(&m.reset) || opt(&m.w)) {
+            return true;
+        }
+        let reg = |r: &Register| opt(&r.reset) || r.write.as_ref().is_some_and(|w| eq(&w.stamp));
+        match self {
+            Fragment::Register(r) => reg(r),
+            Fragment::Slots(x) => x.reg.as_ref().is_some_and(reg) || x.members.values().any(sub),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().any(|e| opt(&e.reset) || e.frag.as_deref().is_some_and(sub)),
+            Fragment::Struct(x) => x.fields.values().any(sub),
+            Fragment::Enum(e) => e.case.as_ref().is_some_and(|c| eq(&c.stamp)) || e.payloads.values().any(sub),
+            Fragment::Map(m) => m.entries.values().any(|e| opt(&e.reset) || opt(&e.created) || e.frag.as_deref().is_some_and(sub)),
+            Fragment::Seq(q) => q.elems().iter().any(|(d, el)| {
+                // a range record's creations are its elements' dots at the record's `ts`
+                let created = el.created.as_ref().is_some_and(|(c, _)| eq(c) || (c.ts == s.ts && s.dot.src == d.src && s.dot.ctr >= d.ctr && s.dot.ctr - d.ctr < el.span));
+                created || el.pos.iter().any(|p| eq(&p.0)) || el.deleted.as_ref().is_some_and(|x| eq(&x.0)) || matches!(&el.content, crate::seq::SeqContent::Frag(f) if sub(f))
+            }),
+        }
+    }
+
     /// `holds_dots` with `holds`, else `dots_supersede`.
     pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
         let a = |s: &Stamp| pred(s.dot.owner());
