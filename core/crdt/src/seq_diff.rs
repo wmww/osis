@@ -167,7 +167,6 @@ fn script(n_old: usize, n_new: usize, keep: &[(usize, usize)], pair: bool) -> Ve
     out
 }
 
-
 fn chars(v: &Value) -> Result<Vec<char>, Error> {
     match v {
         Value::Str(s) => Ok(s.chars().collect()),
