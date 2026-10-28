@@ -62,6 +62,12 @@ def claim(branch, base="main"):
         exists = subprocess.run(["git", "rev-parse", "--verify", "-q", f"refs/heads/{branch}"],
                                 cwd=path, capture_output=True).returncode == 0
         git("checkout", "-q", *([branch] if exists else ["-b", branch, base]), cwd=path)
+        tgt = path / "target"
+        if tgt.is_dir():
+            gb = sum(f.stat().st_size for f in tgt.rglob("*") if f.is_file()) / 2**30
+            if gb > 8:
+                print(f"wt: {tgt} is {gb:.0f} GB (a warm target is about 5-6 GB): stacked artifact generations after a "
+                      f"profile, layout or toolchain change; delete it and rebuild (notes/build.md)", file=sys.stderr)
     except SystemExit:
         (claims / f"wt{n}").unlink()
         raise
