@@ -707,6 +707,9 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
     if first_bounded(tx.core, tid, ak).is_none() {
         return Ok(Some(Vec::new()));
     }
+    if unkilled_drops(tx.core, tid, ak, t_min) {
+        return Ok(None);
+    }
     let k = (*tid, ak.clone());
     let mut u = t_max;
     let mut judge: BTreeMap<(Ts, CommitId), usize> = BTreeMap::new();
@@ -867,6 +870,23 @@ fn window(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, items: &[Due]) -> Result<Option<V
         set_deaths(tx, tid, ak, c, *ai, got.get(&(*c, *ai)).copied())?;
     }
     Ok(Some(judged.into_iter().collect()))
+}
+
+/// Whether a dropped body of `(tid, ak)` sorts between `t_min` and an invalid commit or a
+/// snapshot carrying invalid writes after it. A dropped body's write is gone from the state; an
+/// invalid one un-merged is too, so a dead body's residue whose killer turned invalid is live in
+/// a replay (it supersedes a late delta's writes) but absent from the state the late delta's join
+/// met: no hint bounds where it dies (walks seeds 40558, 40797). Cost: the aspect's invalid parts
+/// and carried groups, then its commits from `t_min` to the last of them (in memory).
+fn unkilled_drops(core: &Core, tid: &Tid, ak: &Ak, t_min: Ts) -> bool {
+    let k = (*tid, ak.clone());
+    let ts_of = |c: &CommitId| core.ix.commits.get(c).map(|m| m.header.ts);
+    let invalid = core.ix.invalid.get(&k).into_iter().flatten().filter(|c| {
+        core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| !m.valid.get(ai).copied().unwrap_or(false)))
+    });
+    let carried = core.ix.carried.get(&k).into_iter().flatten().filter(|g| !g.invalid.is_empty()).map(|g| &g.snap);
+    let Some(last) = invalid.chain(carried).filter_map(ts_of).filter(|t| *t >= t_min).max() else { return false };
+    core.ix.by_aspect.get(&k).into_iter().flat_map(|s| s.range((t_min, LO)..=(last, HI))).any(|(_, c)| held_part(core, c, tid, ak).is_none())
 }
 
 /// Debug builds, after a window (also one that judged nothing): every held bounded body of
