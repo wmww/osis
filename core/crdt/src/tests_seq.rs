@@ -100,6 +100,13 @@ proptest! {
         crate::tests_life::remove_writes_check(seed, &Ty::List(Box::new(inner())));
     }
 
+    /// §4.8: a dead text or list write is a joined side's by exact stamp.
+    #[test]
+    fn seq_deaths_held_by_stamp_spec_4_8(seed in any::<u64>()) {
+        crate::tests_life::holds_stamp_check(seed, &Ty::Text);
+        crate::tests_life::holds_stamp_check(seed, &Ty::List(Box::new(inner())));
+    }
+
     /// §8: bootstrap from a text or list snapshot, then concurrent edits, converges.
     #[test]
     fn seq_bootstrap_then_edit_spec_8(seed in any::<u64>()) {

@@ -81,6 +81,37 @@ proptest! {
     fn bootstrap_then_edit_spec_8(seed in any::<u64>()) {
         bootstrap_check(seed, &sink_no_seq());
     }
+
+    /// §4.8: every write a join reports dead is one of its sides' by exact stamp (`holds_stamp`:
+    /// a snapshot's copy dying again is recognised, spec/commits.md §5).
+    #[test]
+    fn deaths_held_by_stamp_spec_4_8(seed in any::<u64>()) {
+        holds_stamp_check(seed, &sink_no_seq());
+    }
+}
+
+/// `holds_stamp` over random histories of type `ty`: joins of random subsets of the commits
+/// (as snapshots carry them), one joined into another.
+pub(crate) fn holds_stamp_check(seed: u64, ty: &Ty) {
+    let mut r = crate::testutil::rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+    for _ in 0..8 {
+        let mut pick = || {
+            let mut f = Fragment::default();
+            for b in bodies.iter().filter(|_| r.chance(1, 2)) {
+                f.join(b.clone());
+            }
+            f
+        };
+        let (a, b) = (pick(), pick());
+        let mut st = a.clone();
+        let mut ch = crate::changes::Changes::new();
+        st.join_into(b.clone(), None, &mut ch);
+        for d in ch.into_deaths() {
+            assert!(a.holds_stamp(&d.stamp) || b.holds_stamp(&d.stamp), "a dead write is a side's: {d:?}");
+        }
+    }
 }
 
 /// §4.7 laws of `strip` over random states of type `ty`.
