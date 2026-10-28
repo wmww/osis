@@ -203,9 +203,8 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             }
             for (k, f) in removed {
                 let Some(v) = f.read() else { continue };
-                let st = w.fresh();
-                let nd = st.dot.clone();
-                entries.insert(nd, Entry { reset: None, key: Some(k), frag: Some(Box::new(create(w, &vview, &v)?)), created: Some(st) });
+                let (d, e) = crate::ops::new_entry(w, k, |w| create(w, &vview, &v))?;
+                entries.insert(d, e);
             }
             Fragment::Map(Map::new(Meta::default(), entries))
         }

@@ -161,6 +161,14 @@ fn contribution(w: &mut Writer, kind: BagKind, v: Value) -> Fragment {
     Fragment::Bag(Bag { kind, meta: Meta::default(), elems })
 }
 
+/// A new map entry of key `k`: a fresh dot, whose stamp is the creation's (§5.6), holding what
+/// `content` writes after it.
+pub(crate) fn new_entry(w: &mut Writer, k: Value, content: impl FnOnce(&mut Writer) -> Result<Fragment, Error>) -> Result<(Dot, Entry), Error> {
+    let st = w.fresh();
+    let frag = content(w)?;
+    Ok((st.dot.clone(), Entry { reset: None, key: Some(k), frag: Some(Box::new(frag)), created: Some(st) }))
+}
+
 fn with_w(w: &Writer, empty: bool) -> Meta {
     Meta { reset: None, w: empty.then(|| w.delta_stamp()) }
 }
@@ -204,9 +212,8 @@ pub fn create<V: View>(w: &mut Writer, view: &V, v: &Value) -> Result<Fragment, 
             let vv = view.element().ok_or(Error::Mismatch("map without value type"))?;
             let mut entries = BTreeMap::new();
             for (k, val) in kv {
-                let d = w.fresh().dot;
-                let created = Some(Stamp::new(w.ts, d.src.clone(), d.ctr));
-                entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vv, val)?)), created });
+                let (d, e) = new_entry(w, k.clone(), |w| create(w, &vv, val))?;
+                entries.insert(d, e);
             }
             Fragment::Map(Map::new(meta, entries))
         }
@@ -390,9 +397,8 @@ pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value)
                     }
                 }
                 if !matched {
-                    let d = w.fresh().dot;
-                    let created = Some(Stamp::new(w.ts, d.src.clone(), d.ctr));
-                    entries.insert(d, Entry { reset: None, key: Some(k.clone()), frag: Some(Box::new(create(w, &vview, val)?)), created });
+                    let (d, e) = new_entry(w, k.clone(), |w| create(w, &vview, val))?;
+                    entries.insert(d, e);
                 }
             }
             Fragment::Map(Map::new(Meta::default(), entries))
