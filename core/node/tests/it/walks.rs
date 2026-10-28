@@ -204,7 +204,7 @@ fn reload_never_takes_generation_back() {
         if rebuild {
             e.rebuild_index().unwrap();
         } else {
-            e.reload_index().unwrap();
+            e.reload().unwrap();
         }
         assert!(e.core.generation > before, "rebuild {rebuild}: {} after {before}", e.core.generation);
     }
