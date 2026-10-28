@@ -1,6 +1,6 @@
 //! Re-sourcing for imports (spec/permissions.md §7): every dot of a fragment (write stamps,
 //! element identities, anchors, resets) mapped by a function; `ts` is kept. `Derived` dots map
-//! through their underlying dot.
+//! through their underlying dot. Also the one read-only walk over a fragment's writes (`walk`).
 
 use crate::fragment::{Bag, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
